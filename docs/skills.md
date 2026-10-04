@@ -22,7 +22,7 @@ When a required argument is missing, a skill asks for it rather than guessing.
 
 ## Summary
 
-**Installed** says how `python deploy.py` selects the skill: `--all` installs every skill marked "by default"; an opt-in skill needs `--include <name>` or a menu choice; a bundle installs its skills together. **Needs** lists what the skill runs beyond the deployment prerequisites in the [README](../README.md#deployment-requirements), and any setting it reads from `python deploy.py configure`. `python deploy.py check` reports which of those tools are installed.
+**Installed** says how `python deploy.py` selects the skill: `--all` installs every skill marked "by default"; an opt-in skill needs `--include <name>` or a menu choice; a bundle installs its skills together. **Needs** lists what the skill runs beyond the deployment prerequisites in [Installation](installation.md#requirements), and any setting it reads from `python deploy.py configure`. `python deploy.py check` reports which of those tools are installed.
 
 <!-- generated:summary -->
 | Skill | Started by | Installed | Needs |

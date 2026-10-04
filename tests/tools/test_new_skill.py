@@ -16,7 +16,10 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from deployer import frontmatter as fm
 from tools import new_skill, skill_reference
 
-README = "# Fixture\n\n## Included skills\n\n- `alpha`\n- `suite`\n\nSee [Skills](docs/skills.md).\n"
+README = (
+    "# Fixture\n\n## Included skills\n\n| Skill | What it does |\n|---|---|\n"
+    "| [`alpha`](docs/skills.md#alpha) | Alpha. |\n| `suite` | A bundle. |\n\nSee [Skills](docs/skills.md).\n"
+)
 REFERENCE = "# Skills\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n"
 DESCRIPTION = 'Report "widgets" in a repository with spaces — use it when asked about them.'
 
@@ -84,7 +87,7 @@ class NewSkillTestCase(unittest.TestCase):
         self.assertEqual(
             [
                 "docs/skills.md: section `widget-report` has no hand-written explanation after its generated block",
-                "README.md: 'Included skills' does not list `widget-report`",
+                "README.md: 'Included skills' has no row for `widget-report`",
             ],
             remaining,
         )
@@ -93,7 +96,7 @@ class NewSkillTestCase(unittest.TestCase):
         new_skill.scaffold(self.root, "widget-report", DESCRIPTION)
         self.add_prose("widget-report")
         readme = self.root / "README.md"
-        readme.write_text(readme.read_text(encoding="utf-8").replace("- `suite`", "- `suite`\n- `widget-report`"), encoding="utf-8")
+        readme.write_text(readme.read_text(encoding="utf-8").replace("| `suite` | A bundle. |", "| `suite` | A bundle. |\n| `widget-report` | Widgets. |"), encoding="utf-8")
 
         self.assertEqual([], skill_reference.problems(self.root))
 
@@ -161,7 +164,7 @@ class NewSkillTestCase(unittest.TestCase):
                 "CREATED deploy-meta/widget-report.json",
                 "UPDATED docs/skills.md",
                 "REMAINING docs/skills.md: section `widget-report` has no hand-written explanation after its generated block",
-                "REMAINING README.md: 'Included skills' does not list `widget-report`",
+                "REMAINING README.md: 'Included skills' has no row for `widget-report`",
             ],
             stdout.splitlines(),
         )
