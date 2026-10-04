@@ -30,6 +30,8 @@ The skills run in any of these runtimes. Install the ones you use; none of them 
 | Codex CLI | 0.160.0 | `$<skill>` | `python deploy.py verify` |
 | GitHub Copilot CLI | 1.0.91 | `/<skill>` | `python deploy.py verify` |
 
+These versions were tested on the maintainer's own Windows machines, through the [runtime canary](tools/runtime_canary.py) and real skill and review runs, not on a clean Windows installation; installing from a fresh clone on a clean Windows environment, one runtime at a time, has not been done by hand and is deferred for 0.1.0. [Issue #12](https://github.com/EJRyan89/coding-agent-skills/issues/12) adds a manual workflow that covers the deployer and runtime-discovery half of that check on a fresh GitHub-hosted Windows runner; a model running a skill, and the Codex Windows sandbox and Python alias settings, stay tested by hand on the maintainer's machines.
+
 Codex CLI on Windows needs two machine settings before it can run a skill's scripts: a sandbox setting in `~/.codex/config.toml`, and Python's app execution aliases turned off. [First install](#first-install) says when to make them, and [Codex support](docs/codex-support.md) explains both. The deployer keeps its files under `~/.claude` even when Claude Code is not installed, because the skills' authoritative copies live there and the Codex and Copilot adapters point to them.
 
 ## Deployment requirements

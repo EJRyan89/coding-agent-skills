@@ -32,6 +32,8 @@ This checklist records the steps already taken to prepare the project for public
 - [ ] Enable GitHub secret scanning and push protection when available for the repository.
 - [ ] As a separate release activity, test installation from a fresh clone in a clean Windows environment, following the README as written: once with only Claude Code installed, once with only Codex CLI, and once with only Copilot CLI.
 - [ ] After the Codex-only and Copilot-only installs, run `python deploy.py verify` and confirm it reports every adapter `FOUND` for the installed runtime. In each of the three installs, start `update-coding-agent-skills` from the runtime and confirm it reports `UP_TO_DATE`.
+
+  Both clean-machine items above are deferred for `v0.1.0`: no install on a clean Windows environment has been run by hand. The manual workflow from [issue #12](https://github.com/EJRyan89/coding-agent-skills/issues/12) covers the deployer and runtime-discovery part on a fresh GitHub-hosted Windows runner. A model running a skill, and the Codex Windows sandbox and Python alias settings, stay tested by hand on the maintainer's machines.
 - [ ] When tagging, put `SECURITY.md` in the present tense. "Before the first tagged release" and "After the repository is published" in its supported-versions and reporting sections, and "after publication" in its last line, describe a state that has passed once the repository is public and tagged.
 - [ ] Tag the first release as `v0.1.0`.
 
