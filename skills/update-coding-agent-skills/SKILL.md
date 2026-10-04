@@ -1,11 +1,12 @@
 ---
 name: update-coding-agent-skills
-description: "Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill with deploy.py --all."
+description: "Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill with deploy.py --all. Stops before a release that raises the major version until the user passes --cross-major."
+argument-hint: "[--cross-major]"
 allowed-tools: ["Bash(bash \"${CLAUDE_SKILL_DIR}/scripts/update.sh\" *)", "PowerShell(bash \"${CLAUDE_SKILL_DIR}/scripts/update.sh\" *)"]
 disable-model-invocation: true
 ---
 
-Pull the latest changes into the clone at `{{SOURCE_ROOT}}` and redeploy them. Run the update script once, without piping it, through the Bash tool when there is one (in PowerShell, `bash` can be WSL's rather than Git Bash), and report what it printed:
+Pull the latest changes into the clone at `{{SOURCE_ROOT}}` and redeploy them. Run the update script once, without piping it, through the Bash tool when there is one (in PowerShell, `bash` can be WSL's rather than Git Bash), and report what it printed. When the user started the skill with `--cross-major`, pass it after the clone path; pass nothing else.
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/update.sh" "{{SOURCE_ROOT}}"
@@ -13,7 +14,8 @@ bash "${CLAUDE_SKILL_DIR}/scripts/update.sh" "{{SOURCE_ROOT}}"
 
 The first line of output is the status:
 
-- `UP_TO_DATE <sha>` or `UPDATED <old>..<new>`: the clone is on `main` at `origin/main`. `UPDATED` is followed by the pulled commits. The deployer's output follows, ending in `DEPLOYED` (exit 0) or `DEPLOY_FAILED <code>` (exit 1). Report the commit range, the pulled commits, and the deployer's summary of updated, unchanged, skipped, and removed skills. On `DEPLOY_FAILED`, quote the deployer's error.
+- `UP_TO_DATE <sha>` or `UPDATED <old>..<new>`: the clone is on `main` at `origin/main`. `UPDATED` is followed by the pulled commits, and by `CROSSED <current>..<target>` when `--cross-major` accepted a release boundary. The deployer's output follows, ending in `DEPLOYED` (exit 0) or `DEPLOY_FAILED <code>` (exit 1). Report the commit range, the pulled commits, the crossing if any, and the deployer's summary of updated, unchanged, skipped, and removed skills. On `DEPLOY_FAILED`, quote the deployer's error.
+- `MAJOR_UPDATE <current>..<target>` (exit 6): `origin/main` carries a release whose major version is above the installed one (or whose minor version is, while the major is 0), so the update may ask the user to act, as the release notes say. Nothing was merged or deployed. Report both versions and the listed commits, point the user at the release notes for `<target>` on the repository's releases page, and say that rerunning the skill with `--cross-major` applies it. Do not rerun it yourself.
 - `DIRTY` (exit 3): tracked files have uncommitted changes, listed below it. Nothing was fetched. Report the files and stop.
 - `FETCH_FAILED` (exit 4), `CHECKOUT_FAILED` or `NOT_FAST_FORWARD` (exit 5): nothing was merged or deployed. Report Git's error and stop. `NOT_FAST_FORWARD` means local `main` has commits that `origin/main` lacks.
 - Exit 2 is a usage error: report it and stop.
