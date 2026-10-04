@@ -140,6 +140,79 @@ expect_status 1 "deploy failed"
 [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED 7" ] || fail "deploy failed: missing DEPLOY_FAILED 7: $OUTPUT"
 expect_deployed "deploy failed"
 
+# Version tags are published upstream only, so the clone must fetch them to see either side's version.
+tag_upstream() {
+  git_quiet -C "$SEED" tag "$1"
+  git_quiet -C "$SEED" push origin "$1"
+}
+
+# A release with a higher breaking component stops before main moves, and lists what it would pull.
+new_clone
+tag_upstream v0.1.0
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "breaking change"
+tag_upstream v0.2.0
+run_subject "$CLONE"
+expect_status 6 "major"
+expect_first_line "MAJOR_UPDATE v0.1.0..v0.2.0" "major"
+printf '%s\n' "$OUTPUT" | grep -q "breaking change" || fail "major: pending commit not listed"
+[ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "major: main moved"
+expect_not_deployed "major"
+
+# With --cross-major the same update proceeds, names the crossing, and deploys.
+run_subject "$CLONE" --cross-major
+expect_status 0 "cross major"
+AFTER=$(head_of "$CLONE" HEAD)
+expect_first_line "UPDATED $BEFORE..$AFTER" "cross major"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED v0.1.0..v0.2.0" || fail "cross major: crossing not named: $OUTPUT"
+expect_deployed "cross major"
+
+# A patch release within the same breaking component needs no acceptance.
+new_clone
+publish "patch change"
+tag_upstream v0.2.3
+run_subject "$CLONE"
+expect_status 0 "patch"
+printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "patch: expected UPDATED: $OUTPUT"
+if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "patch: crossing reported"; fi
+expect_deployed "patch"
+
+# Leaving 0.x raises the major, so it stops too.
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "first stable"
+tag_upstream v1.0.0
+run_subject "$CLONE"
+expect_status 6 "to 1.0.0"
+expect_first_line "MAJOR_UPDATE v0.2.3..v1.0.0" "to 1.0.0"
+expect_not_deployed "to 1.0.0"
+run_subject "$CLONE" --cross-major
+expect_status 0 "to 1.0.0 accepted"
+expect_deployed "to 1.0.0 accepted"
+
+# From 1.0.0 on, only the major component counts: a minor release passes, a major one stops.
+new_clone
+publish "minor stable"
+tag_upstream v1.5.0
+run_subject "$CLONE"
+expect_status 0 "stable minor"
+if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "stable minor: crossing reported"; fi
+expect_deployed "stable minor"
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "second major"
+tag_upstream v2.0.0
+run_subject "$CLONE"
+expect_status 6 "stable major"
+expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
+[ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
+expect_not_deployed "stable major"
+
+# An unknown option is a usage error.
+run_subject "$CLONE" --force
+expect_status 2 "unknown option"
+expect_not_deployed "unknown option"
+
 # The deploy can back up the installed skill directory the script runs from, and the temporary copy is removed.
 new_clone
 INSTALLED="$FIXTURE/installed skill (copy)"

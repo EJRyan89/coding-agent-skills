@@ -51,7 +51,7 @@ The notes say what the README says: what is included, the supported platform, th
 ## After tagging
 
 1. Deploy from the hub on `main` and confirm `python deploy.py verify` finds every adapter.
-2. Start `update-coding-agent-skills` from a runtime and confirm it reports `UP_TO_DATE`, which exercises the rendered source path and the fetch together.
+2. Start `update-coding-agent-skills` from a runtime and confirm it reports `UP_TO_DATE`, which exercises the rendered source path and the fetch together. A release that raised the breaking component makes the skill stop at `MAJOR_UPDATE` on every installation behind it until the user passes `--cross-major`, so its notes must say what the user has to do.
 3. Retire any worktree the release work used.
 
 The first release, `v0.1.0`, was tagged on 2026-10-04; the history of how the repository was prepared for publication is in the Git history before that tag.

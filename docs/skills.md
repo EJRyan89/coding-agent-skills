@@ -245,16 +245,24 @@ It runs in one of three modes, chosen by its arguments:
 ## `update-coding-agent-skills`
 
 <!-- generated:update-coding-agent-skills -->
-Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill with deploy.py --all.
+Fast-forward the coding-agent-skills clone these skills were deployed from to origin/main, then redeploy every skill with deploy.py --all. Stops before a release that raises the major version until the user passes --cross-major.
 
 ```text
-/update-coding-agent-skills
+/update-coding-agent-skills [--cross-major]
 ```
 
-Started by you. Installed by default. Takes no arguments.
+Started by you. Installed by default.
 <!-- /generated:update-coding-agent-skills -->
 
 It updates the clone these skills were deployed from: it fast-forwards `main` to `origin/main`, then runs `python deploy.py --all`. It stops without changing anything when tracked files have uncommitted changes, the fetch fails, or local `main` has commits that `origin/main` lacks. It never stashes, resets, or forces a deployment; those decisions stay yours.
+
+Without arguments it also stops, reporting `MAJOR_UPDATE <current>..<target>`, when the nearest release tag on `origin/main` raises the major version above the one on local `main` (or the minor version, while the major is 0), because such a release may ask you to act, as [Versioning](releasing.md#versioning) explains; read the release notes for `<target>`, then rerun it with the flag to apply the update. A clone with no release tag on either side is updated without the check.
+
+- `--cross-major`: apply an update across such a release boundary. The output names the crossing as `CROSSED <current>..<target>`.
+
+```text
+/update-coding-agent-skills --cross-major
+```
 
 ## `update-pr-tracker`
 

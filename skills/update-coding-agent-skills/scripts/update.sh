@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # Fast-forward a coding-agent-skills clone to origin/main, then redeploy it with `deploy.py --all`.
 #
-# Usage: update.sh <clone>
+# Usage: update.sh <clone> [--cross-major]
 # Prints one status line first, then details:
 #   DIRTY            followed by the tracked files with uncommitted changes
 #   FETCH_FAILED     followed by Git's error
+#   MAJOR_UPDATE <current>..<target> followed by the commits it would pull; origin/main's nearest
+#                    release tag raises the breaking component (the major, or the minor while the
+#                    major is 0) above local main's, and --cross-major was not given
 #   CHECKOUT_FAILED  followed by Git's error from switching to main
 #   NOT_FAST_FORWARD followed by Git's error; main has commits origin/main lacks
-#   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits,
+#   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
+#                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
 #                    then the deploy output and DEPLOYED or DEPLOY_FAILED <code>
-# Exit: 0 deployed; 1 deploy failed; 2 usage; 3 dirty; 4 fetch failed; 5 checkout failed or not a fast-forward.
+# Exit: 0 deployed; 1 deploy failed; 2 usage; 3 dirty; 4 fetch failed; 5 checkout failed or not a
+# fast-forward; 6 stopped at a release boundary.
 set -uo pipefail
 
 # Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
@@ -24,8 +29,15 @@ fi
 trap 'rm -f -- "$0"' EXIT
 unset UPDATE_SKILLS_COPY
 
-if [ "$#" -ne 1 ] || [ ! -f "$1/deploy.py" ]; then
-  echo "usage: update.sh <clone containing deploy.py>" >&2
+CROSS_MAJOR=
+if [ "$#" -eq 2 ] && [ "$2" = "--cross-major" ]; then
+  CROSS_MAJOR=1
+elif [ "$#" -ne 1 ]; then
+  echo "usage: update.sh <clone containing deploy.py> [--cross-major]" >&2
+  exit 2
+fi
+if [ ! -f "$1/deploy.py" ]; then
+  echo "usage: update.sh <clone containing deploy.py> [--cross-major]" >&2
   exit 2
 fi
 CLONE=$1
@@ -45,10 +57,44 @@ if [ -n "$DIRTY" ]; then
   exit 3
 fi
 
-if ! OUTPUT=$(git -C "$CLONE" fetch --quiet origin main 2>&1); then
+# Release tags are fetched too, so both sides' versions can be compared below.
+if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin main 2>&1); then
   echo "FETCH_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
   exit 4
+fi
+
+# The nearest release tag reachable from a commit, or nothing when there is none.
+release_of() {
+  git -C "$CLONE" describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' "$1" 2>/dev/null | tr -d '\r'
+}
+# The component a release may not raise without acceptance: the major, or the minor while the major is 0.
+breaking_component() {
+  local version=${1#v} major minor
+  major=${version%%.*}
+  minor=${version#*.}
+  minor=${minor%%.*}
+  if [ "$major" -gt 0 ]; then
+    echo "$major.0"
+  else
+    echo "0.$minor"
+  fi
+}
+CURRENT=$(release_of main)
+TARGET=$(release_of origin/main)
+CROSSED=
+if [ -n "$CURRENT" ] && [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
+  CURRENT_BREAKING=$(breaking_component "$CURRENT")
+  TARGET_BREAKING=$(breaking_component "$TARGET")
+  if [ "${CURRENT_BREAKING%%.*}" -lt "${TARGET_BREAKING%%.*}" ] ||
+    { [ "${CURRENT_BREAKING%%.*}" -eq "${TARGET_BREAKING%%.*}" ] && [ "${CURRENT_BREAKING#*.}" -lt "${TARGET_BREAKING#*.}" ]; }; then
+    if [ -z "$CROSS_MAJOR" ]; then
+      echo "MAJOR_UPDATE $CURRENT..$TARGET"
+      git -C "$CLONE" log --oneline --no-decorate main..origin/main | tr -d '\r'
+      exit 6
+    fi
+    CROSSED="$CURRENT..$TARGET"
+  fi
 fi
 
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
@@ -69,6 +115,9 @@ if [ "$BEFORE" = "$AFTER" ]; then
 else
   echo "UPDATED $BEFORE..$AFTER"
   git -C "$CLONE" log --oneline --no-decorate "$BEFORE..$AFTER" | tr -d '\r'
+fi
+if [ -n "$CROSSED" ]; then
+  echo "CROSSED $CROSSED"
 fi
 
 # A fresh process runs the deployer exactly as it now is on main.
