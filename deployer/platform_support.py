@@ -64,7 +64,7 @@ def normalize_path_input(value: str) -> str:
 
 
 def from_shell_path(value: str) -> str:
-    """Translate a Git Bash drive path such as /c/Users into C:/Users; leave every other path unchanged."""
+    """Translate a Git Bash drive path such as /c/Tools into C:/Tools; leave every other path unchanged."""
     match = GIT_BASH_DRIVE.match(value)
     return f"{match.group(1).upper()}:/{match.group(2) or ''}" if match else value
 
