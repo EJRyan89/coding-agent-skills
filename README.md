@@ -172,7 +172,7 @@ Run one deployer test module directly, for example:
 python -B tests/deployer/test_recovery_migration.py
 ```
 
-See [Code-review operations](docs/code-review-operations.md) for suite configuration, [Copilot support](docs/copilot-support.md) for discovery and host boundaries, [Codex support](docs/codex-support.md) for the Windows settings Codex CLI needs, [Adding a skill](docs/adding-a-skill.md) for the template contract, [Dependency updates](docs/dependency-updates.md) for the pin-review process, and [Release checklist](docs/release-checklist.md) for the remaining release steps.
+See [Code-review operations](docs/code-review-operations.md) for suite configuration, [Copilot support](docs/copilot-support.md) for discovery and host boundaries, [Codex support](docs/codex-support.md) for the Windows settings Codex CLI needs, [Adding a skill](docs/adding-a-skill.md) for the template contract, [Dependency updates](docs/dependency-updates.md) for the pin-review process, and [Releasing](docs/releasing.md) for how a release is cut.
 
 ## Contributing and security
 
