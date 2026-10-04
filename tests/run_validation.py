@@ -389,7 +389,7 @@ def skill_path_problems(root: Path) -> list[str]:
     return problems
 
 
-# Defense in depth only: the release checklist requires a dedicated secret scan before publishing. YourName is the
+# Defense in depth only: the private-name scan in docs/releasing.md runs before every release. YourName is the
 # placeholder user documentation may show; the drive-sync folder name is split so this file does not match itself.
 PRIVATE_REFERENCE = re.compile(
     "|".join((
