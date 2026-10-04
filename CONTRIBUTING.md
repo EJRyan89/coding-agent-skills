@@ -12,7 +12,7 @@ Development and deployment are currently supported on Windows only. Contributors
 - PowerShell 7 (`pwsh`); and
 - GitHub CLI for code-review-operation changes.
 
-The README's [deployment requirements](README.md#deployment-requirements) list install commands. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool.
+[Installation](docs/installation.md#installing-the-tools) lists install commands. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool.
 
 Run the validation entry point from PowerShell or Git Bash, and use Git Bash for Bash scripts. Follow `.editorconfig` and `.gitattributes`; do not commit generated build, test, Python-cache, IDE, deployment, or personal configuration artifacts.
 
@@ -35,7 +35,7 @@ Run the complete validation sequence from the repository root:
 python -B tests/run_validation.py
 ```
 
-The runner reports each failing suite by path. When diagnosing a failure, run that suite directly, or narrow the runner with `-k <pattern>`.
+The runner reports each failing suite by path. When diagnosing a failure, run that suite directly, as in `python -B tests/deployer/test_recovery_migration.py`, or narrow the runner with `-k <pattern>`, as in `-k deployer`. Suites run in parallel, with large ones split into shards; set `VALIDATION_JOBS` to change the worker count.
 
 Changes to deployment behavior should also be exercised against an isolated temporary home: `python deploy.py --canary-home <dir>` with a directory under the temporary directory, or a test that builds the deployer's paths on one. On Windows the deployer takes its home from the profile folder, not `HOME`, so setting `HOME` alone does not isolate a run. Never use ordinary development validation to deploy into the contributor's real agent directories.
 

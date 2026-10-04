@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import unittest
 from unittest import mock
@@ -110,7 +111,7 @@ class CheckCommandTests(DeployerTestCase):
         self.assertTrue(
             result.output.endswith(
                 'Install the missing tools before deploying; see "Installing the tools" in\n'
-                "README.md. Open a new terminal afterwards so the tools are on PATH.\n\n"
+                "docs/installation.md. Open a new terminal afterwards so the tools are on PATH.\n\n"
             ),
             result.output,
         )
@@ -198,6 +199,12 @@ class DeployWarningTests(DeployerTestCase):
             self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
 
 
+class InstallationGuideTests(unittest.TestCase):
+    def test_the_section_install_messages_name_exists(self) -> None:
+        guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
+        self.assertIn("Installing the tools", re.findall(r"^## (.+)$", guide, re.MULTILINE))
+
+
 class VersionTests(unittest.TestCase):
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
@@ -222,7 +229,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(1, raised.exception.code)
         self.assertEqual(
             '\nERROR: Python 3.11 or newer is required; this is Python 3.10.\n'
-            'See "Installing the tools" in README.md.\n\n',
+            'See "Installing the tools" in docs/installation.md.\n\n',
             captured.getvalue(),
         )
         entry.require_supported_python((3, 11, 0))

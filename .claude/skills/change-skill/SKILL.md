@@ -57,7 +57,7 @@ Keep `SKILL.md` to orchestration: the commands to run, what their output means, 
 ## 6. Document in the same change
 
 - After any frontmatter or metadata change, run `python tools/skill_reference.py --write`, then update the hand-written part of the skill's section in `docs/skills.md` to match what shipped: what each argument means, what it does without them, and an example.
-- A new skill, or bundle, gets its line under "Included skills" in `README.md`.
+- A new skill, or bundle, gets a row in the "Included skills" table in `README.md`, linking its section in `docs/skills.md`.
 - A code-review skill's configuration or records belong in `docs/code-review-operations.md`.
 
 `python tools/skill_reference.py` lists anything still missing.

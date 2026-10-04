@@ -232,12 +232,21 @@ def regenerate(document: str, skills: list[Entry]) -> str:
     return "".join(parts) + "\n"
 
 
-def readme_problems(readme: str, roots: list[str]) -> list[str]:
+def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[str]:
+    """What keeps the README's 'Included skills' table from having one row per menu item, linked to live sections."""
     match = re.search(r"^## Included skills\n(.*?)(?=^## |\Z)", readme, re.MULTILINE | re.DOTALL)
     if match is None:
         return [f"{README.as_posix()}: no 'Included skills' section"]
     section = match.group(1)
-    problems = [f"{README.as_posix()}: 'Included skills' does not list `{root}`" for root in roots if f"`{root}`" not in section]
+    # A row is named by the first code span in its first cell; the header and separator rows have none.
+    rows = [found.group(1) for line in section.splitlines() if line.startswith("|")
+            if (found := re.search(r"`([^`]+)`", line.split("|")[1]))]
+    problems = [f"{README.as_posix()}: 'Included skills' has no row for `{root}`" for root in roots if root not in rows]
+    problems += [f"{README.as_posix()}: 'Included skills' row `{row}` names no selectable skill or bundle; remove it"
+                 for row in rows if row not in roots]
+    for anchor in re.findall(rf"\({re.escape(REFERENCE.as_posix())}#([^)]+)\)", section):
+        if anchor not in skills:
+            problems.append(f"{README.as_posix()}: 'Included skills' links {REFERENCE.as_posix()}#{anchor}, which has no section")
     if f"({REFERENCE.as_posix()})" not in section:
         problems.append(f"{README.as_posix()}: 'Included skills' does not link {REFERENCE.as_posix()}")
     return problems
@@ -277,7 +286,7 @@ def problems(root: Path) -> list[str]:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])
     readme = root / README
-    found.extend(readme_problems(readme.read_text(encoding="utf-8") if readme.is_file() else "", roots))
+    found.extend(readme_problems(readme.read_text(encoding="utf-8") if readme.is_file() else "", roots, sorted(names)))
     return found
 
 

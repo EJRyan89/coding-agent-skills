@@ -83,7 +83,7 @@ def run(arguments: list[str], paths: Paths) -> int:
     print_report("CHECK", CHECK_ACTIONS, [*deploy_lines, *skill_lines])
     if any(line.action == "MISSING" for line in deploy_lines):
         print('Install the missing tools before deploying; see "Installing the tools" in')
-        print("README.md. Open a new terminal afterwards so the tools are on PATH.")
+        print("docs/installation.md. Open a new terminal afterwards so the tools are on PATH.")
         print("")
         return 1
     if any(line.action in ("MISSING", "OUTDATED") for line in skill_lines):

@@ -216,9 +216,9 @@ Every selectable skill has a section in [Skills](skills.md), the reference users
 1. If the skill takes arguments, declare them as `argument-hint` in its frontmatter, using the notation that page explains. A skill that reads `$ARGUMENTS` without one fails validation.
 2. Run `python tools/skill_reference.py --write`. It regenerates the summary table and adds the skill's section, whose first block it fills from the frontmatter and metadata.
 3. Below that block, write what each argument means, what the skill does with none, and an example invocation. For a skill without arguments, say what it acts on instead.
-4. List the skill, or its bundle, under "Included skills" in the README.
+4. Add a row for the skill, or its bundle, to the "Included skills" table in the README, linking its section here.
 
-Run `python tools/skill_reference.py` to see what is still missing. Validation fails while the reference is stale, a section has no hand-written part, or the README leaves a skill out.
+Run `python tools/skill_reference.py` to see what is still missing. Validation fails while the reference is stale, a section has no hand-written part, or the README table leaves a skill out, keeps a row for a removed one, or links a section that does not exist.
 
 ## Validation
 

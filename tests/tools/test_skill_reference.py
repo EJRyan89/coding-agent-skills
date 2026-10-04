@@ -16,7 +16,11 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from tools import skill_reference
 
 INITIAL_REFERENCE = "# Skills\n\nIntro.\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n"
-README = "# Fixture\n\n## Included skills\n\n- `alpha`\n- `suite`\n\nSee [Skills](docs/skills.md).\n\n## Other\n"
+README = (
+    "# Fixture\n\n## Included skills\n\n| Skill | What it does |\n|---|---|\n"
+    "| [`alpha`](docs/skills.md#alpha) | Sweeps. |\n| `suite` | A bundle: [`beta`](docs/skills.md#beta). |\n\n"
+    "See [Skills](docs/skills.md).\n\n## Other\n"
+)
 
 
 class SkillReferenceTestCase(unittest.TestCase):
@@ -117,7 +121,7 @@ class SkillReferenceTestCase(unittest.TestCase):
     def test_a_new_skill_is_reported_and_write_adds_its_section_in_order(self) -> None:
         self.written_and_explained()
         self.add_skill("aardvark", "description: First. Use it when testing.", {})
-        (self.root / "README.md").write_text(README.replace("- `alpha`", "- `aardvark`\n- `alpha`"), encoding="utf-8")
+        (self.root / "README.md").write_text(README.replace("| [`alpha`]", "| `aardvark` | First. |\n| [`alpha`]"), encoding="utf-8")
 
         found = skill_reference.problems(self.root)
         self.assertIn("docs/skills.md: no section for `aardvark`", found)
@@ -170,13 +174,37 @@ class SkillReferenceTestCase(unittest.TestCase):
 
     def test_the_readme_must_list_every_menu_item_and_link_the_reference(self) -> None:
         self.written_and_explained()
-        (self.root / "README.md").write_text("## Included skills\n\n- `alpha`\n\n## Other\n- `suite`\n", encoding="utf-8")
+        (self.root / "README.md").write_text(
+            "## Included skills\n\n| Skill | What it does |\n|---|---|\n| `alpha` | Sweeps `suite` too. |\n\n"
+            "## Other\n| `suite` | Elsewhere. |\n",
+            encoding="utf-8",
+        )
 
         self.assertEqual(
             [
-                "README.md: 'Included skills' does not list `suite`",
+                "README.md: 'Included skills' has no row for `suite`",
                 "README.md: 'Included skills' does not link docs/skills.md",
             ],
+            skill_reference.problems(self.root),
+        )
+
+    def test_a_readme_row_for_a_removed_skill_is_reported(self) -> None:
+        self.written_and_explained()
+        readme = self.root / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8").replace("| `suite`", "| `retired` | Gone. |\n| `suite`"), encoding="utf-8")
+
+        self.assertEqual(
+            ["README.md: 'Included skills' row `retired` names no selectable skill or bundle; remove it"],
+            skill_reference.problems(self.root),
+        )
+
+    def test_a_readme_link_to_a_missing_reference_section_is_reported(self) -> None:
+        self.written_and_explained()
+        readme = self.root / "README.md"
+        readme.write_text(readme.read_text(encoding="utf-8").replace("skills.md#beta", "skills.md#bta"), encoding="utf-8")
+
+        self.assertEqual(
+            ["README.md: 'Included skills' links docs/skills.md#bta, which has no section"],
             skill_reference.problems(self.root),
         )
 

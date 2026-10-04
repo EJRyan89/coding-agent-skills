@@ -24,7 +24,8 @@ INSTALL_HINTS = {
 }
 INSTALL_HELP = (
     "For Chocolatey, Scoop, or direct downloads, see \"Installing the tools\" in",
-    "README.md. To use Git Bash from another location, set GIT_BASH to its bash.exe.",
+    "docs/installation.md. To use Git Bash from another location, set GIT_BASH",
+    "to its bash.exe.",
     "After installing, open a new terminal. Applications that were already running,",
     "including ones minimized to the system tray, keep the old PATH until restarted.",
 )
