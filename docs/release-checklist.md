@@ -26,16 +26,16 @@ This checklist records the steps already taken to prepare the project for public
 - [x] Run a dedicated secret scanner against every final file immediately before the initial commit.
 - [x] Review the complete initial diff.
 - [x] Create the initial commit.
-- [ ] Immediately before publishing, scan for internal repository names, organization names, and paths from a private list kept outside the repository, one per line: `git grep -n -i -F -f <list>` for the tracked tree, and `git log --all -p | grep -n -i -F -f <list>` for history, which publishing also exposes. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name.
-- [ ] Create and connect the GitHub repository.
-- [ ] Push the default branch and confirm validation succeeds.
-- [ ] Enable GitHub secret scanning and push protection when available for the repository.
+- [x] Immediately before publishing, scan for internal repository names, organization names, and paths from a private list kept outside the repository, one per line: `git grep -n -i -F -f <list>` for the tracked tree, and `git log --all -p | grep -n -i -F -f <list>` for history, which publishing also exposes. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name.
+- [x] Create and connect the GitHub repository.
+- [x] Push the default branch and confirm validation succeeds.
+- [x] Enable GitHub secret scanning and push protection when available for the repository.
 - [ ] As a separate release activity, test installation from a fresh clone in a clean Windows environment, following the README as written: once with only Claude Code installed, once with only Codex CLI, and once with only Copilot CLI.
 - [ ] After the Codex-only and Copilot-only installs, run `python deploy.py verify` and confirm it reports every adapter `FOUND` for the installed runtime. In each of the three installs, start `update-coding-agent-skills` from the runtime and confirm it reports `UP_TO_DATE`.
 
   Both clean-machine items above are deferred for `v0.1.0`: no install on a clean Windows environment has been run by hand. The manual workflow from [issue #12](https://github.com/EJRyan89/coding-agent-skills/issues/12) covers the deployer and runtime-discovery part on a fresh GitHub-hosted Windows runner. A model running a skill, and the Codex Windows sandbox and Python alias settings, stay tested by hand on the maintainer's machines.
-- [ ] When tagging, put `SECURITY.md` in the present tense. "Before the first tagged release" and "After the repository is published" in its supported-versions and reporting sections, and "after publication" in its last line, describe a state that has passed once the repository is public and tagged.
-- [ ] Tag the first release as `v0.1.0`.
+- [x] When tagging, put `SECURITY.md` in the present tense. "Before the first tagged release" and "After the repository is published" in its supported-versions and reporting sections, and "after publication" in its last line, describe a state that has passed once the repository is public and tagged.
+- [x] Tag the first release as `v0.1.0`. Published 2026-10-04 as a pre-release from the first public commit's successor on `main`; the repository went public the same day.
 
 ## Code-review operations cutover
 
