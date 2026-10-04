@@ -14,6 +14,13 @@ Closes #
 <!-- User-visible, compatibility, or security implications, such as a new configuration value, a changed
      command, a manifest change, or a trust boundary that moved. Write "None" when there are none. -->
 
+## Models
+
+<!-- Which model planned, or "no plan" with the size-gate reason, and which model implemented. -->
+
+- Planned by:
+- Implemented by:
+
 ## Validation
 
 - [ ] `python -B tests/run_validation.py` passes in full, with no skipped prerequisites
