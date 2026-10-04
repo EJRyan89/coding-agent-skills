@@ -15,7 +15,7 @@ A skill change is finished only when it is tested, documented, validated, and au
 
 ## 1. Take the work into a worktree
 
-From the hub, before planning, run `python tools/worktrees.py new <kind> <name>`, with `feat`, `fix`, or `docs` as the kind. Then move the session into the printed path with the runtime's worktree transition (in Claude Code, `EnterWorktree` with `path:`, never `name:`). Do this before planning: the plan and project memory are keyed by working directory. If the session is already in a read-only planning mode, plan in the hub and make the worktree the first act of step 4.
+From the hub, before planning, run `python tools/worktrees.py new <kind> <name>`, with `feat` or `fix` as the kind (`docs/parallel-sessions.md` lists the kinds). Then move the session into the printed path with the runtime's worktree transition (in Claude Code, `EnterWorktree` with `path:`, never `name:`). Do this before planning: the plan and project memory are keyed by working directory. If the session is already in a read-only planning mode, plan in the hub and make the worktree the first act of step 4.
 
 ## 2. Intake
 

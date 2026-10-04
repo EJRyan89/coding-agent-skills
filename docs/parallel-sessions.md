@@ -9,7 +9,7 @@ catch.
 ## Layout
 
 ```text
-coding-agent-skills-dev/            hub: always on main, always clean, never edited
+coding-agent-skills/                hub: always on main, always clean, never edited
   .claude/worktrees/                gitignored
     feat-<name>/                    branch feat/<name>
     fix-<name>/                     branch fix/<name>
