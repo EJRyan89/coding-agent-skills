@@ -213,7 +213,7 @@ def unwrapped(output: str) -> str:
 
 
 def shell_path(path: Path) -> str:
-    """The Git Bash form of a drive-letter path, such as /c/Users for C:/Users."""
+    """The Git Bash form of a drive-letter path, such as /c/Tools for C:/Tools."""
     text = forward(path)
     return f"/{text[0].lower()}{text[2:]}"
 
