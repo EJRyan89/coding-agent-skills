@@ -1,0 +1,4 @@
+{
+    "required_vars": ["HOME"],
+    "shared_deps": ["runtime-compatibility.md"]
+}

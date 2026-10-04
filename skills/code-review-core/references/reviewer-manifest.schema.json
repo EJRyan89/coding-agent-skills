@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/coding-agent-skills/reviewer-manifest.schema.json",
+  "title": "Repository reviewer adapter manifest",
+  "oneOf": [
+    { "$ref": "#/$defs/entrypoint" },
+    { "$ref": "#/$defs/specialists" }
+  ],
+  "$defs": {
+    "path": { "type": "string", "minLength": 1 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "supports": {
+      "type": "array",
+      "items": { "enum": ["initial", "re-review"] },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "entrypoint": {
+      "type": "object",
+      "required": ["schema_version", "id", "protocol_version", "supports", "required_capabilities", "entrypoint", "resources", "agent_profiles"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "id": { "$ref": "#/$defs/slug" },
+        "protocol_version": { "const": 1 },
+        "supports": { "$ref": "#/$defs/supports" },
+        "required_capabilities": { "$ref": "#/$defs/capabilities" },
+        "entrypoint": { "$ref": "#/$defs/path" },
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/path" }, "uniqueItems": true },
+        "agent_profiles": { "type": "array", "items": { "$ref": "#/$defs/path" }, "uniqueItems": true }
+      },
+      "additionalProperties": false
+    },
+    "specialists": {
+      "type": "object",
+      "required": ["schema_version", "id", "protocol_version", "kind", "supports", "required_capabilities", "resources", "specialists", "conditions"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "id": { "$ref": "#/$defs/slug" },
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "specialists" },
+        "supports": { "$ref": "#/$defs/supports" },
+        "required_capabilities": {
+          "allOf": [{ "$ref": "#/$defs/capabilities" }, { "contains": { "const": "agent-delegation" } }]
+        },
+        "resources": { "type": "array", "items": { "$ref": "#/$defs/path" }, "uniqueItems": true },
+        "specialists": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "category", "profile", "include", "exclude", "resources", "when"],
+            "properties": {
+              "id": { "allOf": [{ "$ref": "#/$defs/slug" }, { "not": { "const": "generic-review" } }] },
+              "category": { "type": "string", "minLength": 1 },
+              "profile": { "$ref": "#/$defs/path" },
+              "include": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 },
+              "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "resources": { "type": "array", "items": { "$ref": "#/$defs/path" } },
+              "when": { "type": ["string", "null"] },
+              "model": {
+                "description": "The model this specialist's reviewer starts on, overriding its profile's model; inherit uses the session's model.",
+                "enum": ["inherit", "sonnet", "opus", "haiku", "fable"]
+              },
+              "effort": {
+                "description": "Reasoning effort for this specialist's reviewer when the Workflow tool starts it, overriding the config's reviewer_effort.",
+                "enum": ["low", "medium", "high", "xhigh", "max"]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "conditions": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/slug" },
+          "additionalProperties": {
+            "type": "object",
+            "required": ["script"],
+            "properties": { "script": { "$ref": "#/$defs/path" } },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

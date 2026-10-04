@@ -1,0 +1,5 @@
+{
+    "required_vars": ["REPOS_ROOT"],
+    "shared_deps": ["runtime-compatibility.md"],
+    "tools": ["gh"]
+}

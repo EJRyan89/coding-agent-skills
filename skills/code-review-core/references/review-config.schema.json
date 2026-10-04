@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/coding-agent-skills/review-config.schema.json",
+  "title": "Code-review operations configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "default_repository_set",
+    "repository_sets",
+    "repositories",
+    "archive_root",
+    "summary_root",
+    "dashboard_file"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "default_repository_set": { "type": "string", "minLength": 1 },
+    "repository_sets": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "$ref": "#/$defs/repository" }
+      }
+    },
+    "repositories": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reviewer"],
+        "properties": {
+          "checkout_path": { "type": ["string", "null"] },
+          "reviewer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "protocol_version"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+              "protocol_version": { "const": 1 },
+              "trusted_ref": { "type": ["string", "null"] },
+              "scope": { "enum": ["generic", "repository"] },
+              "manifest_path": { "description": "A manifest committed to the repository, read from the trusted commit.", "type": ["string", "null"] },
+              "skill": { "description": "The repository's own review skill or agent file, read from the trusted commit.", "type": ["string", "null"] },
+              "manifest": { "description": "With skill: a specialists manifest kept outside the repository, as an absolute path or true for reviewers/<owner>/<repo>/manifest.json beside this file.", "type": ["string", "boolean", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "archive_root": { "type": "string" },
+    "local_mirror_root": { "type": ["string", "null"] },
+    "summary_root": { "type": "string" },
+    "dashboard_file": { "type": "string" },
+    "github_login": { "type": ["string", "null"] },
+    "runtime": { "enum": ["auto", "claude-code", "codex", "copilot-cli"] },
+    "verdict_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "request_changes_for": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["MUST_FIX", "SHOULD_FIX", "SUGGESTION"] }
+        },
+        "should_fix_threshold": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "operation_repository_sets": {
+      "type": "object",
+      "propertyNames": { "enum": ["review-prs", "update-pr-tracker", "review-insights"] },
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "reviewer_effort": {
+      "description": "Reasoning effort for reviewers started through the Claude Code Workflow tool; null keeps the session's effort. Ordinary subagents cannot take a per-call effort.",
+      "enum": [null, "low", "medium", "high", "xhigh", "max"]
+    },
+    "re_review_scope": {
+      "description": "When an auto-scoped re-review reviews the whole pull request instead of only the files changed since the last review.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "full_share": {
+          "description": "Review in full when at least this share of the pull request's changed lines changed since the last review. Defaults to 0.5.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "full_lines": {
+          "description": "Review in full when at least this many changed lines changed since the last review. Defaults to 1000.",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "dashboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_marker": { "type": "string", "minLength": 1 },
+        "end_marker": { "type": "string", "minLength": 1 },
+        "status_overrides": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1,
+            "not": {
+              "enum": ["to review", "awaiting response", "my pull requests", "drafts", "missing", "current", "stale"]
+            }
+          }
+        },
+        "author_names": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$" },
+          "additionalProperties": { "type": "string", "pattern": "^[^\\r\\n]*\\S[^\\r\\n]*$" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "repository": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$"
+    }
+  }
+}

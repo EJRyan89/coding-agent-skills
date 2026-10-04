@@ -1,0 +1,827 @@
+"""Review adapter validation, verdict calculation, and paired rendering."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from typing import Any, Iterable
+
+from review_config import validate_repository_identity
+from review_io import atomic_write_json, atomic_write_text, read_json
+
+
+RECORD_SCHEMA_VERSION = 1
+ADAPTER_PROTOCOL_VERSION = 1
+SEVERITIES = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
+DISPOSITIONS = {
+    "addressed",
+    "partially_addressed",
+    "still_present",
+    "superseded",
+    "unable_to_verify",
+}
+FINDING_FIELDS = frozenset({"candidate_key", "severity", "category", "path", "line", "body", "evidence", "source"})
+OPTIONAL_FINDING_FIELDS = frozenset({"title", "analyzer"})
+COMMENT_FIELDS = ("id", "author", "path", "line", "outdated", "body", "url")
+REVIEWER_FIELDS = frozenset({"id", "category", "files", "findings", "retries", "dispositions_only"})
+# Records written before reviewer timing or model reporting existed, or by a reviewer that does not report
+# them (a repository entrypoint reviewer has no model field in its protocol), omit them.
+OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model"})
+TITLE_MAXIMUM_LENGTH = 120
+TITLE_RULE = f"must be a single non-blank line of at most {TITLE_MAXIMUM_LENGTH} characters"
+MODEL_MAXIMUM_LENGTH = 200
+MODEL_RULE = f"must be a single non-blank line of at most {MODEL_MAXIMUM_LENGTH} characters"
+# How a diagnostic analyzer could catch a finding instead of a reviewer: a rule in an analyzer the repository already
+# has but does not enforce, a rule in an established analyzer it does not use, or a pattern no rule covers yet.
+ANALYZER_COVERAGES = ("available", "known", "custom-candidate")
+ANALYZER_FIELDS = frozenset({"coverage", "tool", "rule"})
+ANALYZER_NAME = re.compile(r"[^\s`|<>]{1,100}")
+CUSTOM_RULE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+CUSTOM_RULE_MAXIMUM_LENGTH = 60
+ANALYZER_RULE = (
+    f"must be an object with exactly coverage ({', '.join(ANALYZER_COVERAGES)}), tool, and rule; tool and rule "
+    "are at most 100 characters with no whitespace, backticks, pipes, or angle brackets, and a custom-candidate "
+    f"rule is a lowercase kebab-case pattern name of at most {CUSTOM_RULE_MAXIMUM_LENGTH} characters"
+)
+# A re-review asks for one of these scopes and runs as `full` or `incremental`. Its record keeps what was asked,
+# what ran, why, and how much changed since the version it compared with (null when it could not compare).
+RE_REVIEW_SCOPES = ("auto", "full", "incremental")
+SCOPE_FIELDS = frozenset({"requested", "used", "reason", "since_version", "files_changed", "files_total",
+                          "lines_changed", "lines_total"})
+PATCH_FIELDS = frozenset({"sha256", "lines"})
+
+
+def _one_line(value: Any, maximum: int) -> bool:
+    return isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum \
+        and len(value.splitlines()) == 1
+
+
+def valid_title(value: Any) -> bool:
+    """A finding headline: one trimmed, non-blank line short enough for a report summary row."""
+    return _one_line(value, TITLE_MAXIMUM_LENGTH)
+
+
+def valid_model(value: Any) -> bool:
+    """The model a reviewer reports it ran on: one trimmed, non-blank line."""
+    return _one_line(value, MODEL_MAXIMUM_LENGTH)
+
+
+def valid_analyzer(value: Any) -> bool:
+    """A finding's analyzer coverage. Tool and rule are single tokens, so a report line can name them unquoted."""
+    if not isinstance(value, dict) or set(value) != ANALYZER_FIELDS or value["coverage"] not in ANALYZER_COVERAGES:
+        return False
+    if not all(isinstance(value[field], str) and ANALYZER_NAME.fullmatch(value[field]) for field in ("tool", "rule")):
+        return False
+    return value["coverage"] != "custom-candidate" or (
+        len(value["rule"]) <= CUSTOM_RULE_MAXIMUM_LENGTH and CUSTOM_RULE.fullmatch(value["rule"]) is not None
+    )
+
+
+class RecordError(ValueError):
+    pass
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _one_of(value: Any, allowed: set[str] | frozenset[str]) -> bool:
+    """A string in `allowed`. Checking the type first keeps an unhashable value from crashing set membership."""
+    return isinstance(value, str) and value in allowed
+
+
+def _validate_sha(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
+        raise RecordError(f"{field} must be a lowercase Git or SHA-256 hash")
+    return value
+
+
+DISPOSITION_SUBJECTS = {"Prior": "prior finding", "Comment": "review comment"}
+
+
+def validate_dispositions(dispositions: Any, key: str, expected: set[str], label: str) -> None:
+    """Exactly one well-formed disposition for each expected ID (a prior finding or a review comment)."""
+    subject = DISPOSITION_SUBJECTS[label]
+    if not isinstance(dispositions, list):
+        raise RecordError(f"{label.lower()}_dispositions must be an array")
+    actual: set[str] = set()
+    for disposition in dispositions:
+        if not isinstance(disposition, dict) or set(disposition) != {key, "disposition", "rationale"}:
+            raise RecordError(f"{label} disposition fields do not match the protocol")
+        identifier = disposition[key]
+        if not isinstance(identifier, str) or identifier in actual:
+            raise RecordError(f"{label} disposition IDs must be unique strings")
+        actual.add(identifier)
+        if not _one_of(disposition["disposition"], DISPOSITIONS):
+            raise RecordError(f"Invalid disposition for {subject} {identifier}")
+        if not isinstance(disposition["rationale"], str) or not disposition["rationale"].strip():
+            raise RecordError(f"{subject[0].upper()}{subject[1:]} {identifier} requires a rationale")
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown_ids = sorted(actual - expected)
+        raise RecordError(f"{label} dispositions mismatch; missing={missing}, unknown={unknown_ids}")
+
+
+def validate_adapter_result(
+    value: Any,
+    *,
+    expected_repository: str,
+    expected_number: int,
+    expected_head_sha: str,
+    prior_ids: Iterable[str] = (),
+    comment_ids: Iterable[str] = (),
+    require_comment_dispositions: bool = True,
+) -> dict[str, Any]:
+    """Validate a reviewer result against its request.
+
+    Every prior finding needs exactly one disposition. So does every open review comment the request listed,
+    except that a repository reviewer that predates comment dispositions (require_comment_dispositions=False)
+    may omit them all; when it gives any, they must cover every comment exactly once.
+    """
+    if not isinstance(value, dict):
+        raise RecordError("Adapter result must be an object")
+    allowed = {
+        "protocol_version",
+        "repository",
+        "pull_number",
+        "head_sha",
+        "summary",
+        "reviewer",
+        "status",
+        "findings",
+        "prior_dispositions",
+        "comment_dispositions",
+        "usage",
+    }
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise RecordError("Adapter result contains unknown fields: " + ", ".join(unknown))
+    if value.get("protocol_version") != ADAPTER_PROTOCOL_VERSION:
+        raise RecordError("Unsupported adapter protocol version")
+    if validate_repository_identity(value.get("repository")) != expected_repository.lower():
+        raise RecordError("Adapter result repository does not match request")
+    if value.get("pull_number") != expected_number:
+        raise RecordError("Adapter result pull number does not match request")
+    if value.get("head_sha") != expected_head_sha:
+        raise RecordError("Adapter result head SHA does not match request")
+    if not isinstance(value.get("summary"), str) or not value["summary"].strip():
+        raise RecordError("Adapter result summary is required")
+    if not isinstance(value.get("reviewer"), str) or not value["reviewer"].strip():
+        raise RecordError("Adapter result reviewer is required")
+    if not _one_of(value.get("status"), {"complete", "partial", "failed"}):
+        raise RecordError("Adapter result status is invalid")
+    findings = value.get("findings")
+    if not isinstance(findings, list):
+        raise RecordError("Adapter findings must be an array")
+    seen_keys: set[str] = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            raise RecordError("Every adapter finding must be an object")
+        if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
+            raise RecordError("Adapter finding fields do not match the protocol")
+        key = finding["candidate_key"]
+        if not isinstance(key, str) or not key or key in seen_keys:
+            raise RecordError("Adapter candidate keys must be unique non-empty strings")
+        seen_keys.add(key)
+        if "title" in finding and not valid_title(finding["title"]):
+            raise RecordError(f"Finding {key}.title {TITLE_RULE}")
+        if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
+            raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
+        if not _one_of(finding["severity"], SEVERITIES):
+            raise RecordError(f"Invalid finding severity for {key}")
+        for field in ("category", "path", "body", "evidence", "source"):
+            if not isinstance(finding[field], str) or not finding[field].strip():
+                raise RecordError(f"Finding {key}.{field} must be non-empty")
+        path = finding["path"]
+        if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
+            raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
+        line = finding["line"]
+        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+            raise RecordError(f"Finding {key}.line must be a positive integer")
+
+    validate_dispositions(value.get("prior_dispositions", []), "finding_id", set(prior_ids), "Prior")
+    expected_comments = set(comment_ids)
+    if "comment_dispositions" in value or (expected_comments and require_comment_dispositions):
+        validate_dispositions(value.get("comment_dispositions", []), "comment_id", expected_comments, "Comment")
+    usage = value.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise RecordError("usage must be an object or null")
+    return value
+
+
+def assign_finding_ids(findings: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        (copy.deepcopy(item) for item in findings),
+        key=lambda item: (item["path"].casefold(), item["line"], item["candidate_key"]),
+    )
+    result: list[dict[str, Any]] = []
+    for index, finding in enumerate(ordered, start=1):
+        finding["id"] = f"F{index:03d}"
+        result.append(finding)
+    return result
+
+
+def calculate_verdict(
+    findings: Iterable[dict[str, Any]], policy: dict[str, Any], unavailable_sources: Iterable[str] = ()
+) -> str:
+    """CHANGES_REQUESTED when findings require it; else INCOMPLETE when changed source could not be
+    reviewed in full; else APPROVED. A blocking finding is never hidden by a coverage gap."""
+    severities = [item["severity"] for item in findings]
+    request_for = set(policy.get("request_changes_for", ["MUST_FIX"]))
+    if any(severity in request_for for severity in severities):
+        return "CHANGES_REQUESTED"
+    threshold = policy.get("should_fix_threshold", 3)
+    if severities.count("SHOULD_FIX") >= threshold:
+        return "CHANGES_REQUESTED"
+    if list(unavailable_sources):
+        return "INCOMPLETE"
+    return "APPROVED"
+
+
+def build_record(
+    request: dict[str, Any],
+    adapter_result: dict[str, Any],
+    *,
+    version: int,
+    policy: dict[str, Any],
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    findings = assign_finding_ids(adapter_result["findings"])
+    counts = {severity: sum(item["severity"] == severity for item in findings) for severity in sorted(SEVERITIES)}
+    unavailable = sorted(request.get("unavailable_sources", []))
+    record = {
+        "schema_version": RECORD_SCHEMA_VERSION,
+        "repository": request["repository"],
+        "pull_request": {
+            "number": request["pull_number"],
+            "url": request["pull_url"],
+            "title": request["title"],
+            "base_ref": request["base_ref"],
+            "base_sha": request["base_sha"],
+            "head_sha": request["head_sha"],
+        },
+        "review": {
+            "version": version,
+            "mode": request["mode"],
+            "reviewed_at": reviewed_at or datetime.now(timezone.utc).isoformat(),
+            "summary": adapter_result["summary"],
+            "verdict": calculate_verdict(findings, policy, unavailable),
+            "counts": counts,
+            "adapter": {
+                "name": request["adapter"]["name"],
+                "protocol_version": ADAPTER_PROTOCOL_VERSION,
+                "scope": request["adapter"]["scope"],
+                "source_commit": request["adapter"].get("source_commit"),
+                "source_hashes": request["adapter"].get("source_hashes", {}),
+                "reviewer": adapter_result["reviewer"],
+                "status": adapter_result["status"],
+                "usage": adapter_result.get("usage"),
+            },
+        },
+        "findings": findings,
+        "prior_dispositions": copy.deepcopy(adapter_result.get("prior_dispositions", [])),
+    }
+    if request.get("head_ref"):
+        record["pull_request"]["head_ref"] = request["head_ref"]
+    if unavailable:
+        record["review"]["coverage"] = {"unavailable_sources": unavailable}
+    if request.get("reviewers"):
+        record["review"]["reviewers"] = copy.deepcopy(request["reviewers"])
+    if request.get("patches"):
+        record["review"]["patches"] = copy.deepcopy(request["patches"])
+    if request.get("scope"):
+        record["review"]["scope"] = copy.deepcopy(request["scope"])
+    if adapter_result.get("comment_dispositions"):
+        record["github_comments"] = [
+            {key: comment[key] for key in COMMENT_FIELDS} for comment in request.get("github_comments", [])
+        ]
+        record["comment_dispositions"] = copy.deepcopy(adapter_result["comment_dispositions"])
+    return record
+
+
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _duration(seconds: int | None) -> str:
+    """A reviewer's time as `4m 05s`, or `-` when it was not timed."""
+    if seconds is None:
+        return "-"
+    minutes, remainder = divmod(seconds, 60)
+    return f"{minutes}m {remainder:02d}s" if minutes else f"{remainder}s"
+
+
+def _validate_reviewers(reviewers: Any) -> None:
+    """The reviewers that ran: which files each covered, what it found, how often it was retried, and how long it took."""
+    if not isinstance(reviewers, list) or not reviewers:
+        raise RecordError("Review reviewers must be a non-empty array")
+    seen: set[str] = set()
+    for reviewer in reviewers:
+        if not isinstance(reviewer, dict) \
+                or not REVIEWER_FIELDS <= set(reviewer) <= REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS:
+            raise RecordError("Review reviewer fields are malformed")
+        if not isinstance(reviewer["id"], str) or not reviewer["id"] or reviewer["id"] in seen:
+            raise RecordError("Review reviewer IDs must be unique non-empty strings")
+        seen.add(reviewer["id"])
+        if not isinstance(reviewer["category"], str) or not reviewer["category"].strip():
+            raise RecordError(f"Review reviewer {reviewer['id']} needs a category")
+        if not all(_count(reviewer[field]) for field in ("files", "findings", "retries")):
+            raise RecordError(f"Review reviewer {reviewer['id']} counts must be non-negative integers")
+        if not isinstance(reviewer["dispositions_only"], bool):
+            raise RecordError(f"Review reviewer {reviewer['id']}.dispositions_only must be a boolean")
+        if "seconds" in reviewer and not _count(reviewer["seconds"]):
+            raise RecordError(f"Review reviewer {reviewer['id']}.seconds must be a non-negative integer")
+        if "model" in reviewer and not valid_model(reviewer["model"]):
+            raise RecordError(f"Review reviewer {reviewer['id']}.model {MODEL_RULE}")
+
+
+def _safe_relative(path: Any) -> bool:
+    return (isinstance(path, str) and bool(path) and not path.startswith(("/", "\\")) and "\\" not in path
+            and ".." not in Path(path).parts)
+
+
+def _validate_patches(patches: Any) -> None:
+    """Each changed file's patch fingerprint, so the next re-review can tell which files changed since."""
+    if not isinstance(patches, dict) or not patches:
+        raise RecordError("Review patches must be a non-empty object")
+    for path, patch in patches.items():
+        if not _safe_relative(path):
+            raise RecordError("Review patch path is unsafe")
+        if not isinstance(patch, dict) or set(patch) != PATCH_FIELDS \
+                or not isinstance(patch["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", patch["sha256"]) \
+                or not _count(patch["lines"]):
+            raise RecordError(f"Review patch for {path} is malformed")
+
+
+def _validate_scope(scope: Any, review: dict[str, Any]) -> None:
+    if review["mode"] != "re-review":
+        raise RecordError("Only a re-review has a scope")
+    if not isinstance(scope, dict) or set(scope) != SCOPE_FIELDS:
+        raise RecordError("Review scope fields are malformed")
+    if scope["requested"] not in RE_REVIEW_SCOPES or scope["used"] not in ("full", "incremental"):
+        raise RecordError("Review scope is invalid")
+    if not isinstance(scope["reason"], str) or not scope["reason"].strip():
+        raise RecordError("Review scope needs a reason")
+    since = scope["since_version"]
+    if not _count(since) or not 1 <= since < review["version"]:
+        raise RecordError("Review scope.since_version must be an earlier version")
+    if not _count(scope["files_total"]) or not _count(scope["lines_total"]):
+        raise RecordError("Review scope totals must be non-negative integers")
+    compared = scope["files_changed"] is not None
+    if compared != (scope["lines_changed"] is not None) or compared and not (
+            _count(scope["files_changed"]) and scope["files_changed"] <= scope["files_total"]
+            and _count(scope["lines_changed"]) and scope["lines_changed"] <= scope["lines_total"]):
+        raise RecordError("Review scope changed counts must both be null or both be within their totals")
+    if scope["used"] == "incremental" and not compared:
+        raise RecordError("An incremental re-review must have compared with an earlier version")
+
+
+def describe_scope(scope: dict[str, Any]) -> str:
+    """One line on how much of a pull request a re-review covered, and why."""
+    if scope["files_changed"] is None:
+        compared = f"could not compare with v{scope['since_version']}"
+    else:
+        compared = (f"{scope['files_changed']} of {scope['files_total']} files and {scope['lines_changed']} of "
+                    f"{scope['lines_total']} changed lines differ from v{scope['since_version']}")
+    return f"{scope['used']}, {compared} (requested {scope['requested']}: {scope['reason']})"
+
+
+def _validate_comments(record: dict[str, Any]) -> None:
+    """Open review comments and their dispositions come together: exactly one disposition per comment."""
+    comments = record.get("github_comments")
+    dispositions = record.get("comment_dispositions")
+    if comments is None and dispositions is None:
+        return
+    if not isinstance(comments, list) or not comments:
+        raise RecordError("Review comment dispositions need the comments they answer")
+    ids: set[str] = set()
+    for comment in comments:
+        if not isinstance(comment, dict) or set(comment) != set(COMMENT_FIELDS):
+            raise RecordError("Review comment fields are malformed")
+        if not isinstance(comment["id"], str) or not re.fullmatch(r"C[1-9][0-9]*", comment["id"]) \
+                or comment["id"] in ids:
+            raise RecordError("Review comment IDs must be unique C<n> values")
+        ids.add(comment["id"])
+        for field in ("author", "path", "body", "url"):
+            if not isinstance(comment[field], str):
+                raise RecordError(f"Review comment {comment['id']}.{field} must be a string")
+        if comment["line"] is not None and (not _count(comment["line"]) or comment["line"] < 1):
+            raise RecordError(f"Review comment {comment['id']}.line must be a positive integer or null")
+        if not isinstance(comment["outdated"], bool):
+            raise RecordError(f"Review comment {comment['id']}.outdated must be a boolean")
+    validate_dispositions(dispositions, "comment_id", ids, "Comment")
+
+
+def validate_record(value: Any) -> dict[str, Any]:
+    allowed_top = {
+        "schema_version",
+        "repository",
+        "pull_request",
+        "review",
+        "findings",
+        "prior_dispositions",
+        "github_comments",
+        "comment_dispositions",
+        "artifacts",
+    }
+    if (
+        not isinstance(value, dict)
+        or set(value) - allowed_top
+        or value.get("schema_version") != RECORD_SCHEMA_VERSION
+    ):
+        raise RecordError("Unsupported or malformed review record")
+    _validate_comments(value)
+    validate_repository_identity(value.get("repository"))
+    pull = value.get("pull_request")
+    review = value.get("review")
+    if not isinstance(pull, dict) or not isinstance(review, dict):
+        raise RecordError("Review record metadata is malformed")
+    pull_fields = {"number", "url", "title", "base_ref", "base_sha", "head_sha"}
+    if set(pull) not in (pull_fields, pull_fields | {"head_ref"}):
+        raise RecordError("Review pull-request fields are malformed")
+    if "head_ref" in pull and (not isinstance(pull["head_ref"], str) or not pull["head_ref"].strip()):
+        raise RecordError("Review pull_request.head_ref is invalid")
+    if (
+        not isinstance(pull.get("number"), int)
+        or isinstance(pull["number"], bool)
+        or pull["number"] < 1
+    ):
+        raise RecordError("Review pull number is invalid")
+    for field in ("url", "title", "base_ref"):
+        if not isinstance(pull[field], str) or not pull[field].strip():
+            raise RecordError(f"Review pull_request.{field} is invalid")
+    _validate_sha(pull.get("base_sha"), "pull_request.base_sha")
+    _validate_sha(pull.get("head_sha"), "pull_request.head_sha")
+    review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
+    # Records written before patches or scopes were recorded omit them.
+    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope"}:
+        raise RecordError("Review metadata fields are malformed")
+    if "reviewers" in review:
+        _validate_reviewers(review["reviewers"])
+    if "patches" in review:
+        _validate_patches(review["patches"])
+    if not _one_of(review.get("verdict"), {"APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"}):
+        raise RecordError("Review verdict is invalid")
+    coverage = review.get("coverage", {"unavailable_sources": []})
+    unavailable = coverage.get("unavailable_sources") if isinstance(coverage, dict) else None
+    if (
+        not isinstance(coverage, dict)
+        or set(coverage) != {"unavailable_sources"}
+        or not isinstance(unavailable, list)
+        or any(not isinstance(path, str) or not path for path in unavailable)
+        or len(set(unavailable)) != len(unavailable)
+    ):
+        raise RecordError("Review coverage is malformed")
+    if review["verdict"] == "INCOMPLETE" and not unavailable:
+        raise RecordError("An INCOMPLETE review must list its unavailable sources")
+    if (
+        not isinstance(review.get("version"), int)
+        or isinstance(review["version"], bool)
+        or review["version"] < 1
+    ):
+        raise RecordError("Review version is invalid")
+    if not _one_of(review.get("mode"), {"initial", "re-review"}):
+        raise RecordError("Review mode is invalid")
+    if "scope" in review:
+        _validate_scope(review["scope"], review)
+    try:
+        datetime.fromisoformat(review.get("reviewed_at"))
+    except (TypeError, ValueError) as exc:
+        raise RecordError("Review timestamp is invalid") from exc
+    if not isinstance(review.get("summary"), str) or not review["summary"].strip():
+        raise RecordError("Review summary is invalid")
+    adapter = review.get("adapter")
+    if not isinstance(adapter, dict) or set(adapter) != {
+        "name",
+        "protocol_version",
+        "scope",
+        "source_commit",
+        "source_hashes",
+        "reviewer",
+        "status",
+        "usage",
+    }:
+        raise RecordError("Review adapter metadata is malformed")
+    if adapter["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
+        raise RecordError("Review adapter protocol is unsupported")
+    if not _one_of(adapter["scope"], {"generic", "repository"}):
+        raise RecordError("Review adapter scope is invalid")
+    for field in ("name", "reviewer"):
+        if not isinstance(adapter[field], str) or not adapter[field].strip():
+            raise RecordError(f"Review adapter {field} is invalid")
+    if not _one_of(adapter["status"], {"complete", "partial", "failed"}):
+        raise RecordError("Review adapter status is invalid")
+    if adapter["source_commit"] is not None:
+        _validate_sha(adapter["source_commit"], "review.adapter.source_commit")
+    source_hashes = adapter["source_hashes"]
+    if not isinstance(source_hashes, dict):
+        raise RecordError("Review adapter source_hashes is invalid")
+    for path, hash_value in source_hashes.items():
+        if (
+            not isinstance(path, str)
+            or not path
+            or path.startswith(("/", "\\"))
+            or "\\" in path
+            or ".." in Path(path).parts
+        ):
+            raise RecordError("Review adapter source hash path is unsafe")
+        if not isinstance(hash_value, str) or not re.fullmatch(r"[0-9a-f]{64}", hash_value):
+            raise RecordError(f"Review adapter source hash is invalid: {path}")
+    if adapter["usage"] is not None and not isinstance(adapter["usage"], dict):
+        raise RecordError("Review adapter usage is invalid")
+    findings = value.get("findings")
+    if not isinstance(findings, list):
+        raise RecordError("Review findings must be an array")
+    expected_ids = [f"F{index:03d}" for index in range(1, len(findings) + 1)]
+    if [item.get("id") for item in findings if isinstance(item, dict)] != expected_ids:
+        raise RecordError("Review finding IDs are not stable and contiguous")
+    for finding in findings:
+        # Records written before findings carried titles or analyzer coverage remain valid.
+        if not isinstance(finding, dict) or not (
+            FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | OPTIONAL_FINDING_FIELDS
+        ):
+            raise RecordError("Review finding fields are malformed")
+        if not _one_of(finding["severity"], SEVERITIES):
+            raise RecordError(f"Review finding {finding['id']} severity is invalid")
+        if "title" in finding and not valid_title(finding["title"]):
+            raise RecordError(f"Review finding {finding['id']}.title {TITLE_RULE}")
+        if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
+            raise RecordError(f"Review finding {finding['id']}.analyzer {ANALYZER_RULE}")
+        for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
+            if not isinstance(finding[field], str) or not finding[field].strip():
+                raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
+        if (
+            finding["path"].startswith(("/", "\\"))
+            or "\\" in finding["path"]
+            or ".." in Path(finding["path"]).parts
+        ):
+            raise RecordError(f"Review finding {finding['id']}.path is unsafe")
+        if (
+            not isinstance(finding["line"], int)
+            or isinstance(finding["line"], bool)
+            or finding["line"] < 1
+        ):
+            raise RecordError(f"Review finding {finding['id']}.line is invalid")
+    counts = review.get("counts")
+    expected_counts = {
+        severity: sum(item["severity"] == severity for item in findings)
+        for severity in sorted(SEVERITIES)
+    }
+    if counts != expected_counts:
+        raise RecordError("Review finding counts do not match findings")
+    dispositions = value.get("prior_dispositions")
+    if not isinstance(dispositions, list):
+        raise RecordError("Review prior dispositions must be an array")
+    disposition_ids: set[str] = set()
+    for disposition in dispositions:
+        if not isinstance(disposition, dict) or set(disposition) != {
+            "finding_id",
+            "disposition",
+            "rationale",
+        }:
+            raise RecordError("Review prior disposition fields are malformed")
+        finding_id = disposition["finding_id"]
+        if not isinstance(finding_id, str) or not finding_id or finding_id in disposition_ids:
+            raise RecordError("Review prior disposition IDs must be unique")
+        disposition_ids.add(finding_id)
+        if not _one_of(disposition["disposition"], DISPOSITIONS):
+            raise RecordError(f"Review prior disposition is invalid: {finding_id}")
+        if not isinstance(disposition["rationale"], str) or not disposition["rationale"].strip():
+            raise RecordError(f"Review prior disposition rationale is invalid: {finding_id}")
+    artifacts = value.get("artifacts")
+    if artifacts is not None:
+        if not isinstance(artifacts, dict) or set(artifacts) != {"payload_sha256", "markdown_sha256"}:
+            raise RecordError("Review artifact hashes are malformed")
+        _validate_sha(artifacts["payload_sha256"], "artifacts.payload_sha256")
+        _validate_sha(artifacts["markdown_sha256"], "artifacts.markdown_sha256")
+    return value
+
+
+def payload_hash(record: dict[str, Any]) -> str:
+    payload = {key: value for key, value in record.items() if key != "artifacts"}
+    return sha256_text(canonical_json(payload))
+
+
+SEVERITY_SECTIONS = (("MUST_FIX", "MUST FIX"), ("SHOULD_FIX", "SHOULD FIX"), ("SUGGESTION", "SUGGESTIONS"))
+
+
+def _code(text: str) -> str:
+    """Inline code span that survives backticks and line breaks in the text."""
+    text = " ".join(text.split())
+    fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
+    padding = " " if text.startswith("`") or text.endswith("`") else ""
+    return f"{fence}{padding}{text}{padding}{fence}"
+
+
+def _cell(text: str) -> str:
+    """Single-line Markdown table cell content."""
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+def _html(text: str) -> str:
+    return " ".join(text.split()).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _quote(text: str) -> list[str]:
+    return [f"> {line}".rstrip() for line in text.strip().splitlines()]
+
+
+def _label(value: str) -> str:
+    return value.replace("_", " ").upper()
+
+
+def _analyzer_note(analyzer: dict[str, str]) -> str:
+    """One sentence saying how an analyzer could catch a finding."""
+    tool, rule = _code(analyzer["tool"]), _code(analyzer["rule"])
+    if analyzer["coverage"] == "available":
+        return f"{rule} in {tool}, which the repository already has, would catch this if enforced."
+    if analyzer["coverage"] == "known":
+        return f"{rule} in {tool}, which the repository does not use, would catch this."
+    return f"No existing rule catches this; it is a candidate for a custom {tool} rule ({rule})."
+
+
+def _reviewed_at(value: str) -> str:
+    moment = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc).strftime("%d-%b-%Y %H:%M UTC")
+
+
+def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
+    pull = record["pull_request"]
+    review = record["review"]
+    adapter = review["adapter"]
+    heading = f"# Code Review — {record['repository']}#{pull['number']}"
+    if review["mode"] == "re-review":
+        heading += f" (re-review v{review['version']})"
+    lines = [
+        heading,
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Title** | {_cell(pull['title'])} |",
+        (f"| **Branch** | {_cell(_code(pull['head_ref']))} → {_cell(_code(pull['base_ref']))} |"
+         if pull.get("head_ref") else f"| **Base** | {_cell(_code(pull['base_ref']))} |"),
+        f"| **URL** | {_cell(pull['url'])} |",
+        f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
+        f"| **Verdict** | {_label(review['verdict'])} |",
+        *([f"| **Scope** | {_cell(describe_scope(review['scope']))} |"] if "scope" in review else []),
+        "",
+    ]
+    unavailable = (review.get("coverage") or {}).get("unavailable_sources", [])
+    if unavailable:
+        lines.extend([
+            "> **Not reviewed in full:** these changed files were too large or could not be represented safely, "
+            "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
+            "",
+        ])
+    lines.extend(["---", "", "## Summary", "", review["summary"].strip(), "", "## Findings", ""])
+    if not record["findings"]:
+        lines.extend(["No findings.", ""])
+    for severity, title in SEVERITY_SECTIONS:
+        group = [finding for finding in record["findings"] if finding["severity"] == severity]
+        if not group:
+            continue
+        lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
+        for finding in group:
+            headline = (
+                _html(finding["title"]) if "title" in finding
+                else f"<code>{_html(PurePosixPath(finding['path']).name)}:{finding['line']}</code>"
+            )
+            # A specialist's evidence is the added line itself, so it joins the line number instead of
+            # repeating the location on a line of its own; other evidence stays after the body.
+            added_prefix = f"{finding['path']}:{finding['line']} adds: "
+            if finding["evidence"].startswith(added_prefix):
+                location = [f"> **Line {finding['line']}:** {_code(finding['evidence'][len(added_prefix):])} "
+                            f"| **Source:** {_html(finding['source'])}"]
+                evidence = []
+            else:
+                location = [f"> **Line:** {finding['line']} | **Source:** {_html(finding['source'])}"]
+                evidence = [">", f"> **Evidence:** {_code(finding['evidence'])}"]
+            if "analyzer" in finding:
+                evidence.extend([">", f"> **Analyzer:** {_analyzer_note(finding['analyzer'])}"])
+            lines.extend([
+                "<details open>",
+                f"<summary>{finding['id']}. [{_html(finding['category'])}] {headline}</summary>",
+                "",
+                f"> **File:** {_code(finding['path'])}  ",
+                *location,
+                ">",
+                *_quote(finding["body"]),
+                *evidence,
+                "",
+                "</details>",
+                "",
+            ])
+        lines.extend(["</details>", ""])
+    comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
+    if record.get("prior_dispositions") or comments:
+        lines.extend(["## Prior Findings Status", ""])
+    if record.get("prior_dispositions"):
+        if comments:
+            lines.extend(["### From the previous AI review", ""])
+        lines.extend(["| # | Status | Rationale |", "|---|--------|-----------|"])
+        for disposition in record["prior_dispositions"]:
+            lines.append(
+                f"| {_cell(disposition['finding_id'])} | {_label(disposition['disposition'])} "
+                f"| {_cell(disposition['rationale'])} |"
+            )
+        lines.extend(["", _addressed(record["prior_dispositions"]), ""])
+    if comments:
+        lines.extend([
+            "### From GitHub PR comments", "",
+            "| # | Comment | Status | Rationale |", "|---|---------|--------|-----------|",
+        ])
+        for disposition in record["comment_dispositions"]:
+            comment = comments[disposition["comment_id"]]
+            location = comment["path"] + (f":{comment['line']}" if comment["line"] else "")
+            excerpt = " ".join(comment["body"].split())
+            excerpt = excerpt if len(excerpt) <= 120 else excerpt[:117].rstrip() + "..."
+            outdated = " (outdated)" if comment["outdated"] else ""
+            lines.append(
+                f"| [{comment['id']}]({comment['url']}) | @{_cell(comment['author'])} on "
+                f"{_cell(_code(location))}{outdated}: {_cell(excerpt)} | {_label(disposition['disposition'])} "
+                f"| {_cell(disposition['rationale'])} |"
+            )
+        lines.extend(["", _addressed(record["comment_dispositions"]), ""])
+    if review.get("reviewers"):
+        lines.extend([
+            "## Reviewers", "",
+            "| Reviewer | Focus | Model | Files | Findings | Retries | Time |",
+            "|----------|-------|-------|-------|----------|---------|------|",
+        ])
+        for reviewer in review["reviewers"]:
+            focus = reviewer["category"] + (" (dispositions only)" if reviewer["dispositions_only"] else "")
+            lines.append(
+                f"| {_cell(_code(reviewer['id']))} | {_cell(focus)} | {_cell(reviewer.get('model', '-'))} "
+                f"| {reviewer['files']} "
+                f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} |"
+            )
+        lines.append("")
+    lines.extend([
+        "---",
+        "",
+        "<details>",
+        "<summary><strong>Review Details</strong></summary>",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| **Mode** | {review['mode']} v{review['version']} |",
+        f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
+        f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
+        f"| **Base SHA** | `{pull['base_sha']}` |",
+        f"| **Reviewed HEAD** | `{pull['head_sha']}` |",
+        f"| **Record payload SHA-256** | `{record_payload_hash}` |",
+        "",
+        "</details>",
+        "",
+        f"<!-- reviewed_head_sha: {pull['head_sha']} -->",
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def _addressed(dispositions: list[dict[str, Any]]) -> str:
+    addressed = sum(1 for disposition in dispositions if disposition["disposition"] == "addressed")
+    return f"**{addressed}/{len(dispositions)} addressed**"
+
+
+def write_record_pair(json_path: Path, markdown_path: Path, record: dict[str, Any]) -> dict[str, Any]:
+    validate_record(record)
+    payload_sha = payload_hash(record)
+    markdown = render_markdown(record, record_payload_hash=payload_sha)
+    markdown_sha = sha256_text(markdown)
+    persisted = copy.deepcopy(record)
+    persisted["artifacts"] = {
+        "payload_sha256": payload_sha,
+        "markdown_sha256": markdown_sha,
+    }
+    validate_record(persisted)
+    atomic_write_text(markdown_path, markdown)
+    try:
+        atomic_write_json(json_path, persisted, validator=validate_record)
+    except BaseException:
+        markdown_path.unlink(missing_ok=True)
+        raise
+    return persisted
+
+
+def validate_record_pair(json_path: Path, markdown_path: Path) -> dict[str, Any]:
+    record = validate_record(read_json(json_path))
+    markdown = markdown_path.read_text(encoding="utf-8")
+    if payload_hash(record) != record["artifacts"]["payload_sha256"]:
+        raise RecordError("Review JSON payload hash mismatch")
+    if sha256_text(markdown) != record["artifacts"]["markdown_sha256"]:
+        raise RecordError("Review Markdown hash mismatch")
+    expected_marker = f"Record payload SHA-256** | `{record['artifacts']['payload_sha256']}`"
+    if expected_marker not in markdown:
+        raise RecordError("Review Markdown does not reference the JSON payload hash")
+    return record

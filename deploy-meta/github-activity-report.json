@@ -1,0 +1,5 @@
+{
+    "required_vars": [],
+    "shared_deps": ["runtime-compatibility.md"],
+    "tools": ["gh"]
+}

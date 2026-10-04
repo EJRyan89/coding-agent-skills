@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "mode": "initial",
+  "repository": "example/example-repository",
+  "pull_number": 17,
+  "pull_request": {
+    "title": "Handle boundary condition",
+    "url": "https://github.com/example/example-repository/pull/17",
+    "base_ref": "main",
+    "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "diff_path": "D:\\ReviewRun\\17\\diff.patch",
+  "source_snapshot": {
+    "root": "D:\\ReviewRun\\17\\source",
+    "manifest_path": "D:\\ReviewRun\\17\\source\\source-snapshot.json",
+    "source_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "prior_findings": [],
+  "github_comments": []
+}

@@ -1,0 +1,24 @@
+{
+  "protocol_version": 1,
+  "repository": "example/example-repository",
+  "pull_number": 17,
+  "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "summary": "One boundary-condition defect was found.",
+  "reviewer": "generic",
+  "status": "complete",
+  "findings": [
+    {
+      "candidate_key": "boundary-zero",
+      "severity": "SHOULD_FIX",
+      "category": "Correctness",
+      "path": "src/Example.cs",
+      "line": 42,
+      "title": "Zero-length input underflows the index",
+      "body": "Handle zero before indexing the collection.",
+      "evidence": "The changed branch permits zero and then subtracts one.",
+      "source": "generic"
+    }
+  ],
+  "prior_dispositions": [],
+  "usage": null
+}

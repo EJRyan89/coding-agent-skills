@@ -1,0 +1,4 @@
+{
+    "required_vars": ["SOURCE_ROOT"],
+    "shared_deps": ["runtime-compatibility.md"]
+}

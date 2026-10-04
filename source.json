@@ -1,0 +1,17 @@
+{
+    "id": "ejryan89/coding-agent-skills",
+    "name": "Agent Skills",
+    "bundles": {
+        "code-review-operations": {
+            "members": [
+                "review-prs",
+                "update-pr-tracker",
+                "review-insights",
+                "flag-review-finding"
+            ]
+        }
+    },
+    "shared_assets": {
+        "runtime-compatibility.md": "owner"
+    }
+}

@@ -1,0 +1,6 @@
+{
+    "required_vars": [],
+    "shared_deps": ["runtime-compatibility.md"],
+    "tools": ["dotnet-format", "gh"],
+    "opt_in": true
+}

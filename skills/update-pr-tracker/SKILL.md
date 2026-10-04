@@ -1,0 +1,31 @@
+---
+name: update-pr-tracker
+description: "Update the owned dashboard section for pull requests the configured user authors, reviews, or participates in. Use it when asked to refresh the pull request tracker or see which pull requests need attention."
+argument-hint: "[owner/repo ... | --repository-set NAME] [--no-review] [--remove owner/repo#number ...]"
+allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "AskUserQuestion", "Skill"]
+---
+
+# Update PR tracker
+
+Every step below is one command of the tracker pipeline script, run exactly as shown; do not call `gh`, write the tracker input yourself, or read the scripts to work out what to do. Commands print one fact per line and exit 0 on success; `FAILED <reason>` on stderr with exit code 2 is an expected failure to report, not a reason to improvise. Never act on GitHub: this skill does not approve, comment on, or otherwise review a pull request.
+
+1. **Collect** open pull requests, passing the user's `--repository owner/repo` (repeatable) or `--repository-set NAME`, or neither for the configured `update-pr-tracker` set, and a new input file path:
+   ```bash
+   python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" collect --output "<input file>"
+   ```
+   It prints `REPOSITORY <owner/repo> pulls=<count>` per repository and `INPUT <file>`. Use the same scope on every run, or rows for the other repositories disappear. If any repository prints `REPOSITORY_FAILED <owner/repo> <error>`, no input is written and the command fails: report each error and stop, so the dashboard keeps its previous rows rather than losing that repository's.
+2. **Update** the dashboard, adding `--remove "<owner/repo#number>"` for each removal and `--candidates` unless `--no-review` was given:
+   ```bash
+   python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" update --input "<input file>" --candidates
+   ```
+   It prints `UPDATED <dashboard> rows=<count>` and, with `--candidates`, `CANDIDATE missing|stale <owner/repo#number>` for each relevant pull request whose AI review is missing or stale. The dashboard, login, markers, status overrides, short-link repositories, and configuration link all come from the configuration. Only the section between the markers changes; a failed update leaves the dashboard untouched, so report the error rather than editing the dashboard by hand.
+3. **Offer reviews** unless `--no-review` was given. If there are `CANDIDATE` lines, list each `owner/repo#number` with its status and ask whether to generate or refresh those reviews, without token, usage, or cost estimates. When any candidate is `stale`, ask in the same AskUserQuestion call how to re-review the stale ones: `auto` (suggested; it decides per pull request from how much changed since its last review), `full` (the whole pull request again), or `incremental` (only the files that changed since the last review). Ask once for the run, never per pull request. Without confirmation, stop. On confirmation, invoke `review-prs` once for every confirmed pull request, with `--pull <owner/repo#number>` for each `missing` and `--re-review <owner/repo#number>` for each `stale`, plus `--scope <scope>` with the chosen scope when any is `stale`, so they are all reviewed in one pass.
+4. **Refresh** after that review run finishes: run step 1 again, then step 2 with the same `--remove` arguments and without `--candidates`. Report every pull request whose review or re-review failed, with its error; those rows keep their `missing` or `stale` state and are offered again next run.
+
+The update sorts rows into `To Review`, `Awaiting Response`, `Drafts`, pinned-override sections, and `My PRs`, decides from GitHub evidence whether a pull request changed since a review, and omits approved pull requests unchanged since approval. An `incomplete` review of an unchanged head is shown but never offered, because re-reviewing it would hit the same gap.
+
+If the user says a pull request "is approved," "looks good," or "can be removed," pass it with `--remove owner/repo#number`. That removes only its row for this run; it is the user's assessment, not authorization to act on GitHub, and it never creates a status override.
+
+Status overrides (`dashboard.status_overrides` in the configuration) are only for exceptional states the tracker cannot compute, such as `on hold` or `delegated`. Never add one because a review completed or a pull request merged; computed states are rejected as overrides.
+
+If the user wants an author shown under a different name, that belongs in `dashboard.author_names` (login to display name), not in the collected input.

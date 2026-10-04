@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/coding-agent-skills/review-adapter.schema.json",
+  "title": "Code-review adapter result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol_version",
+    "repository",
+    "pull_number",
+    "head_sha",
+    "summary",
+    "reviewer",
+    "status",
+    "findings",
+    "prior_dispositions"
+  ],
+  "properties": {
+    "protocol_version": { "type": "integer", "const": 1 },
+    "repository": { "type": "string" },
+    "pull_number": { "type": "integer", "minimum": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40,64}$" },
+    "summary": { "type": "string", "minLength": 1 },
+    "reviewer": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["complete", "partial", "failed"]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_key",
+          "severity",
+          "category",
+          "path",
+          "line",
+          "body",
+          "evidence",
+          "source"
+        ],
+        "properties": {
+          "candidate_key": { "type": "string", "minLength": 1 },
+          "severity": {
+            "type": "string",
+            "enum": ["MUST_FIX", "SHOULD_FIX", "SUGGESTION"]
+          },
+          "category": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "line": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^\\S(?:.*\\S)?$" },
+          "body": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "analyzer": {
+            "description": "Present only when a diagnostic analyzer could catch the finding: a rule in an analyzer the repository already has but does not enforce (available), a rule in an established analyzer it does not use (known), or a mechanically detectable pattern no rule covers (custom-candidate, whose rule is a proposed pattern name).",
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["coverage", "tool", "rule"],
+            "properties": {
+              "coverage": { "type": "string", "enum": ["available", "known", "custom-candidate"] },
+              "tool": { "type": "string", "pattern": "^[^\\s`|<>]{1,100}$" },
+              "rule": { "type": "string", "pattern": "^[^\\s`|<>]{1,100}$" }
+            },
+            "if": { "properties": { "coverage": { "const": "custom-candidate" } } },
+            "then": { "properties": { "rule": { "maxLength": 60, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" } } }
+          }
+        }
+      }
+    },
+    "prior_dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "disposition", "rationale"],
+        "properties": {
+          "finding_id": { "type": "string", "minLength": 1 },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "addressed",
+              "partially_addressed",
+              "still_present",
+              "superseded",
+              "unable_to_verify"
+            ]
+          },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "comment_dispositions": {
+      "description": "One per open review comment in the request's github_comments. Required from the suite's reviewers; a repository entrypoint reviewer may omit the field, but when present it covers every comment exactly once.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["comment_id", "disposition", "rationale"],
+        "properties": {
+          "comment_id": { "type": "string", "pattern": "^C[1-9][0-9]*$" },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "addressed",
+              "partially_addressed",
+              "still_present",
+              "superseded",
+              "unable_to_verify"
+            ]
+          },
+          "rationale": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "usage": { "type": ["object", "null"] }
+  }
+}

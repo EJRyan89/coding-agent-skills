@@ -1,0 +1,22 @@
+{
+  "runtimes": ["claude", "codex"],
+  "surfaces": ["copilot_cli", "vscode", "cloud_agent"],
+  "features": ["ci_parity", "ci_parity_caller"],
+  "copilot_title": "# {repo_name} — AI Coding Instructions",
+  "copilot_sections": ["Overview", "Build and Test Commands", "Formatting Rules", "CI / Quality Gates"],
+  "copilot_required_sections": ["Overview", "Build and Test Commands", "Formatting Rules", "CI / Quality Gates"],
+  "copilot_setup_commands": [
+    {"name": "Restore dependencies", "run": "dotnet restore"}
+  ],
+  "mcp_servers": [
+    {
+      "name": "docs",
+      "targets": ["claude", "codex", "copilot_local", "vscode"],
+      "transport": "stdio",
+      "command": "docs-mcp",
+      "args": ["--read-only"],
+      "env": {"DOCS_MODE": "local"},
+      "copilot_local": {"tools": null}
+    }
+  ]
+}

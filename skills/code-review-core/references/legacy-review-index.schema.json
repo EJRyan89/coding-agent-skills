@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/coding-agent-skills/legacy-review-index.schema.json",
+  "title": "Legacy review compatibility index",
+  "type": "object",
+  "required": ["schema_version", "kind", "repository", "pull_number", "reviewed_at", "reviewed_head_sha", "verdict", "source_sha256", "source_path", "source_file_sha256"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "legacy-review-index" },
+    "repository": { "type": "string" },
+    "pull_number": { "type": "integer", "minimum": 1 },
+    "reviewed_at": { "type": "string" },
+    "reviewed_head_sha": { "type": "string" },
+    "verdict": { "enum": ["APPROVED", "CHANGES REQUESTED"] },
+    "source_sha256": { "type": "string" },
+    "source_path": { "type": "string" },
+    "source_file_sha256": { "type": "string" }
+  },
+  "additionalProperties": false
+}

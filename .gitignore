@@ -1,0 +1,18 @@
+# Local configuration files (normally stored under ~/.claude/deployer/)
+*.config
+
+# Personal Claude Code settings, and the task worktrees nested in the hub (docs/parallel-sessions.md)
+.claude/settings.local.json
+.claude/worktrees/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+
+# Editor artifacts
+.vs/
+.vscode/
+
+# OS artifacts
+Thumbs.db
+.DS_Store
