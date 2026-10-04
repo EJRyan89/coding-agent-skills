@@ -2,11 +2,11 @@
 
 ## Supported versions
 
-Before the first tagged release, security fixes are applied to the default branch. After publication, only the latest released version is supported. Upgrade to the latest release before reporting an issue that may already be resolved.
+Only the latest release is supported, and security fixes land on the default branch and in the next release. Upgrade to the latest release before reporting an issue that may already be resolved.
 
 ## Reporting a vulnerability
 
-Do not open a public issue for a suspected vulnerability. After the repository is published, use [GitHub private vulnerability reporting](https://github.com/EJRyan89/coding-agent-skills/security/advisories/new).
+Do not open a public issue for a suspected vulnerability. Use [GitHub private vulnerability reporting](https://github.com/EJRyan89/coding-agent-skills/security/advisories/new).
 
 Include enough information to reproduce and assess the issue:
 
@@ -32,4 +32,4 @@ Reports are especially useful when they involve:
 - reviewer isolation that exposes ambient configuration, credentials, or unintended write access; or
 - secret disclosure through logs, generated files, archives, or diagnostics.
 
-Non-sensitive defects and feature requests may be reported through normal GitHub issues after publication.
+Non-sensitive defects and feature requests go through normal GitHub issues.
