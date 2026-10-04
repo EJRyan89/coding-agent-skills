@@ -2,6 +2,28 @@
 
 How a release of this repository is cut. Every release is a tag on `main` created through a GitHub release; nothing is built or uploaded, because users install from a clone. Versions below `1.0.0` are tagged as pre-releases.
 
+## Versioning
+
+A version number tells a user what the update asks of them, because `update-coding-agent-skills` fast-forwards an installation and the skills run from a clone rather than from a built artifact. The level of a release is set by the largest demand any change since the last tag makes on the user, judged against the contracts below.
+
+**Contracts**, in the order a break hurts:
+
+1. **Durable user data.** The code-review records, flags, and tracker state under the code-review state directory, and the ownership manifest under `~/.claude/skills`. A format change without an automatic migration is the most expensive break this project can ship.
+2. **User-authored files.** Reviewer manifests and the code-review configuration file, which people write by hand.
+3. **Skill invocation.** Skill names, their arguments, and the status lines an agent parses, such as `UP_TO_DATE` or `FAILED`.
+4. **Deployer operation.** Commands and flags, configured variables, required tool floors, and supported platforms.
+5. **Behavior.** Prompt wording, review heuristics, and output no script parses. Behavior is not a contract; the structured record is.
+
+**Levels**, from `1.0.0` on:
+
+- **Patch.** The user does nothing after updating: fixes, documentation, prompt wording, tests, internal refactoring.
+- **Minor.** The update may ask for something optional or additive: a new skill or opt-in, a new configured variable that `configure` prompts for, a new platform, a new output line, a manifest version the previous release can still read (`OLDEST_READABLE_VERSION` in `deployer/manifest.py`).
+- **Major.** The user must act or loses something: a removed or renamed skill, a renamed argument or status line, a record or configuration format that needs a migration, a dropped platform, a raised tool floor, or a manifest the previous release cannot read.
+
+**Before `1.0.0`**, the minor level carries changes that would be major later, each with its migration or its stated manual step, and the patch level carries fixes only. `1.0.0` is tagged when the deployer runs on macOS and Linux as well as Windows, every contract above is pinned by a test against literal values, and a record or manifest migration has shipped and been exercised in a release.
+
+A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list under `deploy-meta/`, a schema under `skills/code-review-core/references/`, or a skill directory name, is what raises the level. Until a validation check holds that rule, which [issue #24](https://github.com/EJRyan89/coding-agent-skills/issues/24) adds alongside the version identity, the person tagging reads the diff since the last tag against the list above.
+
 ## Before tagging
 
 1. **Validation and the canary.** `main` is green by construction, since every change arrives through a validated pull request. For a release, also run the `runtime-canary` repository skill against the skills changed since the last tag, so each runtime is seen finding and running them from a deployment, not only passing tests.
@@ -24,7 +46,7 @@ Write the notes to a file and create the release from `main`:
 gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file <file>
 ```
 
-The notes say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Drop `--prerelease` at `1.0.0`.
+The notes say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. They open with the level of the release and the action, if any, the update asks of the user, as [Versioning](#versioning) defines them. Drop `--prerelease` at `1.0.0`.
 
 ## After tagging
 
