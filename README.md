@@ -90,7 +90,7 @@ Working on this repository:
 | [Adding a skill](docs/adding-a-skill.md) | The skill template and metadata contract |
 | [Code-review operations contract](docs/code-review-operations-contract.md) | Behavior the code-review bundle must keep |
 | [Parallel sessions](docs/parallel-sessions.md) | Worktrees for concurrent agent sessions |
-| [Dependency updates](docs/dependency-updates.md) | Reviewing Dependabot updates to pinned GitHub Actions |
+| [Dependency updates](docs/dependency-updates.md) | Every pinned or floor-checked dependency, and the steps after a Dependabot pull request |
 | [Releasing](docs/releasing.md) | How a release is cut |
 
 Report suspected vulnerabilities according to the [Security policy](SECURITY.md), not through a public issue.

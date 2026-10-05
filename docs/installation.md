@@ -10,7 +10,7 @@ Every deployment needs:
 |---|---|
 | Python 3.11 or newer | Runs the deployer. The deployer, the `audit-ai-config` engine, and the `init-ai-config` generator use only the standard library. |
 | Git for Windows | Its Bash checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. |
-| ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0; newer releases also work. |
+| ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
 | PowerShell | Parses rendered `.ps1` files. Windows PowerShell 5.1 is enough for deployment; the validation suite needs PowerShell 7 (`pwsh`). |
 
 Some skills need more when you use them, not when you deploy them:

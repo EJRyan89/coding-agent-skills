@@ -2,15 +2,31 @@ name: Validate
 
 on:
   pull_request:
+  push:
+    branches: [main]
+  # Weekly, so a change to the runner image or a new ShellCheck release surfaces without waiting for a pull request.
+  schedule:
+    - cron: '23 6 * * 1'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels its older run; every commit on main keeps its own result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
-  validate:
+  suite:
+    name: Validate (Python ${{ matrix.python-version }})
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor in deployer/tools.py and the latest stable release.
+        python-version: ['3.11', '3.x']
 
     steps:
       - name: Check out source
@@ -23,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
       - name: Install validation tools
         shell: pwsh
@@ -34,12 +50,45 @@ jobs:
       - name: Verify validation tools
         shell: pwsh
         run: |
-          foreach ($command in 'python.exe', 'shellcheck.exe') {
+          # Git Bash by its path: a bare `bash` can resolve to WSL's.
+          $gitBash = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+          foreach ($command in @('python', $gitBash, 'pwsh', 'shellcheck')) {
             $resolved = Get-Command $command -ErrorAction Stop
             Write-Host "$command -> $($resolved.Source)"
+            & $resolved.Source --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
       - name: Run repository validation
         shell: pwsh
-        run: python -B tests/run_validation.py -v
+        run: |
+          # Outside a pull request there is no base to compare with, so run every suite.
+          $arguments = @('-B', 'tests/run_validation.py', '-v')
+          if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
+          python @arguments
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # The pin above is the floor; this exercises the newest release, whose new warnings would stop deployments.
+      - name: Validate with the latest ShellCheck
+        if: github.event_name == 'schedule' && matrix.python-version == '3.x'
+        shell: pwsh
+        run: |
+          choco upgrade shellcheck --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          shellcheck --version
+          python -B tests/run_validation.py --full -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  # Branch protection requires the single check named `validate`, so the Python legs report through this job.
+  validate:
+    if: ${{ !cancelled() }}
+    needs: suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Python leg to pass
+        env:
+          RESULT: ${{ needs.suite.result }}
+        run: |
+          echo "Python legs: $RESULT"
+          test "$RESULT" = success
