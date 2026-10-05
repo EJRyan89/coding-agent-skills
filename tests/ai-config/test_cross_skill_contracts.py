@@ -310,6 +310,20 @@ class CrossSkillContractTests(unittest.TestCase):
         pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
         self.assertIn('prepare_parser.add_argument("--re-review", action="append"', pipeline)
 
+    def test_review_prs_waits_for_the_copilot_host_in_bounded_calls(self) -> None:
+        # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30 (#36).
+        skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
+        waits = re.findall(r"`wait --run <run directory> --timeout (\d+)` with a command timeout of at least (\d+) "
+                           r"minutes, again each time it prints `RUNNING <seconds>s`", skill)
+        self.assertEqual(1, len(waits), "step 3 waits for the host in repeated bounded calls")
+        timeout, command_minutes = (int(value) for value in waits[0])
+        self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
+        self.assertGreater(command_minutes * 60, timeout)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertLessEqual(timeout, literal_assignment(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertIn("prints `STARTED <run directory>` at once", skill)
+        self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
+
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host (#45).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")

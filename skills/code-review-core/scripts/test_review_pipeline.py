@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -22,6 +23,8 @@ import review_pipeline as rp  # noqa: E402
 from review_archive import latest_record, pull_directory  # noqa: E402
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
 from review_github import CommandResult, GitHubClient  # noqa: E402
+from review_hosts import ProcessResult  # noqa: E402
+from review_process import ProcessStatus, process_status  # noqa: E402
 from review_runtime import CommandResult as GitResult, RuntimeContractError, validate_adapter_manifest  # noqa: E402
 from review_state import load_state  # noqa: E402
 
@@ -1041,43 +1044,6 @@ class RepositoryReviewerTests(PipelineFixture):
         rp.finalize(ready["run"])
         self.assertNotIn("github_comments", latest_record(self.archive, REPOSITORY, 12))
 
-    def test_copilot_runtime_is_dispatched_by_the_host_not_roles(self) -> None:
-        self.configure(self.repository_reviewer("review/copilot.json"))
-        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
-        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
-        self.assertEqual(0, code, err)
-        run = out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
-        self.assertEqual([f"RUN {SELECTOR} {run}", f"HOST copilot-cli {run}"], out.splitlines())
-        with mock.patch("review_hosts.run_copilot") as host, mock.patch("time.time", return_value=3_000.0):
-            self.assertEqual(0, self.run_main("dispatch", "--run", run)[0])
-        self.assertEqual(Path(run) / "copilot-isolation-1", host.call_args.kwargs["isolation_root"])
-        started = lambda: json.loads((Path(run) / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]  # noqa: E731
-        self.assertEqual({"fixture-copilot": 3_000.0}, started())
-        (Path(run) / "copilot-isolation-1").mkdir()  # the first host run leaves its isolation root
-        with mock.patch("review_hosts.run_copilot"), mock.patch("time.time", return_value=4_000.0):
-            self.assertEqual(0, self.run_main("dispatch", "--run", run)[0])
-        self.assertEqual({"fixture-copilot": 3_000.0}, started(), "a rerun does not restart the reviewer's clock")
-
-    def test_a_timed_out_copilot_host_fails_dispatch_and_leaves_a_retry(self) -> None:
-        self.configure(self.repository_reviewer("review/copilot.json"))
-        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
-        run = self.run_main("prepare", "--pull", SELECTOR)[1].splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
-
-        # run_copilot's own timeout handling is covered in test_review_core; here it is the error it raises.
-        timeout = RuntimeContractError("GitHub Copilot CLI timed out after 1800s; see diagnostic")
-        with mock.patch("review_hosts.run_copilot", side_effect=timeout) as host:
-            code, out, err = self.run_main("dispatch", "--run", run)
-        self.assertEqual(Path(run) / "copilot-isolation-1", host.call_args.kwargs["isolation_root"])
-        self.assertEqual((2, ""), (code, out))
-        self.assertEqual("FAILED fixture-copilot: GitHub Copilot CLI timed out after 1800s; see diagnostic\n", err)
-        (Path(run) / "copilot-isolation-1").mkdir()  # the timed-out host run leaves its isolation root
-        code, out, _ = self.run_main("check", "--run", run)
-        self.assertEqual(1, code)
-        self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
-        with mock.patch("review_hosts.run_copilot") as rerun:
-            self.assertEqual(0, self.run_main("dispatch", "--run", run)[0])
-        self.assertEqual(Path(run) / "copilot-isolation-2", rerun.call_args.kwargs["isolation_root"])
-
     def test_dispatch_refuses_a_natively_delegated_run(self) -> None:
         ready = self.prepare()
         code, _, err = self.run_main("dispatch", "--run", str(ready["run"]))
@@ -1088,6 +1054,259 @@ class RepositoryReviewerTests(PipelineFixture):
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"
         with self.assertRaisesRegex(Exception, "agent-delegation"):
             self.prepare()
+
+
+class FakeClock:
+    """A wall clock that only moves when something sleeps on it."""
+
+    def __init__(self, now: float = 10_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class CopilotHostTests(PipelineFixture):
+    """dispatch starts the Copilot CLI host detached; wait and check follow it by its PID and start time."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.configure(self.repository_reviewer("review/copilot.json"))
+        self.clock = FakeClock()
+        self.alive: dict[int, int] = {}  # PID -> start time of each fake host still running
+        self.launched: list[list[str]] = []
+        self.copilot_calls = 0
+        self.review = "valid"  # what the fake Copilot CLI does: valid, partial, or failed
+        self.during_review = lambda: None
+        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
+        self.services.clock = self.clock
+        self.services.sleep = self.clock.sleep
+        self.services.probe = lambda pid: ProcessStatus(pid in self.alive, self.alive.get(pid))
+        self.services.launch = self.launch
+        self.services.copilot_runner = self.copilot
+        self.services.copilot_executable = "copilot"
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.run_directory = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        self.assertEqual([f"RUN {SELECTOR} {self.run_directory}", f"HOST copilot-cli {self.run_directory}"],
+                         out.splitlines())
+        self.run = str(self.run_directory)
+        self.result = self.run_directory / "result.json"
+
+    def launch(self, arguments: Sequence[str], cwd: Path, log: Path) -> int:
+        self.launched.append(list(arguments))
+        pid = 4000 + len(self.launched)
+        self.alive[pid] = 7
+        return pid
+
+    def copilot(self, arguments: Sequence[str], cwd: Path, environment: Any) -> ProcessResult:
+        if "--version" in arguments:
+            return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
+        self.copilot_calls += 1
+        allowed = next(argument for argument in arguments if argument.startswith("--allow-tool=write("))
+        staging = Path(allowed.removeprefix("--allow-tool=write(").removesuffix(")"))
+        self.during_review()
+        if self.review == "failed":
+            return ProcessResult(1, "", "boom")
+        if self.review == "partial":
+            staging.write_text('{"protocol_version": 1, "findi', encoding="utf-8")
+        else:
+            staging.write_text(json.dumps(self.valid_result()), encoding="utf-8")
+        return ProcessResult(0, '{"type":"assistant.message"}\n', "")
+
+    def valid_result(self) -> dict[str, Any]:
+        return {"protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": self.head,
+                "summary": "Fine.", "reviewer": "fixture-copilot", "status": "complete", "findings": [],
+                "prior_dispositions": [], "comment_dispositions": [], "usage": None}
+
+    def run_host(self, index: int = -1) -> tuple[int, str, str]:
+        """Run a host dispatch launched, in this process, with the arguments dispatch gave it."""
+        arguments = self.launched[index]
+        self.assertEqual([sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "host", "--run",
+                          self.run], arguments[:6])
+        return self.run_main(*arguments[3:])
+
+    def claim(self) -> dict[str, Any]:
+        return json.loads((self.run_directory / "copilot-host.json").read_text(encoding="utf-8"))
+
+    def attempts(self) -> dict[str, int]:
+        return json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["attempts"]
+
+    def test_dispatch_starts_the_host_detached_and_returns_at_once(self) -> None:
+        with mock.patch("time.time", return_value=3_000.0):
+            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+        self.assertEqual(1, len(self.launched))
+        self.assertEqual(0, self.copilot_calls, "dispatch only starts the host; it never runs Copilot itself")
+        token = self.launched[0][self.launched[0].index("--token") + 1]
+        self.assertEqual({"attempt": 1, "token": token, "generation": 0, "claimed_at": 10_000.0, "pid": 4001,
+                          "start_time": 7}, self.claim())
+        started = lambda: json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]  # noqa: E731
+        self.assertEqual({"fixture-copilot": 3_000.0}, started())
+
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual((0, f"DISPATCHED {self.result}\n", ""), self.run_main("wait", "--run", self.run,
+                                                                               "--timeout", "90"))
+        self.assertEqual(self.valid_result(), json.loads(self.result.read_text(encoding="utf-8")))
+        self.assertFalse((self.run_directory / "copilot-result-1.json").exists(), "the staging file was promoted")
+        self.assertTrue((self.run_directory / "copilot-isolation-1").is_dir())
+        self.assertTrue((self.run_directory / "copilot-diagnostic-1.jsonl").is_file())
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), self.run_main("check", "--run", self.run)[:2])
+
+    def test_wait_reports_a_running_host_after_its_timeout_and_never_longer(self) -> None:
+        self.run_main("dispatch", "--run", self.run)
+        self.clock.now += 30
+        self.assertEqual((1, "RUNNING 120s\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "90"))
+        self.assertEqual(10_120.0, self.clock.now, "wait returns at its timeout")
+        self.assertEqual((1, "RUNNING 125s\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "5"))
+
+    def test_wait_bounds_its_timeout(self) -> None:
+        for timeout in ("0", "301", "ninety"):
+            with self.subTest(timeout=timeout), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self.run_main("wait", "--run", self.run, "--timeout", timeout)
+
+    def test_wait_reports_a_failed_host_by_its_reviewer(self) -> None:
+        self.review = "failed"
+        self.run_main("dispatch", "--run", self.run)
+        self.assertEqual(0, self.run_host()[0])
+        diagnostic = self.run_directory / "copilot-diagnostic-1.jsonl"
+        self.assertEqual(
+            (2, "", f"FAILED fixture-copilot: GitHub Copilot CLI failed with exit code 1; see {diagnostic}\n"),
+            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+        )
+        self.assertFalse(self.result.exists())
+        code, out, _ = self.run_main("check", "--run", self.run)
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
+
+    def test_wait_reports_a_host_that_ended_without_a_result(self) -> None:
+        self.run_main("dispatch", "--run", self.run)
+        del self.alive[4001]  # killed before it wrote an outcome
+        log = self.run_directory / "copilot-host-1.log"
+        self.assertEqual(
+            (2, "", f"FAILED fixture-copilot: the Copilot CLI host (PID 4001) ended without a result; see {log}\n"),
+            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+        )
+        self.alive[4001] = 8  # the PID now belongs to another process
+        self.assertEqual(2, self.run_main("wait", "--run", self.run, "--timeout", "90")[0])
+
+    def test_wait_reports_a_host_past_its_limit_and_a_run_never_dispatched(self) -> None:
+        self.assertEqual(
+            (2, "", "FAILED fixture-copilot: no Copilot CLI host was dispatched for this run\n"),
+            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+        )
+        self.run_main("dispatch", "--run", self.run)
+        self.clock.now += 1800 + 300 + 1
+        self.assertEqual(
+            (2, "", "FAILED fixture-copilot: the Copilot CLI host (PID 4001) ran past its 1800s limit\n"),
+            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+        )
+
+    def test_a_rerun_refuses_while_the_recorded_host_is_alive(self) -> None:
+        self.run_main("dispatch", "--run", self.run)
+        self.assertEqual(
+            (2, "", "FAILED fixture-copilot: the Copilot CLI host is still running (PID 4001)\n"),
+            self.run_main("dispatch", "--run", self.run),
+        )
+        self.assertEqual(1, len(self.launched))
+        self.alive[4001] = 8  # the recorded host ended and its PID was reused
+        with mock.patch("time.time", return_value=4_000.0):
+            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+        self.assertEqual(2, self.claim()["attempt"])
+        self.assertEqual(4002, self.claim()["pid"])
+        dispatched = json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+        self.assertNotEqual({"fixture-copilot": 4_000.0}, dispatched, "a rerun does not restart the reviewer's clock")
+
+    def test_check_treats_a_running_host_as_not_ready(self) -> None:
+        self.run_main("dispatch", "--run", self.run)
+        self.clock.now += 42
+        self.assertEqual((1, f"RUNNING {SELECTOR} fixture-copilot 42s\n", ""),
+                         self.run_main("check", "--run", self.run))
+        self.assertEqual({"fixture-copilot": 0}, self.attempts(), "a running host's role is not set aside")
+        self.assertEqual([], list(self.run_directory.glob("result.json*")))
+
+    def test_an_interrupted_dispatch_cannot_write_into_a_role_set_aside(self) -> None:
+        def interrupted(arguments: Sequence[str], cwd: Path, log: Path) -> int:
+            self.launched.append(list(arguments))  # the host started, then dispatch was stopped from outside
+            raise KeyboardInterrupt
+
+        self.services.launch = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_main("dispatch", "--run", self.run)
+        self.assertIsNone(self.claim()["pid"])
+        self.assertEqual((2, "", "FAILED fixture-copilot: the Copilot CLI host is still starting\n"),
+                         self.run_main("dispatch", "--run", self.run))
+        self.assertEqual((1, f"RUNNING {SELECTOR} fixture-copilot 0s\n", ""), self.run_main("check", "--run", self.run))
+
+        self.clock.now += 61  # the host never recorded itself, so check sets the role aside
+        code, out, _ = self.run_main("check", "--run", self.run)
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
+        self.assertEqual({"fixture-copilot": 1}, self.attempts())
+
+        self.assertEqual(0, self.run_host(0)[0])  # the orphaned host finally runs
+        self.assertEqual(0, self.copilot_calls, "a host whose role was set aside never starts Copilot")
+        self.assertFalse(self.result.exists())
+
+    def test_a_host_whose_role_is_set_aside_mid_review_never_promotes_its_result(self) -> None:
+        self.run_main("dispatch", "--run", self.run)
+
+        def killed_then_checked() -> None:
+            del self.alive[4001]  # check sees the host gone, though it is still writing
+            code, out, _ = self.run_main("check", "--run", self.run)
+            self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
+
+        self.during_review = killed_then_checked
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual(1, self.copilot_calls)
+        self.assertFalse(self.result.exists(), "a result for a role already set aside is never promoted")
+        self.assertTrue((self.run_directory / "copilot-result-1.json").is_file(), "it stays in its staging file")
+        outcome = json.loads((self.run_directory / "copilot-outcome-1.json").read_text(encoding="utf-8"))
+        self.assertEqual("superseded", outcome["status"])
+        self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+        self.assertEqual({"attempt": 2, "generation": 1}, {key: self.claim()[key] for key in ("attempt", "generation")})
+
+    def test_a_partial_result_is_never_read(self) -> None:
+        self.review = "partial"
+        self.run_main("dispatch", "--run", self.run)
+        checked: list[tuple[int, str, str]] = []
+        self.during_review = lambda: checked.append(self.run_main("check", "--run", self.run))
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual([(1, f"RUNNING {SELECTOR} fixture-copilot 0s\n", "")], checked)
+        self.assertFalse(self.result.exists(), "an invalid staging file is never promoted")
+        code, out, err = self.run_main("wait", "--run", self.run, "--timeout", "90")
+        self.assertEqual((2, ""), (code, out))
+        self.assertTrue(err.startswith("FAILED fixture-copilot: GitHub Copilot CLI result is not valid JSON"), err)
+        self.assertEqual([], list(self.run_directory.glob("result.json*")))
+
+    def test_a_detached_host_runs_and_reports_through_wait(self) -> None:
+        # The real start: a separate Python process runs the host command. Copilot is kept off its PATH, so the
+        # host fails at once with a reason wait reports; nothing here calls a model.
+        empty = self.root / "no copilot"
+        empty.mkdir()
+        with mock.patch.dict(os.environ, {"PATH": str(Path(sys.executable).parent), "LOCALAPPDATA": str(empty)}):
+            self.services = rp.Services(github=self.services.github, resolve_runtime=self.services.resolve_runtime,
+                                        today=self.services.today)
+            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+            pid = self.claim()["pid"]
+            self.addCleanup(self.until_ended, pid)  # it holds its log open until it exits
+            self.assertEqual(
+                (2, "", "FAILED fixture-copilot: GitHub Copilot CLI is not available\n"),
+                self.run_main("wait", "--run", self.run, "--timeout", "60"),
+            )
+        self.assertIsInstance(self.claim()["start_time"], int)
+        self.until_ended(pid)
+        log = (self.run_directory / "copilot-host-1.log").read_text(encoding="utf-8")
+        self.assertIn("OUTCOME failed", log)
+
+    @staticmethod
+    def until_ended(pid: int) -> None:
+        deadline = time.monotonic() + 30
+        while process_status(pid).alive and time.monotonic() < deadline:
+            time.sleep(0.1)
 
 
 class ProfileModelTests(PipelineFixture):
