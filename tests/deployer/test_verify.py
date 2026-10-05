@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import textwrap
 import time
@@ -252,6 +253,21 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual({"SHADOWED": [f"alpha (also {personal})"], "FOUND": ["beta"]},
                          self.groups(result.output, "COPILOT CLI"))
         self.assertIn("Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n", result.output)
+
+    def test_a_runtime_listing_the_adapters_under_another_spelling_of_the_home_finds_them(self) -> None:
+        # Copilot CLI lists a profile folder by its 8.3 short name on some machines (RUNNER~1 for
+        # runneradmin). A junction is the same directory under another name, which a textual comparison misses.
+        alias = self.home.parent / "Alias Of Home"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(alias), str(self.home)], check=True, capture_output=True)
+        try:
+            through_alias = [(name, forward(alias / ".agents" / "skills" / name), True) for name in ("alpha", "beta")]
+            self.answer(copilot=through_alias)
+            result = self.verify()
+        finally:
+            # Removes the junction only, never the directory it points to.
+            os.rmdir(alias)
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
 
     def test_a_runtime_that_is_not_installed_is_skipped(self) -> None:
         del self.installed["codex"]

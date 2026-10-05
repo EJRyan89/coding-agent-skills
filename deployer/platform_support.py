@@ -92,13 +92,13 @@ def ignored_home_variable(home: Path, environment: Mapping[str, str] | None = No
     """
     environment = os.environ if environment is None else environment
     value = environment.get("HOME")
-    if not value or not _same_directory(home, home_directory(environment)):
+    if not value or not same_directory(home, home_directory(environment)):
         return None
     named = from_shell_path(normalize(value))
-    return None if _same_directory(Path(named), home) else normalize(os.path.normpath(named))
+    return None if same_directory(Path(named), home) else normalize(os.path.normpath(named))
 
 
-def _same_directory(first: Path, second: Path) -> bool:
+def same_directory(first: Path, second: Path) -> bool:
     return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
 
 

@@ -78,7 +78,7 @@ If you use Codex CLI or Copilot CLI, check that each one finds the deployed skil
 python deploy.py verify
 ```
 
-It reports each adapter as `FOUND`, `NOT FOUND`, `DISABLED`, or `SHADOWED` for every installed runtime, and skips a runtime that is not installed. A same-named skill can shadow an adapter: Copilot CLI gives personal skills under `~/.copilot/skills/` precedence over the generated adapters, and Codex offers both copies. The deployer reports Copilot shadows when it deploys but never modifies the user-managed Copilot directory. See [Copilot support](copilot-support.md) and [Codex support](codex-support.md).
+It reports each adapter as `FOUND`, `NOT FOUND`, `DISABLED`, or `SHADOWED` for every installed runtime, and skips a runtime that is not installed. A runtime may spell a directory differently from the deployer, such as by its 8.3 short name (`RUNNER~1` for `runneradmin`); `verify` compares the directories the paths resolve to, not their text. A same-named skill can shadow an adapter: Copilot CLI gives personal skills under `~/.copilot/skills/` precedence over the generated adapters, and Codex offers both copies. The deployer reports Copilot shadows when it deploys but never modifies the user-managed Copilot directory. See [Copilot support](copilot-support.md) and [Codex support](codex-support.md).
 
 ### Skipped items
 
