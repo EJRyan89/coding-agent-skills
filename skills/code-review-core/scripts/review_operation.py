@@ -125,6 +125,7 @@ def request_to_record_input(
     *,
     patches: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
+    uncovered_files: list[str] | None = None,
 ) -> dict[str, Any]:
     pull = request.get("pull_request")
     if not isinstance(pull, dict):
@@ -145,6 +146,7 @@ def request_to_record_input(
         "mode": request["mode"],
         "adapter": adapter,
         "unavailable_sources": list((request.get("coverage") or {}).get("unavailable_sources", [])),
+        "uncovered_files": list(uncovered_files or []),
     }
 
 
@@ -169,6 +171,7 @@ def commit_adapter_result(
     require_comment_dispositions: bool = True,
     patches: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
+    uncovered_files: list[str] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     request = read_json(request_path)
     result_value = read_json(result_path)
@@ -191,7 +194,8 @@ def commit_adapter_result(
     archive_versions = list_versions(pull_directory(archive_root, repository, number))
     current = archive_versions[-1] if archive_versions else None
     version = 1 if current is None else current + 1
-    record_input = request_to_record_input(request, adapter, reviewers, patches=patches, scope=scope)
+    record_input = request_to_record_input(request, adapter, reviewers, patches=patches, scope=scope,
+                                           uncovered_files=uncovered_files)
     record = build_record(record_input, result, version=version, policy=policy)
     if local_mirror_root is not None:
         local_versions = list_versions(pull_directory(local_mirror_root, repository, number))

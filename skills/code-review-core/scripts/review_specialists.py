@@ -259,6 +259,27 @@ def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work
     raise SpecialistError(f"Condition script failed: {script}: {detail}")
 
 
+def _matched(specialist: dict[str, Any], changed: list[str]) -> list[str]:
+    """The changed files a specialist's include patterns match and its exclude patterns do not."""
+    includes = [re.compile(pattern) for pattern in specialist["include"]]
+    excludes = [re.compile(pattern) for pattern in specialist["exclude"]]
+    return [
+        path
+        for path in changed
+        if any(p.search(path) for p in includes) and not any(p.search(path) for p in excludes)
+    ]
+
+
+def uncovered(manifest: dict[str, Any], changed: list[str]) -> list[str]:
+    """The changed files no specialist matches, in diff order.
+
+    A file matched only by a specialist whose `when` condition is closed is not here: the condition skips it on
+    purpose. Conditions are evaluated only for specialists that matched files, so this needs none of their results.
+    """
+    matched = {path for specialist in manifest["specialists"] for path in _matched(specialist, changed)}
+    return [path for path in changed if path not in matched]
+
+
 def route(
     manifest: dict[str, Any],
     changed: list[str],
@@ -267,13 +288,7 @@ def route(
     routes: dict[str, list[str]] = {}
     results: dict[str, bool] = {}
     for specialist in manifest["specialists"]:
-        includes = [re.compile(pattern) for pattern in specialist["include"]]
-        excludes = [re.compile(pattern) for pattern in specialist["exclude"]]
-        matched = [
-            path
-            for path in changed
-            if any(p.search(path) for p in includes) and not any(p.search(path) for p in excludes)
-        ]
+        matched = _matched(specialist, changed)
         if not matched:
             continue
         when = specialist["when"]
@@ -579,10 +594,21 @@ def build_plan(
              "files": reviewed or files, "dispositions_only": not reviewed, "model": model,
              "effort": specialist.get("effort")}
         )
+    # When no specialist routes, the generic reviewer reviews the whole change. When some do, it reviews the changed
+    # files none of them matches, unless the manifest leaves those unreviewed; then the record lists them instead.
+    outside = uncovered(manifest, changed) if routes else []
+    ignored = outside if manifest.get("uncovered", "review") == "ignore" else []
+    if ignored:
+        notes.append(f"No reviewer reviews {len(ignored)} changed file{'s' if len(ignored) != 1 else ''} that no "
+                     f"specialist covers, because the reviewer manifest sets uncovered to ignore: "
+                     f"{', '.join(ignored)}.")
+    if not routes:
+        reviewed = to_review(changed)
+    else:
+        reviewed = [] if ignored else to_review(outside)
     # Every review needs a role, so an incremental one in which nothing changed still records a pass.
-    if not routes or unowned or unowned_comments or not roles:
+    if not routes or reviewed or unowned or unowned_comments or not roles:
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
-        reviewed = [] if routes else to_review(changed)
         files = reviewed or (changed if not routes else [p for p in changed if p in paths] or changed)
         roles.append(
             {"id": GENERIC_SPECIALIST, "category": "General", "profile": None,
@@ -629,6 +655,7 @@ def build_plan(
         "analyzer_tools": tool_names(analyzers),
         "roles": roles,
         "notes": notes,
+        "uncovered_files": ignored,
     }
     atomic_write_json(work / "plan.json", plan)
     return plan

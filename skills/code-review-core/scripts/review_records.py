@@ -291,8 +291,13 @@ def build_record(
     }
     if request.get("head_ref"):
         record["pull_request"]["head_ref"] = request["head_ref"]
-    if unavailable:
+    uncovered = sorted(request.get("uncovered_files", []))
+    if unavailable or uncovered:
         record["review"]["coverage"] = {"unavailable_sources": unavailable}
+    if uncovered:
+        # Files no specialist covers, which the reviewer manifest left unreviewed. A deliberate opt-out, so they do
+        # not make the review INCOMPLETE.
+        record["review"]["coverage"]["uncovered_files"] = uncovered
     if request.get("reviewers"):
         record["review"]["reviewers"] = copy.deepcopy(request["reviewers"])
     if request.get("patches"):
@@ -317,6 +322,12 @@ def _duration(seconds: int | None) -> str:
         return "-"
     minutes, remainder = divmod(seconds, 60)
     return f"{minutes}m {remainder:02d}s" if minutes else f"{remainder}s"
+
+
+def _path_set(paths: Any) -> bool:
+    """A list of distinct non-empty paths."""
+    return (isinstance(paths, list) and all(isinstance(path, str) and path for path in paths)
+            and len(set(paths)) == len(paths))
 
 
 def _validate_reviewers(reviewers: Any) -> None:
@@ -472,12 +483,12 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review verdict is invalid")
     coverage = review.get("coverage", {"unavailable_sources": []})
     unavailable = coverage.get("unavailable_sources") if isinstance(coverage, dict) else None
+    # Records written before uncovered files were recorded omit them.
     if (
         not isinstance(coverage, dict)
-        or set(coverage) != {"unavailable_sources"}
-        or not isinstance(unavailable, list)
-        or any(not isinstance(path, str) or not path for path in unavailable)
-        or len(set(unavailable)) != len(unavailable)
+        or not {"unavailable_sources"} <= set(coverage) <= {"unavailable_sources", "uncovered_files"}
+        or not _path_set(unavailable)
+        or not _path_set(coverage.get("uncovered_files", []))
     ):
         raise RecordError("Review coverage is malformed")
     if review["verdict"] == "INCOMPLETE" and not unavailable:
@@ -681,6 +692,13 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
         lines.extend([
             "> **Not reviewed in full:** these changed files were too large or could not be represented safely, "
             "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
+            "",
+        ])
+    uncovered = (review.get("coverage") or {}).get("uncovered_files", [])
+    if uncovered:
+        lines.extend([
+            "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+            "`uncovered` to `ignore`, so no reviewer saw them: " + ", ".join(_code(path) for path in uncovered) + ".",
             "",
         ])
     lines.extend(["---", "", "## Summary", "", review["summary"].strip(), "", "## Findings", ""])
