@@ -59,9 +59,10 @@ def sign_in_problem(message: str) -> bool:
     return SIGN_IN.search(message) is not None
 
 
-def check_runtimes(paths: Paths, environment: Mapping[str, str], find: Find = platform_support.find_executable,
+def check_runtimes(paths: Paths, environment: Mapping[str, str], find: Find | None = None,
                    talk: discovery.Converse | None = None) -> list[RuntimeResult]:
     """Judge every runtime against the adapters the manifest records."""
+    find = find or platform_support.find_executable
     names = verify.adapter_names(manifest.load(paths.manifest_file))
     if not names:
         where = platform_support.normalize(paths.adapter_dest_dir)
@@ -107,8 +108,9 @@ def _run_version(arguments: list[str]) -> tuple[int, str]:
     return result.returncode, result.output
 
 
-def tool_versions(find: Find = platform_support.find_executable,
+def tool_versions(find: Find | None = None,
                   run: RunVersion = _run_version) -> list[tuple[str, str]]:
+    find = find or platform_support.find_executable
     versions = [("Python", tools.format_version(tools.python_version()))]
     for label, name in VERSIONED:
         path = find(name)
