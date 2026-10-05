@@ -327,6 +327,37 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("prints `STARTED <run directory>` at once", skill)
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
 
+    def test_review_prs_finishes_the_workflow_path_in_the_turn_that_invoked_it(self) -> None:
+        # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the turn that
+        # invoked it, so check and finalize were denied later, nothing was recorded, and it still reported success (#40).
+        skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
+        body = skill.split("---", 2)[2]
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertIn("Never end the turn, reply, or schedule a wakeup (ScheduleWakeup, CronCreate, `/loop`) while a "
+                      "prepared run is not finalized", body)
+        workflow = body.split("## With the Workflow tool", 1)[1]
+        self.assertNotIn("Wait for it to finish", workflow, "the Workflow tool returns at once; there is nothing to wait on")
+        minutes = re.findall(r"Never end the turn to wait for it: run `wait-reviewers` with one `--run` per run and a "
+                             r"command timeout of at least (\d+) minutes, again each time it prints a "
+                             r"`RUNNING <selector> <id> <seconds>s` line", workflow)
+        timeouts = re.findall(r'review_pipeline\.py" wait-reviewers --run "<run directory>" --run "<run directory>" '
+                              r'--timeout (\d+)\n', workflow)
+        self.assertEqual((1, 1), (len(minutes), len(timeouts)), "the Workflow path waits in repeated bounded calls")
+        timeout, command_minutes = int(timeouts[0]), int(minutes[0])
+        self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
+        self.assertGreater(command_minutes * 60, timeout)
+        self.assertLessEqual(timeout, literal_assignment(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertIn("`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 "
+                      "retries it.", workflow)
+        # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
+        self.assertIn("run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. "
+                      "Report each `UNFINALIZED <selector> <run directory>` as that pull request's failure", body)
+        self.assertIn("If any pipeline command was denied or could not run, report every pull request without a "
+                      "`RECORDED` line as failed, and never report the run as a success.", body)
+        source = pipeline.read_text(encoding="utf-8")
+        self.assertIn('wait_reviewers_parser = commands.add_parser("wait-reviewers")', source)
+        self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
+
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host (#45).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")

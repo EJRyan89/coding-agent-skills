@@ -5,9 +5,11 @@
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     wait       wait a bounded time for that host: its result, its failure, or how long it has run
     workflow   write a Claude Code Workflow script that starts every role of several runs at once
+    wait-reviewers  wait a bounded time for the Workflow's reviewers: which roles are ready, running, or overdue
     check      validate reviewer results; set aside invalid ones and say which roles to rerun
     validate-result  tell a reviewer whether check would accept its result, changing nothing
     finalize   assemble each result and commit its review record (or a canary pair)
+    unfinalized  list the prepared runs that never reached finalize, each its pull request's failure
     advance    move each fully enumerated repository's merged-pull watermark after a batch
 
     inspect-reviewer   say whether a repository's review skill runs as one reviewer or needs a manifest
@@ -882,6 +884,83 @@ def wait_for_host(run: Path, timeout: int, services: Services) -> tuple[Path | N
         services.sleep(min(WAIT_POLL_SECONDS, remaining))
 
 
+# A Workflow role without a valid result this long after it was handed out is no longer waited for, so the wait ends
+# even when the Workflow's completion never reaches the session. Longer than the Copilot host's 30 minutes, because a
+# role's clock starts when workflow writes the script and a role queued behind the tool's concurrency limit starts late.
+REVIEWER_LIMIT_SECONDS = 3600
+
+
+def reviewer_progress(run: Path, state: dict[str, Any], now: float) -> dict[str, tuple[str, int]]:
+    """Each role's state, `ready`, `running`, or `overdue`, and its whole seconds since it was handed out.
+
+    It only reads, as validate-result does. An invalid result may be one its reviewer is still fixing, so it counts as
+    running and is left alone: check stays the only step that sets a result aside and counts a retry.
+    """
+    errors = role_errors(run, state)
+    started = state.get("dispatched_at", {})
+    progress = {}
+    for role in state["roles"]:
+        elapsed = max(0, round(now - started.get(role["id"], now)))
+        if role["id"] not in errors:
+            status = "ready"
+        elif elapsed >= REVIEWER_LIMIT_SECONDS:
+            status = "overdue"
+        else:
+            status = "running"
+        progress[role["id"]] = (status, elapsed)
+    return progress
+
+
+def wait_for_reviewers(
+    runs: list[Path], timeout: int, services: Services
+) -> tuple[list[tuple[str, dict[str, tuple[str, int]]]], dict[Path, str]]:
+    """Wait at most `timeout` seconds until no role of these runs is running.
+
+    The orchestrator runs this while the Workflow's reviewers work, so it never has to end its turn to wait: the
+    skill's tool grants last only for the turn that invoked it, and check and finalize must run in that turn (#40).
+    Returns each run's selector and role progress, in the given order, and the reason for each run that cannot be read.
+    """
+    loaded: list[tuple[Path, dict[str, Any]]] = []
+    failures: dict[Path, str] = {}
+    for run in runs:
+        try:
+            resolved = run.resolve()
+            state = load_run(resolved)
+            if _is_copilot_host_run(state):
+                raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; wait for it with wait")
+            loaded.append((resolved, state))
+        except EXPECTED_ERRORS as exc:
+            failures[run] = str(exc)
+    deadline = services.clock() + timeout
+    while True:
+        now = services.clock()
+        progress = []
+        for run, state in loaded:
+            try:
+                progress.append((run, state["selector"], reviewer_progress(run, state, now)))
+            except EXPECTED_ERRORS as exc:
+                failures[run] = str(exc)
+        loaded = [(run, state) for run, state in loaded if run not in failures]
+        running = any(status == "running" for _, _, roles in progress for status, _ in roles.values())
+        remaining = deadline - services.clock()
+        if not running or remaining <= 0:
+            return [(selector, roles) for _, selector, roles in progress], failures
+        services.sleep(min(WAIT_POLL_SECONDS, remaining))
+
+
+def unfinalized_selector(run: Path) -> str | None:
+    """The pull request a run directory still holds unfinalized, or None once finalize has removed the run.
+
+    finalize is the only step that removes a prepared run, and prepare never prints RUN for a directory it removed,
+    so a run directory that is gone was recorded. One that remains, after a failure or with nobody finalizing it, is
+    its pull request's failure.
+    """
+    run = run.resolve()
+    if not run.exists():
+        return None
+    return load_run(run)["selector"]
+
+
 def wait_seconds(value: str) -> int:
     seconds = int(value)
     if not 1 <= seconds <= MAX_WAIT_SECONDS:
@@ -1121,10 +1200,15 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     host_parser.add_argument("--token", required=True)
     commands.add_parser("workflow").add_argument("--run", action="append", required=True, type=Path, dest="runs",
                                                  help="prepared run directory; repeatable")
+    wait_reviewers_parser = commands.add_parser("wait-reviewers")
+    wait_reviewers_parser.add_argument("--run", action="append", required=True, type=Path, dest="runs",
+                                       help="prepared run directory whose roles a Workflow runs; repeatable")
+    wait_reviewers_parser.add_argument("--timeout", required=True, type=wait_seconds,
+                                       help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}")
     validate_result_parser = commands.add_parser("validate-result")
     validate_result_parser.add_argument("--run", required=True, type=Path)
     validate_result_parser.add_argument("--role", required=True)
-    for name in ("check", "finalize"):
+    for name in ("check", "finalize", "unfinalized"):
         commands.add_parser(name).add_argument("--run", action="append", required=True, type=Path, dest="runs",
                                                help="prepared run directory; repeatable")
     commands.add_parser("advance").add_argument("--batch", required=True, type=Path)
@@ -1207,6 +1291,34 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print(text, end="")
             print(SCRIPT_END)
             return 0
+        if args.command == "wait-reviewers":
+            progress, failures = wait_for_reviewers(args.runs, args.timeout, services or Services())
+            for run, reason in failures.items():
+                print(f"FAILED {run} {reason}", file=sys.stderr)
+            running = False
+            for selector, roles in progress:
+                if all(status == "ready" for status, _ in roles.values()):
+                    print(f"READY {selector}")
+                for identity, (status, elapsed) in roles.items():
+                    if status != "ready":
+                        print(f"{status.upper()} {selector} {identity} {elapsed}s")
+                    running = running or status == "running"
+            return 2 if failures else 1 if running else 0
+        if args.command == "unfinalized":
+            pending = failed = False
+            for run in args.runs:
+                try:
+                    selector = unfinalized_selector(run)
+                except EXPECTED_ERRORS as exc:
+                    print(f"FAILED {run} {exc}", file=sys.stderr)
+                    failed = True
+                    continue
+                if selector is not None:
+                    print(f"UNFINALIZED {selector} {run.resolve()}")
+                    pending = True
+            if not pending and not failed:
+                print("ALL_FINALIZED")
+            return 2 if pending or failed else 0
         if args.command == "dispatch":
             print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
             return 0
