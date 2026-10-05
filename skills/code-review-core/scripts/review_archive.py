@@ -8,7 +8,7 @@ from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
-from review_records import validate_record_pair, write_record_pair
+from review_records import ledger_history, validate_record_pair, write_record_pair
 
 
 class ArchiveError(RuntimeError):
@@ -55,6 +55,19 @@ def latest_record(root: Path, repository: str, pull_number: int) -> dict[str, An
         return None
     json_path, markdown_path = record_paths(directory, versions[-1])
     return validate_record_pair(json_path, markdown_path)
+
+
+def pull_records(root: Path, repository: str, pull_number: int) -> list[dict[str, Any]]:
+    """Every validated review record of a pull request, oldest first."""
+    directory = pull_directory(root, repository, pull_number)
+    return [validate_record_pair(*record_paths(directory, version)) for version in list_versions(directory)]
+
+
+def current_ledger(root: Path, repository: str, pull_number: int) -> list[dict[str, Any]]:
+    """The latest record's finding ledger, computed from the earlier records when it was written before ledgers;
+    empty when the pull request has no review."""
+    history = ledger_history(pull_records(root, repository, pull_number))
+    return history[max(history)] if history else []
 
 
 def commit_record(

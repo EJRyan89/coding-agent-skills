@@ -10,10 +10,10 @@ import re
 import sys
 from typing import Any, Iterable
 
-from review_archive import commit_record, latest_record, list_versions, pull_directory, record_paths
+from review_archive import commit_record, current_ledger, latest_record, list_versions, pull_directory, record_paths
 from review_config import validate_repository_identity
 from review_io import read_json
-from review_records import build_record, payload_hash, validate_adapter_result
+from review_records import build_record, ledger_summary, payload_hash, validate_adapter_result
 
 
 class ReviewOperationError(ValueError):
@@ -150,6 +150,12 @@ def request_to_record_input(
     }
 
 
+def prior_severities(request: dict[str, Any]) -> dict[str, str]:
+    """Each prior finding's severity, by ID, so a result's `repeats` of it can be checked."""
+    return {item["id"]: item.get("severity") for item in request.get("prior_findings") or []
+            if isinstance(item, dict) and isinstance(item.get("id"), str)}
+
+
 def _ids(items: Any, what: str) -> list[str]:
     if not isinstance(items, list):
         raise ReviewOperationError(f"Adapter request {what}s are invalid")
@@ -184,6 +190,7 @@ def commit_adapter_result(
         prior_ids=prior_ids,
         comment_ids=_ids(request.get("github_comments", []), "review comment"),
         require_comment_dispositions=require_comment_dispositions,
+        prior_severities=prior_severities(request),
     )
     if result["status"] != "complete":
         raise ReviewOperationError(
@@ -196,7 +203,9 @@ def commit_adapter_result(
     version = 1 if current is None else current + 1
     record_input = request_to_record_input(request, adapter, reviewers, patches=patches, scope=scope,
                                            uncovered_files=uncovered_files)
-    record = build_record(record_input, result, version=version, policy=policy)
+    # A re-review judges and extends the archive's latest ledger; an initial review starts a fresh one.
+    prior_ledger = current_ledger(archive_root, repository, number) if request["mode"] == "re-review" else []
+    record = build_record(record_input, result, version=version, policy=policy, prior_ledger=prior_ledger)
     if local_mirror_root is not None:
         local_versions = list_versions(pull_directory(local_mirror_root, repository, number))
         local_current = local_versions[-1] if local_versions else None
@@ -210,6 +219,7 @@ def commit_adapter_result(
                 version=version,
                 policy=policy,
                 reviewed_at=pending["review"]["reviewed_at"],
+                prior_ledger=prior_ledger,
             )
             if payload_hash(candidate) != payload_hash(pending):
                 raise ReviewOperationError(
@@ -289,7 +299,8 @@ def legacy_counts(report: Path) -> dict[str, int] | None:
 def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
     """The latest reviewed head: a validated review record, else a migrated legacy review.
 
-    Also reports the review's verdict, finding counts, and report path for dashboards.
+    Also reports the review's verdict, finding counts, ledger summary (None for a record written before ledgers),
+    and report path for dashboards.
     """
     directory = pull_directory(archive_root, repository, number)
     record = latest_record(archive_root, repository, number)
@@ -299,12 +310,12 @@ def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str,
         _, markdown = record_paths(directory, review["version"])
         return {"head_sha": record["pull_request"]["head_sha"], "source": "record", "version": review["version"],
                 "incomplete": bool(coverage.get("unavailable_sources")), "verdict": review["verdict"],
-                "counts": dict(review["counts"]), "report": str(markdown)}
+                "counts": dict(review["counts"]), "ledger": ledger_summary(record), "report": str(markdown)}
     legacy = legacy_index(archive_root, repository, number)
     if legacy is not None:
         report = directory / "legacy-review.md"
         return {"head_sha": legacy["reviewed_head_sha"], "source": "legacy", "version": None, "incomplete": False,
-                "verdict": legacy["verdict"].replace(" ", "_"), "counts": legacy_counts(report),
+                "verdict": legacy["verdict"].replace(" ", "_"), "counts": legacy_counts(report), "ledger": None,
                 "report": str(report) if report.is_file() else None}
     return None
 

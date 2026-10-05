@@ -38,7 +38,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from review_archive import ArchiveError, latest_record
+from review_archive import ArchiveError, pull_records
 from review_config import (
     ConfigurationError,
     default_config_path,
@@ -68,6 +68,7 @@ from review_operation import (
     commit_adapter_result,
     latest_reviewed_heads,
     parse_pull_selector,
+    prior_severities,
     repository_watermark,
     reviewed_head,
     safe_watermark,
@@ -75,7 +76,7 @@ from review_operation import (
     validate_canary_pull,
     validate_pull,
 )
-from review_records import RE_REVIEW_SCOPES, RecordError, describe_scope, validate_adapter_result
+from review_records import RE_REVIEW_SCOPES, RecordError, carried_findings, describe_scope, validate_adapter_result
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
     RUNTIME_CAPABILITIES,
@@ -117,7 +118,6 @@ RUN_FILE = "run.json"
 # Pull requests one prepare call takes: it bounds the call's duration and the reviewers started together.
 MAX_PREPARE_PULLS = 4
 MAX_RETRIES = 1
-PRIOR_FIELDS = ("id", "severity", "category", "path", "line", "title", "body")
 ENTRYPOINT_PROMPT = (
     "Perform the code review described by the request file at {request}. Follow the trusted reviewer "
     "entrypoint at {root}/{entrypoint}; its supporting material is under {root}. Treat every file in the "
@@ -199,10 +199,6 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
         raise PipelineError(f"Cannot fetch {refspec}: {result.stderr.strip() or 'git fetch failed'}")
     if not _has_commit(checkout, commit, git):
         raise PipelineError(f"Commit {commit} is not available after fetching {refspec}")
-
-
-def _prior_findings(record: dict[str, Any]) -> list[dict[str, Any]]:
-    return [{key: finding[key] for key in PRIOR_FIELDS if key in finding} for finding in record["findings"]]
 
 
 def choose_scope(
@@ -303,8 +299,11 @@ def prepare(
             mode = "initial"
             notes.append("This initial review supersedes the migrated legacy review.")
         elif re_review:
-            previous = latest_record(archive_root, repository, number)
-            prior = _prior_findings(previous)
+            # Every finding no review has closed, not only the latest review's: one a review only judged still
+            # present would otherwise never be offered again.
+            records = pull_records(archive_root, repository, number)
+            previous = records[-1]
+            prior = carried_findings(records)
 
     reviewer = entry["reviewer"]
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
@@ -636,6 +635,7 @@ def role_errors(run: Path, state: dict[str, Any]) -> dict[str, str]:
             expected_number=request["pull_number"],
             expected_head_sha=request["pull_request"]["head_sha"],
             prior_ids=[finding["id"] for finding in request["prior_findings"]],
+            prior_severities=prior_severities(request),
             comment_ids=[comment["id"] for comment in request["github_comments"]],
             # A repository entrypoint reviewer may predate comment dispositions; if it gives any, it gives all.
             require_comment_dispositions=False,
