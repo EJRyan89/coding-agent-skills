@@ -313,8 +313,10 @@ class PipelineFixture(unittest.TestCase):
             reviewer["manifest"] = manifest
         return reviewer
 
-    def local_manifest(self, *, path: Path | None = None, specialists: list[dict[str, Any]] | None = None) -> Path:
-        """A specialists manifest kept outside the repository, with its condition script beside it."""
+    def local_manifest(self, *, path: Path | None = None, specialists: list[dict[str, Any]] | None = None,
+                       **settings: Any) -> Path:
+        """A specialists manifest kept outside the repository, with its condition script beside it; `settings` adds
+        optional top-level entries."""
         path = path or self.root / "local reviewers" / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         (path.parent / "window.py").write_text(WINDOW_SCRIPT, encoding="utf-8")
@@ -327,6 +329,7 @@ class PipelineFixture(unittest.TestCase):
                  "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
             ],
             "conditions": {"window": {"script": "window.py"}},
+            **settings,
         }), encoding="utf-8")
         return path
 
@@ -838,16 +841,30 @@ class ReReviewTests(PipelineFixture):
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         for selector, findings in ((SELECTOR, [self.finding()]), ("example/one#13", [])):
             ready = self.prepare(selector)
-            self.write_role_result(ready["roles"][0], findings=findings)
+            for role in ready["roles"]:
+                self.write_role_result(role, findings=findings if role["id"] == "python-review" else [])
             rp.finalize(ready["run"])
-        self.push({"CLAUDE.md": "Changed again\n"}, 12, 13)  # no specialist covers CLAUDE.md
+        # A new head whose patches are unchanged, as after a base merge.
+        git(self.checkout, "commit", "--allow-empty", "-m", "unchanged")
+        head = git(self.checkout, "rev-parse", "HEAD")
+        for number in (12, 13):
+            self.github.pulls[number] = rest_pull(number, head, self.base)
         with_prior = self.prepare(SELECTOR, re_review=True, scope="incremental")
         self.assertEqual([("python-review", ["app/service.py"], True)], self.planned(with_prior["run"]))
         # Nothing to review and nothing to give a disposition for, yet the new head still gets its record.
         without = self.prepare("example/one#13", re_review=True, scope="incremental")
         self.assertEqual([("generic-review", ["CLAUDE.md", "app/service.py"], True)], self.planned(without["run"]))
         full = self.prepare("example/one#13", re_review=True, scope="full")
-        self.assertEqual([("python-review", ["app/service.py"], False)], self.planned(full["run"]))
+        self.assertEqual([("python-review", ["app/service.py"], False), ("generic-review", ["CLAUDE.md"], False)],
+                         self.planned(full["run"]))
+        # A changed file no specialist covers is reviewed by the generic reviewer, beside a specialist that only
+        # gives dispositions for its unchanged file.
+        self.push({"CLAUDE.md": "Changed again\n"}, 12, 13)
+        with_prior = self.prepare(SELECTOR, re_review=True, scope="incremental")
+        self.assertEqual([("python-review", ["app/service.py"], True), ("generic-review", ["CLAUDE.md"], False)],
+                         self.planned(with_prior["run"]))
+        without = self.prepare("example/one#13", re_review=True, scope="incremental")
+        self.assertEqual([("generic-review", ["CLAUDE.md"], False)], self.planned(without["run"]))
 
     def test_auto_reviews_everything_once_enough_has_changed(self) -> None:
         self.record_initial_review()
@@ -989,13 +1006,18 @@ class RepositoryReviewerTests(PipelineFixture):
         self.github.pulls[12] = rest_pull(12, head, self.base)
         ready = self.prepare()
         self.assertEqual("specialists", ready["kind"])
-        self.assertEqual(["python-review"], [role["id"] for role in ready["roles"]])
+        # The head's attempt to rewrite the profile is reviewed as a change, while the profile itself comes from
+        # the base: no specialist covers it, so the generic reviewer does, with CLAUDE.md.
+        self.assertEqual(["python-review", "generic-review"], [role["id"] for role in ready["roles"]])
+        self.assertEqual("CLAUDE.md\nreview/python.md\n",
+                         (Path(ready["run"]) / "work" / "generic-review.files.txt").read_text(encoding="utf-8"))
         self.assertIn(f'validate-result --run "{ready["run"]}" --role "python-review"\n',
                       Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"))
         self.assertEqual("Python profile\n",
                          (Path(ready["reviewer_root"]) / "review" / "python.md").read_text(encoding="utf-8"))
         self.assertEqual(self.base, ready["adapter"]["source_commit"])
-        self.write_role_result(ready["roles"][0])
+        for role in ready["roles"]:
+            self.write_role_result(role)
         result = rp.finalize(ready["run"])
         self.assertEqual("APPROVED", result["verdict"])
         record = latest_record(self.archive, REPOSITORY, 12)
@@ -1341,7 +1363,10 @@ class ProfileModelTests(PipelineFixture):
         code, out, err = self.run_main("workflow", "--run", run)
         self.assertEqual(0, code, err)
         _, _, roles = workflow_output(out)
-        self.assertEqual([("haiku", "low")], [(role["model"], role["effort"]) for role in roles])
+        # The generic reviewer of CLAUDE.md, which no specialist covers, keeps the session's model and the
+        # configured effort.
+        self.assertEqual([(f"{SELECTOR} python-review", "haiku", "low"), (f"{SELECTOR} generic-review", None, "high")],
+                         [(role["label"], role["model"], role["effort"]) for role in roles])
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1 model=haiku effort=low", out.splitlines())
@@ -1354,7 +1379,8 @@ class ProfileModelTests(PipelineFixture):
         self.assertNotIn("NOTE", out, "the profile's unusable model is not even consulted")
         run = out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
         _, _, roles = workflow_output(self.run_main("workflow", "--run", run)[1])
-        self.assertEqual([(None, None)], [(role["model"], role["effort"]) for role in roles])
+        self.assertEqual([(f"{SELECTOR} python-review", None, None), (f"{SELECTOR} generic-review", None, None)],
+                         [(role["label"], role["model"], role["effort"]) for role in roles])
 
     def test_invalid_manifest_model_or_effort_is_rejected(self) -> None:
         specialist = SPECIALIST_MANIFEST["specialists"][0]
@@ -1475,7 +1501,8 @@ class ReviewerSourceTests(PipelineFixture):
         head = self.commit({".claude/agents/python-reviewer.md": "Head rewrites the profile\n"})
         self.github.pulls[12] = rest_pull(12, head, self.base)
         ready = self.prepare()
-        self.assertEqual(("specialists", ["python-reviewer"]), (ready["kind"], [r["id"] for r in ready["roles"]]))
+        self.assertEqual(("specialists", ["python-reviewer", "generic-review"]),
+                         (ready["kind"], [r["id"] for r in ready["roles"]]))
         root = Path(ready["reviewer_root"])
         self.assertEqual("Python reviewer profile from the base\n",
                          (root / ".claude" / "agents" / "python-reviewer.md").read_text(encoding="utf-8"))
@@ -1527,6 +1554,60 @@ class ReviewerSourceTests(PipelineFixture):
         lines = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")[1].splitlines()
         self.assertIn("CONDITION window closed", lines)
         self.assertTrue(any(line.startswith("GENERIC files=2") for line in lines), lines)
+        self.assertFalse(any(line.startswith("UNCOVERED ") for line in lines), "the generic reviewer reviews it all")
+
+    def test_validate_reviewer_lists_the_files_no_routed_specialist_covers(self) -> None:
+        # The fixture's head changes app/service.py, which the Python specialist takes, and CLAUDE.md, which no
+        # specialist covers.
+        for settings, last in (
+            ({}, "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"),
+            ({"uncovered": "ignore"}, "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)"),
+        ):
+            manifest = self.local_manifest(**settings)
+            self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+            code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+            self.assertEqual(0, code, err)
+            lines = out.splitlines()
+            route = lines.index("ROUTE python-reviewer files=1")
+            self.assertEqual(["UNCOVERED CLAUDE.md", last, "VALID"], lines[route + 1:], settings)
+
+    def test_a_file_whose_only_specialist_is_closed_is_not_uncovered(self) -> None:
+        manifest = self.local_manifest(specialists=[
+            {"id": "python-reviewer", "category": "Python", "profile": ".claude/agents/python-reviewer.md",
+             "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
+            {"id": "instructions-reviewer", "category": "Instructions", "profile": ".claude/agents/python-reviewer.md",
+             "include": [r"^CLAUDE\.md$"], "exclude": [], "resources": [], "when": None},
+        ])
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        head = self.commit({"app/service.py": "def total(items):\n    return sum(items) or 0\n"})
+        self.github.pulls[12] = rest_pull(12, head, self.base)
+        lines = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")[1].splitlines()
+        self.assertIn("CONDITION window closed", lines)
+        self.assertEqual(["ROUTE instructions-reviewer files=1", "VALID"],
+                         lines[lines.index("CONDITION window closed") + 1:])
+        ready = self.prepare()
+        self.assertEqual(["instructions-reviewer"], [role["id"] for role in ready["roles"]])
+
+    def test_an_ignored_uncovered_file_is_listed_in_the_record_and_report(self) -> None:
+        manifest = self.local_manifest(uncovered="ignore")
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertIn(f"NOTE {SELECTOR} No reviewer reviews 1 changed file that no specialist covers, because the "
+                      "reviewer manifest sets uncovered to ignore: CLAUDE.md.", out.splitlines())
+        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        state = rp.load_run(run)
+        self.assertEqual(["python-reviewer"], [role["id"] for role in state["roles"]])
+        self.write_role_result(state["roles"][0])
+        code, out, err = self.run_main("finalize", "--run", str(run))
+        self.assertEqual(0, code, err)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=0", out)
+        record = latest_record(self.archive, REPOSITORY, 12)
+        self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
+        recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
+        report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+        self.assertIn("> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+                      "`uncovered` to `ignore`, so no reviewer saw them: `CLAUDE.md`.", report)
 
     def test_local_manifest_problems_fail_closed(self) -> None:
         manifest = self.local_manifest()

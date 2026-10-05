@@ -74,6 +74,10 @@
             "additionalProperties": false
           }
         },
+        "uncovered": {
+          "description": "When some changed files route to specialists, what happens to the changed files no specialist matches: review (the default) gives them to the generic reviewer; ignore leaves them unreviewed and lists them in the record's review.coverage.uncovered_files.",
+          "enum": ["review", "ignore"]
+        },
         "conditions": {
           "type": "object",
           "propertyNames": { "$ref": "#/$defs/slug" },

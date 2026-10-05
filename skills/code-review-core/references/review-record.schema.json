@@ -25,6 +25,22 @@
       "type": "object",
       "required": ["version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"],
       "properties": {
+        "coverage": {
+          "description": "Changed files no reviewer saw in full. Present only when one of its lists is not empty.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["unavailable_sources"],
+          "properties": {
+            "unavailable_sources": {
+              "description": "Changed files whose source the snapshot could not provide, so reviewers saw only their diff. A non-empty list makes the verdict INCOMPLETE unless findings request changes.",
+              "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true
+            },
+            "uncovered_files": {
+              "description": "Changed files no specialist covers, left unreviewed because the reviewer manifest sets uncovered to ignore. A deliberate opt-out: it does not change the verdict.",
+              "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true
+            }
+          }
+        },
         "reviewers": {
           "description": "The reviewers that ran: files covered, findings raised, reruns, and time taken.",
           "type": "array",
