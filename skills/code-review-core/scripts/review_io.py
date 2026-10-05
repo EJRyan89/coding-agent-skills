@@ -26,6 +26,32 @@ class PersistenceError(RuntimeError):
     """Raised when durable state cannot be read or committed safely."""
 
 
+# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
+SKILLS_ROOT = Path(__file__).resolve().parents[2]
+
+
+def deployed_skill_roots() -> tuple[Path, ...]:
+    """The directories the deployer owns, whatever skills directory this script runs from."""
+    home = Path.home()
+    return home / ".claude" / "skills", home / ".agents" / "skills"
+
+
+def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
+    """Where a command writes a working file: `explicit`, or `name` in a new temporary directory.
+
+    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
+    explicit path inside any skills directory is refused before anything is read or written.
+    """
+    if explicit is None:
+        return Path(tempfile.mkdtemp(prefix=prefix)) / name
+    target = explicit.resolve()
+    for root in (SKILLS_ROOT, *deployed_skill_roots()):
+        if target.is_relative_to(root.resolve()):
+            raise PersistenceError(f"{explicit} is inside the skills directory {root}; omit the option to write "
+                                   "under a new temporary directory")
+    return explicit
+
+
 def map_in_order(
     function: Callable[[Item], Value],
     items: Iterable[Item],

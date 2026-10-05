@@ -2014,6 +2014,40 @@ class BatchTests(PipelineFixture):
         self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("2026-03-10", load_state(self.state_path)["repositories"][REPOSITORY]["merged_since"])
 
+    def test_enumerate_writes_its_batch_under_a_new_temporary_directory_by_default(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        code, out, err = self.run_main("enumerate")
+        self.assertEqual(0, code, err)
+        batch_path = Path(out.splitlines()[-1].removeprefix("BATCH "))
+        self.assertTrue(out.splitlines()[-1].startswith("BATCH "), out)
+        self.assertEqual(self.temporary, batch_path.parent.parent)
+        self.assertTrue(batch_path.parent.name.startswith("review-prs-batch-"), batch_path)
+        self.assertIn("example/one", json.loads(batch_path.read_text(encoding="utf-8"))["repositories"])
+        code, out, _ = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual(0, code)
+
+    def test_enumerate_refuses_a_batch_file_inside_a_skill_tree(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        skills_root = Path(rp.__file__).resolve().parents[2]
+        home = self.root / "home"
+        targets = [
+            skills_root / "review-prs" / "batch.json",  # beside SKILL.md, as the issue found it
+            skills_root / "code-review-core" / "scripts" / "batch.json",
+            home / ".claude" / "skills" / "review-prs" / "batch.json",
+            home / ".agents" / "skills" / "review-prs" / "batch.json",
+        ]
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            for target in targets:
+                self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
+                with self.subTest(target=target):
+                    code, out, err = self.run_main("enumerate", "--output", str(target))
+                    self.assertEqual(2, code)
+                    self.assertEqual("", out)
+                    self.assertTrue(err.startswith(f"FAILED {target} is inside the skills directory "), err)
+                    self.assertFalse(target.exists())
+        self.assertEqual([], self.github.calls)
+        self.assertEqual([], list(self.temporary.iterdir()))
+
     def test_failed_enumeration_keeps_the_watermark(self) -> None:
         batch_path = self.root / "batch.json"
         code, out, _ = self.run_main("enumerate", "--output", str(batch_path))

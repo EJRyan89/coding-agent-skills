@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Sequence
+from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 CORE_SCRIPTS = SCRIPT_DIRECTORY.parents[1] / "code-review-core" / "scripts"
@@ -177,6 +178,43 @@ class CollectTests(TrackerPipelineFixture):
         self.assertTrue(second["ai_review"]["report"].endswith("review.md"))
         self.assertTrue(items["example/one#3"]["draft"])
         self.assertEqual("ghost", items["example/two#5"]["author"], "a deleted account is GitHub's ghost user")
+
+    def test_collect_writes_its_input_under_a_new_temporary_directory_by_default(self) -> None:
+        self.serve_default_pages()
+        temporary = self.root / "tmp"
+        temporary.mkdir()
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            code, out, err = self.run_main("collect")
+        self.assertEqual(0, code, err)
+        last = out.splitlines()[-1]
+        self.assertTrue(last.startswith("INPUT "), out)
+        input_path = Path(last.removeprefix("INPUT "))
+        self.assertEqual(temporary, input_path.parent.parent)
+        self.assertTrue(input_path.parent.name.startswith("update-pr-tracker-input-"), input_path)
+        self.assertEqual(4, len(json.loads(input_path.read_text(encoding="utf-8"))))
+        code, out, err = self.run_main("update", "--input", str(input_path))
+        self.assertEqual(0, code, err)
+
+    def test_collect_refuses_an_input_file_inside_a_skill_tree(self) -> None:
+        self.serve_default_pages()
+        skills_root = Path(tp.__file__).resolve().parents[2]
+        home = self.root / "home"
+        targets = [
+            skills_root / "update-pr-tracker" / "input.json",  # beside SKILL.md, as the issue found it
+            skills_root / "review-prs" / "input.json",
+            home / ".claude" / "skills" / "update-pr-tracker" / "input.json",
+            home / ".agents" / "skills" / "update-pr-tracker" / "input.json",
+        ]
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            for target in targets:
+                self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
+                with self.subTest(target=target):
+                    code, out, err = self.run_main("collect", "--output", str(target))
+                    self.assertEqual(2, code)
+                    self.assertEqual("", out)
+                    self.assertTrue(err.startswith(f"FAILED {target} is inside the skills directory "), err)
+                    self.assertFalse(target.exists())
+        self.assertEqual([], self.github.calls)
 
     def test_explicit_repository_and_authenticated_login(self) -> None:
         self.configure(login=None)

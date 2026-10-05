@@ -169,7 +169,7 @@ Creates or upgrades AI agent configuration (Claude Code, Codex, Copilot) across 
 Started by you or the agent. Installed by default. Takes no arguments.
 <!-- /generated:init-ai-config -->
 
-It configures the Git repository you start it in, and asks which repository to use when you are not in one; it never initializes Git without your approval. Instead of flags, it asks scoping questions as it goes, such as which runtimes and surfaces to support. It shows the existing configuration and any conflicts before writing, and never replaces content you wrote without your approval.
+It configures the Git repository you start it in, and asks which repository to use when you are not in one; it never initializes Git without your approval. Instead of flags, it asks scoping questions as it goes, such as which runtimes and surfaces to support. It shows the existing configuration and any conflicts before writing, and never replaces content you wrote without your approval. The spec it works from is kept in a new temporary directory, never in a skill directory.
 
 ## `repo-cleanup`
 
@@ -186,7 +186,7 @@ Started by you. Installed by default. Needs `gh` and the `REPOS_ROOT` setting.
 - With no argument, it sweeps every repository under the `REPOS_ROOT` you set with `python deploy.py configure`.
 - `<repo-name-or-path>` cleans one repository: a name under `REPOS_ROOT`, or an absolute path to a directory that contains `.git`.
 
-It performs only the actions it can prove safe, such as removing a branch whose pull request merged, and asks you about anything else, such as local branches with no remote or unmerged work.
+It performs only the actions it can prove safe, such as removing a branch whose pull request merged, and asks you about anything else, such as local branches with no remote or unmerged work. Its plan files go in a new temporary directory, never in a skill directory.
 
 ```text
 /repo-cleanup
@@ -234,7 +234,7 @@ It runs in one of three modes, chosen by its arguments:
 
 `--scope` sets how much every `--re-review` in the run reviews again: `full` reviews the whole pull request; `incremental` reviews in full only the files whose changes differ from the last review, and only records dispositions for the earlier findings in the rest; `auto` chooses between them from how much changed. Without it, the skill asks once; it never picks one itself.
 
-`--force` reviews heads that already have a review. The skill never posts to GitHub. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
+`--force` reviews heads that already have a review. The skill never posts to GitHub, and keeps its working files, such as a batch's list of pull requests, in new temporary directories, never in a skill directory. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
 
 ```text
 /review-prs --repository-set team
@@ -280,7 +280,7 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 - `--no-review`: update the dashboard without offering reviews for pull requests whose AI review is missing or out of date.
 - `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub.
 
-Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date.
+Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
 
 ```text
 /update-pr-tracker

@@ -8,11 +8,13 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import ai_config_template
 import init_ai_config as setup
@@ -267,6 +269,38 @@ class ExportSpecTests(Fixture):
         exported = json.loads(output.read_text(encoding="utf-8"))
         self.assertEqual(["vscode"], exported["surfaces"])
         self.assertEqual([], exported["copilot_setup_commands"])
+
+    def test_export_writes_under_a_new_temporary_directory_by_default(self) -> None:
+        self.assertEqual(0, self.install(SPEC)[0])
+        temporary = Path(self.temp.name) / "tmp"
+        temporary.mkdir()
+        with mock.patch.object(tempfile, "tempdir", str(temporary)):
+            code, lines, errors = self.run_command("export-spec")
+        self.assertEqual(0, code, errors)
+        self.assertEqual(1, len(lines), lines)
+        output = Path(lines[0].removeprefix("SPEC "))
+        self.assertEqual(temporary, output.parent.parent)
+        self.assertTrue(output.parent.name.startswith("init-ai-config-spec-"), output)
+        self.assertEqual({**setup.template_defaults(), **SPEC}, json.loads(output.read_text(encoding="utf-8")))
+
+    def test_export_refuses_a_spec_file_inside_a_skill_tree(self) -> None:
+        self.assertEqual(0, self.install(SPEC)[0])
+        skills_root = Path(setup.__file__).resolve().parents[2]
+        home = Path(self.temp.name) / "home"
+        targets = [
+            skills_root / "init-ai-config" / "spec.json",  # beside SKILL.md
+            skills_root / "review-prs" / "spec.json",
+            home / ".claude" / "skills" / "init-ai-config" / "spec.json",
+            home / ".agents" / "skills" / "init-ai-config" / "spec.json",
+        ]
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            for target in targets:
+                self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
+                with self.subTest(target=target):
+                    code, lines, errors = self.run_command("export-spec", "--output", str(target))
+                    self.assertEqual((2, []), (code, lines))
+                    self.assertTrue(errors.startswith(f"FAILED {target} is inside the skills directory "), errors)
+                    self.assertFalse(target.exists())
 
     def test_export_failures(self) -> None:
         output = Path(self.temp.name) / "exported.json"
