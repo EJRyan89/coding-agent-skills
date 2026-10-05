@@ -30,7 +30,9 @@ Install the runtimes you use. None of them is needed to deploy, so you can use t
 | Codex CLI | 0.160.0 | `$<skill>` |
 | GitHub Copilot CLI | 1.0.91 | `/<skill>` |
 
-These versions were tested on the maintainer's own Windows machines, through the [runtime canary](tools/runtime_canary.py) and real skill and review runs, not yet on a clean Windows installation.
+These versions were tested on the maintainer's own Windows machines, through the [runtime canary](tools/runtime_canary.py) and real skill and review runs, not yet on a clean Windows installation by hand.
+
+A manual [`deployable` workflow](.github/workflows/deployable.yml) covers the deployment half on a fresh GitHub-hosted Windows runner: it installs the prerequisites and the Codex CLI and Copilot CLI versions above, deploys, checks that each runtime finds every skill adapter, uninstalls, and deploys again. It starts no model, so it does not show a skill running, and a runtime that will not list skills without signing in is reported as skipped. Running skills stays a manual check through the runtime canary. See [Releasing](docs/releasing.md#before-tagging).
 
 ## Quick start
 

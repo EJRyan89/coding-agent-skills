@@ -1,0 +1,234 @@
+name: Deployable
+
+# A manual check, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It starts
+# from a fresh GitHub-hosted Windows runner, installs the prerequisites and both CLI runtimes, deploys into the
+# runner's real profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and
+# deploys again. It does not start a model, so it does not show a skill running; the runtime canary does that.
+# It needs no secret and no sign-in. If a runtime refuses to list skills until it is signed in, that runtime is
+# reported SKIPPED with the reason, and the job fails only when no runtime could be checked.
+#
+# It deploys into the real profile, not --canary-home: Codex on Windows reads personal skills from the profile whatever
+# HOME says, so only a deployment there can be discovery-checked, and a fresh runner's profile is already clean.
+
+on:
+  workflow_dispatch:
+    inputs:
+      codex-version:
+        description: Codex CLI version to install from npm, or latest. The default is the README's tested version.
+        type: string
+        default: '0.160.0'
+      copilot-version:
+        description: GitHub Copilot CLI version to install from npm, or latest. The default is the README's tested version.
+        type: string
+        default: '1.0.91'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deployable:
+    name: Deploy to a fresh Windows profile
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare the run record
+        run: |
+          $logs = Join-Path $env:RUNNER_TEMP 'deployable-logs'
+          New-Item -ItemType Directory -Force $logs | Out-Null
+          "LOGS=$logs" | Add-Content -Path $env:GITHUB_ENV
+          "RESULTS=$(Join-Path $logs 'results.json')" | Add-Content -Path $env:GITHUB_ENV
+          "NOTES=$(Join-Path $logs 'notes.txt')" | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The floor in deployer/tools.py.
+          python-version: '3.11'
+
+      # Copilot CLI needs Node.js 22 or newer.
+      - name: Set up Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      # The install commands are the ones docs/installation.md lists. The runner image already provides some of these
+      # tools, so each is installed only when it is missing; the verify step below records what was found.
+      - name: Install the prerequisites
+        run: |
+          $installed = $false
+          foreach ($package in @(@('git', 'git'), @('pwsh', 'pwsh'), @('gh', 'gh'), @('shellcheck', 'shellcheck'))) {
+            $command, $name = $package
+            if (Get-Command $command -ErrorAction SilentlyContinue) {
+              Write-Host "$command is provided by the runner image"
+              continue
+            }
+            choco install $name --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $installed = $true
+          }
+          if ($installed) {
+            # Later steps start with the PATH the runner had, so hand them the directories the installers added.
+            $current = $env:PATH -split ';'
+            foreach ($directory in ([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';')) {
+              if ($directory -and ($current -notcontains $directory)) { Add-Content -Path $env:GITHUB_PATH -Value $directory }
+            }
+          }
+
+      - name: Install Codex CLI and GitHub Copilot CLI
+        env:
+          CODEX_VERSION: ${{ inputs.codex-version }}
+          COPILOT_VERSION: ${{ inputs.copilot-version }}
+        run: |
+          npm install --global "@openai/codex@$env:CODEX_VERSION" "@github/copilot@$env:COPILOT_VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Later steps start with the PATH the runner had, so hand them npm's global directory.
+          npm prefix --global | Add-Content -Path $env:GITHUB_PATH
+
+      # A new step is a new shell with the PATH a person would see after opening a terminal.
+      - name: Verify the tools in a fresh shell
+        env:
+          CODEX_VERSION: ${{ inputs.codex-version }}
+          COPILOT_VERSION: ${{ inputs.copilot-version }}
+        run: |
+          foreach ($command in @('python', 'git', 'pwsh', 'shellcheck', 'gh', 'node', 'npm', 'codex', 'copilot')) {
+            $resolved = Get-Command $command -ErrorAction Stop | Select-Object -First 1
+            Write-Host "$command -> $($resolved.Source)"
+          }
+          foreach ($pin in @(@('codex', $env:CODEX_VERSION), @('copilot', $env:COPILOT_VERSION))) {
+            $command, $wanted = $pin
+            $reported = (& $command --version | Out-String).Trim()
+            Write-Host "$command --version: $reported"
+            if ($wanted -ne 'latest' -and $reported -notmatch [regex]::Escape($wanted)) {
+              Write-Host "::error::$command reports '$reported', not the requested version $wanted"
+              exit 1
+            }
+          }
+
+      # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
+      # Neither changes what `verify` sees, because discovery runs no script; they are made here so the runner is set
+      # up the way a user's machine must be.
+      - name: Make the Codex Windows settings
+        run: |
+          $directory = Join-Path $env:USERPROFILE '.codex'
+          New-Item -ItemType Directory -Force $directory | Out-Null
+          $config = Join-Path $directory 'config.toml'
+          if (Test-Path -LiteralPath $config) {
+            Write-Host "::error::$config already exists on a runner that should be fresh"
+            exit 1
+          }
+          Set-Content -LiteralPath $config -Value "[windows]`nsandbox = `"elevated`"" -Encoding utf8NoBOM
+          Add-Content -Path $env:NOTES -Value 'Codex sandbox: wrote [windows] sandbox = "elevated" to ~/.codex/config.toml.'
+
+          # The documented check that needs no model: the mode Codex would use.
+          $probe = (codex debug prompt-input -c sandbox_mode=workspace-write 2>&1 | Out-String)
+          $mode = [regex]::Match($probe, 'sandbox_mode` is `([a-z-]+)')
+          if ($mode.Success -and $mode.Groups[1].Value -eq 'workspace-write') {
+            Add-Content -Path $env:NOTES -Value 'Codex sandbox: codex debug prompt-input reports workspace-write, so the setting is read.'
+          } else {
+            Write-Host '::warning::Codex did not report workspace-write; the sandbox setting is unconfirmed.'
+            Add-Content -Path $env:NOTES -Value 'Codex sandbox: unconfirmed, codex debug prompt-input did not report workspace-write.'
+          }
+
+          # The python.exe and python3.exe app execution aliases can only be turned off in Settings, which has no
+          # supported command, so record where they stand instead.
+          $aliases = @(Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps') -Filter 'python*.exe' -ErrorAction SilentlyContinue)
+          $first = (Get-Command python -All | Select-Object -First 1).Source
+          Add-Content -Path $env:NOTES -Value "Python aliases: $($aliases.Count) python*.exe app execution alias(es) in WindowsApps, not turned off (Settings has no supported command); python resolves first to $first."
+          if ($first -like '*\WindowsApps\*') {
+            Write-Host '::warning::python resolves to a WindowsApps alias, which Codex CLI cannot start.'
+          }
+
+      - name: Check the deployer's prerequisites
+        run: |
+          python deploy.py check 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'check.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # configure reads its one answer from stdin, so piping it exercises the prompt a person uses.
+      - name: Configure
+        run: |
+          $repositories = Join-Path $env:USERPROFILE 'GitHub'
+          New-Item -ItemType Directory -Force $repositories | Out-Null
+          $repositories | python deploy.py configure 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'configure.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Deploy (dry run, then for real)
+        run: |
+          python deploy.py --all --dry-run 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'dry-run.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python deploy.py --all 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'deploy.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify discovery after the first deployment
+        run: |
+          python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-first.log')
+          $deployVerify = $LASTEXITCODE
+          python tools/deployable_report.py verify --label 'first deploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The README's `none` selection, answered on stdin.
+      - name: Uninstall
+        run: |
+          'none' | python deploy.py --dry-run 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall-dry-run.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          'none' | python deploy.py 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'uninstall.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Confirm the profile holds nothing from the suite
+        run: |
+          $left = @()
+          $skills = Join-Path $env:USERPROFILE '.claude\skills'
+          if (Test-Path -LiteralPath $skills) {
+            $left += Get-ChildItem -LiteralPath $skills -Directory | Where-Object { $_.Name -notlike '.*' }
+          }
+          foreach ($pattern in @(@('.agents\skills', '*'), @('.claude\agents', '*.md'))) {
+            $directory = Join-Path $env:USERPROFILE $pattern[0]
+            if (Test-Path -LiteralPath $directory) { $left += Get-ChildItem -LiteralPath $directory -Filter $pattern[1] }
+          }
+          if ($left.Count -gt 0) {
+            $left | ForEach-Object { Write-Host "::error::left after uninstall: $($_.FullName)" }
+            exit 1
+          }
+          Write-Host 'Nothing from the suite is left under ~/.claude/skills, ~/.agents/skills, or ~/.claude/agents.'
+
+      - name: Deploy again
+        run: |
+          python deploy.py --all 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'redeploy.log')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify discovery after the second deployment
+        run: |
+          python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-second.log')
+          $deployVerify = $LASTEXITCODE
+          python tools/deployable_report.py verify --label 'after uninstall and redeploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Write the step summary
+        if: ${{ !cancelled() }}
+        run: |
+          $manifest = Join-Path $env:USERPROFILE '.claude\skills\.deploy-manifest.json'
+          # Not hidden, because the artifact upload leaves hidden files out.
+          if (Test-Path -LiteralPath $manifest) { Copy-Item -LiteralPath $manifest -Destination (Join-Path $env:LOGS 'deploy-manifest.json') }
+          $notes = @()
+          if (Test-Path -LiteralPath $env:NOTES) {
+            $notes = Get-Content -LiteralPath $env:NOTES | ForEach-Object { '--note'; $_ }
+          }
+          python tools/deployable_report.py summary --results $env:RESULTS @notes
+
+      - name: Upload the run record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: deployable-run
+          path: ${{ runner.temp }}/deployable-logs
+          if-no-files-found: warn
