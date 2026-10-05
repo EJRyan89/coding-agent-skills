@@ -1527,6 +1527,39 @@ class RepositoryValidation(unittest.TestCase):
         # The aggregate job keeps the single required status check context that branch protection names.
         self.assertRegex(workflow, r"(?m)^  validate:\n(?:    .*\n)*?    needs: suite$")
 
+    def test_deployable_workflow_is_a_manual_pinned_check_without_secrets(self) -> None:
+        workflows = REPOSITORY_ROOT / ".github/workflows"
+        workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
+        reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
+        # Dispatch is its only trigger, so it can never be a required status check or run on a pull request.
+        triggers = re.search(r"(?ms)^on:\n(.*?)^permissions:", workflow).group(1)
+        self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_]+):", triggers))
+        self.assertRegex(workflow, r"(?m)^permissions:\n  contents: read\n")
+        self.assertNotIn("secrets.", workflow)
+        self.assertNotIn("GITHUB_TOKEN", workflow)
+        pins = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)@(\S+)(.*)$", workflow)
+        self.assertTrue(pins)
+        for action, reference, rest in pins:
+            with self.subTest(action=action):
+                self.assertRegex(reference, r"^[0-9a-f]{40}$")
+                self.assertRegex(rest, r"^\s+# v\d+(?:\.\d+)*$")
+        # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
+        shared = {action for action, _, _ in pins} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
+        self.assertTrue(shared)
+        for action in shared:
+            with self.subTest(shared=action):
+                self.assertEqual(re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
+                                 re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1))
+
+    def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_as_tested(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+        for runtime, key in (("Codex CLI", "codex-version"), ("GitHub Copilot CLI", "copilot-version")):
+            with self.subTest(runtime=runtime):
+                tested = re.search(rf"(?m)^\| {runtime} \| (\d+(?:\.\d+)+) \|", readme).group(1)
+                default = re.search(rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow).group(1)
+                self.assertEqual(tested, default)
+
     def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
         self.assertEqual(
             [

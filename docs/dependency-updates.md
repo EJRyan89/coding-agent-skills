@@ -34,6 +34,8 @@ The README's "Supported platforms and runtimes" table records the Claude Code, C
 
 Every action in `.github/workflows/validate.yml` is pinned to a full commit SHA with its version in a comment beside it. Dependabot (`.github/dependabot.yml`) checks the pins weekly and groups the bumps into one pull request; with Dependabot security updates enabled for the repository, a security advisory opens its own grouped pull request. Review the upstream release notes and the proposed commit before merging, and keep the version comment.
 
+`.github/workflows/deployable.yml` pins its actions the same way, and Dependabot bumps it in the same grouped pull request. `tests/run_validation.py` fails unless every action it shares with `validate.yml` carries the same SHA and version comment, so a Dependabot pull request that touches only one of them cannot merge green. The Codex CLI and Copilot CLI versions it installs by default are the README's tested versions, and validation fails when they differ; change the README row and the workflow default together.
+
 The `init-ai-config` skill generates workflows that pin the same actions: its generator `skills/init-ai-config/scripts/ai_config_template.py`, the generator's test, and any `skills/init-ai-config/references/*.yml`. `tests/ai-config/test_cross_skill_contracts.py` fails until they match `validate.yml`, which Dependabot alone never edits.
 
 ### After a Dependabot pull request

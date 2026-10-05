@@ -27,7 +27,15 @@ A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list 
 ## Before tagging
 
 1. **Validation and the canary.** `main` is green by construction, since every change arrives through a validated pull request. For a release, also run the `runtime-canary` repository skill against the skills changed since the last tag, so each runtime is seen finding and running them from a deployment, not only passing tests.
-2. **Deployability on a fresh machine.** Dispatch the manual deployability workflow (see the issue that adds it, or `deployable.yml` once it exists). It installs the prerequisites on a fresh GitHub-hosted Windows runner, deploys into a throwaway home, checks Codex CLI and Copilot CLI discovery, uninstalls, and deploys again. Installing by hand on a clean Windows environment, one runtime at a time, is the stronger check and was not done for `v0.1.0`; do it when a machine and the time exist, and record the environment in the README's supported-runtimes section either way.
+2. **Deployability on a fresh machine.** Dispatch the manual `deployable.yml` workflow against `main`:
+
+   ```bash
+   gh workflow run deployable.yml --ref main
+   ```
+
+   Or use **Actions > Deployable > Run workflow**. Its `codex-version` and `copilot-version` inputs default to the versions in the README's table; pass `latest` to try the newest release. The workflow installs the prerequisites and both CLI runtimes on a fresh GitHub-hosted Windows runner, makes the two Codex Windows settings, configures and deploys into the runner's profile, checks that Codex CLI and Copilot CLI find every adapter, uninstalls, confirms nothing is left, deploys again, and checks discovery again. It is a manual check, never a required status check, and it starts no model, so it does not show a skill running.
+
+   Read the run's summary page: the tool versions, then one row per runtime and pass, each `PASSED`, `SKIPPED` with the reason (a runtime that will not list skills until it is signed in), or `FAILED`. A green run means every runtime that could list found every adapter and at least one could list. The **deployable-run** artifact holds each command's log, the verify results, and the manifest. Quote the versions and the date in the release notes. Installing by hand on a clean Windows environment, one runtime at a time, is the stronger check and was not done for `v0.1.0`; do it when a machine and the time exist, and record the environment in the README's supported-runtimes section either way.
 3. **Private-name scan.** Scan the tracked tree against the private list kept outside the repository, one term per line, and expect no hits:
 
    ```bash
