@@ -4,7 +4,8 @@ name: Deployable
 # from a fresh GitHub-hosted Windows runner, installs the prerequisites and both CLI runtimes, deploys into the
 # runner's real profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and
 # deploys again. It does not start a model, so it does not show a skill running; the runtime canary does that.
-# It needs no secret and no sign-in. If a runtime refuses to list skills until it is signed in, that runtime is
+# Claude Code reads the deployed files directly and cannot list skills without a session, so for it the check is the
+# installed version and the file layout, not discovery. It needs no secret and no sign-in. If a runtime refuses to list skills until it is signed in, that runtime is
 # reported SKIPPED with the reason, and the job fails only when no runtime could be checked.
 #
 # It deploys into the real profile, not --canary-home: Codex on Windows reads personal skills from the profile whatever
@@ -13,6 +14,10 @@ name: Deployable
 on:
   workflow_dispatch:
     inputs:
+      claude-version:
+        description: Claude Code version to install from npm, or latest. The default is the README's tested version.
+        type: string
+        default: '2.1.289'
       codex-version:
         description: Codex CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
@@ -85,12 +90,13 @@ jobs:
             }
           }
 
-      - name: Install Codex CLI and GitHub Copilot CLI
+      - name: Install Claude Code, Codex CLI, and GitHub Copilot CLI
         env:
+          CLAUDE_VERSION: ${{ inputs.claude-version }}
           CODEX_VERSION: ${{ inputs.codex-version }}
           COPILOT_VERSION: ${{ inputs.copilot-version }}
         run: |
-          npm install --global "@openai/codex@$env:CODEX_VERSION" "@github/copilot@$env:COPILOT_VERSION"
+          npm install --global "@anthropic-ai/claude-code@$env:CLAUDE_VERSION" "@openai/codex@$env:CODEX_VERSION" "@github/copilot@$env:COPILOT_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Later steps start with the PATH the runner had, so hand them npm's global directory.
           npm prefix --global | Add-Content -Path $env:GITHUB_PATH
@@ -98,14 +104,15 @@ jobs:
       # A new step is a new shell with the PATH a person would see after opening a terminal.
       - name: Verify the tools in a fresh shell
         env:
+          CLAUDE_VERSION: ${{ inputs.claude-version }}
           CODEX_VERSION: ${{ inputs.codex-version }}
           COPILOT_VERSION: ${{ inputs.copilot-version }}
         run: |
-          foreach ($command in @('python', 'git', 'pwsh', 'shellcheck', 'gh', 'node', 'npm', 'codex', 'copilot')) {
+          foreach ($command in @('python', 'git', 'pwsh', 'shellcheck', 'gh', 'node', 'npm', 'claude', 'codex', 'copilot')) {
             $resolved = Get-Command $command -ErrorAction Stop | Select-Object -First 1
             Write-Host "$command -> $($resolved.Source)"
           }
-          foreach ($pin in @(@('codex', $env:CODEX_VERSION), @('copilot', $env:COPILOT_VERSION))) {
+          foreach ($pin in @(@('claude', $env:CLAUDE_VERSION), @('codex', $env:CODEX_VERSION), @('copilot', $env:COPILOT_VERSION))) {
             $command, $wanted = $pin
             $reported = (& $command --version | Out-String).Trim()
             Write-Host "$command --version: $reported"
@@ -176,6 +183,12 @@ jobs:
           python tools/deployable_report.py verify --label 'first deploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # Claude Code has no skill listing and no adapter, so check its files instead; no session is started.
+      - name: Check the Claude Code file layout after the first deployment
+        run: |
+          python tools/deployable_report.py layout --label 'first deploy' --results $env:RESULTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The README's `none` selection, answered on stdin.
       - name: Uninstall
         run: |
@@ -211,6 +224,11 @@ jobs:
           python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-second.log')
           $deployVerify = $LASTEXITCODE
           python tools/deployable_report.py verify --label 'after uninstall and redeploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check the Claude Code file layout after the second deployment
+        run: |
+          python tools/deployable_report.py layout --label 'after uninstall and redeploy' --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Write the step summary

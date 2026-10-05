@@ -13,6 +13,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,7 @@ from tools import deployable_report as report
 SOURCE_ID = "test/source"
 HASH = "sha256:" + "0" * 64
 ADAPTERS = ("alpha", "beta")
+AGENT = "reviewer.md"
 SIGN_IN = "it exited before answering with exit code 1: You are not logged in. Run `copilot login` to sign in."
 
 
@@ -35,7 +37,7 @@ class FakeRuntimes:
         self.adapters = adapters
         self.listed: dict[str, list[str]] = {runtime: list(ADAPTERS) for runtime in discovery.RUNTIMES}
         self.errors: dict[str, str] = {}
-        self.installed = set(discovery.RUNTIMES)
+        self.installed = {*discovery.RUNTIMES, "claude"}
 
     def find(self, name: str) -> str | None:
         return f"C:/tools/{name}.cmd" if name in self.installed else None
@@ -59,7 +61,14 @@ class DeployableReportTests(unittest.TestCase):
         self.home = root / "Home With Spaces"
         self.paths = Paths(root / "source", self.home)
         self.paths.manifest_file.parent.mkdir(parents=True)
-        entry = {"wrappers": {name: {"hash": HASH} for name in ADAPTERS}}
+        entry = {"wrappers": {name: {"hash": HASH} for name in ADAPTERS},
+                 "skills": {name: {"hash": HASH} for name in ADAPTERS},
+                 "agents": {AGENT: {"hash": HASH}}}
+        for name in ADAPTERS:
+            (self.paths.dest_dir / name).mkdir(parents=True)
+            (self.paths.dest_dir / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
+        self.paths.agent_dest_dir.mkdir(parents=True)
+        (self.paths.agent_dest_dir / AGENT).write_text("---\nname: reviewer\n---\n", encoding="utf-8")
         self.paths.manifest_file.write_text(
             json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {SOURCE_ID: entry}}),
             encoding="utf-8")
@@ -194,6 +203,68 @@ class DeployableReportTests(unittest.TestCase):
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
         self.assertEqual(["first deploy", "after reinstall"], [item["label"] for item in recorded])
 
+    # -- Claude Code file layout ----------------------------------------------------------------------------
+
+    def layout(self) -> report.RuntimeResult:
+        return report.check_layout(self.paths, find=self.fake.find)
+
+    def test_claude_code_passes_when_every_owned_skill_and_agent_is_in_place(self) -> None:
+        result = self.layout()
+        self.assertEqual((report.PASSED, "claude"), (result.status, result.runtime))
+        self.assertIn("2 skills and 1 agent in place", result.detail)
+        self.assertIn("no session", result.detail)
+
+    def test_a_missing_or_empty_skill_file_fails_and_names_the_skill(self) -> None:
+        (self.paths.dest_dir / "alpha" / "SKILL.md").unlink()
+        (self.paths.dest_dir / "beta" / "SKILL.md").write_text("", encoding="utf-8")
+        result = self.layout()
+        self.assertEqual(report.FAILED, result.status)
+        self.assertIn("alpha/SKILL.md missing or empty", result.detail)
+        self.assertIn("beta/SKILL.md missing or empty", result.detail)
+
+    def test_a_missing_agent_fails(self) -> None:
+        (self.paths.agent_dest_dir / AGENT).unlink()
+        result = self.layout()
+        self.assertEqual(report.FAILED, result.status)
+        self.assertIn(f"agent {AGENT} missing", result.detail)
+
+    def test_claude_code_not_installed_fails_even_when_the_files_are_in_place(self) -> None:
+        self.fake.installed.discard("claude")
+        result = self.layout()
+        self.assertEqual(report.FAILED, result.status)
+        self.assertIn("not installed", result.detail)
+
+    def test_a_manifest_without_skills_is_an_error(self) -> None:
+        self.paths.manifest_file.write_text(
+            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8")
+        code, output = self.run_main("layout", "--label", "first deploy", "--results", str(self.results_file),
+                                     "--home", str(self.home), "--source", str(self.paths.source_dir))
+        self.assertEqual(1, code)
+        self.assertIn("no skills are deployed", output.lower())
+
+    def test_the_layout_result_joins_the_pass_with_the_same_label(self) -> None:
+        self.results_file.write_text(json.dumps([{"label": "first deploy", "results": [
+            {"runtime": "codex", "status": "PASSED", "detail": "2 adapters found"}]}]), encoding="utf-8")
+        with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
+            code, output = self.run_main("layout", "--label", "first deploy", "--results", str(self.results_file),
+                                         "--home", str(self.home), "--source", str(self.paths.source_dir))
+        self.assertEqual(0, code, output)
+        self.assertIn("PASSED claude", output)
+        recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
+        self.assertEqual(1, len(recorded))
+        self.assertEqual(["codex", "claude"], [item["runtime"] for item in recorded[0]["results"]])
+
+    def test_a_layout_failure_exits_non_zero_and_is_still_recorded(self) -> None:
+        (self.paths.dest_dir / "alpha" / "SKILL.md").unlink()
+        with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
+            code, _ = self.run_main("layout", "--label", "after reinstall", "--results", str(self.results_file),
+                                    "--home", str(self.home), "--source", str(self.paths.source_dir))
+        self.assertEqual(1, code)
+        recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
+        self.assertEqual(("after reinstall", "claude", "FAILED"),
+                         (recorded[0]["label"], recorded[0]["results"][0]["runtime"],
+                          recorded[0]["results"][0]["status"]))
+
     # -- summary --------------------------------------------------------------------------------------------
 
     def test_the_summary_lists_versions_results_and_notes_and_appends(self) -> None:
@@ -235,6 +306,7 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual("not installed", versions["Copilot CLI"])
         self.assertEqual("version could not be read", versions["Codex CLI"])
         self.assertEqual("9.8.7", versions["Node.js"])
+        self.assertEqual("9.8.7", versions["Claude Code"])
 
 
 if __name__ == "__main__":
