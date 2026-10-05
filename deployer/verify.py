@@ -38,7 +38,12 @@ def adapter_names(owned: manifest.Manifest) -> list[str]:
 
 
 def _same(directory: str, expected: Path) -> bool:
-    return os.path.normcase(os.path.normpath(directory)) == os.path.normcase(os.path.normpath(expected))
+    """Whether a runtime's listed directory is the expected one, however it spells the path.
+
+    A runtime may list a profile folder by its 8.3 short name (RUNNER~1 for runneradmin) or through a link, so compare
+    the directories they resolve to, not the text.
+    """
+    return platform_support.same_directory(Path(directory), expected)
 
 
 def adapter_line(name: str, copies: list[Listed], expected: Path) -> ReportLine:
