@@ -741,14 +741,19 @@ def dispatch_copilot(run: Path) -> Path:
     attempt = sum(1 for _ in run.glob("copilot-isolation-*")) + 1
     if attempt == 1:
         mark_dispatched(run)
-    run_copilot(
-        run_directory=run,
-        materialized_root=Path(state["reviewer_root"]),
-        request_path=Path(state["request_path"]),
-        result_path=Path(state["result_path"]),
-        diagnostic_path=run / f"copilot-diagnostic-{attempt}.jsonl",
-        isolation_root=run / f"copilot-isolation-{attempt}",
-    )
+    try:
+        run_copilot(
+            run_directory=run,
+            materialized_root=Path(state["reviewer_root"]),
+            request_path=Path(state["request_path"]),
+            result_path=Path(state["result_path"]),
+            diagnostic_path=run / f"copilot-diagnostic-{attempt}.jsonl",
+            isolation_root=run / f"copilot-isolation-{attempt}",
+        )
+    except RuntimeContractError as exc:
+        # Name the reviewer, as check's FAILED lines do; check still decides whether it is rerun.
+        reviewer = ", ".join(role["id"] for role in state["roles"])
+        raise RuntimeContractError(f"{reviewer}: {exc}") from exc
     return Path(state["result_path"])
 
 
