@@ -28,7 +28,7 @@ python -B tests/run_validation.py
 
 ## Tested runtimes
 
-The README's "Supported platforms and runtimes" table records the Claude Code, Codex CLI, and Copilot CLI versions the skills were last checked with. These are records, not floors: update a row after the `runtime-canary` repository skill passes on a new version, and confirm every row at each release ([Releasing](releasing.md)).
+The README's "Supported platforms and runtimes" table records the Claude Code, Codex CLI, and Copilot CLI versions the skills were last checked with, in two columns. These are records, not floors, and the table stays a matrix of the latest versions, not a log. Update the maintainer's column after the `runtime-canary` repository skill passes on a new version. The fresh-runner column and the date under the table follow the `deployable.yml` workflow: the column equals that workflow's default `claude-version`, `codex-version`, and `copilot-version`, which validation enforces, so change them together after a run passes. Confirm every cell at each release ([Releasing](releasing.md)).
 
 ## GitHub Actions
 

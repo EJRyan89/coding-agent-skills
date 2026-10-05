@@ -1614,12 +1614,14 @@ class RepositoryValidation(unittest.TestCase):
                 self.assertEqual(re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
                                  re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1))
 
-    def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_as_tested(self) -> None:
+    def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-        for runtime, key in (("Codex CLI", "codex-version"), ("GitHub Copilot CLI", "copilot-version")):
+        for runtime, key in (("Claude Code", "claude-version"), ("Codex CLI", "codex-version"),
+                             ("GitHub Copilot CLI", "copilot-version")):
             with self.subTest(runtime=runtime):
-                tested = re.search(rf"(?m)^\| {runtime} \| (\d+(?:\.\d+)+) \|", readme).group(1)
+                # The third column: the maintainer's machines come first and may be ahead of the runner.
+                tested = re.search(rf"(?m)^\| {runtime} \| \S+ \| (\d+(?:\.\d+)+) \|", readme).group(1)
                 default = re.search(rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow).group(1)
                 self.assertEqual(tested, default)
 

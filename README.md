@@ -24,15 +24,13 @@ Version 0.1.0 supports Windows only; macOS and Linux support is planned. On thos
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code.
 
-| Runtime | Tested with | Start a skill with |
-|---|---|---|
-| Claude Code | 2.1.289 | `/<skill>` |
-| Codex CLI | 0.160.0 | `$<skill>` |
-| GitHub Copilot CLI | 1.0.91 | `/<skill>` |
+| Runtime | Maintainer's machines | Fresh Windows runner | Start a skill with |
+|---|---|---|---|
+| Claude Code | 2.1.289 | 2.1.289 | `/<skill>` |
+| Codex CLI | 0.160.0 | 0.160.0 | `$<skill>` |
+| GitHub Copilot CLI | 1.0.91 | 1.0.91 | `/<skill>` |
 
-These versions were tested on the maintainer's own Windows machines, through the [runtime canary](tools/runtime_canary.py) and real skill and review runs, not yet on a clean Windows installation by hand.
-
-A manual [`deployable` workflow](.github/workflows/deployable.yml) covers the deployment half on a fresh GitHub-hosted Windows runner: it installs the prerequisites and the Codex CLI and Copilot CLI versions above, deploys, checks that each runtime finds every skill adapter, uninstalls, and deploys again. It starts no model, so it does not show a skill running, and a runtime that will not list skills without signing in is reported as skipped. Running skills stays a manual check through the runtime canary. See [Releasing](docs/releasing.md#before-tagging).
+The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs. The fresh runner is the manual [`deployable` workflow](.github/workflows/deployable.yml), last passed on 2026-10-05: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. See [Releasing](docs/releasing.md#before-tagging).
 
 ## Quick start
 

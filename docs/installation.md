@@ -18,6 +18,7 @@ Some skills need more when you use them, not when you deploy them:
 | Tool | Needed by |
 |---|---|
 | GitHub CLI (`gh`) 2.48.0 or newer, signed in with `gh auth login` | The code-review operations bundle, `github-activity-report`, and `repo-cleanup`; `dotnet-format` uses it, when present, to find a pull request's base branch |
+| Claude Code (optional) | Running the skills from Claude Code; the deployer itself does not need it |
 | Codex CLI (optional) | Verifying Codex skill discovery |
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
 | .NET SDK and the `dotnet-format` global tool | `dotnet-format`, which checks for them and reports the install command |
@@ -35,6 +36,7 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 | ShellCheck | `koalaman.shellcheck` | `shellcheck` | `shellcheck` | [GitHub releases](https://github.com/koalaman/shellcheck/releases) |
 | PowerShell 7 | `Microsoft.PowerShell` | `pwsh` | `pwsh` | [GitHub releases](https://github.com/PowerShell/PowerShell/releases) |
 | GitHub CLI | `GitHub.cli` | `gh` | `gh` | [cli.github.com](https://cli.github.com/) |
+| Claude Code | none | none | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
 | Codex CLI | none | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
 | GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases) |
 
