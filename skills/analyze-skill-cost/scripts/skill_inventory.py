@@ -1,8 +1,9 @@
 """Deterministic measurements for the analyze-skill-cost audit.
 
     locate NAME [--repo DIR] [--home DIR]   find the skill's main file in the user, project, and source skill roots
-    inventory DIR                           classify and size every file, estimate tokens, flag thresholds, and
-                                            size the Markdown files the skill reads from outside its folder
+    inventory DIR                           classify and size every file, estimate tokens, flag structure that
+                                            departs from the published guidance, and size the Markdown files
+                                            the skill reads from outside its folder
     tools FILE                              compare the tools a skill body references with its allowed-tools, and
                                             size the description every session loads
     scan FILE...                            list lines with cost cues for the agent to judge, and subagent
@@ -15,6 +16,12 @@ Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
 including the fence lines, are code and the rest is prose. A file that is not UTF-8 text counts 0.
 The estimate is a relative signal, not the active model's tokenizer.
+
+Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
+a Markdown file over 100 lines whose first heading below the title is not "Contents" or "Table of contents".
+NESTED_REFERENCE <path:line> <reference> is a Markdown file other than SKILL.md that names another one in the
+skill folder that SKILL.md itself never names, so it is reached only through another reference. A path resolves
+from the naming file, or from the skill folder after ${CLAUDE_SKILL_DIR}/.
 
 Listing: DESCRIPTION gives the description's characters and ceil(characters / 4) tokens, which every session
 loads while the skill is model-invocable; INVOCATION is model, user-only (disable-model-invocation: true),
@@ -55,8 +62,12 @@ from pathlib import Path
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
 CATEGORIES = ("main", "helper", "doc", "data")
-BODY_LIMIT_BYTES = 8 * 1024
-DOC_LIMIT_BYTES = 4 * 1024
+# Structure limits from Anthropic's skill authoring best practices
+# (https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices): "Keep SKILL.md body under
+# 500 lines for optimal performance", and "For reference files longer than 100 lines, include a table of contents".
+# They are counted in lines, as published; size in bytes is reported as data, never flagged.
+BODY_LINE_LIMIT = 500
+DOC_TOC_LINE_LIMIT = 100
 SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
@@ -160,6 +171,10 @@ SCRIPT_PATH = re.compile(r"[\w./{}$-]*scripts/[\w.-]+\.(?:py|sh|bash|ps1|js|mjs)
 # A relative Markdown path that leaves the skill folder, such as `../shared.md`. With a ${CLAUDE_SKILL_DIR}
 # prefix it resolves against the skill folder instead of the file that names it.
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
+# A relative Markdown path that stays in the skill folder, such as `references/a.md` or `a.md`.
+INSIDE_REFERENCE = re.compile(r"(?<![\w./$}-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\./)?[\w-][\w./-]*\.md)\b")
+HEADING = re.compile(r"^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
+CONTENTS_HEADING = re.compile(r"(?i)(?:table of )?contents")
 FENCE_SHELL_COMMAND = re.compile(rf"(?:^|[|;&(]|\$\()\s*({SHELL_FILE_COMMAND})\b")
 SPAN_SHELL_COMMAND = re.compile(rf"^{SHELL_FILE_COMMAND}(?:\s|$)")
 
@@ -437,16 +452,69 @@ def inventory(directory: Path) -> list[str]:
             totals[kind][index] += value
         if text is not None:
             texts[posix(relative)] = (kind, text)
-        if kind == "main" and size > BODY_LIMIT_BYTES:
-            flags.insert(0, f"BODY_OVER_8KB {size}")
-        if kind == "doc" and size > DOC_LIMIT_BYTES:
-            flags.append(f"DOC_OVER_4KB {size} {posix(relative)}")
+        if text is not None:
+            flags.extend(structure_flags(kind, text, posix(relative)))
     for kind in CATEGORIES:
         lines.append(f"TOTAL {kind} {totals[kind][0]} {totals[kind][1]} {totals[kind][2]}")
     lines.append("TOTAL all " + " ".join(str(sum(totals[kind][i] for kind in CATEGORIES)) for i in range(3)))
     if not totals["main"][0]:
         flags.insert(0, "NO_MAIN")
-    return [*lines, *flags, *duplicate_flags(texts), *outside_lines(directory, texts), *declared_lines(directory)]
+    return [
+        *lines,
+        *flags,
+        *duplicate_flags(texts),
+        *nested_flags(directory, texts),
+        *outside_lines(directory, texts),
+        *declared_lines(directory),
+    ]
+
+
+def structure_flags(kind: str, text: str, relative: str) -> list[str]:
+    """A body past the published line limit, or a long reference file without a table of contents."""
+    lines = text.splitlines()
+    if kind == "main":
+        body = len(lines) - body_start(lines)
+        return [f"BODY_OVER_500_LINES {body}"] if body > BODY_LINE_LIMIT else []
+    if kind != "doc" or len(lines) <= DOC_TOC_LINE_LIMIT:
+        return []
+    languages, _ = parse_fences(lines)
+    for line, language in zip(lines, languages):
+        heading = HEADING.match(line) if language is None else None
+        if heading and len(heading.group(1)) >= 2:
+            if CONTENTS_HEADING.fullmatch(heading.group(2)):
+                return []
+            break
+    return [f"DOC_NO_TOC {len(lines)} {relative}"]
+
+
+def inside_references(root: Path, source: Path, lines: list[str]) -> list[tuple[int, str, Path]]:
+    """Each Markdown path a file names inside the skill folder: line number, text, and the resolved file."""
+    found = []
+    for number, line in enumerate(lines, start=1):
+        for match in INSIDE_REFERENCE.finditer(line):
+            base = root if match.group(1) else source.parent
+            found.append((number, match.group(0), (base / match.group(2)).resolve()))
+    return found
+
+
+def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:
+    """Reference files reached only through another reference file; published guidance links each from SKILL.md."""
+    root = directory.resolve()
+    docs = {(directory / relative).resolve() for relative, (kind, _) in texts.items() if kind == "doc"}
+    linked: set[Path] = set()
+    for relative, (kind, text) in texts.items():
+        if kind == "main":
+            lines = text.splitlines()
+            linked.update(target for _, _, target in inside_references(root, root / relative, lines[body_start(lines):]))
+    flags: list[str] = []
+    for relative, (kind, text) in texts.items():
+        if kind != "doc":
+            continue
+        source = (directory / relative).resolve()
+        for number, reference, target in inside_references(root, source, text.splitlines()):
+            if target != source and target in docs and target not in linked:
+                flags.append(f"NESTED_REFERENCE {relative}:{number} {reference}")
+    return flags
 
 
 def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str]:

@@ -45,6 +45,15 @@ Use an explicit initial-review canary before enabling a new repository, reviewer
 
 Each selector must name a configured open (including draft) or merged pull request. Repeat `--canary` to cover every case the change affects, such as a pull request of each kind a manifest routes to a different specialist, or one on each side of a routing threshold; they are prepared up to four per `prepare` call and reviewed in one pass. Each canary fetches only its pull request, materializes the exact head into an isolated hash-verified source snapshot, and writes the validated JSON/Markdown pair only under its own new temporary canary directory, which `finalize` reports as `CANARY <selector> <root>` followed by a `SHA256` line per file. One canary failing leaves the others' directories in place and reported. A canary never reads or writes configured archives, mirrors, state, dashboards, flags, watermarks, or GitHub review state. Inspect the retained output before deleting it.
 
+## Posting findings
+
+`review-prs` never posts to GitHub. If you then ask the agent to post findings, it should post only the ones you
+choose, as one review whose payload a JSON serializer builds and `gh api --input <file>` sends, never `--field`
+arguments or a shell heredoc. The payload omits `event` entirely, so no review state (approve, request changes, or
+comment) is submitted, and comment bodies are plain text without internal finding IDs or labels. The skill keeps
+only the rule against sending an `event`; Codex and Copilot CLI also get the rest through the runtime compatibility
+contract every adapter carries.
+
 ## Review pipeline
 
 `code-review-core/scripts/review_pipeline.py` runs every deterministic step of `review-prs`, so the orchestrating agent only runs its commands and starts reviewer subagents:
@@ -92,7 +101,7 @@ The **Findings** cell reads the latest review's finding ledger (see "Finding led
 
 ## Review insights
 
-`review-insights/scripts/review_insights.py` reads the configured archive and summary root.
+`review-insights/scripts/review_insights.py` reads the configured archive and summary root. A report reads only validated review records and names every record file and payload hash it analyzed.
 
 | Command | What it does |
 | --- | --- |

@@ -19,7 +19,7 @@ Trim leading/trailing whitespace. If empty, print `usage: analyze-skill-cost <Sk
 python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
 ```
 
-It searches `{{HOME}}/.claude/skills/<SKILL_NAME>/` and, when the current directory is in a Git repository, that repository's `.agents/skills/` and `.claude/skills/`, accepting `SKILL.md` or `skill.md`. In a skill source tree, where `skills/<SKILL_NAME>/` has a `deploy-meta/<SKILL_NAME>.json`, it also finds the source (`SCOPE source`) and prefers it over the deployed user copy. A file reached through two roots (a symlink or the same directory) counts once. `REPO <path>` or `REPO none` says which repository it searched.
+It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
 
 - `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these.
 - `NOT_FOUND <name>` followed by `AVAILABLE <scope> <name>` lines: stop with `skill '<SKILL_NAME>' not found. Available skills: <user: …> / <project: …>`.
@@ -31,12 +31,7 @@ It searches `{{HOME}}/.claude/skills/<SKILL_NAME>/` and, when the current direct
 python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
-- `FILE <category> <bytes> <est_tokens> <path>` for every file except `.git`, `__pycache__`, and `node_modules` contents. Categories: `main` is the root `SKILL.md`; `helper` is a `.sh`, `.bash`, `.ps1`, `.py`, `.js`, `.mjs`, `.cjs`, or `.ts` script; `doc` is any other Markdown; `data` is everything else.
-- `TOTAL <category> <files> <bytes> <est_tokens>` for each category, then `TOTAL all`.
-- Flags: `BODY_OVER_8KB <bytes>` (main over 8 KiB), `DOC_OVER_4KB <bytes> <path>`, `DUPLICATE_BLOCK <path:line> <first path:line>` (identical fenced blocks), `INLINED_HELPER <path:line> <helper>` (a fenced block copied from a helper script), and `NO_MAIN`.
-- `OUTSIDE_READ <path:line> <bytes> <est_tokens> <file>` for each Markdown file outside the skill folder that its Markdown names (a `../` path to a Markdown file, also after the skill-directory variable), `OUTSIDE_MISSING <path:line> <file>` when that file does not exist, and `TOTAL outside <files> <bytes> <est_tokens>`, counting each file once. From the skill's source tree, `DECLARED shared <asset>` and `DECLARED skill <name>` list its `deploy-meta` dependencies.
-
-The estimate is `ceil(prose characters / 4 + code characters / 3)`. Helper and data files are all code; in Markdown, lines inside fenced blocks are code and the rest is prose; a binary file counts 0. It is a relative signal, not the active model's tokenizer.
+`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and Step 4 judges the rest.
 
 ## Step 3 — Read what the judgment needs
 
@@ -44,9 +39,13 @@ Read the main body and every `doc` file in full; they are what the audit judges.
 
 ## Step 4 — Token footprint
 
-- **MUST FIX** — `BODY_OVER_8KB` **and** the body contains duplicated code blocks (`DUPLICATE_BLOCK`), repeated "Important" prose that restates step bodies, or trimmable example output. Length alone is not a MUST FIX: a 20 KB skill whose every section earns its space passes, and a short skill full of duplicated prose does not.
-- **SUGGESTION** — a `DOC_OVER_4KB` file whose content the body copies inline instead of pointing at it. Recommend an instruction to read the file.
+Judge content, not size: a long body whose every section earns its space passes, and a short one full of duplicated prose does not.
+
+- **MUST FIX** — the body contains duplicated code blocks (`DUPLICATE_BLOCK`), prose that restates another step's instruction (such as "Important" bullets repeating step bodies), or trimmable example output. Documentation the agent never acts on, such as safety guarantees the scripts enforce, a glossary of self-labelled output, or a procedure for an action the skill never takes, counts as restatement: recommend moving it to the user documentation.
+- **SUGGESTION** — a `doc` file whose content the body copies inline instead of pointing at it. Recommend an instruction to read the file.
+- **SUGGESTION** — the structure checks from Anthropic's skill authoring best practices: `BODY_OVER_500_LINES` (split the body into reference files), `DOC_NO_TOC` (add a table of contents; skip a template the agent copies whole), and `NESTED_REFERENCE` (link that file from `SKILL.md`, since references should be one level deep).
 - **SUGGESTION** — each `OUTSIDE_READ` file: it costs a turn and its tokens on every run. Recommend keeping only the rules the skill needs in the skill; runtime guidance such as a tool mapping belongs in the runtime adapters. A `DECLARED` dependency the Markdown never names is not a per-run cost.
+- **MUST FIX** — each `OUTSIDE_MISSING`: the skill names a file outside its folder that does not exist, so that read fails on every run. Recommend correcting the path or the dependency.
 - **SUGGESTION** — each `INLINED_HELPER`. Recommend invoking the script instead of copying it.
 
 ## Step 5 — Tool-call efficiency
@@ -77,7 +76,7 @@ Flag steps that make the agent do work a program would do the same way every tim
 - **MUST FIX** — the body has the agent redo logic that a script in the skill or one of its dependencies already implements, such as reading a module to learn its functions and then calling them by hand.
 - **SUGGESTION** — the agent must parse or normalize command output, or loop applying rule-based decisions (counting, comparing, sorting, classifying by fixed rules). Cues: `rule-based-work`, `loop`.
 
-Recommend a tested command under `scripts/` that prints one fact per line, so the agent keeps only judgment and user questions. Respect the limits: prefer an established tool or an existing option (a `--json` output flag, `gh --jq`) over a new script; never script genuine judgment such as severity, wording, or whether a section earns its space; and skip the recommendation when the step is rare or a one-liner and the script's tests and upkeep would outweigh the tokens and calls it saves. These findings belong to the Tool-call efficiency bucket.
+Recommend a tested command under `scripts/` that prints one fact per line, so the agent keeps only judgment and user questions. Respect the limits: prefer an established tool or an existing option (a `--json` output flag, `gh --jq`) over a new script; never script genuine judgment such as severity, wording, or whether a section earns its space; and skip the recommendation when the step is rare or a one-liner and the script's tests and upkeep would outweigh the tokens and calls it saves.
 
 ## Step 6 — Agent delegation cost
 
@@ -97,11 +96,11 @@ Review every `agent` cue. For each subagent invocation:
 python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" tools "<SKILL_FILE>"
 ```
 
-It prints `MODEL <value>` (`none` when absent, so the caller's model applies), `DESCRIPTION <chars> <est_tokens>`, `INVOCATION model|user-only|hidden`, `INTERNAL_LISTED` when the description calls the skill internal but the model can still invoke it, `ALLOWED <tool>` lines or `NO_ALLOWED_TOOLS`, `USED <tool> <line>`, `IMPLIED <tool> <line>`, `UNUSED_ALLOWED <tool>`, `MISSING_ALLOWED <tool> <line>`, `UNSCOPED_ALLOWED <entry>`, `UNPAIRED_ALLOWED <entry>`, `UNGRANTED <tool> <line> <command>`, and `EXPANDS <line> <command>`. A tool is `USED` only where the body names it in a tool-use context: at the start of a code span, in call syntax, followed by "tool" or "call", as a multi-word tool name that is not an English word, or through a shell fence (each of Bash and PowerShell that is allowed, else Bash). A sentence that starts with "Read" or says "read and apply" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool.
+`MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool. The bullets below say what each other line means for the report.
 
 Model selection. Claude adapter values are `haiku`, `sonnet`, `opus`, or absent. For other runtimes, also inspect any native adapter metadata when present.
 
-- **SUGGESTION** — a Claude skill does purely mechanical work (all shell and file/search operations; no synthesis, no subagent calls requiring reasoning, no natural-language output beyond a fixed template) and has no model set or pins `sonnet`/`opus`. Suggest trying `model: haiku`, and only after comparing real runs before and after: a cheaper model can quietly lower quality, so never make it a MUST FIX or recommend it without that comparison. Also warn that in Claude Code a skill's `model` applies for the rest of the turn that invoked it, not only while the skill runs; the session's model resumes at the user's next prompt. Every subagent started later in that turn without an explicit model runs on the skill's model: a code review started in the same turn as a Haiku-pinned skill ran every reviewer on Haiku, and they missed a must-fix finding. Never suggest a cheaper `model` for a skill that is usually followed, in the same turn, by work that starts subagents. When such a skill can run without the conversation's context, suggest `context: fork` with `model` instead, since `model` then sets only the forked subagent's model. For another runtime, suggest its low-cost equivalent only when that runtime supports skill-level model selection, under the same condition.
+- **SUGGESTION** — a Claude skill does purely mechanical work (all shell and file/search operations; no synthesis, no subagent calls requiring reasoning, no natural-language output beyond a fixed template) and has no model set or pins `sonnet`/`opus`. Suggest trying `model: haiku`, and only after comparing real runs before and after: a cheaper model can quietly lower quality, so never make it a MUST FIX or recommend it without that comparison. Also warn that in Claude Code a skill's `model` applies for the rest of the turn that invoked it, not only while the skill runs; the session's model resumes at the user's next prompt. Every subagent started later in that turn without an explicit model runs on the skill's model. Never suggest a cheaper `model` for a skill that is usually followed, in the same turn, by work that starts subagents. When such a skill can run without the conversation's context, suggest `context: fork` with `model` instead, since `model` then sets only the forked subagent's model. For another runtime, suggest its low-cost equivalent only when that runtime supports skill-level model selection, under the same condition.
 - **SUGGESTION** — a skill pins `haiku` but includes reasoning-heavy steps (multi-file synthesis, severity judgment, written recommendations). Recommend removing the pin so the caller's default applies.
 
 Listing. While `INVOCATION` is `model`, every session in every project loads the description, whether or not the skill runs.
@@ -187,5 +186,3 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 ## Top wins
 <2–4 bullets; highest-impact changes phrased as "before → after" with an estimated saving (tokens/invocation, or calls eliminated).>
 ```
-
-The skill is read-only: no file edits, no user prompts, and no Git operations beyond the repository lookup `locate` performs.

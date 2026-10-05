@@ -349,6 +349,8 @@ def skill_grant_problems(root: Path) -> list[str]:
 
 INSTALL_PATH = re.compile(r"\{\{HOME\}\}/\.claude/skills/([A-Za-z0-9._-]+)")
 SIBLING_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)")
+# A concrete file a skill names through its directory; a pattern such as scripts/* in a grant names none.
+SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-z0-9._/*<-])")
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
 SKILL_PATHS_DOC = "\"Paths to a skill's own files\" in docs/adding-a-skill.md"
 # Git Bash takes $HOME from HOME, which need not be the profile folder the deployer installs into.
@@ -359,15 +361,17 @@ AGENTS_DOC = "\"Subagent definitions\" in docs/adding-a-skill.md"
 def skill_path_problems(root: Path) -> list[str]:
     """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
     skills = {path.parent.name for path in (root / "skills").glob("**/SKILL.md")}
-    documents: list[tuple[Path, set[str] | None]] = [(path, None) for path in sorted((root / "agents").glob("*.md"))]
+    documents: list[tuple[Path, set[str] | None, Path | None]] = [
+        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
+    ]
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
         dependencies = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
         for directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
             if (directory / "SKILL.md").is_file():
-                documents += [(path, dependencies) for path in sorted(directory.rglob("*.md"))]
+                documents += [(path, dependencies, directory) for path in sorted(directory.rglob("*.md"))]
     problems: list[str] = []
-    for path, dependencies in documents:
+    for path, dependencies, directory in documents:
         name = path.relative_to(root).as_posix()
         in_shell_fence = False
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
@@ -387,6 +391,10 @@ def skill_path_problems(root: Path) -> list[str]:
             for match in SIBLING_PATH.finditer(line):
                 if dependencies is not None and match.group(1) not in dependencies:
                     problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
+            for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
+                named = match.group(1).rstrip(".")  # a path may end a sentence
+                if not (directory / named).exists():
+                    problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
     return problems
 
 
@@ -1349,15 +1357,24 @@ class RepositoryValidation(unittest.TestCase):
             (root / "agents").mkdir()
             for skill, metadata in {"alpha": {"skill_deps": ["core"]}, "beta": {}, "core": {}}.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
-                (root / "skills" / skill).mkdir(parents=True)
+                (root / "skills" / skill / "scripts").mkdir(parents=True)
                 (root / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+            (root / "skills" / "alpha" / "scripts" / "run.py").write_text("", encoding="utf-8")
+            (root / "skills" / "core" / "scripts" / "lib.py").write_text("", encoding="utf-8")
+            (root / "skills" / "alpha" / "references").mkdir()
+            (root / "skills" / "alpha" / "references" / "checks.md").write_text(
+                "See ${CLAUDE_SKILL_DIR}/references/checks.md and ${CLAUDE_SKILL_DIR}/references/<target>.md.\n",
+                encoding="utf-8",
+            )
             (root / "skills" / "alpha" / "SKILL.md").write_text(
                 "Searches `{{HOME}}/.claude/skills/<SKILL_NAME>/`.\n"
                 "```bash\n"
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/run.py" --in "data/scripts/x"\n'
                 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/lib.py"\n'
                 "```\n"
-                "Prose may name `scripts/run.py`.\n",
+                "Prose may name `scripts/run.py`, grant `Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)`, and point at "
+                "${CLAUDE_SKILL_DIR}/references/checks.md.\n"
+                "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n",
                 encoding="utf-8",
             )
             (root / "skills" / "beta" / "SKILL.md").write_text(
@@ -1386,6 +1403,8 @@ class RepositoryValidation(unittest.TestCase):
                     f"agents/helper.md:2 finds a file through $HOME; see {agents_doc}",
                     f"agents/helper.md:3 finds a file through $HOME; see {agents_doc}",
                     f"agents/helper.md:4 finds a file through $HOME; see {agents_doc}",
+                    "skills/alpha/SKILL.md:7 names ${CLAUDE_SKILL_DIR}/references/gone.md, which does not exist",
+                    "skills/alpha/SKILL.md:7 names ${CLAUDE_SKILL_DIR}/../core/scripts/old.py, which does not exist",
                     f"skills/beta/SKILL.md:1 names skill core by its install path; see {doc}",
                     f"skills/beta/SKILL.md:3 runs a script by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:4 runs a script by a bare relative path; see {doc}",

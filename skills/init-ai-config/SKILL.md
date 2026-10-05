@@ -20,7 +20,7 @@ Confirm the target is a Git repository (`git rev-parse --show-toplevel`). If it 
 python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository root>" inventory
 ```
 
-Each `FILE <path> owner=generated|user|hash-mismatch` line is an existing configuration file; each `CONFLICT <path> <reason>` line must be resolved deliberately with the user before step 6. Never delete or replace user-authored content without the user's approval. Present the inventory, and note that Copilot repository MCP settings live in GitHub settings and need manual verification.
+Each `FILE <path> owner=generated|user|hash-mismatch` line is an existing configuration file; each `CONFLICT <path> <reason>` line must be resolved deliberately with the user before step 6. Never delete or replace user-authored content without the user's approval. Present the inventory.
 
 ## 2. Detect and choose scope
 
@@ -69,7 +69,7 @@ python -B .github/scripts/ai_config.py --write
 python -B .github/scripts/ai_config.py --check
 ```
 
-Each prints one success line and exits 0. Otherwise it exits 1 and prints each problem on stderr, starting with a label such as `COLLISION`, `CONFLICT`, `DRIFT` (followed by a diff), `ORPHAN`, `NO CALLER`, `INVALID`, or `MISSING`; `WARNING:` lines do not fail. Resolve each problem with the user, by changing `CLAUDE.md`, a skill, or the spec and reinstalling, then rerun. `--write` refuses to replace user-authored files and writes nothing when it finds a collision or cleanup conflict.
+Each prints one success line and exits 0. Otherwise it exits 1 and prints each problem on stderr, one labelled line each (a `DRIFT` line is followed by a diff); `WARNING:` lines do not fail. Resolve each problem with the user, by changing `CLAUDE.md`, a skill, or the spec and reinstalling, then rerun.
 
 ## 8. Configure what is not a file
 
@@ -88,10 +88,4 @@ If `audit-ai-config` appears in the available-skills list, invoke it via native 
 
 ## 10. Runtime checks for the user
 
-These need a running Codex or Copilot session, so list the ones for the selected targets for the user to confirm:
-
-- **Codex**: instructions load from the repository root and from a nested directory; `CLAUDE.md` is reached through the `AGENTS.md` adapter; repository skills appear through `.agents/skills`; `codex mcp list` shows the expected servers and each completes a transport-appropriate smoke test; behavior is documented for an untrusted project and for a missing server executable.
-- **Copilot CLI/app**: `.github/copilot-instructions.md` loads as repository instructions without excessive context; path-specific instructions do not conflict with it; repository skills and file-based MCP servers are discovered.
-- **VS Code**: MCP servers are discovered from `.vscode/mcp.json`, and the CLI does not read that file.
-- **Cloud agent**: `copilot-setup-steps.yml` provisions the expected environment; repository MCP settings carry tool allowlists; secrets for authenticated servers are documented, including behavior when they are missing.
-- **Code review**: once custom instructions are enabled, repository-wide and path-specific instructions are respected.
+Some checks need a running Codex or Copilot session. Give the user the path `${CLAUDE_SKILL_DIR}/references/runtime-checks.md` and name its sections for the selected targets (`Codex`, `Copilot CLI/app`, `VS Code`, `Cloud agent`, `Code review`) for them to confirm; do not copy the checks into your reply.

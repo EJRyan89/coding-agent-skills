@@ -2,6 +2,17 @@
 
 Finding format, severities, and output modes for the audit engine.
 
+## Contents
+
+- Report Envelope
+- Finding Structure
+- Severities
+- Exit Codes
+- Ordering
+- Output Formats: Markdown (default), JSON (for CI integration)
+- Manual-Verification Warnings
+- No Remediation
+
 ## Report Envelope
 
 The Markdown and JSON report include repository `authority` plus `scopeStatus`.

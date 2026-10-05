@@ -2,6 +2,14 @@
 
 What the audit engine checks and why. Each check maps to a function in `scripts/audit_ai_config.py`; the `check` column of a finding names it. Agents run the engine rather than repeating these checks by hand.
 
+## Contents
+
+- Read-Only Safety Model
+- Order of Checks
+- Checks: 1. Inventory, 2. Authority Classification, 3. Vocabulary and Scope Integrity, 4. Parity, 5. Orphans,
+  6. MCP Configuration, 7. Instruction Layering, 8. Copilot Skills, Agents, and Roles, 9. Behavioral Constraints,
+  10. Ownership, 11. User-Authored Collisions, 12. Applicable Limitations
+
 ## Read-Only Safety Model
 
 The engine never writes, modifies, or deletes files. It does not run generators, tests, hooks, MCP servers, package installers, authentication commands, or autofix modes, and it makes no network requests. All parsing is static. An MCP server can mutate external state even when the audit writes no files, so the handshake in `scripts/mcp_handshake.py` and the generator's `--check` are a separate opt-in step that needs explicit user authorization.
