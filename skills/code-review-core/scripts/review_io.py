@@ -13,6 +13,8 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, Callable, Iterable, TypeVar
 
+from review_process import ProcessStatus, process_status, same_process
+
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
 
@@ -146,22 +148,13 @@ def atomic_write_json(
     atomic_write_text(path, content)
 
 
-def _pid_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
 class ResourceLock(AbstractContextManager["ResourceLock"]):
-    """Short-lived mkdir lock with token-checked release and conservative recovery."""
+    """Short-lived mkdir lock with token-checked release and conservative recovery.
+
+    The owner file records the holder's PID and start time. An old lock is reclaimed only when its holder is
+    provably gone: not running, or its PID now names a process with a different start time. A live PID whose
+    identity cannot be checked keeps the lock, as the deployer's lock does.
+    """
 
     def __init__(
         self,
@@ -169,8 +162,10 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         *,
         timeout_seconds: float = 10.0,
         stale_after_seconds: float = 3600.0,
+        probe: Callable[[int], ProcessStatus] | None = None,
     ) -> None:
         self.directory = directory
+        self.probe = probe or process_status
         self.timeout_seconds = timeout_seconds
         self.stale_after_seconds = stale_after_seconds
         self.token = secrets.token_hex(16)
@@ -188,6 +183,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             raise PersistenceError(
                 f"Cannot prepare lock parent {self.directory.parent}: {exc}"
             ) from exc
+        start_time = self.probe(os.getpid()).start_time
         while True:
             try:
                 self.directory.mkdir()
@@ -197,6 +193,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                         "pid": os.getpid(),
                         "token": self.token,
                         "created_unix": time.time(),
+                        "start_time": start_time,
                     },
                 )
                 self._held = True
@@ -219,13 +216,18 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             pid = owner.get("pid")
             created = owner.get("created_unix")
             token = owner.get("token")
-            if not isinstance(pid, int) or not isinstance(created, (int, float)):
+            recorded_start = owner.get("start_time")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                return False
+            if not isinstance(created, (int, float)):
                 return False
             if not isinstance(token, str) or not token:
                 return False
             if time.time() - float(created) <= self.stale_after_seconds:
                 return False
-            if _pid_is_running(pid):
+            if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
+                recorded_start = None
+            if same_process(self.probe(pid), recorded_start) is not False:
                 return False
             stale = self.directory.with_name(
                 f"{self.directory.name}.stale.{secrets.token_hex(8)}"

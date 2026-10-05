@@ -39,7 +39,9 @@ from review_hosts import (
     parse_copilot_version,
     run_copilot,
 )
+import review_io
 from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json
+from review_process import ProcessStatus
 from review_records import (
     RecordError,
     TITLE_MAXIMUM_LENGTH,
@@ -401,6 +403,97 @@ class StateAndLockTests(unittest.TestCase):
                     with ResourceLock(path, timeout_seconds=0.01):
                         pass
                 self.assertTrue(path.exists())
+
+    def _old_lock(self, path: Path, owner: dict) -> None:
+        path.mkdir()
+        atomic_write_json(
+            path / "owner.json",
+            {"token": "a" * 32, "created_unix": time.time() - 7200, **owner},
+        )
+
+    def test_lock_records_its_holder_start_time(self) -> None:
+        probed: list[int] = []
+
+        def probe(pid: int) -> ProcessStatus:
+            probed.append(pid)
+            return ProcessStatus(True, 1234)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            with ResourceLock(path, probe=probe):
+                owner = read_json(path / "owner.json")
+            self.assertEqual(os.getpid(), owner["pid"])
+            self.assertEqual(1234, owner["start_time"])
+            self.assertEqual([os.getpid()], probed)
+
+    def test_old_lock_of_live_owner_is_not_reclaimed(self) -> None:
+        cases = {
+            "same process": ({"pid": 4242, "start_time": 1234}, ProcessStatus(True, 1234)),
+            "no recorded start time": ({"pid": 4242}, ProcessStatus(True, 1234)),
+            "recorded start time not an integer": ({"pid": 4242, "start_time": True}, ProcessStatus(True, 1)),
+            "start time unreadable": ({"pid": 4242, "start_time": 1234}, ProcessStatus(True, None)),
+            "pid not positive": ({"pid": 0, "start_time": 1234}, ProcessStatus(False, None)),
+        }
+        for name, (owner, status) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "resource.lock"
+                self._old_lock(path, owner)
+                with self.assertRaisesRegex(PersistenceError, "Timed out"):
+                    with ResourceLock(path, timeout_seconds=0.01, probe=lambda pid: status):
+                        pass
+                self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
+
+    def test_old_lock_of_dead_or_reused_owner_is_reclaimed(self) -> None:
+        cases = {
+            "dead": ({"pid": 4242, "start_time": 1234}, ProcessStatus(False, None)),
+            "dead without recorded start time": ({"pid": 4242}, ProcessStatus(False, None)),
+            "pid reused": ({"pid": 4242, "start_time": 1234}, ProcessStatus(True, 5678)),
+        }
+        for name, (owner, status) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "resource.lock"
+                self._old_lock(path, owner)
+
+                def probe(pid: int) -> ProcessStatus:
+                    return ProcessStatus(True, 9999) if pid == os.getpid() else status
+
+                with ResourceLock(path, timeout_seconds=0.5, probe=probe):
+                    self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
+                self.assertFalse(path.exists())
+
+    def test_recent_lock_is_not_probed(self) -> None:
+        def probe(pid: int) -> ProcessStatus:
+            if pid != os.getpid():
+                raise AssertionError(f"probed PID {pid}")
+            return ProcessStatus(True, 1)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            path.mkdir()
+            atomic_write_json(
+                path / "owner.json",
+                {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1},
+            )
+            with self.assertRaisesRegex(PersistenceError, "Timed out"):
+                with ResourceLock(path, timeout_seconds=0.01, probe=probe):
+                    pass
+
+    def test_lock_probes_identity_by_default_and_never_signals(self) -> None:
+        probed: list[int] = []
+
+        def probe(pid: int) -> ProcessStatus:
+            probed.append(pid)
+            return ProcessStatus(pid == os.getpid(), 1234 if pid == os.getpid() else None)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            self._old_lock(path, {"pid": 4242, "start_time": 1234})
+            with mock.patch.object(review_io, "process_status", probe), mock.patch(
+                "os.kill", side_effect=AssertionError("os.kill called")
+            ):
+                with ResourceLock(path, timeout_seconds=0.5):
+                    self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
+            self.assertIn(4242, probed)
 
     def test_atomic_json_is_restrictive_and_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
