@@ -71,7 +71,7 @@ Carrying the field would approve either nothing or every Python command, so a Co
 A skill names its own files, and a sibling skill's, through `${CLAUDE_SKILL_DIR}`, never through a rendered install path such as `{{HOME}}/.claude/skills/<name>/`:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/tool.py" report --output "<file>"
+python -B "${CLAUDE_SKILL_DIR}/scripts/tool.py" report
 python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" check --run "<run>"
 ```
 
@@ -84,6 +84,12 @@ Claude Code replaces `${CLAUDE_SKILL_DIR}` with the absolute directory of the sk
 - A script that needs the user's Claude directory derives it, as `curate-agent-memory` does from `CLAUDE_CONFIG_DIR` or `~/.claude`, rather than taking a rendered `{{HOME}}`. Keep `{{HOME}}` for documentation that names another location, such as the user's skills root.
 
 Repository validation fails when a skill or agent names any skill through `{{HOME}}/.claude/skills/<skill>`, when a shell fence runs a script by a bare relative path, when a skill reaches `../<skill>` without declaring it in `skill_deps`, or when a skill reads another skill's `SKILL.md` or names it beside a step number or section title.
+
+### Working files
+
+A script that writes a working file, such as a batch, an input, or a plan, chooses the path itself: by default a new directory from `tempfile.mkdtemp` with a prefix naming the skill, such as `review-prs-batch-`. It prints the path on one line, such as `BATCH <file>`, and the next step reads that line. An option for an explicit path may stay, but the script refuses, with its failure line and exit code 2 before writing anything, any path inside the skills directory it runs from, `~/.claude/skills`, or `~/.agents/skills`.
+
+Never leave the path to the agent. Given a placeholder such as `--output "<file>"` and a skill directory it already knows, an agent writes beside `SKILL.md`, and the deployer then sees the installed skill as modified and skips it on every later update. Repository validation fails when a command fence in a skill passes a `<...>` placeholder to `--output`, `--output-<name>`, `--out`, `--out-dir`, or `--plans`. A placeholder for a path an earlier command printed, such as `--run "<run directory>"` or `--input "<input file>"`, is fine.
 
 Metadata declares the variables and shared files needed by the skill:
 

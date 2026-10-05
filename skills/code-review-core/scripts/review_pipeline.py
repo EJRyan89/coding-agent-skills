@@ -1,6 +1,6 @@
 """Deterministic review steps, so an orchestrating agent only dispatches reviewers.
 
-    enumerate  list the pull requests a batch run should review, to a batch file
+    enumerate  list the pull requests a batch run should review, to a batch file (by default in a new temporary directory)
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     wait       wait a bounded time for that host: its result, its failure, or how long it has run
@@ -61,7 +61,7 @@ from review_hosts import (
 )
 from review_hosts import Runner as CopilotRunner
 from review_hosts import subprocess_runner as copilot_subprocess_runner
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, map_in_order, read_json
+from review_io import PersistenceError, atomic_write_json, atomic_write_text, map_in_order, read_json, working_path
 from review_process import ProcessStatus, process_status, start_detached
 from review_operation import (
     ReviewOperationError,
@@ -1177,7 +1177,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     scope.add_argument("--repository", action="append", dest="repositories")
     scope.add_argument("--repository-set")
     enumerate_parser.add_argument("--force", action="store_true")
-    enumerate_parser.add_argument("--output", required=True, type=Path)
+    enumerate_parser.add_argument("--output", type=Path, help="batch file; defaults to a new temporary directory")
     prepare_parser = commands.add_parser("prepare")
     prepare_parser.add_argument("--pull", action="append", default=[], dest="pulls",
                                 help="owner/repo#number to review; repeatable")
@@ -1249,14 +1249,15 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print("\n".join(lines))
             return 0
         if args.command == "enumerate":
-            batch = enumerate_batch(args.output, repositories=args.repositories, repository_set=args.repository_set,
+            output = working_path(args.output, "review-prs-batch-", "batch.json")
+            batch = enumerate_batch(output, repositories=args.repositories, repository_set=args.repository_set,
                                     force=args.force, config_path=args.config, services=services)
             for repository, entry in batch["repositories"].items():
                 if not entry["complete"]:
                     print(f"REPOSITORY_FAILED {repository} {entry['error']}")
                 for pull in entry["eligible"]:
                     print(f"PULL {repository}#{pull['number']}")
-            print(f"BATCH {args.output}")
+            print(f"BATCH {output}")
             return 0
         if args.command == "prepare":
             failed = False

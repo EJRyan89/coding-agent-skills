@@ -45,10 +45,12 @@ Write each as `.claude/skills/<name>/SKILL.md` with `name` and `description` fro
 For an upgrade of a repository that already has a generator, export its current spec first and edit that:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository root>" export-spec --output "<spec file>"
+python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository root>" export-spec
 ```
 
-Otherwise write a new JSON spec file outside the repository, following `references/spec-reference.md` and `references/example-spec.json`. The spec records the step 2 choices: runtimes, surfaces, features, Copilot sections, cloud-agent setup commands, and MCP servers. Classify every MCP tool by risk as that reference describes and record the classification in the `MCP Tools` table of `CLAUDE.md`.
+It prints `SPEC <spec file>`, the file it wrote under a new temporary directory; edit that file.
+
+Otherwise write a new JSON spec file in a new temporary directory, outside the repository and every skill directory, following `references/spec-reference.md` and `references/example-spec.json`. The spec records the step 2 choices: runtimes, surfaces, features, Copilot sections, cloud-agent setup commands, and MCP servers. Classify every MCP tool by risk as that reference describes and record the classification in the `MCP Tools` table of `CLAUDE.md`.
 
 ## 6. Install the generator
 

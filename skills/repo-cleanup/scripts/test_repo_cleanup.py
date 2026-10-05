@@ -12,6 +12,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
@@ -675,6 +676,52 @@ class SweepTests(Fixture):
         self.assertTrue((self.clone / "draft.txt").is_file())
         self.assertFalse((self.root / "plans" / "other repo.json").exists(), "only the target is swept")
 
+    def test_sweep_keeps_its_plans_in_a_new_temporary_directory_by_default(self) -> None:
+        self.finished_branch("done")
+        temporary = self.root / "tmp"
+        temporary.mkdir()
+        output = io.StringIO()
+        with mock.patch.object(tempfile, "tempdir", str(temporary)), contextlib.redirect_stdout(output):
+            code = rc.main(["sweep", "--repos-root", str(self.repos), "my repo"], rc.Services(gh=self.github))
+        lines = output.getvalue().splitlines()
+        self.assertEqual(0, code, lines)
+        self.assertEqual("PLANS", lines[0].split("\t")[0], "the directory comes first")
+        plans = Path(facts(lines, "PLANS")[0][0])
+        self.assertEqual(temporary, plans.parent)
+        self.assertTrue(plans.name.startswith("repo-cleanup-plans-"), plans)
+        self.assertEqual([[(plans / "my repo.json").as_posix()]], facts(lines, "PLAN"))
+        self.assertTrue((plans / "my repo.json").is_file())
+
+    def test_sweep_refuses_a_plans_directory_inside_a_skill_tree(self) -> None:
+        skills_root = Path(rc.__file__).resolve().parents[2]
+        home = self.root / "home"
+        targets = [
+            skills_root / "repo-cleanup" / "plans-from-a-test",  # beside SKILL.md
+            skills_root / "review-prs" / "plans-from-a-test",
+            home / ".claude" / "skills" / "repo-cleanup" / "plans",
+            home / ".agents" / "skills" / "repo-cleanup" / "plans",
+        ]
+        with mock.patch.dict(os.environ, {"USERPROFILE": str(home), "HOME": str(home)}):
+            for target in targets:
+                self.addCleanup(shutil.rmtree, target, ignore_errors=True)  # if a regression wrote it
+                with self.subTest(target=target):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        code = rc.main(["sweep", "--repos-root", str(self.repos), "--plans", str(target)],
+                                       rc.Services(gh=self.github))
+                    lines = output.getvalue().splitlines()
+                    self.assertEqual(rc.EXIT_FATAL, code)
+                    self.assertEqual(1, len(lines), lines)
+                    self.assertTrue(lines[0].startswith(f"ERROR\t{target} is inside the skills directory "), lines)
+                    self.assertFalse(target.exists())
+        self.assertEqual([], self.github.calls)
+
+    def test_an_explicit_plans_directory_outside_every_skill_tree_is_used_and_printed(self) -> None:
+        code, lines = self.sweep(None, "my repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[(self.root / "plans").as_posix()]], facts(lines, "PLANS"))
+        self.assertEqual([[(self.root / "plans" / "my repo.json").as_posix()]], facts(lines, "PLAN"))
+
     def blocks(self, lines: list[str]) -> dict[str, list[str]]:
         """Each repository's lines, keyed by its folder name, without the REPO header."""
         blocks: dict[str, list[str]] = {}
@@ -703,7 +750,7 @@ class SweepTests(Fixture):
                           [f"{root}/my repo", "cleaned"], [f"{root}/quiet repo", "quiet"]], facts(lines, "REPO"))
         self.assertEqual([["4", "cleaned=1", "quiet=1", "dirty=1", "fetch-failed=1", "error=0", "helper-failed=0"]],
                          facts(lines, "SWEPT"))
-        self.assertEqual({"REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
+        self.assertEqual({"PLANS", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
                          {line.split("\t")[0] for line in lines}, "plan items and step chatter stay out")
 
         blocks = self.blocks(lines)
