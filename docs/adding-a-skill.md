@@ -33,6 +33,8 @@ skills/<skill-name>/scripts/
 
 Executable `.bash`, `.sh`, `.py`, `.ps1`, `.js`, `.mjs`, `.cjs`, and `.ts` files are rejected anywhere else in a skill. Keep `SKILL.md` and supporting Markdown focused on orchestration and explanation. Executable-language fences are reserved for short command examples of at most five lines; extract longer logic into `scripts/`.
 
+The body keeps what the agent needs to run the skill: the commands, what their output means, and what to ask the user. What a person reads once, such as guarantees the scripts enforce, a glossary of output that labels itself, or a procedure for an action the skill never takes, belongs in the skill's section of [skills.md](skills.md) instead. For structure, follow Anthropic's [skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices): keep the body under 500 lines, link every reference file directly from `SKILL.md`, and start a reference file over 100 lines with a table of contents. `analyze-skill-cost` checks all of this, by content rather than by size.
+
 ### Description
 
 A model-invocable skill's description is all the model reads when deciding whether to start it, so it says what the skill does, then when to use it: `<What it does>. Use it when <the requests and situations that call for it>.` Name the requests the way a user would make them and, where it helps, a near miss the skill should not take. Keep what it does first, and add trigger cues rather than length, since every session loads the description. A user-only skill's description never starts anything, so it needs no such clause.

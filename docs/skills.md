@@ -57,6 +57,8 @@ Started by you or the agent. Installed by default.
 
 `<SkillName>` is a skill's name, not a path. The skill looks for it under `~/.claude/skills/` and, when you start it inside a Git repository, in that repository's `.agents/skills/` and `.claude/skills/`. In a checkout of this repository it also looks in `skills/` for a skill with a `deploy-meta/<name>.json`, and audits that source rather than the deployed copy under `~/.claude/skills/`, so a change is audited before it is deployed. If no skill or more than one has that name, it lists what it found and stops. It takes no flags.
 
+It judges a skill's text by content, not size: duplicated code blocks, prose that restates another step, and documentation the agent never acts on are findings at any length. Sizes and token estimates are reported as data, never as a threshold. The only structure limits it checks are the ones in Anthropic's [skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices): a body under 500 lines, a table of contents in a reference file over 100 lines, and references linked directly from `SKILL.md`. Each is a suggestion. It never suggests a cheaper `model` for a skill usually followed in the same turn by work that starts subagents, because those subagents inherit the skill's model: a code review started in the same turn as a Haiku-pinned skill ran every reviewer on Haiku, and they missed a must-fix finding.
+
 ```text
 /analyze-skill-cost repo-cleanup
 ```
@@ -92,6 +94,8 @@ Started by you or the agent. Installed by default.
 
 Either way it shows the directory and asks you to confirm before reading further, and it changes nothing you have not approved.
 
+It looks for the directory in Claude Code's documented order: `autoMemoryDirectory` from managed, local, project, then user settings; then `CLAUDE_CODE_PROJECT_DIR_NAME` under the configuration directory; then a directory derived from the repository's main worktree. It compares each memory with the repository's `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, README, contributor and `docs/` guidance, Copilot instructions, and skill files, plus your own `CLAUDE.md` and `rules/`. When it rebuilds `MEMORY.md`, it writes one `- [Title](file.md) — hook` line per memory file and never deletes or changes a memory: entries keep their order, title, and surrounding headings, entries for missing files or repeated links are dropped, and unindexed memories are appended. The hook is the memory's `description`, else the entry's existing hook, else the body's first line.
+
 ```text
 /curate-agent-memory
 /curate-agent-memory C:\GitHub\widgets
@@ -109,7 +113,20 @@ Run dotnet format (whitespace + style + analyzers) and region layout checks on C
 Started by you or the agent. Opt-in: deploy it with `--include dotnet-format`. Needs `dotnet-format` and `gh`. Takes no arguments.
 <!-- /generated:dotnet-format -->
 
-Start it inside the repository, on the branch to check. It compares with the pull request's base branch, found with `gh`, else `origin/main`, else `origin/master`, and checks every committed, uncommitted, and untracked `.cs` file that differs. It uses the nearest solution to the current directory that owns a changed file. It reports violations and asks before fixing them, and asks before adding any missing `.editorconfig` settings.
+Start it inside the repository, on the branch to check. It compares with the pull request's base branch, found with `gh`, else `origin/main`, else `origin/master`, and checks every committed, uncommitted, and untracked `.cs` file that differs. It uses the nearest solution to the current directory that owns a changed file, else the repository's solution whose projects own the most, and stops rather than pick one that owns none. Files outside that solution, such as scripts or `.cs` files no project compiles, get only the layout checks. It reports violations and asks before fixing them, and asks before adding any missing `.editorconfig` settings. It runs the `dotnet-format` global tool (`dotnet tool install -g dotnet-format`), not the SDK's built-in `dotnet format`, which can fail with `TypeInitializationException` against .NET Framework solutions on newer SDKs, and stops a formatter run after 570 seconds.
+
+It checks these layout rules:
+
+| Rule | Enforced by |
+|---|---|
+| `else if` on one line | Roslynator `RCS0041` |
+| Exactly one blank line between members | `RCS0010` and `RCS0012` (at least one), `RCS0063` (no more than one) |
+| Exactly one blank line after `#region` and before `#endregion` | `RCS0002`, `RCS0005`, and `RCS0063` |
+| No blank line between a type's `{` and its first `#region` | `RCS0063` |
+| Newline at end of file | `insert_final_newline = true`, applied by the formatter's whitespace pass |
+| `#endregion` in the brace scope of its `#region`; no `#endregion` description; exactly one blank line between `#endregion` and a following `#region`; no blank line between `#endregion` and a following `}` | `csharp_layout.py check` |
+
+The Roslynator rules need the `.editorconfig` settings the skill proposes and the `Roslynator.Formatting.Analyzers` package, which it never adds itself.
 
 ## `flag-review-finding`
 
@@ -169,7 +186,7 @@ Creates or upgrades AI agent configuration (Claude Code, Codex, Copilot) across 
 Started by you or the agent. Installed by default. Takes no arguments.
 <!-- /generated:init-ai-config -->
 
-It configures the Git repository you start it in, and asks which repository to use when you are not in one; it never initializes Git without your approval. Instead of flags, it asks scoping questions as it goes, such as which runtimes and surfaces to support. It shows the existing configuration and any conflicts before writing, and never replaces content you wrote without your approval. The spec it works from is kept in a new temporary directory, never in a skill directory.
+It configures the Git repository you start it in, and asks which repository to use when you are not in one; it never initializes Git without your approval. Instead of flags, it asks scoping questions as it goes, such as which runtimes and surfaces to support. It shows the existing configuration and any conflicts before writing, and never replaces content you wrote without your approval. The spec it works from is kept in a new temporary directory, never in a skill directory. Some checks need a running Codex or Copilot session, so it ends by naming the sections of its `references/runtime-checks.md` that apply to the runtimes you chose, for you to confirm.
 
 ## `repo-cleanup`
 
@@ -187,6 +204,18 @@ Started by you. Installed by default. Needs `gh` and the `REPOS_ROOT` setting.
 - `<repo-name-or-path>` cleans one repository: a name under `REPOS_ROOT`, or an absolute path to a directory that contains `.git`.
 
 It performs only the actions it can prove safe, such as removing a branch whose pull request merged, and asks you about anything else, such as local branches with no remote or unmerged work. Its plan files go in a new temporary directory, never in a skill directory.
+
+For each repository it switches to the default branch, runs `git fetch --all --prune`, prunes worktree records, fast-forwards the default branch, classifies branches and worktrees, and performs the safe actions, re-checking every recorded branch tip first. Its summary of a repository covers the default branch, deleted branches, removed worktrees, fast-forwarded and diverged branches, skipped dirty worktrees, branches kept because their pull request status was unverified or unmatched, protected release worktrees, and any unmerged, local-only, preserved, or gone-with-open-PR branches and removed empty directories.
+
+The commands enforce these rules, whatever the agent is asked:
+
+- `release/*` branches are never deleted. A worktree is never removed when its branch matches `release/*` or its path contains a `/release/` segment.
+- A branch is deleted automatically only when its remote branch is gone and its pull request status is `MERGED`, `CLOSED`, or `NONE`, and only with `git branch -d`, except that a squash- or rebase-merged branch that `-d` refuses is deleted with `git branch -D` when its status is `MERGED` and its tip has not moved. A merged or closed pull request counts only when its head is in the same repository, there are no newer upstream commits, and it ended at the branch's exact local tip. A merged pull request also counts when the local tip is one of its commits and every later commit is a merge whose non-first parents are reachable from the fetched default branch, as GitHub's "Update branch" makes; a later commit with any other changes leaves the branch `UNMATCHED`. Branches whose status is `OPEN`, `UNMATCHED`, or `UNKNOWN` (any failed or possibly truncated `gh` query) are kept and reported, never deleted or offered for deletion.
+- Otherwise `git branch -D` runs only after you confirm, and only for a branch reported `UNMERGED` whose tip has not moved. A `CLOSED` or `NONE` branch that is not fully merged is always reported `UNMERGED`, never forced.
+- Worktrees with uncommitted or untracked changes are never removed, only reported. Worktrees are removed only by `git worktree remove`; when Git refuses, the worktree and its branch are preserved and reported.
+- Empty directories are removed only with `rmdir`, only for parents of worktrees removed in this run, and never at or above `REPOS_ROOT/Worktrees` or the repository root.
+- Fast-forwards are fast-forward only. Diverged branches are reported, never rebased, merged, or reset. The main worktree's files are never stashed, reset, or cleaned.
+- When a repository's fetch fails, nothing after the fetch runs for it. Earlier steps may already have switched its checkout, and a multi-remote fetch may have updated some remote-tracking refs before failing.
 
 ```text
 /repo-cleanup

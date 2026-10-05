@@ -211,16 +211,43 @@ class InventoryTests(TemporaryTestCase):
             self.inventory(),
         )
 
-    def test_size_thresholds_are_strictly_greater_than_8_and_4_kib(self) -> None:
-        write(self.root / "SKILL.md", "x" * 8192)
-        write(self.root / "notes.md", "x" * 4096)
-        self.assertEqual([], [line for line in self.inventory() if line.startswith(("BODY_", "DOC_"))])
-        write(self.root / "SKILL.md", "x" * 8193)
-        write(self.root / "notes.md", "x" * 4097)
+    def structure_flags(self) -> list[str]:
+        return [line for line in self.inventory() if line.startswith(("BODY_", "DOC_", "NESTED_"))]
+
+    def test_byte_size_alone_is_never_flagged(self) -> None:
+        write(self.root / "SKILL.md", "x" * 9000)
+        write(self.root / "notes.md", "x" * 5000)
+        self.assertEqual([], self.structure_flags())
+
+    def test_a_body_over_500_lines_after_its_frontmatter_is_flagged(self) -> None:
+        frontmatter_lines = "---\nname: demo\ndescription: d\n---\n"
+        write(self.root / "SKILL.md", frontmatter_lines + "line\n" * 500)
+        self.assertEqual([], self.structure_flags())
+        write(self.root / "SKILL.md", frontmatter_lines + "line\n" * 501)
+        self.assertEqual(["BODY_OVER_500_LINES 501"], self.structure_flags())
+
+    def test_a_doc_over_100_lines_needs_a_table_of_contents_first(self) -> None:
+        write(self.root / "SKILL.md", "x\n")
+        write(self.root / "short.md", "# Short\n" + "line\n" * 99)
+        write(self.root / "listed.md", "# Listed\n\n## Contents\n- One\n\n## One\n" + "line\n" * 100)
+        write(self.root / "toc.md", "# Toc\n\n### Table of contents\n- One\n\n## One\n" + "line\n" * 100)
+        write(self.root / "late.md", "# Late\n\n## One\n" + "line\n" * 100 + "## Contents\n")
+        write(self.root / "fenced.md", "```markdown\n## Contents\n```\n" + "line\n" * 100)
+        self.assertEqual(["DOC_NO_TOC 103 fenced.md", "DOC_NO_TOC 104 late.md"], self.structure_flags())
+
+    def test_a_doc_reached_only_through_another_doc_is_a_nested_reference(self) -> None:
+        write(self.root / "SKILL.md", "---\nname: demo\n---\nRead [a](references/a.md).\n")
+        write(self.root / "references" / "a.md", "See `b.md`, `references/b.md`, and ${CLAUDE_SKILL_DIR}/references/b.md.\n")
+        write(self.root / "references" / "b.md", "Back to `a.md`; `missing.md`, `../outside.md`, `SKILL.md`.\n")
         self.assertEqual(
-            ["BODY_OVER_8KB 8193", "DOC_OVER_4KB 4097 notes.md"],
-            [line for line in self.inventory() if line.startswith(("BODY_", "DOC_"))],
+            [
+                "NESTED_REFERENCE references/a.md:1 b.md",
+                "NESTED_REFERENCE references/a.md:1 ${CLAUDE_SKILL_DIR}/references/b.md",
+            ],
+            self.structure_flags(),
         )
+        write(self.root / "SKILL.md", "---\nname: demo\n---\nRead `references/a.md`, then ${CLAUDE_SKILL_DIR}/references/b.md.\n")
+        self.assertEqual([], self.structure_flags())
 
     def test_missing_main_file_is_flagged(self) -> None:
         write(self.root / "README.md", "x")

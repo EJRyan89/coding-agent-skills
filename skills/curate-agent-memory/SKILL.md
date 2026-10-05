@@ -20,7 +20,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
   python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve --repo "<repository>"
   ```
 
-  It follows Claude Code's documented order: `autoMemoryDirectory` from managed, local, project, then user settings; then `CLAUDE_CODE_PROJECT_DIR_NAME` under the config directory; then a directory derived from the repository's main worktree. It reports the directory, where it came from, whether it exists, and notes such as the `--settings` launch flag it cannot see.
+  It reports the directory, where it came from, whether it exists, and notes such as the `--settings` launch flag it cannot see.
 - If the result has no directory, or the directory does not exist, list its `candidates` and ask the user to choose or supply `--memory-dir`. Never guess.
 - Show the user the resolved directory and its source, and get explicit confirmation before continuing.
 
@@ -30,7 +30,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
 ```
 
-It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. It is read-only and reports: memory files missing from `MEMORY.md`, index entries whose file is gone, duplicate index entries, an index over or near Claude Code's load limit (the first 200 lines or 25KB, whichever comes first), broken `[[links]]`, cited paths that no longer exist, each memory's age, and up to three passages whose wording overlaps each memory. It searches the repository's `CLAUDE.md`, `CLAUDE.local.md`, `.claude/rules/`, `AGENTS.md`, README, contributor and `docs/` guidance, Copilot instructions, and skill files, plus the user's `CLAUDE.md` and `rules/`. Overlaps are candidates only; the script cannot tell whether a passage states the same rule.
+It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
 
 ## Step 3: Verify and classify every memory
 
@@ -70,7 +70,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
-  It writes one `- [Title](file.md) — hook` line per memory file and never deletes or changes a memory. Entries keep their order, title, and surrounding headings; entries for missing files or repeated links are dropped (`DROPPED <reason> <file>`); unindexed memories are appended (`ADDED <file>`). The hook is the memory's `description`, else the entry's existing hook, else the body's first line. `OVER_LIMIT` or `NEAR_LIMIT` means the index still needs merging or moving entries.
+  It writes the index from the memory files; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` or `NEAR_LIMIT` means the index still needs merging or moving entries.
 - Do not commit, push, or open pull requests; report which repository files changed so the user can review them.
 
 ## Step 6: Re-audit and report

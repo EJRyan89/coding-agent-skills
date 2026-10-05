@@ -371,6 +371,21 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual(["claude-code", "codex", "copilot-cli"],
                          [line.split('"')[1] for line in hosts.strip().splitlines()])
 
+    def test_review_prs_prepares_canaries_in_the_shape_the_pipeline_accepts(self) -> None:
+        # The skill takes `--canary owner/repo#number`, but the pipeline's --canary is a bare flag before --pull
+        # selectors; with only the --pull fence to copy, a canary run first tried `--canary <selector>` (#11).
+        skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
+        body = skill.split("---", 2)[2]
+        self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --pull "<owner/repo#number>"', body)
+        pipeline_lines = [line for line in body.splitlines() if "review_pipeline.py" in line and "--canary" in line]
+        self.assertTrue(pipeline_lines)
+        for line in pipeline_lines:
+            with self.subTest(line=line):
+                self.assertRegex(line, r"--canary --pull ")
+        self.assertIsNone(re.search(r"`[^`\n]*--canary \"?<?owner[^`\n]*`", body.replace("`--canary owner/repo#number`", "")))
+        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
+        self.assertIn('prepare_parser.add_argument("--canary", action="store_true")', pipeline)
+
     def test_a_re_review_scope_is_asked_for_and_never_assumed(self) -> None:
         # A full or incremental pass is the user's call: the tracker asks once per run, a direct call asks itself.
         def read(name: str) -> tuple[str, str]:

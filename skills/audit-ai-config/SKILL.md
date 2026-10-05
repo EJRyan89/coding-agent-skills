@@ -16,7 +16,7 @@ Confirm the target is a Git repository (`git rev-parse --show-toplevel`); if it 
 python -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository root>"
 ```
 
-Add `--json` when the user wants machine-readable output. The engine parses files statically: it executes nothing from the repository, makes no network requests, and writes nothing.
+Add `--json` when the user wants machine-readable output.
 
 | Exit | Meaning | Report as |
 |---|---|---|
@@ -49,4 +49,4 @@ Only when the user explicitly authorizes it for a trusted repository, because bo
 
    It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so its servers were not checked: report it as a failure, never as "no servers". Pass `--server <name>` to start only one.
 
-Report the results as additional findings. All write-mode execution belongs to `init-ai-config`, never the audit.
+Report the results as additional findings.
