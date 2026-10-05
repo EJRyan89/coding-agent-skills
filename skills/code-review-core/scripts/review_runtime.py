@@ -57,6 +57,10 @@ SPECIALIST_MANIFEST_KEYS = {
     "specialists",
     "conditions",
 }
+# `uncovered` says what happens to changed files no specialist matches when others route: `review` (the default) gives
+# them to the generic reviewer, `ignore` leaves them unreviewed and lists them in the record.
+OPTIONAL_SPECIALIST_MANIFEST_KEYS = {"uncovered"}
+UNCOVERED_POLICIES = ("review", "ignore")
 SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources", "when"}
 # Optional per-specialist settings a manifest may give. `model` takes the aliases every way of starting a Claude
 # subagent accepts (the Agent tool takes no other value; on Bedrock a bare model name can be silently ignored), or
@@ -193,7 +197,8 @@ def validate_adapter_manifest(value: Any) -> dict[str, Any]:
         raise RuntimeContractError("Adapter manifest fields do not match the protocol")
     version = value.get("schema_version")
     expected_keys = SPECIALIST_MANIFEST_KEYS if version == 2 else MANIFEST_KEYS
-    if set(value) != expected_keys:
+    optional_keys = OPTIONAL_SPECIALIST_MANIFEST_KEYS if version == 2 else set()
+    if not expected_keys <= set(value) <= expected_keys | optional_keys:
         raise RuntimeContractError("Adapter manifest fields do not match the protocol")
     if version not in {1, 2} or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
         raise RuntimeContractError("Adapter manifest protocol version is unsupported")
@@ -219,6 +224,8 @@ def validate_adapter_manifest(value: Any) -> dict[str, Any]:
             raise RuntimeContractError("Adapter manifest kind is unsupported")
         if "agent-delegation" not in capabilities:
             raise RuntimeContractError("Specialist reviewers must require agent-delegation")
+        if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
+            raise RuntimeContractError("Adapter uncovered must be review or ignore")
         normalized = dict(value)
         normalized["resources"] = _path_list(value["resources"], "resources")
         normalized.update(_validate_specialists(value))

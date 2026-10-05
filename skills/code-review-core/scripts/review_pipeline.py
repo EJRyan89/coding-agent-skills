@@ -106,6 +106,7 @@ from review_specialists import (
     reviewer_models,
     route,
     specialist_model,
+    uncovered,
 )
 from review_state import StateError, default_state_path, load_state, update_state
 
@@ -409,6 +410,7 @@ def prepare(
                 check=self_check_command(run, adapter["name"]),
             ))
             roles = [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}]
+            uncovered_files: list[str] = []
         else:
             plan = build_plan(request_path, reviewer_root, run / "work",
                               self_check=lambda identity: self_check_command(run, identity), verify_contents=False,
@@ -419,6 +421,7 @@ def prepare(
                 for role in plan["roles"]
             ]
             notes.extend(plan["notes"])
+            uncovered_files = plan["uncovered_files"]
         state = {
             "schema_version": RUN_SCHEMA_VERSION,
             "selector": selector,
@@ -438,6 +441,7 @@ def prepare(
             "notes": notes,
             "patches": patches,
             "scope": scope_record,
+            "uncovered_files": uncovered_files,
         }
         atomic_write_json(run / RUN_FILE, state)
     except BaseException:
@@ -599,6 +603,15 @@ def validate_reviewer(
                 lines.extend([f"NOTE {note}"] if note else [])
             if not routes:
                 lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
+                continue
+            outside = uncovered(manifest, changed)
+            lines.extend(f"UNCOVERED {path}" for path in outside)
+            if outside and manifest.get("uncovered", "review") == "ignore":
+                lines.append(f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record "
+                             "lists them)")
+            elif outside:
+                lines.append(f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer "
+                             "reviews them)")
     lines.append("VALID")
     return lines
 
@@ -1029,6 +1042,7 @@ def finalize(run: Path) -> dict[str, Any]:
         require_comment_dispositions=state["kind"] != "entrypoint",
         patches=state.get("patches"),  # absent from runs prepared before patches were recorded
         scope=state.get("scope"),
+        uncovered_files=state.get("uncovered_files"),  # absent from runs prepared before they were recorded
     )
     shutil.rmtree(run, ignore_errors=True)
     return {

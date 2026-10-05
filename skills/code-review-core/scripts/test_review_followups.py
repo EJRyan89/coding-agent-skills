@@ -209,13 +209,14 @@ class CoverageTests(unittest.TestCase):
                 source_snapshot_root=root / "source")
         return request, root
 
-    def record(self, request: dict, findings: list[dict]) -> dict:
+    def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> dict:
         from review_records import build_record
         adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
         result = {"protocol_version": 1, "repository": "owner/repo", "pull_number": 3, "head_sha": HEAD,
                   "summary": "s", "reviewer": "generic", "status": "complete", "findings": findings,
                   "prior_dispositions": []}
-        return build_record(review_operation.request_to_record_input(request, adapter), result, version=1, policy=self.POLICY)
+        return build_record(review_operation.request_to_record_input(request, adapter, uncovered_files=uncovered),
+                            result, version=1, policy=self.POLICY)
 
     @staticmethod
     def finding(severity: str) -> dict:
@@ -243,6 +244,43 @@ class CoverageTests(unittest.TestCase):
         del broken["review"]["coverage"]
         with self.assertRaisesRegex(RecordError, "must list its unavailable sources"):
             validate_record(broken)
+
+    def test_uncovered_files_a_manifest_ignores_are_listed_without_making_the_review_incomplete(self) -> None:
+        from review_records import RecordError, render_markdown, validate_record
+        request, _ = self.request()
+        request["coverage"] = {"unavailable_sources": []}
+        record = self.record(request, [self.finding("SUGGESTION")], uncovered=["README.md", ".github/ci.yml"])
+        self.assertEqual("APPROVED", record["review"]["verdict"], "a deliberate opt-out is not a coverage gap")
+        self.assertEqual({"unavailable_sources": [], "uncovered_files": [".github/ci.yml", "README.md"]},
+                         record["review"]["coverage"])
+        validate_record(record)
+        report = render_markdown(record, record_payload_hash="0" * 64)
+        self.assertIn("> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+                      "`uncovered` to `ignore`, so no reviewer saw them: `.github/ci.yml`, `README.md`.", report)
+        self.assertNotIn("Not reviewed in full", report)
+        self.assertNotIn("coverage", self.record(request, [self.finding("SUGGESTION")], uncovered=[])["review"])
+
+        request, _ = self.request()
+        both = self.record(request, [], uncovered=["README.md"])
+        self.assertEqual("INCOMPLETE", both["review"]["verdict"])
+        self.assertEqual({"unavailable_sources": ["db/Big.sql"], "uncovered_files": ["README.md"]},
+                         both["review"]["coverage"])
+        validate_record(both)
+        report = render_markdown(both, record_payload_hash="0" * 64)
+        self.assertIn("**Not reviewed in full:**", report)
+        self.assertIn("**Not reviewed:**", report)
+
+        for malformed in ("README.md", ["README.md", "README.md"], [""], [3]):
+            broken = json.loads(json.dumps(record))
+            broken["review"]["coverage"]["uncovered_files"] = malformed
+            with self.subTest(malformed=malformed), self.assertRaisesRegex(RecordError, "coverage is malformed"):
+                validate_record(broken)
+        for coverage in ({"uncovered_files": ["README.md"]},
+                         {"unavailable_sources": [], "uncovered_files": ["README.md"], "skipped": []}):
+            broken = json.loads(json.dumps(record))
+            broken["review"]["coverage"] = coverage
+            with self.subTest(coverage=coverage), self.assertRaisesRegex(RecordError, "coverage is malformed"):
+                validate_record(broken)
 
 
 class TrackerIncompleteTests(unittest.TestCase):
