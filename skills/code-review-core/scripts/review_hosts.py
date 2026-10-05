@@ -43,6 +43,7 @@ class ProcessResult:
 Runner = Callable[[Sequence[str], Path, Mapping[str, str]], ProcessResult]
 
 MINIMUM_COPILOT_CLI_VERSION = (1, 0, 88)
+COPILOT_TIMEOUT_SECONDS = 1800
 
 
 def subprocess_runner(
@@ -56,9 +57,38 @@ def subprocess_runner(
         text=True,
         encoding="utf-8",
         check=False,
-        timeout=1800,
+        timeout=COPILOT_TIMEOUT_SECONDS,
     )
     return ProcessResult(process.returncode, process.stdout, process.stderr)
+
+
+def _write_diagnostic(diagnostic_path: Path, result: ProcessResult) -> None:
+    diagnostic = result.stdout
+    if result.stderr:
+        diagnostic += "\nSTDERR:\n" + result.stderr
+    atomic_write_text(diagnostic_path, diagnostic)
+
+
+def _run_bounded(
+    runner: Runner,
+    arguments: Sequence[str],
+    cwd: Path,
+    environment: Mapping[str, str],
+    diagnostic_path: Path,
+) -> ProcessResult:
+    """Run Copilot; a timeout keeps its partial output and becomes a contract error."""
+    try:
+        return runner(arguments, cwd, environment)
+    except subprocess.TimeoutExpired as exc:
+        # The partial output is bytes or text depending on the platform, or absent.
+        stdout, stderr = (
+            part.decode("utf-8", "replace") if isinstance(part, bytes) else part or ""
+            for part in (exc.output, exc.stderr)
+        )
+        _write_diagnostic(diagnostic_path, ProcessResult(-1, stdout, stderr))
+        raise RuntimeContractError(
+            f"GitHub Copilot CLI timed out after {exc.timeout:g}s; see {diagnostic_path}"
+        ) from exc
 
 
 def find_copilot() -> str:
@@ -302,7 +332,9 @@ def run_copilot(
         isolation_root, base_environment
     )
     executable = executable or find_copilot()
-    version_result = runner([executable, "--version"], execution_directory, environment)
+    version_result = _run_bounded(
+        runner, [executable, "--version"], execution_directory, environment, diagnostic_path
+    )
     if version_result.returncode != 0:
         raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
     version = parse_copilot_version(version_result.stdout)
@@ -320,7 +352,8 @@ def run_copilot(
         f"Write only the protocol result JSON to {result_path}. Do not ask questions, "
         "run shell commands, use network tools, or modify any other file."
     )
-    result = runner(
+    result = _run_bounded(
+        runner,
         copilot_command(
             executable,
             prompt=prompt,
@@ -330,11 +363,9 @@ def run_copilot(
         ),
         execution_directory,
         environment,
+        diagnostic_path,
     )
-    diagnostic = result.stdout
-    if result.stderr:
-        diagnostic += "\nSTDERR:\n" + result.stderr
-    atomic_write_text(diagnostic_path, diagnostic)
+    _write_diagnostic(diagnostic_path, result)
     if result.returncode != 0:
         raise RuntimeContractError(
             f"GitHub Copilot CLI failed with exit code {result.returncode}; see {diagnostic_path}"

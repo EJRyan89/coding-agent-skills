@@ -22,7 +22,7 @@ import review_pipeline as rp  # noqa: E402
 from review_archive import latest_record, pull_directory  # noqa: E402
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
 from review_github import CommandResult, GitHubClient  # noqa: E402
-from review_runtime import CommandResult as GitResult, validate_adapter_manifest  # noqa: E402
+from review_runtime import CommandResult as GitResult, RuntimeContractError, validate_adapter_manifest  # noqa: E402
 from review_state import load_state  # noqa: E402
 
 REPOSITORY = "example/one"
@@ -1057,6 +1057,26 @@ class RepositoryReviewerTests(PipelineFixture):
         with mock.patch("review_hosts.run_copilot"), mock.patch("time.time", return_value=4_000.0):
             self.assertEqual(0, self.run_main("dispatch", "--run", run)[0])
         self.assertEqual({"fixture-copilot": 3_000.0}, started(), "a rerun does not restart the reviewer's clock")
+
+    def test_a_timed_out_copilot_host_fails_dispatch_and_leaves_a_retry(self) -> None:
+        self.configure(self.repository_reviewer("review/copilot.json"))
+        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
+        run = self.run_main("prepare", "--pull", SELECTOR)[1].splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
+
+        # run_copilot's own timeout handling is covered in test_review_core; here it is the error it raises.
+        timeout = RuntimeContractError("GitHub Copilot CLI timed out after 1800s; see diagnostic")
+        with mock.patch("review_hosts.run_copilot", side_effect=timeout) as host:
+            code, out, err = self.run_main("dispatch", "--run", run)
+        self.assertEqual(Path(run) / "copilot-isolation-1", host.call_args.kwargs["isolation_root"])
+        self.assertEqual((2, ""), (code, out))
+        self.assertEqual("FAILED fixture-copilot: GitHub Copilot CLI timed out after 1800s; see diagnostic\n", err)
+        (Path(run) / "copilot-isolation-1").mkdir()  # the timed-out host run leaves its isolation root
+        code, out, _ = self.run_main("check", "--run", run)
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
+        with mock.patch("review_hosts.run_copilot") as rerun:
+            self.assertEqual(0, self.run_main("dispatch", "--run", run)[0])
+        self.assertEqual(Path(run) / "copilot-isolation-2", rerun.call_args.kwargs["isolation_root"])
 
     def test_dispatch_refuses_a_natively_delegated_run(self) -> None:
         ready = self.prepare()

@@ -2016,6 +2016,43 @@ class RuntimeHostTests(unittest.TestCase):
                     executable="copilot",
                 )
 
+    def test_copilot_timeout_is_a_contract_error_with_its_partial_output(self) -> None:
+        for timed_out, partial in (("review", b'{"type":"assistant.message"}\n'), ("version", None)):
+            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve()
+                materialized, _ = self._materialized_reviewer(root)
+                request = root / "request.json"
+                self._write_request_with_snapshot(root, request)
+                diagnostic = root / "diagnostic.jsonl"
+
+                def runner(
+                    arguments: list[str], cwd: Path, environment: dict[str, str]
+                ) -> ProcessResult:
+                    del cwd, environment
+                    if "--version" in arguments and timed_out == "review":
+                        return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
+                    raise subprocess.TimeoutExpired(arguments, 1800, output=partial, stderr="still working")
+
+                with self.assertRaisesRegex(
+                    RuntimeContractError,
+                    f"^GitHub Copilot CLI timed out after 1800s; see {re.escape(str(diagnostic))}$",
+                ):
+                    run_copilot(
+                        run_directory=root,
+                        materialized_root=materialized,
+                        request_path=request,
+                        result_path=root / "result.json",
+                        diagnostic_path=diagnostic,
+                        isolation_root=root / "isolation",
+                        runner=runner,
+                        executable="copilot",
+                    )
+                text = diagnostic.read_text(encoding="utf-8")
+                if partial:
+                    self.assertIn("assistant.message", text)
+                self.assertIn("STDERR:\nstill working", text)
+                self.assertFalse((root / "result.json").exists())
+
     def test_copilot_rejects_entrypoint_outside_materialized_root(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
