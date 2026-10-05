@@ -106,13 +106,16 @@ class CrossSkillContractTests(unittest.TestCase):
             skill / "scripts/ai_config_template.py",
             *sorted((skill / "references").glob("*.yml")),
         ]
+        # A Dependabot bump fails here until the pins are copied over, so the message names the tool that does it.
+        self.assertTrue((REPOSITORY_ROOT / "tools/sync_action_pins.py").is_file())
+        fix = "; run python tools/sync_action_pins.py"
         found = 0
         for source in sources:
             for action, sha in ACTION_PIN.findall(source.read_text(encoding="utf-8")):
                 found += 1
                 with self.subTest(source=source.name, action=action):
-                    self.assertIn(action, reviewed, f"{action} is not pinned in validate.yml")
-                    self.assertEqual(reviewed[action], sha, f"{source.name} pins a stale {action}")
+                    self.assertIn(action, reviewed, f"{action} is not pinned in validate.yml{fix}")
+                    self.assertEqual(reviewed[action], sha, f"{source.name} pins a stale {action}{fix}")
         self.assertGreater(found, 0, "No generated action pins were found")
 
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:

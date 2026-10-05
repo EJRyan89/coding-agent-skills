@@ -31,12 +31,13 @@ from unittest import mock
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from deployer import platform_support
+from deployer import tools
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
@@ -582,15 +583,109 @@ def missing_prerequisites(
     return missing
 
 
-def report_missing_prerequisites() -> bool:
+# The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these,
+# and CI installs Python and ShellCheck at their floors. Git Bash has no floor: the shell scripts need no Bash 4.
+DEPENDENCY_DOC = "docs/dependency-updates.md"
+VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
+    "Python": tools.MINIMUM_PYTHON,
+    "ShellCheck": (0, 9, 0),
+    "PowerShell 7 (pwsh)": (7, 0),
+}
+
+
+def read_tool_version(path: str) -> tuple[int, ...] | None:
+    result = platform_support.run_tool([path, "--version"])
+    return tools.parse_version(result.output) if result.returncode == 0 else None
+
+
+def tool_versions(
+    prerequisites: tuple[tuple[str, str, Callable[[], str | None]], ...] = PREREQUISITES,
+    read_version: Callable[[str], tuple[int, ...] | None] = read_tool_version,
+) -> dict[str, tuple[int, ...] | None]:
+    """The version of each required tool that is found, or None where it cannot be read."""
+    versions: dict[str, tuple[int, ...] | None] = {}
+    for label, _, finder in prerequisites:
+        try:
+            found = finder()
+        except AssertionError:
+            found = None
+        if found:
+            versions[label] = read_version(found)
+    return versions
+
+
+def outdated_prerequisites(
+    versions: dict[str, tuple[int, ...] | None], python: tuple[int, ...]
+) -> list[str]:
+    """Describe every found tool older than its floor, or whose version cannot be read, with its install hint."""
+    hints = {label: hint_key for label, hint_key, _ in PREREQUISITES}
+    found = {"Python": python, **versions}
+    outdated: list[str] = []
+    for label, floor in VALIDATION_FLOORS.items():
+        if label not in found:
+            continue
+        version = found[label]
+        hint = f": {platform_support.install_hint(hints[label])}" if label in hints else ""
+        if version is None:
+            outdated.append(
+                f"  - {label}: its version could not be read; the floor is {tools.format_version(floor)} in "
+                f"{DEPENDENCY_DOC}{hint}"
+            )
+        elif version < floor:
+            outdated.append(
+                f"  - {label} {tools.format_version(version)} is older than the floor "
+                f"{tools.format_version(floor)} in {DEPENDENCY_DOC}{hint}"
+            )
+    return outdated
+
+
+def report_prerequisite_problems(versions: dict[str, tuple[int, ...] | None]) -> bool:
     missing = missing_prerequisites()
+    outdated = outdated_prerequisites(versions, tools.python_version())
     if missing:
         print("Repository validation cannot run; required tools were not found:", file=sys.stderr)
         for line in missing:
             print(line, file=sys.stderr)
+    if outdated:
+        print("Repository validation cannot run; required tools are older than their floors:", file=sys.stderr)
+        for line in outdated:
+            print(line, file=sys.stderr)
+    if missing or outdated:
         for line in platform_support.INSTALL_HELP:
             print(line, file=sys.stderr)
-    return bool(missing)
+    return bool(missing or outdated)
+
+
+def step_summary(
+    python: tuple[int, ...],
+    versions: dict[str, tuple[int, ...] | None],
+    mode: str,
+    policies: int,
+    jobs: int,
+    seconds: float,
+    failed: list[str],
+) -> str:
+    """The Markdown GitHub Actions shows on the run's summary page."""
+    found = [f"Python {tools.format_version(python)}"] + [
+        f"{label} {tools.format_version(version) if version else 'unknown'}" for label, version in versions.items()
+    ]
+    result = "**validation FAILED**" if failed else "**validation passed**"
+    lines = [
+        "## Repository validation",
+        "",
+        f"- {', '.join(found)}",
+        f"- {mode}",
+        f"- {policies} policy checks and {jobs} suite jobs in {seconds:.0f}s: {result}",
+        *(f"- Failed: `{label}`" for label in failed),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def append_step_summary(environment: Mapping[str, str], text: str) -> None:
+    path = environment.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as summary:
+            summary.write(text)
 
 
 def run_process(arguments: list[str], environment: dict[str, str] | None = None) -> None:
@@ -1416,6 +1511,91 @@ class RepositoryValidation(unittest.TestCase):
         )
         self.assertEqual([], missing_prerequisites((("ShellCheck", "ShellCheck", lambda: "shellcheck"),)))
 
+    def test_validation_floors_are_the_documented_versions(self) -> None:
+        self.assertEqual(
+            {"Python": (3, 11), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 0)}, VALIDATION_FLOORS
+        )
+        document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
+        for row in ("| Python | 3.11 |", "| ShellCheck | 0.9.0 |", "| PowerShell 7 (`pwsh`) | 7.0 |"):
+            with self.subTest(row=row):
+                self.assertIn(row, document)
+
+    def test_ci_exercises_each_floor(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
+        self.assertIn("python-version: ['3.11', '3.x']", workflow)
+        # The aggregate job keeps the single required status check context that branch protection names.
+        self.assertRegex(workflow, r"(?m)^  validate:\n(?:    .*\n)*?    needs: suite$")
+
+    def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
+        self.assertEqual(
+            [
+                "  - Python 3.10.12 is older than the floor 3.11 in docs/dependency-updates.md",
+                "  - ShellCheck 0.8.0 is older than the floor 0.9.0 in docs/dependency-updates.md: "
+                "winget install --id koalaman.shellcheck",
+                "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
+                "docs/dependency-updates.md: winget install --id Microsoft.PowerShell",
+            ],
+            outdated_prerequisites(
+                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None}, (3, 10, 12)
+            ),
+        )
+        self.assertEqual(
+            [],
+            outdated_prerequisites(
+                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3)}, (3, 11, 0)
+            ),
+        )
+        # A missing tool is reported by missing_prerequisites, not again here.
+        self.assertEqual([], outdated_prerequisites({}, (3, 14, 7)))
+
+    def test_tool_versions_reads_each_found_tool(self) -> None:
+        def raises() -> str:
+            raise AssertionError("not found")
+
+        read = {"C:/tools/shellcheck.exe": (0, 11, 0), "C:/tools/pwsh.exe": None}
+        self.assertEqual(
+            {"ShellCheck": (0, 11, 0), "PowerShell 7 (pwsh)": None},
+            tool_versions(
+                (
+                    ("Git Bash", "Git Bash", raises),
+                    ("ShellCheck", "ShellCheck", lambda: "C:/tools/shellcheck.exe"),
+                    ("PowerShell 7 (pwsh)", "PowerShell", lambda: "C:/tools/pwsh.exe"),
+                ),
+                read.__getitem__,
+            ),
+        )
+
+    def test_step_summary_reports_the_result_and_each_failure(self) -> None:
+        text = step_summary(
+            (3, 11, 9),
+            {"Git Bash": (5, 2, 37), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": None},
+            "Full validation: no changed files were found.",
+            140,
+            52,
+            61.4,
+            ["policy test_one", "suite tests/x.py"],
+        )
+        self.assertEqual(
+            "## Repository validation\n\n"
+            "- Python 3.11.9, Git Bash 5.2.37, ShellCheck 0.9.0, PowerShell 7 (pwsh) unknown\n"
+            "- Full validation: no changed files were found.\n"
+            "- 140 policy checks and 52 suite jobs in 61s: **validation FAILED**\n"
+            "- Failed: `policy test_one`\n"
+            "- Failed: `suite tests/x.py`\n",
+            text,
+        )
+        self.assertIn("**validation passed**", step_summary((3, 14, 7), {}, "Mode.", 1, 1, 1.0, []))
+
+    def test_step_summary_is_appended_only_when_github_names_a_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "summary with spaces.md"
+            path.write_text("earlier\n", encoding="utf-8")
+            append_step_summary({"GITHUB_STEP_SUMMARY": str(path)}, "## Repository validation\n")
+            self.assertEqual("earlier\n## Repository validation\n", path.read_text(encoding="utf-8"))
+            append_step_summary({}, "ignored\n")
+            self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
     parser.add_argument("-k", dest="patterns", action="append", default=[], metavar="PATTERN",
@@ -1423,7 +1603,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-v", "--verbose", action="store_true", help="list each policy check and suite as it finishes")
     parser.add_argument("--full", action="store_true", help="run every suite even when only documentation changed")
     arguments = parser.parse_args(argv)
-    if report_missing_prerequisites():
+    versions = tool_versions()
+    if report_prerequisite_problems(versions):
         return 2
     started = time.perf_counter()
     patterns = name_patterns(arguments.patterns)
@@ -1433,6 +1614,7 @@ def main(argv: list[str] | None = None) -> int:
     policies = loader.loadTestsFromTestCase(RepositoryValidation)
     if patterns:
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
+        mode = f"Selected by -k {' '.join(arguments.patterns)}."
     else:
         base = f"origin/{os.environ.get('GITHUB_BASE_REF') or 'main'}"
         paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
@@ -1440,11 +1622,12 @@ def main(argv: list[str] | None = None) -> int:
         if only:
             suites = suites_naming(paths, regression_suites())
             jobs = suite_jobs(suites)
-            print(f"Documentation only: {reason} since {base}. Running the policy checks and the "
-                  f"{len(suites)} suites that name a changed file; pass --full to run every suite.", flush=True)
+            mode = (f"Documentation only: {reason} since {base}. Running the policy checks and the "
+                    f"{len(suites)} suites that name a changed file; pass --full to run every suite.")
         else:
             jobs = all_jobs()
-            print(f"Full validation: {reason}.", flush=True)
+            mode = f"Full validation: {reason}."
+        print(mode, flush=True)
     if not policies.countTestCases() and not jobs:
         print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=sys.stderr)
         return 2
@@ -1456,9 +1639,16 @@ def main(argv: list[str] | None = None) -> int:
     for job, error in failures:
         print(f"\n{'=' * 70}\nFAILED {job.label}\n{'-' * 70}\n{error}", flush=True)
     passed = policy_result.wasSuccessful() and not failures
+    seconds = time.perf_counter() - started
     print(
-        f"\n{policy_result.testsRun} policy checks and {len(jobs)} suite jobs in {time.perf_counter() - started:.0f}s: "
+        f"\n{policy_result.testsRun} policy checks and {len(jobs)} suite jobs in {seconds:.0f}s: "
         + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed).")
+    )
+    failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
+    failed += [job.label for job, _ in failures]
+    append_step_summary(
+        os.environ,
+        step_summary(tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed),
     )
     return 0 if passed else 1
 

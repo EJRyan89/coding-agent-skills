@@ -12,7 +12,7 @@ Development and deployment are currently supported on Windows only. Contributors
 - PowerShell 7 (`pwsh`); and
 - GitHub CLI for code-review-operation changes.
 
-[Installation](docs/installation.md#installing-the-tools) lists install commands. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool.
+[Installation](docs/installation.md#installing-the-tools) lists install commands. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
 
 Run the validation entry point from PowerShell or Git Bash, and use Git Bash for Bash scripts. Follow `.editorconfig` and `.gitattributes`; do not commit generated build, test, Python-cache, IDE, deployment, or personal configuration artifacts.
 
