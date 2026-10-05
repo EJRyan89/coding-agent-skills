@@ -809,10 +809,10 @@ class WaitReviewersTests(PipelineFixture):
         self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": trusted})
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         first, second = self.start(SELECTOR, "example/one#13")
-        self.assertEqual(["python-review", "python-style"], [role["id"] for role in first["roles"]])
-        self.write_role_result(first["roles"][1], findings=[self.finding()])
-        for role in second["roles"]:
-            self.write_role_result(role, findings=[self.finding()])
+        # The generic reviewer covers the changed files no specialist routes (#44).
+        self.assertEqual(["python-review", "python-style", "generic-review"], [role["id"] for role in first["roles"]])
+        for role in [*first["roles"][1:], *second["roles"]]:
+            self.write_role_result(role)
         self.assertEqual((1, f"RUNNING {SELECTOR} python-review 4s\nREADY example/one#13\n", ""),
                          self.wait(first, second, timeout="4"))
 
