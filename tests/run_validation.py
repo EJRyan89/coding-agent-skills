@@ -390,6 +390,35 @@ def skill_path_problems(root: Path) -> list[str]:
     return problems
 
 
+# An option that names where a script writes, given a placeholder for the agent to fill in: "--output <file>",
+# "--plans=<dir>". Placeholders for paths a command printed, such as "--run <run directory>", name no output option.
+OUTPUT_PLACEHOLDER = re.compile(r"""(--(?:output(?:-[a-z]+)*|out(?:-dir)?|plans))(?:\s+|=)["']?<[^>]*>""")
+WORKING_FILES_DOC = "\"Working files\" in docs/adding-a-skill.md"
+
+
+def output_placeholder_problems(root: Path) -> list[str]:
+    """Report command fences in shipped Markdown that leave the agent to choose where a script writes.
+
+    Given a placeholder and a skill directory it already knows, an agent writes beside SKILL.md, and the deployer
+    then sees the installed skill as modified and stops updating it.
+    """
+    problems: list[str] = []
+    for path in sorted((root / "skills").rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        in_command_fence = False
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_command_fence = (not in_command_fence
+                                    and stripped[3:].strip().casefold() in EXECUTABLE_FENCE_LANGUAGES)
+                continue
+            if in_command_fence:
+                for match in OUTPUT_PLACEHOLDER.finditer(line):
+                    problems.append(f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
+                                    f"and print the path; see {WORKING_FILES_DOC}")
+    return problems
+
+
 # Defense in depth only: the private-name scan in docs/releasing.md runs before every release. YourName is the
 # placeholder user documentation may show; the drive-sync folder name is split so this file does not match itself.
 PRIVATE_REFERENCE = re.compile(
@@ -1363,6 +1392,40 @@ class RepositoryValidation(unittest.TestCase):
                     "skills/beta/SKILL.md:5 reaches ../core without declaring it in skill_deps",
                 ],
                 skill_path_problems(root),
+            )
+
+    def test_skills_never_leave_an_output_path_to_the_agent(self) -> None:
+        self.assertEqual([], output_placeholder_problems(REPOSITORY_ROOT))
+
+    def test_output_placeholder_policy_flags_output_options_only_in_command_fences(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "skills" / "alpha" / "references").mkdir(parents=True)
+            (root / "skills" / "alpha" / "SKILL.md").write_text(
+                "Prose may say --output \"<file>\".\n"
+                "```bash\n"
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" enumerate --output "<batch file>"\n'
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" sweep --plans <plan directory> --output=<x>\n'
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" check --run "<run directory>" --input "<input file>"\n'
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" install --spec "<spec file>" --plan "<plan file>"\n'
+                'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" collect --output "$TMP/x.json"\n'
+                "```\n"
+                "```text\n--output \"<file>\"\n```\n",
+                encoding="utf-8",
+            )
+            (root / "skills" / "alpha" / "references" / "notes.md").write_text(
+                "```powershell\npython -B x.py --output-dir '<dir>' --out <file>\n```\n", encoding="utf-8"
+            )
+            see = f"let the script choose and print the path; see {WORKING_FILES_DOC}"
+            self.assertEqual(
+                [
+                    f"skills/alpha/SKILL.md:3 leaves --output to the agent; {see}",
+                    f"skills/alpha/SKILL.md:4 leaves --plans to the agent; {see}",
+                    f"skills/alpha/SKILL.md:4 leaves --output to the agent; {see}",
+                    f"skills/alpha/references/notes.md:2 leaves --output-dir to the agent; {see}",
+                    f"skills/alpha/references/notes.md:2 leaves --out to the agent; {see}",
+                ],
+                output_placeholder_problems(root),
             )
 
     def test_shell_command_extraction_ignores_keywords_patterns_and_functions(self) -> None:

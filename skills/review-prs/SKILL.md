@@ -15,11 +15,11 @@ Run the whole skill, from the first command to the report, in the turn that invo
 
 Every `--re-review` needs `--scope`, which applies to all of them: `full` reviews the whole pull request again, `incremental` reviews in full only the files whose changes differ from the last review (the rest only get dispositions), and `auto` picks one of those for each pull request from how much changed since its last review. If `--re-review` was given without `--scope`, ask the user once with AskUserQuestion, offering `auto`, `full`, and `incremental` in that order; never choose one yourself. Each re-review's `NOTE <selector> Scope ...` line says which scope ran and why; include it in the report.
 
-1. **Batch mode only.** Enumerate, passing the user's `--repository owner/repo` (repeatable) or `--repository-set NAME`, or neither for the configured set, plus `--force` if given, and a new batch file path:
+1. **Batch mode only.** Enumerate, passing the user's `--repository owner/repo` (repeatable) or `--repository-set NAME`, or neither for the configured set, plus `--force` if given:
    ```bash
-   python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" enumerate --output "<batch file>"
+   python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" enumerate
    ```
-   Review each printed `PULL <owner/repo#number>`. Report each `REPOSITORY_FAILED <repository> <error>`.
+   Review each printed `PULL <owner/repo#number>`. Report each `REPOSITORY_FAILED <repository> <error>`. The last line, `BATCH <batch file>`, names the batch file it wrote under a new temporary directory; step 6 uses it.
 2. **Prepare** the pull requests in groups of up to four, one `--pull` per pull request in one command (or `--re-review` for one given with `--re-review`), adding `--scope` when the command has a `--re-review`, and `--force` when given. Canaries are prepared the same way, as one `--canary` followed by a `--pull` for each of the group's pull requests. `--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`. Give it a timeout of at least 10 minutes:
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" prepare --host "<runtime>" --pull "<owner/repo#number>" --pull "<owner/repo#number>"
@@ -36,7 +36,7 @@ Every `--re-review` needs `--scope`, which applies to all of them: `full` review
    python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" finalize --run "<run directory>" --run "<run directory>"
    ```
    Report each `RECORDED <selector> verdict=<verdict> findings=<count> <report>` line, and each `FAILED <run directory> <reason>` on stderr as that pull request's failure. A version race or archive failure is that pull request's failure, never permission to guess the next version. Each canary also prints `CANARY <selector> <root>` and `SHA256 <hash> <path>` lines: its pair is written only under its own new temporary root and nothing configured is read or written; report every root and its hashes and leave them for inspection. Then start the next group at step 2.
-6. **Batch mode only.** After every pull request has finished or failed, run the pipeline's `advance --batch <batch file>` command and report its `WATERMARK` lines. It moves a repository's watermark only past merged pull requests that now have a review, so failures stay eligible. `--pull`, `--re-review`, and `--canary` never advance a watermark.
+6. **Batch mode only.** After every pull request has finished or failed, run the pipeline's `advance --batch <batch file>` command with the file step 1 printed and report its `WATERMARK` lines. It moves a repository's watermark only past merged pull requests that now have a review, so failures stay eligible. `--pull`, `--re-review`, and `--canary` never advance a watermark.
 7. **Before reporting**, in every mode, run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. Report each `UNFINALIZED <selector> <run directory>` as that pull request's failure; `ALL_FINALIZED` means every run was recorded. If any pipeline command was denied or could not run, report every pull request without a `RECORDED` line as failed, and never report the run as a success.
 
 ## With the Workflow tool

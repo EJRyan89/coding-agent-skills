@@ -1,7 +1,7 @@
 """Deterministic repository cleanup steps, so the agent only relays results and asks the user's confirmations.
 
     sweep         discover, then sync, plan, and apply every repository at once, printing only what needs the
-                  agent: decisions, failures, and summaries
+                  agent: decisions, failures, and summaries; plans go to a new temporary directory by default
     discover      list the repositories to clean and check that the GitHub CLI is signed in
     sync          switch to the default branch, fetch and prune, and fast-forward the default branch
     plan          classify branches and worktrees without changing the repository, and write the plan file
@@ -36,6 +36,8 @@ from typing import Any
 import pr_status
 
 SCRIPTS = Path(__file__).resolve().parent
+# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
+SKILLS_ROOT = SCRIPTS.parents[1]
 PLAN_SCHEMA_VERSION = 1
 EXIT_SKIP, EXIT_FATAL, EXIT_STOP = 1, 2, 3
 RELEASE_PREFIX = "release/"
@@ -757,6 +759,28 @@ def print_summary(plan: dict[str, Any]) -> None:
 
 # sweep ----------------------------------------------------------------------------------------------------------
 
+def deployed_skill_roots() -> tuple[Path, ...]:
+    """The directories the deployer owns, whatever skills directory this script runs from."""
+    home = Path.home()
+    return home / ".claude" / "skills", home / ".agents" / "skills"
+
+
+def plans_directory(explicit: str | None) -> Path:
+    """Where a sweep keeps its plan files: `explicit`, or a new temporary directory.
+
+    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
+    explicit directory inside any skills directory is refused before anything runs.
+    """
+    if explicit is None:
+        return Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
+    target = Path(explicit).resolve()
+    for root in (SKILLS_ROOT, *deployed_skill_roots()):
+        if target.is_relative_to(root.resolve()):
+            raise ValueError(f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans "
+                             "in a new temporary directory")
+    return Path(explicit)
+
+
 def sweep_repository(root: str, repos_root: str, plans: str, services: Services,
                      skip_checkout: bool = False) -> dict[str, Any]:
     """sync, plan, and apply one repository, capturing its lines. Runs on a sweep worker thread."""
@@ -817,7 +841,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     sweep_parser = commands.add_parser("sweep")
     sweep_parser.add_argument("--repos-root", required=True)
-    sweep_parser.add_argument("--plans", required=True, help="directory for each repository's plan file")
+    sweep_parser.add_argument("--plans", help="directory for each repository's plan file; defaults to a new "
+                                              "temporary directory")
     sweep_parser.add_argument("--skip-checkout", action="store_true",
                               help="clean a dirty main worktree without switching branches, as sync does")
     sweep_parser.add_argument("target", nargs="?")
@@ -845,7 +870,13 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     services = services or Services()
     try:
         if options.command == "sweep":
-            return sweep(options.target, options.repos_root, options.plans, services, options.skip_checkout)
+            try:
+                plans = plans_directory(options.plans)
+            except ValueError as exc:
+                emit("ERROR", exc)
+                return EXIT_FATAL
+            emit("PLANS", plans.as_posix())
+            return sweep(options.target, options.repos_root, str(plans), services, options.skip_checkout)
         if options.command == "discover":
             repositories = discover(options.target, options.repos_root, services)
             for path in repositories:

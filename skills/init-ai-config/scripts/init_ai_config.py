@@ -3,7 +3,8 @@
 
     inventory    list AI configuration files with their ownership, and the conflicts to resolve
     detect       list build files, formatter configs, workflows, parity callers, and MCP servers
-    export-spec  write the JSON spec of an existing repository generator, to edit and reinstall
+    export-spec  write the JSON spec of an existing repository generator, to edit and reinstall (by default in a new
+                 temporary directory)
     install      validate a JSON spec, then install the generator and its tests into a repository
 
 Every command takes --root (default: the current directory), which must be a Git repository.
@@ -22,6 +23,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import tomllib
 import types
 from typing import Any
@@ -111,6 +113,32 @@ MCP_JSON_SOURCES = ((".mcp.json", "mcpServers"), (".github/mcp.json", "mcpServer
 
 class SetupError(Exception):
     """An expected failure reported as FAILED."""
+
+
+# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
+SKILLS_ROOT = SCRIPTS.parents[1]
+
+
+def deployed_skill_roots() -> tuple[Path, ...]:
+    """The directories the deployer owns, whatever skills directory this script runs from."""
+    home = Path.home()
+    return home / ".claude" / "skills", home / ".agents" / "skills"
+
+
+def spec_output(explicit: Path | None) -> Path:
+    """Where export-spec writes: `explicit`, or spec.json in a new temporary directory.
+
+    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
+    explicit path inside any skills directory is refused before anything is written.
+    """
+    if explicit is None:
+        return Path(tempfile.mkdtemp(prefix="init-ai-config-spec-")) / "spec.json"
+    target = explicit.resolve()
+    for root in (SKILLS_ROOT, *deployed_skill_roots()):
+        if target.is_relative_to(root.resolve()):
+            raise SetupError(f"{explicit} is inside the skills directory {root}; omit --output to write under a "
+                             "new temporary directory")
+    return explicit
 
 
 def _relative(root: Path, path: Path) -> str:
@@ -512,7 +540,7 @@ def main(arguments: list[str] | None = None) -> int:
     commands.add_parser("inventory")
     commands.add_parser("detect")
     export_parser = commands.add_parser("export-spec")
-    export_parser.add_argument("--output", type=Path, required=True)
+    export_parser.add_argument("--output", type=Path, help="spec file; defaults to a new temporary directory")
     install_parser = commands.add_parser("install")
     install_parser.add_argument("--spec", type=Path, required=True)
     install_parser.add_argument("--replace", action="store_true",
@@ -528,7 +556,7 @@ def main(arguments: list[str] | None = None) -> int:
         elif args.command == "detect":
             lines = detect(root)
         elif args.command == "export-spec":
-            lines = export_spec(root, args.output)
+            lines = export_spec(root, spec_output(args.output))
         else:
             code, lines = install(root, args.spec, args.replace)
     except SetupError as error:

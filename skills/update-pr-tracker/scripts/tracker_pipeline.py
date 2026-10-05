@@ -1,6 +1,7 @@
 """Deterministic update-pr-tracker steps, so the orchestrating agent only asks the user about reviews.
 
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
+             (by default in a new temporary directory)
     update   render the owned dashboard section from that file, with every other argument taken from the configuration
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures print
@@ -23,7 +24,7 @@ from pr_change import FATAL_ERROR_KINDS, ChangeDetector
 from review_archive import ArchiveError
 from review_config import ConfigurationError, default_config_path, load_config, resolve_repositories
 from review_github import GitHubClient, GitHubError
-from review_io import PersistenceError, atomic_write_json, map_in_order
+from review_io import PersistenceError, atomic_write_json, map_in_order, working_path
 from review_operation import reviewed_head
 from review_records import RecordError
 from update_pr_tracker import Row, TrackerError, review_candidates, update_dashboard_rows, validate_items
@@ -216,7 +217,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     scope = collect_parser.add_mutually_exclusive_group()
     scope.add_argument("--repository", action="append", dest="repositories")
     scope.add_argument("--repository-set")
-    collect_parser.add_argument("--output", required=True, type=Path)
+    collect_parser.add_argument("--output", type=Path, help="input file; defaults to a new temporary directory")
     update_parser = commands.add_parser("update")
     update_parser.add_argument("--input", required=True, type=Path)
     update_parser.add_argument("--remove", action="append", default=[], help="owner/repo#number; repeatable")
@@ -224,7 +225,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     args = parser.parse_args(arguments)
     try:
         if args.command == "collect":
-            results = collect(args.output, repositories=args.repositories, repository_set=args.repository_set,
+            output = working_path(args.output, "update-pr-tracker-input-", "input.json")
+            results = collect(output, repositories=args.repositories, repository_set=args.repository_set,
                               config_path=args.config, services=services)
             for repository, result in results.items():
                 print(f"REPOSITORY {repository} pulls={result}" if isinstance(result, int)
@@ -234,7 +236,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 print(f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
                       "and the dashboard keeps its previous rows", file=sys.stderr)
                 return 2
-            print(f"INPUT {args.output}")
+            print(f"INPUT {output}")
             return 0
         dashboard, rows = update(args.input, removals=args.remove, config_path=args.config, services=services)
         print(f"UPDATED {dashboard} rows={len(rows)}")

@@ -12,11 +12,13 @@ Every step is one command of `repo_cleanup.py`, run exactly as shown. Do not run
 
 ## 1. Sweep
 
-Choose a new plan directory outside every repository, such as `<temp directory>/repo-cleanup`. Pass the user's argument as the target, or omit it to sweep every repository:
+Pass the user's argument as the target, or omit it to sweep every repository:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --plans "<plan directory>" "<target>"
+python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" "<target>"
 ```
+
+It first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file.
 
 A target is a repository name under `{{REPOS_ROOT}}` or an absolute path to a directory that contains a `.git` directory. An `ERROR` before any `REPO` line (for example, the GitHub CLI is not signed in) stops the run. Otherwise the sweep cleans every repository at once, each exactly as `sync`, `plan`, and `apply` would: it switches to the default branch, runs `git fetch --all --prune`, prunes worktree records, fast-forwards the default branch, classifies branches and worktrees, and performs only the safe actions, re-checking every recorded branch tip first.
 
@@ -37,7 +39,7 @@ A `CHECKOUT failed <reason>` line means the switch to the default branch failed;
 For each `dirty` repository, call `AskUserQuestion` with question `"<REPO_NAME>: The main worktree has uncommitted changes. Continue (branch switch will be skipped) or abort this repo?"`, header `"Dirty tree"`, and options `"Continue"` and `"Abort"`. For Abort, report the repository as aborted. For Continue, sweep that repository again without switching its branch, passing its path as the target:
 
 ```bash
-python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --plans "<plan directory>" --skip-checkout "<repo>"
+python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" --skip-checkout "<repo>"
 ```
 
 It prints the same block as the first sweep, now with the repository's state after cleaning; handle that state as step 2 describes.
