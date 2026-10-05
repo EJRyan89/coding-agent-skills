@@ -2,7 +2,8 @@
 
     enumerate  list the pull requests a batch run should review, to a batch file
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
-    dispatch   run the bounded Copilot CLI host for a prepared run (copilot-cli runtime only)
+    dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
+    wait       wait a bounded time for that host: its result, its failure, or how long it has run
     workflow   write a Claude Code Workflow script that starts every role of several runs at once
     check      validate reviewer results; set aside invalid ones and say which roles to rerun
     validate-result  tell a reviewer whether check would accept its result, changing nothing
@@ -33,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from review_archive import ArchiveError, latest_record
 from review_config import (
@@ -44,7 +45,22 @@ from review_config import (
     validate_repository_identity,
 )
 from review_github import GitHubClient, GitHubError
+from review_hosts import (
+    HostSuperseded,
+    claim_holds,
+    host_lock,
+    host_log_path,
+    host_state,
+    new_claim,
+    record_host_process,
+    run_copilot,
+    staging_path,
+    write_outcome,
+)
+from review_hosts import Runner as CopilotRunner
+from review_hosts import subprocess_runner as copilot_subprocess_runner
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, map_in_order, read_json
+from review_process import ProcessStatus, process_status, start_detached
 from review_operation import (
     ReviewOperationError,
     commit_adapter_result,
@@ -144,6 +160,13 @@ class Services:
     fetch_tarball: Callable[[str, str, Path], None] = github_tarball_fetcher
     resolve_runtime: Callable[[str, str | None], str] = resolve_runtime
     today: Callable[[], date] = date.today
+    # The detached Copilot CLI host: how it starts, how its process is probed, and the clock wait and check use.
+    launch: Callable[[Sequence[str], Path, Path], int] = start_detached
+    probe: Callable[[int], ProcessStatus] = process_status
+    clock: Callable[[], float] = time.time
+    sleep: Callable[[float], None] = time.sleep
+    copilot_runner: CopilotRunner = copilot_subprocess_runner
+    copilot_executable: str | None = None
 
 
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
@@ -633,10 +656,31 @@ def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
     return seconds
 
 
-def check_run(run: Path) -> dict[str, Any]:
-    """Validate results. An invalid result is set aside so a fresh reviewer can rerun that role, once."""
+def _is_copilot_host_run(state: dict[str, Any]) -> bool:
+    return state["runtime"] == "copilot-cli" and state["kind"] == "entrypoint"
+
+
+def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
+    """Validate results. An invalid result is set aside so a fresh reviewer can rerun that role, once.
+
+    A Copilot CLI host still starting or running is not ready: its role is reported as running and left alone.
+    Setting the role aside raises its attempt count, which a late host finds and so never promotes its result.
+    """
     run = run.resolve()
     state = load_run(run)
+    if not _is_copilot_host_run(state):
+        return _check_roles(run, state)
+    services = services or Services()
+    with host_lock(run):
+        state = load_run(run)  # dispatch and the host change it under this lock
+        host = host_state(run, probe=services.probe, now=services.clock())
+        if host.status in {"starting", "running"}:
+            return {"selector": state["selector"], "errors": {}, "retry": [], "failed": {},
+                    "running": {state["roles"][0]["id"]: host.elapsed}}
+        return _check_roles(run, state)
+
+
+def _check_roles(run: Path, state: dict[str, Any]) -> dict[str, Any]:
     errors = role_errors(run, state)
     retry: list[dict[str, Any]] = []
     failed: dict[str, str] = {}
@@ -653,7 +697,7 @@ def check_run(run: Path) -> dict[str, Any]:
         else:
             failed[identity] = errors[identity]
     atomic_write_json(run / RUN_FILE, state)
-    return {"selector": state["selector"], "errors": errors, "retry": retry, "failed": failed}
+    return {"selector": state["selector"], "errors": errors, "retry": retry, "failed": failed, "running": {}}
 
 
 def validate_result(run: Path, role: str) -> str | None:
@@ -731,30 +775,105 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
     return script, text, count
 
 
-def dispatch_copilot(run: Path) -> Path:
-    from review_hosts import run_copilot
+WAIT_POLL_SECONDS = 2
+MAX_WAIT_SECONDS = 300
 
+
+def _copilot_run(run: Path) -> tuple[Path, dict[str, Any], str]:
+    """A Copilot CLI host run, its state, and its one reviewer, whose name every host failure carries."""
     run = run.resolve()
     state = load_run(run)
-    if state["runtime"] != "copilot-cli" or state["kind"] != "entrypoint":
+    if not _is_copilot_host_run(state):
         raise PipelineError("dispatch runs only a Copilot CLI entrypoint reviewer; delegate the ROLE prompts instead")
-    attempt = sum(1 for _ in run.glob("copilot-isolation-*")) + 1
-    if attempt == 1:
-        mark_dispatched(run)
+    return run, state, state["roles"][0]["id"]
+
+
+def dispatch_copilot(run: Path, services: Services) -> Path:
+    """Start the Copilot CLI host detached and return at once; refuse while an earlier host is still going."""
+    run, state, reviewer = _copilot_run(run)
+    with host_lock(run):
+        host = host_state(run, probe=services.probe, now=services.clock())
+        if host.status == "running":
+            raise PipelineError(f"{reviewer}: the Copilot CLI host is still running (PID {host.pid})")
+        if host.status == "starting":
+            raise PipelineError(f"{reviewer}: the Copilot CLI host is still starting")
+        claim = new_claim(run, generation=load_run(run)["attempts"][reviewer], now=services.clock())
+        if claim["attempt"] == 1:
+            mark_dispatched(run)
+    pid = services.launch(
+        [sys.executable, "-B", str(Path(__file__).resolve()), "host", "--run", str(run), "--token", claim["token"]],
+        run, host_log_path(run, claim["attempt"]),
+    )
+    with host_lock(run):
+        record_host_process(run, claim["token"], pid, services.probe(pid).start_time)
+    return run
+
+
+def run_host(run: Path, token: str, services: Services) -> str:
+    """The detached host dispatch starts: run Copilot, promote its result only while the claim holds, and record
+    the outcome. Returns the outcome, or `superseded` without running when the claim no longer holds."""
+    run, state, reviewer = _copilot_run(run)
+    generation = lambda: load_run(run)["attempts"][reviewer]  # noqa: E731
+    with host_lock(run):
+        claim = claim_holds(run, token, generation())
+        if claim is None:
+            return "superseded"
+        # Dispatch records the host; this covers a dispatch stopped between starting it and recording it.
+        record_host_process(run, token, os.getpid(), services.probe(os.getpid()).start_time)
+
+    def promote(staging: Path, result: Path) -> bool:
+        with host_lock(run):
+            if claim_holds(run, token, generation()) is None:
+                return False
+            os.replace(staging, result)
+            return True
+
+    attempt = claim["attempt"]
     try:
         run_copilot(
             run_directory=run,
             materialized_root=Path(state["reviewer_root"]),
             request_path=Path(state["request_path"]),
             result_path=Path(state["result_path"]),
+            staging_path=staging_path(run, attempt),
+            promote=promote,
             diagnostic_path=run / f"copilot-diagnostic-{attempt}.jsonl",
             isolation_root=run / f"copilot-isolation-{attempt}",
+            runner=services.copilot_runner,
+            executable=services.copilot_executable,
         )
-    except RuntimeContractError as exc:
-        # Name the reviewer, as check's FAILED lines do; check still decides whether it is rerun.
-        reviewer = ", ".join(role["id"] for role in state["roles"])
-        raise RuntimeContractError(f"{reviewer}: {exc}") from exc
-    return Path(state["result_path"])
+        status, reason = "dispatched", None
+    except HostSuperseded as exc:
+        status, reason = "superseded", str(exc)
+    except EXPECTED_ERRORS as exc:
+        status, reason = "failed", str(exc)
+    write_outcome(run, claim, status, reason)
+    return status
+
+
+def wait_for_host(run: Path, timeout: int, services: Services) -> tuple[Path | None, int]:
+    """Wait at most `timeout` seconds for the host: its result file when it is done, or None and the seconds it
+    has run so far. A host that failed, ended without a result, or was never dispatched is a PipelineError naming
+    the reviewer."""
+    run, state, reviewer = _copilot_run(run)
+    deadline = services.clock() + timeout
+    while True:
+        host = host_state(run, probe=services.probe, now=services.clock())
+        if host.status == "done" and host.outcome == "dispatched":
+            return Path(state["result_path"]), host.elapsed
+        if host.status not in {"starting", "running"}:
+            raise PipelineError(f"{reviewer}: {host.reason}")
+        remaining = deadline - services.clock()
+        if remaining <= 0:
+            return None, host.elapsed
+        services.sleep(min(WAIT_POLL_SECONDS, remaining))
+
+
+def wait_seconds(value: str) -> int:
+    seconds = int(value)
+    if not 1 <= seconds <= MAX_WAIT_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be from 1 to {MAX_WAIT_SECONDS} seconds")
+    return seconds
 
 
 def _sha256(path: Path) -> str:
@@ -978,6 +1097,14 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     prepare_parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES),
                                 help="the runtime this session runs in; decides an auto runtime before PATH does")
     commands.add_parser("dispatch").add_argument("--run", required=True, type=Path)
+    wait_parser = commands.add_parser("wait")
+    wait_parser.add_argument("--run", required=True, type=Path)
+    wait_parser.add_argument("--timeout", required=True, type=wait_seconds,
+                             help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}")
+    # Run only by dispatch, as the detached host process; never by an orchestrator.
+    host_parser = commands.add_parser("host", help=argparse.SUPPRESS)
+    host_parser.add_argument("--run", required=True, type=Path)
+    host_parser.add_argument("--token", required=True)
     commands.add_parser("workflow").add_argument("--run", action="append", required=True, type=Path, dest="runs",
                                                  help="prepared run directory; repeatable")
     validate_result_parser = commands.add_parser("validate-result")
@@ -1067,13 +1194,23 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print(SCRIPT_END)
             return 0
         if args.command == "dispatch":
-            print(f"DISPATCHED {dispatch_copilot(args.run)}")
+            print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
+            return 0
+        if args.command == "host":
+            print(f"OUTCOME {run_host(args.run, args.token, services or Services())}")
+            return 0
+        if args.command == "wait":
+            result, elapsed = wait_for_host(args.run, args.timeout, services or Services())
+            if result is None:
+                print(f"RUNNING {elapsed}s")
+                return 1
+            print(f"DISPATCHED {result}")
             return 0
         if args.command == "check":
             pending = failed = False
             for run in args.runs:
                 try:
-                    outcome = check_run(run)
+                    outcome = check_run(run, services)
                 except EXPECTED_ERRORS as exc:
                     print(f"FAILED {run} {exc}", file=sys.stderr)
                     failed = True
@@ -1084,9 +1221,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     _print_model(selector, role)
                 for identity, error in outcome["failed"].items():
                     print(f"FAILED {selector} {identity} {error}")
-                if not outcome["errors"]:
+                for identity, elapsed in outcome["running"].items():
+                    print(f"RUNNING {selector} {identity} {elapsed}s")
+                if not outcome["errors"] and not outcome["running"]:
                     print(f"ALL_VALID {selector}")
-                pending = pending or bool(outcome["retry"])
+                pending = pending or bool(outcome["retry"]) or bool(outcome["running"])
                 failed = failed or bool(outcome["failed"])
             return 2 if failed else 1 if pending else 0
         if args.command == "finalize":
