@@ -168,9 +168,35 @@ class LayoutTests(unittest.TestCase):
             with self.subTest(names=names), self.assertRaisesRegex(TrackerError, "author.name"):
                 run([item()], author_names=names)
 
+    def test_the_findings_cell_reads_the_ledger_when_the_review_has_one(self) -> None:
+        def ledger(must: int = 0, should: int = 0, suggestion: int = 0, *, addressed: int = 0, since: int | None = None,
+                   version: int = 3) -> dict:
+            return {"open": {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion},
+                    "addressed": addressed, "since": since, "version": version}
+
+        for review, expected in (
+            (ai("CHANGES_REQUESTED", suggestion=1) | {"ledger": ledger(1, 0, 1, addressed=3, since=1)},
+             "1M 1S open since v1 · 3 addressed · v3"),
+            (ai("APPROVED") | {"ledger": ledger(addressed=2)}, "none open · 2 addressed · v3"),
+            (ai("CHANGES_REQUESTED", must=1) | {"ledger": ledger(1, since=1, version=1)}, "1M open · v1"),
+            (ai("APPROVED", should=2) | {"ledger": None}, "2H"),
+        ):
+            row = item(number=4)
+            row.update(author="ada", reviewed_head_sha=HEAD, ai_review=review)
+            content, _ = run([row])
+            with self.subTest(expected=expected):
+                self.assertIn(f"| {expected} | [AI Review]", content)
+
     def test_presentation_fields_are_validated(self) -> None:
+        good = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": 0, "since": 1, "version": 2}
+        validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": good}}])
         for field, value in (("author_name", ""), ("review_decision", "MERGED"), ("ai_review", {"verdict": "OK"}),
-                             ("ai_review", ai("APPROVED") | {"counts": {"MUST_FIX": -1, "SHOULD_FIX": 0, "SUGGESTION": 0}})):
+                             ("ai_review", ai("APPROVED") | {"counts": {"MUST_FIX": -1, "SHOULD_FIX": 0, "SUGGESTION": 0}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": -1}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good | {"since": 3}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good | {"since": None}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good | {"open": {"MUST_FIX": 1}}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": "1M"})):
             bad = item()
             bad[field] = value
             with self.subTest(field=field), self.assertRaises(TrackerError):

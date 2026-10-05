@@ -91,6 +91,27 @@ class Row:
         return f"{self.item['repository']}#{self.item['number']}"
 
 
+def _count(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_ledger(ledger: Any) -> bool:
+    """The latest review's finding-ledger summary, or None for a review recorded before ledgers."""
+    if ledger is None:
+        return True
+    if not isinstance(ledger, dict) or set(ledger) != {"open", "addressed", "since", "version"}:
+        return False
+    opened, since, version = ledger["open"], ledger["since"], ledger["version"]
+    if not isinstance(opened, dict) or set(opened) != {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"} \
+            or not all(_count(value) for value in opened.values()):
+        return False
+    if not _count(ledger["addressed"]) or not _count(version) or version < 1:
+        return False
+    if not any(opened.values()):
+        return since is None
+    return _count(since) and 1 <= since <= version
+
+
 def _validate_presentation(item: dict[str, Any]) -> None:
     key = f"{item.get('repository')}#{item.get('number')}"
     name = item["author_name"]
@@ -101,8 +122,11 @@ def _validate_presentation(item: dict[str, Any]) -> None:
     review = item["ai_review"]
     if review is None:
         return
-    if not isinstance(review, dict) or set(review) != {"verdict", "counts", "report"}:
+    # An input collected before reviews kept a finding ledger has no ledger key.
+    if not isinstance(review, dict) or set(review) - {"ledger"} != {"verdict", "counts", "report"}:
         raise TrackerError(f"Tracker item {key}.ai_review must have verdict, counts, and report")
+    if not _valid_ledger(review.get("ledger")):
+        raise TrackerError(f"Tracker item {key}.ai_review.ledger is invalid")
     if review["verdict"] not in AI_VERDICTS:
         raise TrackerError(f"Tracker item {key}.ai_review.verdict is invalid")
     counts = review["counts"]
@@ -313,13 +337,30 @@ def _findings(counts: dict[str, int] | None) -> str:
     return " ".join(parts) or "-"
 
 
+def _ledger_findings(ledger: dict[str, Any]) -> str:
+    """Open findings by severity and the version the oldest dates from, findings addressed, and the review version,
+    such as `1M 1S open since v1 · 3 addressed · v3`."""
+    opened = _findings(ledger["open"])
+    if opened == "-":
+        parts = ["none open"]
+    else:
+        parts = [f"{opened} open" + (f" since v{ledger['since']}" if ledger["since"] != ledger["version"] else "")]
+    if ledger["addressed"]:
+        parts.append(f"{ledger['addressed']} addressed")
+    parts.append(f"v{ledger['version']}")
+    return " · ".join(parts)
+
+
 def _ai_cells(row: Row) -> list[str]:
     """AI Result, Findings, and AI Review cells; stale or incomplete reviews are marked in the last cell."""
     review = row.item["ai_review"]
     if row.item["reviewed_head_sha"] is None:
         return ["-", "-", "-"]
     verdict = AI_VERDICTS[review["verdict"]] if review else "-"
-    findings = _findings(review["counts"]) if review else "-"
+    if review and review.get("ledger"):
+        findings = _ledger_findings(review["ledger"])
+    else:
+        findings = _findings(review["counts"]) if review else "-"
     link = ""
     if review and review["report"]:
         link = f"[AI Review](vscode://file/{quote(review['report'].replace(chr(92), '/'), safe='/:')})"

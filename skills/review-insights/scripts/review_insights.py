@@ -20,7 +20,9 @@ the report is written, so `decide` resolves exactly the flags it listed.
 
 Each recommendation also counts its findings by the reviewer that raised them and the model that reviewer ran on,
 read from the review record: a finding raised by several reviewers counts for each, and a reviewer whose record
-names no model counts under `unknown`.
+names no model counts under `unknown`. Beside the flags, each count says how many of those findings the pull
+request's latest re-review judged addressed and how many still present, read from its finding ledger whatever the
+range, so acceptance shows without anyone flagging.
 """
 
 from __future__ import annotations
@@ -47,17 +49,21 @@ from review_config import (
 )
 from review_flags import FlagError, default_flags_path, load_store, resolve_flag
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, RecordError, valid_analyzer, validate_record_pair
+from review_archive import pull_records
+from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
 
 # Version 2 adds each recommendation's decision_history and linked_flags. Version 3 links a flag only to the
 # finding in the review version it names; earlier reports linked it to whatever finding had its ID in the latest
 # review, so their links are dropped when read, and a decision on one resolves no flag until it is regenerated.
 # Version 4 adds each recommendation's reviewers breakdown; an earlier report has none until it is regenerated.
 # Version 5 adds each recommendation's kind and the analyzer recommendations; every earlier one is a category one.
-SCHEMA_VERSION = 5
-READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5}
+# Version 6 adds each reviewer row's addressed and still_present counts; an earlier report's rows have null for both
+# until it is regenerated.
+SCHEMA_VERSION = 6
+READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6}
 UNKNOWN_MODEL = "unknown"
-REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings"}
+REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}
+OUTCOMES = ("addressed", "still_present")
 EVIDENCE_FIELDS = {"repository", "pull_number", "review_version", "finding_id", "path", "line", "title"}
 DECISIONS = ("accepted", "rejected", "deferred")
 KINDS = ("category", "analyzer")
@@ -158,18 +164,51 @@ def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str
     return named or [(part, UNKNOWN_MODEL) for part in parts]
 
 
-def reviewer_breakdown(pairs: list[Pair], flagged: set[FindingKey]) -> list[dict[str, Any]]:
-    """How many of a recommendation's findings each reviewer raised on each model, and how many of those an open
-    flag names. A finding raised by several reviewers counts for each, so the counts can sum past the findings."""
+def finding_outcomes(archive_root: Path, records: list[tuple[Path, dict[str, Any]]]) -> dict[FindingKey, str]:
+    """The latest disposition of each analyzed finding's ledger entry, read from every review of its pull request,
+    in range or not. A finding is judged in the ledger that ends its chain: the last review before the next
+    initial review, which starts a new ledger. A finding no later review judged has no outcome."""
+    outcomes: dict[FindingKey, str] = {}
+    pulls = sorted({(record["repository"].lower(), record["pull_request"]["number"]) for _, record in records})
+    for repository, number in pulls:
+        try:
+            history = pull_records(archive_root, repository, number)
+        except (KeyError, ValueError, OSError, RecordError) as exc:
+            raise InsightError(f"Invalid review history for {repository}#{number}: {exc}") from exc
+        ledgers = ledger_history(history)
+        starts = sorted(record["review"]["version"] for record in history if record["review"]["mode"] == "initial")
+        for record in history:
+            version = record["review"]["version"]
+            end = max(v for v in ledgers if v >= version and not any(version < s <= v for s in starts))
+            for entry in ledgers[end]:
+                if not entry["dispositions"]:
+                    continue
+                for occurrence in ({"version": entry["version"], "id": entry["id"]}, *entry["repeats"]):
+                    if occurrence["version"] == version:
+                        outcomes[(repository, number, version, occurrence["id"])] = \
+                            entry["dispositions"][-1]["disposition"]
+    return outcomes
+
+
+def reviewer_breakdown(pairs: list[Pair], flagged: set[FindingKey],
+                       outcomes: dict[FindingKey, str]) -> list[dict[str, Any]]:
+    """How many of a recommendation's findings each reviewer raised on each model, how many of those an open flag
+    names, and how many a later review judged addressed or still present. A finding raised by several reviewers
+    counts for each, so the counts can sum past the findings."""
     counts: Counter[tuple[str, str]] = Counter()
     flagged_counts: Counter[tuple[str, str]] = Counter()
+    outcome_counts: dict[str, Counter[tuple[str, str]]] = {outcome: Counter() for outcome in OUTCOMES}
     for record, finding in pairs:
-        is_flagged = _finding_key(record, finding) in flagged
+        key = _finding_key(record, finding)
+        outcome = outcomes.get(key)
         for pair in raised_by(record, finding):
             counts[pair] += 1
-            flagged_counts[pair] += int(is_flagged)
+            flagged_counts[pair] += int(key in flagged)
+            if outcome in outcome_counts:
+                outcome_counts[outcome][pair] += 1
     return [
-        {"reviewer": reviewer, "model": model, "findings": count, "flagged_findings": flagged_counts[(reviewer, model)]}
+        {"reviewer": reviewer, "model": model, "findings": count, "flagged_findings": flagged_counts[(reviewer, model)],
+         **{outcome: outcome_counts[outcome][(reviewer, model)] for outcome in OUTCOMES}}
         for (reviewer, model), count in sorted(
             counts.items(), key=lambda item: (-item[1], item[0][0].casefold(), item[0][1].casefold())
         )
@@ -217,9 +256,10 @@ def analyze(
     *,
     flags: list[dict[str, Any]] | None = None,
     previous: dict[tuple[str, ...], dict[str, Any]] | None = None,
+    outcomes: dict[FindingKey, str] | None = None,
 ) -> dict[str, Any]:
     """Recommendations by category, then by analyzer rule; a subject already in `previous` keeps its decision and
-    history."""
+    history. `outcomes` holds each finding's latest disposition (see finding_outcomes)."""
     category_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
     groups: dict[tuple[str, ...], list[Pair]] = {}
@@ -260,7 +300,7 @@ def analyze(
             "decision": prior.get("decision", "deferred"),
             "decision_history": list(prior.get("decision_history", [])),
             "linked_flags": links,
-            "reviewers": reviewer_breakdown(pairs, flagged),
+            "reviewers": reviewer_breakdown(pairs, flagged, outcomes or {}),
         }
         if key[0] == "category":
             category = key[1]
@@ -301,10 +341,12 @@ def _render_recommendation(item: dict[str, Any], heading: str) -> list[str]:
         "",
     ])
     if item["reviewers"]:
-        lines.extend(["| Reviewer | Model | Findings | Flagged |", "| --- | --- | --- | --- |"])
+        lines.extend(["| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
+                      "| --- | --- | --- | --- | --- | --- |"])
         for row in item["reviewers"]:
             lines.append(f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
-                         f"{row['flagged_findings']} |")
+                         f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
+                         f"{_outcome(row['still_present'])} |")
         lines.append("")
     if item["kind"] == "analyzer":
         lines.extend(["Findings:", ""])
@@ -372,12 +414,18 @@ def _cell(value: str) -> str:
     return value.replace("\\", "\\\\").replace("|", "\\|")
 
 
+def _outcome(count: int | None) -> str:
+    """An outcome count, or `-` in a report written before outcomes were counted."""
+    return "-" if count is None else str(count)
+
+
 def _validate_reviewers(value: Any, identifier: str) -> None:
     if not isinstance(value, list) or any(
         not isinstance(row, dict)
         or set(row) != REVIEWER_FIELDS
         or not all(isinstance(row[field], str) and row[field] for field in ("reviewer", "model"))
         or not all(type(row[field]) is int and row[field] >= 0 for field in ("findings", "flagged_findings"))
+        or not all(row[field] is None or type(row[field]) is int and row[field] >= 0 for field in OUTCOMES)
         for row in value
     ):
         raise InsightError(f"{identifier}.reviewers must be a list of reviewer counts")
@@ -453,6 +501,10 @@ def load_report(path: Path) -> dict[str, Any]:
             item["linked_flags"] = []
         if report["schema_version"] < 4:
             item.setdefault("reviewers", [])
+        if report["schema_version"] < 6 and isinstance(item.get("reviewers"), list):
+            for row in item["reviewers"]:
+                if isinstance(row, dict):
+                    row.update({outcome: row.get(outcome) for outcome in OUTCOMES})
         _validate_reviewers(item.get("reviewers"), item["id"])
     report["schema_version"] = SCHEMA_VERSION
     return report
@@ -490,7 +542,7 @@ def create_report(
         "repositories": sorted(validate_repository_identity(value) for value in repositories),
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
-        **analyze(records, flags=flags, previous=previous),
+        **analyze(records, flags=flags, previous=previous, outcomes=finding_outcomes(archive_root, records)),
         "records": [
             {
                 "path": str(path),
@@ -624,7 +676,8 @@ def _print_report(report: dict[str, Any]) -> None:
                   f"decision={item['decision']} flags={flags}")
         for row in item["reviewers"]:
             print(f"REVIEWER {item['id']} {row['reviewer']} model={row['model']} "
-                  f"findings={row['findings']} flagged={row['flagged_findings']}")
+                  f"findings={row['findings']} flagged={row['flagged_findings']} "
+                  f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}")
         for entry in item.get("evidence", [])[:EXAMPLES_PRINTED]:
             print(f"EXAMPLE {item['id']} {_example(entry)}")
 

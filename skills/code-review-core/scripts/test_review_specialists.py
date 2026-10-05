@@ -259,6 +259,85 @@ class DedupeTests(unittest.TestCase):
             self.assertEqual(expected, merged[0].get("analyzer"), (qualifier, csharp))
 
 
+class RepeatLinkTests(unittest.TestCase):
+    """A reviewer links a finding that repeats another one, so the verdict counts the problem once."""
+
+    PRIOR = {"v1:F001": "SHOULD_FIX"}
+    STILL = [{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}]
+
+    def assemble(self, roles: list[tuple[str, list[dict], list[dict]]], prior: dict[str, str] | None = None) -> dict:
+        prior = self.PRIOR if prior is None else prior
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {str(n): "x" for n in range(130, 140)}},
+                    "roles": []}
+            for identity, findings, dispositions in roles:
+                result_file = Path(temporary) / f"{identity}.json"
+                result_file.write_text(json.dumps({"model": "m", "summary": "s", "findings": findings,
+                                                   "prior_dispositions": dispositions}), encoding="utf-8")
+                owned = {key: value for key, value in prior.items() if dispositions}
+                plan["roles"].append({"id": identity, "category": identity, "files": ["Sources/Q.cs"],
+                                      "result_file": str(result_file), "prior_ids": list(owned),
+                                      "prior_severities": owned, "dispositions_only": False})
+            request = {"repository": "example/one", "pull_number": 7, "pull_request": {"head_sha": "b" * 40}}
+            errors = rs.check(plan)
+            if errors:
+                raise rs.SpecialistError("; ".join(errors.values()))
+            result = rs.assemble(plan, request)
+        validate_adapter_result(result, expected_repository="example/one", expected_number=7,
+                                expected_head_sha="b" * 40, prior_ids=list(prior), prior_severities=prior)
+        return result
+
+    @staticmethod
+    def finding(line: int, severity: str = "SHOULD_FIX", body: str | None = None, **extra: object) -> dict:
+        return {"path": "Sources/Q.cs", "line": line, "severity": severity, "title": f"Line {line}",
+                "body": body or f"Problem on line {line}.", **extra}
+
+    def test_a_role_links_a_repeat_by_index_or_by_prior_finding_id(self) -> None:
+        result = self.assemble([("csharp-review", [
+            self.finding(134), self.finding(135, repeats=0), self.finding(136, "SUGGESTION", repeats="v1:F001")],
+            self.STILL)])
+        self.assertEqual([None, "csharp-review-1", "v1:F001"],
+                         [finding.get("repeats") for finding in result["findings"]])
+
+    def test_an_invalid_link_is_a_retryable_result_error(self) -> None:
+        for findings, dispositions, message in (
+            ([self.finding(134, repeats=1)], [], "not a finding in this result"),
+            ([self.finding(134, repeats=0)], [], "cannot repeat itself"),
+            ([self.finding(134), self.finding(135, repeats=0), self.finding(136, repeats=1)], [], "itself a repeat"),
+            ([self.finding(134, "SUGGESTION"), self.finding(135, "MUST_FIX", repeats=0)], [], "less severe"),
+            ([self.finding(134, "MUST_FIX", repeats="v1:F001")], self.STILL, "less severe"),
+            ([self.finding(134, repeats="v1:F009")], self.STILL, "not a prior finding listed for you"),
+            ([self.finding(134, repeats="v1:F001")],
+             [{**self.STILL[0], "disposition": "addressed"}], "still_present or partially_addressed"),
+            ([self.finding(134, repeats=True)], [], "repeats must be"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(rs.SpecialistError, message):
+                self.assemble([("csharp-review", findings, dispositions)])
+
+    def test_a_link_follows_a_merge_to_its_end_and_is_dropped_when_the_merge_made_it_less_severe(self) -> None:
+        # The qualifier finding repeats a prior must-fix and merges with the C# finding on the same line, so a C#
+        # finding that repeats it repeats the prior one.
+        result = self.assemble([
+            ("qualifier-review", [self.finding(134, body=QUALIFIER_134, repeats="v1:F001")], self.STILL),
+            ("csharp-review", [self.finding(134, body=CSHARP_134), self.finding(135, "SUGGESTION", repeats=0)], []),
+        ], prior={"v1:F001": "MUST_FIX"})
+        self.assertEqual([("qualifier-review + csharp-review", "v1:F001"), ("csharp-review", "v1:F001")],
+                         [(finding["source"], finding.get("repeats")) for finding in result["findings"]])
+        # Merging with a must-fix makes the merged finding more severe than the should-fix it repeated.
+        result = self.assemble([
+            ("qualifier-review", [self.finding(134, body=QUALIFIER_134, repeats="v1:F001")], self.STILL),
+            ("csharp-review", [self.finding(134, "MUST_FIX", body=CSHARP_134)], []),
+        ])
+        self.assertEqual([("MUST_FIX", None)],
+                         [(finding["severity"], finding.get("repeats")) for finding in result["findings"]])
+        # Two findings one reviewer linked, merged into one, do not repeat themselves.
+        result = self.assemble([
+            ("csharp-review", [self.finding(134, body=CSHARP_134), self.finding(134, body=CSHARP_134[:60], repeats=0),
+                               self.finding(136, "SUGGESTION", repeats=0)], []),
+        ], prior={})
+        self.assertEqual([None, "csharp-review-1"], [finding.get("repeats") for finding in result["findings"]])
+
+
 class SpecialistFixture:
     """A trusted commit holding the fixture manifest and a head that changes db/Procs.sql, src/A.cs, and HEAD_EXTRA."""
 

@@ -140,7 +140,7 @@ class ReviewedHeadTests(unittest.TestCase):
     def test_legacy_index_counts_as_reviewed(self) -> None:
         self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
         self.write_legacy()
-        self.assertEqual({"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "report": None},
+        self.assertEqual({"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "ledger": None, "report": None},
                          review_operation.reviewed_head(self.root, "owner/repo", 5))
         self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5, 6]))
 
@@ -164,7 +164,7 @@ class ReviewedHeadTests(unittest.TestCase):
         record = {"pull_request": {"head_sha": "b" * 40}, "review": {"version": 2, "verdict": "INCOMPLETE", "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, "coverage": {"unavailable_sources": ["big.sql"]}}}
         with mock.patch.object(review_operation, "latest_record", return_value=record):
             self.assertEqual({"head_sha": "b" * 40, "source": "record", "version": 2, "incomplete": True, "verdict": "INCOMPLETE",
-                              "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                              "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, "ledger": None,
                               "report": str(self.directory / "review-v2.md")},
                              review_operation.reviewed_head(self.root, "owner/repo", 5))
 
@@ -174,7 +174,7 @@ class ReviewedHeadTests(unittest.TestCase):
             [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_operation.py"), "reviewed-heads",
              "--repository", "owner/repo", "--archive-root", str(self.root), "5", "6"],
             capture_output=True, text=True, check=True)
-        self.assertEqual({"5": {"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "report": None}, "6": None},
+        self.assertEqual({"5": {"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "ledger": None, "report": None}, "6": None},
                          json.loads(result.stdout))
 
     def test_missing_watermark_starts_today(self) -> None:

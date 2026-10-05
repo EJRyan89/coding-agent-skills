@@ -931,15 +931,15 @@ class ReReviewTests(PipelineFixture):
         ready = self.prepare(re_review=True, scope="full")
         self.assertEqual("re-review", ready["mode"])
         request = json.loads(Path(ready["request_path"]).read_text(encoding="utf-8"))
-        self.assertEqual(["F001"], [finding["id"] for finding in request["prior_findings"]])
+        self.assertEqual(["v1:F001"], [finding["id"] for finding in request["prior_findings"]])
         self.assertNotIn("evidence", request["prior_findings"][0])
         role = ready["roles"][0]
-        self.assertIn('"id": "F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"))
+        self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"))
 
         self.write_role_result(role)
         self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])
         self.write_role_result(role, dispositions=[
-            {"finding_id": "F001", "disposition": "addressed", "rationale": "Now returns a float."}])
+            {"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}])
         rp.finalize(ready["run"])
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual((2, "re-review"), (record["review"]["version"], record["review"]["mode"]))
@@ -967,10 +967,10 @@ class ReReviewTests(PipelineFixture):
         run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual([("generic-review", ["CLAUDE.md"], False)], self.planned(run))
         role = rp.load_run(Path(run))["roles"][0]
-        self.assertIn('"id": "F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"),
+        self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"),
                       "a finding in an unchanged file still needs its disposition")
         self.write_role_result(role, dispositions=[
-            {"finding_id": "F001", "disposition": "still_present", "rationale": "Unchanged."}])
+            {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}])
         code, out, err = self.run_main("finalize", "--run", run)
         self.assertEqual(0, code, err)
         review = latest_record(self.archive, REPOSITORY, 12)["review"]
@@ -983,6 +983,30 @@ class ReReviewTests(PipelineFixture):
         report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
         self.assertIn("| **Scope** | incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 (requested "
                       "incremental: an incremental re-review was requested) |\n", report)
+
+    def test_a_must_fix_only_judged_still_present_is_offered_again_and_keeps_requesting_changes(self) -> None:
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0], findings=[{**self.finding(), "severity": "MUST_FIX"}])
+        rp.finalize(ready["run"])
+        for version, change in ((2, "Changed again\n"), (3, "And again\n")):
+            self.push({"CLAUDE.md": change})
+            code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--scope", "incremental")
+            self.assertEqual(0, code, err)
+            run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
+            role = rp.load_run(Path(run))["roles"][0]
+            # Version 2 reports no findings, so version 3 sees the finding only through the ledger.
+            self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"), version)
+            self.write_role_result(role, dispositions=[
+                {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}])
+            code, out, err = self.run_main("finalize", "--run", run)
+            self.assertEqual(0, code, err)
+        record = latest_record(self.archive, REPOSITORY, 12)
+        self.assertEqual((3, [], "CHANGES_REQUESTED"),
+                         (record["review"]["version"], record["findings"], record["review"]["verdict"]))
+        self.assertEqual([{"version": 1, "id": "F001", "severity": "MUST_FIX", "category": "General", "state": "open",
+                           "judged_in": 3, "dispositions": [{"version": 2, "disposition": "still_present"},
+                                                            {"version": 3, "disposition": "still_present"}],
+                           "repeats": []}], record["ledger"])
 
     def test_an_unchanged_specialist_only_gives_dispositions_or_is_left_out(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -1090,7 +1114,7 @@ class ReReviewTests(PipelineFixture):
 
         prior = rp.load_run(Path(runs["example/one#12"]))["roles"][0]
         self.write_role_result(prior, dispositions=[
-            {"finding_id": "F001", "disposition": "addressed", "rationale": "Now returns a float."}])
+            {"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}])
         self.write_role_result(rp.load_run(Path(runs["example/one#13"]))["roles"][0])
         code, out, err = self.run_main("finalize", "--run", runs["example/one#13"], "--run", runs["example/one#12"])
         self.assertEqual(0, code, err)

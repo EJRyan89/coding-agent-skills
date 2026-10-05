@@ -9,7 +9,7 @@ This is the behavior the four public skills of the `code-review-operations` bund
 | `review-prs` | Review open non-draft pull requests and merged pull requests after a watermark; review one exact configured pull request, draft or not, without enumeration; skip an unchanged reviewed head; allow explicit subset selection; preserve retry eligibility after partial failure. | Validated JSON/Markdown review pair and per-repository state. |
 | `review-prs --re-review` | Re-review a previously reviewed pull request; require a changed head unless forced; compare every prior finding; create the next review version without overwriting history; never post to GitHub. | Versioned JSON/Markdown review pair. |
 | `update-pr-tracker` | Track pull requests authored by, assigned to, or involving the configured user; place each in a counted section from the user's own GitHub review state; treat an update as unchanged only when every file the pull request changes is identical in content and file mode to what was reviewed, and uncertain responses to requested changes as awaiting response; omit approved pull requests unchanged since approval; remove a row on the user's direct assessment without acting on GitHub; show missing/current/stale AI review status independently of section; optionally offer to generate missing or stale reviews; preserve user-authored dashboard content. | One marker-owned dashboard section. |
-| `review-insights` | Filter reviews by explicit inclusive dates; aggregate severity/category themes; record an accept/reject/defer decision per recommendation; retain reproducible evidence. | Versioned summary JSON plus Markdown projection. |
+| `review-insights` | Filter reviews by explicit inclusive dates; aggregate severity/category themes; count findings later judged addressed or still present per reviewer, model, and category; record an accept/reject/defer decision per recommendation; retain reproducible evidence. | Versioned summary JSON plus Markdown projection. |
 | `flag-review-finding` | Add, list, and resolve review-improvement observations with stable IDs and optional PR/finding association. | Locked structured flag store. |
 
 Repository targeting is always one or more full `owner/repo` identities or a named configured set. Pagination must complete per repository. Authentication, rate limits, malformed responses, and unexpected API failures fail closed.
@@ -26,8 +26,9 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 
 - The bundled generic reviewer and a repository-provided specialist both receive the same versioned request and must return the same normalized result shape.
 - The bundled generic reviewer prompt and result schema resolve from the installed `code-review-core` skill, not from a repository checkout or branch.
-- Re-review requires exactly one disposition for every prior finding.
-- The core assigns stable finding IDs, calculates verdicts, renders reports, and owns durable writes.
+- Re-review requires exactly one disposition for every prior finding, and every open or unverified entry of the pull request's finding ledger is a prior finding until a review closes it.
+- A finding that repeats another one is linked to it with `repeats` and counted once, never twice. A link must name an existing finding at least as severe that is not itself a repeat.
+- The core assigns stable finding IDs, keeps the finding ledger, calculates verdicts from its open entries, renders reports, and owns durable writes. An initial review starts a fresh ledger; a record written before ledgers stays valid and is read as having no history.
 - Repository reviewers are loaded only from an immutable merge-base target or an explicitly configured trusted ref. Every loaded file is declared, materialized, and hashed.
 - GitHub review comments, including Copilot code-review comments, are evidence only. Terminal prose and JSONL runtime diagnostics are never the durable adapter result.
 

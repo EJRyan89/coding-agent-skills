@@ -126,7 +126,7 @@ def tracker_item(repository: str, node: dict[str, Any], archive_root: Path) -> d
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
     item["ai_review"] = (
-        {key: reviewed[key] for key in ("verdict", "counts", "report")} if reviewed else None
+        {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
     )
     return item
 
