@@ -103,8 +103,60 @@
         }
       }
     },
-    "findings": { "type": "array" },
-    "prior_dispositions": { "type": "array" },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repeats": {
+            "description": "Present only when the finding reports the same problem as another one, which it is counted with: a finding in this review (version equal to the record's) or the first finding of a ledger entry (an earlier version). Absent from records written before ledgers.",
+            "$ref": "#/$defs/finding_reference"
+          }
+        }
+      }
+    },
+    "prior_dispositions": {
+      "description": "One per prior finding the review was given. In a record with a ledger, finding_id is the ledger entry's v<version>:<finding ID>; in an older record, a bare finding ID of the version it compared with.",
+      "type": "array"
+    },
+    "ledger": {
+      "description": "Every problem raised on the pull request since its latest initial review, one entry each, ordered by version and finding ID. A re-review extends the latest record's ledger; an initial review starts a fresh one. Absent from records written before ledgers, which are read as having no history.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"],
+        "properties": {
+          "version": { "description": "The review version where the problem first appeared.", "type": "integer", "minimum": 1 },
+          "id": { "description": "Its finding ID in that version.", "type": "string", "pattern": "^F[0-9]{3,}$" },
+          "severity": { "enum": ["MUST_FIX", "SHOULD_FIX", "SUGGESTION"] },
+          "category": { "type": "string", "minLength": 1 },
+          "state": {
+            "description": "open when the latest judgment raised or repeated it or found it still_present or partially_addressed; closed when addressed or superseded; unverified when unable_to_verify. Open entries count toward the verdict.",
+            "enum": ["open", "closed", "unverified"]
+          },
+          "judged_in": { "description": "The version that last raised, repeated, or disposed of it.", "type": "integer", "minimum": 1 },
+          "dispositions": {
+            "description": "Each later review's disposition of it, oldest first.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["version", "disposition"],
+              "properties": {
+                "version": { "type": "integer", "minimum": 2 },
+                "disposition": { "enum": ["addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"] }
+              }
+            }
+          },
+          "repeats": {
+            "description": "The findings linked to it as repeats, oldest first.",
+            "type": "array",
+            "items": { "$ref": "#/$defs/finding_reference" }
+          }
+        }
+      }
+    },
     "github_comments": {
       "description": "The open review comments the reviewers gave dispositions for, as listed in the request.",
       "type": "array",
@@ -119,5 +171,16 @@
   "dependentRequired": {
     "github_comments": ["comment_dispositions"],
     "comment_dispositions": ["github_comments"]
+  },
+  "$defs": {
+    "finding_reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "id"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "id": { "type": "string", "pattern": "^F[0-9]{3,}$" }
+      }
+    }
   }
 }

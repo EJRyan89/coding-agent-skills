@@ -364,7 +364,8 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
       "severity": "MUST_FIX | SHOULD_FIX | SUGGESTION",
       "title": "<one-line headline naming the defect, at most {title_maximum} characters>",
       "body": "<the issue and the rule it breaks>",
-      "analyzer": {{"coverage": "available | known | custom-candidate", "tool": "<analyzer>", "rule": "<rule>"}}}}
+      "analyzer": {{"coverage": "available | known | custom-candidate", "tool": "<analyzer>", "rule": "<rule>"}},
+      "repeats": <index of another finding above> | "<prior finding id>"}}
   ],
   "prior_dispositions": [
     {{"finding_id": "<id>", "disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
@@ -379,6 +380,11 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
 finding listed below, and `comment_dispositions` exactly one for every open review comment listed
 below; each must be empty when none are listed. A review comment is a request from a person: decide
 from the current code whether it was addressed, not whether you agree with it.
+
+Give a finding `repeats` only when it reports the same problem as another finding, so the problem
+counts once: the 0-based index of that finding in your `findings`, or the `id` of a prior finding
+listed below that you marked `still_present` or `partially_addressed`. The finding it names must be
+at least as severe and must not have `repeats` itself.
 
 Give a finding `analyzer` only when a diagnostic analyzer could catch that kind of issue without
 a reviewer; leave it out when finding it needs judgment about intent or behavior. ANALYZERS_FILE
@@ -628,6 +634,7 @@ def build_plan(
         role["result_file"] = str(work / f"{identity}.result.json")
         role["prompt_file"] = str(work / f"{identity}.prompt.md")
         role["prior_ids"] = [f["id"] for f in assigned[identity]]
+        role["prior_severities"] = {f["id"]: f.get("severity") for f in assigned[identity]}
         role["comment_ids"] = [c["id"] for c in assigned_comments[identity]]
         atomic_write_text(work / f"{identity}.files.txt", "\n".join(role["files"]) + "\n")
         atomic_write_text(work / f"{identity}.diff", "".join(diff[p]["numbered"] for p in role["files"]))
@@ -765,8 +772,65 @@ def load_role_result(
     )
     if role["dispositions_only"] and findings:
         raise SpecialistError(f"{name}: disposition-only review returned findings")
+    _check_repeats(name, findings, dispositions, role)
     return {"model": value["model"], "summary": value["summary"].strip(), "findings": findings,
             "prior_dispositions": dispositions, "comment_dispositions": comment_dispositions}
+
+
+def _check_repeats(name: str, findings: list[dict[str, Any]], dispositions: list[dict[str, Any]],
+                   role: dict[str, Any]) -> None:
+    """A finding's `repeats` is the index of another finding in the result that is not itself a repeat, or a prior
+    finding the role judged still present; either way at least as severe."""
+    judged = {item["finding_id"]: item["disposition"] for item in dispositions}
+    for index, finding in enumerate(findings):
+        if "repeats" not in finding:
+            continue
+        target = finding["repeats"]
+        if isinstance(target, bool) or not isinstance(target, (int, str)):
+            raise SpecialistError(f"{name}: finding {index} repeats must be the index of another finding in this "
+                                  "result or a prior finding ID")
+        if isinstance(target, int):
+            if not 0 <= target < len(findings):
+                raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a finding in this "
+                                      "result")
+            if target == index:
+                raise SpecialistError(f"{name}: finding {index} cannot repeat itself")
+            if "repeats" in findings[target]:
+                raise SpecialistError(f"{name}: finding {index} repeats finding {target}, which is itself a repeat; "
+                                      "give the finding that one repeats")
+            severity = SEVERITY[findings[target]["severity"]]
+        else:
+            if target not in role["prior_ids"]:
+                raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a prior finding listed "
+                                      "for you")
+            if judged.get(target) not in {"still_present", "partially_addressed"}:
+                raise SpecialistError(f"{name}: finding {index} repeats {target}, so mark that prior finding "
+                                      "still_present or partially_addressed")
+            severity = role.get("prior_severities", {}).get(target)
+            if severity not in RANK:
+                raise SpecialistError(f"{name}: finding {index} repeats {target}, whose severity is unknown")
+        if RANK[severity] > RANK[SEVERITY[finding["severity"]]]:
+            raise SpecialistError(f"{name}: finding {index} repeats a less severe finding; link a finding only to "
+                                  "one at least as severe")
+
+
+def _resolve_repeats(merged: list[dict[str, Any]], prior_severities: dict[str, str]) -> dict[int, Any]:
+    """Each merged finding's link, followed to the finding at the end of its chain: another merged finding (by
+    position) or a prior finding ID. A link that comes back to its own finding, or whose end is now less severe
+    because a merge raised the linking finding's severity, is dropped, so the finding counts on its own."""
+    position = {id(item): index for index, item in enumerate(merged)}
+    resolved: dict[int, Any] = {}
+    for index, item in enumerate(merged):
+        link, seen = item.get("link"), {id(item)}
+        while link is not None and isinstance(link, dict) and link.get("link") is not None and id(link) not in seen:
+            seen.add(id(link))
+            link = link["link"]
+        if link is None or (isinstance(link, dict) and id(link) in seen):
+            continue
+        severity = prior_severities.get(link) if isinstance(link, str) else link["severity"]
+        if severity in RANK and RANK[severity] <= RANK[item["severity"]]:
+            resolved[index] = link if isinstance(link, str) else position[id(link)]
+    return resolved
 
 
 def _role_dispositions(name: str, dispositions: Any, key: str, ids: list[str], what: str) -> list[dict[str, Any]]:
@@ -830,11 +894,14 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     summaries: list[tuple[str, str]] = []
     dispositions: list[dict[str, Any]] = []
     comment_dispositions: list[dict[str, Any]] = []
+    prior_severities: dict[str, str] = {}
     for role in plan["roles"]:
         result = _load(plan, role)
         summaries.append((role["id"], result["summary"]))
         dispositions.extend(result["prior_dispositions"])
         comment_dispositions.extend(result["comment_dispositions"])
+        prior_severities.update(role.get("prior_severities", {}))
+        landed: list[dict[str, Any]] = []  # the merged finding each of this role's findings became part of
         for finding in result["findings"]:
             path, line = finding["path"], finding["line"]
             text = added[path][str(line)]
@@ -843,6 +910,7 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                          "evidence": f"{path}:{line} adds: {text.strip() or '(blank line)'}", "sources": [role["id"]],
                          **({"analyzer": finding["analyzer"]} if "analyzer" in finding else {})}
             duplicate = next((item for item in merged if same_issue(item, candidate)), None)
+            landed.append(duplicate or candidate)
             if duplicate is None:
                 merged.append(candidate)
                 continue
@@ -857,6 +925,15 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 duplicate["analyzer"] = candidate["analyzer"]
             if role["id"] not in duplicate["sources"]:
                 duplicate["sources"].append(role["id"])
+        # A role links a repeat by its own index or a prior finding ID; a merged finding keeps the first link it gets,
+        # and none to itself, which two linked findings merged into one would give it.
+        for finding, item in zip(result["findings"], landed):
+            target = finding.get("repeats")
+            link = target if isinstance(target, str) else None if target is None else landed[target]
+            if link is not None and link is not item and item.get("link") is None:
+                item["link"] = link
+    links = _resolve_repeats(merged, prior_severities)
+    keys = [f"{item['sources'][0]}-{index}" for index, item in enumerate(merged, start=1)]
     # One paragraph per specialist, labelled only when there is more than one.
     summary = summaries[0][1] if len(summaries) == 1 else "\n\n".join(
         f"**{role}:** {text}" for role, text in summaries)
@@ -865,12 +942,14 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         "summary": summary,
         "status": "complete",
         "findings": [
-            {"candidate_key": f"{item['sources'][0]}-{index}", "severity": item["severity"],
+            {"candidate_key": keys[index], "severity": item["severity"],
              "category": item["category"], "path": item["path"], "line": item["line"], "title": item["title"],
              "body": item["body"],
              "evidence": item["evidence"], "source": " + ".join(item["sources"]),
-             **({"analyzer": item["analyzer"]} if "analyzer" in item else {})}
-            for index, item in enumerate(merged, start=1)
+             **({"analyzer": item["analyzer"]} if "analyzer" in item else {}),
+             **({"repeats": links[index] if isinstance(links[index], str) else keys[links[index]]}
+                if index in links else {})}
+            for index, item in enumerate(merged)
         ],
         "prior_dispositions": dispositions,
         **({"comment_dispositions": comment_dispositions} if request.get("github_comments") else {}),

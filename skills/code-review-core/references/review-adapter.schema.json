@@ -54,6 +54,11 @@
           "body": { "type": "string", "minLength": 1 },
           "evidence": { "type": "string", "minLength": 1 },
           "source": { "type": "string", "minLength": 1 },
+          "repeats": {
+            "description": "Present only when the finding reports the same problem as another one, so it counts once: another finding's candidate_key, or the ID of a prior finding whose disposition is still_present or partially_addressed. The finding it names must be at least as severe and must not have repeats itself.",
+            "type": "string",
+            "minLength": 1
+          },
           "analyzer": {
             "description": "Present only when a diagnostic analyzer could catch the finding: a rule in an analyzer the repository already has but does not enforce (available), a rule in an established analyzer it does not use (known), or a mechanically detectable pattern no rule covers (custom-candidate, whose rule is a proposed pattern name).",
             "type": "object",

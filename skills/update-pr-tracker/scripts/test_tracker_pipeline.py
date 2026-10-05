@@ -251,6 +251,44 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
 
+    def test_the_findings_cell_shows_the_ledger_of_a_three_version_review(self) -> None:
+        policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+        ledger: list[dict[str, Any]] = []
+        for version, findings, dispositions in (
+            (1, [("leak", "MUST_FIX"), ("name", "SHOULD_FIX")], []),
+            (2, [], [("v1:F001", "still_present"), ("v1:F002", "addressed")]),
+            (3, [("style", "SUGGESTION")], [("v1:F001", "still_present")]),
+        ):
+            request = {
+                "repository": "example/one", "pull_number": 2, "pull_url": "https://github.com/example/one/pull/2",
+                "title": "Change 2", "base_ref": "main", "base_sha": "d" * 40, "head_sha": OLD_HEAD,
+                "mode": "initial" if version == 1 else "re-review",
+                "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            }
+            result = {
+                "protocol_version": 1, "repository": "example/one", "pull_number": 2, "head_sha": OLD_HEAD,
+                "summary": "Fixture", "reviewer": "fixture", "status": "complete", "usage": None,
+                "findings": [{"candidate_key": key, "severity": severity, "category": "Correctness", "path": "a.py",
+                              "line": index, "body": "Fix.", "evidence": "Evidence.", "source": "fixture"}
+                             for index, (key, severity) in enumerate(findings, start=1)],
+                "prior_dispositions": [{"finding_id": identifier, "disposition": value, "rationale": "Checked."}
+                                       for identifier, value in dispositions],
+            }
+            record = build_record(request, result, version=version, policy=policy, prior_ledger=ledger)
+            commit_record(self.archive, "example/one", 2, record,
+                          expected_latest_version=None if version == 1 else version - 1)
+            ledger = record["ledger"]
+        self.serve_default_pages()
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        second = next(item for item in json.loads(self.input.read_text(encoding="utf-8")) if item["number"] == 2)
+        self.assertEqual({"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1}, "addressed": 1, "since": 1,
+                          "version": 3}, second["ai_review"]["ledger"])
+        code, _, err = self.run_main("update", "--input", str(self.input))
+        self.assertEqual(0, code, err)
+        self.assertIn("| Changes Requested | 1M 1S open since v1 · 1 addressed · v3 | [AI Review]",
+                      self.dashboard.read_text(encoding="utf-8"))
+
     def test_remove_drops_one_row_and_no_candidates_without_the_flag(self) -> None:
         self.collect()
         code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "Example/One#1")
