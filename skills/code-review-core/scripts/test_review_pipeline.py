@@ -726,6 +726,154 @@ class WorkflowTests(PipelineFixture):
         self.assertIn("FAILED", err)
 
 
+class WaitReviewersTests(PipelineFixture):
+    """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's reviewers
+    run. The skill's tool grants end with the turn that invoked it, so check and finalize must run in that turn (#40)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.clock = FakeClock()
+        self.services.clock = self.clock
+        self.services.sleep = self.sleep
+        self.during_wait: Any = lambda: None
+
+    def sleep(self, seconds: float) -> None:
+        self.clock.sleep(seconds)
+        self.during_wait()
+
+    def start(self, *selectors: str) -> list[dict[str, Any]]:
+        """Prepare each pull request and write one Workflow script for all of them, as review-prs does."""
+        readies = [self.prepare(selector) for selector in selectors or (SELECTOR,)]
+        with mock.patch("time.time", return_value=self.clock.now):
+            code, _, err = self.run_main("workflow", *self.runs(*readies))
+        self.assertEqual(0, code, err)
+        return readies
+
+    @staticmethod
+    def runs(*readies: dict[str, Any]) -> list[str]:
+        return [argument for ready in readies for argument in ("--run", str(ready["run"]))]
+
+    def wait(self, *readies: dict[str, Any], timeout: str = "90") -> tuple[int, str, str]:
+        return self.run_main("wait-reviewers", *self.runs(*readies), "--timeout", timeout)
+
+    def test_a_role_without_a_result_is_running_until_the_timeout_and_never_longer(self) -> None:
+        ready, = self.start()
+        self.clock.now += 30
+        self.assertEqual((1, f"RUNNING {SELECTOR} generic-review 120s\n", ""), self.wait(ready))
+        self.assertEqual(10_120.0, self.clock.now, "wait-reviewers returns at its timeout")
+        self.assertEqual((1, f"RUNNING {SELECTOR} generic-review 125s\n", ""), self.wait(ready, timeout="5"))
+
+    def test_a_result_written_during_the_wait_ends_it_and_the_review_is_recorded_in_the_same_turn(self) -> None:
+        # The whole Workflow path from the pipeline's side: no step waits for a notification in a later turn.
+        ready, = self.start()
+        role = ready["roles"][0]
+
+        def reviewer_finishes() -> None:
+            if self.clock.now >= 10_010:
+                self.write_role_result(role, findings=[self.finding()])
+
+        self.during_wait = reviewer_finishes
+        self.assertEqual((0, f"READY {SELECTOR}\n", ""), self.wait(ready))
+        self.assertEqual(10_010.0, self.clock.now, "it returns at the first poll that finds every result valid")
+        self.assertEqual((0, f"READY {SELECTOR}\n", ""), self.wait(ready), "a finished run returns without sleeping")
+        self.assertEqual(10_010.0, self.clock.now)
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), self.run_main("check", *self.runs(ready))[:2])
+        code, out, err = self.run_main("finalize", *self.runs(ready))
+        self.assertEqual(0, code, err)
+        self.assertTrue(out.startswith(f"RECORDED {SELECTOR} verdict="), out)
+        self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", *self.runs(ready)))
+
+    def test_an_invalid_result_is_left_to_its_reviewer_and_to_check(self) -> None:
+        ready, = self.start()
+        role = ready["roles"][0]
+        self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is unchanged context
+        run_file = ready["run"] / rp.RUN_FILE
+        before = run_file.read_bytes()
+        self.assertEqual((1, f"RUNNING {SELECTOR} generic-review 10s\n", ""), self.wait(ready, timeout="10"))
+        self.assertTrue(Path(role["result_file"]).exists(), "its reviewer may still be fixing it")
+        self.assertEqual([], list(Path(role["result_file"]).parent.glob("*.rejected-*")))
+        self.assertEqual(before, run_file.read_bytes(), "only check sets a result aside and counts a retry")
+
+    def test_each_run_and_role_is_reported_on_its_own_line(self) -> None:
+        git(self.checkout, "switch", "-c", "trusted", self.base)
+        manifest = json.loads(json.dumps(SPECIALIST_MANIFEST))
+        manifest["specialists"].append({**manifest["specialists"][0], "id": "python-style", "category": "Style"})
+        self.write({"review/specialists.json": json.dumps(manifest)})
+        git(self.checkout, "add", ".")
+        git(self.checkout, "commit", "-m", "two specialists")
+        trusted = git(self.checkout, "rev-parse", "HEAD")
+        git(self.checkout, "switch", "feature")
+        self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": trusted})
+        self.github.pulls[13] = rest_pull(13, self.head, self.base)
+        first, second = self.start(SELECTOR, "example/one#13")
+        self.assertEqual(["python-review", "python-style"], [role["id"] for role in first["roles"]])
+        self.write_role_result(first["roles"][1], findings=[self.finding()])
+        for role in second["roles"]:
+            self.write_role_result(role, findings=[self.finding()])
+        self.assertEqual((1, f"RUNNING {SELECTOR} python-review 4s\nREADY example/one#13\n", ""),
+                         self.wait(first, second, timeout="4"))
+
+    def test_a_role_past_the_reviewer_limit_is_overdue_and_check_retries_it(self) -> None:
+        # A backstop for a Workflow whose completion never reaches the session: the wait always ends.
+        self.assertEqual(3600, rp.REVIEWER_LIMIT_SECONDS)
+        ready, = self.start()
+        self.clock.now += 3600 - 5
+        self.assertEqual((0, f"OVERDUE {SELECTOR} generic-review 3601s\n", ""), self.wait(ready))
+        self.assertEqual(10_000.0 + 3601, self.clock.now, "it stops waiting once nothing is running")
+        code, out, _ = self.run_main("check", *self.runs(ready))
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} generic-review "), out)
+
+    def test_copilot_hosts_unprepared_directories_and_unbounded_timeouts_are_refused(self) -> None:
+        not_a_run = self.root / "not a run"
+        not_a_run.mkdir()
+        code, out, err = self.run_main("wait-reviewers", "--run", str(not_a_run), "--timeout", "5")
+        self.assertEqual((2, ""), (code, out))
+        self.assertTrue(err.startswith(f"FAILED {not_a_run} "), err)
+        for timeout in ("0", "301", "ninety"):
+            with self.subTest(timeout=timeout), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self.run_main("wait-reviewers", "--run", str(not_a_run), "--timeout", timeout)
+        self.configure(self.repository_reviewer("review/copilot.json"))
+        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
+        ready = self.prepare()
+        code, out, err = self.run_main("wait-reviewers", "--run", str(ready["run"]), "--timeout", "5")
+        self.assertEqual((2, ""), (code, out))
+        self.assertEqual(f"FAILED {ready['run']} {SELECTOR} runs on the Copilot CLI host; wait for it with wait\n", err)
+
+
+class UnfinalizedTests(PipelineFixture):
+    """A run that never reached finalize is the pull request's failure, so the session never reports success (#40)."""
+
+    def test_a_prepared_run_is_unfinalized_until_finalize_records_it(self) -> None:
+        self.github.pulls[13] = rest_pull(13, self.head, self.base)
+        first, second = self.prepare(), self.prepare("example/one#13")
+        runs = ["--run", str(first["run"]), "--run", str(second["run"])]
+        self.assertEqual(
+            (2, f"UNFINALIZED {SELECTOR} {first['run']}\nUNFINALIZED example/one#13 {second['run']}\n", ""),
+            self.run_main("unfinalized", *runs))
+        self.write_role_result(first["roles"][0], findings=[self.finding()])
+        self.assertEqual(0, self.run_main("finalize", "--run", str(first["run"]))[0])
+        self.assertEqual((2, f"UNFINALIZED example/one#13 {second['run']}\n", ""), self.run_main("unfinalized", *runs))
+        self.write_role_result(second["roles"][0], findings=[self.finding()])
+        self.assertEqual(0, self.run_main("finalize", "--run", str(second["run"]))[0])
+        self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", *runs))
+
+    def test_a_run_check_failed_stays_unfinalized(self) -> None:
+        ready = self.prepare()
+        self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])  # no result: one rerun
+        self.assertEqual(2, self.run_main("check", "--run", str(ready["run"]))[0])  # the rerun wrote none either
+        self.assertEqual((2, f"UNFINALIZED {SELECTOR} {ready['run']}\n", ""),
+                         self.run_main("unfinalized", "--run", str(ready["run"])))
+
+    def test_a_directory_that_is_not_a_prepared_run_fails(self) -> None:
+        other = self.root / "not a run"
+        other.mkdir()
+        code, out, err = self.run_main("unfinalized", "--run", str(other))
+        self.assertEqual((2, ""), (code, out))
+        self.assertTrue(err.startswith(f"FAILED {other} "), err)
+
+
 class RetryTests(PipelineFixture):
     def test_unhashable_disposition_values_are_retried_not_crashes(self) -> None:
         self.github.threads = [thread("dev", "Why zero?", line=2)]
