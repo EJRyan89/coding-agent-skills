@@ -289,19 +289,11 @@ class RepeatTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
                 validate_record(broken)
 
-    def test_the_schemas_publish_the_ledger_and_the_repeats_link(self) -> None:
-        references = SCRIPT_DIRECTORY.parent / "references"
-        record = json.loads((references / "review-record.schema.json").read_text(encoding="utf-8"))
-        item = record["properties"]["ledger"]["items"]
-        self.assertFalse(item["additionalProperties"])
-        self.assertEqual({"version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"},
-                         set(item["required"]))
-        self.assertEqual(["open", "closed", "unverified"], item["properties"]["state"]["enum"])
-        self.assertEqual({"version", "id"}, set(record["$defs"]["finding_reference"]["required"]))
-        self.assertEqual("#/$defs/finding_reference",
-                         record["properties"]["findings"]["items"]["properties"]["repeats"]["$ref"])
-        self.assertNotIn("ledger", record["required"], "a record written before ledgers stays valid")
-        adapter = json.loads((references / "review-adapter.schema.json").read_text(encoding="utf-8"))
+    def test_the_adapter_schema_publishes_the_repeats_link(self) -> None:
+        # The record's ledger and finding references are stated in docs/code-review-operations-contract.md and
+        # checked against validate_record by tests/code-review/test_format_contract.py.
+        adapter = json.loads((SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json")
+                             .read_text(encoding="utf-8"))
         self.assertEqual("string", adapter["properties"]["findings"]["items"]["properties"]["repeats"]["type"])
 
     def test_a_record_without_a_ledger_validates_and_reads_as_no_history(self) -> None:
