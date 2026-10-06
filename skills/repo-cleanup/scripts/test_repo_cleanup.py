@@ -12,7 +12,9 @@ import sys
 import tempfile
 import threading
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,6 +24,8 @@ import repo_cleanup as rc
 REMOTE_URL = "https://github.com/owner/repo.git"
 # The repositories every Fixture test starts from, built once per process by setUpModule.
 TEMPLATE: Path | None = None
+# What a sweep step returns.
+T = TypeVar("T")
 
 
 def setUpModule() -> None:
@@ -261,7 +265,7 @@ class Fixture(unittest.TestCase):
             code = rc.main(list(arguments), rc.Services(gh=self.github))
         return code, output.getvalue().splitlines()
 
-    def step(self, action) -> tuple[object, list[str]]:
+    def step(self, action: Callable[[rc.Services], T]) -> tuple[T, list[str]]:
         """Run one of the steps a sweep takes for each repository, capturing the lines it prints."""
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -323,6 +327,7 @@ class FixtureTemplateTests(unittest.TestCase):
         copy_fixture(copied)
         self.assertEqual(shape(fresh), shape(copied))
 
+        assert TEMPLATE is not None, "setUpModule builds the template"
         remote, other, clone = fixture_paths(copied)
         git(other, "commit", "--quiet", "--allow-empty", "-m", "only in this copy")
         git(other, "push", "--quiet", "origin", "main")
@@ -936,7 +941,7 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.repo.mkdir()
         git(self.repo, "init", "--quiet", "-b", "main")
         git(self.repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
-        self.plan = {"repo_root": str(self.repo), "events": []}
+        self.plan: dict[str, Any] = {"repo_root": str(self.repo), "events": []}
 
     def tip(self, branch: str) -> str | None:
         result = subprocess.run(
@@ -954,8 +959,10 @@ class RemoveWorktreeTests(unittest.TestCase):
     def remove(self, name: str, pr: str = "CLOSED") -> tuple[bool, list[list[str]], Path]:
         path = self.root / f"{name} wt"
         entry = {"path": str(path), "branch": name}
+        tip = self.tip(name)
+        assert tip is not None, f"{name} was added with a branch"
         with contextlib.redirect_stdout(io.StringIO()):
-            removed = rc.remove_worktree(rc.Services(), self.plan, entry, self.tip(name), pr)
+            removed = rc.remove_worktree(rc.Services(), self.plan, entry, tip, pr)
         return removed, self.plan["events"], path
 
     def test_a_merged_worktree_and_its_branch_are_removed(self) -> None:
