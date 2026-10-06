@@ -10,5 +10,20 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
+# Validation runs `ruff check` with these rule sets on the same roots it formats. E501 stays on: the formatter
+# wraps code, and a string, comment, or docstring it cannot wrap is split by hand. The complexity rules (PLR, C90)
+# are #91's.
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# Findings not yet fixed when the gate was added; each later commit of #90 removes the codes it fixes.
+ignore = [
+    "B007", "B008", "B023", "B904", "B905",
+    "E402", "E501", "E731", "E741",
+    "F401", "F402", "F541",
+    "I001",
+    "SIM102", "SIM105", "SIM108", "SIM112", "SIM114", "SIM117", "SIM118", "SIM905",
+    "UP012", "UP017", "UP030", "UP032", "UP033", "UP035", "UP037",
+]
+
 # mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.
 [tool.mypy]

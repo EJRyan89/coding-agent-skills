@@ -63,7 +63,7 @@ TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
 # Every suite runs as `python <file>`, so a Python suite without this entry point runs no tests and still exits 0.
 PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
-# Every Python file under these is checked with `ruff format --check`; none is excluded.
+# Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
@@ -1547,16 +1547,35 @@ def ruff_format_check(root: Path, targets: list[str]) -> None:
         ) from exc
 
 
+def ruff_lint_check(root: Path, targets: list[str]) -> None:
+    """Fail, naming each finding, when ruff check finds a violation of root's rule set under the targets."""
+    ruff = find_ruff()
+    if ruff is None:
+        raise AssertionError(f"ruff was not found: {platform_support.install_hint('ruff')}")
+    try:
+        run_process([ruff, "check", "--output-format", "concise", "--no-cache", *targets], cwd=root)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}\nFix the findings named above; `python -m ruff check --fix` applies the ones ruff marks safe."
+        ) from exc
+
+
 def static_format_check() -> None:
     ruff_format_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
+
+
+def static_lint_check() -> None:
+    ruff_lint_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
 
 
 def all_jobs() -> list[Job]:
     shell = "static shell checks (bash -n and ShellCheck on skill scripts)"
     python_format = "static format check (ruff format --check)"
+    python_lint = "static lint check (ruff check)"
     return [
         Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
         Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
+        Job(python_lint, python_lint, UNSPLIT_SUITE_WEIGHT, static_lint_check),
         *suite_jobs(regression_suites()),
     ]
 
@@ -2804,6 +2823,33 @@ class RepositoryValidation(unittest.TestCase):
     def test_format_check_covers_every_python_root(self) -> None:
         self.assertEqual(("deployer", "tools", "tests", "skills", "deploy.py"), FORMAT_ROOTS)
         self.assertIn("static format check (ruff format --check)", [job.name for job in all_jobs()])
+
+    def test_lint_check_names_an_unused_import(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text('[tool.ruff.lint]\nselect = ["F"]\n', encoding="utf-8")
+            (root / "clean.py").write_text("import os\n\nprint(os.sep)\n", encoding="utf-8")
+            ruff_lint_check(root, ["clean.py"])
+            (root / "module.py").write_text("import os\n", encoding="utf-8")
+            with self.assertRaises(AssertionError) as raised:
+                ruff_lint_check(root, ["clean.py", "module.py"])
+            message = str(raised.exception)
+            self.assertRegex(message, r"(?m)^module\.py:1:8: F401 ")
+            self.assertNotRegex(message, r"(?m)^clean\.py:")
+            self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
+            self.assertIn("python -m ruff check --fix", message)
+
+    def test_lint_check_covers_every_python_root(self) -> None:
+        jobs = {job.name: job for job in all_jobs()}
+        self.assertIn("static lint check (ruff check)", jobs)
+        with mock.patch(f"{__name__}.ruff_lint_check") as lint:
+            jobs["static lint check (ruff check)"].run()
+        lint.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", "deploy.py"])
+
+    def test_missing_ruff_fails_the_lint_check_with_the_install_command(self) -> None:
+        with mock.patch(f"{__name__}.find_ruff", return_value=None), self.assertRaises(AssertionError) as raised:
+            ruff_lint_check(REPOSITORY_ROOT, ["deploy.py"])
+        self.assertIn("ruff was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
 
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertEqual(
