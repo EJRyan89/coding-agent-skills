@@ -118,7 +118,7 @@ The flag store is `CODE_REVIEW_FLAGS`, else `~/.coding-agent-skills/code-review/
 
 ## Configuration
 
-Set `CODE_REVIEW_CONFIG` to an alternate file for fixtures or profiles. Otherwise the suite reads `~/.coding-agent-skills/code-review/config.json`.
+Set `CODE_REVIEW_CONFIG` to an alternate file for fixtures or profiles. Otherwise the suite reads `~/.coding-agent-skills/code-review/config.json`. Every field, its type, and when it is required are listed under [Configuration](code-review-operations-contract.md#configuration) in the behavior contract's formats.
 
 ```json
 {
@@ -230,7 +230,7 @@ Finding IDs restart at `F001` in every review, so a problem's identity across ve
 
 ## Reviewer manifest
 
-The manifest declares every trusted reviewer file. Directories are not recursively discovered. A repository's existing human-oriented review skill may be a declared resource, but the manifest entrypoint must also enforce the normalized adapter-result protocol; terminal prose is not accepted as a result.
+The manifest declares every trusted reviewer file. Directories are not recursively discovered. Every field of both manifest versions is listed under [Reviewer manifests](code-review-operations-contract.md#reviewer-manifests) in the behavior contract's formats. A repository's existing human-oriented review skill may be a declared resource, but the manifest entrypoint must also enforce the normalized adapter-result protocol; terminal prose is not accepted as a result.
 
 ```json
 {

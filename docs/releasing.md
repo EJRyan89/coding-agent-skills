@@ -22,7 +22,7 @@ A version number tells a user what the update asks of them, because `update-codi
 
 **Before `1.0.0`**, the minor level carries changes that would be major later, each with its migration or its stated manual step, and the patch level carries fixes only. `1.0.0` is tagged when the deployer runs on macOS and Linux as well as Windows, every contract above is pinned by a test against literal values, and a record or manifest migration has shipped and been exercised in a release.
 
-A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list under `deploy-meta/`, a schema under `skills/code-review-core/references/`, or a skill directory name, is what raises the level. Until a validation check holds that rule, which [issue #24](https://github.com/EJRyan89/coding-agent-skills/issues/24) adds alongside the version identity, the person tagging reads the diff since the last tag against the list above.
+A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list under `deploy-meta/`, `skills/code-review-core/references/review-adapter.schema.json`, a format table in `docs/code-review-operations-contract.md`, or a skill directory name, is what raises the level. Until a validation check holds that rule, which [issue #24](https://github.com/EJRyan89/coding-agent-skills/issues/24) adds alongside the version identity, the person tagging reads the diff since the last tag against the list above.
 
 ## Before tagging
 
