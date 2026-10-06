@@ -31,5 +31,6 @@ The script fails closed and never prints a partial table. On failure it prints o
 - `[forbidden]`: the token cannot read some repositories or pull requests, often because it is not SSO-authorized for the organization.
 - `[sso_partial]`: GitHub reported that it left out results from organizations the token is not SSO-authorized for. Authorize the token (`gh auth refresh`, or the SSO link on the token's settings page) and rerun.
 - `[rate_limit]`: GitHub kept rate-limiting after retries, or asked for a long wait. Suggest rerunning later.
+- `[network]`: `gh` could not reach GitHub. Suggest checking the connection and rerunning.
 - `[incomplete]`: a search kept returning fewer results than GitHub reported, usually because results changed while it was paging or the search timed out. Suggest rerunning.
 - Any other kind: report the message unchanged.

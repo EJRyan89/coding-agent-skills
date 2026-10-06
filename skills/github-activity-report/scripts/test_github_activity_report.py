@@ -16,15 +16,13 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import github_activity_report as report
 from github_activity_report import (
     MAX_INTERVAL,
-    MAX_RETRIES,
     SEARCH_INTERVAL,
     Activity,
-    CommandResult,
-    GitHubActivityError,
     GitHubSearchClient,
     collect_activity,
     main,
@@ -32,6 +30,7 @@ from github_activity_report import (
     months_window,
     render_report,
 )
+from github_client import BACKOFF, CommandResult, GitHubError
 
 SPAN = re.compile(r"(\d{4}-\d{2}-\d{2})\.\.(\d{4}-\d{2}-\d{2})")
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
@@ -223,7 +222,7 @@ class SearchTests(unittest.TestCase):
         duplicated = [ok(search_page(rows(100), 150)), ok(search_page(rows(50, 99), 150))]
         run, _ = scripted(*duplicated * 3)
         client, _ = client_for(run)
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             fetch(client)
         self.assertEqual("incomplete", context.exception.kind)
         self.assertIn("returned 149 distinct results but GitHub reported 150", str(context.exception))
@@ -237,7 +236,7 @@ class SearchTests(unittest.TestCase):
     def test_underfilled_commit_search_fails_closed(self) -> None:
         run, calls = scripted(*[ok(search_page(rows(2), 3))] * 3)
         client, _ = client_for(run)
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             client.search_all("search/commits", "q", KEY)
         self.assertEqual("incomplete", context.exception.kind)
         self.assertEqual(3, len(calls))
@@ -262,7 +261,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual((3, [], 2), (len(nodes), capped, len(calls)))
         run, calls = scripted(*[page(2, 3)] * 3)
         client, _ = client_for(run)
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             client.graphql_search_range("q {span}", "octo", date(2026, 1, 1), date(2026, 1, 31))
         self.assertEqual("incomplete", context.exception.kind)
         self.assertEqual(3, len(calls))
@@ -271,13 +270,13 @@ class SearchTests(unittest.TestCase):
         malformed: tuple[object, ...] = ({"total_count": 1}, {"items": []}, [], {"items": [], "total_count": "1"})
         for payload in malformed:
             client, _ = client_for(scripted(ok(payload))[0])
-            with self.subTest(payload=payload), self.assertRaises(GitHubActivityError) as context:
+            with self.subTest(payload=payload), self.assertRaises(GitHubError) as context:
                 client.search_all("search/issues", "q", KEY)
             self.assertEqual("malformed", context.exception.kind)
 
     def test_invalid_json_fails_closed(self) -> None:
         client, _ = client_for(scripted(CommandResult(0, "not json", ""))[0])
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             fetch(client)
         self.assertEqual("malformed", context.exception.kind)
 
@@ -310,19 +309,19 @@ class RetryTests(unittest.TestCase):
     def test_a_wait_longer_than_the_limit_fails_instead_of_sleeping(self) -> None:
         head = "HTTP/2.0 403 Forbidden\nRetry-After: 3600\r\n\r\n{}"
         client, sleeper = client_for(scripted(failed(SECONDARY_LIMIT, head))[0])
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             fetch(client)
         self.assertEqual("rate_limit", context.exception.kind)
         self.assertEqual([], sleeper.waits)
 
     def test_exhausting_retries_raises_a_rate_limit_error(self) -> None:
-        run, calls = scripted(*[failed(SECONDARY_LIMIT)] * (MAX_RETRIES + 1))
+        run, calls = scripted(*[failed(SECONDARY_LIMIT)] * (BACKOFF.retries + 1))
         client, sleeper = client_for(run)
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             fetch(client)
         self.assertEqual("rate_limit", context.exception.kind)
         self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0], sleeper.waits)
-        self.assertEqual(MAX_RETRIES + 1, len(calls))
+        self.assertEqual(BACKOFF.retries + 1, len(calls))
 
     def test_incomplete_search_results_are_retried(self) -> None:
         incomplete = dict(search_page([], 0), incomplete_results=True)
@@ -336,7 +335,7 @@ class RetryTests(unittest.TestCase):
         self.assertEqual({"nodes": []}, client.graphql("query", {"id": "PR_1"}))
         self.assertEqual([5.0], sleeper.waits)
         client, _ = client_for(scripted(ok({"errors": [{"type": "FORBIDDEN", "message": "SSO"}]}))[0])
-        with self.assertRaisesRegex(GitHubActivityError, "FORBIDDEN"):
+        with self.assertRaisesRegex(GitHubError, "FORBIDDEN"):
             client.graphql("query", {"id": "PR_1"})
 
     def test_failures_are_classified(self) -> None:
@@ -346,10 +345,12 @@ class RetryTests(unittest.TestCase):
             "gh: Resource protected by organization SAML enforcement (HTTP 403)": "forbidden",
             "Only the first 1000 search results are available (HTTP 422)": "search_cap",
             "gh: Validation Failed (HTTP 422)": "api",
+            "gh: Not Found (HTTP 404)": "not_found",
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com": "network",
         }
         for stderr, kind in cases.items():
             client, sleeper = client_for(scripted(failed(stderr))[0])
-            with self.subTest(stderr=stderr), self.assertRaises(GitHubActivityError) as context:
+            with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as context:
                 fetch(client)
             self.assertEqual(kind, context.exception.kind)
             self.assertEqual([], sleeper.waits)
@@ -359,7 +360,7 @@ class RetryTests(unittest.TestCase):
         for request in ("search", "graphql"):
             payload = search_page(rows(1)) if request == "search" else {"data": {"node": {}}}
             client, sleeper = client_for(scripted(ok(payload, header))[0])
-            with self.subTest(request=request), self.assertRaises(GitHubActivityError) as context:
+            with self.subTest(request=request), self.assertRaises(GitHubError) as context:
                 if request == "search":
                     fetch(client)
                 else:
@@ -368,10 +369,17 @@ class RetryTests(unittest.TestCase):
             self.assertIn("21955855", str(context.exception))
             self.assertEqual([], sleeper.waits)
 
+    def test_output_that_is_not_utf8_is_replaced_instead_of_failing(self) -> None:
+        body = json.dumps(search_page([{"id": "i0", "title": "TITLE"}])).replace("TITLE", "caf\xe9")
+        process = subprocess.CompletedProcess([], 0, body.encode("latin-1"), b"")
+        with mock.patch("subprocess.run", return_value=process):
+            items, _ = GitHubSearchClient(sleeper=Recorder()).search_all("search/issues", "q", KEY)
+        self.assertEqual("caf\ufffd", items[0]["title"])
+
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
         with (
-            mock.patch("github_activity_report.subprocess.run", side_effect=FileNotFoundError("gh")),
-            self.assertRaises(GitHubActivityError) as context,
+            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            self.assertRaises(GitHubError) as context,
         ):
             report.subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
@@ -569,7 +577,7 @@ class CollectTests(unittest.TestCase):
             payload["data"]["search"]["nodes"][0] = {}
             return ok(payload)
 
-        with mock.patch.object(github, "search", hide_first), self.assertRaises(GitHubActivityError) as context:
+        with mock.patch.object(github, "search", hide_first), self.assertRaises(GitHubError) as context:
             self.collect(github)
         self.assertEqual("forbidden", context.exception.kind)
 
@@ -606,7 +614,7 @@ class CollectTests(unittest.TestCase):
     def test_search_results_without_identity_fail_closed(self) -> None:
         github = self.fake()
         github.dated[AUTHORED] = [(date(2026, 3, 15), {"created_at": "2026-03-15T10:00:00Z"})]
-        with self.assertRaises(GitHubActivityError) as context:
+        with self.assertRaises(GitHubError) as context:
             self.collect(github)
         self.assertEqual("malformed", context.exception.kind)
 
@@ -686,7 +694,7 @@ class MainTests(unittest.TestCase):
         run, _ = scripted(failed("gh: HTTP 404: Not Found\n(https://api.github.com/search/issues)\n"))
         code, stdout, _ = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
         self.assertEqual(
-            (1, "FAILED gh: HTTP 404: Not Found (https://api.github.com/search/issues) [api]\n"), (code, stdout)
+            (1, "FAILED gh: HTTP 404: Not Found (https://api.github.com/search/issues) [not_found]\n"), (code, stdout)
         )
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
@@ -696,7 +704,8 @@ class MainTests(unittest.TestCase):
         program = (
             "import runpy, subprocess, sys\n"
             "def fake(arguments, **options):\n"
-            "    return subprocess.CompletedProcess(arguments, 1, '', 'gh: HTTP 502: proxy \\u2192 upstream \\u2713')\n"
+            "    stderr = 'gh: HTTP 502: proxy \\u2192 upstream \\u2713'.encode()\n"
+            "    return subprocess.CompletedProcess(arguments, 1, b'', stderr)\n"
             "subprocess.run = fake\n"
             f"sys.argv = [{script!r}, '--org', 'acme', '--user', 'octo', '--months', '1']\n"
             f"runpy.run_path({script!r}, run_name='__main__')\n"

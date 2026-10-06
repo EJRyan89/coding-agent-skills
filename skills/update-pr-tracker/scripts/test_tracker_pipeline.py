@@ -15,13 +15,15 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_fixture
 import tracker_pipeline as tp
+from github_client import CommandResult
 from review_archive import commit_record
 from review_config import write_config
 from review_flags import add_flag
-from review_github import CommandResult, GitHubClient
+from review_github import GitHubClient
 from review_records import build_record, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -164,7 +166,9 @@ class TrackerPipelineFixture(unittest.TestCase):
         self.input = self.root / "work" / "tracker input.json"
         self.github = FakeGitHub()
         self.flags_path = self.root / "flags" / "flags.json"
-        self.services = tp.Services(github=GitHubClient(runner=self.github), flags_path=lambda: self.flags_path)
+        self.waits: list[float] = []
+        github = GitHubClient(runner=self.github, sleeper=self.waits.append)
+        self.services = tp.Services(github=github, flags_path=lambda: self.flags_path)
         self.configure()
 
     def configure(
@@ -369,6 +373,9 @@ class CollectTests(TrackerPipelineFixture):
                 self.assertEqual(1, len(out.splitlines()), out)
                 self.assertTrue(out.startswith("FAILED API rate limit exceeded"), out)
                 self.assertFalse(self.input.exists())
+                # The limit was waited out with skill-core's bounded backoff before it stopped the collection.
+                self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0], self.waits)
+                self.waits.clear()
 
 
 class ExitContractTests(TrackerPipelineFixture):

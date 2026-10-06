@@ -9,10 +9,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 import time
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -22,6 +20,16 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from github_client import (
+    Clock,
+    CommandResult,
+    GitHubClient,
+    GitHubError,
+    Runner,
+    Sleeper,
+    graphql_failure,
+    subprocess_runner,
+)
 
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
@@ -29,9 +37,6 @@ SEARCH_INTERVAL = 2.1
 MAX_INTERVAL = 8.0
 INTERVAL_GROWTH = 1.5
 RECOVERY_STREAK = 10
-BACKOFF_BASE = 5.0
-MAX_RETRIES = 5
-MAX_WAIT = 300.0
 PAGINATION_PASSES = 3
 MAX_MONTHS = 36
 LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}")
@@ -70,167 +75,71 @@ query($id: ID!, $user: String!, $after: String!) {
 """
 
 
-class GitHubActivityError(RuntimeError):
-    def __init__(self, message: str, *, kind: str = "api") -> None:
-        super().__init__(message)
-        self.kind = kind
+class SearchPacer:
+    """Spaces search requests to stay under GitHub's search rate limits.
 
+    It leaves at least `interval` between the end of one search request and the start of the next, widens the
+    interval after each rate-limited attempt, and narrows it again after a run of clean searches.
+    """
 
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "CommandResult": "also in code-review-core's review_github.py and review_runtime.py; #27's shared core "
-    "replaces the copies",
-}
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-Runner = Callable[[Sequence[str]], CommandResult]
-Sleeper = Callable[[float], None]
-Clock = Callable[[], float]
-
-
-def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
-    try:
-        process = subprocess.run(list(arguments), capture_output=True, text=True, encoding="utf-8", check=False)
-    except FileNotFoundError as exc:
-        raise GitHubActivityError(
-            "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first",
-            kind="prerequisite",
-        ) from exc
-    except OSError as exc:
-        raise GitHubActivityError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
-    return CommandResult(process.returncode, process.stdout, process.stderr)
-
-
-def _classify_failure(stderr: str) -> str:
-    lowered = stderr.casefold()
-    if "rate limit" in lowered or "http 429" in lowered:
-        return "rate_limit"
-    if "http 401" in lowered or "not logged" in lowered:
-        return "authentication"
-    if "only the first 1000 search results" in lowered:
-        return "search_cap"
-    if "http 403" in lowered:
-        return "forbidden"
-    return "api"
-
-
-@dataclass
-class Response:
-    status: int | None
-    headers: dict[str, str]
-    body: str
-
-
-def _split_response(stdout: str) -> Response:
-    """Separate the status line and headers printed by `gh api -i` from the body."""
-    if not stdout.startswith("HTTP/"):
-        return Response(None, {}, stdout)
-    parts = re.split(r"\r?\n\r?\n", stdout, maxsplit=1)
-    head, body = parts[0], parts[1] if len(parts) > 1 else ""
-    lines = head.splitlines()
-    status_parts = lines[0].split()
-    status = int(status_parts[1]) if len(status_parts) > 1 and status_parts[1].isdigit() else None
-    headers: dict[str, str] = {}
-    for line in lines[1:]:
-        name, separator, value = line.partition(":")
-        if separator:
-            headers[name.strip().casefold()] = value.strip()
-    return Response(status, headers, body)
-
-
-class GitHubSearchClient:
-    def __init__(
-        self, runner: Runner = subprocess_runner, sleeper: Sleeper = time.sleep, clock: Clock = time.time
-    ) -> None:
-        self.runner = runner
+    def __init__(self, sleeper: Sleeper, clock: Clock) -> None:
         self.sleeper = sleeper
         self.clock = clock
         self.interval = SEARCH_INTERVAL
         self._last_search: float | None = None
         self._clean_searches = 0
 
-    def _pace_search(self) -> None:
-        """Leave at least `interval` between the end of one search request and the start of the next."""
+    def before(self) -> None:
         if self._last_search is not None:
             remaining = self.interval - (self.clock() - self._last_search)
             if remaining > 0:
                 self.sleeper(remaining)
 
-    def _record_search(self, rate_limited: bool) -> None:
-        if rate_limited:
+    def after(self, error: GitHubError | None) -> None:
+        self._last_search = self.clock()
+        if error is None:
+            self._clean_searches += 1
+            if self._clean_searches >= RECOVERY_STREAK and self.interval > SEARCH_INTERVAL:
+                self.interval = max(SEARCH_INTERVAL, self.interval / INTERVAL_GROWTH)
+                self._clean_searches = 0
+        elif error.kind == "rate_limit":
             self.interval = min(self.interval * INTERVAL_GROWTH, MAX_INTERVAL)
             self._clean_searches = 0
-            return
-        self._clean_searches += 1
-        if self._clean_searches >= RECOVERY_STREAK and self.interval > SEARCH_INTERVAL:
-            self.interval = max(SEARCH_INTERVAL, self.interval / INTERVAL_GROWTH)
-            self._clean_searches = 0
 
-    def _retry_wait(self, response: Response, attempt: int) -> float:
-        retry_after = response.headers.get("retry-after", "")
-        if retry_after.isdigit():
-            wait = float(retry_after)
-        elif (
-            response.headers.get("x-ratelimit-remaining") == "0"
-            and response.headers.get("x-ratelimit-reset", "").isdigit()
-        ):
-            wait = max(1.0, float(response.headers["x-ratelimit-reset"]) - self.clock() + 1.0)
-        else:
-            wait = BACKOFF_BASE * 2**attempt
-        if wait > MAX_WAIT:
-            raise GitHubActivityError(
-                f"GitHub asked to wait {wait:.0f}s before retrying; rerun the report later", kind="rate_limit"
-            )
-        return wait
+
+def _payload(result: CommandResult) -> Any:
+    """The JSON body, failing on GraphQL errors and retrying a search GitHub cut short."""
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+    if isinstance(payload, dict) and payload.get("incomplete_results") is True:
+        raise GitHubError("GitHub search timed out and returned incomplete results", kind="incomplete", retryable=True)
+    problem = graphql_failure(payload)
+    if problem is not None:
+        raise problem
+    return payload
+
+
+class GitHubSearchClient:
+    """The REST and GraphQL searches the report makes, over skill-core's GitHub CLI client.
+
+    Every request reads the response headers, so GitHub's Retry-After and quota reset set the wait, and a response
+    missing results from organizations the token is not SSO-authorized for fails. Searches are also paced.
+    """
+
+    def __init__(
+        self, runner: Runner = subprocess_runner, sleeper: Sleeper = time.sleep, clock: Clock = time.time
+    ) -> None:
+        self.github = GitHubClient(runner, sleeper=sleeper, clock=clock)
+        self.pacer = SearchPacer(sleeper, clock)
+
+    @property
+    def interval(self) -> float:
+        return self.pacer.interval
 
     def _request(self, arguments: list[str], *, search: bool) -> Any:
-        for attempt in range(MAX_RETRIES + 1):
-            if search:
-                self._pace_search()
-            result = self.runner(["gh", "api", "-i", *arguments])
-            if search:
-                self._last_search = self.clock()
-            response = _split_response(result.stdout)
-            kind, message = None, ""
-            sso = response.headers.get("x-github-sso", "")
-            if "partial-results" in sso.casefold():
-                raise GitHubActivityError(
-                    "GitHub omitted results from organizations this token is not SSO-authorized for "
-                    f"({sso}); authorize the token for SSO and rerun",
-                    kind="sso_partial",
-                )
-            if result.returncode != 0:
-                kind = _classify_failure(result.stderr)
-                if response.status == 429 or (
-                    response.status == 403 and response.headers.get("x-ratelimit-remaining") == "0"
-                ):
-                    kind = "rate_limit"
-                message = result.stderr.strip() or "GitHub API request failed"
-            else:
-                try:
-                    payload = json.loads(response.body)
-                except json.JSONDecodeError as exc:
-                    raise GitHubActivityError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
-                kind, message = _payload_problem(payload)
-                if kind is None:
-                    if search:
-                        self._record_search(rate_limited=False)
-                    return payload
-            if kind not in ("rate_limit", "incomplete"):
-                raise GitHubActivityError(message, kind=kind)
-            if search and kind == "rate_limit":
-                self._record_search(rate_limited=True)
-            if attempt == MAX_RETRIES:
-                raise GitHubActivityError(f"{message} (gave up after {MAX_RETRIES} retries)", kind=kind)
-            self.sleeper(self._retry_wait(response, attempt))
-        raise AssertionError("unreachable")
+        return self.github.request(["api", *arguments], _payload, headers=True, pacer=self.pacer if search else None)
 
     def _search_page(self, endpoint: str, query: str, page: int, per_page: int) -> dict[str, Any]:
         payload = self._request([f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], search=True)
@@ -239,7 +148,7 @@ class GitHubSearchClient:
             or not isinstance(payload.get("items"), list)
             or not isinstance(payload.get("total_count"), int)
         ):
-            raise GitHubActivityError(f"Search response for {query!r} has an unexpected shape", kind="malformed")
+            raise GitHubError(f"Search response for {query!r} has an unexpected shape", kind="malformed")
         return payload
 
     def search_all(
@@ -270,7 +179,7 @@ class GitHubSearchClient:
             found = min(len(items), SEARCH_RESULT_CAP) if repeats_allowed else len(unique)
             if found >= expected:
                 return unique[:SEARCH_RESULT_CAP], payload["total_count"] > SEARCH_RESULT_CAP
-        raise GitHubActivityError(_shortfall(query, found, expected), kind="incomplete")
+        raise GitHubError(_shortfall(query, found, expected), kind="incomplete")
 
     def search_range(
         self, endpoint: str, template: str, start: date, end: date, key: tuple[str, ...]
@@ -296,7 +205,7 @@ class GitHubSearchClient:
         payload = self._request(arguments, search=search)
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
-            raise GitHubActivityError("GraphQL response has no data", kind="malformed")
+            raise GitHubError("GraphQL response has no data", kind="malformed")
         return data
 
     def _graphql_search_page(self, query: str, user: str, after: str | None) -> dict[str, Any]:
@@ -310,7 +219,7 @@ class GitHubSearchClient:
             or not isinstance(search.get("nodes"), list)
             or not isinstance(search.get("pageInfo"), dict)
         ):
-            raise GitHubActivityError(f"GraphQL search for {query!r} has an unexpected shape", kind="malformed")
+            raise GitHubError(f"GraphQL search for {query!r} has an unexpected shape", kind="malformed")
         return search
 
     def graphql_search_range(self, template: str, user: str, start: date, end: date) -> tuple[list[Any], list[str]]:
@@ -333,7 +242,7 @@ class GitHubSearchClient:
             unique = _distinct_pull_requests(nodes)
             if len(unique) >= expected:
                 return unique[:SEARCH_RESULT_CAP], [str(start)] if page["issueCount"] > SEARCH_RESULT_CAP else []
-        raise GitHubActivityError(_shortfall(query, len(unique), expected), kind="incomplete")
+        raise GitHubError(_shortfall(query, len(unique), expected), kind="incomplete")
 
 
 def _shortfall(query: str, found: int, expected: int) -> str:
@@ -349,26 +258,11 @@ def _distinct_pull_requests(nodes: list[Any]) -> list[dict[str, Any]]:
     for node in nodes:
         node_id = node.get("id") if isinstance(node, dict) else None
         if not isinstance(node_id, str):
-            raise GitHubActivityError(
-                "Review search returned a result that is not a readable pull request", kind="forbidden"
-            )
+            raise GitHubError("Review search returned a result that is not a readable pull request", kind="forbidden")
         if node_id not in seen:
             seen.add(node_id)
             unique.append(node)
     return unique
-
-
-def _payload_problem(payload: Any) -> tuple[str | None, str]:
-    if isinstance(payload, dict) and payload.get("incomplete_results") is True:
-        return "incomplete", "GitHub search timed out and returned incomplete results"
-    errors = payload.get("errors") if isinstance(payload, dict) else None
-    if errors:
-        types = sorted({str(error.get("type", "")) for error in errors if isinstance(error, dict)})
-        messages = "; ".join(str(error.get("message", "")) for error in errors if isinstance(error, dict))
-        if "RATE_LIMITED" in types:
-            return "rate_limit", f"GraphQL rate limit: {messages}"
-        return "api", f"GraphQL request failed ({', '.join(types) or 'unknown'}): {messages}"
-    return None, ""
 
 
 def months_window(today: date, months: int) -> list[date]:
@@ -392,11 +286,11 @@ def month_label(value: date) -> str:
 
 def _utc_date(timestamp: Any, context: str) -> date:
     if not isinstance(timestamp, str):
-        raise GitHubActivityError(f"{context} has no timestamp", kind="malformed")
+        raise GitHubError(f"{context} has no timestamp", kind="malformed")
     try:
         return datetime.fromisoformat(timestamp).astimezone(UTC).date()
     except ValueError as exc:
-        raise GitHubActivityError(f"{context} has an invalid timestamp: {timestamp!r}", kind="malformed") from exc
+        raise GitHubError(f"{context} has an invalid timestamp: {timestamp!r}", kind="malformed") from exc
 
 
 @dataclass
@@ -425,7 +319,7 @@ def _unique(items: list[dict[str, Any]], key: tuple[str, ...], context: str) -> 
     for item in items:
         identity = _field(item, key)
         if not isinstance(identity, str):
-            raise GitHubActivityError(f"{context} search result has no {'.'.join(key)}", kind="malformed")
+            raise GitHubError(f"{context} search result has no {'.'.join(key)}", kind="malformed")
         if identity not in seen:
             seen.add(identity)
             unique.append(item)
@@ -462,7 +356,7 @@ def _review_connection(node: Any, node_id: str) -> tuple[list[Any], dict[str, An
         or not isinstance(reviews.get("nodes"), list)
         or not isinstance(reviews.get("pageInfo"), dict)
     ):
-        raise GitHubActivityError(f"Pull request {node_id} is not readable with this token", kind="forbidden")
+        raise GitHubError(f"Pull request {node_id} is not readable with this token", kind="forbidden")
     return reviews["nodes"], reviews["pageInfo"]
 
 
@@ -478,9 +372,7 @@ def _review_dates(
     for node in nodes:
         node_id = node.get("id") if isinstance(node, dict) else None
         if not isinstance(node_id, str):
-            raise GitHubActivityError(
-                "Review search returned a result that is not a readable pull request", kind="forbidden"
-            )
+            raise GitHubError("Review search returned a result that is not a readable pull request", kind="forbidden")
         login = _field(node, ("author", "login"))
         if node_id in dates or (isinstance(login, str) and login.casefold() == user.casefold()):
             continue
@@ -623,7 +515,7 @@ def main(
     )
     try:
         activity = collect_activity(client or GitHubSearchClient(), options.org, options.user, options.months, current)
-    except GitHubActivityError as exc:
+    except GitHubError as exc:
         # The reason can carry gh's multi-line stderr; the FAILED line stays one line.
         print(f"FAILED {' '.join(str(exc).split())} [{exc.kind}]")
         return 1

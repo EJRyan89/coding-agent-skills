@@ -377,6 +377,22 @@ class ResolveTests(unittest.TestCase):
             self.assertEqual([["App/Feature.cs"]], self.values(lines, "FILE"))
             self.assertEqual([["App.sln", "1"]], self.values(lines, "SOLUTION"))
 
+    def test_a_rate_limited_pull_request_base_falls_back_without_waiting(self) -> None:
+        services = Services(pull_base="release")
+        answer = services.run
+
+        def limited(arguments: Sequence[str], cwd: Path) -> targets.Completed:
+            if arguments[0] == "gh":
+                services.calls.append(list(arguments))
+                return targets.Completed(1, b"", b"gh: API rate limit exceeded for user ID 1. (HTTP 403)")
+            return answer(arguments, cwd)
+
+        services.run = limited
+        with mock.patch("time.sleep") as sleep:
+            self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
+        sleep.assert_not_called()
+        self.assertEqual(1, sum(1 for call in services.calls if call[0] == "gh"))
+
     def test_a_malformed_pull_request_base_falls_back_to_origin_main(self) -> None:
         self.repository.git("update-ref", "refs/remotes/origin/develop", "HEAD")
         for output in (

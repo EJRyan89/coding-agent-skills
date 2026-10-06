@@ -45,6 +45,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from github_client import CommandResult, GitHubClient, GitHubError
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
@@ -60,6 +61,7 @@ COMMAND_TIMEOUT_SECONDS = 300
 class Completed:
     returncode: int
     stdout: bytes
+    stderr: bytes = b""
 
 
 Runner = Callable[[Sequence[str], Path], Completed]
@@ -79,7 +81,7 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path) -> Completed:
         )
     except (OSError, subprocess.TimeoutExpired):
         return Completed(127, b"")
-    return Completed(result.returncode, result.stdout)
+    return Completed(result.returncode, result.stdout, result.stderr)
 
 
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
@@ -138,18 +140,30 @@ def ref_exists(services: Services, root: Path, ref: str) -> bool:
     return services.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], root).returncode == 0
 
 
-def pull_request_base(result: Completed) -> str | None:
-    """The base branch in `gh pr view --json baseRefName` output, or None when gh does not report one."""
-    if result.returncode != 0:
-        return None
+def pull_request_base(services: Services, root: Path) -> str | None:
+    """The base branch `gh pr view --json baseRefName` reports, or None when gh does not report one.
+
+    Any gh failure gives None, and a rate limit is not waited out: the base is a hint with fallbacks after it.
+    """
+
+    def run(arguments: Sequence[str]) -> CommandResult:
+        result = services.run(arguments, root)
+        return CommandResult(result.returncode, decoded(result.stdout), decoded(result.stderr))
+
     try:
-        document = json.loads(result.stdout.decode("utf-8", errors="replace"))
-    except ValueError:
+        output = GitHubClient(run).run(["pr", "view", "--json", "baseRefName"], retry=False)
+        document = json.loads(output.stdout)
+    except (GitHubError, ValueError):
         return None
     name = document.get("baseRefName") if isinstance(document, dict) else None
     if not isinstance(name, str) or not name.strip():
         return None
     return name.strip()
+
+
+def decoded(data: bytes) -> str:
+    """Command output as the shared GitHub client expects it: each byte that is not UTF-8 kept as a lone surrogate."""
+    return data.decode("utf-8", errors="surrogateescape")
 
 
 def remote_default_branch(result: Completed) -> str | None:
@@ -167,7 +181,7 @@ def base_ref(services: Services, root: Path) -> str:
     services.run(["git", "fetch", "origin", "--quiet"], root)
     candidates: list[str] = []
     if services.which("gh"):
-        name = pull_request_base(services.run(["gh", "pr", "view", "--json", "baseRefName"], root))
+        name = pull_request_base(services, root)
         if name:
             candidates.append(f"origin/{name}")
     default = remote_default_branch(services.run(["git", "symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"], root))

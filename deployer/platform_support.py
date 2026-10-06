@@ -242,10 +242,10 @@ def current_process_id() -> int:
 
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
 DUPLICATION_ALLOWED = {
-    "process_status": "skills/code-review-core/scripts/review_process.py carries a copy because a deployed skill "
-    "cannot import the deployer; #27 removes it",
-    "HiddenWindow": "skills/code-review-core/scripts/review_process.py carries a copy because a deployed skill "
-    "cannot import the deployer; #27 removes it",
+    "process_status": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
+    "cannot import the deployer, and the deployer cannot import a skill; this policy keeps the two identical",
+    "HiddenWindow": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
+    "cannot import the deployer, and the deployer cannot import a skill; this policy keeps the two identical",
 }
 
 

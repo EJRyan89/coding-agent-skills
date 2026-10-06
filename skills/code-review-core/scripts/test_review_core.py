@@ -20,10 +20,12 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_github
 import review_io
 import review_runtime
+from github_client import CommandResult
 from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory
 from review_config import (
     ConfigurationError,
@@ -33,7 +35,7 @@ from review_config import (
     write_config,
 )
 from review_flags import FlagError, add_flag, load_store, resolve_flag
-from review_github import CommandResult, GitHubClient, GitHubError
+from review_github import GitHubClient, GitHubError
 from review_hosts import (
     HostSuperseded,
     ProcessResult,
@@ -1203,7 +1205,7 @@ class GitHubTests(unittest.TestCase):
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
         with (
             mock.patch(
-                "review_github.subprocess.run",
+                "subprocess.run",
                 side_effect=FileNotFoundError("gh was not found"),
             ),
             self.assertRaises(GitHubError) as context,
@@ -1292,10 +1294,12 @@ class GitHubTests(unittest.TestCase):
         )
         for response, kind, message in cases:
             with self.subTest(kind=kind, message=message):
-                client = GitHubClient(answering(response))
+                waits: list[float] = []
+                client = GitHubClient(answering(response), sleeper=waits.append)
                 with self.assertRaisesRegex(GitHubError, message) as context:
                     client.graphql_nodes("query", {}, connection)
                 self.assertEqual(kind, context.exception.kind)
+                self.assertEqual(5 if kind == "rate_limit" else 0, len(waits))
 
     def test_authenticated_login_is_shape_checked(self) -> None:
         self.assertEqual(
@@ -1352,14 +1356,31 @@ class GitHubTests(unittest.TestCase):
             ("not logged into GitHub", "authentication"),
             ("HTTP 403: forbidden", "forbidden"),
             ("HTTP 404: not found", "not_found"),
-            ("connection reset", "api"),
+            ("connection reset", "network"),
+            ("HTTP 502: Bad Gateway", "api"),
         )
         for stderr, expected in cases:
             with self.subTest(stderr=stderr):
-                client = GitHubClient(answering(CommandResult(1, "", stderr)))
+                waits: list[float] = []
+                client = GitHubClient(answering(CommandResult(1, "", stderr)), sleeper=waits.append)
                 with self.assertRaises(GitHubError) as context:
                     client.api_json("repos/example/one")
                 self.assertEqual(expected, context.exception.kind)
+                # Only a rate limit is waited out, with skill-core's bounded backoff, before it fails.
+                self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0] if expected == "rate_limit" else [], waits)
+
+    def test_a_rate_limit_is_retried_until_it_clears(self) -> None:
+        answers = [CommandResult(1, "", "gh: API rate limit exceeded (HTTP 403)"), CommandResult(0, "[]", "")]
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(list(arguments))
+            return answers.pop(0)
+
+        waits: list[float] = []
+        self.assertEqual([], GitHubClient(runner, sleeper=waits.append).api_json("repos/example/one/pulls"))
+        self.assertEqual([5.0], waits)
+        self.assertEqual([["gh", "api", "repos/example/one/pulls"]] * 2, calls)
 
     def test_runner_decodes_bytes_that_are_not_utf8_without_losing_them(self) -> None:
         result = review_github.subprocess_runner(

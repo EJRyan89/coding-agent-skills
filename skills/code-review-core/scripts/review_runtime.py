@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Sequence
@@ -17,6 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from github_client import CommandResult, GitHubClient, GitHubError
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
 
@@ -80,20 +84,6 @@ SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 class RuntimeContractError(ValueError):
     """Raised when a runtime or repository reviewer violates the trust contract."""
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "CommandResult": "also in review_github.py and github-activity-report's github_activity_report.py; #27's "
-    "shared core replaces the copies",
-}
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-    stderr: str
 
 
 Runner = Callable[[Sequence[str]], CommandResult]
@@ -865,14 +855,11 @@ def measure_source_snapshot(
     return SnapshotSize(files, sum(directories.values()), excluded, directories)
 
 
-def github_tarball_fetcher(repository: str, commit: str, target: Path) -> None:
-    with target.open("wb") as handle:
-        process = subprocess.run(
-            ["gh", "api", f"repos/{repository}/tarball/{commit}"], stdout=handle, stderr=subprocess.PIPE, check=False
-        )
-    if process.returncode != 0:
-        detail = process.stderr.decode("utf-8", "replace").strip() or "gh api tarball failed"
-        raise RuntimeContractError(f"Cannot download {repository}@{commit}: {detail}")
+def github_tarball_fetcher(repository: str, commit: str, target: Path, github: GitHubClient | None = None) -> None:
+    try:
+        (github or GitHubClient()).download(["api", f"repos/{repository}/tarball/{commit}"], target)
+    except GitHubError as exc:
+        raise RuntimeContractError(f"Cannot download {repository}@{commit}: {exc}") from exc
 
 
 def materialize_source_snapshot_from_github(
