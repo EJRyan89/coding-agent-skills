@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -70,6 +71,12 @@ FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
 # A noqa comment names the codes it suppresses and says why, after a dash: `# noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
+# mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
+# the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration and its exclusions.
+TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
+# A type: ignore names its error codes and states its reason in a comment after it: `# type: ignore[code]  # <why>`.
+TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b")
+TYPE_IGNORE_WITH_REASON = re.compile(r"#\s*type:\s*ignore\[[a-z-]+(?:\s*,\s*[a-z-]+)*\]\s*#\s*\S")
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
 HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "NotebookEdit", "PowerShell", "Write"}
@@ -626,6 +633,74 @@ def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
             ):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
+
+
+def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
+    """Each `# type: ignore` comment that does not name its codes and state its reason after them, as path:line."""
+    found: list[str] = []
+    for path in sorted(files):
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if (
+                token.type == tokenize.COMMENT
+                and TYPE_IGNORE.search(token.string)
+                and not TYPE_IGNORE_WITH_REASON.search(token.string)
+            ):
+                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+    return found
+
+
+def scripts_put_on_path(source: str) -> list[str]:
+    """The skill names in each `sys.path.insert(..., ... / "<skill>" / "scripts")` call in the source."""
+    names: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "insert"
+            and ast.unparse(node.func.value) == "sys.path"
+        ):
+            continue
+        for part in ast.walk(node):
+            if (
+                isinstance(part, ast.BinOp)
+                and isinstance(part.op, ast.Div)
+                and isinstance(part.right, ast.Constant)
+                and part.right.value == "scripts"
+                and isinstance(part.left, ast.BinOp)
+                and isinstance(part.left.right, ast.Constant)
+                and isinstance(part.left.right.value, str)
+            ):
+                names.append(part.left.right.value)
+    return names
+
+
+def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
+    """mypy_path must name exactly the skills' scripts directories that a module other than a suite puts on sys.path.
+
+    A skill reaches a skill_deps sibling that way, and the repository's tools reach analyze-skill-cost's inventory.
+    """
+    configuration = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    configured = configuration.get("tool", {}).get("mypy", {}).get("mypy_path", [])
+    if not isinstance(configured, list):
+        return ["pyproject.toml: [tool.mypy] mypy_path must be a list"]
+    expected: dict[str, str] = {}
+    for path in sorted(files):
+        if path.suffix != ".py" or is_test_script(path):
+            continue
+        for name in scripts_put_on_path(path.read_text(encoding="utf-8")):
+            expected.setdefault(f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", path.relative_to(root).as_posix())
+    problems = [
+        f"pyproject.toml: [tool.mypy] mypy_path lacks {entry}, which {expected[entry]} puts on sys.path"
+        for entry in sorted(set(expected) - set(configured))
+    ]
+    problems += [
+        f"pyproject.toml: [tool.mypy] mypy_path names {entry}, which no module puts on sys.path"
+        for entry in sorted(set(configured) - set(expected))
+    ]
+    return problems
 
 
 def private_references(root: Path, files: list[Path]) -> list[str]:
@@ -1298,11 +1373,17 @@ def find_ruff() -> str | None:
         return platform_support.find_executable("ruff")
 
 
+def find_mypy() -> str | None:
+    """mypy from this interpreter's scripts directory, where requirements-dev.txt installs it, or else from PATH."""
+    return shutil.which("mypy", path=sysconfig.get_path("scripts")) or platform_support.find_executable("mypy")
+
+
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
     ("Git Bash", "Git Bash", find_git_bash),
     ("ShellCheck", "ShellCheck", find_shellcheck),
     ("PowerShell 7 (pwsh)", "PowerShell", find_powershell),
     ("ruff", "ruff", find_ruff),
+    ("mypy", "mypy", find_mypy),
 )
 
 
@@ -1322,14 +1403,16 @@ def missing_prerequisites(
 
 
 # The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these,
-# and CI installs Python, ShellCheck, and ruff at their floors. Git Bash has no floor: the shell scripts need no Bash 4.
-# ruff's floor is its pin in requirements-dev.txt, because a newer minor release can change the formatting style.
+# and CI installs Python, ShellCheck, ruff, and mypy at their floors. Git Bash has no floor: the shell scripts need no
+# Bash 4. ruff's and mypy's floors are their pins in requirements-dev.txt, because a newer release can change the
+# formatting style or report new errors in an unchanged tree.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
     "ShellCheck": (0, 9, 0),
     "PowerShell 7 (pwsh)": (7, 0),
     "ruff": (0, 16, 10),
+    "mypy": (2, 4, 0),
 }
 
 
@@ -1582,6 +1665,47 @@ def ruff_lint_check(root: Path, targets: list[str]) -> None:
         ) from exc
 
 
+def mypy_type_check(cwd: Path, targets: list[str], configuration: Path) -> None:
+    """Fail, naming each error, when mypy finds a type error under the targets, checked from cwd."""
+    mypy = find_mypy()
+    if mypy is None:
+        raise AssertionError(f"mypy was not found: {platform_support.install_hint('mypy')}")
+    # The null device as the cache directory keeps mypy from writing a cache into the tree.
+    try:
+        run_process([mypy, "--config-file", str(configuration), "--cache-dir", os.devnull, *targets], cwd=cwd)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}\nFix each error named above; a `# type: ignore[<code>]` that must stay states its reason in a "
+            "comment after it."
+        ) from exc
+
+
+def type_check_skill_roots() -> list[Path]:
+    """The scripts directory of each skill that holds a Python module other than a regression suite."""
+    return [
+        skill / "scripts"
+        for skill in skill_directories()
+        if any(not is_test_script(path) for path in (skill / "scripts").glob("*.py"))
+    ]
+
+
+def type_check_jobs() -> list[Job]:
+    configuration = REPOSITORY_ROOT / "pyproject.toml"
+    core = f"static type check (mypy {', '.join(TYPE_CHECK_ROOTS)})"
+    jobs = [
+        Job(
+            core,
+            core,
+            UNSPLIT_SUITE_WEIGHT,
+            lambda: mypy_type_check(REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration),
+        )
+    ]
+    for root in type_check_skill_roots():
+        name = f"static type check (mypy {relative(root)})"
+        jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, lambda r=root: mypy_type_check(r, ["."], configuration)))
+    return jobs
+
+
 def static_format_check() -> None:
     ruff_format_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
 
@@ -1598,6 +1722,7 @@ def all_jobs() -> list[Job]:
         Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
         Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
         Job(python_lint, python_lint, UNSPLIT_SUITE_WEIGHT, static_lint_check),
+        *type_check_jobs(),
         *suite_jobs(regression_suites()),
     ]
 
@@ -2881,6 +3006,126 @@ class RepositoryValidation(unittest.TestCase):
         self.assertEqual(["select"], sorted(lint))
         self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
 
+    def test_missing_mypy_is_reported_with_the_install_command(self) -> None:
+        self.assertIn(("mypy", "mypy", find_mypy), PREREQUISITES)
+        with (
+            mock.patch.object(shutil, "which", return_value=None),
+            mock.patch.object(platform_support, "find_executable", return_value=None),
+        ):
+            self.assertIsNone(find_mypy())
+        self.assertEqual(
+            ["  - mypy: python -m pip install -r requirements-dev.txt"],
+            missing_prerequisites((("mypy", "mypy", lambda: None),)),
+        )
+        with mock.patch(f"{__name__}.find_mypy", return_value=None), self.assertRaises(AssertionError) as raised:
+            mypy_type_check(REPOSITORY_ROOT, ["deploy.py"], REPOSITORY_ROOT / "pyproject.toml")
+        self.assertIn("mypy was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
+
+    def test_type_check_names_a_wrong_return_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "pyproject.toml"
+            configuration.write_text('[tool.mypy]\npython_version = "3.11"\n', encoding="utf-8")
+            (root / "clean.py").write_text("def answer() -> int:\n    return 42\n", encoding="utf-8")
+            mypy_type_check(root, ["clean.py"], configuration)
+            (root / "module.py").write_text('def answer() -> int:\n    return "42"\n', encoding="utf-8")
+            with self.assertRaises(AssertionError) as raised:
+                mypy_type_check(root, ["clean.py", "module.py"], configuration)
+            message = str(raised.exception)
+            self.assertRegex(message, r"(?m)^module\.py:2: error: Incompatible return value type .*\[return-value\]$")
+            self.assertNotRegex(message, r"(?m)^clean\.py:")
+            self.assertIn("type: ignore[<code>]", message)
+            # No cache or other state is written into the checked tree.
+            self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
+
+    def test_type_check_runs_once_per_root(self) -> None:
+        jobs = {job.name: job for job in all_jobs()}
+        configuration = REPOSITORY_ROOT / "pyproject.toml"
+        core = "static type check (mypy deployer, tools, deploy.py, tests)"
+        self.assertIn(core, jobs)
+        with mock.patch(f"{__name__}.mypy_type_check") as check:
+            jobs[core].run()
+        check.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests"], configuration)
+        # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
+        roots = type_check_skill_roots()
+        self.assertIn(SKILLS_ROOT / "code-review-core" / "scripts", roots)
+        self.assertNotIn(SKILLS_ROOT / "update-coding-agent-skills" / "scripts", roots)
+        for root in roots:
+            name = f"static type check (mypy {relative(root)})"
+            with self.subTest(root=name), mock.patch(f"{__name__}.mypy_type_check") as check:
+                jobs[name].run()
+                check.assert_called_once_with(root, ["."], configuration)
+
+    def test_type_check_configuration_is_pinned(self) -> None:
+        configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
+        self.assertEqual("3.11", configuration["python_version"])
+        self.assertEqual("win32", configuration["platform"])
+        self.assertIs(True, configuration["explicit_package_bases"])
+        # Default strictness, and no module or import is exempt; test suites wait for #92's second pass.
+        self.assertEqual(
+            ["exclude", "explicit_package_bases", "mypy_path", "platform", "python_version"], sorted(configuration)
+        )
+        excluded = re.compile(configuration["exclude"])
+        for path in ("tests/run_validation.py", "tests/deployer/harness.py", "skills/x/scripts/review_records.py"):
+            with self.subTest(checked=path):
+                self.assertIsNone(excluded.search(path))
+        for path in ("tests/deployer/test_cli.py", "test_review_core.py", "tests/fixtures/runtime-canary/x.py"):
+            with self.subTest(excluded=path):
+                self.assertIsNotNone(excluded.search(path))
+
+    def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
+        self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "skills" / "user" / "scripts").mkdir(parents=True)
+            sibling = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
+            (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling, encoding="utf-8")
+            # A regression suite's own path changes do not count: suites are not type-checked yet.
+            suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\n'
+            (root / "skills" / "user" / "scripts" / "test_user.py").write_text(suite, encoding="utf-8")
+            # Text that only names the call is not one.
+            (root / "skills" / "user" / "scripts" / "notes.py").write_text(f"TEXT = {sibling!r}\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/skills/stale/scripts"]\n', encoding="utf-8"
+            )
+            self.assertEqual(
+                [
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/core/scripts, which "
+                    "skills/user/scripts/user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path names $MYPY_CONFIG_FILE_DIR/skills/stale/scripts, which "
+                    "no module puts on sys.path",
+                ],
+                mypy_path_problems(root, sorted(root.rglob("*"))),
+            )
+
+    def test_repository_has_no_type_ignore_without_a_reason(self) -> None:
+        self.assertEqual([], type_ignore_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_type_ignore_scan_requires_codes_and_a_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # The comments are assembled so this file does not carry the comments it tests.
+            marker = "# type" + ": ignore"
+            (root / "module.py").write_text(
+                "\n".join(
+                    [
+                        f"a = 1  {marker}",
+                        f"b = 1  {marker}[misc]",
+                        f"c = 1  {marker}  # no codes",
+                        f"d = 1  {marker}[misc]  # the stub omits it",
+                        f"e = 1  {marker}[misc, arg-type]  # the stub omits both",
+                        f'TEXT = "{marker}"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "notes.md").write_text(f"{marker}\n", encoding="utf-8")
+            self.assertEqual(
+                ["module.py:1", "module.py:2", "module.py:3"],
+                type_ignore_without_reason(root, [root / "module.py", root / "notes.md"]),
+            )
+
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
@@ -2916,7 +3161,13 @@ class RepositoryValidation(unittest.TestCase):
 
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertEqual(
-            {"Python": (3, 11), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 0), "ruff": (0, 16, 10)},
+            {
+                "Python": (3, 11),
+                "ShellCheck": (0, 9, 0),
+                "PowerShell 7 (pwsh)": (7, 0),
+                "ruff": (0, 16, 10),
+                "mypy": (2, 4, 0),
+            },
             VALIDATION_FLOORS,
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
@@ -2925,6 +3176,7 @@ class RepositoryValidation(unittest.TestCase):
             "| ShellCheck | 0.9.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
             "| ruff | 0.16.10 |",
+            "| mypy | 2.4.0 |",
         ):
             with self.subTest(row=row):
                 self.assertIn(row, document)
@@ -2933,8 +3185,9 @@ class RepositoryValidation(unittest.TestCase):
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
         self.assertIn("python-version: ['3.11', '3.x']", workflow)
-        # Both matrix entries install the pinned development dependencies, so ruff runs at its floor.
+        # Both matrix entries install the pinned development dependencies, so ruff and mypy run at their floors.
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
+        self.assertIn("python -m mypy --version", workflow)
         requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
         self.assertEqual(["ruff==0.16.10", "mypy==2.4.0"], [line for line in requirements if "==" in line])
         dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")

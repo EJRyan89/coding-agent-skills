@@ -24,6 +24,7 @@ INSTALL_HINTS = {
     "PowerShell": "winget install --id Microsoft.PowerShell",
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
     "ruff": "python -m pip install -r requirements-dev.txt",
+    "mypy": "python -m pip install -r requirements-dev.txt",
 }
 INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',

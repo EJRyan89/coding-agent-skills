@@ -17,5 +17,22 @@ line-ending = "auto"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 
-# mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.
+# Validation runs mypy once per root: deployer/, tools/, deploy.py, and tests/ together from the repository root, and
+# each skill's scripts/ directory from inside it. Default strictness; no module or import is exempt.
 [tool.mypy]
+python_version = "3.11"
+# The deployer and the skills support Windows only, so mypy checks them as Windows sees them on any host. Revisit
+# when deployer/platform_support.py gains another platform.
+platform = "win32"
+# tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths.
+explicit_package_bases = true
+# Each skills/<name>/scripts directory a module puts on sys.path: the code-review-core scripts its skill_deps
+# dependents import, and the analyze-skill-cost inventory tools/new_skill.py and the validation runner import. Their
+# imports then resolve as they do at run time. Validation keeps this list equal to those sys.path entries.
+mypy_path = [
+    "$MYPY_CONFIG_FILE_DIR/skills/analyze-skill-cost/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/code-review-core/scripts",
+]
+# Regression suites (test_*.py) and the runtime-canary fixture tree are excluded in #92's first pass; its second pass
+# removes this exclusion and fixes the suites.
+exclude = '(^|/)test_[^/]*\.py$|^tests/fixtures/'
