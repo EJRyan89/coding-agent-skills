@@ -2,7 +2,7 @@
 
 This project packages portable Claude Code skills and a guarded deployer.
 
-The deployer is a standard-library Python 3.11+ package and currently supports Windows only: configured paths are absolute drive-letter paths, and rendered Bash and PowerShell are validated with Git Bash, ShellCheck, and PowerShell. Keep every operating-system-specific behavior in `deployer/platform_support.py` so Linux and other Unix support can be added there without touching the pipeline.
+The deployer is a standard-library Python 3.11+ package and currently supports Windows only: configured paths are absolute drive-letter paths, and rendered Bash and PowerShell are validated with Git Bash, ShellCheck, and PowerShell. Keep every operating-system-specific behavior in `deployer/platform_support.py` so Linux and other Unix support can be added there without touching the pipeline. Validation fails when the deployer, `tools/`, `deploy.py`, or the validation runner names a platform-specific attribute, module, environment variable, or command outside it. A module states a sanctioned exception beside the code it excuses, as a module-level `PLATFORM_ALLOWED = {token: reason}`.
 
 ## Architecture
 
@@ -63,7 +63,9 @@ python -B tests/run_validation.py
 
 Never work around a failing check. Do not mark tests as expected failures or skipped, weaken or disable a gate, or leave TODO or placeholder comments to land partial work; finish the change so every check passes, or keep it uncommitted. Never disable or suppress ShellCheck diagnostics to make validation pass; fix the cause. The only sanctioned suppression is the fragment-lint header `deployer/render.py` adds to Markdown command examples it extracts for validation.
 
-Add regression coverage for every behavior change. When a token appears in executable content, include a rendered execution fixture with representative values containing spaces and other allowed punctuation.
+Add regression coverage for every behavior change. When a token appears in executable content, include a rendered execution fixture with representative values containing spaces and other allowed punctuation. For a token in Bash or PowerShell, validation requires it to sit inside quotes and requires a `tests/deployer/` test named `*with_spaces*` that renders and runs it in that language.
+
+A regression suite runs only if its name matches `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` with a `.py`, `.sh`, or `.ps1` extension, and a Python suite must end with `if __name__ == "__main__":`; "Validation" in `docs/adding-a-skill.md` states these rules and validation checks that it does.
 
 Every skill with executable files must include an executable regression suite under its `scripts/` directory. Markdown may use executable-language fences only for command examples of five lines or fewer; extract longer programs into tested files under `scripts/`.
 

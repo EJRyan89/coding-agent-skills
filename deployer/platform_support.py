@@ -15,6 +15,7 @@ from .errors import DeployError
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/$")
 GIT_BASH_DRIVE = re.compile(r"^/([A-Za-z])(?:/(.*))?$", re.DOTALL)
+DRIVE_PATH = re.compile(r"^([A-Za-z]):(.*)$", re.DOTALL)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 CREATE_NO_WINDOW = 0x08000000
 INSTALL_HINTS = {
@@ -29,6 +30,9 @@ INSTALL_HELP = (
     "After installing, open a new terminal. Applications that were already running,",
     "including ones minimized to the system tray, keep the old PATH until restarted.",
 )
+# Commands this platform provides beyond the portable ones in tools.STANDARD_COMMANDS: Python as python, because
+# python3 is often a Microsoft Store placeholder; Windows PowerShell; and cygpath, which Git for Windows bundles.
+STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"})
 
 
 def ensure_supported() -> None:
@@ -68,6 +72,13 @@ def from_shell_path(value: str) -> str:
     """Translate a Git Bash drive path such as /c/Tools into C:/Tools; leave every other path unchanged."""
     match = GIT_BASH_DRIVE.match(value)
     return f"{match.group(1).upper()}:/{match.group(2) or ''}" if match else value
+
+
+def to_shell_path(value: str) -> str:
+    """Translate a drive-letter path such as C:/Tools into Git Bash's /c/Tools; leave every other path unchanged."""
+    normalized = normalize(value)
+    match = DRIVE_PATH.match(normalized)
+    return f"/{match.group(1).lower()}{match.group(2)}" if match else normalized
 
 
 # Where the runtimes read personal skills from, as named in the warning about an ignored HOME.

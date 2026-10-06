@@ -34,16 +34,16 @@ DEPLOY_TOOLS = (
     Tool("powershell", "PowerShell", lambda: platform_support.find_powershell(), POWERSHELL_VERSION),
 )
 
-# Commands every deployment already provides, so skills may run them without declaring them: Python, Git for
-# Windows (Git, Bash, and the utilities it bundles), and PowerShell. Keep in step with "Commands skills may run" in
-# docs/adding-a-skill.md. python3 is deliberately absent: on Windows it is often a Microsoft Store placeholder.
+# Commands every deployment already provides, so skills may run them without declaring them: Git, Bash and the
+# utilities that come with it, PowerShell 7, and the platform's own, such as Python's command name. Keep in step with
+# "Commands skills may run" in docs/adding-a-skill.md.
 STANDARD_COMMANDS = frozenset({
-    "python", "git", "bash", "sh", "pwsh", "powershell",
-    "awk", "basename", "cat", "cmp", "comm", "cp", "curl", "cut", "cygpath", "date", "diff", "dirname", "env",
+    "git", "bash", "sh", "pwsh",
+    "awk", "basename", "cat", "cmp", "comm", "cp", "curl", "cut", "date", "diff", "dirname", "env",
     "expr", "find", "grep", "gzip", "head", "ls", "mkdir", "mktemp", "mv", "od", "paste", "readlink", "realpath",
     "rm", "rmdir", "sed", "seq", "sleep", "sort", "stat", "tail", "tar", "tee", "touch", "tr", "uniq", "wc",
     "xargs",
-})
+}) | platform_support.STANDARD_COMMANDS
 
 # Tools a skill may declare in its deploy-meta "tools" list. Git and Python are deployment requirements already.
 SKILL_TOOLS = {
