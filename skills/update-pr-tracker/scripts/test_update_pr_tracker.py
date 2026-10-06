@@ -95,11 +95,17 @@ def run(
 def ai(
     verdict: str, must: int = 0, should: int = 0, suggestion: int = 0, report: str | None = "C:/Reviews/a b/review.md"
 ) -> dict:
+    """A first review's collected result: its findings are its open ledger entries."""
+    counts = {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion}
     return {
         "verdict": verdict,
-        "counts": {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion},
+        "counts": counts,
+        "ledger": {"open": counts, "addressed": 0, "since": 1 if any(counts.values()) else None, "version": 1},
         "report": report,
     }
+
+
+LEGEND = "Findings: M must fix, H should fix, S suggestion; flagged means you flagged it with flag-review-finding."
 
 
 class LayoutTests(unittest.TestCase):
@@ -127,12 +133,12 @@ class LayoutTests(unittest.TestCase):
         )
         self.assertIn(
             "| Ada Lovelace | [#3 Improve \\| "
-            "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H | "
+            "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H open | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) (stale) |",
             content,
         )
         self.assertIn(
-            "|  | [#7 Improve \\| behavior](https://github.com/owner/repo/pull/7) | Approved | 2S | "
+            "|  | [#7 Improve \\| behavior](https://github.com/owner/repo/pull/7) | Approved | 2S open | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) |",
             content,
         )
@@ -143,7 +149,7 @@ class LayoutTests(unittest.TestCase):
         mine = content[content.index("### My PRs (2)") :]
         self.assertIn("| PR | Status | AI Result | Findings | AI Review |", mine)
         self.assertLess(mine.index("#9 "), mine.index("#8 "))
-        self.assertIn("| Draft | Incomplete | - | - |", mine)
+        self.assertIn("| Draft | Incomplete | none open | - |", mine)
         self.assertIn("| Approved | - | - | (stale) |", mine)
         self.assertNotIn("Awaiting Response", content)
         self.assertLess(content.index("### Drafts"), content.index("### My PRs"))
@@ -192,15 +198,15 @@ class LayoutTests(unittest.TestCase):
             with self.subTest(names=names), self.assertRaisesRegex(TrackerError, "author.name"):
                 run([item()], author_names=names)
 
-    def test_the_findings_cell_reads_the_ledger_when_the_review_has_one(self) -> None:
+    def test_the_findings_cell_has_one_grammar_for_every_row(self) -> None:
         def ledger(
             must: int = 0,
             should: int = 0,
             suggestion: int = 0,
             *,
-            addressed: int = 0,
+            addressed: int | None = 0,
             since: int | None = None,
-            version: int = 3,
+            version: int | None = 3,
         ) -> dict:
             return {
                 "open": {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion},
@@ -212,37 +218,92 @@ class LayoutTests(unittest.TestCase):
         def since(version: int, new: int = 0, addressed: int = 0) -> dict:
             return {"version": version, "new": new, "addressed": addressed}
 
+        def unreviewed(summary: dict | None, flagged: int = 0) -> dict:
+            return ai("CHANGES_REQUESTED") | {"ledger": summary, "since_review": None, "flagged": flagged}
+
         open_since_v1 = ai("CHANGES_REQUESTED", suggestion=1) | {"ledger": ledger(1, 0, 1, addressed=3, since=1)}
-        for review, expected in (
+        for situation, review, expected in (
+            # The issue's table, row by row.
+            ("first review", unreviewed(ledger(1, 0, 1, since=1, version=1)), "1M 1S open"),
+            ("re-review", unreviewed(ledger(0, 1, 3, addressed=2, since=1, version=2)), "1H 3S open · 2 addressed"),
             (
-                open_since_v1 | {"since_review": since(1, 1, 1), "flagged": 0},
-                "1M 1S open · 1 new, 1 addressed since your review",
+                "re-review, every earlier finding fixed",
+                unreviewed(ledger(7, 0, 1, addressed=3, since=2, version=2)),
+                "7M 1S open · 3 addressed",
+            ),
+            ("re-review, nothing addressed yet", unreviewed(ledger(2, since=1, version=2)), "2M open"),
+            ("re-review, everything fixed", unreviewed(ledger(addressed=5)), "none open · 5 addressed"),
+            (
+                "after the user's review",
+                ai("CHANGES_REQUESTED")
+                | {"ledger": ledger(4, 4, 2, addressed=1, since=1), "since_review": since(1, 7, 1), "flagged": 0},
+                "4M 4H 2S open · 7 new, 1 addressed since your review",
             ),
             (
+                "after the user's review, no movement",
+                open_since_v1 | {"since_review": since(3), "flagged": 0},
+                "1M 1S open · unchanged since your review",
+            ),
+            # A record written before ledgers: collect summarizes the ledger its records compute, so its counts
+            # (one suggestion, the only finding it raised) are not what the cell shows.
+            (
+                "record before ledgers",
+                ai("CHANGES_REQUESTED", suggestion=1)
+                | {"ledger": ledger(0, 1, 1, addressed=1, since=1, version=2), "since_review": None, "flagged": 0},
+                "1H 1S open · 1 addressed",
+            ),
+            # A migrated legacy review cannot say what was addressed, so its counts are the head alone.
+            (
+                "legacy review",
+                ai("APPROVED", 1, 0, 3) | {"ledger": ledger(1, 0, 3, addressed=None, version=None)},
+                "1M 3S open",
+            ),
+            ("legacy review with an unreadable report", ai("APPROVED", 1) | {"ledger": None}, "-"),
+            (
+                "flagged head",
+                unreviewed(ledger(1, 0, 1, addressed=3, since=1), flagged=1),
+                "1M 1S open (1 flagged) · 3 addressed",
+            ),
+            (
+                "flagged head after the user's review",
                 open_since_v1 | {"since_review": since(2, addressed=2), "flagged": 1},
                 "1M 1S open (1 flagged) · 2 addressed since your review",
             ),
-            (open_since_v1 | {"since_review": since(0, 2), "flagged": 0}, "1M 1S open · 2 new since your review"),
-            (open_since_v1 | {"since_review": since(3), "flagged": 0}, "1M 1S open · nothing new since your review"),
-            (open_since_v1 | {"since_review": None, "flagged": 0}, "1M 1S open · v1–v3"),
-            (open_since_v1, "1M 1S open · v1–v3"),  # collected before since_review existed
-            (ai("APPROVED") | {"ledger": ledger(addressed=2), "since_review": None, "flagged": 0}, "none open · v3"),
             (
+                "new only",
+                open_since_v1 | {"since_review": since(0, 2), "flagged": 0},
+                "1M 1S open · 2 new since your review",
+            ),
+            (
+                "everything fixed since the user's review",
                 ai("APPROVED") | {"ledger": ledger(addressed=2), "since_review": since(1, addressed=2), "flagged": 0},
                 "none open · 2 addressed since your review",
             ),
-            (ai("CHANGES_REQUESTED", must=1) | {"ledger": ledger(1, since=1, version=1)}, "1M open · v1"),
-            (ai("APPROVED", should=2) | {"ledger": None}, "2H"),
+            ("commit not placed", open_since_v1 | {"since_review": None, "flagged": 0}, "1M 1S open · 3 addressed"),
+            ("collected before since_review existed", open_since_v1, "1M 1S open · 3 addressed"),
         ):
             row = item(number=4)
             row.update(author="ada", reviewed_head_sha=HEAD, ai_review=review)
             content, _ = run([row])
-            with self.subTest(expected=expected):
+            with self.subTest(situation):
                 self.assertIn(f"| {expected} | [AI Review]", content)
+                self.assertNotRegex(content, r"\| [^|]*v\d[^|]* \| \[AI Review\]")
+
+    def test_a_tracker_with_rows_has_one_legend_above_its_first_section(self) -> None:
+        content, _ = run([item(number=1), reviewed(2, "COMMENTED")])
+        block = content[content.index(START_MARKER) : content.index(END_MARKER)]
+        self.assertEqual(1, content.count(LEGEND))
+        self.assertEqual(1, sum(line.startswith("Findings:") for line in content.splitlines()))
+        self.assertLess(block.index(LEGEND), block.index("### "))
+        self.assertIn(f"{START_MARKER}\n\n{LEGEND}\n\n### ", content)
+        empty, _ = run([])
+        self.assertNotIn("Findings:", empty)
 
     def test_presentation_fields_are_validated(self) -> None:
         good = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": 0, "since": 1, "version": 2}
         validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": good}}])
+        legacy = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": None, "since": None}
+        validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": legacy | {"version": None}}}])
         validate_items(
             [
                 item()
@@ -258,6 +319,11 @@ class LayoutTests(unittest.TestCase):
             ("ai_review", {"verdict": "OK"}),
             ("ai_review", ai("APPROVED") | {"counts": {"MUST_FIX": -1, "SHOULD_FIX": 0, "SUGGESTION": 0}}),
             ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": -1}}),
+            # Only a legacy review, which has no version, may leave what was addressed unknown.
+            ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": None}}),
+            ("ai_review", ai("APPROVED") | {"ledger": legacy | {"version": None, "addressed": 0}}),
+            ("ai_review", ai("APPROVED") | {"ledger": legacy | {"version": None, "since": 1}}),
+            ("ai_review", ai("APPROVED") | {"ledger": legacy | {"version": None}, "since_review": None, "flagged": 0}),
             ("ai_review", ai("APPROVED") | {"ledger": good | {"since": 3}}),
             ("ai_review", ai("APPROVED") | {"ledger": good | {"since": None}}),
             ("ai_review", ai("APPROVED") | {"ledger": good | {"open": {"MUST_FIX": 1}}}),

@@ -27,7 +27,7 @@ from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
 from review_io import PersistenceError, atomic_write_json, map_in_order, working_path
 from review_operation import reviewed_head
-from review_records import RecordError, flagged_entries, ledger_id
+from review_records import RecordError, flagged_entries, ledger_history, ledger_id
 from update_pr_tracker import Row, TrackerError, review_candidates, update_dashboard_rows, validate_items
 
 # One query per page of 50 open pull requests. Nested connections are not paginated: a pull request with more
@@ -108,9 +108,10 @@ def tracker_item(
     ancestry: Ancestry = lambda repository, earlier, later: None,
     flags: Iterable[dict[str, Any]] = (),
 ) -> dict[str, Any]:
-    """One tracker input item from a GraphQL pull-request node and the archive's reviewed head. For a review with a
-    finding ledger, it also counts the open findings `flags` name and what moved since the user's last review, using
-    `ancestry` to place that review's commit among the review versions' heads."""
+    """One tracker input item from a GraphQL pull-request node and the archive's reviewed head. For a review record,
+    it also counts the open findings `flags` name and what moved since the user's last review, read from the ledger
+    the record stores or, for one written before ledgers, the ledger the earlier records compute, using `ancestry` to
+    place that review's commit among the review versions' heads."""
     flags = list(flags)
     try:
         number = node["number"]
@@ -142,13 +143,14 @@ def tracker_item(
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
     item["ai_review"] = {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
-    if reviewed and reviewed["ledger"]:
+    # A legacy review has no records to read a ledger from, so its row shows only its counts.
+    if reviewed and reviewed["source"] == "record":
         records = [
             record
             for record in pull_records(archive_root, repository, number)
             if record["review"]["version"] <= reviewed["version"]
         ]
-        ledger = records[-1]["ledger"]
+        ledger = ledger_history(records)[reviewed["version"]]
         opened = {ledger_id(entry["version"], entry["id"]) for entry in ledger if entry["state"] == "open"}
         item["ai_review"]["flagged"] = len(opened & set(flagged_entries(ledger, flags, repository, number)))
         baseline = _baseline(records, item["user_review_sha"], repository, ancestry)

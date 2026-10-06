@@ -211,6 +211,16 @@ class ReviewedHeadTests(unittest.TestCase):
         )
         reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 3}, reviewed["counts"])
+        # Its findings were never converted, so it cannot say how many were addressed.
+        self.assertEqual(
+            {
+                "open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 3},
+                "addressed": None,
+                "since": None,
+                "version": None,
+            },
+            reviewed["ledger"],
+        )
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
 
     def test_invalid_legacy_index_is_treated_as_unreviewed(self) -> None:
@@ -229,6 +239,18 @@ class ReviewedHeadTests(unittest.TestCase):
                 "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
                 "coverage": {"unavailable_sources": ["big.sql"]},
             },
+            "ledger": [
+                {
+                    "version": 2,
+                    "id": "F001",
+                    "severity": "SUGGESTION",
+                    "category": "Correctness",
+                    "state": "open",
+                    "judged_in": 2,
+                    "dispositions": [],
+                    "repeats": [],
+                }
+            ],
         }
         with mock.patch.object(review_operation, "latest_record", return_value=record):
             self.assertEqual(
@@ -239,7 +261,12 @@ class ReviewedHeadTests(unittest.TestCase):
                     "incomplete": True,
                     "verdict": "INCOMPLETE",
                     "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
-                    "ledger": None,
+                    "ledger": {
+                        "open": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "addressed": 0,
+                        "since": 2,
+                        "version": 2,
+                    },
                     "report": str(self.directory / "review-v2.md"),
                 },
                 review_operation.reviewed_head(self.root, "owner/repo", 5),

@@ -61,6 +61,9 @@ SECTION_SUMMARIES = {
     SECTION_MINE: "PRs you authored. Status reflects GitHub's review decision on the PR.",
 }
 OPEN_SECTIONS = {SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE}
+FINDINGS_LEGEND = (
+    "Findings: M must fix, H should fix, S suggestion; flagged means you flagged it with flag-review-finding."
+)
 PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
 
 
@@ -90,7 +93,8 @@ def _count(value: Any) -> bool:
 
 
 def _valid_ledger(ledger: Any) -> bool:
-    """The latest review's finding-ledger summary, or None for a review recorded before ledgers."""
+    """The latest review's finding-ledger summary. A migrated legacy review's has no version and cannot say what was
+    addressed, so both are None; it is None itself when the legacy report is unreadable."""
     if ledger is None:
         return True
     if not isinstance(ledger, dict) or set(ledger) != {"open", "addressed", "since", "version"}:
@@ -102,6 +106,8 @@ def _valid_ledger(ledger: Any) -> bool:
         or not all(_count(value) for value in opened.values())
     ):
         return False
+    if version is None:
+        return ledger["addressed"] is None and since is None
     if not _count(ledger["addressed"]) or not _count(version) or version < 1:
         return False
     if not any(opened.values()):
@@ -116,7 +122,7 @@ def _valid_ledger_reading(review: dict[str, Any]) -> bool:
     if "flagged" not in review and "since_review" not in review:
         return True
     ledger = review.get("ledger")
-    if ledger is None or "flagged" not in review or "since_review" not in review:
+    if ledger is None or ledger["version"] is None or "flagged" not in review or "since_review" not in review:
         return False
     if not _count(review["flagged"]) or review["flagged"] > sum(ledger["open"].values()):
         return False
@@ -342,32 +348,30 @@ def review_candidates(rows: list[Row]) -> list[dict[str, Any]]:
     ]
 
 
-def _findings(counts: dict[str, int] | None) -> str:
-    if not counts:
-        return "-"
-    parts = [
+def _findings(counts: dict[str, int]) -> str:
+    return " ".join(
         f"{counts[key]}{letter}"
         for key, letter in (("MUST_FIX", "M"), ("SHOULD_FIX", "H"), ("SUGGESTION", "S"))
         if counts[key]
-    ]
-    return " ".join(parts) or "-"
+    )
 
 
-def _ledger_findings(review: dict[str, Any]) -> str:
-    """Open findings by severity and how many are flagged, then what moved since the user's last review, such as
-    `1M 1S open (1 flagged) · 1 new, 1 addressed since your review`; without that review, the versions from the oldest
-    open finding to the latest review, such as `1M 1S open · v1–v3`."""
+def _ledger_findings(review: dict[str, Any] | None) -> str:
+    """The remaining work, then the progress: open findings by severity and how many are flagged, then what moved
+    since the user's last review, such as `1M 1S open (1 flagged) · 1 new, 1 addressed since your review` or
+    `… · unchanged since your review`. Without that review, how many findings were addressed, such as
+    `1H 3S open · 2 addressed`, or the head alone when none were or the review cannot say (a legacy review)."""
+    if review is None or not review.get("ledger"):
+        return "-"
     ledger = review["ledger"]
     opened = _findings(ledger["open"])
     flagged = f" ({review['flagged']} flagged)" if review.get("flagged") else ""
-    head = "none open" if opened == "-" else f"{opened} open{flagged}"
+    head = f"{opened} open{flagged}" if opened else "none open"
     since = review.get("since_review")
-    if since is None:
-        first = ledger["since"] if ledger["since"] is not None else ledger["version"]
-        span = f"v{first}–v{ledger['version']}" if first != ledger["version"] else f"v{ledger['version']}"
-        return f"{head} · {span}"
-    moved = [f"{since[key]} {key}" for key in ("new", "addressed") if since[key]]
-    return f"{head} · {', '.join(moved) if moved else 'nothing new'} since your review"
+    if since is not None:
+        moved = [f"{since[key]} {key}" for key in ("new", "addressed") if since[key]]
+        return f"{head} · {', '.join(moved) if moved else 'unchanged'} since your review"
+    return f"{head} · {ledger['addressed']} addressed" if ledger["addressed"] else head
 
 
 def _ai_cells(row: Row) -> list[str]:
@@ -376,10 +380,7 @@ def _ai_cells(row: Row) -> list[str]:
     if row.item["reviewed_head_sha"] is None:
         return ["-", "-", "-"]
     verdict = AI_VERDICTS[review["verdict"]] if review else "-"
-    if review and review.get("ledger"):
-        findings = _ledger_findings(review)
-    else:
-        findings = _findings(review["counts"]) if review else "-"
+    findings = _ledger_findings(review)
     link = ""
     if review and review["report"]:
         link = f"[AI Review](vscode://file/{quote(review['report'].replace(chr(92), '/'), safe='/:')})"
@@ -436,6 +437,8 @@ def render(
     """Render the owned section: collapsible sections, rows grouped by requestor, AI verdict and findings."""
     home = {repository.lower() for repository in (home_repositories or set())}
     lines = [start_marker, ""]
+    if rows:
+        lines.extend([FINDINGS_LEGEND, ""])
     pinned_sections = sorted({row.section for row in rows if row.overridden}, key=str.casefold)
     config_link = (
         f"[the code-review configuration](vscode://file/{quote(config_path.replace(chr(92), '/'), safe='/:')})"

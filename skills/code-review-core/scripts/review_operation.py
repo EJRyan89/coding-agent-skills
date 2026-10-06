@@ -314,14 +314,17 @@ def legacy_counts(report: Path) -> dict[str, int] | None:
 def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
     """The latest reviewed head: a validated review record, else a migrated legacy review.
 
-    Also reports the review's verdict, finding counts, ledger summary (None for a record written before ledgers),
-    and report path for dashboards.
+    Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards. A record
+    written before ledgers is summarized from the ledger its pull request's records compute. A legacy review's
+    findings were never converted, so its summary counts its report's findings as open and cannot say how many
+    were addressed (None); it is None when the report is unreadable.
     """
     directory = pull_directory(archive_root, repository, number)
     record = latest_record(archive_root, repository, number)
     if record is not None:
         review = record["review"]
         coverage = review.get("coverage") or {}
+        ledger = record["ledger"] if "ledger" in record else current_ledger(archive_root, repository, number)
         _, markdown = record_paths(directory, review["version"])
         return {
             "head_sha": record["pull_request"]["head_sha"],
@@ -330,20 +333,22 @@ def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str,
             "incomplete": bool(coverage.get("unavailable_sources")),
             "verdict": review["verdict"],
             "counts": dict(review["counts"]),
-            "ledger": ledger_summary(record),
+            "ledger": ledger_summary(ledger, review["version"]),
             "report": str(markdown),
         }
     legacy = legacy_index(archive_root, repository, number)
     if legacy is not None:
         report = directory / "legacy-review.md"
+        counts = legacy_counts(report)
+        summary = None if counts is None else {"open": counts, "addressed": None, "since": None, "version": None}
         return {
             "head_sha": legacy["reviewed_head_sha"],
             "source": "legacy",
             "version": None,
             "incomplete": False,
             "verdict": legacy["verdict"].replace(" ", "_"),
-            "counts": legacy_counts(report),
-            "ledger": None,
+            "counts": counts,
+            "ledger": summary,
             "report": str(report) if report.is_file() else None,
         }
     return None

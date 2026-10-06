@@ -478,9 +478,9 @@ class UpdateTests(TrackerPipelineFixture):
             ),
             (between, {"version": 2, "new": 1, "addressed": 0}, "1M 1S open · 1 new since your review", 2),
             (OLD_HEAD, {"version": 0, "new": 2, "addressed": 0}, "1M 1S open · 2 new since your review", 3),
-            (heads[3], {"version": 3, "new": 0, "addressed": 0}, "1M 1S open · nothing new since your review", 0),
-            (USER_REVIEWED, None, "1M 1S open · v1–v3", 1),  # GitHub cannot compare it
-            (None, None, "1M 1S open · v1–v3", 0),
+            (heads[3], {"version": 3, "new": 0, "addressed": 0}, "1M 1S open · unchanged since your review", 0),
+            (USER_REVIEWED, None, "1M 1S open · 1 addressed", 1),  # GitHub cannot compare it
+            (None, None, "1M 1S open · 1 addressed", 0),
         ):
             with self.subTest(sha=sha):
                 self.github.calls.clear()
@@ -499,6 +499,138 @@ class UpdateTests(TrackerPipelineFixture):
                 self.assertIn(f"| Changes Requested | {cell} | [AI Review]", row)
                 self.assertEqual(compared, len(self.compares()), "an exact head match needs no comparison")
 
+    def test_a_review_recorded_before_ledgers_renders_from_the_ledger_its_records_compute(self) -> None:
+        heads = review_fixture.HEADS
+
+        def record(version: int, keys: list[tuple[str, str, int]]) -> dict[str, Any]:
+            mode = "initial" if version == 1 else "re-review"
+            findings = [
+                {
+                    "candidate_key": key,
+                    "severity": severity,
+                    "category": "Correctness",
+                    "path": "src/file.py",
+                    "line": line,
+                    "body": f"Problem {key}.",
+                    "evidence": "The added line shows it.",
+                    "source": "fixture",
+                }
+                for key, severity, line in keys
+            ]
+            result = {
+                "protocol_version": 1,
+                "repository": "example/one",
+                "pull_number": 12,
+                "head_sha": heads[version],
+                "summary": "Fixture",
+                "reviewer": "fixture",
+                "status": "complete",
+                "findings": findings,
+                "prior_dispositions": [],
+                "usage": None,
+            }
+            request = {
+                "repository": "example/one",
+                "pull_number": 12,
+                "pull_url": "https://github.com/example/one/pull/12",
+                "title": "Change 12",
+                "base_ref": "main",
+                "base_sha": "d" * 40,
+                "head_sha": heads[version],
+                "mode": mode,
+                "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            }
+            if mode == "re-review":
+                request["scope"] = {
+                    "requested": "incremental",
+                    "used": "incremental",
+                    "reason": "requested",
+                    "since_version": version - 1,
+                    "files_changed": 1,
+                    "files_total": 1,
+                    "lines_changed": 1,
+                    "lines_total": 3,
+                }
+            built = build_record(
+                request,
+                validate_adapter_result(
+                    result, expected_repository="example/one", expected_number=12, expected_head_sha=heads[version]
+                ),
+                version=version,
+                policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+                reviewed_at=f"2026-03-0{version}T12:00:00+00:00",
+            )
+            del built["ledger"]
+            return built
+
+        commit_record(
+            self.archive,
+            "example/one",
+            12,
+            record(1, [("lock", "MUST_FIX", 10), ("null", "SHOULD_FIX", 20)]),
+            expected_latest_version=None,
+        )
+        # Before ledgers, a re-review disposed bare IDs and counted only the findings it raised itself.
+        legacy = record(2, [("retry", "SUGGESTION", 30)])
+        legacy["prior_dispositions"] = [
+            {"finding_id": "F001", "disposition": "still_present", "rationale": "Still there."},
+            {"finding_id": "F002", "disposition": "addressed", "rationale": "Fixed."},
+        ]
+        commit_record(self.archive, "example/one", 12, legacy, expected_latest_version=1)
+        for sha, since, cell in (
+            (None, None, "1M 1S open · 1 addressed"),
+            (heads[1], {"version": 1, "new": 1, "addressed": 1}, "1M 1S open · 1 new, 1 addressed since your review"),
+        ):
+            with self.subTest(sha=sha):
+                reviews = [{"state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
+                item, row = self.collect_fixture(reviews)
+                self.assertEqual({"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, item["ai_review"]["counts"])
+                self.assertEqual(
+                    {
+                        "open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "addressed": 1,
+                        "since": 1,
+                        "version": 2,
+                    },
+                    item["ai_review"]["ledger"],
+                )
+                self.assertEqual((since, 0), (item["ai_review"]["since_review"], item["ai_review"]["flagged"]))
+                # The verdict is the record's own, which counted only the suggestion it raised.
+                self.assertIn(f"| Approved | {cell} | [AI Review]", row)
+
+    def test_a_legacy_review_shows_its_counts_alone(self) -> None:
+        directory = self.archive / "example" / "one" / "pulls" / "12"
+        directory.mkdir(parents=True)
+        index = {
+            "schema_version": 1,
+            "kind": "legacy-review-index",
+            "repository": "example/one",
+            "pull_number": 12,
+            "reviewed_at": "2026-01-01T00:00:00+00:00",
+            "reviewed_head_sha": review_fixture.HEADS[3],
+            "verdict": "CHANGES_REQUESTED",
+            "source_sha256": "0" * 64,
+            "source_path": "C:/legacy/review-12.md",
+            "source_file_sha256": "0" * 64,
+        }
+        (directory / "legacy-review.json").write_text(json.dumps(index), encoding="utf-8")
+        (directory / "legacy-review.md").write_text(
+            "<summary><strong>SHOULD FIX (1)</strong></summary>\n<summary><strong>SUGGESTIONS (2)</strong></summary>\n",
+            encoding="utf-8",
+        )
+        item, row = self.collect_fixture([{"state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}])
+        self.assertEqual(
+            {
+                "open": {"MUST_FIX": 0, "SHOULD_FIX": 1, "SUGGESTION": 2},
+                "addressed": None,
+                "since": None,
+                "version": None,
+            },
+            item["ai_review"]["ledger"],
+        )
+        self.assertNotIn("since_review", item["ai_review"])
+        self.assertIn("| Changes Requested | 1H 2S open | [AI Review]", row)
+
     def test_the_findings_cell_counts_flagged_open_findings(self) -> None:
         review_fixture.commit_fixture(self.archive)
         add_flag(
@@ -512,7 +644,7 @@ class UpdateTests(TrackerPipelineFixture):
         )
         item, row = self.collect_fixture([])
         self.assertEqual(1, item["ai_review"]["flagged"])
-        self.assertIn("| 1M 1S open (1 flagged) · v1–v3 |", row)
+        self.assertIn("| 1M 1S open (1 flagged) · 1 addressed |", row)
         self.flags_path.write_text("{}", encoding="utf-8")
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual((1, "FAILED Flag store shape is invalid\n", ""), (code, out, err))
