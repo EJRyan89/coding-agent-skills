@@ -752,6 +752,13 @@ def print_summary(plan: dict[str, Any]) -> None:
 # sweep ----------------------------------------------------------------------------------------------------------
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "deployed_skill_roots": "also in code-review-core's review_io.py and curate-agent-memory's memory_audit.py; "
+    "#27's shared core replaces the copies",
+}
+
+
 def deployed_skill_roots() -> tuple[Path, ...]:
     """The directories the deployer owns, whatever skills directory this script runs from."""
     home = Path.home()

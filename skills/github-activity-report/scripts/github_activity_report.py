@@ -71,6 +71,13 @@ class GitHubActivityError(RuntimeError):
         self.kind = kind
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "CommandResult": "also in code-review-core's review_github.py and review_runtime.py; #27's shared core "
+    "replaces the copies",
+}
+
+
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int

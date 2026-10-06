@@ -82,6 +82,13 @@ class RuntimeContractError(ValueError):
     """Raised when a runtime or repository reviewer violates the trust contract."""
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "CommandResult": "also in review_github.py and github-activity-report's github_activity_report.py; #27's "
+    "shared core replaces the copies",
+}
+
+
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int

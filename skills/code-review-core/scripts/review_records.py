@@ -598,6 +598,16 @@ def _path_set(paths: Any) -> bool:
     )
 
 
+def _validate_timestamp(value: Any) -> None:
+    """An ISO 8601 timestamp string, as a review's reviewed_at must be."""
+    if not isinstance(value, str):
+        raise RecordError("Review timestamp is invalid")
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise RecordError("Review timestamp is invalid") from exc
+
+
 def _validate_reviewers(reviewers: Any) -> None:
     """The reviewers that ran: which files each covered, what it found, how often it was retried, and how
     long it took."""
@@ -924,13 +934,7 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review mode is invalid")
     if "scope" in review:
         _validate_scope(review["scope"], review)
-    reviewed_at = review.get("reviewed_at")
-    if not isinstance(reviewed_at, str):
-        raise RecordError("Review timestamp is invalid")
-    try:
-        datetime.fromisoformat(reviewed_at)
-    except ValueError as exc:
-        raise RecordError("Review timestamp is invalid") from exc
+    _validate_timestamp(review.get("reviewed_at"))
     if not isinstance(review.get("summary"), str) or not review["summary"].strip():
         raise RecordError("Review summary is invalid")
     adapter = review.get("adapter")

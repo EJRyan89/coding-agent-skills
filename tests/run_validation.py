@@ -1179,6 +1179,182 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
+# A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
+# every module holding the copy states it; "*" sanctions every definition in its module. An allowance the module no
+# longer needs is reported.
+DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
+EVERY_DEFINITION = "*"
+DUPLICATION_ROOTS = ("skills", "deployer", "tools")
+MINIMUM_DUPLICATED_LINES = 4
+
+
+def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
+    """The definition's syntax tree without docstrings or line numbers, equal for two copies of one body."""
+    for child in ast.walk(node):
+        if (
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and isinstance(child.body[0], ast.Expr)
+            and isinstance(child.body[0].value, ast.Constant)
+            and isinstance(child.body[0].value.value, str)
+        ):
+            child.body = child.body[1:] or [ast.Pass()]
+    return ast.dump(node)
+
+
+def _joined(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def duplicated_definition_problems(root: Path) -> list[str]:
+    """Report a top-level function or class defined identically in two files, and allowances no longer needed.
+
+    Every copy #27 lists began identical and then drifted; a copy caught while it is still identical is caught before
+    it diverges. Two scripts of one skill count, because one can import the other.
+    """
+    copies: dict[str, list[tuple[str, int, str]]] = {}
+    allowances: dict[str, dict[str, str]] = {}
+    problems: list[str] = []
+    files = [path for top in DUPLICATION_ROOTS for path in (root / top).rglob("*.py") if not is_test_script(path)]
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        allowed = _platform_allowance(tree, DUPLICATION_ALLOWANCE)
+        if allowed is None:
+            problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
+            allowed = {}
+        allowances[name] = allowed
+        for node in tree.body:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and (node.end_lineno or node.lineno) - node.lineno + 1 >= MINIMUM_DUPLICATED_LINES
+            ):
+                copies.setdefault(_definition_key(node), []).append((name, node.lineno, node.name))
+    found: list[str] = []
+    copied: dict[str, set[str]] = {}
+    for group in copies.values():
+        modules = sorted({module for module, _, _ in group})
+        if len(modules) < 2:
+            continue
+        definition = group[0][2]
+        for module in modules:
+            copied.setdefault(module, set()).add(definition)
+        if all({definition, EVERY_DEFINITION} & set(allowances[module]) for module in modules):
+            continue
+        places = _joined([f"{module}:{line}" for module, line, _ in group])
+        found.append(
+            f"{definition} is defined identically in {places}; import one copy, or sanction it in each copy's module "
+            f"with {DUPLICATION_ALLOWANCE}"
+        )
+    for module, allowed in allowances.items():
+        problems += [
+            f"{module}: {DUPLICATION_ALLOWANCE} allows {entry}, which no other file defines identically"
+            for entry in sorted(allowed)
+            if not (copied.get(module) if entry == EVERY_DEFINITION else entry in copied.get(module, set()))
+        ]
+    return sorted(found) + sorted(problems)
+
+
+MARKDOWN_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
+MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
+MARKDOWN_REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(?:<([^>\n]+)>|(\S+))")
+URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
+# GitHub's heading slug keeps letters, digits, underscores, hyphens, and spaces, then turns each space into a hyphen.
+SLUG_REMOVED = re.compile(r"[^\w\- ]")
+
+
+def _outside_fences(text: str) -> list[str]:
+    """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
+    lines: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        marker = MARKDOWN_FENCE.match(line)
+        if fence is None and marker:
+            fence = marker.group(1)
+        elif fence is not None and marker and marker.group(1).startswith(fence) and line.strip() == marker.group(1):
+            fence = None
+        elif fence is None:
+            lines.append(line)
+            continue
+        lines.append("")
+    return lines
+
+
+def heading_slugs(text: str) -> set[str]:
+    """The fragment GitHub gives each heading, numbering a repeated one -1, -2, and so on."""
+    slugs: set[str] = set()
+    seen: dict[str, int] = {}
+    for line in _outside_fences(text):
+        heading = MARKDOWN_HEADING.match(line)
+        if heading:
+            slug = SLUG_REMOVED.sub("", heading.group(1).strip().lower()).replace(" ", "-")
+            slugs.add(f"{slug}-{seen[slug]}" if slug in seen else slug)
+            seen[slug] = seen.get(slug, 0) + 1
+    return slugs
+
+
+def markdown_link_problems(root: Path) -> list[str]:
+    """Report each relative link in the repository's Markdown to a missing file, or to a heading its target lacks.
+
+    Code blocks and spans are not links; URLs with a scheme are not checked. Files Git ignores, and the session
+    worktrees under .claude/worktrees/, are not read.
+    """
+    from urllib.parse import unquote
+
+    problems: list[str] = []
+    for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.suffix.casefold() != ".md" or name.startswith(".claude/worktrees/"):
+            continue
+        for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
+            text = MARKDOWN_CODE_SPAN.sub("", line)
+            for match in [*MARKDOWN_LINK.finditer(text), *MARKDOWN_REFERENCE.finditer(text)]:
+                target = match.group(1) or match.group(2)
+                if URL_SCHEME.match(target):
+                    continue
+                location, _, fragment = target.partition("#")
+                destination = path.parent / unquote(location) if location else path
+                if not destination.exists():
+                    problems.append(f"{name}:{number} links to {target}, which does not exist")
+                elif (
+                    fragment
+                    and destination.is_file()
+                    and destination.suffix.casefold() == ".md"
+                    and unquote(fragment) not in heading_slugs(destination.read_text(encoding="utf-8"))
+                ):
+                    problems.append(f"{name}:{number} links to {target}, which has no heading with that slug")
+    return problems
+
+
+def _needs_a_test(name: str) -> bool:
+    """Whether a repository path is a module under skills/*/scripts/, deployer/, or tools/ that a test must name."""
+    parts = name.split("/")
+    in_scope = parts[0] in {"deployer", "tools"} or (len(parts) > 3 and parts[0] == "skills" and parts[2] == "scripts")
+    return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
+
+
+def untested_module_problems(root: Path) -> list[str]:
+    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py names.
+
+    A test names a module by importing, running, or mentioning it, or by being test_<module>.py. A package's
+    __init__.py needs no test.
+    """
+    files = repository_files(root)
+    tests = [path for path in files if fnmatch.fnmatchcase(path.name, "test_*.py")]
+    texts = [path.read_text(encoding="utf-8") for path in tests]
+    test_names = {path.name for path in tests}
+    problems: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if not _needs_a_test(name) or f"test_{path.name}" in test_names:
+            continue
+        mention = re.compile(rf"\b{re.escape(path.stem)}\b")
+        if not any(mention.search(text) for text in texts):
+            problems.append(f"{name} is named by no test_*.py; add a test that imports or runs it")
+    return problems
+
+
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
 # A fixture executes a token in a context when it calls run_tool and one of these finders.
@@ -3018,9 +3194,11 @@ class RepositoryValidation(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
         self.assertEqual(120, configuration["line-length"])
         lint = configuration["lint"]
-        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM"], lint["select"])
+        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"], lint["select"])
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
-        self.assertEqual(["select"], sorted(lint))
+        self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
+        self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
+        self.assertEqual(["max-statements"], sorted(lint["pylint"]))
         self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
 
     def test_missing_mypy_is_reported_with_the_install_command(self) -> None:
@@ -3143,6 +3321,12 @@ class RepositoryValidation(unittest.TestCase):
                 ["module.py:1", "module.py:2", "module.py:3"],
                 type_ignore_without_reason(root, [root / "module.py", root / "notes.md"]),
             )
+
+    def test_complexity_and_statement_thresholds_only_go_down(self) -> None:
+        # #91's ratchet: a pull request may lower these literals with the thresholds, never raise them.
+        lint = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
+        self.assertLessEqual(lint["mccabe"]["max-complexity"], 51)
+        self.assertLessEqual(lint["pylint"]["max-statements"], 148)
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
@@ -3331,6 +3515,208 @@ class RepositoryValidation(unittest.TestCase):
             self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
 
 
+def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:
+    """Write each relative path's literal text under root, creating its folders."""
+    for relative_path, text in files.items():
+        (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative_path).write_text(text, encoding="utf-8")
+
+
+class DuplicatedDefinitionPolicy(unittest.TestCase):
+    SHARED = "def shared(value):\n    total = value + 1\n    total *= 2\n    return total\n"
+    DOCUMENTED = SHARED.replace(":\n", ':\n    """The same body, documented."""\n', 1)
+    FIX = "; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            write_fixture_tree(Path(temporary), files)
+            return duplicated_definition_problems(Path(temporary))
+
+    def test_repository_copies_only_what_it_sanctions(self) -> None:
+        # Every copy #27 lists began identical and then drifted, so a copy is caught while it is still identical.
+        self.assertEqual([], duplicated_definition_problems(REPOSITORY_ROOT))
+
+    def test_a_definition_copied_into_another_file_fails_and_names_both(self) -> None:
+        self.assertEqual(
+            [f"shared is defined identically in deployer/one.py:1 and tools/two.py:3{self.FIX}"],
+            self.problems({"deployer/one.py": self.SHARED, "tools/two.py": '"""Module."""\n\n' + self.DOCUMENTED}),
+        )
+
+    def test_two_scripts_of_one_skill_count_because_one_can_import_the_other(self) -> None:
+        self.assertEqual(
+            [f"shared is defined identically in skills/s/scripts/a.py:1 and skills/s/scripts/b.py:1{self.FIX}"],
+            self.problems({"skills/s/scripts/a.py": self.SHARED, "skills/s/scripts/b.py": self.SHARED}),
+        )
+
+    def test_a_copy_sanctioned_in_every_module_passes(self) -> None:
+        allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n\n\n'
+        everything = 'DUPLICATION_ALLOWED = {"*": "the whole module is a sanctioned copy"}\n\n\n'
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": allowed + self.SHARED,
+                    "skills/s/scripts/two.py": allowed + self.SHARED,
+                    "deployer/whole.py": everything + self.SHARED.replace("shared", "whole"),
+                    "skills/s/scripts/whole.py": everything + self.SHARED.replace("shared", "whole"),
+                }
+            ),
+        )
+
+    def test_a_copy_sanctioned_in_only_some_modules_fails_and_names_every_copy(self) -> None:
+        allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n'
+        self.assertEqual(
+            [
+                "shared is defined identically in deployer/one.py:2, skills/s/scripts/two.py:2 and tools/three.py:1"
+                + self.FIX
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": allowed + self.SHARED,
+                    "skills/s/scripts/two.py": allowed + self.SHARED,
+                    "tools/three.py": self.SHARED,
+                }
+            ),
+        )
+
+    def test_a_stale_or_unexplained_sanction_fails(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/one.py: DUPLICATION_ALLOWED allows shared, which no other file defines identically",
+                "deployer/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+                "tools/vague.py: DUPLICATION_ALLOWED must map each name to the reason it is allowed",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": 'DUPLICATION_ALLOWED = {"shared": "copied into tools/two.py"}\n' + self.SHARED,
+                    "tools/two.py": self.SHARED.replace("+ 1", "+ 2"),
+                    "deployer/whole.py": 'DUPLICATION_ALLOWED = {"*": "no longer copied"}\n'
+                    + self.SHARED.replace("shared", "whole"),
+                    "tools/vague.py": 'DUPLICATION_ALLOWED = {"shared": ""}\n',
+                }
+            ),
+        )
+
+    def test_short_nested_test_and_other_root_definitions_and_repeats_in_one_file_are_not_copies(self) -> None:
+        short = "def short(value):\n    total = value + 1\n    return total\n"
+        nested = "".join(f"    {line}" for line in self.SHARED.splitlines(keepends=True))
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": self.SHARED + "\n\n" + short + "\n\n" + self.SHARED,
+                    "deployer/nested.py": "if True:\n" + nested,
+                    "deployer/test_one.py": self.SHARED,
+                    "skills/s/scripts/test_two.py": self.SHARED,
+                    "tests/three.py": self.SHARED,
+                    "tools/short.py": short,
+                }
+            ),
+        )
+
+
+class MarkdownLinkPolicy(unittest.TestCase):
+    TARGET = (
+        "# Guide\n\n## The `run_validation` step_two\n\n## Notes: (draft) & more!\n\n## Notes: (draft) & more!\n\n"
+        "```markdown\n## Not a heading\n```\n"
+    )
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, files)
+            return markdown_link_problems(root)
+
+    def test_repository_links_resolve(self) -> None:
+        self.assertEqual([], markdown_link_problems(REPOSITORY_ROOT))
+
+    def test_fragments_follow_githubs_heading_slugs(self) -> None:
+        # Backticks and punctuation go, underscores and hyphens stay, and a repeated heading is numbered.
+        index = (
+            "# Index\n\n## Local heading\n\n"
+            "See [the step](docs/target.md#the-run_validation-step_two), [notes](docs/target.md#notes-draft--more)"
+            " and [again](<docs/target.md#notes-draft--more-1>).\n"
+            "Also [here](#local-heading), [the folder](docs/), ![a picture](docs/target.md 'title'),"
+            " [away](https://example.com/missing.md#nowhere) and [mail](mailto:someone@example.com).\n"
+            "Code is not a link: `[x](missing.md)`.\n\n"
+            "```text\n[x](missing.md)\n```\n\n"
+            "[reference]: docs/target.md#guide\n"
+        )
+        self.assertEqual([], self.problems({"index.md": index, "docs/target.md": self.TARGET}))
+
+    def test_a_link_to_a_missing_file_fails(self) -> None:
+        self.assertEqual(
+            ["docs/guide.md:3 links to ../missing.md, which does not exist"],
+            self.problems({"docs/guide.md": "# Guide\n\nSee [gone](../missing.md).\n"}),
+        )
+
+    def test_a_fragment_that_names_no_heading_fails(self) -> None:
+        self.assertEqual(
+            [
+                "index.md:1 links to docs/target.md#the-run-validation-step-two, which has no heading with that slug",
+                "index.md:2 links to docs/target.md#not-a-heading, which has no heading with that slug",
+                "index.md:3 links to #missing, which has no heading with that slug",
+            ],
+            self.problems(
+                {
+                    "index.md": "[a](docs/target.md#the-run-validation-step-two)\n"
+                    "[b](docs/target.md#not-a-heading)\n"
+                    "[c](#missing)\n",
+                    "docs/target.md": self.TARGET,
+                }
+            ),
+        )
+
+    def test_ignored_and_worktree_markdown_is_not_read(self) -> None:
+        broken = "[gone](missing.md)\n"
+        self.assertEqual(
+            [],
+            self.problems(
+                {".gitignore": "ignored.md\n", "ignored.md": broken, ".claude/worktrees/feat-x/README.md": broken}
+            ),
+        )
+
+
+class TestedModulePolicy(unittest.TestCase):
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, files)
+            return untested_module_problems(root)
+
+    def test_every_module_is_named_by_a_test(self) -> None:
+        self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
+
+    def test_a_module_no_test_names_fails_and_is_named(self) -> None:
+        self.assertEqual(
+            ["deployer/unreached.py is named by no test_*.py; add a test that imports or runs it"],
+            self.problems(
+                {
+                    "deployer/imported.py": "",
+                    "deployer/through_cli.py": "",
+                    "deployer/unreached.py": "",
+                    "deployer/lonely.py": "",
+                    "tools/tool.py": "",
+                    "skills/s/scripts/helper.py": "",
+                    "skills/s/notes.py": "",
+                    "tests/support.py": "",
+                    "skills/s/scripts/test_s.py": "import helper\n",
+                    "tests/deployer/test_lonely.py": "pass\n",
+                    "tests/deployer/test_suite.py": "from deployer import imported\n\n"
+                    "# Runs tools/tool.py and reaches deployer.through_cli.\n"
+                    "UNREACHED_NAMES = 'unreached_by_prefix'\n",
+                }
+            ),
+        )
+
+    def test_package_initializers_need_no_test(self) -> None:
+        self.assertEqual(
+            [], self.problems({"deployer/__init__.py": "", "tools/__init__.py": "", "skills/s/scripts/__init__.py": ""})
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
     parser.add_argument(
@@ -3352,7 +3738,7 @@ def main(argv: list[str] | None = None) -> int:
     loader = unittest.TestLoader()
     if patterns:
         loader.testNamePatterns = patterns
-    policies = loader.loadTestsFromTestCase(RepositoryValidation)
+    policies = loader.loadTestsFromModule(sys.modules[__name__])
     if patterns:
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."

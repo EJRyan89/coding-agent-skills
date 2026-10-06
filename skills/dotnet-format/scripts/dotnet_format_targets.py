@@ -78,6 +78,12 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path) -> Completed:
     return Completed(result.returncode, result.stdout)
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "Services": "run_dotnet_format.py defines it again; the follow-up has that script import it from here instead",
+}
+
+
 @dataclass
 class Services:
     """External effects, replaceable in tests."""

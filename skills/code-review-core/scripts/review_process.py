@@ -25,6 +25,15 @@ class ProcessStatus:
     start_time: int | None
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "process_status": "a copy of deployer/platform_support.py's, because a deployed skill cannot import the "
+    "deployer; #27 removes it",
+    "HiddenWindow": "a copy of deployer/platform_support.py's, because a deployed skill cannot import the "
+    "deployer; #27 removes it",
+}
+
+
 def process_status(pid: int) -> ProcessStatus:
     """Report whether a process is running and, when readable, its creation time."""
     import ctypes
