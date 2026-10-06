@@ -23,7 +23,7 @@ List the open flags:
 python -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" list
 ```
 
-It prints `FLAG <flag id> <category> <target> <body>` per open flag, then `COUNT <n>`. The target is `<owner/repo>#<pull>`, followed by the review version and finding (such as `v2 F002`) when the flag names them, or `-` when it names no repository or pull request. The body is collapsed to one line and cut to 160 characters, ending in `…` when cut.
+It prints `FLAG <flag id> <category> <target> <body>` per open flag, with the body cut to 160 characters and `-` as the target of a flag that names no pull request, then `COUNT <n>`.
 
 Resolve an open flag by its ID (such as `RF-000004`) with a non-empty resolution:
 
@@ -32,5 +32,3 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" resolve "<flag id
 ```
 
 It prints `RESOLVED <flag id>`, or `ALREADY_RESOLVED <flag id>` when the flag was resolved earlier; it keeps that earlier resolution.
-
-The core allocates IDs and commits each update under a short-lived lock. The JSON flag store is authoritative; anything you show the user is a projection of it.

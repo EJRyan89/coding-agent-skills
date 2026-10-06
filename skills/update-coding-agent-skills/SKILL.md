@@ -12,7 +12,7 @@ Pull the latest changes into the clone at `{{SOURCE_ROOT}}` and redeploy them. R
 bash "${CLAUDE_SKILL_DIR}/scripts/update.sh" "{{SOURCE_ROOT}}"
 ```
 
-The first line of output is the status; act on it, not on the exit code, which is 0 only after `DEPLOYED`, 1 for every other status, and 2 for a usage error:
+The first line of output is the status; act on it, not on the exit code:
 
 - `UP_TO_DATE <sha>` or `UPDATED <old>..<new>`: the clone is on `main` at `origin/main`. `UPDATED` is followed by the pulled commits, and by `CROSSED <current>..<target>` when `--cross-major` accepted a release boundary. The deployer's output follows, ending in `DEPLOYED` or `DEPLOY_FAILED <code>`. Report the commit range, the pulled commits, the crossing if any, and the deployer's summary of updated, unchanged, skipped, and removed skills. On `DEPLOY_FAILED`, quote the deployer's error.
 - `MAJOR_UPDATE <current>..<target>`: `origin/main` carries a release whose major version is above the installed one (or whose minor version is, while the major is 0), so the update may ask the user to act, as the release notes say. Nothing was merged or deployed. Report both versions and the listed commits, point the user at the release notes for `<target>` on the repository's releases page, and say that rerunning the skill with `--cross-major` applies it. Do not rerun it yourself.
