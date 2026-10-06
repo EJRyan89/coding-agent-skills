@@ -9,10 +9,19 @@ Development and deployment are currently supported on Windows only. Contributors
 - Python 3.11 or newer;
 - Git for Windows, for Git Bash;
 - ShellCheck;
-- PowerShell 7 (`pwsh`); and
+- PowerShell 7 (`pwsh`);
+- the pinned development dependencies, `ruff` and `mypy`; and
 - GitHub CLI for code-review-operation changes.
 
-[Installation](docs/installation.md#installing-the-tools) lists install commands. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
+Install the development dependencies into the Python that runs validation:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+```
+
+They are the only ones: contributor and CI tools, pinned, while the deployer and every shipped skill stay standard-library. Validation checks formatting with `ruff format` at a line length of 120; run `python -m ruff format` on any file it names. [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+
+[Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
 
 Run the validation entry point from PowerShell or Git Bash, and use Git Bash for Bash scripts. Follow `.editorconfig` and `.gitattributes`; do not commit generated build, test, Python-cache, IDE, deployment, or personal configuration artifacts.
 

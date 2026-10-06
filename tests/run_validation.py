@@ -63,6 +63,8 @@ TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
 # Every suite runs as `python <file>`, so a Python suite without this entry point runs no tests and still exits 0.
 PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
+# Every Python file under these is checked with `ruff format --check`; none is excluded.
+FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
 HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "NotebookEdit", "PowerShell", "Write"}
@@ -1131,10 +1133,21 @@ def find_powershell() -> str:
     )
 
 
+def find_ruff() -> str | None:
+    """ruff from this interpreter, where requirements-dev.txt installs it even when its scripts are not on PATH."""
+    try:
+        from ruff.__main__ import find_ruff_bin
+
+        return find_ruff_bin()
+    except (ImportError, FileNotFoundError):
+        return platform_support.find_executable("ruff")
+
+
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
     ("Git Bash", "Git Bash", find_git_bash),
     ("ShellCheck", "ShellCheck", find_shellcheck),
     ("PowerShell 7 (pwsh)", "PowerShell", find_powershell),
+    ("ruff", "ruff", find_ruff),
 )
 
 
@@ -1154,12 +1167,14 @@ def missing_prerequisites(
 
 
 # The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these,
-# and CI installs Python and ShellCheck at their floors. Git Bash has no floor: the shell scripts need no Bash 4.
+# and CI installs Python, ShellCheck, and ruff at their floors. Git Bash has no floor: the shell scripts need no Bash 4.
+# ruff's floor is its pin in requirements-dev.txt, because a newer minor release can change the formatting style.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
     "ShellCheck": (0, 9, 0),
     "PowerShell 7 (pwsh)": (7, 0),
+    "ruff": (0, 16, 10),
 }
 
 
@@ -1258,7 +1273,9 @@ def append_step_summary(environment: Mapping[str, str], text: str) -> None:
             summary.write(text)
 
 
-def run_process(arguments: list[str], environment: dict[str, str] | None = None) -> None:
+def run_process(
+    arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT
+) -> None:
     merged = dict(os.environ)
     if environment:
         merged.update(environment)
@@ -1268,7 +1285,7 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None)
         try:
             completed = subprocess.run(
                 arguments,
-                cwd=REPOSITORY_ROOT,
+                cwd=cwd,
                 env=merged,
                 stdin=subprocess.DEVNULL,
                 stdout=stdout,
@@ -1384,9 +1401,29 @@ def static_shell_check() -> None:
     run_git_bash(f"{checks} && shellcheck --severity=warning {arguments}")
 
 
+def ruff_format_check(root: Path, targets: list[str]) -> None:
+    """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
+    ruff = find_ruff()
+    if ruff is None:
+        raise AssertionError(f"ruff was not found: {platform_support.install_hint('ruff')}")
+    # Concise output names one file per line instead of printing each diff; no cache is written into the tree.
+    try:
+        run_process([ruff, "format", "--check", "--output-format", "concise", "--no-cache", *targets], cwd=root)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}\nRun `python -m ruff format` on the files named above, using requirements-dev.txt's ruff."
+        ) from exc
+
+
+def static_format_check() -> None:
+    ruff_format_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
+
+
 def all_jobs() -> list[Job]:
     shell = "static shell checks (bash -n and ShellCheck on skill scripts)"
+    python_format = "static format check (ruff format --check)"
     return [Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
+            Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
             *suite_jobs(regression_suites())]
 
 
@@ -2513,12 +2550,46 @@ class RepositoryValidation(unittest.TestCase):
         )
         self.assertEqual([], missing_prerequisites((("ShellCheck", "ShellCheck", lambda: "shellcheck"),)))
 
+    def test_missing_ruff_is_reported_with_the_install_command(self) -> None:
+        self.assertIn(("ruff", "ruff", find_ruff), PREREQUISITES)
+        # Neither the interpreter's ruff package nor one on PATH: no import or command error, only None.
+        with (
+            mock.patch.dict(sys.modules, {"ruff": None, "ruff.__main__": None}),
+            mock.patch.object(platform_support, "find_executable", return_value=None),
+        ):
+            self.assertIsNone(find_ruff())
+        self.assertEqual(
+            ["  - ruff: python -m pip install -r requirements-dev.txt"],
+            missing_prerequisites((("ruff", "ruff", lambda: None),)),
+        )
+
+    def test_format_check_names_an_unformatted_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text("[tool.ruff]\nline-length = 120\n", encoding="utf-8")
+            (root / "clean.py").write_text('x = {"a": 1}\n', encoding="utf-8")
+            ruff_format_check(root, ["clean.py"])
+            (root / "module.py").write_text("x = {  'a':1 }\n", encoding="utf-8")
+            with self.assertRaises(AssertionError) as raised:
+                ruff_format_check(root, ["clean.py", "module.py"])
+            message = str(raised.exception)
+            self.assertRegex(message, r"(?m)^module\.py:\d+:\d+: unformatted: File would be reformatted$")
+            self.assertNotRegex(message, r"(?m)^clean\.py:")
+            self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
+            self.assertIn("python -m ruff format", message)
+
+    def test_format_check_covers_every_python_root(self) -> None:
+        self.assertEqual(("deployer", "tools", "tests", "skills", "deploy.py"), FORMAT_ROOTS)
+        self.assertIn("static format check (ruff format --check)", [job.name for job in all_jobs()])
+
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertEqual(
-            {"Python": (3, 11), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 0)}, VALIDATION_FLOORS
+            {"Python": (3, 11), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 0), "ruff": (0, 16, 10)},
+            VALIDATION_FLOORS,
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
-        for row in ("| Python | 3.11 |", "| ShellCheck | 0.9.0 |", "| PowerShell 7 (`pwsh`) | 7.0 |"):
+        for row in ("| Python | 3.11 |", "| ShellCheck | 0.9.0 |", "| PowerShell 7 (`pwsh`) | 7.0 |",
+                    "| ruff | 0.16.10 |"):
             with self.subTest(row=row):
                 self.assertIn(row, document)
 
@@ -2526,6 +2597,14 @@ class RepositoryValidation(unittest.TestCase):
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
         self.assertIn("python-version: ['3.11', '3.x']", workflow)
+        # Both matrix entries install the pinned development dependencies, so ruff runs at its floor.
+        self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
+        requirements = (REPOSITORY_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(["ruff==0.16.10", "mypy==2.4.0"], [line for line in requirements if "==" in line])
+        dependabot = (REPOSITORY_ROOT / ".github/dependabot.yml").read_text(encoding="utf-8")
+        self.assertRegex(
+            dependabot, r"(?m)^  - package-ecosystem: pip\n    directory: /\n    schedule:\n      interval: weekly$"
+        )
         # The aggregate job keeps the single required status check context that branch protection names.
         self.assertRegex(workflow, r"(?m)^  validate:\n(?:    .*\n)*?    needs: suite$")
 
@@ -2572,15 +2651,19 @@ class RepositoryValidation(unittest.TestCase):
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
                 "docs/dependency-updates.md: winget install --id Microsoft.PowerShell",
+                "  - ruff 0.16.9 is older than the floor 0.16.10 in docs/dependency-updates.md: "
+                "python -m pip install -r requirements-dev.txt",
             ],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None}, (3, 10, 12)
+                {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 16, 9)},
+                (3, 10, 12),
             ),
         )
         self.assertEqual(
             [],
             outdated_prerequisites(
-                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3)}, (3, 11, 0)
+                {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 16, 10)},
+                (3, 11, 0),
             ),
         )
         # A missing tool is reported by missing_prerequisites, not again here.

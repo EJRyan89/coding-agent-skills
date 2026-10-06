@@ -11,3 +11,15 @@ updates:
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
+  # requirements-dev.txt: the pinned development dependencies, ruff and mypy.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python-dev:
+        patterns: ["*"]
+      python-dev-security:
+        applies-to: security-updates
+        patterns: ["*"]
