@@ -36,7 +36,8 @@ A change to any of these is a contract change and raises the release level (the 
 
 - `MANIFEST_VERSION` and `OLDEST_READABLE_VERSION` in `deployer/manifest.py`;
 - a `required_vars` list under `deploy-meta/`;
-- a schema under `skills/code-review-core/references/`;
+- `skills/code-review-core/references/review-adapter.schema.json`, or a format table in
+  `docs/code-review-operations-contract.md`;
 - a skill directory name, or a skill's arguments or status lines;
 - the code-review configuration file's format and the reviewer manifest format.
 

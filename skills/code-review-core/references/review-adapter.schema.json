@@ -12,8 +12,7 @@
     "summary",
     "reviewer",
     "status",
-    "findings",
-    "prior_dispositions"
+    "findings"
   ],
   "properties": {
     "protocol_version": { "type": "integer", "const": 1 },
@@ -76,6 +75,7 @@
       }
     },
     "prior_dispositions": {
+      "description": "One per prior finding in the request's prior_findings, so required when that list is not empty.",
       "type": "array",
       "items": {
         "type": "object",
