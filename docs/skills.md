@@ -75,7 +75,7 @@ Read-only assessment of a repository's AI agent configuration for Claude Code, C
 Started by you or the agent. Installed by default. Takes no arguments.
 <!-- /generated:audit-ai-config -->
 
-It audits the Git repository you start it in, and asks which repository to audit when you are not in one. Ask for JSON when you want to process the findings rather than read them. It parses files statically: it runs nothing from the repository, makes no network requests, and writes nothing.
+It audits the Git repository you start it in, and asks which repository to audit when you are not in one. It reports the repository's authority and scope, every error and warning, and every documented limitation that applies, and summarizes the informational inventory as a count per check; ask for the full inventory when you want each file it found. Ask for JSON when you want to process the findings rather than read them. It parses files statically: it runs nothing from the repository, makes no network requests, and writes nothing.
 
 ## `curate-agent-memory`
 

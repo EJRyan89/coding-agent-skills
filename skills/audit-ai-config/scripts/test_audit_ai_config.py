@@ -1574,6 +1574,58 @@ class OutputFormatTests(unittest.TestCase):
         self.assertEqual(0, data["exitCode"])
         self.assertIsInstance(data["findings"], list)
 
+    def test_markdown_summary_counts_each_severity_and_info_check(self) -> None:
+        result = audit.AuditResult(
+            repository="example",
+            authority="conforming",
+            scope_status="independently-derived",
+            findings=[
+                audit.Finding(severity="INFO", check="layering", path="AGENTS.md"),
+                audit.Finding(severity="WARNING", check="mcp", path=".mcp.json"),
+                audit.Finding(severity="INFO", check="inventory", path="CLAUDE.md"),
+                audit.Finding(severity="ERROR", check="parity", path="AGENTS.md"),
+                audit.Finding(severity="INFO", check="inventory", path="AGENTS.md"),
+                audit.Finding(severity="INFO", check="limitation"),
+            ],
+        )
+        summary = [
+            line for line in audit.format_markdown(result).splitlines()
+            if line.startswith("SUMMARY ")
+        ]
+        self.assertEqual(
+            [
+                "SUMMARY ERROR 1",
+                "SUMMARY WARNING 1",
+                "SUMMARY INFO 4",
+                "SUMMARY INFO inventory 2",
+                "SUMMARY INFO layering 1",
+                "SUMMARY INFO limitation 1",
+            ],
+            summary,
+        )
+
+    def test_markdown_summary_precedes_findings(self) -> None:
+        md = audit.format_markdown(audit.audit(self.root))
+        self.assertLess(md.index("SUMMARY ERROR"), md.index("### Findings"))
+        self.assertRegex(md, r"(?m)^SUMMARY INFO inventory [1-9]\d*$")
+
+    def test_markdown_summary_without_findings(self) -> None:
+        result = audit.AuditResult(repository="example", authority="unconfigured")
+        md = audit.format_markdown(result)
+        self.assertEqual(
+            ["SUMMARY ERROR 0", "SUMMARY WARNING 0", "SUMMARY INFO 0"],
+            [line for line in md.splitlines() if line.startswith("SUMMARY ")],
+        )
+        self.assertIn("No findings.", md)
+
+    def test_json_output_has_no_summary(self) -> None:
+        data = json.loads(audit.format_json(audit.audit(self.root)))
+        self.assertEqual(
+            {"repository", "authority", "scopeStatus", "exitCode", "findings"},
+            set(data),
+        )
+        self.assertNotIn("SUMMARY", audit.format_json(audit.audit(self.root)))
+
     def test_findings_sorted_deterministically(self) -> None:
         result = audit.audit(self.root)
         sorted_f = result.sorted_findings()
