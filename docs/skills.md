@@ -30,15 +30,15 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`analyze-skill-cost`](#analyze-skill-cost) | You or the agent | By default | Nothing extra |
 | [`audit-ai-config`](#audit-ai-config) | You or the agent | By default | Nothing extra |
 | [`curate-agent-memory`](#curate-agent-memory) | You or the agent | By default | Nothing extra |
-| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in | `dotnet-format`, `gh` |
-| [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
+| [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in | `dotnet-format`, `gh` (optional) |
+| [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
 | [`init-ai-config`](#init-ai-config) | You or the agent | By default | Nothing extra |
 | [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
-| [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
+| [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | Nothing extra |
-| [`update-pr-tracker`](#update-pr-tracker) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
+| [`update-pr-tracker`](#update-pr-tracker) | You or the agent | `code-review-operations` bundle | `gh` |
 <!-- /generated:summary -->
 
 The summary and the first block of each section below are generated from each skill's `SKILL.md` frontmatter and `deploy-meta/<name>.json`. Change those, then run `python tools/skill_reference.py --write`; validation fails while this file is stale. The explanation after each generated block is written by hand.
@@ -110,7 +110,7 @@ Run dotnet format (whitespace + style + analyzers) and region layout checks on C
 /dotnet-format
 ```
 
-Started by you or the agent. Opt-in: deploy it with `--include dotnet-format`. Needs `dotnet-format` and `gh`. Takes no arguments.
+Started by you or the agent. Opt-in: deploy it with `--include dotnet-format`. Needs `dotnet-format` and `gh` (optional). Takes no arguments.
 <!-- /generated:dotnet-format -->
 
 Start it inside the repository, on the branch to check. It compares with the pull request's base branch, found with `gh`, else `origin/main`, else `origin/master`, and checks every committed, uncommitted, and untracked `.cs` file that differs. It uses the nearest solution to the current directory that owns a changed file, else the repository's solution whose projects own the most, and stops rather than pick one that owns none. Files outside that solution, such as scripts or `.cs` files no project compiles, get only the layout checks. It reports violations and asks before fixing them, and asks before adding any missing `.editorconfig` settings. It runs the `dotnet-format` global tool (`dotnet tool install -g dotnet-format`), not the SDK's built-in `dotnet format`, which can fail with `TypeInitializationException` against .NET Framework solutions on newer SDKs, and stops a formatter run after 570 seconds.
@@ -137,7 +137,7 @@ Add, list, or resolve a structured code-review improvement flag. Use it when the
 /flag-review-finding add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | resolve ID RESOLUTION
 ```
 
-Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh`.
+Started by you or the agent. Installed with the `code-review-operations` bundle.
 <!-- /generated:flag-review-finding -->
 
 The first word chooses what to do:
@@ -231,7 +231,7 @@ Analyze structured code-review findings for an explicit date range and repositor
 /review-insights START_DATE END_DATE [owner/repo ... | --repository-set NAME]
 ```
 
-Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh`.
+Started by you or the agent. Installed with the `code-review-operations` bundle.
 <!-- /generated:review-insights -->
 
 - `START_DATE END_DATE`: the inclusive range, as `YYYY-MM-DD`. Both are required; the skill never guesses a range.
@@ -302,7 +302,7 @@ Update the owned dashboard section for pull requests the configured user authors
 /update-pr-tracker [owner/repo ... | --repository-set NAME] [--no-review] [--remove owner/repo#number ...]
 ```
 
-Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh`.
+Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `gh`.
 <!-- /generated:update-pr-tracker -->
 
 - `owner/repo ...` or `--repository-set NAME`: which repositories' pull requests to track. With neither, it uses the configured `update-pr-tracker` set. Use the same scope on every run, or the rows for the other repositories disappear.

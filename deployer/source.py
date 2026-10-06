@@ -37,6 +37,7 @@ class Skill:
     tools: list[str] = field(default_factory=list)
     opt_in: bool = False
     agent_deps: list[str] = field(default_factory=list)
+    optional_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -121,8 +122,8 @@ NAME_RULES = (
 )
 XML_TAG_REMEDY = 'Remove the tag, or write it without angle brackets; see "Files" in docs/adding-a-skill.md.'
 METADATA_SHAPE = (
-    "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, and agent_deps, where present, "
-    "are lists of strings, and whose selectable and opt_in, where present, are true or false. "
+    "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, optional_tools, and agent_deps, "
+    "where present, are lists of strings, and whose selectable and opt_in, where present, are true or false. "
     "docs/adding-a-skill.md describes each key."
 )
 
@@ -248,11 +249,13 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     shared = _string_list(metadata.get("shared_deps"))
     dependencies = _string_list(metadata.get("skill_deps"))
     tools = _string_list(metadata.get("tools"))
+    optional_tools = _string_list(metadata.get("optional_tools"))
     agents = _string_list(metadata.get("agent_deps"))
     selectable = metadata.get("selectable", True)
     opt_in = metadata.get("opt_in", False)
     if (
-        required is None or shared is None or dependencies is None or tools is None or agents is None
+        required is None or shared is None or dependencies is None or tools is None or optional_tools is None
+        or agents is None
         or not isinstance(selectable, bool) or not isinstance(opt_in, bool)
     ):
         raise shape_error
@@ -262,11 +265,17 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     for variable in required:
         if variable not in known:
             raise DeployError(f"ERROR: Skill '{name}' requires unknown variable '{variable}'")
-    for tool in tools:
+    for tool in [*tools, *optional_tools]:
         if tool not in SKILL_TOOLS:
             known_tools = ", ".join(sorted(SKILL_TOOLS))
             raise DeployError(f"ERROR: Skill '{name}' declares unknown tool '{tool}' (known tools: {known_tools})")
-    return Skill(name, directory, required, shared, dependencies, selectable, sorted(set(tools)), opt_in, agents)
+    both = sorted(set(tools) & set(optional_tools))
+    if both:
+        raise DeployError(f"ERROR: Skill '{name}' declares tool '{both[0]}' both required and optional")
+    return Skill(
+        name, directory, required, shared, dependencies, selectable, sorted(set(tools)), opt_in, agents,
+        sorted(set(optional_tools)),
+    )
 
 
 def _load_bundles(document: dict[str, Any], source: Source) -> None:
@@ -427,11 +436,24 @@ def is_opt_in(source: Source, root: str) -> bool:
     return root in source.opt_in_bundles or (root in source.skills and source.skills[root].opt_in)
 
 
-def tool_users(source: Source, bundles: list[str], skills: list[str]) -> dict[str, list[str]]:
-    """Map each tool declared in these bundles' and skills' dependency closures to the roots that need it."""
-    users: dict[str, list[str]] = {}
+def _closures(source: Source, bundles: list[str], skills: list[str]) -> list[tuple[str, list[str]]]:
     roots = [*((bundle, source.bundles[bundle]) for bundle in bundles), *((skill, [skill]) for skill in skills)]
-    for root, members in roots:
-        for tool in sorted({tool for name in expand(source, [], members) for tool in source.skills[name].tools}):
+    return [(root, expand(source, [], members)) for root, members in roots]
+
+
+def tool_users(source: Source, bundles: list[str], skills: list[str]) -> dict[str, list[str]]:
+    """Map each tool declared, required or optional, in these bundles' and skills' dependency closures to the roots
+    that use it."""
+    users: dict[str, list[str]] = {}
+    for root, closure in _closures(source, bundles, skills):
+        members = [source.skills[name] for name in closure]
+        declared = {tool for member in members for tool in (*member.tools, *member.optional_tools)}
+        for tool in sorted(declared):
             users.setdefault(tool, []).append(root)
     return {tool: sorted(names) for tool, names in sorted(users.items())}
+
+
+def required_tools(source: Source, bundles: list[str], skills: list[str]) -> set[str]:
+    """The tools some skill in these closures requires, rather than using only when it is installed."""
+    closures = _closures(source, bundles, skills)
+    return {tool for _, closure in closures for name in closure for tool in source.skills[name].tools}

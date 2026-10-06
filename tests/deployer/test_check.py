@@ -23,10 +23,10 @@ INSTALLED = {
 }
 
 
-def set_tools(test: DeployerTestCase, name: str, names: list[str]) -> None:
+def set_tools(test: DeployerTestCase, name: str, names: list[str], key: str = "tools") -> None:
     path = test.source / "deploy-meta" / f"{name}.json"
     metadata = json.loads(path.read_text(encoding="utf-8"))
-    metadata["tools"] = names
+    metadata[key] = names
     path.write_text(json.dumps(metadata), encoding="utf-8")
 
 
@@ -193,6 +193,24 @@ class CheckCommandTests(DeployerTestCase):
         self.assertIn("codex 0.88.0 (used by Codex verification)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
 
+    def test_a_tool_every_user_declares_optional_is_optional(self) -> None:
+        # dotnet-format reads a pull request's base through gh only when gh is there, so it declares gh optional.
+        set_tools(self, "core", ["copilot"])
+        set_tools(self, "reporter", [])
+        set_tools(self, "reporter", ["gh"], key="optional_tools")
+        set_tools(self, "formatter", ["gh"], key="optional_tools")
+        result = self.check(Machine(missing=("gh",)))
+        self.assertEqual(0, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertIn("gh (not installed; used by formatter, reporter)", groups["OPTIONAL"])
+        self.assertNotIn("MISSING", groups)
+        groups = self.report_groups(self.check(Machine()).output, "CHECK")
+        self.assertIn("gh 2.97.0 (used by formatter, reporter)", groups["OPTIONAL"])
+        set_tools(self, "reporter", ["gh"])
+        set_tools(self, "reporter", [], key="optional_tools")
+        groups = self.report_groups(self.check(Machine(missing=("gh",))).output, "CHECK")
+        self.assertEqual(["gh (used by formatter, reporter)"], groups["MISSING"])
+
     def test_tools_no_skill_declares_are_not_listed(self) -> None:
         set_tools(self, "formatter", [])
         output = self.check(Machine(missing=("dotnet-format",))).output
@@ -227,6 +245,14 @@ class DeployWarningTests(DeployerTestCase):
             menu_selection = self.selection_number("plain")
             self.assertNotIn("WARNING", self.deploy_ok("--dry-run", stdin=f"{menu_selection}\n").output)
         with Machine().patches():
+            self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
+
+    def test_deploying_does_not_warn_about_a_missing_optional_tool(self) -> None:
+        self.make_source_json()
+        self.make_skill("reporter", "Reporter")
+        set_tools(self, "reporter", ["gh"], key="optional_tools")
+        self.make_config()
+        with Machine(missing=("gh",)).patches():
             self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
 
 

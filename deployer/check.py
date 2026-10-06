@@ -37,19 +37,21 @@ def _deploy_lines() -> list[ReportLine]:
 
 def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLine]:
     users = source.tool_users(src, sorted(src.bundles), source.root_names(src))
+    required = source.required_tools(src, sorted(src.bundles), source.root_names(src))
     # The runtimes verify runs are reported even when no skill declares them.
     catalogue = {**tools.VERIFY_TOOLS, **tools.SKILL_TOOLS}
     users |= {name: [] for name in tools.VERIFY_TOOLS if name not in users}
     lines: list[ReportLine] = []
     for name, roots in users.items():
         tool = catalogue[name]
-        # An opt-in item that is not installed makes its tools optional, like a tool marked optional.
+        # An opt-in item that is not installed makes its tools optional, like a tool marked optional or one that
+        # every skill using it declares optional.
         dormant = {
             root for root in roots
             if source.is_opt_in(src, root)
             and not currently_chosen(src, owned, root, "bundle" if root in src.bundles else "skill")
         }
-        optional = tool.optional or dormant == set(roots)
+        optional = tool.optional or dormant == set(roots) or name not in required
         named = [f"opt-in {root}" if root in dormant else root for root in roots]
         used_by = f"used by {', '.join([*named, *tool.other_uses])}"
         probe = tools.probe(tool)

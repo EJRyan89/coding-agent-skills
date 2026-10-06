@@ -78,9 +78,12 @@ def read_frontmatter(skill_md: Path) -> dict[str, str]:
 
 
 def _needs(source: deploy_source.Source, name: str) -> list[str]:
+    # Only the skill's own tools: validation holds that list to what the skill runs, including through the
+    # dependency scripts it reaches, while a dependency's other tools are not the skill's to need.
     skills = deploy_source.expand(source, [], [name])
-    tools = sorted({tool for skill in skills for tool in source.skills[skill].tools})
-    needs = [f"`{tool}` (optional)" if SKILL_TOOLS[tool].optional else f"`{tool}`" for tool in tools]
+    own = source.skills[name]
+    optional = set(own.optional_tools) | {tool for tool in own.tools if SKILL_TOOLS[tool].optional}
+    needs = [f"`{tool}` (optional)" if tool in optional else f"`{tool}`" for tool in sorted({*own.tools, *optional})]
     settings = sorted({var for skill in skills for var in source.skills[skill].required_vars if var in CONFIGURED_VARIABLES})
     needs.extend(f"the `{var}` setting" for var in settings)
     return needs
