@@ -19,8 +19,6 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from deployer import frontmatter as skill_frontmatter
 
-ACTION_PIN = re.compile(r"uses:\s*(actions/[A-Za-z0-9_.-]+)@([0-9a-f]{40})")
-
 
 def literal_assignment(path: Path, name: str) -> object:
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
@@ -44,80 +42,6 @@ def replayed_skills(text: str, own: str, names: set[str]) -> list[str]:
 
 
 class CrossSkillContractTests(unittest.TestCase):
-    def test_transport_compatibility_matches(self) -> None:
-        audit = REPOSITORY_ROOT / "skills/audit-ai-config/scripts/audit_ai_config.py"
-        generator = REPOSITORY_ROOT / "skills/init-ai-config/scripts/ai_config_template.py"
-        self.assertEqual(
-            literal_assignment(audit, "TRANSPORT_COMPATIBILITY"),
-            literal_assignment(generator, "TRANSPORT_COMPATIBILITY"),
-            "Standalone audit and generator transport matrices drifted",
-        )
-
-    def test_inventory_file_sets_match(self) -> None:
-        audit = REPOSITORY_ROOT / "skills/audit-ai-config/scripts/audit_ai_config.py"
-        setup = REPOSITORY_ROOT / "skills/init-ai-config/scripts/init_ai_config.py"
-        for name in ("INVENTORY_FILES", "RECURSIVE_INVENTORY_NAMES", "GENERATOR_CANDIDATES"):
-            with self.subTest(constant=name):
-                self.assertEqual(literal_assignment(audit, name), literal_assignment(setup, name))
-
-    def test_audit_accepts_every_path_the_generator_may_own(self) -> None:
-        audit = REPOSITORY_ROOT / "skills/audit-ai-config/scripts/audit_ai_config.py"
-        generator = REPOSITORY_ROOT / "skills/init-ai-config/scripts/ai_config_template.py"
-        audit_paths = set(literal_assignment(audit, "MANIFEST_ALLOWED_PATHS"))
-        generator_paths = set(literal_assignment(generator, "MANIFEST_ALLOWED_PATHS"))
-        self.assertEqual(set(), generator_paths - audit_paths)
-        self.assertIn(".github/workflows/ai-config-parity-pr.yml", generator_paths)
-
-    def test_audit_derives_scope_from_an_installed_generator(self) -> None:
-        for skill in ("audit-ai-config", "init-ai-config"):
-            scripts = str(REPOSITORY_ROOT / "skills" / skill / "scripts")
-            if scripts not in sys.path:
-                sys.path.insert(0, scripts)
-        import audit_ai_config
-        import init_ai_config
-
-        spec = {"runtimes": ["claude", "codex"], "surfaces": ["copilot_cli", "code_review"],
-                "features": ["ci_parity", "ci_parity_caller"]}
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / ".git").mkdir()
-            (root / "CLAUDE.md").write_text(
-                "# CLAUDE.md\n\n## Overview\n\nx\n\n## Build and Test Commands\n\nmake\n\n"
-                "## Formatting Rules\n\ntabs\n\n## CI / Quality Gates\n\nEvery check must pass.\n",
-                encoding="utf-8",
-            )
-            spec_path = root / "spec.json"
-            spec_path.write_text(json.dumps(spec), encoding="utf-8")
-            code, lines = init_ai_config.install(root, spec_path, replace=False)
-            self.assertEqual(0, code, lines)
-            derived, status = audit_ai_config.derive_generator_scope(root)
-        self.assertEqual("independently-derived", status)
-        self.assertEqual(spec, derived)
-
-    def test_generated_workflows_pin_the_reviewed_action_commits(self) -> None:
-        # Dependabot updates only validate.yml; this keeps generated workflows in step.
-        reviewed = dict(
-            ACTION_PIN.findall(
-                (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-            )
-        )
-        skill = REPOSITORY_ROOT / "skills/init-ai-config"
-        sources = [
-            skill / "scripts/ai_config_template.py",
-            *sorted((skill / "references").glob("*.yml")),
-        ]
-        # A Dependabot bump fails here until the pins are copied over, so the message names the tool that does it.
-        self.assertTrue((REPOSITORY_ROOT / "tools/sync_action_pins.py").is_file())
-        fix = "; run python tools/sync_action_pins.py"
-        found = 0
-        for source in sources:
-            for action, sha in ACTION_PIN.findall(source.read_text(encoding="utf-8")):
-                found += 1
-                with self.subTest(source=source.name, action=action):
-                    self.assertIn(action, reviewed, f"{action} is not pinned in validate.yml{fix}")
-                    self.assertEqual(reviewed[action], sha, f"{source.name} pins a stale {action}{fix}")
-        self.assertGreater(found, 0, "No generated action pins were found")
-
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:
         contract = (
             REPOSITORY_ROOT / "skills/runtime-compatibility.md"
@@ -157,7 +81,7 @@ class CrossSkillContractTests(unittest.TestCase):
             for line in path.read_text(encoding="utf-8-sig").splitlines() if "invoke" in line
             for span in re.findall(r"`([^`]+)`", line) if span.split() and span.split()[0] in names
         }
-        self.assertEqual({"review-prs", "flag-review-finding", "audit-ai-config"}, invoked)
+        self.assertEqual({"review-prs", "flag-review-finding"}, invoked)
         for name in sorted(invoked):
             with self.subTest(invoked=name):
                 self.assertIsNone(flag(name, "disable-model-invocation"))

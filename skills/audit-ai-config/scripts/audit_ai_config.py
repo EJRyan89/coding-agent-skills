@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic read-only audit engine for AI agent configuration.
 
-Owned by the audit-ai-config skill. The init-ai-config skill may invoke this
-for post-generation verification but does not contain a copy of this logic.
-This engine works independently and does not depend on init-ai-config files.
+Owned by the audit-ai-config skill and standalone after deployment. It checks
+any repository, and checks the generated layout described in
+references/generated-layout.md where a repository's own ai_config.py generator
+produced one.
 
 Usage:
     python audit_ai_config.py [--json] [--root <path>]
@@ -43,7 +44,7 @@ SEVERITY_ORDER = {"ERROR": 0, "WARNING": 1, "INFO": 2}
 
 OWNERSHIP_MARKER = "AUTO-GENERATED from CLAUDE.md"
 
-# Canonical vocabulary — must match the generator's definitions.
+# Canonical vocabulary of the generated manifest (references/generated-layout.md).
 VALID_RUNTIMES: set[str] = {"claude", "codex"}
 VALID_SURFACES: set[str] = {
     "copilot_cli", "copilot_app", "vscode", "jetbrains",
@@ -53,8 +54,7 @@ VALID_MCP_TARGETS: set[str] = {
     "claude", "codex", "copilot_local", "vscode", "copilot_repository",
 }
 
-# This engine must remain standalone after deployment. The repository-level
-# cross-skill contract test enforces parity with init-ai-config's generator.
+# The transport table in references/generated-layout.md; test_audit_ai_config.py pins both.
 TRANSPORT_COMPATIBILITY: dict[str, set[str]] = {
     "stdio": {"claude", "codex", "copilot_local", "vscode", "copilot_repository"},
     "local": {"copilot_local", "copilot_repository"},
@@ -239,8 +239,7 @@ def is_redirecting_agents_md(content: str) -> bool:
 # Check 1: Inventory
 # ---------------------------------------------------------------------------
 
-# Fixed and recursively discovered configuration files. init-ai-config's inventory
-# keeps an identical copy; tests/ai-config/test_cross_skill_contracts.py enforces parity.
+# Fixed and recursively discovered configuration files.
 INVENTORY_FILES: list[str] = [
     "CLAUDE.md",
     "GEMINI.md",
@@ -1148,115 +1147,85 @@ def _parse_mcp_json(
     return servers, findings
 
 
-def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
+def _check_duplicate_mcp_names(
+    mcp_servers: dict[str, Any],
+    github_mcp_servers: dict[str, Any],
+) -> list[Finding]:
+    """A .github/mcp.json server that .mcp.json also names is unreachable."""
+    return [
+        Finding(
+            severity="ERROR",
+            check="mcp",
+            path=".github/mcp.json",
+            message=f"Duplicate server name '{dup}' — .mcp.json takes "
+                    "precedence, making .github/mcp.json entry unreachable",
+        )
+        for dup in sorted(set(mcp_servers) & set(github_mcp_servers))
+    ]
+
+
+def _read_vscode_mcp(root: Path) -> tuple[dict[str, Any], list[Finding]]:
+    """Parse .vscode/mcp.json, which wraps its servers in 'servers', not 'mcpServers'."""
+    path = root / ".vscode/mcp.json"
+    if not path.is_file():
+        return {}, []
+    try:
+        data = json.loads(read_text(path))
+    except (json.JSONDecodeError, OSError, UnicodeError) as e:
+        message = f"Could not read or parse: {e}"
+    else:
+        if not isinstance(data, dict):
+            message = "Top-level value must be an object"
+        elif "servers" not in data:
+            message = "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"
+        elif not isinstance(data["servers"], dict):
+            message = "'servers' must be an object"
+        else:
+            return data["servers"], []
+    return {}, [Finding(severity="ERROR", check="mcp", path=".vscode/mcp.json", message=message)]
+
+
+def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding]]:
+    """Read the object-valued mcp_servers entries of .codex/config.toml."""
+    path = root / ".codex/config.toml"
+    if not path.is_file():
+        return {}, []
+    try:
+        with path.open("rb") as handle:
+            config = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as e:
+        message = f"Invalid TOML: {e}"
+    except OSError as e:
+        message = f"Error reading config: {e}"
+    else:
+        servers = config.get("mcp_servers", {})
+        if not isinstance(servers, dict):
+            return {}, []
+        return {name: server for name, server in servers.items() if isinstance(server, dict)}, []
+    return {}, [Finding(severity="ERROR", check="mcp", path=".codex/config.toml", message=message)]
+
+
+def _check_codex_http_env(codex_servers: dict[str, dict[str, Any]]) -> list[Finding]:
+    """env and env_vars configure a STDIO process, so a Codex server with a url must not carry them."""
+    return [
+        Finding(
+            severity="ERROR",
+            check="mcp",
+            path=".codex/config.toml",
+            message=f"Server '{name}': {key} is STDIO-only, "
+                    "must not be present on HTTP transport",
+        )
+        for name, server in codex_servers.items() if "url" in server
+        for key in ("env", "env_vars") if key in server
+    ]
+
+
+def _check_manifest_transports(manifest: dict[str, Any]) -> list[Finding]:
+    """Every manifest server's transport must be known and support each of its targets."""
     findings: list[Finding] = []
-
-    # .mcp.json
-    mcp_servers, f = _parse_mcp_json(root / ".mcp.json", ".mcp.json", "mcpServers")
-    findings.extend(f)
-
-    # .github/mcp.json
-    github_mcp_servers, f = _parse_mcp_json(
-        root / ".github/mcp.json", ".github/mcp.json", "mcpServers"
-    )
-    findings.extend(f)
-
-    # Duplicate server names between .mcp.json and .github/mcp.json
-    if mcp_servers and github_mcp_servers:
-        duplicates = set(mcp_servers) & set(github_mcp_servers)
-        for dup in sorted(duplicates):
-            findings.append(Finding(
-                severity="ERROR",
-                check="mcp",
-                path=".github/mcp.json",
-                message=f"Duplicate server name '{dup}' — .mcp.json takes "
-                        "precedence, making .github/mcp.json entry unreachable",
-            ))
-
-    # .vscode/mcp.json — uses "servers" wrapper, not "mcpServers"
-    vscode_mcp_path = root / ".vscode/mcp.json"
-    vscode_servers: dict[str, Any] = {}
-    if vscode_mcp_path.is_file():
-        try:
-            data = json.loads(read_text(vscode_mcp_path))
-        except (json.JSONDecodeError, OSError, UnicodeError) as e:
-            findings.append(Finding(
-                severity="ERROR", check="mcp", path=".vscode/mcp.json",
-                message=f"Could not read or parse: {e}",
-            ))
-            data = None
-        if data is not None:
-            if not isinstance(data, dict):
-                findings.append(Finding(
-                    severity="ERROR", check="mcp", path=".vscode/mcp.json",
-                    message="Top-level value must be an object",
-                ))
-            elif "servers" not in data:
-                findings.append(Finding(
-                    severity="ERROR", check="mcp", path=".vscode/mcp.json",
-                    message="VS Code MCP must use 'servers' wrapper (not 'mcpServers')",
-                ))
-            elif not isinstance(data["servers"], dict):
-                findings.append(Finding(
-                    severity="ERROR", check="mcp", path=".vscode/mcp.json",
-                    message="'servers' must be an object",
-                ))
-            else:
-                vscode_servers = data["servers"]
-
-    # .codex/config.toml
-    codex_servers: dict[str, dict[str, Any]] = {}
-    codex_path = root / ".codex/config.toml"
-    if codex_path.is_file():
-        try:
-            with codex_path.open("rb") as f:
-                codex_config = tomllib.load(f)
-            codex_mcp = codex_config.get("mcp_servers", {})
-            if isinstance(codex_mcp, dict):
-                for name, server in codex_mcp.items():
-                    if not isinstance(server, dict):
-                        continue
-                    codex_servers[name] = server
-                    has_url = "url" in server
-                    if has_url:
-                        if "env" in server:
-                            findings.append(Finding(
-                                severity="ERROR",
-                                check="mcp",
-                                path=".codex/config.toml",
-                                message=f"Server '{name}': env is STDIO-only, "
-                                        "must not be present on HTTP transport",
-                            ))
-                        if "env_vars" in server:
-                            findings.append(Finding(
-                                severity="ERROR",
-                                check="mcp",
-                                path=".codex/config.toml",
-                                message=f"Server '{name}': env_vars is STDIO-only, "
-                                        "must not be present on HTTP transport",
-                            ))
-        except tomllib.TOMLDecodeError as e:
-            findings.append(Finding(
-                severity="ERROR",
-                check="mcp",
-                path=".codex/config.toml",
-                message=f"Invalid TOML: {e}",
-            ))
-        except OSError as e:
-            findings.append(Finding(
-                severity="ERROR",
-                check="mcp",
-                path=".codex/config.toml",
-                message=f"Error reading config: {e}",
-            ))
-
-    # Transport/target validation from manifest
-    manifest_servers = manifest.get("mcp_servers", [])
-    for server in manifest_servers:
+    for server in manifest.get("mcp_servers", []):
         name = server.get("name", "<unnamed>")
         transport = server.get("transport", "")
-        targets = server.get("targets", [])
-
         if transport not in TRANSPORT_COMPATIBILITY:
             findings.append(Finding(
                 severity="ERROR",
@@ -1264,45 +1233,47 @@ def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
                 message=f"Server '{name}': unknown transport '{transport}'",
             ))
             continue
-
         supported = TRANSPORT_COMPATIBILITY[transport]
-        for target in targets:
-            if target not in supported:
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="mcp",
-                    message=f"Server '{name}': transport '{transport}' not "
-                            f"supported for target '{target}'",
-                ))
+        findings.extend(
+            Finding(
+                severity="ERROR",
+                check="mcp",
+                message=f"Server '{name}': transport '{transport}' not "
+                        f"supported for target '{target}'",
+            )
+            for target in server.get("targets", []) if target not in supported
+        )
+    return findings
 
-    # Copilot local tool policy in shared .mcp.json
-    mcp_targets = manifest_mcp_targets(manifest)
-    if "copilot_local" in mcp_targets and mcp_servers:
-        for name, server in mcp_servers.items():
-            if not isinstance(server, dict):
-                continue
-            tools = server.get("tools")
-            if tools is not None and tools != ["*"]:
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="mcp",
-                    path=".mcp.json",
-                    message=f"Server '{name}': copilot_local.tools allowlist "
-                            "cannot be enforced in shared .mcp.json",
-                ))
 
-    # Copilot repository MCP: mandatory manual-verification warning
-    if "copilot_repository" in mcp_targets:
-        findings.append(Finding(
-            severity="WARNING",
+def _check_copilot_local_tools(manifest: dict[str, Any], mcp_servers: dict[str, Any]) -> list[Finding]:
+    """The shared .mcp.json cannot enforce a Copilot tool allowlist."""
+    if "copilot_local" not in manifest_mcp_targets(manifest):
+        return []
+    return [
+        Finding(
+            severity="ERROR",
             check="mcp",
-            message="Copilot repository MCP (cloud agent/code review) "
-                    "configured via repository settings — cannot validate statically",
-        ))
+            path=".mcp.json",
+            message=f"Server '{name}': copilot_local.tools allowlist "
+                    "cannot be enforced in shared .mcp.json",
+        )
+        for name, server in mcp_servers.items()
+        if isinstance(server, dict) and server.get("tools") is not None and server.get("tools") != ["*"]
+    ]
 
-    # Code review + repository MCP: readOnlyHint warning
-    surfaces = manifest.get("surfaces", [])
-    if "code_review" in surfaces and "copilot_repository" in mcp_targets:
+
+def _copilot_repository_mcp_warnings(manifest: dict[str, Any]) -> list[Finding]:
+    """Repository MCP lives in repository settings, which a static audit cannot read."""
+    if "copilot_repository" not in manifest_mcp_targets(manifest):
+        return []
+    findings = [Finding(
+        severity="WARNING",
+        check="mcp",
+        message="Copilot repository MCP (cloud agent/code review) "
+                "configured via repository settings — cannot validate statically",
+    )]
+    if "code_review" in manifest.get("surfaces", []):
         findings.append(Finding(
             severity="WARNING",
             check="mcp",
@@ -1310,45 +1281,56 @@ def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
                     "intersected with readOnlyHint: true — cannot verify "
                     "tool annotations statically",
         ))
+    return findings
 
-    # Cross-runtime semantic parity
-    def _normalize_server(server: dict[str, Any]) -> dict[str, Any]:
-        """Extract connection-relevant fields for parity comparison."""
-        normalized: dict[str, Any] = {}
-        for key in ("command", "args", "url", "cwd", "env"):
-            if key in server:
-                normalized[key] = server[key]
-        return normalized
 
-    all_servers: dict[str, list[tuple[str, dict[str, Any]]]] = {}
-    for name, server in mcp_servers.items():
-        if isinstance(server, dict):
-            all_servers.setdefault(name, []).append((".mcp.json", server))
-    for name, server in github_mcp_servers.items():
-        if isinstance(server, dict):
-            all_servers.setdefault(name, []).append((".github/mcp.json", server))
-    for name, server in vscode_servers.items():
-        if isinstance(server, dict):
-            all_servers.setdefault(name, []).append((".vscode/mcp.json", server))
-    for name, server in codex_servers.items():
-        all_servers.setdefault(name, []).append((".codex/config.toml", server))
+def _normalize_server(server: dict[str, Any]) -> dict[str, Any]:
+    """The connection fields that every copy of one server must agree on."""
+    return {key: server[key] for key in ("command", "args", "url", "cwd", "env") if key in server}
 
-    for name, entries in all_servers.items():
-        if len(entries) < 2:
-            continue
-        normalized_entries = [
-            (source, _normalize_server(server)) for source, server in entries
-        ]
-        base_source, base_norm = normalized_entries[0]
-        for other_source, other_norm in normalized_entries[1:]:
-            if base_norm != other_norm:
+
+def _check_mcp_parity(sources: list[tuple[str, dict[str, Any]]]) -> list[Finding]:
+    """Warn when one server name has different connection fields in two configuration files."""
+    copies: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for source, servers in sources:
+        for name, server in servers.items():
+            if isinstance(server, dict):
+                copies.setdefault(name, []).append((source, _normalize_server(server)))
+    findings: list[Finding] = []
+    for name, entries in copies.items():
+        base_source, base = entries[0]
+        for other_source, other in entries[1:]:
+            if base != other:
                 findings.append(Finding(
                     severity="WARNING",
                     check="mcp",
                     message=f"Server '{name}': connection fields differ between "
                             f"{base_source} and {other_source}",
                 ))
+    return findings
 
+
+def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
+    mcp_servers, findings = _parse_mcp_json(root / ".mcp.json", ".mcp.json", "mcpServers")
+    github_mcp_servers, github_findings = _parse_mcp_json(
+        root / ".github/mcp.json", ".github/mcp.json", "mcpServers"
+    )
+    findings.extend(github_findings)
+    findings.extend(_check_duplicate_mcp_names(mcp_servers, github_mcp_servers))
+    vscode_servers, vscode_findings = _read_vscode_mcp(root)
+    findings.extend(vscode_findings)
+    codex_servers, codex_findings = _read_codex_mcp(root)
+    findings.extend(codex_findings)
+    findings.extend(_check_codex_http_env(codex_servers))
+    findings.extend(_check_manifest_transports(manifest))
+    findings.extend(_check_copilot_local_tools(manifest, mcp_servers))
+    findings.extend(_copilot_repository_mcp_warnings(manifest))
+    findings.extend(_check_mcp_parity([
+        (".mcp.json", mcp_servers),
+        (".github/mcp.json", github_mcp_servers),
+        (".vscode/mcp.json", vscode_servers),
+        (".codex/config.toml", codex_servers),
+    ]))
     return findings
 
 
@@ -1356,271 +1338,266 @@ def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 # Check 6: Instruction layering
 # ---------------------------------------------------------------------------
 
-def check_instruction_layering(
-    root: Path,
-    manifest: dict[str, Any],
-) -> list[Finding]:
-    findings: list[Finding] = []
-    surfaces = set(manifest.get("surfaces", []))
-    runtimes = set(manifest.get("runtimes", []))
+@dataclass(frozen=True)
+class InstructionSources:
+    """The instruction files at a repository's root that the layering checks consider."""
 
-    has_claude_md = (root / "CLAUDE.md").is_file()
-    has_agents_md = (root / "AGENTS.md").is_file()
+    claude_md: bool
+    agents_md: bool
+    agents_redirects: bool
+    agents_override: bool
+    copilot_instructions: bool
+    gemini_md: bool
+    path_instructions: bool
+
+
+def _instruction_sources(root: Path) -> InstructionSources:
+    agents_md = (root / "AGENTS.md").is_file()
     agents_redirects = False
-    if has_agents_md:
+    if agents_md:
         try:
-            agents_content = read_text(root / "AGENTS.md")
-            agents_redirects = is_redirecting_agents_md(agents_content)
+            agents_redirects = is_redirecting_agents_md(read_text(root / "AGENTS.md"))
         except (OSError, UnicodeError):
             pass
+    instructions = root / ".github/instructions"
+    return InstructionSources(
+        claude_md=(root / "CLAUDE.md").is_file(),
+        agents_md=agents_md,
+        agents_redirects=agents_redirects,
+        agents_override=(root / "AGENTS.override.md").is_file(),
+        copilot_instructions=(root / ".github/copilot-instructions.md").is_file(),
+        gemini_md=(root / "GEMINI.md").is_file(),
+        path_instructions=instructions.is_dir() and any(instructions.rglob("*.instructions.md")),
+    )
 
-    has_copilot_instructions = (root / ".github/copilot-instructions.md").is_file()
-    has_gemini_md = (root / "GEMINI.md").is_file()
 
-    # Check for AGENTS.override.md masking the adapter
-    has_override = (root / "AGENTS.override.md").is_file()
+def _nested_files(root: Path, name: str) -> list[Path]:
+    """Every file with this name below the repository root, outside .git."""
+    return [path for path in root.rglob(name) if ".git" not in path.parts and path != root / name]
 
-    # Codex analysis
-    if "codex" in runtimes:
-        if has_override and has_agents_md and agents_redirects:
-            findings.append(Finding(
-                severity="ERROR",
-                check="layering",
-                path="AGENTS.override.md",
-                message="AGENTS.override.md masks the generated AGENTS.md adapter"
-                        " — Codex will not load CLAUDE.md through the adapter",
-            ))
-        elif has_agents_md:
-            if agents_redirects:
-                findings.append(Finding(
-                    severity="INFO",
-                    check="layering",
-                    message="Codex: AGENTS.md adapter redirects to CLAUDE.md",
-                ))
-            else:
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="layering",
-                    message="Codex: non-redirecting AGENTS.md — "
-                            "CLAUDE.md not loaded through adapter",
-                ))
-        elif has_claude_md:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message="Codex: no AGENTS.md, CLAUDE.md used via fallback",
-            ))
-        else:
-            findings.append(Finding(
-                severity="ERROR",
-                check="layering",
-                message="Codex: no AGENTS.md or CLAUDE.md — "
-                        "no instructions available",
-            ))
 
-        # Nested instruction files: Codex concatenates from root to cwd
-        for nested_override in root.rglob("AGENTS.override.md"):
-            if ".git" in nested_override.parts:
+def _layering_codex(sources: InstructionSources) -> list[Finding]:
+    """How Codex reaches CLAUDE.md from the repository root."""
+    if sources.agents_override and sources.agents_md and sources.agents_redirects:
+        return [Finding(
+            severity="ERROR",
+            check="layering",
+            path="AGENTS.override.md",
+            message="AGENTS.override.md masks the generated AGENTS.md adapter"
+                    " — Codex will not load CLAUDE.md through the adapter",
+        )]
+    if sources.agents_md and sources.agents_redirects:
+        return [Finding(severity="INFO", check="layering", message="Codex: AGENTS.md adapter redirects to CLAUDE.md")]
+    if sources.agents_md:
+        return [Finding(
+            severity="WARNING",
+            check="layering",
+            message="Codex: non-redirecting AGENTS.md — "
+                    "CLAUDE.md not loaded through adapter",
+        )]
+    if sources.claude_md:
+        return [Finding(severity="INFO", check="layering", message="Codex: no AGENTS.md, CLAUDE.md used via fallback")]
+    return [Finding(
+        severity="ERROR",
+        check="layering",
+        message="Codex: no AGENTS.md or CLAUDE.md — "
+                "no instructions available",
+    )]
+
+
+def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[Finding]:
+    """Codex concatenates instruction files from the root to the working directory."""
+    findings = [
+        Finding(
+            severity="WARNING",
+            check="layering",
+            path=override.relative_to(root).as_posix(),
+            message="Nested AGENTS.override.md takes precedence over "
+                    "AGENTS.md in this subtree — review for conflicting "
+                    "guidance with the root adapter",
+        )
+        for override in _nested_files(root, "AGENTS.override.md")
+    ]
+    if not (sources.agents_md and sources.agents_redirects):
+        return findings
+    for nested in _nested_files(root, "AGENTS.md"):
+        try:
+            if is_redirecting_agents_md(read_text(nested)):
                 continue
-            if nested_override == root / "AGENTS.override.md":
-                continue
-            rel = nested_override.relative_to(root).as_posix()
-            findings.append(Finding(
-                severity="WARNING",
-                check="layering",
-                path=rel,
-                message="Nested AGENTS.override.md takes precedence over "
-                        "AGENTS.md in this subtree — review for conflicting "
-                        "guidance with the root adapter",
-            ))
-
-        # Nested non-redirecting AGENTS.md in the chain
-        if has_agents_md and agents_redirects:
-            for nested_agents in root.rglob("AGENTS.md"):
-                if ".git" in nested_agents.parts:
-                    continue
-                if nested_agents == root / "AGENTS.md":
-                    continue
-                rel = nested_agents.relative_to(root).as_posix()
-                try:
-                    nested_content = read_text(nested_agents)
-                    if not is_redirecting_agents_md(nested_content):
-                        findings.append(Finding(
-                            severity="WARNING",
-                            check="layering",
-                            path=rel,
-                            message="Nested AGENTS.md adds instructions alongside "
-                                    "the root adapter in this subtree — review "
-                                    "for conflicting or redundant guidance",
-                        ))
-                except (OSError, UnicodeError):
-                    pass
-
-    # Copilot CLI/app analysis
-    if {"copilot_cli", "copilot_app"} & surfaces:
-        effective_sources: list[str] = []
-        if has_claude_md:
-            effective_sources.append("CLAUDE.md")
-        if has_agents_md:
-            effective_sources.append("AGENTS.md")
-        if has_copilot_instructions:
-            effective_sources.append(".github/copilot-instructions.md")
-        if has_gemini_md:
-            effective_sources.append("GEMINI.md")
-
-        if not effective_sources:
-            findings.append(Finding(
-                severity="ERROR",
-                check="layering",
-                message="Copilot CLI/app: no instruction sources available",
-            ))
-        else:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message=f"Copilot CLI/app: effective sources: "
-                        f"{', '.join(effective_sources)}",
-            ))
-
+        except (OSError, UnicodeError):
+            continue
         findings.append(Finding(
             severity="WARNING",
             check="layering",
-            message="Copilot CLI/app folder trust status cannot be determined "
-                    "statically — .mcp.json silently skipped in untrusted directories",
+            path=nested.relative_to(root).as_posix(),
+            message="Nested AGENTS.md adds instructions alongside "
+                    "the root adapter in this subtree — review "
+                    "for conflicting or redundant guidance",
         ))
+    return findings
 
-    # JetBrains analysis
-    if "jetbrains" in surfaces:
-        if not has_copilot_instructions:
-            has_path_instructions = (root / ".github/instructions").is_dir() and any(
-                (root / ".github/instructions").rglob("*.instructions.md")
+
+def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
+    """The instruction files Copilot CLI and the Copilot app load."""
+    effective = [
+        name for name, present in (
+            ("CLAUDE.md", sources.claude_md),
+            ("AGENTS.md", sources.agents_md),
+            (".github/copilot-instructions.md", sources.copilot_instructions),
+            ("GEMINI.md", sources.gemini_md),
+        ) if present
+    ]
+    if effective:
+        first = Finding(
+            severity="INFO",
+            check="layering",
+            message=f"Copilot CLI/app: effective sources: {', '.join(effective)}",
+        )
+    else:
+        first = Finding(severity="ERROR", check="layering", message="Copilot CLI/app: no instruction sources available")
+    return [first, Finding(
+        severity="WARNING",
+        check="layering",
+        message="Copilot CLI/app folder trust status cannot be determined "
+                "statically — .mcp.json silently skipped in untrusted directories",
+    )]
+
+
+def _layering_jetbrains(sources: InstructionSources) -> list[Finding]:
+    """JetBrains cannot read CLAUDE.md, only Copilot instruction files."""
+    if sources.copilot_instructions:
+        return [Finding(severity="INFO", check="layering", message="JetBrains: .github/copilot-instructions.md available")]
+    if sources.path_instructions:
+        return [Finding(
+            severity="INFO",
+            check="layering",
+            message="JetBrains: path-specific instructions only "
+                    "(no copilot-instructions.md)",
+        )]
+    return [Finding(
+        severity="ERROR",
+        check="layering",
+        message="JetBrains: no .github/copilot-instructions.md or "
+                "path-specific instructions — JetBrains cannot "
+                "load CLAUDE.md directly",
+    )]
+
+
+def _cloud_agent_selection(sources: InstructionSources) -> Finding:
+    """The one root instruction file the cloud agent selects."""
+    if sources.agents_md and sources.agents_redirects:
+        return Finding(severity="INFO", check="layering", message="Cloud agent: AGENTS.md adapter redirects to CLAUDE.md")
+    if sources.agents_md:
+        return Finding(
+            severity="INFO",
+            check="layering",
+            message="Cloud agent: non-redirecting AGENTS.md — "
+                    "CLAUDE.md not loaded directly",
+        )
+    if sources.claude_md:
+        return Finding(severity="INFO", check="layering", message="Cloud agent: no AGENTS.md, CLAUDE.md selected directly")
+    if sources.gemini_md:
+        return Finding(
+            severity="INFO",
+            check="layering",
+            message="Cloud agent: no AGENTS.md or CLAUDE.md, "
+                    "GEMINI.md selected as alternative",
+        )
+    return Finding(
+        severity="ERROR",
+        check="layering",
+        message="Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md "
+                "— no instructions available",
+    )
+
+
+def _layering_cloud_agent(root: Path, sources: InstructionSources) -> list[Finding]:
+    """The cloud agent's root selection, and the nested AGENTS.md files that supersede the root adapter."""
+    findings = [_cloud_agent_selection(sources)]
+    if sources.agents_md and sources.agents_redirects:
+        findings.extend(
+            Finding(
+                severity="WARNING",
+                check="layering",
+                path=nested.relative_to(root).as_posix(),
+                message="Nested AGENTS.md supersedes root adapter for "
+                        "cloud agent sessions in this subtree",
             )
-            if not has_path_instructions:
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="layering",
-                    message="JetBrains: no .github/copilot-instructions.md or "
-                            "path-specific instructions — JetBrains cannot "
-                            "load CLAUDE.md directly",
-                ))
-            else:
-                findings.append(Finding(
-                    severity="INFO",
-                    check="layering",
-                    message="JetBrains: path-specific instructions only "
-                            "(no copilot-instructions.md)",
-                ))
-        else:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message="JetBrains: .github/copilot-instructions.md available",
-            ))
+            for nested in _nested_files(root, "AGENTS.md")
+        )
+    return findings
 
-    # Cloud agent analysis
-    if "cloud_agent" in surfaces:
-        if has_agents_md:
-            if agents_redirects:
-                findings.append(Finding(
-                    severity="INFO",
-                    check="layering",
-                    message="Cloud agent: AGENTS.md adapter redirects to CLAUDE.md",
-                ))
-            else:
-                findings.append(Finding(
-                    severity="INFO",
-                    check="layering",
-                    message="Cloud agent: non-redirecting AGENTS.md — "
-                            "CLAUDE.md not loaded directly",
-                ))
-        elif has_claude_md:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message="Cloud agent: no AGENTS.md, CLAUDE.md selected directly",
-            ))
-        elif has_gemini_md:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message="Cloud agent: no AGENTS.md or CLAUDE.md, "
-                        "GEMINI.md selected as alternative",
-            ))
-        else:
-            findings.append(Finding(
-                severity="ERROR",
-                check="layering",
-                message="Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md "
-                        "— no instructions available",
-            ))
 
-        # Check for nested AGENTS.md that supersedes root adapter
-        nested_agents = [
-            p for p in root.rglob("AGENTS.md")
-            if ".git" not in p.parts and p != root / "AGENTS.md"
-        ]
-        if nested_agents and has_agents_md and agents_redirects:
-            for nested in nested_agents:
-                rel = nested.relative_to(root).as_posix()
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="layering",
-                    path=rel,
-                    message="Nested AGENTS.md supersedes root adapter for "
-                            "cloud agent sessions in this subtree",
-                ))
-
-    # Code review analysis: it reads AGENTS.md, copilot-instructions, and path-specific
-    # instructions, but never CLAUDE.md or GEMINI.md, so a redirect-only AGENTS.md adds nothing.
-    if "code_review" in surfaces:
-        review_sources: list[str] = []
-        if has_agents_md and not agents_redirects:
-            review_sources.append("AGENTS.md")
-        if has_copilot_instructions:
-            review_sources.append(".github/copilot-instructions.md")
-        if (root / ".github/instructions").is_dir() and any(
-            (root / ".github/instructions").rglob("*.instructions.md")
-        ):
-            review_sources.append(".github/instructions")
-        if review_sources:
-            findings.append(Finding(
-                severity="INFO",
-                check="layering",
-                message=f"Code review: effective sources: {', '.join(review_sources)}",
-            ))
-        else:
-            findings.append(Finding(
-                severity="ERROR",
-                check="layering",
-                message="Code review: no project instructions it can read — it ignores "
-                        "CLAUDE.md, and AGENTS.md "
-                        + ("only redirects to CLAUDE.md" if has_agents_md else "is absent"),
-            ))
-        findings.append(Finding(
+def _layering_code_review(root: Path, sources: InstructionSources) -> list[Finding]:
+    """Code review reads AGENTS.md, copilot-instructions, and path-specific instructions, but never CLAUDE.md or
+    GEMINI.md, so a redirect-only AGENTS.md adds nothing."""
+    review_sources = [
+        name for name, present in (
+            ("AGENTS.md", sources.agents_md and not sources.agents_redirects),
+            (".github/copilot-instructions.md", sources.copilot_instructions),
+            (".github/instructions", sources.path_instructions),
+        ) if present
+    ]
+    if review_sources:
+        first = Finding(
+            severity="INFO",
+            check="layering",
+            message=f"Code review: effective sources: {', '.join(review_sources)}",
+        )
+    else:
+        first = Finding(
+            severity="ERROR",
+            check="layering",
+            message="Code review: no project instructions it can read — it ignores "
+                    "CLAUDE.md, and AGENTS.md "
+                    + ("only redirects to CLAUDE.md" if sources.agents_md else "is absent"),
+        )
+    findings = [
+        first,
+        Finding(
             severity="WARNING",
             check="layering",
             message="Code-review custom-instructions enablement cannot "
                     "be verified statically",
-        ))
-        findings.append(Finding(
+        ),
+        Finding(
             severity="WARNING",
             check="trust-boundary",
             message="Copilot code review loads instructions, agents, and skills from the PR head; "
                     "this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+    ]
+    if (root / ".github/skills").is_dir():
+        findings.append(Finding(
+            severity="INFO", check="layering", path=".github/skills",
+            message="Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
         ))
-        if (root / ".github/skills").is_dir():
-            findings.append(Finding(
-                severity="INFO", check="layering", path=".github/skills",
-                message="Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
-            ))
+    return findings
 
+
+def check_instruction_layering(
+    root: Path,
+    manifest: dict[str, Any],
+) -> list[Finding]:
+    surfaces = set(manifest.get("surfaces", []))
+    sources = _instruction_sources(root)
+    findings: list[Finding] = []
+    if "codex" in set(manifest.get("runtimes", [])):
+        findings.extend(_layering_codex(sources))
+        findings.extend(_nested_codex_instructions(root, sources))
+    if {"copilot_cli", "copilot_app"} & surfaces:
+        findings.extend(_layering_copilot_cli(sources))
+    if "jetbrains" in surfaces:
+        findings.extend(_layering_jetbrains(sources))
+    if "cloud_agent" in surfaces:
+        findings.extend(_layering_cloud_agent(root, sources))
+    if "code_review" in surfaces:
+        findings.extend(_layering_code_review(root, sources))
     if {"copilot_cli", "copilot_app", "cloud_agent", "code_review"} & surfaces:
         findings.append(Finding(
             severity="WARNING", check="runtime",
             message="Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
         ))
-
-    # VS Code analysis
     if "vscode" in surfaces:
         findings.append(Finding(
             severity="WARNING",
@@ -1629,7 +1606,6 @@ def check_instruction_layering(
                     "chat.useAgentsMdFile, useInstructionFiles, "
                     "includeApplyingInstructions) cannot be verified statically",
         ))
-
     return findings
 
 

@@ -128,4 +128,4 @@ These are emitted per surface when static validation is insufficient:
 
 ## No Remediation
 
-The audit never fixes findings. Remediation is only performed by separately invoking `init-ai-config` or manual fixes.
+The audit never fixes findings. Remediation is a manual fix; `generated-layout.md` describes the generated files the checks expect.

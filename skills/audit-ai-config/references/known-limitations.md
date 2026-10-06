@@ -56,9 +56,9 @@ cannot determine what a particular historical review actually loaded.
 
 For manifest-owned or marker-bearing `.github/skills` and `.github/agents`
 projections, the audit verifies ownership marker and manifest relationship. It
-does not yet reconstruct a generator-specific projection byte-for-byte because
-`init-ai-config` does not define a Copilot skill/agent projection template or
-manifest schema for canonical-source mapping. Such projections remain derived
+does not reconstruct a generator-specific projection byte-for-byte because the
+generated layout (`generated-layout.md`) defines no Copilot skill/agent
+projection template or manifest schema for canonical-source mapping. Such projections remain derived
 artifacts rather than authority sources.
 
 ## MCP validation gaps

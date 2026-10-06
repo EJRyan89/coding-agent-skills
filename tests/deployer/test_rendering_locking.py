@@ -115,7 +115,6 @@ class RenderedExecutableTests(DeployerTestCase):
         self.deploy_from(repository, "--all", "--include", "dotnet-format")
         for relative in (
             "audit-ai-config/scripts/audit_ai_config.py",
-            "init-ai-config/scripts/ai_config_template.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
             "repo-cleanup/scripts/repo_cleanup.py",
             "update-coding-agent-skills/scripts/update.sh",
