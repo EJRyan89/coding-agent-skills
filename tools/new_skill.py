@@ -11,7 +11,8 @@ the analyze-skill-cost inventory.
 It writes skills/<name>/SKILL.md (frontmatter and a title only), deploy-meta/<name>.json, and the generated
 part of the skill's docs/skills.md section, then prints one REMAINING line for each thing validation still needs
 from a person, such as the reference's hand-written explanation and the README entry. It refuses, changing
-nothing, when the name is invalid or already used, or when a tool is not in deployer/tools.py.
+nothing, when the name is invalid or already used, when the name or description breaks the Agent Skills
+frontmatter rules, or when a tool is not in deployer/tools.py.
 
 It writes no scripts: validation requires a regression suite for any script under scripts/, so a stub would be
 a placeholder that lands untested.
@@ -105,7 +106,13 @@ def scaffold(
     """Write the new skill's files and return the reference problems a person still has to resolve."""
     if not deploy_source.is_valid_name(name):
         raise ScaffoldError(f"'{name}' is not a valid skill name; see docs/adding-a-skill.md")
+    word = deploy_source.reserved_word(name)
+    if word:
+        raise ScaffoldError(f"'{name}' contains the reserved word '{word}', {deploy_source.AGENT_SKILLS_RULE}")
     description = _one_line("--description", description)
+    tag = deploy_source.xml_tag(description)
+    if tag:
+        raise ScaffoldError(f"--description contains the XML tag '{tag}', {deploy_source.AGENT_SKILLS_RULE}")
     if not user_only and not skill_reference.says_when(description):
         raise ScaffoldError(f"--description must {skill_reference.WHEN_RULE}")
     if argument_hint is not None:

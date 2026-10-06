@@ -320,6 +320,32 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertFalse((self.agents_dir / "alpha").exists())
 
 
+    def test_description_with_an_xml_tag_stops_before_any_change(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", description='"Compare a < b and c > d, then map x -> y. Use it when sorting."')
+        self.make_skill("beta", "Beta", description='"Wrap the answer in <tag> markup. Use it when testing."')
+        self.make_config()
+        result = self.deploy_fails(
+            "--all",
+            pattern=re.escape(
+                "ERROR: Skill 'beta' description contains the XML tag '<tag>', "
+                "which the Agent Skills frontmatter rules forbid"
+            ),
+        )
+        self.assertIn(
+            'Remove the tag, or write it without angle brackets; see "Files" in docs/adding-a-skill.md.',
+            result.output.splitlines(),
+        )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertFalse((self.agents_dir / "alpha").exists())
+        self.make_skill("beta", "Beta", description='"Close the </tag> and <tag attr=\\"x\\"/>. Use it when testing."')
+        self.deploy_fails("--all", pattern="description contains the XML tag '</tag>'")
+        self.remove_skill("beta")
+        self.make_source_json()
+        self.deploy_ok("--all")
+        self.assertEqual("Compare a < b and c > d, then map x -> y. Use it when sorting.",
+                         self.adapter("alpha").string("description"))
+
 class SelectionTests(DeployerTestCase):
     def test_invalid_and_out_of_range_selections_are_rejected(self) -> None:
         self.make_source_json()
