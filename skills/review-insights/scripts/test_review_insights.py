@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
@@ -145,7 +146,7 @@ class InsightFixture(unittest.TestCase):
         )
         self.services = ri.Services(now=lambda: DECIDED_AT, flags_path=lambda: self.flags)
 
-    def commit(self, repository: str, number: int, categories: list[str | tuple], **options: object) -> None:
+    def commit(self, repository: str, number: int, categories: list[str | tuple], **options: Any) -> None:
         version = options.get("version", 1)
         commit_record(
             self.archive,
