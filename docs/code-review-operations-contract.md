@@ -253,6 +253,15 @@ The snapshot's manifest records each path it leaves out under `excluded_paths`, 
 | `line` | integer | yes | The line it was last reported at. |
 | `title` | string | no | Its headline, when it had one. |
 | `body` | string | yes | What it said. |
+| `flags` | array | no | The flags in the `flag-review-finding` store that name the finding or one of its repeats, resolved or not; absent when there are none. |
+
+#### Prior finding flag (`request.prior_findings[].flags[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | The flag's ID, such as `RF-000001`. |
+| `category` | string | yes | The flag's category, a label the user chose. |
+| `rationale` | string | yes | The flag's body: why the user judged the finding wrong or noisy. |
 
 ### Review record
 

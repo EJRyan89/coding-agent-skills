@@ -327,7 +327,7 @@ def prepare(
             # present would otherwise never be offered again.
             records = pull_records(archive_root, repository, number)
             previous = records[-1]
-            prior = carried_findings(records)
+            prior = carried_findings(records, load_store(default_flags_path())["flags"])
 
     reviewer = entry["reviewer"]
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
