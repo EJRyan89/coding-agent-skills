@@ -764,6 +764,95 @@ def platform_code_problems(root: Path) -> list[str]:
     ] + problems
 
 
+RESULTS_DOC = '"Script results" in docs/adding-a-skill.md'
+CONTRACT_EXEMPTION = "EXIT_CONTRACT_EXEMPT"
+CONTRACT_EXIT_CODES = {0, 1, 2}
+SHELL_EXIT = re.compile(r"(?:^|[\s;&|(])exit\s+(\d+)\b")
+
+
+def _contract_exemption(tree: ast.Module) -> str | None:
+    """A module's EXIT_CONTRACT_EXEMPT reason, "" when it has none, or None when it is not a non-empty string."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == CONTRACT_EXEMPTION for target in node.targets
+        ):
+            value = node.value
+            valid = isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip()
+            return value.value if valid else None
+    return ""
+
+
+def _mentions_failed(node: ast.expr) -> bool:
+    parts = node.values if isinstance(node, ast.JoinedStr) else [node]
+    return any(isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value
+               for part in parts)
+
+
+def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
+    """Where a script reports in a way "Script results" rules out, with what it does instead."""
+    breaches: list[tuple[int, str]] = []
+    handlers = [node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)]
+    in_handler = {id(inner) for handler in handlers for statement in handler.body for inner in ast.walk(statement)}
+    entry_points = [
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}
+    ]
+    for function in entry_points:
+        for node in ast.walk(function):
+            if (isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
+                    and type(node.value.value) is int and node.value.value not in CONTRACT_EXIT_CODES):
+                breaches.append((node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        if (isinstance(function, ast.Attribute) and function.attr == "error" and id(node) in in_handler
+                and isinstance(function.value, ast.Name) and "parser" in function.value.id):
+            breaches.append((node.lineno, "reports a failure through parser.error; print FAILED <reason> and exit 1"))
+        exits = (isinstance(function, ast.Attribute) and function.attr == "exit"
+                 and isinstance(function.value, ast.Name) and function.value.id == "sys")
+        if (exits or (isinstance(function, ast.Name) and function.id == "SystemExit")) and node.args:
+            code = node.args[0]
+            if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
+                breaches.append((node.lineno, f"exits {code.value}; scripts exit only 0, 1, or 2"))
+        if isinstance(function, ast.Name) and function.id == "print" and node.args:
+            stderr = any(keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr"
+                         for keyword in node.keywords)
+            if stderr and _mentions_failed(node.args[0]):
+                breaches.append((node.lineno, "prints FAILED on stderr; print it on stdout"))
+            first = node.args[0]
+            if (not stderr and isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
+                    and first.func.attr == "dumps" and ast.unparse(first.func.value) == "json"):
+                breaches.append((node.lineno, "prints JSON; print one fact per line"))
+    return sorted(breaches)
+
+
+def script_contract_problems(root: Path) -> list[str]:
+    """Report skill scripts that break "Script results": a failure through parser.error or on stderr, JSON output,
+    or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
+    EXIT_CONTRACT_EXEMPT."""
+    problems: list[str] = []
+    for path in sorted((root / "skills").glob("*/scripts/*")):
+        if not path.is_file() or is_test_script(path):
+            continue
+        name = path.relative_to(root).as_posix()
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if path.suffix == ".py":
+            tree = ast.parse(text)
+            exemption = _contract_exemption(tree)
+            if exemption is None:
+                problems.append(f"{name}: {CONTRACT_EXEMPTION} must be a non-empty string saying why")
+            elif not exemption:
+                problems += [f"{name}:{line} {breach}; see {RESULTS_DOC}" for line, breach in _contract_breaches(tree)]
+        elif path.suffix in {".sh", ".bash"}:
+            for number, line in enumerate(text.splitlines(), 1):
+                for code in SHELL_EXIT.findall(line.split("#", 1)[0]):
+                    if int(code) not in CONTRACT_EXIT_CODES:
+                        problems.append(
+                            f"{name}:{number} exits {code}; scripts exit only 0, 1, or 2; see {RESULTS_DOC}"
+                        )
+    return problems
+
+
 # Calls that change the filesystem. CLAUDE.md routes every one the deployer makes through deployer/fsops.py, whose
 # functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
 # tell a Path from another receiver; the names are chosen so that none is a common method of anything else.
@@ -1734,6 +1823,57 @@ class RepositoryValidation(unittest.TestCase):
     def test_os_specific_code_stays_in_platform_support(self) -> None:
         # The macOS and Linux port then changes one module: deployer/platform_support.py.
         self.assertEqual([], platform_code_problems(REPOSITORY_ROOT))
+
+    def test_skill_scripts_follow_the_script_results_contract(self) -> None:
+        # An agent that learned one script's results can read every other's (#28).
+        self.assertEqual([], script_contract_problems(REPOSITORY_ROOT))
+
+    def test_script_contract_policy_detects_each_breach_and_honors_a_stated_exemption(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "skills" / "alpha" / "scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "run.py").write_text(
+                "import json, sys\n"
+                "def main(parser, value):\n"
+                "    try:\n"
+                "        value()\n"
+                "    except OSError as exc:\n"
+                "        parser.error(str(exc))\n"
+                "    print(f'FAILED {value}', file=sys.stderr)\n"
+                "    print(json.dumps(value))\n"
+                "    if value:\n"
+                "        return 3\n"
+                "    parser.error('usage before any work is fine')\n"
+                "    print('FAILED on stdout is fine')\n"
+                "    return 2\n"
+                "if __name__ == '__main__':\n"
+                "    sys.exit(4)\n",
+                encoding="utf-8",
+            )
+            (scripts / "hook.py").write_text(
+                "import json\nEXIT_CONTRACT_EXEMPT = 'A hook protocol answers in JSON'\nprint(json.dumps({}))\n",
+                encoding="utf-8",
+            )
+            (scripts / "vague.py").write_text("EXIT_CONTRACT_EXEMPT = ' '\n", encoding="utf-8")
+            (scripts / "test_run.py").write_text("import sys\nsys.exit(5)\n", encoding="utf-8")
+            (scripts / "tool.sh").write_text("set -e\n[ -n \"$1\" ] || exit 3\nexit 0  # exit 6 in a comment\n",
+                                             encoding="utf-8")
+            (scripts / "test_tool.sh").write_text("exit 7\n", encoding="utf-8")
+            doc = '"Script results" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/run.py:6 reports a failure through parser.error; print FAILED <reason> and "
+                    f"exit 1; see {doc}",
+                    f"skills/alpha/scripts/run.py:7 prints FAILED on stderr; print it on stdout; see {doc}",
+                    f"skills/alpha/scripts/run.py:8 prints JSON; print one fact per line; see {doc}",
+                    f"skills/alpha/scripts/run.py:10 exits 3; scripts exit only 0, 1, or 2; see {doc}",
+                    f"skills/alpha/scripts/run.py:15 exits 4; scripts exit only 0, 1, or 2; see {doc}",
+                    f"skills/alpha/scripts/tool.sh:2 exits 3; scripts exit only 0, 1, or 2; see {doc}",
+                    "skills/alpha/scripts/vague.py: EXIT_CONTRACT_EXEMPT must be a non-empty string saying why",
+                ],
+                script_contract_problems(root),
+            )
 
     def test_deployer_filesystem_writes_go_through_fsops(self) -> None:
         # Tests inject failures by replacing deployer/fsops.py's functions, which reach only writes made through it.

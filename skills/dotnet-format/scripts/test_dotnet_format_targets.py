@@ -96,16 +96,32 @@ class ResolveTests(unittest.TestCase):
         self.repository.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.repository.git("checkout", "--quiet", "-b", "feature")
 
-    def resolve(self, cwd: Path | None = None, services: targets.Services | None = None) -> list[list[str]]:
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+    def run_resolve(self, cwd: Path | None = None,
+                    services: targets.Services | None = None) -> tuple[int, list[list[str]], str]:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             status = targets.main(["resolve", "--cwd", str(cwd or self.repository.root)], services or Services())
-        self.assertEqual(0, status)
         lines = [line.split("\t") for line in output.getvalue().splitlines()]
         for fields in lines:
             if fields[0] == "FILE_LIST":
                 self.addCleanup(os.remove, fields[1])
+        return status, lines, errors.getvalue()
+
+    def resolve(self, cwd: Path | None = None, services: targets.Services | None = None) -> list[list[str]]:
+        status, lines, errors = self.run_resolve(cwd, services)
+        self.assertEqual((0, ""), (status, errors))
         return lines
+
+    def failed(self, cwd: Path | None = None, services: targets.Services | None = None) -> str:
+        """The reason a resolve run's last line, FAILED, gives, after checking it exits 1 and writes no stderr."""
+        status, lines, errors = self.run_resolve(cwd, services)
+        self.assertEqual((1, ""), (status, errors))
+        self.assertEqual([], self.values(lines, "FILE_LIST"))
+        self.assertEqual([], self.values(lines, "STOP"))
+        last = "\t".join(lines[-1])
+        self.assertTrue(last.startswith("FAILED "), last)
+        self.assertEqual(1, sum(1 for fields in lines if fields[0].startswith("FAILED")))
+        return last[len("FAILED "):]
 
     def values(self, lines: list[list[str]], kind: str) -> list[list[str]]:
         return [fields[1:] for fields in lines if fields[0] == kind]
@@ -271,18 +287,71 @@ class ResolveTests(unittest.TestCase):
             [["no C# files changed vs origin/main (excluding ASP.NET projects)"]], self.values(self.resolve(), "STOP")
         )
 
-    def test_pull_request_base_wins_and_falls_back_to_master(self) -> None:
+    def test_base_is_the_pull_request_base_then_origin_head_then_main_then_master(self) -> None:
         repo = self.repository
+        repo.git("update-ref", "refs/remotes/origin/release", "HEAD")
         repo.git("update-ref", "refs/remotes/origin/develop", "HEAD")
-        services = Services(pull_base="develop")
-        self.assertEqual([["origin/develop"]], self.values(self.resolve(services=services), "BASE"))
+        repo.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop")
+        services = Services(pull_base="release")
+        self.assertEqual([["origin/release"]], self.values(self.resolve(services=services), "BASE"))
         self.assertIn(["gh", "pr", "view", "--json", "baseRefName"], services.calls)
         self.assertIn(["git", "fetch", "origin", "--quiet"], services.calls)
+
+        services = Services(pull_base="missing")
+        self.assertEqual([["origin/develop"]], self.values(self.resolve(services=services), "BASE"))
+        self.assertIn(["git", "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], services.calls)
+
+        repo.git("update-ref", "-d", "refs/remotes/origin/develop")  # origin/HEAD now names a missing branch
+        self.assertEqual([["origin/main"]], self.values(self.resolve(), "BASE"))
+        repo.git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD")
+        self.assertEqual([["origin/main"]], self.values(self.resolve(), "BASE"))
+
         repo.git("update-ref", "-d", "refs/remotes/origin/main")
-        self.assertEqual([["no base ref: neither the pull request base, origin/main, nor origin/master exists"]],
-                         self.values(self.resolve(), "STOP"))
         repo.git("update-ref", "refs/remotes/origin/master", "HEAD")
         self.assertEqual([["origin/master"]], self.values(self.resolve(services=Services("missing")), "BASE"))
+
+    def test_no_base_ref_fails(self) -> None:
+        self.repository.git("update-ref", "-d", "refs/remotes/origin/main")
+        self.assertEqual(
+            "no base ref: none of the pull request base, origin/HEAD, origin/main, or origin/master exists",
+            self.failed(),
+        )
+
+    def test_the_remote_default_branch_of_a_real_clone_is_the_base(self) -> None:
+        # A bare remote whose HEAD names develop, with a main branch as a decoy: comparing with origin/main would
+        # also list Lib/Shipped.cs, which develop already has.
+        with tempfile.TemporaryDirectory() as directory:
+            top = Path(directory).resolve()
+            seed = Repository(top / "seed")
+            seed.root.mkdir()
+            seed.git("init", "--quiet", "--initial-branch=main")
+            seed.write("README.md", "fixture\n")
+            seed.commit("base")
+            seed.git("checkout", "--quiet", "-b", "develop")
+            seed.write("Lib/Lib.csproj", SDK_PROJECT)
+            seed.write("Lib/Shipped.cs")
+            seed.write("App.sln", solution("Lib\\Lib.csproj", "App\\App.csproj"))
+            seed.commit("develop")
+            Repository(top).git("init", "--quiet", "--bare", "--initial-branch=develop", "remote.git")
+            seed.git("push", "--quiet", str(top / "remote.git"), "main", "develop")
+            Repository(top).git("clone", "--quiet", str(top / "remote.git"), "clone")
+            clone = Repository(top / "clone")
+            self.assertEqual("refs/remotes/origin/develop\n",
+                             clone.git("symbolic-ref", "refs/remotes/origin/HEAD"))
+            self.assertEqual("main\n", clone.git("branch", "--remotes", "--list", "origin/main",
+                                                 "--format=%(refname:lstrip=3)"))
+            clone.git("checkout", "--quiet", "-b", "feature")
+            clone.write("App/App.csproj", SDK_PROJECT)
+            clone.write("App/Feature.cs")
+            clone.commit("feature")
+
+            services = Services()
+            lines = self.resolve(cwd=clone.root, services=services)
+
+            self.assertEqual([], [call for call in services.calls if call[0] == "gh"])
+            self.assertEqual([["origin/develop"]], self.values(lines, "BASE"))
+            self.assertEqual([["App/Feature.cs"]], self.values(lines, "FILE"))
+            self.assertEqual([["App.sln", "1"]], self.values(lines, "SOLUTION"))
 
     def test_a_malformed_pull_request_base_falls_back_to_origin_main(self) -> None:
         self.repository.git("update-ref", "refs/remotes/origin/develop", "HEAD")
@@ -291,11 +360,67 @@ class ResolveTests(unittest.TestCase):
             with self.subTest(output=output):
                 self.assertEqual([["origin/main"]], self.values(self.resolve(services=Services(gh_output=output)), "BASE"))
 
-    def test_outside_a_repository_stops(self) -> None:
+    def test_outside_a_repository_fails(self) -> None:
         with tempfile.TemporaryDirectory() as outside:
-            lines = self.resolve(cwd=Path(outside))
-        self.assertEqual("STOP", lines[0][0])
-        self.assertIn("is not inside a Git repository", lines[0][1])
+            self.assertEqual(f"{outside} is not inside a Git repository", self.failed(cwd=Path(outside)))
+
+    def test_a_failed_git_command_fails(self) -> None:
+        self.repository.write("Code.cs")
+        self.repository.commit("code")
+        services = Services()
+        real = services.run
+
+        def run(arguments: Sequence[str], cwd: Path) -> targets.Completed:
+            if list(arguments[:2]) == ["git", "ls-files"]:
+                return targets.Completed(128, b"")
+            return real(arguments, cwd)
+
+        services.run = run
+        self.assertEqual("git ls-files --others --exclude-standard -- *.cs failed", self.failed(services=services))
+
+    def test_an_unreadable_project_fails(self) -> None:
+        self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
+        self.repository.write("Lib/Code.cs")
+        self.repository.commit("code")
+        denied = PermissionError(13, "Permission denied", "Lib/Lib.csproj")
+        with mock.patch.object(Path, "read_bytes", side_effect=denied):
+            self.assertEqual("[Errno 13] Permission denied: 'Lib/Lib.csproj'", self.failed())
+
+    def test_an_unreadable_directory_fails_instead_of_hiding_a_solution(self) -> None:
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("Locked/Lib.sln", solution("..\\Lib\\Lib.csproj"))
+        repo.commit("code")
+        locked = repo.root / "Locked"
+        real = os.scandir
+
+        def scandir(path: object = ".") -> object:
+            if os.path.normcase(os.fspath(path)) == os.path.normcase(str(locked)):
+                raise PermissionError(13, "Permission denied", "Locked")
+            return real(path)
+
+        with mock.patch.object(os, "scandir", side_effect=scandir):
+            self.assertEqual("[Errno 13] Permission denied: 'Locked'", self.failed())
+
+    def test_an_unwritable_temporary_directory_fails(self) -> None:
+        self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
+        self.repository.write("Lib/Code.cs")
+        self.repository.write("Lib.sln", solution("Lib\\Lib.csproj"))
+        self.repository.commit("code")
+        with mock.patch.object(tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
+            self.assertEqual("[Errno 28] No space left on device", self.failed())
+
+    def test_usage_errors_exit_2_on_stderr(self) -> None:
+        for arguments in ([], ["resolve", "--unknown"], ["other"]):
+            with self.subTest(arguments=arguments):
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                        self.assertRaises(SystemExit) as raised:
+                    targets.main(arguments, Services())
+                self.assertEqual(2, raised.exception.code)
+                self.assertEqual("", output.getvalue())
+                self.assertIn("usage:", errors.getvalue())
 
     def test_reads_utf16_and_bom_project_files(self) -> None:
         repo = self.repository

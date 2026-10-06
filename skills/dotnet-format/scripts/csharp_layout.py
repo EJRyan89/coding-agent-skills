@@ -1,7 +1,7 @@
 """Region layout checks no Roslyn analyzer offers, and the analyzer configuration for the rest of the C# layout rules.
 
-    check  --repo-root R --file-list LIST [--fix]      check (and fix) #region / #endregion layout
-    config --repo-root R --solution S [--apply]        report (and add) the layout analyzer configuration
+    check  --repo-root R --file-list LIST [--fix]                  check (and fix) #region / #endregion layout
+    config --repo-root R --solution S --file-list LIST [--apply]   report (and add) the layout analyzer configuration
 
 `check` enforces the rules that StyleCop, Roslynator, and the IDE rules do not:
 
@@ -11,12 +11,19 @@
     endregion-brace-spacing no blank line between an #endregion and a directly following closing brace
 
 It prints `VIOLATION <file> <line> <severity> <rule> <message>` per violation, `FIXED <file> <line> <rule>` per fix
-with --fix (preserving line endings, BOM, and encoding), and `SUMMARY <violations> <files> <rules>`.
+with --fix (preserving line endings, BOM, and encoding), and `SUMMARY <violations> <files> <rules>`. It exits 1 when
+a VIOLATION remains (findings), 0 when none does.
 
 `config` prints `PACKAGE Roslynator.Formatting.Analyzers present|missing` and one `SETTING <key> <wanted> <state>`
-per .editorconfig setting (state: present, missing, or other:<value>). With --apply it appends only the missing
-settings to the effective top-level .editorconfig and prints `ADDED <.editorconfig> <key> <value>`; it never changes
-a value the repository already sets and never adds a package reference.
+per .editorconfig setting (state: present, missing, or other:<value>), judged as the listed files see it. With
+--apply it adds only the missing settings, as a `[*.cs]` section placed first in the outermost .editorconfig that
+applies, so every existing section still overrides them, and prints `ADDED <.editorconfig> <key> <value>`; it never
+changes a value the repository already sets and never adds a package reference. It exits 1 when a setting is
+missing and --apply was not given (findings), 0 otherwise: another value is the repository's choice, and the
+package is advice the skill cannot act on.
+
+A failure, such as a listed file that does not exist or a file it cannot read or write, prints `FAILED <reason>`
+as the last line and exits 1. A usage error exits 2.
 """
 
 from __future__ import annotations
@@ -406,12 +413,18 @@ def write_source(path: Path, source: Source, text: str) -> None:
     path.write_bytes(source.bom + text.encode(source.encoding, errors="surrogatepass"))
 
 
-def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], None]) -> None:
+class Failed(Exception):
+    pass
+
+
+def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], None]) -> bool:
+    """Check (and fix) each file; return whether a violation remains."""
+    missing = next((root / name for name in names if not (root / name).is_file()), None)
+    if missing is not None:
+        raise Failed(f"{missing} does not exist")
     remaining: list[tuple[str, Violation]] = []
     for name in names:
         path = root / name
-        if not path.is_file():
-            continue
         source = read_source(path)
         text = source.text
         if fix:
@@ -426,6 +439,7 @@ def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], N
                         violation.message)))
     rules = sorted({violation.rule for _, violation in remaining})
     emit(f"SUMMARY\t{len(remaining)}\t{len({name for name, _ in remaining})}\t{','.join(rules) or '-'}")
+    return bool(remaining)
 
 
 # ------------------------------------------------------------------------------------------ configuration
@@ -644,8 +658,9 @@ def insert_settings(path: Path, settings: list[tuple[str, str]]) -> None:
     write_source(path, source, text)
 
 
-def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: Callable[[str], None]) -> None:
-    """Report each setting as the changed files see it; with apply, fill only the gaps."""
+def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: Callable[[str], None]) -> bool:
+    """Report each setting as the changed files see it; with apply, fill only the gaps. Return whether a setting
+    is still missing."""
     emit(f"PACKAGE\t{PACKAGE}\t{'present' if package_referenced(root, solution) else 'missing'}")
     effective: list[tuple[Path, dict[str, str]]] = []
     for name in files:
@@ -665,11 +680,13 @@ def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: C
         else:
             state = "other:" + ",".join(sorted({value for value in values if value not in ACCEPTED[wanted]}))
         emit(f"SETTING\t{key}\t{wanted}\t{state}")
-    if apply:
-        for target, settings in gaps.items():
-            insert_settings(target, settings)
-            for key, value in settings:
-                emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
+    if not apply:
+        return bool(gaps)
+    for target, settings in gaps.items():
+        insert_settings(target, settings)
+        for key, value in settings:
+            emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
+    return False
 
 
 # -------------------------------------------------------------------------------------------------- main
@@ -692,16 +709,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     root = arguments.repo_root.resolve()
     try:
-        names = [line.strip() for line in arguments.file_list.read_text(encoding="utf-8-sig").splitlines()]
-        names = [name for name in names if name]
+        try:
+            text = arguments.file_list.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            raise Failed(f"{arguments.file_list} is not UTF-8 text") from None
+        names = [name for name in (line.strip() for line in text.splitlines()) if name]
         if arguments.command == "check":
-            check_files(root, names, arguments.fix, print)
+            findings = check_files(root, names, arguments.fix, print)
         else:
-            configure(root, root / arguments.solution, names, arguments.apply, print)
-    except OSError as error:
-        print(f"FAILED {error}", file=sys.stderr)
-        return 2
-    return 0
+            findings = configure(root, root / arguments.solution, names, arguments.apply, print)
+    except (Failed, OSError) as error:
+        print(f"FAILED {error}")
+        return 1
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":

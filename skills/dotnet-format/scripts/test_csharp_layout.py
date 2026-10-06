@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
@@ -176,10 +177,16 @@ class FileTests(unittest.TestCase):
         self.root = Path(directory.name).resolve()
 
     def main(self, *arguments: str) -> tuple[int, list[list[str]]]:
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             status = layout.main(list(arguments))
+        self.assertEqual("", errors.getvalue())
         return status, [line.split("\t") for line in output.getvalue().splitlines()]
+
+    def file_list(self, *names: str) -> Path:
+        path = self.root / "files.txt"
+        path.write_text("".join(f"{name}\n" for name in names), encoding="utf-8")
+        return path
 
     def test_check_and_fix_preserve_bom_crlf_and_legacy_encoding(self) -> None:
         crlf = self.root / "Src" / "With Space.cs"
@@ -191,10 +198,10 @@ class FileTests(unittest.TestCase):
         clean = self.root / "Clean.cs"
         clean.write_bytes(b"class D { }\n")
         file_list = self.root / "files.txt"
-        file_list.write_text("Src/With Space.cs\nLegacy.cs\nClean.cs\nMissing.cs\n", encoding="utf-8")
+        file_list.write_text("Src/With Space.cs\nLegacy.cs\nClean.cs\n", encoding="utf-8")
 
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
-        self.assertEqual(0, status)
+        self.assertEqual(1, status, "violations are findings")
         self.assertEqual([
             ["VIOLATION", "Src/With Space.cs", "7", "warning", "endregion-brace-spacing",
              "expected no blank lines between #endregion and the closing brace, found 1"],
@@ -206,7 +213,7 @@ class FileTests(unittest.TestCase):
         ], lines)
 
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
-        self.assertEqual(0, status)
+        self.assertEqual(0, status, "every violation was fixed")
         self.assertEqual([
             ["FIXED", "Src/With Space.cs", "7", "endregion-brace-spacing"],
             ["FIXED", "Src/With Space.cs", "7", "endregion-description"],
@@ -229,10 +236,71 @@ class FileTests(unittest.TestCase):
         file_list = self.root / "files.txt"
         file_list.write_text("Scope.cs\n", encoding="utf-8")
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
-        self.assertEqual(0, status)
+        self.assertEqual(1, status, "a violation --fix cannot fix remains")
         self.assertEqual(["VIOLATION", "Scope.cs", "7", "error", "region-scope"], lines[0][:5])
         self.assertEqual(["SUMMARY", "1", "1", "region-scope"], lines[1])
         self.assertEqual(original, path.read_bytes())
+
+    def test_a_clean_check_exits_0(self) -> None:
+        (self.root / "Clean.cs").write_bytes(b"class C\n{\n    #region A\n\n    int a;\n\n    #endregion\n}\n")
+        for extra in ((), ("--fix",)):
+            with self.subTest(extra=extra):
+                status, lines = self.main("check", "--repo-root", str(self.root),
+                                          "--file-list", str(self.file_list("Clean.cs")), *extra)
+                self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
+
+    def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
+        fixable = self.root / "Fixable.cs"
+        original = b"#region A\n\n#endregion A\n"
+        fixable.write_bytes(original)
+        file_list = self.file_list("Fixable.cs", "Gone/Missing.cs")
+        for extra in ((), ("--fix",)):
+            with self.subTest(extra=extra):
+                status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list),
+                                          *extra)
+                self.assertEqual((1, [[f"FAILED {self.root / 'Gone' / 'Missing.cs'} does not exist"]]),
+                                 (status, lines))
+                self.assertEqual(original, fixable.read_bytes())
+
+    def test_an_unreadable_file_list_fails(self) -> None:
+        missing = self.root / "absent.txt"
+        status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(missing))
+        self.assertEqual(1, status)
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0][0].startswith("FAILED [Errno 2] "), lines)
+        self.assertIn("absent.txt", lines[0][0])
+
+        undecodable = self.root / "files.txt"
+        undecodable.write_bytes(b"caf\xe9.cs\n")
+        for command in (("check",), ("config", "--solution", "App.sln")):
+            with self.subTest(command=command[0]):
+                status, lines = self.main(*command, "--repo-root", str(self.root), "--file-list", str(undecodable))
+                self.assertEqual((1, [[f"FAILED {undecodable} is not UTF-8 text"]]), (status, lines))
+
+    def test_an_unwritable_source_file_fails(self) -> None:
+        (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
+        file_list = self.file_list("Fixable.cs")
+        denied = PermissionError(13, "Permission denied", "Fixable.cs")
+        with mock.patch.object(Path, "write_bytes", side_effect=denied):
+            status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
+        self.assertEqual((1, [["FAILED [Errno 13] Permission denied: 'Fixable.cs'"]]), (status, lines))
+
+    def test_usage_errors_exit_2_with_usage_on_stderr(self) -> None:
+        cases = (
+            [],
+            ["check", "--file-list", "f"],
+            ["config", "--repo-root", ".", "--file-list", "f"],
+            ["config", "--repo-root", ".", "--solution", "A.sln", "--file-list", "f", "--fix"],
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments):
+                output, errors = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                        self.assertRaises(SystemExit) as raised:
+                    layout.main(arguments)
+                self.assertEqual(2, raised.exception.code)
+                self.assertEqual("", output.getvalue())
+                self.assertIn("usage:", errors.getvalue())
 
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
@@ -255,20 +323,51 @@ class ConfigTests(unittest.TestCase):
     def changed(self, *names: str) -> None:
         self.file_list.write_text("".join(f"{name}\n" for name in names), encoding="utf-8")
 
-    def config(self, *extra: str, solution: str = "App.sln") -> dict[str, list[list[str]]]:
-        output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+    def run_config(self, *extra: str, solution: str = "App.sln") -> tuple[int, dict[str, list[list[str]]]]:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             status = layout.main(["config", "--repo-root", str(self.root), "--solution", solution,
                                   "--file-list", str(self.file_list), *extra])
-        self.assertEqual(0, status)
+        self.assertEqual("", errors.getvalue())
         grouped: dict[str, list[list[str]]] = {}
         for line in output.getvalue().splitlines():
             kind, *fields = line.split("\t")
             grouped.setdefault(kind, []).append(fields)
+        return status, grouped
+
+    def config(self, *extra: str, solution: str = "App.sln") -> dict[str, list[list[str]]]:
+        """The output grouped by kind, after checking that only a missing setting left unapplied exits 1."""
+        status, grouped = self.run_config(*extra, solution=solution)
+        unapplied = "--apply" not in extra and any(state == "missing" for _, _, state in grouped["SETTING"])
+        self.assertEqual(1 if unapplied else 0, status)
         return grouped
 
     def states(self, grouped: dict[str, list[list[str]]]) -> dict[str, str]:
         return {key: state for key, _, state in grouped["SETTING"]}
+
+    def test_a_missing_setting_is_a_finding_until_applied_and_the_rest_are_not(self) -> None:
+        status, grouped = self.run_config()
+        self.assertEqual(1, status)
+        self.assertEqual(7, len(grouped["SETTING"]))
+        status, grouped = self.run_config("--apply")
+        self.assertEqual((0, 7), (status, len(grouped["ADDED"])))
+        status, grouped = self.run_config()
+        self.assertEqual((0, [["Roslynator.Formatting.Analyzers", "missing"]]), (status, grouped["PACKAGE"]))
+        editorconfig = self.root / ".editorconfig"
+        editorconfig.write_text(editorconfig.read_text(encoding="utf-8").replace("= true", "= false"),
+                                encoding="utf-8")
+        status, grouped = self.run_config()
+        self.assertEqual(0, status, "another value is the repository's choice")
+        self.assertIn(["insert_final_newline", "true", "other:false"], grouped["SETTING"])
+
+    def test_an_unwritable_editorconfig_fails_after_reporting(self) -> None:
+        denied = PermissionError(13, "Permission denied", ".editorconfig")
+        with mock.patch.object(Path, "write_bytes", side_effect=denied):
+            status, grouped = self.run_config("--apply")
+        self.assertEqual(1, status)
+        self.assertEqual("FAILED [Errno 13] Permission denied: '.editorconfig'", list(grouped)[-1])
+        self.assertEqual(7, len(grouped["SETTING"]))
+        self.assertNotIn("ADDED", grouped)
 
     def test_reports_missing_configuration_and_adds_only_editorconfig_settings(self) -> None:
         grouped = self.config()

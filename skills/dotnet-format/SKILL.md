@@ -4,7 +4,7 @@ description: "Run dotnet format (whitespace + style + analyzers) and region layo
 allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "AskUserQuestion"]
 ---
 
-Check the C# files changed on the current branch with the `dotnet-format` global tool (whitespace, code-style, and analyzer rules the repository configures) and with this skill's region layout checker, then offer to fix what they find. Every step is one script command, run exactly as shown. Each prints one tab-separated fact per line. Do not read the changed files, count braces, or edit source files yourself: the tools find and fix every violation. `FAILED <reason>` on stderr with exit code 2 means stop: read the end of the `LOG` file, when one was printed, and report the reason, the cause the log shows, and its path.
+Check the C# files changed on the current branch with the `dotnet-format` global tool (whitespace, code-style, and analyzer rules the repository configures) and with this skill's region layout checker, then offer to fix what they find. Every step is one script command, run exactly as shown. Each prints one tab-separated fact per line. Do not read the changed files, count braces, or edit source files yourself: the tools find and fix every violation. Act on the printed lines, not the exit code: a command that reports findings also exits 1. A last line `FAILED <reason>` means stop: read the end of the `LOG` file, when one was printed, and report the reason, the cause the log shows, and its path.
 
 ## Steps
 
@@ -31,7 +31,7 @@ Check the C# files changed on the current branch with the `dotnet-format` global
    python -B "${CLAUDE_SKILL_DIR}/scripts/csharp_layout.py" check --repo-root "<REPO_ROOT>" --file-list "<FILE_LIST>"
    ```
 
-   `STOP <reason>` from the formatter means `dotnet-format` is not installed: report the install command it prints and stop. Otherwise each prints `DIAGNOSTIC` or `VIOLATION` lines and a `SUMMARY <count> <files> <rules>` line; the formatter also prints `LOG <path>` with its full output.
+   Each prints `DIAGNOSTIC` or `VIOLATION` lines and a `SUMMARY <count> <files> <rules>` line; the formatter also prints `LOG <path>` with its full output.
 
 4. **If both summaries count 0**, report "no formatting issues found on changed files" and stop. Otherwise report the counts, files, and distinct rules, and call `AskUserQuestion` with **Fix** / **Skip**. `region-scope` violations are report-only: tell the user which `#endregion` to move into the scope where its `#region` opened.
 
