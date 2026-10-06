@@ -19,11 +19,12 @@ python -B tests/run_validation.py
 
 ## Runtime tool floors
 
-`python deploy.py check` reports each tool a skill declares, with its version, and marks one older than its floor. Raise a floor in `SKILL_TOOLS` in `deployer/tools.py` only when a skill starts using a newer feature, with a comment naming that feature, as the `gh` entry has.
+`python deploy.py check` reports each tool a skill declares and each runtime `python deploy.py verify` lists, with its version, and marks one older than its floor; `verify` reports a runtime below its floor as `OUTDATED` instead of listing its skills. Raise a floor in `deployer/tools.py` (`SKILL_TOOLS`, or `VERIFY_TOOLS` for the runtimes) only when a skill or `verify` starts using a newer feature, with a comment naming that feature, as the `gh` and `codex` entries have.
 
 | Tool | Floor | Why |
 |---|---|---|
 | `gh` | 2.48.0 | `gh api --paginate --slurp`, which skill scripts use to parse paginated output as JSON. |
+| `codex` | 0.88.0 | The first release whose app-server `skills/list` answer says whether each skill is enabled, which `verify` reads to report a disabled adapter. |
 | `copilot` | 1.0.88 | The bounded Copilot code-review host requires it, and declares it again as `MINIMUM_COPILOT_CLI_VERSION` in `skills/code-review-core/scripts/review_hosts.py`; change both together, along with `docs/installation.md`, `docs/copilot-support.md`, and `docs/code-review-operations.md`. |
 
 ## Tested runtimes

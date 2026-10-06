@@ -18,6 +18,7 @@ INSTALLED = {
     "shellcheck": ("C:/tools/shellcheck.exe", "ShellCheck - shell script analysis tool\nversion: 0.11.0\n"),
     "gh": ("C:/tools/gh.exe", "gh version 2.97.0 (2026-07-31)\n"),
     "copilot": ("C:/tools/copilot.exe", "GitHub Copilot CLI 1.0.89.\n"),
+    "codex": ("C:/tools/codex.exe", "codex-cli 0.160.0\n"),
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
 }
 
@@ -95,7 +96,8 @@ class CheckCommandTests(DeployerTestCase):
             "  dotnet-format 5.1.250801 (used by formatter)\n"
             "  gh 2.97.0 (used by operations, reporter)\n"
             "\n"
-            "OPTIONAL (1):\n"
+            "OPTIONAL (2):\n"
+            "  codex 0.160.0 (used by Codex verification)\n"
             "  copilot 1.0.89 (used by operations, Copilot verification)\n"
             "\n"
             "Ready to deploy.\n"
@@ -124,7 +126,11 @@ class CheckCommandTests(DeployerTestCase):
 
     def test_optional_and_outdated_tools_are_reported_separately(self) -> None:
         groups = self.report_groups(self.check(Machine(missing=("copilot",))).output, "CHECK")
-        self.assertEqual(["copilot (not installed; used by operations, Copilot verification)"], groups["OPTIONAL"])
+        self.assertEqual(
+            ["codex 0.160.0 (used by Codex verification)",
+             "copilot (not installed; used by operations, Copilot verification)"],
+            groups["OPTIONAL"],
+        )
         self.assertNotIn("MISSING", groups)
         result = self.check(Machine(versions={"copilot": "GitHub Copilot CLI 1.0.87.\n"}))
         self.assertEqual(0, result.code, result.output)
@@ -161,6 +167,31 @@ class CheckCommandTests(DeployerTestCase):
             self.deploy_ok("--all", "--include", "formatter")
         groups = self.report_groups(self.check(machine).output, "CHECK")
         self.assertEqual(["dotnet-format (used by formatter)"], groups["MISSING"])
+
+    def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
+        # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
+        set_tools(self, "core", ["gh"])
+        groups = self.report_groups(self.check(Machine()).output, "CHECK")
+        self.assertEqual(
+            ["codex 0.160.0 (used by Codex verification)", "copilot 1.0.89 (used by Copilot verification)"],
+            groups["OPTIONAL"],
+        )
+        groups = self.report_groups(self.check(Machine(missing=("codex", "copilot"))).output, "CHECK")
+        self.assertEqual(
+            ["codex (not installed; used by Codex verification)",
+             "copilot (not installed; used by Copilot verification)"],
+            groups["OPTIONAL"],
+        )
+        self.assertNotIn("MISSING", groups)
+
+    def test_codex_before_0_88_is_outdated_because_verify_reads_whether_a_skill_is_enabled(self) -> None:
+        # Codex CLI 0.88.0 is the first whose app-server skills/list answer says whether each skill is enabled.
+        result = self.check(Machine(versions={"codex": "codex-cli 0.87.0\n"}))
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual(["codex 0.87.0 (needs 0.88.0 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"])
+        groups = self.report_groups(self.check(Machine(versions={"codex": "codex-cli 0.88.0\n"})).output, "CHECK")
+        self.assertIn("codex 0.88.0 (used by Codex verification)", groups["OPTIONAL"])
+        self.assertNotIn("OUTDATED", groups)
 
     def test_tools_no_skill_declares_are_not_listed(self) -> None:
         set_tools(self, "formatter", [])
@@ -221,9 +252,20 @@ class StandardCommandTests(unittest.TestCase):
 
 
 class VersionTests(unittest.TestCase):
+    def test_verify_runtimes_are_catalogued_with_their_floors(self) -> None:
+        from deployer import discovery
+
+        self.assertEqual({"codex", "copilot"}, set(discovery.RUNTIMES))
+        self.assertEqual(set(discovery.RUNTIMES), set(tools.VERIFY_TOOLS))
+        self.assertEqual({"codex": (0, 88, 0), "copilot": (1, 0, 88)},
+                         {name: tool.minimum for name, tool in tools.VERIFY_TOOLS.items()})
+        self.assertIs(tools.SKILL_TOOLS["copilot"], tools.VERIFY_TOOLS["copilot"])
+        self.assertNotIn("codex", tools.SKILL_TOOLS, "no skill runs Codex CLI")
+
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
             ("gh version 2.97.0 (2026-07-31)", (2, 97, 0)),
+            ("codex-cli 0.160.0", (0, 160, 0)),
             ("ShellCheck - shell script analysis tool\nversion: 0.9.0\nlicense: GNU", (0, 9, 0)),
             ("GitHub Copilot CLI 1.0.89.\nRun 'copilot update'", (1, 0, 89)),
             ("7.6", (7, 6)),

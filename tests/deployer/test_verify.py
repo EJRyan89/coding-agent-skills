@@ -15,10 +15,11 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import cli, discovery
+from deployer import cli, discovery, platform_support
 from deployer.discovery import Listed, ListingError
 
 EXECUTABLES = {"codex": "C:/tools/codex.cmd", "copilot": "C:/tools/copilot.exe"}
+VERSIONS = {"codex": "codex-cli 0.160.0\n", "copilot": "GitHub Copilot CLI 1.0.92.\n"}
 
 
 def codex_answer(*skills: tuple[str, str, bool], errors: list | None = None) -> str:
@@ -185,6 +186,7 @@ class VerifyCommandTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.runtimes = Runtimes()
         self.installed = dict(EXECUTABLES)
+        self.versions = dict(VERSIONS)
 
     def adapter(self, name: str) -> str:
         return forward(self.agents_dir / name)
@@ -202,10 +204,18 @@ class VerifyCommandTests(DeployerTestCase):
         end = output.find("\n=== ", start)
         return self.report_groups(output[start:] if end < 0 else output[start:end], label)
 
+    def version(self, arguments: list[str],
+                environment: Mapping[str, str] | None = None) -> platform_support.ToolResult:
+        """A runtime's --version output, the only command verify runs besides each listing."""
+        runtime = next(name for name, path in self.installed.items() if path == arguments[0])
+        self.assertEqual([self.installed[runtime], "--version"], arguments)
+        return platform_support.ToolResult(0, self.versions[runtime])
+
     def verify(self, *arguments: str) -> Result:
         captured = io.StringIO()
         with mock.patch("deployer.discovery.converse", self.runtimes), \
                 mock.patch("deployer.platform_support.find_executable", side_effect=self.installed.get), \
+                mock.patch("deployer.platform_support.run_tool", side_effect=self.version), \
                 contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             code = cli.main(["verify", *arguments], self.paths)
         return Result(code, captured.getvalue())
@@ -278,6 +288,43 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
         self.assertTrue(result.output.endswith("Verified: Copilot CLI finds every adapter.\n\n"), result.output)
         self.assertEqual(1, len(self.runtimes.calls))
+
+    def test_a_runtime_older_than_its_floor_is_outdated_not_started_and_fails(self) -> None:
+        # Copilot CLI before 1.0.88 and Codex CLI before 0.88.0 cannot give the listing verify reads.
+        self.answer()
+        self.versions["copilot"] = "GitHub Copilot CLI 1.0.87.\n"
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "\n=== COPILOT CLI ===\n\n"
+            "OUTDATED: Copilot CLI 1.0.87 is older than 1.0.88, the oldest version verify can read. "
+            "Update it, then rerun.\n\n",
+            result.output,
+        )
+        self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "CODEX CLI"))
+        self.assertEqual([EXECUTABLES["codex"]], [call[0][0] for call in self.runtimes.calls])
+        self.assertTrue(result.output.endswith(
+            "Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n\n"), result.output)
+
+        self.runtimes.calls.clear()
+        self.versions.update(codex="codex-cli 0.87.0\n", copilot="GitHub Copilot CLI 1.0.88.\n")
+        result = self.verify()
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "\n=== CODEX CLI ===\n\n"
+            "OUTDATED: Codex CLI 0.87.0 is older than 0.88.0, the oldest version verify can read. "
+            "Update it, then rerun.\n\n",
+            result.output,
+        )
+        self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
+        self.assertEqual([EXECUTABLES["copilot"]], [call[0][0] for call in self.runtimes.calls])
+
+    def test_a_runtime_at_its_floor_or_with_an_unreadable_version_is_listed(self) -> None:
+        self.answer()
+        self.versions.update(codex="codex-cli 0.88.0\n", copilot="no version here\n")
+        result = self.verify()
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual(2, len(self.runtimes.calls))
 
     def test_nothing_verified_is_a_failure(self) -> None:
         self.installed.clear()

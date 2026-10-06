@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter, hashing, platform_support
+from . import frontmatter, fsops, hashing, platform_support
 from .config import DERIVED_VARIABLES
 from .errors import DeployError
 from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
@@ -48,6 +48,11 @@ UNSAFE_CHARACTERS = {
     "yaml": "\"'\\#\n\r",
 }
 SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154\n"
+# Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
+FSOPS_ALLOWED = {
+    "tempfile.TemporaryDirectory": "validate_executables checks rendered scripts in a throwaway directory under the "
+    "system temporary directory, outside every managed root, and a failure there changes no deployed state",
+}
 
 
 ADAPTER_STAGING = ".agent-adapters"
@@ -85,11 +90,14 @@ class Staged:
 
     def write(self, staging_dir: Path) -> None:
         for logical, content in self.logical_files().items():
-            target = staging_dir / logical
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(content)
-        (staging_dir / ADAPTER_STAGING).mkdir(parents=True, exist_ok=True)
-        (staging_dir / AGENT_STAGING).mkdir(parents=True, exist_ok=True)
+            _write(staging_dir / logical, content)
+        fsops.make_directories(staging_dir / ADAPTER_STAGING)
+        fsops.make_directories(staging_dir / AGENT_STAGING)
+
+
+def _write(target: Path, content: bytes) -> None:
+    fsops.make_directories(target.parent)
+    fsops.write_file(target, content)
 
 
 def _escape(key: str, value: str, context: str, logical: str) -> str:
@@ -305,8 +313,7 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     for logical in sorted(files):
         if Path(logical).suffix.casefold() in (".sh", ".bash"):
             target = workspace / "files" / logical
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(files[logical])
+            _write(target, files[logical])
             units.append(ShellUnit(target, logical, False))
     for logical in sorted(files):
         if Path(logical).suffix.casefold() != ".md":
@@ -322,10 +329,7 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
                     block = []
             elif trimmed == "```":
                 target = workspace / "blocks" / f"{len(units)}.sh"
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(
-                    (SHELLCHECK_HEADER + "".join(f"{text}\n" for text in block)).encode("utf-8")
-                )
+                _write(target, (SHELLCHECK_HEADER + "".join(f"{text}\n" for text in block)).encode("utf-8"))
                 units.append(ShellUnit(target, f"{logical} block {block_number}", True))
                 block = None
             else:
@@ -423,8 +427,7 @@ def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str)
     origins: dict[str, str] = {}
     for logical, content in sorted(files.items()):
         target = workspace / "powershell" / logical
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(content)
+        _write(target, content)
         origins[str(target)] = logical
     result = platform_support.run_tool(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_PARSE],

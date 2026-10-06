@@ -22,7 +22,7 @@ After deployment, run the read-only discovery check:
 python deploy.py verify
 ```
 
-The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under `~/.copilot/skills` is reported as `SHADOWED`, with its path. The command performs discovery only; it does not start an AI session or consume a model request. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery).
+The verifier runs `copilot skill list --json` from an empty directory, so no repository skill takes part, and compares each manifest-owned adapter with the copy Copilot lists. Copilot lists one copy per name, the one it will use, so an adapter is `FOUND` only when that copy is the adapter and it is enabled. A same-named skill under `~/.copilot/skills` is reported as `SHADOWED`, with its path. The command performs discovery only; it does not start an AI session or consume a model request. It reports Copilot CLI older than 1.0.88 as `OUTDATED` without starting it. It checks Codex the same way when Codex is installed; see [Codex support](codex-support.md#checking-discovery).
 
 ## Headless sessions
 

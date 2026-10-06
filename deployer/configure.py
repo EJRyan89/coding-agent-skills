@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
-from pathlib import Path
 from typing import TextIO
 
 from . import config, fsops, platform_support, source
@@ -30,21 +27,6 @@ def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | No
         return None
     value = line.rstrip("\r\n")
     return value if value else current
-
-
-def _write(config_file: Path, content: str) -> None:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{config_file.stem}.config.tmp.", dir=config_file.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        # mkstemp already creates the file readable and writable by its owner only, and the replace keeps that.
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(content)
-        fsops.replace(temporary, config_file)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
 
 
 def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
@@ -77,7 +59,7 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         lines += [f"{key}={values[key]}" for key in config.CONFIGURED_VARIABLES if values.get(key)]
         content = "\n".join(lines) + "\n"
         config.validate_directories(config.parse(content, source_id))
-        _write(config_file, content)
+        fsops.write_private(config_file, content.encode("utf-8"))
     except ParserExit as exc:
         return exc.code
     except DeployError as exc:

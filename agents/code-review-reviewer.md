@@ -10,7 +10,11 @@ hooks:
       hooks:
         - type: command
           command: >-
-            python -I -B -c "import os, runpy;
+            python -I -B -c "import json, os, runpy, sys;
+            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny',
+            'permissionDecisionReason': 'Code-review reviewer boundary: the guard could not run (' + kind.__name__ + ').'}}),
+            flush=True), os._exit(0));
             runpy.run_path(os.path.expanduser('~/.claude/skills/code-review-core/scripts/review_guard.py'),
             run_name='__main__')"
           timeout: 30

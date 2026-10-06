@@ -45,23 +45,39 @@ STANDARD_COMMANDS = frozenset({
     "xargs",
 }) | platform_support.STANDARD_COMMANDS
 
+COPILOT = Tool(
+    "copilot",
+    "copilot",
+    lambda: platform_support.find_executable("copilot"),
+    minimum=(1, 0, 88),
+    optional=True,
+    other_uses=("Copilot verification",),
+)
+# 0.88.0 is the first release whose app-server skills/list answer says whether each skill is enabled, which verify
+# reads to report a disabled adapter.
+CODEX = Tool(
+    "codex",
+    "codex",
+    lambda: platform_support.find_executable("codex"),
+    minimum=(0, 88, 0),
+    optional=True,
+    other_uses=("Codex verification",),
+)
+
 # Tools a skill may declare in its deploy-meta "tools" list. Git and Python are deployment requirements already.
 SKILL_TOOLS = {
     tool.name: tool
     for tool in (
         # 2.48.0 added `gh api --paginate --slurp`, which skill scripts use to parse paginated output as JSON.
         Tool("gh", "gh", lambda: platform_support.find_executable("gh"), minimum=(2, 48, 0)),
-        Tool(
-            "copilot",
-            "copilot",
-            lambda: platform_support.find_executable("copilot"),
-            minimum=(1, 0, 88),
-            optional=True,
-            other_uses=("Copilot verification",),
-        ),
+        COPILOT,
         Tool("dotnet-format", "dotnet-format", lambda: platform_support.find_executable("dotnet-format")),
     )
 }
+
+# The runtimes `deploy.py verify` asks for their skill listings, by their names in discovery.RUNTIMES. No skill runs
+# Codex CLI, so only this catalogue names it.
+VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
 
 
 def parse_version(text: str) -> tuple[int, ...] | None:

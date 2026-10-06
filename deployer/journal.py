@@ -13,15 +13,16 @@ from . import fsops, hashing, platform_support
 from .errors import DeployError, see_recovery
 from .names import safe_name_problem
 from .paths import Paths
+from .render import ADAPTER_STAGING, AGENT_STAGING
 
 ROOT_PREFIXES = {
     "claude": ("skills", "staging"),
-    "agents": ("agents", "staging-adapters"),
-    "claude-agents": ("claude-agents", "staging-claude-agents"),
+    "agents": ("agents", f"staging/{ADAPTER_STAGING}"),
+    "claude-agents": ("claude-agents", f"staging/{AGENT_STAGING}"),
 }
-# Before runtime adapters were called adapters, the journal labeled their staging root "staging-wrappers". A run
-# interrupted under that version still recovers.
-LEGACY_STAGING = {"agents": ("staging-wrappers",)}
+# Earlier versions labeled staging roots that did not exist: "staging-wrappers" before runtime adapters were called
+# adapters, then "staging-adapters" and "staging-claude-agents". A run interrupted under any of them still recovers.
+LEGACY_STAGING = {"agents": ("staging-adapters", "staging-wrappers"), "claude-agents": ("staging-claude-agents",)}
 
 
 def root_directory(paths: Paths, root: str) -> Path:
@@ -36,7 +37,7 @@ class Journal:
 
     def create(self) -> None:
         fsops.make_directories(self.path.parent)
-        self.path.touch()
+        fsops.write_file(self.path, b"")
 
     def write(self, entry: dict[str, Any]) -> None:
         fsops.append_line(self.path, json.dumps(entry, separators=(",", ":")))

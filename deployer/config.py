@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from urllib.parse import quote
 
 from . import fsops, platform_support
 from .arguments import CONFIGURE_COMMAND_LINE
@@ -15,7 +14,18 @@ ALLOW_PATH = "[A-Za-z0-9 /:.@_()-]"
 CONFIGURED_VARIABLES: dict[str, str] = {"REPOS_ROOT": ALLOW_PATH}
 DIRECTORY_VARIABLES = ("REPOS_ROOT",)
 PROMPTS: dict[str, str] = {"REPOS_ROOT": "root directory for your git repositories, such as C:/GitHub"}
-DERIVED_VARIABLES = ("HOME", "HOME_URI", "SOURCE_ROOT")
+# Rendering escapes a value only for the contexts it knows, so derived values pass an allowlist as configured ones
+# do. Nobody chooses a home folder's name to suit the deployer, so letters of any script are allowed, but nothing a
+# shell, PowerShell, YAML, or Markdown gives a meaning to.
+ALLOW_DERIVED_PATH = r"[\w /:.@()-]"
+DERIVED_VARIABLES: dict[str, str] = {"HOME": ALLOW_DERIVED_PATH, "SOURCE_ROOT": ALLOW_DERIVED_PATH}
+DERIVED_PROBLEM = "Derived paths may contain only letters, digits, spaces, and / : . @ _ ( ) -."
+DERIVED_SOURCES: dict[str, tuple[str, str]] = {
+    "HOME": ("the home folder", "Skills cannot be deployed into a home folder whose path has other characters."),
+    "SOURCE_ROOT": (
+        "the source checkout", "Move the checkout to a path without other characters, then deploy from there."
+    ),
+}
 # A --canary-home deployment never reads the configuration; each configured directory is this folder of the
 # throwaway home instead, so nothing a canary run does reaches the user's real directories.
 CANARY_DIRECTORIES: dict[str, str] = {"REPOS_ROOT": "repos"}
@@ -23,12 +33,18 @@ SOURCE_KEY = "_source_id"
 KEY_VALUE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
 
 
+def _disallowed(allowlist: str, value: str) -> tuple[int, str] | None:
+    """The first character of `value` outside `allowlist`, with its position."""
+    if re.fullmatch(f"{allowlist}*", value):
+        return None
+    return next((index, char) for index, char in enumerate(value) if not re.fullmatch(allowlist, char))
+
+
 def _require_allowed(key: str, value: str) -> None:
     allowlist = CONFIGURED_VARIABLES.get(key)
-    if allowlist and value and not re.fullmatch(f"{allowlist}+", value):
-        position, char = next(
-            (index, c) for index, c in enumerate(value) if not re.fullmatch(allowlist, c)
-        )
+    found = _disallowed(allowlist, value) if allowlist else None
+    if found is not None:
+        position, char = found
         raise DeployError(
             f"ERROR: Config key {key} contains disallowed character '{char}' at position {position}"
         )
@@ -106,10 +122,12 @@ def load(path: Path, source_id: str, home: Path, source_dir: Path) -> dict[str, 
     if not path.is_file():
         raise DeployError(f"ERROR: No config found at {path}", f"Run '{CONFIGURE_COMMAND_LINE}' first.")
     values = read(path, source_id)
+    values.update(derived_values(home, source_dir))
     try:
-        return _derive(values, home, source_dir)
+        validate_directories(values)
     except DeployError as exc:
         raise DeployError(*exc.lines, f"Run '{CONFIGURE_COMMAND_LINE}' to change it.") from exc
+    return values
 
 
 def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
@@ -118,15 +136,27 @@ def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
     for key, folder in CANARY_DIRECTORIES.items():
         values[key] = platform_support.normalize(home / folder)
         _require_allowed(key, values[key])
+    values.update(derived_values(home, source_dir))
     for key, folder in CANARY_DIRECTORIES.items():
         fsops.make_directories(home / folder)
-    return _derive(values, home, source_dir)
-
-
-def _derive(values: dict[str, str], home: Path, source_dir: Path) -> dict[str, str]:
-    home_value = platform_support.normalize(os.path.abspath(home))
-    values["HOME"] = home_value
-    values["HOME_URI"] = quote(home_value, safe="/:")
-    values["SOURCE_ROOT"] = platform_support.normalize(os.path.abspath(source_dir))
     validate_directories(values)
+    return values
+
+
+def derived_values(home: Path, source_dir: Path) -> dict[str, str]:
+    """HOME and SOURCE_ROOT for this run, refused when either has a character outside its allowlist."""
+    values = {
+        "HOME": platform_support.normalize(os.path.abspath(home)),
+        "SOURCE_ROOT": platform_support.normalize(os.path.abspath(source_dir)),
+    }
+    for key, value in values.items():
+        found = _disallowed(DERIVED_VARIABLES[key], value)
+        if found is not None:
+            position, char = found
+            description, remedy = DERIVED_SOURCES[key]
+            raise DeployError(
+                f"ERROR: {key} ({description}) contains disallowed character '{char}' at position {position}",
+                DERIVED_PROBLEM,
+                remedy,
+            )
     return values
