@@ -15,24 +15,24 @@ python -B tests/run_validation.py
 | Python | 3.11 | `MINIMUM_PYTHON` in `deployer/tools.py`; the CI matrix; `docs/installation.md`, `CONTRIBUTING.md`, and the README | CI runs every suite on 3.11 and on the latest stable release (`3.x`), so a new interpreter surfaces on the next weekly run. Raise the floor only when its release is past end of life or the code needs a newer feature, and update every place that names it. |
 | ShellCheck | 0.9.0 | `VALIDATION_FLOORS` in `tests/run_validation.py`; the Chocolatey pin in `.github/workflows/validate.yml` | The weekly scheduled run validates a second time with the latest Chocolatey release, which is the standing review of new releases. A red scheduled run means a new release raises a finding; fix the finding rather than pinning around it, because deployment stops on any ShellCheck finding on users' machines. Raise the pin and floor together. Chocolatey is not a Dependabot ecosystem. |
 | PowerShell 7 (`pwsh`) | 7.0 | `VALIDATION_FLOORS` in `tests/run_validation.py` | Arrives unpinned with the runner image; the verify step prints its version. Deployment itself needs only Windows PowerShell 5.1 (`docs/installation.md`). |
-| ruff | 0.16.10 | `requirements-dev.txt`; `VALIDATION_FLOORS` in `tests/run_validation.py` | The floor is the pin, because a new minor release can change the formatting style and fail `ruff format --check` on an unchanged tree. Dependabot proposes new releases; see [Development dependencies](#development-dependencies). |
+| ruff | 0.16.10 | `requirements-dev.txt`; `VALIDATION_FLOORS` in `tests/run_validation.py` | The floor is the pin, because a new minor release can change the formatting style or the lint rules and fail `ruff format --check` or `ruff check` on an unchanged tree. Dependabot proposes new releases; see [Development dependencies](#development-dependencies). |
 | Git Bash | none | Git for Windows | The repository's shell scripts use no Bash 4 features, so no floor is checked. Arrives with the runner image; the verify step prints its version. |
 
 ## Development dependencies
 
-Validation and CI take two Python packages from PyPI, pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter, and `mypy`, pinned ahead of its gate (#92). They are contributor and CI dependencies only. The deployer and every shipped skill stay standard-library, so deploying needs neither. Install them into the interpreter that runs validation:
+Validation and CI take two Python packages from PyPI, pinned in `requirements-dev.txt`, and no others: `ruff`, the formatter and linter, and `mypy`, pinned ahead of its gate (#92). They are contributor and CI dependencies only. The deployer and every shipped skill stay standard-library, so deploying needs neither. Install them into the interpreter that runs validation:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 ```
 
-`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. The line length is 120. `tests/run_validation.py` runs `ruff format --check` on `deployer/`, `tools/`, `tests/`, `skills/`, and `deploy.py`, names every file it would change, and excludes none; run `python -m ruff format` on those files to fix it.
+`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. The line length is 120. `tests/run_validation.py` runs `ruff format --check` and `ruff check` on `deployer/`, `tools/`, `tests/`, `skills/`, and `deploy.py`, excluding none. The format check names every file it would change; run `python -m ruff format` on those files to fix it. The lint check names every finding of the rule sets `pyproject.toml` selects; fix each one.
 
 Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first.
 
 ### After a Dependabot pull request for ruff
 
-A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/run_validation.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the five roots and commit the result on its own. Run the complete validation before merging. A mypy bump needs no follow-up until its gate lands.
+A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/run_validation.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the five roots and commit the result on its own, and fix anything `ruff check` newly names in a commit of its own. Run the complete validation before merging. A mypy bump needs no follow-up until its gate lands.
 
 ## Runtime tool floors
 

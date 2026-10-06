@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
@@ -242,7 +242,7 @@ def collect(
         ),
         fatal=lambda error: isinstance(error, GitHubError) and error.kind in FATAL_ERROR_KINDS,
     )
-    for repository, (collected, error) in zip(selected, outcomes):
+    for repository, (collected, error) in zip(selected, outcomes, strict=True):
         if error is not None:
             results[repository] = str(error)
             continue
@@ -260,7 +260,8 @@ def update(
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> tuple[Path, list[Row]]:
-    """Render the owned section with the configured dashboard, login, markers, overrides, author names, and home repositories."""
+    """Render the owned section with the configured dashboard, login, markers, overrides, author names, and
+    home repositories."""
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)

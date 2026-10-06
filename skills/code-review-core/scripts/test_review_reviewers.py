@@ -6,13 +6,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_reviewers import (  # noqa: E402
+from review_reviewers import (
     entrypoint_manifest,
     frontmatter_value,
     inspect_configured_skill,
@@ -21,7 +20,9 @@ from review_reviewers import (  # noqa: E402
     repository_files,
     resolve_reviewer,
 )
-from review_runtime import CommandResult, RuntimeContractError  # noqa: E402
+from review_runtime import CommandResult, RuntimeContractError
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 FILES = {".claude/agents/review.md", ".claude/agents/db-review.md", "docs/rules.md", "src/A.cs"}
 COMMIT = "a" * 40

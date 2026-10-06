@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 LIMIT = 1000
 FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner"

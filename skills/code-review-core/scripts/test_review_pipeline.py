@@ -12,23 +12,26 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_pipeline as rp  # noqa: E402
-from review_archive import latest_record, pull_directory  # noqa: E402
-from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
-from review_flags import FlagError, add_flag  # noqa: E402
-from review_github import CommandResult, GitHubClient, subprocess_runner  # noqa: E402
-from review_hosts import ProcessResult  # noqa: E402
-from review_process import ProcessStatus, process_status  # noqa: E402
-from review_runtime import CommandResult as GitResult, RuntimeContractError, validate_adapter_manifest  # noqa: E402
-from review_state import load_state  # noqa: E402
+import review_pipeline as rp
+from review_archive import latest_record, pull_directory
+from review_config import ConfigurationError, default_manifest_path, validate_config, write_config
+from review_flags import FlagError, add_flag
+from review_github import CommandResult, GitHubClient, subprocess_runner
+from review_hosts import ProcessResult
+from review_process import ProcessStatus, process_status
+from review_runtime import CommandResult as GitResult
+from review_runtime import validate_adapter_manifest
+from review_state import load_state
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 REPOSITORY = "example/one"
 SELECTOR = "example/one#12"
@@ -710,7 +713,10 @@ class GenericReviewTests(PipelineFixture):
     def test_a_workflow_restarts_every_role_clock_when_it_starts_them(self) -> None:
         with mock.patch("time.time", return_value=1_000.0):
             ready = self.prepare()
-        state = lambda: json.loads((ready["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))  # noqa: E731
+
+        def state() -> dict[str, Any]:
+            return json.loads((ready["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))
+
         self.assertEqual({"generic-review": 1_000.0}, state()["dispatched_at"])
         with mock.patch("time.time", return_value=1_600.0):
             self.assertEqual(0, self.run_main("workflow", "--run", str(ready["run"]))[0])
@@ -1013,7 +1019,8 @@ class WorkflowTests(PipelineFixture):
                 },
                 {
                     "label": "example/one#13 generic-review",
-                    "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
+                    "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. "
+                    "It is your complete task.",
                     "model": None,
                     "effort": None,
                 },
@@ -1053,8 +1060,9 @@ class WorkflowTests(PipelineFixture):
 
 
 class WaitReviewersTests(PipelineFixture):
-    """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's reviewers
-    run. The skill's tool grants end with the turn that invoked it, so check and finalize must run in that turn (#40)."""
+    """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's
+    reviewers run. The skill's tool grants end with the turn that invoked it, so check and finalize must run
+    in that turn (#40)."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -2006,7 +2014,10 @@ class CopilotHostTests(PipelineFixture):
             {"attempt": 1, "token": token, "generation": 0, "claimed_at": 10_000.0, "pid": 4001, "start_time": 7},
             self.claim(),
         )
-        started = lambda: json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]  # noqa: E731
+
+        def started() -> dict[str, float]:
+            return json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+
         self.assertEqual({"fixture-copilot": 3_000.0}, started())
 
         self.assertEqual(0, self.run_host()[0])
@@ -2605,7 +2616,7 @@ class CanaryTests(PipelineFixture):
         roots = [Path(root) for _, root in canaries]
         self.assertNotEqual(roots[0], roots[1])
         self.assertEqual(4, sum(line.startswith("SHA256 ") for line in out.splitlines()))
-        for root, (number, other) in zip(roots, ((12, 14), (14, 12))):
+        for root, (number, other) in zip(roots, ((12, 14), (14, 12)), strict=True):
             self.assertEqual(self.temporary, root.parent)
             self.assertIsNotNone(latest_record(root, REPOSITORY, number))
             self.assertIsNone(latest_record(root, REPOSITORY, other))

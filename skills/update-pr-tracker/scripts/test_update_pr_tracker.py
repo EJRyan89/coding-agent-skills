@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import CHANGED, UNCHANGED, UNKNOWN
 from update_pr_tracker import (
@@ -127,7 +126,8 @@ class LayoutTests(unittest.TestCase):
             "| Requestor | PR | AI Result | Findings | AI Review |\n| :--- | :--- | :--- | :--- | :--- |", content
         )
         self.assertIn(
-            "| Ada Lovelace | [#3 Improve \\| behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H | "
+            "| Ada Lovelace | [#3 Improve \\| "
+            "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) (stale) |",
             content,
         )
@@ -371,9 +371,8 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual({"On Hold": ["owner/repo#1"]}, sections(content))
         self.assertEqual([], candidates)
         for computed in ("stale", "Drafts", "awaiting response", "To Review"):
-            with self.subTest(computed=computed):
-                with self.assertRaisesRegex(TrackerError, "computed tracker state"):
-                    run([item()], overrides={"owner/repo#1": computed})
+            with self.subTest(computed=computed), self.assertRaisesRegex(TrackerError, "computed tracker state"):
+                run([item()], overrides={"owner/repo#1": computed})
 
     def test_review_candidates_list_relevant_missing_and_stale_reviews_including_drafts(self) -> None:
         missing = item(number=1)

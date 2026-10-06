@@ -8,9 +8,10 @@ import secrets
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import TextIO
 
 from . import config, fsops, hashing, journal, lock, manifest, platform_support, render, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, PROG, ParserExit, deploy_parser
@@ -220,7 +221,8 @@ def _validate_shared_assets(context: Context, selected: list[str]) -> dict[str, 
         for dependency in src.skills[name].shared_deps:
             if dependency not in assets:
                 raise DeployError(
-                    f"ERROR: Skill '{name}' declares shared_dep '{dependency}' but it is not in source.json shared_assets"
+                    f"ERROR: Skill '{name}' declares shared_dep "
+                    f"'{dependency}' but it is not in source.json shared_assets"
                 )
     return assets
 
@@ -526,7 +528,8 @@ def _ensure_transient_available(item: str, base: Path) -> None:
     transient = base / f"{item}.deploying-bak"
     if os.path.lexists(transient):
         raise DeployError(
-            f"ERROR: Refusing to deploy '{item}': transient backup already exists at {platform_support.normalize(transient)}",
+            f"ERROR: Refusing to deploy '{item}': transient backup "
+            f"already exists at {platform_support.normalize(transient)}",
             "Resolve or remove the stale backup after verifying its contents, then retry.",
             see_recovery("Backups"),
         )
@@ -551,9 +554,12 @@ def _surviving_skills(context: Context, selected: list[str]) -> list[str]:
         destination = context.paths.dest_dir / name
         if not os.path.lexists(destination):
             continue
-        if not destination.is_dir() or hashing.find_link(destination) is not None:
-            survivors.append(name)
-        elif hashing.hash_path(destination) != owned_hash and not (name in selected and context.forced(name)):
+        if (
+            not destination.is_dir()
+            or hashing.find_link(destination) is not None
+            or hashing.hash_path(destination) != owned_hash
+            and not (name in selected and context.forced(name))
+        ):
             survivors.append(name)
     return survivors
 
@@ -645,7 +651,8 @@ def _check_ownership(
         link = hashing.find_link(destination) if os.path.lexists(destination) else None
         if link is not None:
             raise DeployError(
-                f"ERROR: Destination '{destination.name}' contains a symlink or junction: {platform_support.normalize(link)}",
+                f"ERROR: Destination '{destination.name}' contains a "
+                f"symlink or junction: {platform_support.normalize(link)}",
                 "Remove it or restore the deployed copy after verifying its contents, then retry.",
             )
 

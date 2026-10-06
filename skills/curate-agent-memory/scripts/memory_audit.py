@@ -72,9 +72,57 @@ PATH_LIKE = re.compile(r"^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])?[\w.@()\- ]+(?:
 ANCHORED_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/])|[\\/]$|\.[A-Za-z0-9]{1,8}$")
 WORD = re.compile(r"[a-z][a-z0-9_]{2,}")
 STOP_WORDS = frozenset(
-    "the and for with that this from are not use when into only must should never always "
-    "all any can does each its has have was were will what which while who why how than then "
-    "them they their there these those via per our out also but instead".split()
+    [
+        "the",
+        "and",
+        "for",
+        "with",
+        "that",
+        "this",
+        "from",
+        "are",
+        "not",
+        "use",
+        "when",
+        "into",
+        "only",
+        "must",
+        "should",
+        "never",
+        "always",
+        "all",
+        "any",
+        "can",
+        "does",
+        "each",
+        "its",
+        "has",
+        "have",
+        "was",
+        "were",
+        "will",
+        "what",
+        "which",
+        "while",
+        "who",
+        "why",
+        "how",
+        "than",
+        "then",
+        "them",
+        "they",
+        "their",
+        "there",
+        "these",
+        "those",
+        "via",
+        "per",
+        "our",
+        "out",
+        "also",
+        "but",
+        "instead",
+    ]
 )
 DESTINATION_GLOBS = (
     "README.md",
@@ -431,7 +479,7 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
 
 def managed_settings_path() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
+        return Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
     return Path("/etc/claude-code/managed-settings.json")

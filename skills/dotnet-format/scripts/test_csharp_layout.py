@@ -8,10 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import csharp_layout as layout  # noqa: E402
+import csharp_layout as layout
 
 
 def source(*lines: str) -> str:
@@ -476,7 +475,8 @@ class ConfigTests(unittest.TestCase):
         self.assertTrue(content.startswith(b"\xef\xbb\xbf# comment\r\n"))
         self.assertTrue(
             content.startswith(
-                b"\xef\xbb\xbf# comment\r\nroot = true\r\n\r\n[*.cs]\r\ndotnet_diagnostic.RCS0010.severity = warning\r\n"
+                b"\xef\xbb\xbf# comment\r\nroot = "
+                b"true\r\n\r\n[*.cs]\r\ndotnet_diagnostic.RCS0010.severity = warning\r\n"
             ),
             "the added section comes first, so the existing sections still override it",
         )

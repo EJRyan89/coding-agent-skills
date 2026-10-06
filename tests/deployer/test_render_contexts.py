@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-# The harness puts the repository root on sys.path so the deployer package imports.
-import harness
+import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 
 from deployer import hashing, render
 from deployer.errors import DeployError
@@ -31,9 +30,8 @@ class SubstitutionContextTests(unittest.TestCase):
             "s/config.yml": "a: b",
         }
         for logical, value in cases.items():
-            with self.subTest(logical=logical):
-                with self.assertRaisesRegex(DeployError, "cannot be safely substituted"):
-                    render.render_file(logical, b"value {{X}}\n", {"X": value})
+            with self.subTest(logical=logical), self.assertRaisesRegex(DeployError, "cannot be safely substituted"):
+                render.render_file(logical, b"value {{X}}\n", {"X": value})
 
     def test_markdown_applies_fence_context_and_leaves_prose_raw(self) -> None:
         prose = render.render_file("s/SKILL.md", b"Owner: {{X}}\n", {"X": "O'Brien"})

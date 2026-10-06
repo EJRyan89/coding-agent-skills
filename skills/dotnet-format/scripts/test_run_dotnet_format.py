@@ -6,14 +6,13 @@ import os
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import run_dotnet_format as formatter  # noqa: E402
+import run_dotnet_format as formatter
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 

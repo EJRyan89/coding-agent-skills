@@ -54,17 +54,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deployer import discovery, frontmatter, pipeline, platform_support
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 RUNTIMES = ("claude", "codex", "copilot")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"

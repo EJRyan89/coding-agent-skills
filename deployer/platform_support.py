@@ -149,7 +149,7 @@ def find_bash() -> str | None:
     configured = os.environ.get("GIT_BASH")
     if configured and Path(configured).is_file():
         return configured
-    candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
+    candidate = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
     if candidate.is_file():
         return str(candidate)
     return _bash_beside_git()

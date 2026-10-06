@@ -20,8 +20,9 @@ import json
 import re
 import tomllib
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400

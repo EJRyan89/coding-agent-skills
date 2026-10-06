@@ -18,8 +18,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deployer import frontmatter
 from deployer import source as deploy_source
@@ -27,6 +26,8 @@ from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.tools import SKILL_TOOLS
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 REFERENCE = Path("docs") / "skills.md"
 README = Path("README.md")
@@ -304,7 +305,8 @@ def problems(root: Path) -> list[str]:
     for section in sections:
         if section.name in names and not _prose(section).strip():
             found.append(
-                f"{REFERENCE.as_posix()}: section `{section.name}` has no hand-written explanation after its generated block"
+                f"{REFERENCE.as_posix()}: section `{section.name}` has "
+                "no hand-written explanation after its generated block"
             )
     if current != document:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")

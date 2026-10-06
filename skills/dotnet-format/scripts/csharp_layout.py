@@ -33,13 +33,13 @@ import functools
 import os
 import re
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dotnet_format_targets import read_text, same_path, solution_projects  # noqa: E402
+from dotnet_format_targets import read_text, same_path, solution_projects
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
@@ -592,7 +592,7 @@ def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
     return "".join(out), separator
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def section_glob(section: str) -> tuple[re.Pattern[str], tuple[tuple[int, int], ...]]:
     """The compiled EditorConfig glob for a section name (https://spec.editorconfig.org/#glob-expressions).
 
@@ -610,7 +610,7 @@ def section_matches(section: str, relative_path: str) -> bool:
     regex, ranges = section_glob(section)
     match = regex.fullmatch(relative_path)
     return match is not None and all(
-        value is None or low <= int(value) <= high for value, (low, high) in zip(match.groups(), ranges)
+        value is None or low <= int(value) <= high for value, (low, high) in zip(match.groups(), ranges, strict=True)
     )
 
 

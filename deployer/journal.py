@@ -319,7 +319,8 @@ def recover_incomplete(paths: Paths) -> bool:
     for run_dir in sorted(path for path in paths.staging_root.iterdir() if path.is_dir()):
         if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
             print(
-                f"  ERROR: Staging run is a symlink or junction and was not replayed: {platform_support.normalize(run_dir)}",
+                "  ERROR: Staging run is a symlink or junction and was "
+                f"not replayed: {platform_support.normalize(run_dir)}",
                 file=sys.stderr,
             )
             succeeded = False

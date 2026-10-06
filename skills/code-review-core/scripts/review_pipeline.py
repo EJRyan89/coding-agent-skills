@@ -1,6 +1,7 @@
 """Deterministic review steps, so an orchestrating agent only dispatches reviewers.
 
-    enumerate  list the pull requests a batch run should review, to a batch file (by default in a new temporary directory)
+    enumerate  list the pull requests a batch run should review, to a batch file (by default in a new
+               temporary directory)
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     wait       wait a bounded time for that host: its result, its failure, or how long it has run
@@ -25,6 +26,7 @@ succeeds or fails on its own, and every line names its pull request.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -34,10 +36,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -72,7 +75,6 @@ from review_io import (
     read_json,
     working_path,
 )
-from review_process import ProcessStatus, process_status, start_detached
 from review_operation import (
     ReviewOperationError,
     commit_adapter_result,
@@ -86,7 +88,9 @@ from review_operation import (
     validate_canary_pull,
     validate_pull,
 )
+from review_process import ProcessStatus, process_status, start_detached
 from review_records import RE_REVIEW_SCOPES, RecordError, carried_findings, describe_scope, validate_adapter_result
+from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
     RUNTIME_CAPABILITIES,
@@ -105,7 +109,6 @@ from review_runtime import (
     verify_checkout_remote,
     write_adapter_request,
 )
-from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
 from review_specialists import (
     LINK_FINDING,
     SpecialistError,
@@ -123,7 +126,6 @@ from review_specialists import (
     uncovered,
 )
 from review_state import StateError, default_state_path, load_state, update_state
-
 
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1
@@ -610,6 +612,28 @@ def _snapshot_line(checkout: Path, commit: str, changed: list[str], services: Se
     )
 
 
+def _route_condition(
+    name: str,
+    *,
+    checkout: Path,
+    repository: str,
+    head: str,
+    changed: list[str],
+    reviewer_root: Path,
+    manifest: dict[str, Any],
+    source: Path,
+    work: Path,
+    results: dict[str, bool],
+    services: Services,
+) -> bool:
+    """Evaluate one routing condition on the pull request's source snapshot, taken on first use, and record it."""
+    if not source.exists():
+        materialize_source_snapshot(checkout, repository, head, source, runner=services.git, changed_paths=changed)
+    work.mkdir(exist_ok=True)
+    results[name] = evaluate_condition(reviewer_root, manifest["conditions"][name]["script"], source, work)
+    return results[name]
+
+
 def validate_reviewer(
     repository: str,
     *,
@@ -688,19 +712,20 @@ def validate_reviewer(
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
-            source = scratch / f"source-{index}"
             results: dict[str, bool] = {}
-
-            def condition(name: str) -> bool:
-                if not source.exists():
-                    materialize_source_snapshot(
-                        checkout, repository, pull["headRefOid"], source, runner=services.git, changed_paths=changed
-                    )
-                work = scratch / f"conditions-{index}"
-                work.mkdir(exist_ok=True)
-                results[name] = evaluate_condition(root, manifest["conditions"][name]["script"], source, work)
-                return results[name]
-
+            condition = functools.partial(
+                _route_condition,
+                checkout=checkout,
+                repository=repository,
+                head=pull["headRefOid"],
+                changed=changed,
+                reviewer_root=root,
+                manifest=manifest,
+                source=scratch / f"source-{index}",
+                work=scratch / f"conditions-{index}",
+                results=results,
+                services=services,
+            )
             routes = route(manifest, changed, condition)
             lines.extend(f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items())
             specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
@@ -886,7 +911,7 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
     entries: list[str] = []
     count = 0
     states = [(run.resolve(), load_run(run.resolve())) for run in runs]
-    for run, state in states:
+    for _, state in states:
         if state["runtime"] == "copilot-cli":
             raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; dispatch it instead")
     for run, state in states:
@@ -956,7 +981,10 @@ def run_host(run: Path, token: str, services: Services) -> str:
     """The detached host dispatch starts: run Copilot, promote its result only while the claim holds, and record
     the outcome. Returns the outcome, or `superseded` without running when the claim no longer holds."""
     run, state, reviewer = _copilot_run(run)
-    generation = lambda: load_run(run)["attempts"][reviewer]  # noqa: E731
+
+    def generation() -> int:
+        return load_run(run)["attempts"][reviewer]
+
     with host_lock(run):
         claim = claim_holds(run, token, generation())
         if claim is None:
@@ -1242,7 +1270,7 @@ def enumerate_batch(
             entry["error"] = str(exc)
         return entry
 
-    for repository, (entry, _) in zip(selected, map_in_order(listing, selected)):
+    for repository, (entry, _) in zip(selected, map_in_order(listing, selected), strict=True):
         batch["repositories"][repository] = entry
     atomic_write_json(output, batch)
     return batch
@@ -1460,7 +1488,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 items,
                 catch=EXPECTED_ERRORS,
             )
-            for (selector, _), (result, error) in zip(items, outcomes):
+            for (selector, _), (result, error) in zip(items, outcomes, strict=True):
                 if error is not None:
                     print(f"FAILED {selector} {error}")
                     failed = True

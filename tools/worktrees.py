@@ -26,8 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deployer import platform_support
 
@@ -577,7 +576,7 @@ def list_worktrees() -> int:
     widths = [max(len(getattr(r, field)) for r in rows) for field in ("branch", "state", "ahead", "behind", "dirty")]
     for r in rows:
         cells = (r.branch, r.state, r.ahead, r.behind, r.dirty)
-        print("  ".join(cell.ljust(width) for cell, width in zip(cells, widths)) + "  " + r.path)
+        print("  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)) + "  " + r.path)
     return 0
 
 

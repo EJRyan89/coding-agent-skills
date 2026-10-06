@@ -6,10 +6,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import mcp_handshake
@@ -212,7 +212,8 @@ class HandshakeTests(unittest.TestCase):
             (
                 1,
                 [
-                    "HANDSHAKE_FAILED crash source=.mcp.json server exited before responding: boom: stderr after stdout closed"
+                    "HANDSHAKE_FAILED crash source=.mcp.json server exited "
+                    "before responding: boom: stderr after stdout closed"
                 ],
             ),
             self._run(),

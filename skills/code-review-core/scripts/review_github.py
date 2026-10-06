@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from review_config import validate_repository_identity
 

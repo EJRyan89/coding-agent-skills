@@ -22,27 +22,29 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass, field
-from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+
+import review_runtime
+from review_config import validate_config
+from review_flags import validate_store
+from review_operation import legacy_index
+from review_records import build_record, carried_findings, validate_adapter_result, validate_record
+from review_runtime import build_adapter_request, validate_adapter_manifest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
 SCRIPTS = REPOSITORY_ROOT / "skills" / "code-review-core" / "scripts"
 REFERENCES = SCRIPTS.parent / "references"
-sys.path.insert(0, str(SCRIPTS))
-
-import review_runtime  # noqa: E402
-from review_config import validate_config  # noqa: E402
-from review_flags import validate_store  # noqa: E402
-from review_operation import legacy_index  # noqa: E402
-from review_records import build_record, carried_findings, validate_adapter_result, validate_record  # noqa: E402
-from review_runtime import build_adapter_request, validate_adapter_manifest  # noqa: E402
 
 JSON_TYPES = ("null", "boolean", "integer", "number", "string", "array", "object")
 # Values of each JSON type to probe a field with, in the order they are tried.
@@ -866,7 +868,9 @@ class FormatContractTest(unittest.TestCase):
             "record": [
                 Fixture(name, value, record)
                 for name, value in zip(
-                    ("initial record", "re-review record", "uncompared re-review record", "older record"), records
+                    ("initial record", "re-review record", "uncompared re-review record", "older record"),
+                    records,
+                    strict=True,
                 )
             ],
             "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
@@ -883,7 +887,7 @@ class FormatContractTest(unittest.TestCase):
         return parse_tables(CONTRACT.read_text(encoding="utf-8"))
 
     def test_fixtures_are_valid(self) -> None:
-        for root, fixtures in self.fixtures.items():
+        for fixtures in self.fixtures.values():
             for fixture in fixtures:
                 with self.subTest(fixture=fixture.name):
                     self.assertTrue(fixture.accepts is None or fixture.accepts(copy.deepcopy(fixture.value)))

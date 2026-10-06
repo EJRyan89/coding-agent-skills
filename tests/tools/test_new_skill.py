@@ -10,8 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import frontmatter as fm
 from tools import new_skill, skill_reference
@@ -120,7 +119,8 @@ class NewSkillTestCase(unittest.TestCase):
         )
 
         self.assertIn(
-            'allowed-tools: ["Bash(gh auth status)", "PowerShell(gh auth status)"]\ndisable-model-invocation: true\n---',
+            'allowed-tools: ["Bash(gh auth status)", "PowerShell(gh auth status)"]\n'
+            "disable-model-invocation: true\n---",
             (self.root / "skills" / "tidy" / "SKILL.md").read_text(encoding="utf-8"),
         )
         # The canonical layout that validation holds every deploy-meta file to.
@@ -185,7 +185,8 @@ class NewSkillTestCase(unittest.TestCase):
                 "CREATED skills/widget-report/SKILL.md",
                 "CREATED deploy-meta/widget-report.json",
                 "UPDATED docs/skills.md",
-                "REMAINING docs/skills.md: section `widget-report` has no hand-written explanation after its generated block",
+                "REMAINING docs/skills.md: section `widget-report` has "
+                "no hand-written explanation after its generated block",
                 "REMAINING README.md: 'Included skills' has no row for `widget-report`",
             ],
             stdout.splitlines(),

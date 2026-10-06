@@ -9,8 +9,8 @@ import sys
 import textwrap
 import time
 import unittest
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Callable, Mapping
 from unittest import mock
 
 from harness import DeployerTestCase, Result, forward

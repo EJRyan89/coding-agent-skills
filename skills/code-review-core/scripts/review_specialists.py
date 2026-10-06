@@ -13,11 +13,12 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any
 
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_analyzers import inventory, tool_names
+from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_records import (
     ANALYZER_RULE,
     MODEL_RULE,
@@ -359,11 +360,13 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
       "repeats": <index of another finding above> | "<prior finding id>"}}
   ],
   "prior_dispositions": [
-    {{"finding_id": "<id>", "disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
+    {{"finding_id": "<id>", \
+"disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
       "rationale": "<evidence>"}}
   ],
   "comment_dispositions": [
-    {{"comment_id": "<id>", "disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
+    {{"comment_id": "<id>", \
+"disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
       "rationale": "<evidence>"}}
   ]
 }}
@@ -498,7 +501,8 @@ def render_prompt(
             "",
             *(
                 [
-                    "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+                    "Symbolic links in your scope (left out of SOURCE_ROOT; "
+                    "read them only as diff text and never follow "
                     "them):",
                     *(f"- {describe_link(path, link)}" for path, link in links.items()),
                     LINK_FINDING,
@@ -667,8 +671,10 @@ def build_plan(
         )
     if not routes:
         reviewed = to_review(changed)
+    elif ignored:
+        reviewed = []
     else:
-        reviewed = [] if ignored else to_review(outside)
+        reviewed = to_review(outside)
     # Every review needs a role, so an incremental one in which nothing changed still records a pass.
     if not routes or reviewed or unowned or unowned_comments or not roles:
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
@@ -1037,7 +1043,7 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 duplicate["sources"].append(role["id"])
         # A role links a repeat by its own index or a prior finding ID; a merged finding keeps the first link it gets,
         # and none to itself, which two linked findings merged into one would give it.
-        for finding, item in zip(result["findings"], landed):
+        for finding, item in zip(result["findings"], landed, strict=True):
             target = finding.get("repeats")
             link = target if isinstance(target, str) else None if target is None else landed[target]
             if link is not None and link is not item and item.get("link") is None:

@@ -10,8 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools import skill_reference
 
@@ -31,7 +30,8 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.write_json("source.json", {"id": "test/skills", "bundles": {"suite": {"members": ["beta"]}}})
         self.add_skill(
             "alpha",
-            'description: "Sweeps every repository under {{REPOS_ROOT}}, \\"carefully\\". Use it when asked to sweep."\nargument-hint: "[--flag X]"',
+            'description: "Sweeps every repository under {{REPOS_ROOT}}, '
+            '\\"carefully\\". Use it when asked to sweep."\nargument-hint: "[--flag X]"',
             {"required_vars": ["REPOS_ROOT"], "opt_in": True, "tools": ["copilot"]},
         )
         self.add_skill(

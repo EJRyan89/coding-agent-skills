@@ -7,8 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import frontmatter
 from deployer.frontmatter import FrontmatterError
@@ -106,9 +105,8 @@ class RefusalTests(unittest.TestCase):
             "key: [a]\n  more": "one line",
         }
         for block, message in cases.items():
-            with self.subTest(block=block):
-                with self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
-                    parse(block).value("key")
+            with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
+                parse(block).value("key")
 
     def test_unread_keys_are_never_parsed(self) -> None:
         document = parse(
@@ -138,9 +136,8 @@ class RefusalTests(unittest.TestCase):
             ("  indented first line", "line 1 belongs to no key"),
             ("name: a\nnot a key", "line 2 is not a 'key: value' line"),
         ):
-            with self.subTest(block=block):
-                with self.assertRaisesRegex(FrontmatterError, message):
-                    parse(block)
+            with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, message):
+                parse(block)
 
     def test_comments_and_blank_lines_between_keys_are_ignored(self) -> None:
         document = parse("# leading comment\n\nname: a\n# between\n\ndescription: b")
@@ -165,7 +162,7 @@ class DocumentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "With Spaces" / "SKILL.md"
             path.parent.mkdir()
-            path.write_bytes('﻿---\r\nname: "crlf"\r\ndescription: >-\r\n  one\r\n  two\r\n---\r\n'.encode("utf-8"))
+            path.write_bytes('﻿---\r\nname: "crlf"\r\ndescription: >-\r\n  one\r\n  two\r\n---\r\n'.encode())
             document = frontmatter.read(path)
             self.assertEqual(("crlf", "one two"), (document.string("name"), document.string("description")))
             path.write_text("No frontmatter.\n", encoding="utf-8")

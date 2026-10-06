@@ -594,7 +594,10 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(str(config / "projects" / "shared" / "memory"), result["memory_dir"])
         self.assertEqual("CLAUDE_CODE_PROJECT_DIR_NAME", result["source"])
 
-    SETTINGS_NOTE = "NOTE A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
+    SETTINGS_NOTE = (
+        "NOTE A --settings file passed when Claude Code starts can also set autoMemoryDirectory; "
+        "this audit cannot see it."
+    )
     DERIVED_NOTE = "NOTE The directory name is derived by convention; confirm it before changing anything."
 
     def resolve_lines(self, *arguments: str, cwd: Path | None = None, code: int = 0) -> list[str]:

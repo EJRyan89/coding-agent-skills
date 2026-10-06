@@ -29,16 +29,17 @@ import re
 import shutil
 import sys
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from deployer import discovery, manifest, platform_support, tools, verify
+from deployer.errors import DeployError, print_error
+from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT))
-
-from deployer import discovery, manifest, platform_support, tools, verify  # noqa: E402
-from deployer.errors import DeployError, print_error  # noqa: E402
-from deployer.paths import Paths  # noqa: E402
 
 PASSED = "PASSED"
 SKIPPED = "SKIPPED"

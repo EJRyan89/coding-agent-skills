@@ -32,14 +32,15 @@ import hashlib
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
+from review_archive import pull_records
 from review_config import (
     ConfigurationError,
     load_config,
@@ -49,7 +50,6 @@ from review_config import (
 )
 from review_flags import FlagError, default_flags_path, load_store, resolve_flag
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_json
-from review_archive import pull_records
 from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
 
 # Version 2 adds each recommendation's decision_history and linked_flags. Version 3 links a flag only to the
@@ -88,7 +88,7 @@ EXPECTED_ERRORS = (InsightError, ConfigurationError, FlagError, PersistenceError
 class Services:
     """External effects, replaceable in tests."""
 
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
+    now: Callable[[], datetime] = lambda: datetime.now(UTC)
     flags_path: Callable[[], Path] = default_flags_path
 
 
@@ -334,7 +334,8 @@ def analyze(
                     "id": identifier,
                     "kind": "category",
                     "category": category,
-                    "recommendation": f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
+                    "recommendation": f"Review recurring {category} findings and decide "
+                    "whether guidance or reviewer rules should change.",
                     **common,
                 }
             )

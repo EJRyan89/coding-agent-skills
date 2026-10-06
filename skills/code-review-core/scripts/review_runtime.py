@@ -11,14 +11,14 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any
 
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
-
 
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1

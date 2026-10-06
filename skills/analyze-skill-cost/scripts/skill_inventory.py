@@ -58,10 +58,11 @@ import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
+from itertools import pairwise
+from pathlib import Path
 
 import frontmatter
-from dataclasses import dataclass, field
-from pathlib import Path
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -187,7 +188,8 @@ CUES = (
     (
         "generated-code",
         re.compile(
-            rf"(?i)python3? -c{WORD_END}|<<-?\s*['\"]?[A-Z_]+['\"]?|{WORD_START}(?:write|writes|generate|generates|compose)"
+            rf"(?i)python3? -c{WORD_END}|<<-?\s*['\"]?[A-Z_]+['\"]?|"
+            rf"{WORD_START}(?:write|writes|generate|generates|compose)"
             rf"{WORD_END}.{{0,40}}{WORD_START}(?:script|code|glue|program|one-liner){WORD_END}"
         ),
     ),
@@ -343,7 +345,7 @@ def grants(pattern: str, command: str) -> bool:
 def fence_commands(body: list[str], languages: list[str | None], start: int) -> list[tuple[int, str]]:
     """Each command line in a shell or PowerShell fence, with its file line number."""
     commands: list[tuple[int, str]] = []
-    for offset, (line, language) in enumerate(zip(body, languages)):
+    for offset, (line, language) in enumerate(zip(body, languages, strict=True)):
         if language not in SHELL_FENCES | POWERSHELL_FENCES or FENCE.match(line):
             continue
         command = COMMAND_JOIN.sub("", line.strip())
@@ -474,7 +476,7 @@ def estimate_tokens(text: str | None, kind: str) -> int:
     if kind in ("main", "doc"):
         lines = text.splitlines(keepends=True)
         languages, _ = parse_fences([line.rstrip("\r\n") for line in lines])
-        code = sum(len(line) for line, language in zip(lines, languages) if language is not None)
+        code = sum(len(line) for line, language in zip(lines, languages, strict=True) if language is not None)
         prose = len(text) - code
     else:
         code, prose = len(text), 0
@@ -542,7 +544,7 @@ def structure_flags(kind: str, text: str, relative: str) -> list[str]:
     if kind != "doc" or len(lines) <= DOC_TOC_LINE_LIMIT:
         return []
     languages, _ = parse_fences(lines)
-    for line, language in zip(lines, languages):
+    for line, language in zip(lines, languages, strict=True):
         heading = HEADING.match(line) if language is None else None
         if heading and len(heading.group(1)) >= 2:
             if CONTENTS_HEADING.fullmatch(heading.group(2)):
@@ -697,7 +699,7 @@ def negated_ranges(line: str) -> list[tuple[int, int]]:
         masked = blanked(masked, match.start() + 1, match.end() - 1)
     bounds = [0, *(match.end() for match in CLAUSE_END.finditer(masked)), len(masked)]
     ranges: list[tuple[int, int]] = []
-    for start, end in zip(bounds, bounds[1:]):
+    for start, end in pairwise(bounds):
         for negator in NEGATOR.finditer(masked, start, end):
             reach = end
             for subordinator in SUBORDINATOR.finditer(masked, start, negator.start()):
@@ -744,7 +746,7 @@ def tools(path: Path) -> list[str]:
     languages, _ = parse_fences(body)
     first_use: dict[str, int] = {}
     first_implied: dict[str, int] = {}
-    for offset, (line, language) in enumerate(zip(body, languages)):
+    for offset, (line, language) in enumerate(zip(body, languages, strict=True)):
         if language is None:
             line = without_subagent_prompts(line)
         for name in line_references(line, language, names, allowed or []):
@@ -769,7 +771,10 @@ def tools(path: Path) -> list[str]:
 def listing(document: frontmatter.Frontmatter) -> list[str]:
     """What every session loads for this skill: its description, unless model invocation is disabled."""
     text = (document.string("description") or "").strip()
-    flag = lambda key: (document.string(key) or "").strip().casefold()
+
+    def flag(key: str) -> str:
+        return (document.string(key) or "").strip().casefold()
+
     model_invocable = flag("disable-model-invocation") != "true"
     user_invocable = flag("user-invocable") != "false"
     invocation = "model" if model_invocable else ("user-only" if user_invocable else "hidden")

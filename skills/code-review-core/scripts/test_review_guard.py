@@ -9,11 +9,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_guard as guard  # noqa: E402
-import review_pipeline as rp  # noqa: E402
+import review_guard as guard
+import review_pipeline as rp
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
 class ReviewGuardTests(unittest.TestCase):

@@ -15,16 +15,17 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from unittest import mock
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import discovery, platform_support
 from tools import runtime_canary
 from tools.runtime_canary import Completed
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURE = "runtime-canary-probe"
 # A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.
@@ -140,7 +141,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
             allowed = json.dumps([f"Bash({scripts})", f"PowerShell({scripts})"])
             (source / "skills" / name / "SKILL.md").write_bytes(
                 f'---\nname: {name}\ndescription: "Skill {name}"\nallowed-tools: {allowed}\n{flags}---\n\n'
-                f'Run `{command} "{script}"`.\n'.encode("utf-8")
+                f'Run `{command} "{script}"`.\n'.encode()
             )
             (source / "deploy-meta" / f"{name}.json").write_text(json.dumps(metadata), encoding="utf-8")
             if command == "bash":
@@ -461,7 +462,7 @@ class RunTests(RuntimeCanaryTestCase):
         }
         self.assertEqual(set(runtime_canary.RUNTIMES), set(runs))
         recorder = self.home / ".runtime-canary" / "recorder"
-        for runtime, (arguments, cwd, environment) in runs.items():
+        for runtime, (_, cwd, environment) in runs.items():
             with self.subTest(runtime=runtime):
                 self.assertEqual(self.home, cwd)
                 # The real configuration folders, and so the sign-ins, are left where they are.

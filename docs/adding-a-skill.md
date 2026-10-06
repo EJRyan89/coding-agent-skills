@@ -264,13 +264,14 @@ Before adding the skill to a release:
 
 1. Add positive rendering coverage to the appropriate `tests/deployer/test_*.py` module, creating a focused module only when necessary. `tests/run_validation.py` discovers and runs every module in parallel.
 2. If the skill contains executable files, include an executable regression suite under its `scripts/` directory. Name each test entry point `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` and use `.py`, `.sh`, or `.ps1`. `tests/run_validation.py` discovers and runs these suites automatically, under `tests/` and each skill's `scripts/`, by name alone: a file whose name misses the patterns never runs. It runs each suite as a program, so end a Python suite with `if __name__ == "__main__":` calling `unittest.main()`; without it the suite runs no tests and still exits 0, and validation fails. JavaScript or TypeScript implementations may use one of those supported test entry points as their test driver.
-3. Add failure cases for any new parsing, path, or execution behavior.
-4. Run the repository validation sequence:
+3. Python under `scripts/` passes the same format and lint checks as the rest of the repository, `ruff format --check` and `ruff check` with the rules in `pyproject.toml`, and no file or rule is exempt. A script that imports a sibling's scripts, as `skill_deps` allows, puts `${CLAUDE_SKILL_DIR}/../<dependency>/scripts` on `sys.path` first. Write that as one bare statement directly above the imports it serves, `sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "<dependency>" / "scripts"))`, and define any path constant after those imports: ruff's E402 accepts an import after a `sys.path` change but not after an assignment, so the sibling-import pattern needs no exemption.
+4. Add failure cases for any new parsing, path, or execution behavior.
+5. Run the repository validation sequence:
 
    ```powershell
    python -B tests/run_validation.py
    ```
 
-5. If debugging a failure, run the affected Bash, ShellCheck, or Python command directly.
-6. Deploy into an isolated temporary home with `deploy.py --canary-home` and verify configuration, manifest entries, backups, and rendered output. Setting `HOME` does not isolate a run: on Windows the deployer always uses the profile folder.
-7. When the change touches how the skill names its own files, its `allowed-tools`, its runtime adapter, or its agents, run the `runtime-canary` repository skill. `tools/runtime_canary.py` deploys into a throwaway home with `deploy.py --canary-home`, starts Claude Code, Codex, and Copilot CLI there, and reports whether each found the skill and ran its script from the deployed copy. Each run calls a model, so it never runs inside validation; record its result in the pull request.
+6. If debugging a failure, run the affected Bash, ShellCheck, or Python command directly.
+7. Deploy into an isolated temporary home with `deploy.py --canary-home` and verify configuration, manifest entries, backups, and rendered output. Setting `HOME` does not isolate a run: on Windows the deployer always uses the profile folder.
+8. When the change touches how the skill names its own files, its `allowed-tools`, its runtime adapter, or its agents, run the `runtime-canary` repository skill. `tools/runtime_canary.py` deploys into a throwaway home with `deploy.py --canary-home`, starts Claude Code, Codex, and Copilot CLI there, and reports whether each found the skill and ran its script from the deployed copy. Each run calls a model, so it never runs inside validation; record its result in the pull request.

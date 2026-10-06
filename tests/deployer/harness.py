@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import configure, pipeline
 from deployer.paths import Paths
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 SOURCE_ID = "test/skills"
 # The grant shipped skills use: Bash and PowerShell for the skill's own scripts only. See "Granting tools" in
@@ -116,7 +117,7 @@ class DeployerTestCase(unittest.TestCase):
             (
                 f"---\nname: {name}\ndescription: {description}\nallowed-tools: {ALLOWED_TOOLS}\n{flags}---\n\n"
                 f"{content}\n"
-            ).encode("utf-8")
+            ).encode()
         )
         metadata = {
             "required_vars": list(required_vars),
@@ -134,14 +135,14 @@ class DeployerTestCase(unittest.TestCase):
         content = (
             f"---\nname: {declared or name}\ndescription: Test agent {name}\ntools: Read, Write\n"
             f"model: inherit\n---\n\n{body}\n"
-        ).encode("utf-8")
+        ).encode()
         target = self.source / "agents" / f"{name}.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         return content
 
     def make_shared_asset(self, name: str, content: str = "# Shared asset") -> None:
-        (self.source / "skills" / name).write_bytes(f"{content}\n".encode("utf-8"))
+        (self.source / "skills" / name).write_bytes(f"{content}\n".encode())
 
     def config_file(self, source_id: str = SOURCE_ID) -> Path:
         digest = hashlib.sha256(source_id.encode("utf-8")).hexdigest()[:12]
@@ -151,7 +152,7 @@ class DeployerTestCase(unittest.TestCase):
         repos = repos_root or self.repos
         repos.mkdir(parents=True, exist_ok=True)
         path = self.config_file(source_id)
-        path.write_bytes(f"_source_id={source_id}\nREPOS_ROOT={forward(repos)}\n{extra}".encode("utf-8"))
+        path.write_bytes(f"_source_id={source_id}\nREPOS_ROOT={forward(repos)}\n{extra}".encode())
         return path
 
     def deploy(self, *arguments: str, stdin: str = "", **options: Any) -> Result:

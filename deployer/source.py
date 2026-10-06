@@ -311,7 +311,8 @@ def _load_bundles(document: dict[str, Any], source: Source) -> None:
                 )
             if source.skills[member].opt_in:
                 raise DeployError(
-                    f"ERROR: Skill '{member}' is opt-in but belongs to bundle '{bundle}'; mark the bundle opt-in instead"
+                    f"ERROR: Skill '{member}' is opt-in but belongs to "
+                    f"bundle '{bundle}'; mark the bundle opt-in instead"
                 )
             source.skill_bundle[member] = bundle
         opt_in = definition.get("opt_in", False)

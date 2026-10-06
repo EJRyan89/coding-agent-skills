@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
-
 
 # Version 2 adds review_version, so a finding ID names one review; finding IDs restart at F001 in every review.
 SCHEMA_VERSION = 2
@@ -153,7 +152,7 @@ def add_flag(
     with ResourceLock(lock):
         store = load_store(path)
         numeric = store["next_id"]
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         flag = {
             "id": f"RF-{numeric:06d}",
             "status": "open",
@@ -186,7 +185,7 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
         if flag["status"] != "open":
             raise FlagError(f"Flag is already resolved: {flag_id}")
         flag["status"] = "resolved"
-        flag["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        flag["resolved_at"] = datetime.now(UTC).isoformat()
         flag["resolution"] = resolution
         atomic_write_json(path, store, validator=validate_store)
         return flag

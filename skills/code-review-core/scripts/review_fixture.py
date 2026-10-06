@@ -6,8 +6,9 @@ Version 3 reports a new suggestion and repeats the open must-fix. Each version's
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from review_archive import commit_record, current_ledger, pull_records
 from review_records import build_record, carried_findings, validate_adapter_result

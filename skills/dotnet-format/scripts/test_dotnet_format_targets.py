@@ -8,14 +8,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import dotnet_format_targets as targets  # noqa: E402
+import dotnet_format_targets as targets
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'

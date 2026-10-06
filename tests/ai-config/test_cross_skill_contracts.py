@@ -6,29 +6,34 @@ from __future__ import annotations
 import ast
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import frontmatter as skill_frontmatter
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def literal_assignment(path: Path, name: str) -> object:
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     for node in tree.body:
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.target.id == name and node.value is not None:
-                return ast.literal_eval(node.value)
-        if isinstance(node, ast.Assign):
-            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
-                return ast.literal_eval(node.value)
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            return ast.literal_eval(node.value)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
     raise AssertionError(f"{name} is not a literal assignment in {path}")
 
 
@@ -75,7 +80,7 @@ class CrossSkillContractTests(unittest.TestCase):
         for path in [*(REPOSITORY_ROOT / "skills").glob("*/SKILL.md"), *(REPOSITORY_ROOT / "agents").glob("*.md")]:
             document = skill_frontmatter.read(path)
             for key in ("allowed-tools", "tools"):
-                if key in document.keys():
+                if key in document:
                     value = document.value(key)
                     entries = value if isinstance(value, list) else str(value).split(",")
                     granted |= {entry.strip().split("(", 1)[0] for entry in entries if entry.strip()}
@@ -196,12 +201,14 @@ class CrossSkillContractTests(unittest.TestCase):
                 "          command: >-",
                 '            python -I -B -c "import json, os, runpy, sys;',
                 "            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),",
-                "            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision':"
+                "            print(json.dumps({'hookSpecificOutput': "
+                "{'hookEventName': 'PreToolUse', 'permissionDecision':"
                 " 'deny',",
                 "            'permissionDecisionReason': 'Code-review reviewer boundary: the guard could not run (' +"
                 " kind.__name__ + ').'}}),",
                 "            flush=True), os._exit(0));",
-                "            runpy.run_path(os.path.expanduser('~/.claude/skills/code-review-core/scripts/review_guard.py'),",
+                "            runpy.run_path(os.path.expanduser("
+                "'~/.claude/skills/code-review-core/scripts/review_guard.py'),",
                 "            run_name='__main__')\"",
                 "          timeout: 30",
             ],
@@ -279,7 +286,8 @@ class CrossSkillContractTests(unittest.TestCase):
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
                                     "permissionDecision": "deny",
-                                    "permissionDecisionReason": f"Code-review reviewer boundary: the guard could not run ({error}).",
+                                    "permissionDecisionReason": "Code-review reviewer boundary: "
+                                    f"the guard could not run ({error}).",
                                 }
                             },
                             json.loads(result.stdout),
@@ -372,8 +380,9 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
 
     def test_review_prs_finishes_the_workflow_path_in_the_turn_that_invoked_it(self) -> None:
-        # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the turn that
-        # invoked it, so check and finalize were denied later, nothing was recorded, and it still reported success (#40).
+        # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the
+        # turn that invoked it, so check and finalize were denied later, nothing was recorded, and it still
+        # reported success (#40).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"

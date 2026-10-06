@@ -6,8 +6,8 @@ import json
 import secrets
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from . import fsops, platform_support
 from .errors import DeployError, see_recovery
@@ -54,7 +54,8 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
 def _existing_holder(paths: Paths, probe: ProcessProbe) -> None:
     """Fail when a live deployment holds the lock; warn and return when it is stale."""
     hint = (
-        f"If no deployment is running, the lock is stale: remove {platform_support.normalize(paths.lock_dir)}, then retry.",
+        "If no deployment is running, the lock is stale: "
+        f"remove {platform_support.normalize(paths.lock_dir)}, then retry.",
         see_recovery(LOCK),
     )
     info_file = paths.lock_dir / "info.json"

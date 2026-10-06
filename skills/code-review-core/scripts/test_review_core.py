@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from datetime import date
 import hashlib
 import io
 import json
@@ -14,12 +13,15 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import review_github
+import review_io
+import review_runtime
 from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory
 from review_config import (
     ConfigurationError,
@@ -29,8 +31,6 @@ from review_config import (
     write_config,
 )
 from review_flags import FlagError, add_flag, load_store, resolve_flag
-import review_github
-import review_runtime
 from review_github import CommandResult, GitHubClient, GitHubError
 from review_hosts import (
     HostSuperseded,
@@ -40,22 +40,7 @@ from review_hosts import (
     parse_copilot_version,
     run_copilot,
 )
-import review_io
 from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json
-from review_process import ProcessStatus
-from review_records import (
-    RecordError,
-    TITLE_MAXIMUM_LENGTH,
-    build_record,
-    calculate_verdict,
-    render_markdown,
-    validate_adapter_result,
-    validate_record,
-    validate_record_pair,
-    valid_analyzer,
-    valid_title,
-    write_record_pair,
-)
 from review_operation import (
     ReviewOperationError,
     commit_adapter_result,
@@ -64,6 +49,20 @@ from review_operation import (
     safe_watermark,
     select_eligible_pulls,
     validate_canary_pull,
+)
+from review_process import ProcessStatus
+from review_records import (
+    TITLE_MAXIMUM_LENGTH,
+    RecordError,
+    build_record,
+    calculate_verdict,
+    render_markdown,
+    valid_analyzer,
+    valid_title,
+    validate_adapter_result,
+    validate_record,
+    validate_record_pair,
+    write_record_pair,
 )
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
@@ -80,6 +79,8 @@ from review_runtime import (
     verify_source_snapshot,
 )
 from review_state import StateError, empty_state, load_state, update_state
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
 def valid_config() -> dict:
@@ -280,9 +281,11 @@ class ConfigurationTests(unittest.TestCase):
             path = Path(temporary) / "config.json"
             write_config(valid_config(), path)
             previous = path.read_bytes()
-            with mock.patch("review_io.os.replace", side_effect=OSError("synthetic")):
-                with self.assertRaises(PersistenceError):
-                    write_config(valid_config(), path)
+            with (
+                mock.patch("review_io.os.replace", side_effect=OSError("synthetic")),
+                self.assertRaises(PersistenceError),
+            ):
+                write_config(valid_config(), path)
             self.assertEqual(previous, path.read_bytes())
 
     def test_dashboard_markers_and_threshold_boundaries_are_validated(self) -> None:
@@ -383,7 +386,7 @@ class ParallelCallTests(unittest.TestCase):
             started: list[int] = []
             release = threading.Event()
 
-            def call(item: int) -> int:
+            def call(item: int, *, started: list[int] = started, release: threading.Event = release) -> int:
                 started.append(item)
                 if item == 1:
                     raise ValueError("stop")
@@ -423,9 +426,8 @@ class StateAndLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             with ResourceLock(path):
-                with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                    with ResourceLock(path, timeout_seconds=0.01):
-                        pass
+                with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.01):
+                    pass
                 self.assertTrue(path.exists())
 
     def _old_lock(self, path: Path, owner: dict) -> None:
@@ -462,9 +464,11 @@ class StateAndLockTests(unittest.TestCase):
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "resource.lock"
                 self._old_lock(path, owner)
-                with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                    with ResourceLock(path, timeout_seconds=0.01, probe=lambda pid: status):
-                        pass
+                with (
+                    self.assertRaisesRegex(PersistenceError, "Timed out"),
+                    ResourceLock(path, timeout_seconds=0.01, probe=lambda pid, status=status: status),
+                ):
+                    pass
                 self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
 
     def test_old_lock_of_dead_or_reused_owner_is_reclaimed(self) -> None:
@@ -478,7 +482,7 @@ class StateAndLockTests(unittest.TestCase):
                 path = Path(temporary) / "resource.lock"
                 self._old_lock(path, owner)
 
-                def probe(pid: int) -> ProcessStatus:
+                def probe(pid: int, *, status: ProcessStatus = status) -> ProcessStatus:
                     return ProcessStatus(True, 9999) if pid == os.getpid() else status
 
                 with ResourceLock(path, timeout_seconds=0.5, probe=probe):
@@ -498,9 +502,11 @@ class StateAndLockTests(unittest.TestCase):
                 path / "owner.json",
                 {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1},
             )
-            with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                with ResourceLock(path, timeout_seconds=0.01, probe=probe):
-                    pass
+            with (
+                self.assertRaisesRegex(PersistenceError, "Timed out"),
+                ResourceLock(path, timeout_seconds=0.01, probe=probe),
+            ):
+                pass
 
     def test_lock_probes_identity_by_default_and_never_signals(self) -> None:
         probed: list[int] = []
@@ -515,9 +521,9 @@ class StateAndLockTests(unittest.TestCase):
             with (
                 mock.patch.object(review_io, "process_status", probe),
                 mock.patch("os.kill", side_effect=AssertionError("os.kill called")),
+                ResourceLock(path, timeout_seconds=0.5),
             ):
-                with ResourceLock(path, timeout_seconds=0.5):
-                    self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
+                self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
             self.assertIn(4242, probed)
 
     def test_atomic_json_is_restrictive_and_valid(self) -> None:
@@ -1174,12 +1180,14 @@ class GitHubTests(unittest.TestCase):
         }
 
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
-        with mock.patch(
-            "review_github.subprocess.run",
-            side_effect=FileNotFoundError("gh was not found"),
+        with (
+            mock.patch(
+                "review_github.subprocess.run",
+                side_effect=FileNotFoundError("gh was not found"),
+            ),
+            self.assertRaises(GitHubError) as context,
         ):
-            with self.assertRaises(GitHubError) as context:
-                review_github.subprocess_runner(["gh", "api", "user"])
+            review_github.subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
         self.assertIn("install GitHub CLI", str(context.exception))
 
@@ -1354,7 +1362,8 @@ class GitHubTests(unittest.TestCase):
         )
         for data, text, count in cases:
             with self.subTest(data=data):
-                client = GitHubClient(lambda arguments, value=undecodable(data): CommandResult(0, value, ""))
+                value = undecodable(data)
+                client = GitHubClient(lambda arguments, value=value: CommandResult(0, value, ""))
                 self.assertEqual((text, count), client.get_pull_diff("example/one", 7))
 
     def test_json_and_errors_replace_undecodable_bytes(self) -> None:
@@ -1495,9 +1504,9 @@ class RuntimeContractTests(unittest.TestCase):
         with (
             mock.patch("review_runtime.shutil.which", return_value=None),
             mock.patch("review_runtime.Path.is_file", return_value=False),
+            self.assertRaisesRegex(RuntimeContractError, "No supported"),
         ):
-            with self.assertRaisesRegex(RuntimeContractError, "No supported"):
-                resolve_runtime("auto")
+            resolve_runtime("auto")
 
     def test_runtime_auto_prefers_the_stated_host_over_path(self) -> None:
         # A Codex session on a machine that also has claude installed must not resolve to claude-code.
@@ -1839,13 +1848,15 @@ class RuntimeContractTests(unittest.TestCase):
             instruction.rename(snapshot / "source.txt")
             manifest["source_hashes"] = {"source.txt": hashlib.sha256(content).hexdigest()}
             (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-            with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1):
-                with self.assertRaisesRegex(RuntimeContractError, "file exceeds"):
-                    verify_source_snapshot(
-                        snapshot,
-                        expected_repository="example/one",
-                        expected_commit=commit,
-                    )
+            with (
+                mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1),
+                self.assertRaisesRegex(RuntimeContractError, "file exceeds"),
+            ):
+                verify_source_snapshot(
+                    snapshot,
+                    expected_repository="example/one",
+                    expected_commit=commit,
+                )
 
     def test_source_snapshot_materialization_enforces_file_count_limit(self) -> None:
         commit = "b" * 40
@@ -1867,15 +1878,17 @@ class RuntimeContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "snapshot"
-            with mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_FILES", 1):
-                with self.assertRaisesRegex(RuntimeContractError, "file-count"):
-                    materialize_source_snapshot(
-                        Path(temporary) / "checkout",
-                        "example/one",
-                        commit,
-                        destination,
-                        runner=runner,
-                    )
+            with (
+                mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_FILES", 1),
+                self.assertRaisesRegex(RuntimeContractError, "file-count"),
+            ):
+                materialize_source_snapshot(
+                    Path(temporary) / "checkout",
+                    "example/one",
+                    commit,
+                    destination,
+                    runner=runner,
+                )
             self.assertFalse(destination.exists())
 
     def test_source_snapshot_excludes_binary_and_oversized_files_from_limits(self) -> None:
@@ -2359,7 +2372,14 @@ class RuntimeHostTests(unittest.TestCase):
                 staging = root / "copilot-result-1.json"
                 promoted: list[tuple[Path, Path]] = []
 
-                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+                def runner(
+                    arguments: list[str],
+                    cwd: Path,
+                    environment: dict[str, str],
+                    *,
+                    case: str = case,
+                    staging: Path = staging,
+                ) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments:
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
@@ -2367,7 +2387,7 @@ class RuntimeHostTests(unittest.TestCase):
                     staging.write_text(content, encoding="utf-8")
                     return ProcessResult(0, "", "")
 
-                def promote(source: Path, target: Path) -> bool:
+                def promote(source: Path, target: Path, *, promoted: list[tuple[Path, Path]] = promoted) -> bool:
                     promoted.append((source, target))
                     return False
 
@@ -2459,7 +2479,14 @@ class RuntimeHostTests(unittest.TestCase):
                 self._write_request_with_snapshot(root, request)
                 diagnostic = root / "diagnostic.jsonl"
 
-                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+                def runner(
+                    arguments: list[str],
+                    cwd: Path,
+                    environment: dict[str, str],
+                    *,
+                    timed_out: str = timed_out,
+                    partial: bytes | None = partial,
+                ) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments and timed_out == "review":
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")

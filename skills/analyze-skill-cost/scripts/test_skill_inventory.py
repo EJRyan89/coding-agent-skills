@@ -11,10 +11,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
-sys.path.insert(0, str(SCRIPT.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_inventory
+
+SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
 
 def write(path: Path, text: str | bytes) -> Path:
@@ -436,7 +437,8 @@ class ToolsTests(TemporaryTestCase):
     def test_an_action_outside_the_negation_still_implies_its_tool(self) -> None:
         cases = {
             "If it is not a repository, ask the user which one to use.\n": "IMPLIED AskUserQuestion 4",
-            "If there is no file, or the file does not exist, list them and ask the user.\n": "IMPLIED AskUserQuestion 4",
+            "If there is no file, or the file does not exist, "
+            "list them and ask the user.\n": "IMPLIED AskUserQuestion 4",
             "Do not count braces yourself. On failure, read the end of the log.\n": "IMPLIED Read 4",
             "Do not count braces: read the log.\n": "IMPLIED Read 4",
             "Do not edit the file you read.\n": "IMPLIED Read 4",
@@ -564,7 +566,8 @@ class ToolsTests(TemporaryTestCase):
         )
 
     def test_listing_reports_the_description_every_session_loads(self) -> None:
-        description = 'description: "Internal support. Not intended for direct invocation."'  # 53 characters, ceil(53 / 4) = 14 tokens
+        # 53 characters, ceil(53 / 4) = 14 tokens
+        description = 'description: "Internal support. Not intended for direct invocation."'
         cases = {
             "description: Run the report.": ["DESCRIPTION 15 4", "INVOCATION model"],
             "description: >-\n  Run the\n  report.": ["DESCRIPTION 15 4", "INVOCATION model"],

@@ -10,5 +10,12 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
+# Validation runs `ruff check` with these rule sets on the same roots it formats, and no rule or file is exempt.
+# E501 stays on: the formatter wraps code, and a string, comment, or docstring it cannot wrap is split by hand.
+# A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
+# The complexity rules (PLR, C90) are #91's.
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
 # mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.
 [tool.mypy]

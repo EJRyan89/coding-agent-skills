@@ -1,7 +1,7 @@
 """Deploy this repository's skills, or configure them with `python deploy.py configure`. See README.md."""
 
-# Keep this module importable by old Pythons so they reach the version check below: no annotations
-# future import, no f-strings, and nothing from the deployer package until the check passes.
+# Keep this module importable by a Python 3 older than the floor, so it reaches the version check below: nothing
+# from the deployer package until the check passes.
 import sys
 
 MINIMUM_PYTHON = (3, 11)
@@ -10,10 +10,9 @@ MINIMUM_PYTHON = (3, 11)
 def require_supported_python(version_info=sys.version_info):
     if tuple(version_info[:2]) < MINIMUM_PYTHON:
         sys.stderr.write(
-            "\nERROR: Python {0}.{1} or newer is required; this is Python {2}.{3}.\n"
-            'See "Installing the tools" in docs/installation.md.\n\n'.format(
-                MINIMUM_PYTHON[0], MINIMUM_PYTHON[1], version_info[0], version_info[1]
-            )
+            f"\nERROR: Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer "
+            f"is required; this is Python {version_info[0]}.{version_info[1]}.\n"
+            'See "Installing the tools" in docs/installation.md.\n\n'
         )
         raise SystemExit(1)
 
