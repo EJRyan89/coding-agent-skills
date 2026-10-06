@@ -586,6 +586,8 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
                     "TARGET_FEATURES",
                 }:
                     value = node.value
+                    if value is None:  # an annotation without a value
+                        return None, "generator-scope-not-literal"
                     try:
                         literal = ast.literal_eval(value)
                     except (ValueError, TypeError):

@@ -198,12 +198,11 @@ def _replace_block(text: str, block: str, content: str) -> str | None:
 
 def _split(document: str) -> tuple[str, list[Section]]:
     lines = document.split("\n")
-    starts = [index for index, line in enumerate(lines) if SECTION_HEADING.match(line)]
-    preamble = "\n".join(lines[: starts[0]] if starts else lines)
+    headings = [(index, match.group(1)) for index, line in enumerate(lines) if (match := SECTION_HEADING.match(line))]
+    preamble = "\n".join(lines[: headings[0][0]] if headings else lines)
     sections = []
-    for position, start in enumerate(starts):
-        stop = starts[position + 1] if position + 1 < len(starts) else len(lines)
-        name = SECTION_HEADING.match(lines[start]).group(1)
+    for position, (start, name) in enumerate(headings):
+        stop = headings[position + 1][0] if position + 1 < len(headings) else len(lines)
         sections.append(Section(name, "\n".join(lines[start + 1 : stop])))
     return preamble, sections
 
@@ -231,14 +230,14 @@ def regenerate(document: str, skills: list[Entry]) -> str:
     ordered = sorted(sections, key=lambda section: (section.name not in by_name, section.name))
     parts = [summary.rstrip("\n")]
     for section in ordered:
-        entry = by_name.get(section.name)
+        known_entry = by_name.get(section.name)
         body = section.body
-        if entry is not None:
-            replaced = _replace_block(body, entry.name, section_block(entry))
+        if known_entry is not None:
+            replaced = _replace_block(body, known_entry.name, section_block(known_entry))
             body = (
                 replaced
                 if replaced is not None
-                else "\n" + _wrap(entry.name, section_block(entry)) + "\n" + body.lstrip("\n")
+                else "\n" + _wrap(known_entry.name, section_block(known_entry)) + "\n" + body.lstrip("\n")
             )
         parts.append(f"\n\n## `{section.name}`\n" + body.rstrip("\n"))
     return "".join(parts) + "\n"

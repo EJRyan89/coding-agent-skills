@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Literal
 
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
@@ -475,13 +475,14 @@ def materialize_reviewer(
     guideline_sources: dict[str, str] = {}
     try:
         for relative in declared:
-            if relative in local:
+            # local is empty without local_root, and guidelines without guideline_commit.
+            if local_root is not None and relative in local:
                 source_file = local_root.joinpath(*PurePosixPath(relative).parts)
                 _require_safe_snapshot_path(local_root, source_file)
                 content = source_file.read_bytes()
             else:
                 source = commit
-                if relative in guidelines:
+                if guideline_commit is not None and relative in guidelines:
                     if _run_git(checkout, runner, "ls-tree", guideline_commit, "--", relative):
                         source = guideline_commit
                     guideline_sources[relative] = source
@@ -663,8 +664,8 @@ def verify_source_snapshot(
 
 def _snapshot_members(
     source: tarfile.TarFile, *, strip_components: int, changed_paths: frozenset[str]
-) -> Iterable[tuple[str, bytes | None, str | None]]:
-    """Each archive file as (path, content, None) when the snapshot keeps it, or (path, None, reason) when not.
+) -> Iterable[tuple[str, bytes | str]]:
+    """Each archive file as (path, content bytes) when the snapshot keeps it, or (path, reason) when not.
 
     A symbolic link, and any other entry that is not a regular file or a directory, is excluded without being read,
     written, or followed; reviewers see a link only as diff text. Raises for an entry that fails the whole
@@ -680,23 +681,23 @@ def _snapshot_members(
             continue
         name = PurePosixPath(*parts).as_posix()
         if any(WINDOWS_UNSAFE.search(part) for part in parts):
-            yield name, None, "unsafe-path"
+            yield name, "unsafe-path"
             continue
         relative = _safe_relative_path(name, "source snapshot member")
         if relative == SOURCE_SNAPSHOT_MANIFEST:
             raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
         if member.issym():
-            yield relative, None, "symbolic-link"
+            yield relative, "symbolic-link"
             continue
         if not member.isfile():  # a hard link, FIFO, or device entry
-            yield relative, None, "non-regular"
+            yield relative, "non-regular"
             continue
         if _is_agent_instruction_path(relative):
-            yield relative, None, "agent-instruction"
+            yield relative, "agent-instruction"
             continue
         limit = MAX_CHANGED_FILE_BYTES if relative in changed_paths else MAX_SOURCE_FILE_BYTES
         if member.size > limit:
-            yield relative, None, "file-size-limit"
+            yield relative, "file-size-limit"
             continue
         extracted = source.extractfile(member)
         if extracted is None:
@@ -705,7 +706,7 @@ def _snapshot_members(
         if len(content) != member.size:
             raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
         if b"\0" in content[:BINARY_PROBE_BYTES]:
-            yield relative, None, "binary"
+            yield relative, "binary"
             continue
         key = "/".join(part.rstrip(". ").casefold() for part in PurePosixPath(relative).parts)
         if key in written:
@@ -713,7 +714,7 @@ def _snapshot_members(
                 f"Source paths collide on a case-insensitive filesystem: {written[key]} and {relative}"
             )
         written[key] = relative
-        yield relative, content, None
+        yield relative, content
 
 
 def _populate_snapshot(
@@ -722,7 +723,7 @@ def _populate_snapshot(
     *,
     repository: str,
     commit: str,
-    mode: str,
+    mode: Literal["r:", "r:gz"],
     strip_components: int,
     changed_paths: frozenset[str],
 ) -> dict[str, Any]:
@@ -734,11 +735,11 @@ def _populate_snapshot(
     # Real-time antivirus scans each new file, which costs milliseconds of latency per file but little CPU, so
     # overlapping the writes hides most of it. Directories are created and checked once, before their files.
     with tarfile.open(archive, mode=mode) as source, ThreadPoolExecutor(SNAPSHOT_WRITE_WORKERS) as pool:
-        for relative, content, reason in _snapshot_members(
+        for relative, content in _snapshot_members(
             source, strip_components=strip_components, changed_paths=changed_paths
         ):
-            if content is None:
-                excluded[relative] = reason
+            if isinstance(content, str):
+                excluded[relative] = content
                 continue
             if len(hashes) >= MAX_SOURCE_SNAPSHOT_FILES:
                 raise RuntimeContractError("Source snapshot exceeds the file-count limit")
@@ -852,11 +853,11 @@ def measure_source_snapshot(
         archive = Path(temporary) / "source.tar"
         _run_git(checkout, runner, "archive", "--format=tar", f"--output={archive}", commit)
         with tarfile.open(archive, mode="r:") as source:
-            for relative, content, reason in _snapshot_members(
+            for relative, content in _snapshot_members(
                 source, strip_components=0, changed_paths=frozenset(changed_paths)
             ):
-                if content is None:
-                    excluded[reason] = excluded.get(reason, 0) + 1
+                if isinstance(content, str):
+                    excluded[content] = excluded.get(content, 0) + 1
                     continue
                 files += 1
                 top = relative.split("/", 1)[0] if "/" in relative else ""

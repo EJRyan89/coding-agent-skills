@@ -97,9 +97,10 @@ def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
         commit.get("sha"),
         *(parent.get("sha") if isinstance(parent, dict) else None for parent in commit["parents"]),
     ]
-    if not all(isinstance(sha, str) and SHA_PATTERN.fullmatch(sha) for sha in shas):
+    valid = [sha for sha in shas if isinstance(sha, str) and SHA_PATTERN.fullmatch(sha)]
+    if len(valid) != len(shas):
         return None
-    return shas[0], shas[1:]
+    return valid[0], valid[1:]
 
 
 def pull_commits(repository: str, number: int, runner: Runner = run_gh) -> dict[str, list[str]]:

@@ -271,7 +271,7 @@ class GitHubClient:
             {"owner": owner, "name": name, "number": number},
             ("repository", "pullRequest", "reviewThreads"),
         )
-        comments = []
+        comments: list[dict[str, Any]] = []
         for thread in threads:
             try:
                 if thread["isResolved"]:

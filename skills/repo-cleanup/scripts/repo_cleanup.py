@@ -520,7 +520,9 @@ def unchanged(
     if branch_tip(services, plan["repo_root"], name) != sha:
         record(plan, "PRESERVED", name, "moved")
         return False
-    if (where is None) != (worktree is None) or (where is not None and not same_path(where.path, worktree)):
+    if (where is None) != (worktree is None) or (
+        where is not None and worktree is not None and not same_path(where.path, worktree)
+    ):
         record(plan, "PRESERVED", name, "moved" if worktree is not None else "checked out")
         return False
     return True
@@ -887,5 +889,6 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     raise SystemExit(main())
