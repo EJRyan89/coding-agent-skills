@@ -25,8 +25,7 @@ import json
 import sys
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from deployer import source as deploy_source
 from deployer.tools import SKILL_TOOLS
@@ -34,9 +33,10 @@ from tools import skill_reference
 
 # The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
-sys.path.insert(0, str(REPOSITORY_ROOT / "skills" / "analyze-skill-cost" / "scripts"))
-import skill_inventory  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "analyze-skill-cost" / "scripts"))
+import skill_inventory
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OWN_SCRIPTS = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
 DEFAULT_ALLOWED_TOOLS = [f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})", "Read"]
 

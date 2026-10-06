@@ -11,10 +11,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
-sys.path.insert(0, str(SCRIPT.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_inventory
+
+SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
 
 def write(path: Path, text: str | bytes) -> Path:

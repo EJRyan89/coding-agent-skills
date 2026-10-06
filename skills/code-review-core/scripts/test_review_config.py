@@ -13,10 +13,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_config  # noqa: E402
+import review_config
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
 def valid_config() -> dict:

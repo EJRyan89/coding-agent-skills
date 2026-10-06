@@ -9,8 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_fixture
 from review_archive import commit_record, current_ledger, pull_directory, pull_records, record_paths
@@ -27,6 +26,8 @@ from review_records import (
     validate_adapter_result,
     validate_record,
 )
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 ADAPTER = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}

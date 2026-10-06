@@ -32,18 +32,19 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+
+import review_runtime
+from review_config import validate_config
+from review_flags import validate_store
+from review_operation import legacy_index
+from review_records import build_record, carried_findings, validate_adapter_result, validate_record
+from review_runtime import build_adapter_request, validate_adapter_manifest
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
 SCRIPTS = REPOSITORY_ROOT / "skills" / "code-review-core" / "scripts"
 REFERENCES = SCRIPTS.parent / "references"
-sys.path.insert(0, str(SCRIPTS))
-
-import review_runtime  # noqa: E402
-from review_config import validate_config  # noqa: E402
-from review_flags import validate_store  # noqa: E402
-from review_operation import legacy_index  # noqa: E402
-from review_records import build_record, carried_findings, validate_adapter_result, validate_record  # noqa: E402
-from review_runtime import build_adapter_request, validate_adapter_manifest  # noqa: E402
 
 JSON_TYPES = ("null", "boolean", "integer", "number", "string", "array", "object")
 # Values of each JSON type to probe a field with, in the order they are tried.

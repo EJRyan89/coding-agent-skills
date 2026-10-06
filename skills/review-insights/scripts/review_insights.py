@@ -38,8 +38,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 from review_archive import pull_records
 from review_config import (

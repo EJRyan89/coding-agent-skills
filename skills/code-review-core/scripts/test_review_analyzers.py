@@ -6,10 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_analyzers import MAX_SETTINGS, UNREAD, inventory, tool_names  # noqa: E402
+from review_analyzers import MAX_SETTINGS, UNREAD, inventory, tool_names
 
 SDK_PROJECT = """<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">

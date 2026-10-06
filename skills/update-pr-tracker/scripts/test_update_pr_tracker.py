@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import CHANGED, UNCHANGED, UNKNOWN
 from update_pr_tracker import (

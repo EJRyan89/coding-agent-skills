@@ -12,11 +12,12 @@ import threading
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-SCRIPT = REPOSITORY_ROOT / "tools" / "worktrees.py"
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools import worktrees
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPOSITORY_ROOT / "tools" / "worktrees.py"
 
 HUB = "Repo With Spaces"
 TREE = Path(".claude") / "worktrees" / "feat-demo"

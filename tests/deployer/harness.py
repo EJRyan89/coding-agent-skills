@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import configure, pipeline
 from deployer.paths import Paths
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 SOURCE_ID = "test/skills"
 # The grant shipped skills use: Bash and PowerShell for the skill's own scripts only. See "Granting tools" in

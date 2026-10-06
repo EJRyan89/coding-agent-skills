@@ -6,8 +6,7 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 from review_github import GitHubClient, GitHubError
 

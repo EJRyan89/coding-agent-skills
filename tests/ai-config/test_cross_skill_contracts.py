@@ -13,10 +13,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import frontmatter as skill_frontmatter
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 def literal_assignment(path: Path, name: str) -> object:

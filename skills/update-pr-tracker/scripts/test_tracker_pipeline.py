@@ -13,18 +13,18 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-CORE_SCRIPTS = SCRIPT_DIRECTORY.parents[1] / "code-review-core" / "scripts"
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
-import review_fixture  # noqa: E402
-import tracker_pipeline as tp  # noqa: E402
-from review_archive import commit_record  # noqa: E402
-from review_config import write_config  # noqa: E402
-from review_flags import add_flag  # noqa: E402
-from review_github import CommandResult, GitHubClient  # noqa: E402
-from review_records import build_record, validate_adapter_result  # noqa: E402
+import review_fixture
+import tracker_pipeline as tp
+from review_archive import commit_record
+from review_config import write_config
+from review_flags import add_flag
+from review_github import CommandResult, GitHubClient
+from review_records import build_record, validate_adapter_result
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 HEAD = "b" * 40
 OLD_HEAD = "a" * 40

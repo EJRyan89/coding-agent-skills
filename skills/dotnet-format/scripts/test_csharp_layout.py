@@ -8,10 +8,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import csharp_layout as layout  # noqa: E402
+import csharp_layout as layout
 
 
 def source(*lines: str) -> str:

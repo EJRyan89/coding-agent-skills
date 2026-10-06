@@ -15,10 +15,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import repo_cleanup as rc  # noqa: E402
+import repo_cleanup as rc
 
 REMOTE_URL = "https://github.com/owner/repo.git"
 # The repositories every Fixture test starts from, built once per process by setUpModule.

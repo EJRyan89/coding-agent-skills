@@ -17,8 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before

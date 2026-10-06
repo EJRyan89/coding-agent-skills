@@ -16,8 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 from review_config import ConfigurationError
 from review_flags import FlagError, add_flag, default_flags_path, load_store, resolve_flag

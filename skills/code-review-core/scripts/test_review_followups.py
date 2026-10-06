@@ -11,18 +11,19 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_operation  # noqa: E402
-import review_runtime  # noqa: E402
-from review_config import (  # noqa: E402
+import review_operation
+import review_runtime
+from review_config import (
     ConfigurationError,
     resolve_repositories,
     selected_repository_set,
     validate_config,
 )
-from review_runtime import RuntimeContractError  # noqa: E402
+from review_runtime import RuntimeContractError
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 HEAD = "c" * 40
 

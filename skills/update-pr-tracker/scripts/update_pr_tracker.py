@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import quote
 
-CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from pr_change import CHANGED, UNCHANGED, ChangeDetector

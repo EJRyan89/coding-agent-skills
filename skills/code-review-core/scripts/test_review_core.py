@@ -17,8 +17,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_github
 import review_io
@@ -80,6 +79,8 @@ from review_runtime import (
     verify_source_snapshot,
 )
 from review_state import StateError, empty_state, load_state, update_state
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 
 def valid_config() -> dict:

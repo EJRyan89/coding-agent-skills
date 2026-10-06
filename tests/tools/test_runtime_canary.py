@@ -19,12 +19,13 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deployer import discovery, platform_support
 from tools import runtime_canary
 from tools.runtime_canary import Completed
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURE = "runtime-canary-probe"
 # A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.

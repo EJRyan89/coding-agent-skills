@@ -7,12 +7,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_specialists as rs  # noqa: E402
-from review_records import validate_adapter_result  # noqa: E402
-from review_runtime import (  # noqa: E402
+import review_specialists as rs
+from review_records import validate_adapter_result
+from review_runtime import (
     RuntimeContractError,
     build_adapter_request,
     declared_reviewer_files,

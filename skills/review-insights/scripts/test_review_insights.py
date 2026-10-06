@@ -11,16 +11,16 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-CORE_SCRIPTS = SCRIPT_DIRECTORY.parents[1] / "code-review-core" / "scripts"
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
-sys.path.insert(0, str(CORE_SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
-import review_insights as ri  # noqa: E402
-from review_archive import commit_record  # noqa: E402
-from review_config import write_config  # noqa: E402
-from review_flags import add_flag, load_store, resolve_flag  # noqa: E402
-from review_records import build_record, validate_adapter_result  # noqa: E402
+import review_insights as ri
+from review_archive import commit_record
+from review_config import write_config
+from review_flags import add_flag, load_store, resolve_flag
+from review_records import build_record, validate_adapter_result
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
 

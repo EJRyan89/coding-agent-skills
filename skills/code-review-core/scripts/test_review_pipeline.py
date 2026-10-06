@@ -18,19 +18,20 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIRECTORY))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import review_pipeline as rp  # noqa: E402
-from review_archive import latest_record, pull_directory  # noqa: E402
-from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
-from review_flags import FlagError, add_flag  # noqa: E402
-from review_github import CommandResult, GitHubClient, subprocess_runner  # noqa: E402
-from review_hosts import ProcessResult  # noqa: E402
-from review_process import ProcessStatus, process_status  # noqa: E402
-from review_runtime import CommandResult as GitResult  # noqa: E402
+import review_pipeline as rp
+from review_archive import latest_record, pull_directory
+from review_config import ConfigurationError, default_manifest_path, validate_config, write_config
+from review_flags import FlagError, add_flag
+from review_github import CommandResult, GitHubClient, subprocess_runner
+from review_hosts import ProcessResult
+from review_process import ProcessStatus, process_status
+from review_runtime import CommandResult as GitResult
 from review_runtime import validate_adapter_manifest
-from review_state import load_state  # noqa: E402
+from review_state import load_state
+
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 REPOSITORY = "example/one"
 SELECTOR = "example/one#12"
