@@ -12,7 +12,7 @@ The setup commands below print one fact per line. `FAILED <reason>` on stderr wi
 
 ## Precondition
 
-Confirm the target is a Git repository (`git rev-parse --show-toplevel`). If it is not, ask the user which repository to target; never initialize Git without explicit authorization. Before generating, tell the user which limitations in `references/known-limitations.md` apply to their selection.
+Confirm the target is a Git repository (`git rev-parse --show-toplevel`). If it is not, ask the user which repository to target; never initialize Git without explicit authorization. Before generating, tell the user which limitations in `${CLAUDE_SKILL_DIR}/references/known-limitations.md` apply to their selection.
 
 ## 1. Inventory
 
@@ -30,11 +30,11 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository ro
 
 It prints `BUILD_FILE`, `FORMAT_CONFIG`, `WORKFLOW`, `PARITY_CALLER` (an existing workflow that already calls the parity workflow), `MCP_SERVER <name> transport=<t> source=<file>`, and `UNREADABLE <file> <reason>` lines. Read the build and format files you need to learn the exact build, test, and formatting commands; do not assume Linux, sandboxed networking, or permissive tool approval.
 
-Ask the user which runtimes (Claude Code always; Codex optionally) and which Copilot surfaces to target (VS Code, JetBrains, Copilot app, CLI, cloud agent, code review), which existing MCP servers to keep and for which targets, and, if parity CI is wanted, whether the repository's own CI will call the parity workflow or the generator should add a pull-request caller. `references/spec-reference.md` lists what each choice generates and the transport and surface compatibility matrices.
+Ask the user which runtimes (Claude Code always; Codex optionally) and which Copilot surfaces to target (VS Code, JetBrains, Copilot app, CLI, cloud agent, code review), which existing MCP servers to keep and for which targets, and, if parity CI is wanted, whether the repository's own CI will call the parity workflow or the generator should add a pull-request caller. `${CLAUDE_SKILL_DIR}/references/spec-reference.md` lists what each choice generates and the transport and surface compatibility matrices.
 
 ## 3. Write CLAUDE.md
 
-Create or update `CLAUDE.md` from `references/claude-md-template.md`, filling every placeholder with the facts from step 2. Make these prominent callouts: never disable or suppress the repository's own rules, never work around a failing check, the external quality gate thresholds, and any dogfooding requirement. Its H2 headings become the Copilot projection sections.
+Create or update `CLAUDE.md` from `${CLAUDE_SKILL_DIR}/references/claude-md-template.md`, filling every placeholder with the facts from step 2. Make these prominent callouts: never disable or suppress the repository's own rules, never work around a failing check, the external quality gate thresholds, and any dogfooding requirement. Its H2 headings become the Copilot projection sections.
 
 ## 4. Repository skills (if the repository has repeatable workflows)
 
@@ -50,7 +50,7 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository ro
 
 It prints `SPEC <spec file>`, the file it wrote under a new temporary directory; edit that file.
 
-Otherwise write a new JSON spec file in a new temporary directory, outside the repository and every skill directory, following `references/spec-reference.md` and `references/example-spec.json`. The spec records the step 2 choices: runtimes, surfaces, features, Copilot sections, cloud-agent setup commands, and MCP servers. Classify every MCP tool by risk as that reference describes and record the classification in the `MCP Tools` table of `CLAUDE.md`.
+Otherwise write a new JSON spec file in a new temporary directory, outside the repository and every skill directory, following `${CLAUDE_SKILL_DIR}/references/spec-reference.md` and `${CLAUDE_SKILL_DIR}/references/example-spec.json`. The spec records the step 2 choices: runtimes, surfaces, features, Copilot sections, cloud-agent setup commands, and MCP servers. Classify every MCP tool by risk as that reference describes and record the classification in the `MCP Tools` table of `CLAUDE.md`.
 
 ## 6. Install the generator
 

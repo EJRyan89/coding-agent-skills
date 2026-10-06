@@ -96,7 +96,7 @@ Review every `agent` cue. For each subagent invocation:
 python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" tools "<SKILL_FILE>"
 ```
 
-`MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool. The bullets below say what each other line means for the report.
+`MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool; a prohibition ("do not read") and a prompt quoted for a subagent never count. The bullets below say what each other line means for the report.
 
 Model selection. Claude adapter values are `haiku`, `sonnet`, `opus`, or absent. For other runtimes, also inspect any native adapter metadata when present.
 
