@@ -34,7 +34,11 @@ TOP_LEVEL_KEYS = {
     "operation_repository_sets",
     "reviewer_effort",
     "re_review_scope",
+    "model_names",
 }
+# A model identifier reviewers report (up to the 200 characters a record allows) and the shorter name reports show.
+MODEL_IDENTIFIER_MAXIMUM_LENGTH = 200
+MODEL_NAME_MAXIMUM_LENGTH = 100
 # Reasoning effort for reviewers the Workflow tool starts; null keeps the session's effort.
 REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # When an `auto` re-review reviews the whole pull request instead of only what changed since the last review:
@@ -266,6 +270,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["runtime"] = runtime
     normalized["reviewer_effort"] = effort
     normalized["re_review_scope"] = scope
+    normalized["model_names"] = normalize_model_names(config.get("model_names", {}))
     normalized["archive_root"] = validate_windows_absolute_path(
         config.get("archive_root"), "archive_root"
     )
@@ -329,6 +334,27 @@ def validate_config(value: Any) -> dict[str, Any]:
         "status_overrides": overrides,
         "author_names": normalize_author_names(dashboard.get("author_names", {})),
     }
+    return normalized
+
+
+def _single_line(value: Any, maximum: int) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and "\n" not in value and "\r" not in value \
+        and len(value.strip()) <= maximum
+
+
+def normalize_model_names(value: Any) -> dict[str, str]:
+    """Display names keyed by the model identifier a reviewer reports, such as an inference-profile ARN."""
+    if not isinstance(value, dict):
+        raise ConfigurationError("model_names must be an object")
+    normalized: dict[str, str] = {}
+    for identifier, name in value.items():
+        if not _single_line(identifier, MODEL_IDENTIFIER_MAXIMUM_LENGTH) or identifier != identifier.strip():
+            raise ConfigurationError(f"Invalid model_names key {identifier!r}: it must be a trimmed single line of "
+                                     f"at most {MODEL_IDENTIFIER_MAXIMUM_LENGTH} characters")
+        if not _single_line(name, MODEL_NAME_MAXIMUM_LENGTH):
+            raise ConfigurationError(f"model_names.{identifier} must be a non-empty single-line name of at most "
+                                     f"{MODEL_NAME_MAXIMUM_LENGTH} characters")
+        normalized[identifier] = name.strip()
     return normalized
 
 

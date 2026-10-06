@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
@@ -77,7 +77,11 @@ def commit_record(
     record: dict[str, Any],
     *,
     expected_latest_version: int | None,
+    model_names: dict[str, str] | None = None,
+    flags: Iterable[dict[str, Any]] = (),
 ) -> tuple[Path, Path, dict[str, Any]]:
+    """Archive the next review version. A re-review's report shows findings raised by earlier versions, so it is
+    rendered from the records already archived here."""
     directory = pull_directory(root, repository, pull_number)
     lock_key = f"{repository.replace('/', '__')}#{pull_number}.lock"
     lock = root / ".locks" / lock_key
@@ -94,7 +98,10 @@ def commit_record(
         json_path, markdown_path = record_paths(directory, version)
         if json_path.exists() or markdown_path.exists():
             raise PersistenceError("Review destination already exists")
+        prior_records = ([validate_record_pair(*record_paths(directory, item)) for item in versions]
+                         if record["review"]["mode"] == "re-review" else [])
         directory.mkdir(parents=True, exist_ok=True)
-        persisted = write_record_pair(json_path, markdown_path, record)
+        persisted = write_record_pair(json_path, markdown_path, record, prior_records=prior_records,
+                                      model_names=model_names, flags=flags)
         return json_path, markdown_path, persisted
 

@@ -12,13 +12,15 @@ from pathlib import Path
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
-from review_archive import commit_record, current_ledger, pull_records
+import review_fixture
+from review_archive import commit_record, current_ledger, pull_directory, pull_records, record_paths
 from review_operation import commit_adapter_result, reviewed_head
 from review_records import (
     RecordError,
     build_record,
     calculate_verdict,
     carried_findings,
+    flagged_entries,
     ledger_history,
     ledger_summary,
     render_markdown,
@@ -156,11 +158,14 @@ class CarriedFindingTests(unittest.TestCase):
             self.assertEqual({"version": 1, "id": "F001"}, second["findings"][0]["repeats"])
             # The entry is offered again where it was last reported.
             self.assertEqual([("v1:F001", 12), ("v2:F002", 30)], [(item["id"], item["line"]) for item in reviews.prior()])
-            markdown = render_markdown(second, record_payload_hash="0" * 64)
-            self.assertIn("> **Repeats:** v1 F001", markdown)
-            self.assertIn("## Open Findings", markdown)
-            self.assertIn("| v1 F001 | SHOULD FIX | Correctness | v2 | OPEN |", markdown)
-            self.assertNotIn("| v2 F002 |", markdown, "only entries carried from earlier versions are listed")
+            markdown = render_markdown(second, record_payload_hash="0" * 64,
+                                       prior_records=pull_records(reviews.archive, "example/one", 12)[:1])
+            # The re-reported problem is shown inside the entry it repeats, not as a finding of its own.
+            self.assertIn("<summary>v1 F001. [Correctness] Problem boundary</summary>\n\n> **Open since v1.** Still "
+                          "present in v2: Checked against the current code.\n", markdown)
+            self.assertIn("<summary>v2 F001. Repeats v1 F001: [Correctness] Problem again</summary>", markdown)
+            self.assertIn("<summary><strong>SHOULD FIX (1)</strong></summary>", markdown)
+            self.assertIn("<summary>v2 F002. [Correctness] Problem other</summary>\n\n> **New in v2.**\n", markdown)
 
     def test_an_initial_review_starts_a_fresh_ledger(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -215,9 +220,9 @@ class RepeatTests(unittest.TestCase):
             build_record(record_request(), validate(adapter_result(linked)), version=1, policy=POLICY),
             record_payload_hash="0" * 64)
         self.assertIn("<summary><strong>SHOULD FIX (2)</strong></summary>", markdown)
-        self.assertIn("<summary>F003. Repeats F001: [Correctness] Problem a-again</summary>", markdown)
-        self.assertLess(markdown.index("F001. [Correctness]"), markdown.index("F003. Repeats F001"))
-        self.assertLess(markdown.index("F003. Repeats F001"), markdown.index("F002. [Correctness]"))
+        self.assertIn("<summary>v1 F003. Repeats v1 F001: [Correctness] Problem a-again</summary>", markdown)
+        self.assertLess(markdown.index("v1 F001. [Correctness]"), markdown.index("v1 F003. Repeats v1 F001"))
+        self.assertLess(markdown.index("v1 F003. Repeats v1 F001"), markdown.index("v1 F002. [Correctness]"))
 
     def test_the_verdict_counts_open_ledger_entries(self) -> None:
         should = [entry(1, f"F00{n}", "SHOULD_FIX", "open", 1) for n in (1, 2)]
@@ -303,6 +308,217 @@ class RepeatTests(unittest.TestCase):
         validate_record(record)
         self.assertIsNone(ledger_summary(record))
         self.assertEqual({1: [entry(1, "F001", "MUST_FIX", "open", 1)]}, ledger_history([record]))
+
+
+# Today's v1 report of the fixture, with the finding IDs in the `v<version> F<nnn>` notation.
+FIXTURE_V1_REPORT = """# Code Review — example/one#12
+
+| | |
+|---|---|
+| **Title** | Release the lock |
+| **Base** | `main` |
+| **URL** | https://github.com/example/one/pull/12 |
+| **Reviewed** | 01-Oct-2026 09:30 UTC |
+| **Verdict** | CHANGES REQUESTED |
+
+---
+
+## Summary
+
+Version 1 of the fixture.
+
+## Findings
+
+<details open>
+<summary><strong>MUST FIX (1)</strong></summary>
+
+<details open>
+<summary>v1 F001. [Correctness] Lock is never released</summary>
+
+> **File:** `src/lock.py`\x20\x20
+> **Line 10:** `lock.acquire()` | **Source:** generic
+>
+> The lock taken here is not released when the read fails.
+
+</details>
+
+</details>
+
+<details open>
+<summary><strong>SHOULD FIX (1)</strong></summary>
+
+<details open>
+<summary>v1 F002. [Correctness] Null result is not checked</summary>
+
+> **File:** `src/parse.py`\x20\x20
+> **Line 20:** `value = parse(text)` | **Source:** generic
+>
+> A null result from parse reaches the caller unchecked.
+
+</details>
+
+</details>
+
+---
+
+<details>
+<summary><strong>Review Details</strong></summary>
+
+| | |
+|---|---|
+| **Mode** | initial v1 |
+| **Adapter** | `generic` (generic) |
+| **Reviewer** | fixture-reviewer (complete) |
+| **Base SHA** | `0000000000000000000000000000000000000000` |
+| **Reviewed HEAD** | `1111111111111111111111111111111111111111` |
+| **Record payload SHA-256** | `{payload}` |
+
+</details>
+
+<!-- reviewed_head_sha: 1111111111111111111111111111111111111111 -->
+"""
+
+FIXTURE_V3_OPEN_ENTRY = """<details open>
+<summary>v1 F001. [Correctness] Lock is never released</summary>
+
+> **Open since v1.** Still present in v3: The timeout branch still returns while holding the lock.
+>
+> **File:** `src/lock.py`\x20\x20
+> **Line 10:** `lock.acquire()` | **Source:** generic
+>
+> The lock taken here is not released when the read fails.
+
+<details open>
+<summary>v3 F001. Repeats v1 F001: [Correctness] Lock leaks on the timeout path</summary>
+
+> **File:** `src/lock.py`\x20\x20
+> **Line 14:** `return None` | **Source:** generic
+>
+> The timeout branch returns before releasing the lock.
+
+</details>
+
+</details>
+"""
+
+FIXTURE_ADDRESSED = """<details>
+<summary><strong>Addressed since v1</strong></summary>
+
+- **v1 F002.** SHOULD FIX [Correctness] Null result is not checked, `src/parse.py:20`. Addressed in v2: The caller \
+now returns early on null.
+
+</details>
+"""
+
+
+def fixture_report(archive: Path, version: int) -> str:
+    return record_paths(pull_directory(archive, review_fixture.REPOSITORY, review_fixture.NUMBER),
+                        version)[1].read_text(encoding="utf-8")
+
+
+def flag(identifier: int, version: int | None, finding_id: str | None, *, number: int = 12,
+         status: str = "open") -> dict:
+    resolved = status == "resolved"
+    return {"id": f"RF-{identifier:06d}", "status": status, "created_at": "2026-10-04T10:00:00+00:00",
+            "resolved_at": "2026-10-05T10:00:00+00:00" if resolved else None, "repository": "example/one",
+            "pull_number": number, "review_version": version, "finding_id": finding_id, "category": "noise",
+            "body": "The context manager\nreleases the lock.", "resolution": "Prompt adjusted." if resolved else None}
+
+
+class LedgerReportTests(unittest.TestCase):
+    """The report renders a pull request's whole ledger, from the three-version fixture in review_fixture.py."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.archive = Path(temporary.name) / "archive"
+
+    def test_a_re_review_report_shows_every_open_entry_in_full_and_what_was_addressed(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        report = fixture_report(self.archive, 3)
+        self.assertIn("| **Verdict** | CHANGES REQUESTED, 2 open since v1, 1 addressed |\n", report)
+        self.assertIn("## Findings\n\n<details open>\n<summary><strong>MUST FIX (1)</strong></summary>\n\n"
+                      + FIXTURE_V3_OPEN_ENTRY + "\n</details>\n", report)
+        self.assertIn("<details open>\n<summary><strong>SUGGESTIONS (1)</strong></summary>\n\n<details open>\n"
+                      "<summary>v3 F002. [Maintainability] Name the retry limit</summary>\n\n"
+                      "> **New in v3.**\n>\n> **File:** `src/retry.py`  \n", report)
+        self.assertIn(FIXTURE_ADDRESSED, report)
+        self.assertLess(report.index("SUGGESTIONS (1)"), report.index("Addressed since v1"))
+        self.assertNotIn("SHOULD FIX (", report, "an addressed entry leaves the open set")
+        for removed in ("## Open Findings", "## Prior Findings Status", "v1:F00", "**Repeats:**"):
+            self.assertNotIn(removed, report)
+
+    def test_an_initial_report_changes_only_its_finding_ids(self) -> None:
+        first = review_fixture.commit_fixture(self.archive, versions=1)[0]
+        self.assertEqual(FIXTURE_V1_REPORT.replace("{payload}", first["artifacts"]["payload_sha256"]),
+                         fixture_report(self.archive, 1))
+
+    def test_a_report_that_reports_nothing_new_still_shows_the_open_entry(self) -> None:
+        review_fixture.commit_fixture(self.archive, versions=2)
+        report = fixture_report(self.archive, 2)
+        self.assertIn("| **Verdict** | CHANGES REQUESTED, 1 open since v1, 1 addressed |\n", report)
+        self.assertIn("<summary>v1 F001. [Correctness] Lock is never released</summary>\n\n"
+                      "> **Open since v1.** Still present in v2: The read still runs outside a try block.\n>\n", report)
+        self.assertNotIn("No findings.", report)
+        self.assertIn(FIXTURE_ADDRESSED, report)
+
+    def test_the_report_names_unverified_partially_addressed_and_superseded_entries(self) -> None:
+        reviews = ArchiveFixture(self.archive.parent)
+        reviews.commit([finding("leak", "MUST_FIX"), finding("bound", "SHOULD_FIX", 20),
+                        finding("style", "SUGGESTION", 30)], mode="initial")
+        reviews.commit([], [disposition("v1:F001", "unable_to_verify"), disposition("v1:F002", "partially_addressed"),
+                            disposition("v1:F003", "superseded")])
+        report = fixture_report(self.archive, 2)
+        self.assertIn("| **Verdict** | APPROVED, 1 open since v1, 1 unverified |\n", report)
+        self.assertIn("<summary>v1 F001. [Correctness] Problem leak</summary>\n\n> **Unverified, raised in v1.** "
+                      "Unable to verify in v2: Checked against the current code.\n", report)
+        self.assertIn("> **Open since v1.** Partially addressed in v2: Checked against the current code.\n", report)
+        self.assertIn("- **v1 F003.** SUGGESTION [Correctness] Problem style, `src/file.cs:30`. Superseded in v2: "
+                      "Checked against the current code.\n", report)
+        reviews.commit([], [disposition("v1:F001", "addressed"), disposition("v1:F002", "addressed")])
+        report = fixture_report(self.archive, 3)
+        self.assertIn("| **Verdict** | APPROVED, none open, 2 addressed |\n", report)
+        self.assertIn("## Findings\n\nNo open findings.\n", report)
+
+    def test_rendering_needs_the_record_that_raised_each_entry(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        render_markdown(third, record_payload_hash="0" * 64, prior_records=[first, second])
+        with self.assertRaisesRegex(RecordError, "v1 with finding F001 is missing"):
+            render_markdown(third, record_payload_hash="0" * 64, prior_records=[second])
+
+    def test_configured_model_names_replace_identifiers_in_the_reviewers_table(self) -> None:
+        review_fixture.commit_fixture(self.archive, model_names={review_fixture.MODEL_ARN: "Fixture Opus"})
+        report = fixture_report(self.archive, 3)
+        self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s |\n", report)
+        self.assertIn("| `style` | Style | claude-sonnet-5-5 | 1 | 1 | 0 | 12s |\n", report, "unmapped stays as is")
+        self.assertIn("| **Reviewer models** | Fixture Opus: `arn:aws:bedrock:us-east-1:111122223333:"
+                      "application-inference-profile/fixture` |\n", report)
+
+    def test_without_model_names_the_reviewers_table_shows_the_identifier(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        report = fixture_report(self.archive, 3)
+        self.assertIn(f"| `generic` | General | {review_fixture.MODEL_ARN} | 3 |", report)
+        self.assertNotIn("Reviewer models", report)
+
+    def test_a_flagged_finding_is_marked_on_its_entry_and_in_the_verdict(self) -> None:
+        # The flag names version 3's repeat, which belongs to the entry raised in version 1. Resolving a flag
+        # records that the improvement was handled, so it still marks the finding; other pull requests and flags
+        # without a review version mark nothing.
+        flags = [flag(1, 3, "F001", status="resolved"), flag(2, 3, "F002", number=13), flag(3, None, None)]
+        review_fixture.commit_fixture(self.archive, flags=flags)
+        report = fixture_report(self.archive, 3)
+        self.assertIn("| **Verdict** | CHANGES REQUESTED, 2 open since v1 (1 flagged), 1 addressed |\n", report)
+        self.assertIn("> **Open since v1.** Still present in v3: The timeout branch still returns while holding the "
+                      "lock.  \n> **Flagged:** RF-000001 (noise): The context manager releases the lock.\n>\n"
+                      "> **File:** `src/lock.py`", report)
+        self.assertEqual(1, report.count("**Flagged:**"))
+
+    def test_flags_attach_to_the_entry_holding_the_flagged_finding(self) -> None:
+        ledger = review_fixture.commit_fixture(self.archive)[2]["ledger"]
+        flags = [flag(1, 1, "F001"), flag(2, 3, "F001"), flag(3, 3, "F002"), flag(4, 2, "F001"),
+                 flag(5, 1, "F002", number=13)]
+        self.assertEqual({"v1:F001": [flags[0], flags[1]], "v3:F002": [flags[2]]},
+                         flagged_entries(ledger, flags, "Example/One", 12))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ sys.path.insert(0, str(SCRIPT_DIRECTORY))
 import review_pipeline as rp  # noqa: E402
 from review_archive import latest_record, pull_directory  # noqa: E402
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
+from review_flags import FlagError, add_flag  # noqa: E402
 from review_github import CommandResult, GitHubClient  # noqa: E402
 from review_hosts import ProcessResult  # noqa: E402
 from review_process import ProcessStatus, process_status  # noqa: E402
@@ -257,7 +258,9 @@ class PipelineFixture(unittest.TestCase):
             today=lambda: date(2026, 3, 10),
         )
         self.state_path = self.root / "state" / "state.json"
-        patcher = mock.patch.dict(os.environ, {"CODE_REVIEW_STATE": str(self.state_path)})
+        self.flags_path = self.root / "flags" / "flags.json"
+        patcher = mock.patch.dict(os.environ, {"CODE_REVIEW_STATE": str(self.state_path),
+                                               "CODE_REVIEW_FLAGS": str(self.flags_path)})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.archive = self.root / "archive"
@@ -506,11 +509,11 @@ class GenericReviewTests(PipelineFixture):
         self.assertEqual(["C1", "C2"], [comment["id"] for comment in record["github_comments"]])
         self.assertEqual("addressed", record["comment_dispositions"][0]["disposition"])
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
-        self.assertIn("### From GitHub PR comments", markdown)
+        self.assertIn("## Review Comments\n\n| # | Comment | Status | Rationale |", markdown)
         self.assertIn("| [C1](https://example.invalid/c/Is) | @someone on `app/service.py:2`: Is zero right here? "
                       "| ADDRESSED | Empty input now returns 0. |", markdown)
         self.assertIn("@ghost on `app/other.py:7` (outdated)", markdown)
-        self.assertNotIn("### From the previous AI review", markdown, "no prior findings in an initial review")
+        self.assertNotIn("Addressed since", markdown, "no prior findings in an initial review")
 
     def test_reviewers_table_records_who_ran(self) -> None:
         ready = self.prepare()
@@ -944,6 +947,30 @@ class ReReviewTests(PipelineFixture):
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual((2, "re-review"), (record["review"]["version"], record["review"]["mode"]))
         self.assertEqual("addressed", record["prior_dispositions"][0]["disposition"])
+
+    def test_the_report_names_configured_models_and_marks_flagged_findings(self) -> None:
+        self.record_initial_review()
+        add_flag(self.flags_path, category="noise", body="Callers accept an int.", repository=REPOSITORY,
+                 pull_number=12, review_version=1, finding_id="F001")
+        self.configure(model_names={"fixture-model": "Fixture Model"})
+        self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
+        ready = self.prepare(re_review=True, scope="full")
+        self.write_role_result(ready["roles"][0], dispositions=[
+            {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Still an int."}])
+        self.flags_path.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
+            rp.finalize(ready["run"])
+        self.assertEqual(1, latest_record(self.archive, REPOSITORY, 12)["review"]["version"], "nothing archived")
+        self.flags_path.unlink()
+        add_flag(self.flags_path, category="noise", body="Callers accept an int.", repository=REPOSITORY,
+                 pull_number=12, review_version=1, finding_id="F001")
+        rp.finalize(ready["run"])
+        markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review-v2.md").read_text(encoding="utf-8")
+        self.assertIn("| **Verdict** | APPROVED, 1 open since v1 (1 flagged) |", markdown)
+        self.assertIn("> **Open since v1.** Still present in v2: Still an int.  \n"
+                      "> **Flagged:** RF-000001 (noise): Callers accept an int.\n", markdown)
+        self.assertIn("| General | Fixture Model |", markdown)
+        self.assertIn("| **Reviewer models** | Fixture Model: `fixture-model` |", markdown)
 
     @staticmethod
     def planned(run: Path | str) -> list[tuple[str, list[str], bool]]:

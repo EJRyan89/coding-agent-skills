@@ -85,6 +85,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | `operation_repository_sets` | object | no | Keyed by operation (`review-prs`, `update-pr-tracker`, or `review-insights`). Each value names a key of `repository_sets`: the operation's own default set. |
 | `reviewer_effort` | string or null | no | One of `low`, `medium`, `high`, `xhigh`, or `max`. Reasoning effort for reviewers the Workflow tool starts; null or absent keeps the session's effort. |
 | `re_review_scope` | object | no | When an `auto` re-review reviews in full; see [re-review scope](#re-review-scope-configre_review_scope). |
+| `model_names` | object | no | Keyed by a model identifier reviewers report, a trimmed single line of at most 200 characters. Each value is the non-empty single-line name of at most 100 characters that a report's Reviewers table shows instead. |
 | `dashboard` | object | no | How the tracker section is marked and shown; see [dashboard](#dashboard-configdashboard). |
 
 #### Repository (`config.repositories.<repository>`)

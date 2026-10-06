@@ -157,13 +157,25 @@ def valid_adapter_result(repository: str = "example/one", number: int = 12) -> d
     }
 
 
-def prior_entry(version: int, identifier: str, severity: str = "SHOULD_FIX") -> dict:
-    """An open ledger entry that an earlier review raised and no review has judged since."""
-    return {"version": version, "id": identifier, "severity": severity, "category": "Correctness", "state": "open",
-            "judged_in": version, "dispositions": [], "repeats": []}
-
-
 class ConfigurationTests(unittest.TestCase):
+    def test_model_names_map_model_identifiers_to_display_names(self) -> None:
+        self.assertEqual({}, validate_config(valid_config())["model_names"])
+        arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc"
+        config = validate_config({**valid_config(), "model_names": {arn: "  Opus 5.5 "}})
+        self.assertEqual({arn: "Opus 5.5"}, config["model_names"])
+        for value, message in (
+            ([], "model_names must be an object"),
+            ({"": "Opus"}, "model_names key"),
+            ({"a\nb": "Opus"}, "model_names key"),
+            ({"m" * 201: "Opus"}, "model_names key"),
+            ({arn: ""}, f"model_names.{arn}"),
+            ({arn: "Opus\n5"}, f"model_names.{arn}"),
+            ({arn: "O" * 101}, f"model_names.{arn}"),
+            ({arn: 5}, f"model_names.{arn}"),
+        ):
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigurationError, re.escape(message)):
+                validate_config({**valid_config(), "model_names": value})
+
     def test_config_normalizes_repository_keys_and_resolves_default(self) -> None:
         config = validate_config(valid_config())
         self.assertEqual(["example/one"], config["repository_sets"]["primary"])
@@ -747,16 +759,19 @@ class RecordTests(unittest.TestCase):
         self.assertNotIn("reviewers", without["review"])
 
         result["prior_dispositions"] = [{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Fixed."}]
+        first = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
         markdown = render_markdown(build_record({**request, "mode": "re-review"}, result, version=2, policy={},
-                                                prior_ledger=[prior_entry(1, "F001")]),
-                                   record_payload_hash="0" * 64)
-        self.assertLess(markdown.index("### From the previous AI review"), markdown.index("### From GitHub PR comments"))
+                                                prior_ledger=first["ledger"]),
+                                   record_payload_hash="0" * 64, prior_records=[first])
+        # Prior findings are shown with the findings; review comments keep a section of their own.
+        self.assertLess(markdown.index("Addressed in v2: Fixed."), markdown.index("## Review Comments"))
         self.assertIn("| [C1](https://example.invalid/1) | @dev on `src/file.cs`: Why? | STILL PRESENT | Unchanged. |",
                       markdown)
         self.assertIn("## Reviewers", markdown)
+        self.assertLess(markdown.index("## Review Comments"), markdown.index("## Reviewers"))
         self.assertLess(markdown.index("## Reviewers"), markdown.index("Review Details</strong>"))
         self.assertIn("| STILL PRESENT | Unchanged. |\n\n**0/1 addressed**\n", markdown)
-        self.assertIn("| v1:F001 | ADDRESSED | Fixed. |\n\n**1/1 addressed**\n", markdown)
+        self.assertEqual(1, markdown.count(" addressed**"), "the prior findings' count is in the verdict row")
 
     def test_unhashable_values_are_validation_errors_not_crashes(self) -> None:
         arguments = {"expected_repository": "example/one", "expected_number": 12, "expected_head_sha": "b" * 40}
@@ -872,29 +887,31 @@ class RecordTests(unittest.TestCase):
         result["prior_dispositions"] = [
             {"finding_id": "v2:F001", "disposition": "partially_addressed", "rationale": "One | of two."}
         ]
+        prior = build_record(valid_request(), valid_adapter_result(), version=2, policy={})
         record = build_record(request, result, version=3, policy={}, reviewed_at="2026-10-01T23:26:42+02:00",
-                              prior_ledger=[prior_entry(2, "F001")])
-        markdown = render_markdown(record, record_payload_hash="0" * 64)
+                              prior_ledger=prior["ledger"])
+        markdown = render_markdown(record, record_payload_hash="0" * 64, prior_records=[prior])
         self.assertTrue(markdown.startswith("# Code Review — example/one#12 (re-review v3)\n\n| | |\n|---|---|\n"))
         for expected in (
             "| **Title** | Fix \\| split |",
             "| **Reviewed** | 01-Oct-2026 21:26 UTC |",
-            "| **Verdict** | CHANGES REQUESTED |",
+            "| **Verdict** | CHANGES REQUESTED, 3 open since v2 |",
             "<summary><strong>MUST FIX (1)</strong></summary>",
-            "<summary>F001. [A&lt;B&gt;] List&lt;T&gt; &amp; friends leak</summary>",
-            "<summary>F002. [Correctness] <code>z.cs:9</code></summary>",
+            "<summary>v3 F001. [A&lt;B&gt;] List&lt;T&gt; &amp; friends leak</summary>",
+            "<summary>v3 F002. [Correctness] <code>z.cs:9</code></summary>",
             "> **File:** `src/a.cs`  \n> **Line:** 3 | **Source:** generic\n>\n"
             "> First paragraph.\n>\n> Second paragraph.\n>\n> **Evidence:** ``a.cs:3 adds: f(`x`) | y``\n",
+            "<summary><strong>SHOULD FIX (1)</strong></summary>",
+            "> **Open since v2.** Partially addressed in v3: One | of two.\n",
             "<summary><strong>SUGGESTIONS (1)</strong></summary>",
-            "| v2:F001 | PARTIALLY ADDRESSED | One \\| of two. |",
             "| **Record payload SHA-256** | `" + "0" * 64 + "` |",
         ):
             self.assertIn(expected, markdown)
-        self.assertNotIn("SHOULD FIX (", markdown)
-        self.assertLess(markdown.index("MUST FIX (1)"), markdown.index("SUGGESTIONS (1)"))
+        self.assertLess(markdown.index("MUST FIX (1)"), markdown.index("SHOULD FIX (1)"))
+        self.assertLess(markdown.index("SHOULD FIX (1)"), markdown.index("SUGGESTIONS (1)"))
         self.assertTrue(markdown.endswith(f"<!-- reviewed_head_sha: {'b' * 40} -->\n"))
         self.assertEqual(len(re.findall(r"<details[ >]", markdown)), markdown.count("</details>"))
-        self.assertIn("| v2:F001 | PARTIALLY ADDRESSED | One \\| of two. |\n\n**0/1 addressed**\n", markdown)
+        self.assertNotIn("addressed**", markdown)
         self.assertIn("<details>\n<summary><strong>Review Details</strong></summary>", markdown)
         self.assertIn("| **Base** | `main` |", markdown)
         empty = valid_adapter_result()

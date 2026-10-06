@@ -142,7 +142,7 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 
 The first word chooses what to do:
 
-- `add CATEGORY BODY` records a flag. `CATEGORY` is a short label of your choosing and `BODY` is the rationale; quote either when it has spaces. To tie the flag to a review finding, add `--repository owner/repo --pull N`, then `--review-version V --finding ID`. `ID` is the finding's ID in the review report, such as `F002`, and `V` is the `v<N>` in that report's **Mode** row. Finding IDs restart at `F001` in every review, so `--finding` needs `--review-version`. Only a flag that names a finding can be resolved by `review-insights`.
+- `add CATEGORY BODY` records a flag. `CATEGORY` is a short label of your choosing and `BODY` is the rationale; quote either when it has spaces. To tie the flag to a review finding, add `--repository owner/repo --pull N`, then `--review-version V --finding ID`. Both come from the finding's label in the review report: `v2 F003` is `--review-version 2 --finding F003`. A re-review report shows a finding carried from an earlier review under that review's label, so the report's **Mode** row is not the version to use. Finding IDs restart at `F001` in every review, so `--finding` needs `--review-version`. Only a flag that names a finding can be resolved by `review-insights`.
 - `list` shows the open flags.
 - `resolve ID RESOLUTION` closes the flag `ID`, such as `RF-000004`, with a non-empty explanation.
 
@@ -310,6 +310,8 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 - `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub.
 
 Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
+
+Each row's Findings cell counts the latest AI review's open findings by severity (`M`, `H`, `S`), including those carried from earlier reviews, and how many of them you have flagged with `flag-review-finding`. Then it says what moved since your own last review of that pull request, for example `1M 1S open (1 flagged) · 1 new, 1 addressed since your review`. "New" counts findings first raised after the AI review of the commit you reviewed and still open; "addressed" counts findings raised by then that a later review found fixed. Before you have reviewed, or when GitHub can't place your review's commit, it shows the reviews the open findings span instead, such as `1M 1S open · v1–v3`. The AI Review link opens the latest report, which lists every open finding in full.
 
 ```text
 /update-pr-tracker

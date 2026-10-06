@@ -52,6 +52,7 @@ SECTION_MINE = "My PRs"
 SECTION_DRAFTS = "Drafts"
 COMPUTED_SECTIONS = [SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE, SECTION_DRAFTS]
 OPTIONAL_FIELDS = {"reviewed_incomplete", "author_name", "review_decision", "ai_review"}
+LEDGER_KEYS = {"ledger", "flagged", "since_review"}
 REVIEW_DECISIONS = {None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
 AI_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested", "INCOMPLETE": "Incomplete"}
 SECTION_SUMMARIES = {
@@ -112,6 +113,24 @@ def _valid_ledger(ledger: Any) -> bool:
     return _count(since) and 1 <= since <= version
 
 
+def _valid_ledger_reading(review: dict[str, Any]) -> bool:
+    """The open findings flags name and what moved since the user's last review, both read from a ledger: flagged
+    counts open findings, and since_review is null when the user has not reviewed or the review commit could not be
+    placed, else the baseline version (0 when every review came after it) with the entries new and addressed since."""
+    if "flagged" not in review and "since_review" not in review:
+        return True
+    ledger = review.get("ledger")
+    if ledger is None or "flagged" not in review or "since_review" not in review:
+        return False
+    if not _count(review["flagged"]) or review["flagged"] > sum(ledger["open"].values()):
+        return False
+    since = review["since_review"]
+    if since is None:
+        return True
+    return (isinstance(since, dict) and set(since) == {"version", "new", "addressed"}
+            and all(_count(value) for value in since.values()) and since["version"] <= ledger["version"])
+
+
 def _validate_presentation(item: dict[str, Any]) -> None:
     key = f"{item.get('repository')}#{item.get('number')}"
     name = item["author_name"]
@@ -122,11 +141,14 @@ def _validate_presentation(item: dict[str, Any]) -> None:
     review = item["ai_review"]
     if review is None:
         return
-    # An input collected before reviews kept a finding ledger has no ledger key.
-    if not isinstance(review, dict) or set(review) - {"ledger"} != {"verdict", "counts", "report"}:
+    # An input collected before reviews kept a finding ledger has no ledger key, and one collected before the tracker
+    # read flags and the user's last review has no flagged or since_review keys.
+    if not isinstance(review, dict) or set(review) - LEDGER_KEYS != {"verdict", "counts", "report"}:
         raise TrackerError(f"Tracker item {key}.ai_review must have verdict, counts, and report")
     if not _valid_ledger(review.get("ledger")):
         raise TrackerError(f"Tracker item {key}.ai_review.ledger is invalid")
+    if not _valid_ledger_reading(review):
+        raise TrackerError(f"Tracker item {key}.ai_review.flagged or since_review is invalid")
     if review["verdict"] not in AI_VERDICTS:
         raise TrackerError(f"Tracker item {key}.ai_review.verdict is invalid")
     counts = review["counts"]
@@ -337,18 +359,21 @@ def _findings(counts: dict[str, int] | None) -> str:
     return " ".join(parts) or "-"
 
 
-def _ledger_findings(ledger: dict[str, Any]) -> str:
-    """Open findings by severity and the version the oldest dates from, findings addressed, and the review version,
-    such as `1M 1S open since v1 · 3 addressed · v3`."""
+def _ledger_findings(review: dict[str, Any]) -> str:
+    """Open findings by severity and how many are flagged, then what moved since the user's last review, such as
+    `1M 1S open (1 flagged) · 1 new, 1 addressed since your review`; without that review, the versions from the oldest
+    open finding to the latest review, such as `1M 1S open · v1–v3`."""
+    ledger = review["ledger"]
     opened = _findings(ledger["open"])
-    if opened == "-":
-        parts = ["none open"]
-    else:
-        parts = [f"{opened} open" + (f" since v{ledger['since']}" if ledger["since"] != ledger["version"] else "")]
-    if ledger["addressed"]:
-        parts.append(f"{ledger['addressed']} addressed")
-    parts.append(f"v{ledger['version']}")
-    return " · ".join(parts)
+    flagged = f" ({review['flagged']} flagged)" if review.get("flagged") else ""
+    head = "none open" if opened == "-" else f"{opened} open{flagged}"
+    since = review.get("since_review")
+    if since is None:
+        first = ledger["since"] if ledger["since"] is not None else ledger["version"]
+        span = f"v{first}–v{ledger['version']}" if first != ledger["version"] else f"v{ledger['version']}"
+        return f"{head} · {span}"
+    moved = [f"{since[key]} {key}" for key in ("new", "addressed") if since[key]]
+    return f"{head} · {', '.join(moved) if moved else 'nothing new'} since your review"
 
 
 def _ai_cells(row: Row) -> list[str]:
@@ -358,7 +383,7 @@ def _ai_cells(row: Row) -> list[str]:
         return ["-", "-", "-"]
     verdict = AI_VERDICTS[review["verdict"]] if review else "-"
     if review and review.get("ledger"):
-        findings = _ledger_findings(review["ledger"])
+        findings = _ledger_findings(review)
     else:
         findings = _findings(review["counts"]) if review else "-"
     link = ""
