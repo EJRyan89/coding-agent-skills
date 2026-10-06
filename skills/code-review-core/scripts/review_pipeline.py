@@ -99,8 +99,8 @@ from review_runtime import (
     materialize_source_snapshot_from_github,
     measure_source_snapshot,
     negotiate_capabilities,
+    resolve_reviewer_commit,
     resolve_runtime,
-    resolve_trusted_commit,
     subprocess_runner,
     verify_checkout_remote,
     write_adapter_request,
@@ -398,13 +398,13 @@ def prepare(
             adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
         else:
             ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
-            trusted = resolve_trusted_commit(
+            reviewer_commit = resolve_reviewer_commit(
                 checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
             )
             resolved = resolve_reviewer(
                 reviewer,
                 checkout=checkout,
-                commit=trusted,
+                commit=reviewer_commit,
                 config_path=config_path,
                 repository=repository,
                 runner=services.git,
@@ -425,7 +425,7 @@ def prepare(
             reviewer_root = run / "reviewer"
             hashes = materialize_reviewer(
                 checkout,
-                trusted,
+                reviewer_commit,
                 manifest,
                 reviewer_root,
                 runner=services.git,
@@ -433,7 +433,12 @@ def prepare(
                 local_root=resolved.local_root,
             )
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
-            adapter = {"name": manifest["id"], "scope": "repository", "source_commit": trusted, "source_hashes": hashes}
+            adapter = {
+                "name": manifest["id"],
+                "scope": "repository",
+                "source_commit": reviewer_commit,
+                "source_hashes": hashes,
+            }
 
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
@@ -545,11 +550,11 @@ def _repository_reviewer(
     return config_path, repository, entry["reviewer"], checkout
 
 
-def _trusted_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
+def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
     """The commit a reviewer is read from without a pull request: --ref, the trusted ref, or origin's default."""
     candidate = ref or reviewer["trusted_ref"] or "refs/remotes/origin/HEAD"
     try:
-        return resolve_trusted_commit(checkout, candidate, head_sha="", runner=services.git)
+        return resolve_reviewer_commit(checkout, candidate, head_sha="", runner=services.git)
     except RuntimeContractError as exc:
         raise PipelineError(f"Cannot resolve {candidate} in {checkout}; pass --ref: {exc}") from exc
 
@@ -560,7 +565,7 @@ def inspect_reviewer(
     """Whether a repository's review skill can run as one entrypoint reviewer or needs a specialists manifest."""
     services = services or Services()
     config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
-    commit = _trusted_commit(checkout, reviewer, ref, services)
+    commit = _reviewer_commit(checkout, reviewer, ref, services)
     lines = [f"REVIEWER {reviewer['id']} {repository} commit={commit}"]
     if reviewer["manifest_path"]:
         return [*lines, f"MANIFEST repository {reviewer['manifest_path']}", "VERDICT manifest-configured"]
@@ -628,7 +633,7 @@ def validate_reviewer(
         ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
         targets.append(
             (
-                resolve_trusted_commit(
+                resolve_reviewer_commit(
                     checkout,
                     reviewer["trusted_ref"] or pull["baseRefOid"],
                     head_sha=pull["headRefOid"],
@@ -638,7 +643,7 @@ def validate_reviewer(
             )
         )
     if not targets:
-        targets.append((_trusted_commit(checkout, reviewer, ref, services), None))
+        targets.append((_reviewer_commit(checkout, reviewer, ref, services), None))
     lines: list[str] = []
     checked: set[str] = set()
     with tempfile.TemporaryDirectory(prefix="code-review-validate-") as temporary:

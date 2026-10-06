@@ -73,8 +73,8 @@ from review_runtime import (
     materialize_reviewer,
     materialize_source_snapshot,
     negotiate_capabilities,
+    resolve_reviewer_commit,
     resolve_runtime,
-    resolve_trusted_commit,
     validate_adapter_manifest,
     verify_checkout_remote,
     verify_source_snapshot,
@@ -1543,7 +1543,7 @@ class RuntimeContractTests(unittest.TestCase):
             root = Path(temporary)
             checkout, trusted, head = self._repository(root)
             verify_checkout_remote(checkout, "example/one")
-            resolved = resolve_trusted_commit(checkout, trusted, head_sha=head)
+            resolved = resolve_reviewer_commit(checkout, trusted, head_sha=head)
             self.assertEqual(trusted, resolved)
             manifest = load_manifest_from_commit(checkout, trusted, ".review/adapter.json")
             destination = root / "materialized"
@@ -1952,9 +1952,9 @@ class RuntimeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             checkout, trusted, head = self._repository(Path(temporary))
             with self.assertRaisesRegex(RuntimeContractError, "Pull-request refs"):
-                resolve_trusted_commit(checkout, "refs/pull/1/head", head_sha=head)
+                resolve_reviewer_commit(checkout, "refs/pull/1/head", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "pull-request head"):
-                resolve_trusted_commit(checkout, "HEAD", head_sha=head)
+                resolve_reviewer_commit(checkout, "HEAD", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "origin mismatch"):
                 verify_checkout_remote(checkout, "different/one")
 

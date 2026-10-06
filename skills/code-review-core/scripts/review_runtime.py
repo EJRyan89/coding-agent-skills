@@ -333,7 +333,7 @@ def verify_checkout_remote(checkout: Path, repository: str, runner: Runner = sub
         raise RuntimeContractError(f"Checkout origin mismatch: expected {expected}, found {actual}")
 
 
-def resolve_trusted_commit(
+def resolve_reviewer_commit(
     checkout: Path,
     trusted_ref: str,
     *,

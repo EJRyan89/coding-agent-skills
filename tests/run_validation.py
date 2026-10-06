@@ -914,6 +914,30 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     return sorted(breaches)
 
 
+# CodeQL's sensitive-data heuristic treats a call to a function whose name says "secret" or "trusted" (but not
+# "untrusted" or "is_trusted") as returning a secret, and raises clear-text logging on wherever the result is printed.
+# A commit SHA from a function named that way was flagged twice, so shipped code names such functions otherwise.
+CODEQL_SECRET_NAME = re.compile(r"secret|(?<!un)(?<!un_)(?<!is)(?<!is_)trusted", re.IGNORECASE)
+
+
+def secret_named_function_problems(root: Path) -> list[str]:
+    """Report each function in shipped or deployer code whose name CodeQL reads as returning a secret."""
+    files = [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
+    files += (root / "skills").glob("*/scripts/**/*.py")
+    problems: list[str] = []
+    for path in sorted(
+        (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
+    ):
+        name = path.relative_to(root).as_posix()
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and CODEQL_SECRET_NAME.search(node.name):
+                problems.append(
+                    f"{name}:{node.lineno}: function {node.name} is named so CodeQL treats its result as a secret "
+                    "and flags printing it; name it for what it returns"
+                )
+    return problems
+
+
 def script_contract_problems(root: Path) -> list[str]:
     """Report skill scripts that break "Script results": a failure through parser.error or on stderr, JSON output,
     or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
@@ -2143,6 +2167,32 @@ class RepositoryValidation(unittest.TestCase):
                     "deployer/unexplained.py: FSOPS_ALLOWED must map each token to the reason it is allowed",
                 ],
                 filesystem_write_problems(root),
+            )
+
+    def test_no_shipped_function_is_named_so_codeql_reads_its_result_as_a_secret(self) -> None:
+        self.assertEqual([], secret_named_function_problems(REPOSITORY_ROOT))
+
+    def test_secret_named_function_policy_flags_trusted_but_not_untrusted_or_tests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "skills" / "example" / "scripts"
+            scripts.mkdir(parents=True)
+            (root / "deployer").mkdir()
+            (scripts / "runtime.py").write_text(
+                "def resolve_trusted_commit():\n    pass\n\n\n"
+                "class Reader:\n    def _trusted_files(self):\n        pass\n\n\n"
+                "def is_trusted():\n    pass\n\n\ndef untrusted_text():\n    pass\n",
+                encoding="utf-8",
+            )
+            (scripts / "test_runtime.py").write_text("def test_trusted_commit():\n    pass\n", encoding="utf-8")
+            (root / "deployer" / "check.py").write_text("def trusted_paths():\n    pass\n", encoding="utf-8")
+            self.assertEqual(
+                [
+                    "deployer/check.py:1: function trusted_paths",
+                    "skills/example/scripts/runtime.py:1: function resolve_trusted_commit",
+                    "skills/example/scripts/runtime.py:6: function _trusted_files",
+                ],
+                [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(root)],
             )
 
     def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
