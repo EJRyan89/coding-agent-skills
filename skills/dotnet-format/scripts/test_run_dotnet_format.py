@@ -22,24 +22,26 @@ def sample_log(root: Path) -> str:
     """Detailed dotnet-format output in its MSBuildIssueFormatter layout, as a check run prints it."""
     app = root / "src" / "App"
     project = f"[{app / 'App.csproj'}]"
-    return "\r\n".join((
-        "  The dotnet runtime version is '5.0.17'.",
-        f"  Formatting code files in workspace '{root / 'App.sln'}'.",
-        "  Loading workspace.",
-        f"  {app / 'Program.cs'}(12,5): error WHITESPACE: Fix whitespace formatting. Replace 6 characters "
-        f"with '\\r\\n\\s\\s\\s\\s'. {project}",
-        f"  {app / 'Program.cs'}(30,2): error FINALNEWLINE: Fix final newline. Insert '\\r\\n'. {project}",
-        f"  {app / 'Program.cs'}(14,9): warning RCS0041: Remove new line between 'if' keyword and 'else' "
-        f"keyword {project}",
-        f"  {app / 'Program.cs'}(14,9): warning RCS0041: Remove new line between 'if' keyword and 'else' "
-        f"keyword {project}",
-        f"  {app / 'My Folder' / 'Util.cs'}(3,1): info IDE0005: Using directive is unnecessary. {project}",
-        "  C:\\elsewhere\\Generated.cs(1,1): warning CA1822: Mark members as static",
-        "  Warning: Program.cs(1,1) is not an issue line",
-        "  Formatted code file 'Program.cs'.",
-        "  Format complete in 5123ms.",
-        "",
-    ))
+    return "\r\n".join(
+        (
+            "  The dotnet runtime version is '5.0.17'.",
+            f"  Formatting code files in workspace '{root / 'App.sln'}'.",
+            "  Loading workspace.",
+            f"  {app / 'Program.cs'}(12,5): error WHITESPACE: Fix whitespace formatting. Replace 6 characters "
+            f"with '\\r\\n\\s\\s\\s\\s'. {project}",
+            f"  {app / 'Program.cs'}(30,2): error FINALNEWLINE: Fix final newline. Insert '\\r\\n'. {project}",
+            f"  {app / 'Program.cs'}(14,9): warning RCS0041: Remove new line between 'if' keyword and 'else' "
+            f"keyword {project}",
+            f"  {app / 'Program.cs'}(14,9): warning RCS0041: Remove new line between 'if' keyword and 'else' "
+            f"keyword {project}",
+            f"  {app / 'My Folder' / 'Util.cs'}(3,1): info IDE0005: Using directive is unnecessary. {project}",
+            "  C:\\elsewhere\\Generated.cs(1,1): warning CA1822: Mark members as static",
+            "  Warning: Program.cs(1,1) is not an issue line",
+            "  Formatted code file 'Program.cs'.",
+            "  Format complete in 5123ms.",
+            "",
+        )
+    )
 
 
 SAMPLE_DIAGNOSTICS = [
@@ -64,17 +66,44 @@ class FakeRunner:
 
 class CommandTests(unittest.TestCase):
     def test_check_adds_check_and_keeps_each_file_one_argument(self) -> None:
-        self.assertEqual([
-            "dotnet-format", "My App.sln", "--no-restore", "--fix-whitespace", "--fix-style", "warn",
-            "--fix-analyzers", "warn", "--verbosity", "detailed", "--check",
-            "--include", "src/A.cs", "src/My Folder/B.cs",
-        ], formatter.command("check", "My App.sln", ["src/A.cs", "src/My Folder/B.cs"], "warn"))
+        self.assertEqual(
+            [
+                "dotnet-format",
+                "My App.sln",
+                "--no-restore",
+                "--fix-whitespace",
+                "--fix-style",
+                "warn",
+                "--fix-analyzers",
+                "warn",
+                "--verbosity",
+                "detailed",
+                "--check",
+                "--include",
+                "src/A.cs",
+                "src/My Folder/B.cs",
+            ],
+            formatter.command("check", "My App.sln", ["src/A.cs", "src/My Folder/B.cs"], "warn"),
+        )
 
     def test_fix_saves_and_passes_the_severity_to_style_and_analyzers(self) -> None:
-        self.assertEqual([
-            "dotnet-format", "App.sln", "--no-restore", "--fix-whitespace", "--fix-style", "info",
-            "--fix-analyzers", "info", "--verbosity", "detailed", "--include", "A.cs",
-        ], formatter.command("fix", "App.sln", ["A.cs"], "info"))
+        self.assertEqual(
+            [
+                "dotnet-format",
+                "App.sln",
+                "--no-restore",
+                "--fix-whitespace",
+                "--fix-style",
+                "info",
+                "--fix-analyzers",
+                "info",
+                "--verbosity",
+                "detailed",
+                "--include",
+                "A.cs",
+            ],
+            formatter.command("fix", "App.sln", ["A.cs"], "info"),
+        )
 
 
 class ParseTests(unittest.TestCase):
@@ -90,20 +119,25 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(Path(outside).as_posix(), formatter.display_path(outside, self.root))
 
     def test_diagnostics_are_distinct_in_first_seen_order_and_only_from_issue_lines(self) -> None:
-        log = "\n".join((
-            f"{self.root / 'A.cs'}(2,3): hidden IDE0055: Fix formatting [{self.root / 'A.csproj'}]",
-            f"  {self.root / 'A.cs'}(1,1): warning Custom_Rule2: Underscore and digit rule",
-            f"{self.root / 'A.cs'}(2,3): hidden IDE0055: Fix formatting again",
-            f"{self.root / 'A.cs'}(4,1): notice IDE0001: not a severity dotnet-format prints",
-            f"{self.root / 'A.cs'}(5,1): warning 1BAD: a rule never starts with a digit",
-            f"{self.root / 'A.cs'}(6,1): warning CA1000 missing the colon",
-            f"{self.root / 'A.cs'}(x,1): warning CA1000: not a line number",
-            "Warning: A.cs(1,1) is not an issue line",
-        ))
-        self.assertEqual([
-            formatter.Diagnostic("A.cs", 2, 3, "hidden", "IDE0055"),
-            formatter.Diagnostic("A.cs", 1, 1, "warning", "Custom_Rule2"),
-        ], formatter.parse_diagnostics(log, self.root))
+        log = "\n".join(
+            (
+                f"{self.root / 'A.cs'}(2,3): hidden IDE0055: Fix formatting [{self.root / 'A.csproj'}]",
+                f"  {self.root / 'A.cs'}(1,1): warning Custom_Rule2: Underscore and digit rule",
+                f"{self.root / 'A.cs'}(2,3): hidden IDE0055: Fix formatting again",
+                f"{self.root / 'A.cs'}(4,1): notice IDE0001: not a severity dotnet-format prints",
+                f"{self.root / 'A.cs'}(5,1): warning 1BAD: a rule never starts with a digit",
+                f"{self.root / 'A.cs'}(6,1): warning CA1000 missing the colon",
+                f"{self.root / 'A.cs'}(x,1): warning CA1000: not a line number",
+                "Warning: A.cs(1,1) is not an issue line",
+            )
+        )
+        self.assertEqual(
+            [
+                formatter.Diagnostic("A.cs", 2, 3, "hidden", "IDE0055"),
+                formatter.Diagnostic("A.cs", 1, 1, "warning", "Custom_Rule2"),
+            ],
+            formatter.parse_diagnostics(log, self.root),
+        )
         self.assertEqual([], formatter.parse_diagnostics("", self.root))
 
     def test_file_lists_skip_blank_lines_and_a_byte_order_mark(self) -> None:
@@ -139,12 +173,21 @@ class MainTests(unittest.TestCase):
         self.file_list = self.root / "files.txt"
         self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
 
-    def run_formatter(self, mode: str, runner: FakeRunner, installed: bool = True,
-                      *extra: str) -> tuple[int, list[list[str]], str]:
+    def run_formatter(
+        self, mode: str, runner: FakeRunner, installed: bool = True, *extra: str
+    ) -> tuple[int, list[list[str]], str]:
         services = formatter.Services(run=runner, which=lambda name: "dotnet-format" if installed else None)
         output, errors = io.StringIO(), io.StringIO()
-        arguments = [mode, "--repo-root", str(self.root), "--solution", "App.sln",
-                     "--include-file", str(self.file_list), *extra]
+        arguments = [
+            mode,
+            "--repo-root",
+            str(self.root),
+            "--solution",
+            "App.sln",
+            "--include-file",
+            str(self.file_list),
+            *extra,
+        ]
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             status = formatter.main(arguments, services)
         lines = [line.split("\t") for line in output.getvalue().splitlines()]
@@ -177,11 +220,25 @@ class MainTests(unittest.TestCase):
         ((arguments, cwd, timeout),) = runner.calls
         self.assertEqual(self.root, cwd)
         self.assertEqual(570.0, timeout)
-        self.assertEqual([
-            "dotnet-format", "App.sln", "--no-restore", "--fix-whitespace", "--fix-style", "warn",
-            "--fix-analyzers", "warn", "--verbosity", "detailed", "--check",
-            "--include", "src/App/Program.cs", "src/App/My Folder/Util.cs",
-        ], arguments)
+        self.assertEqual(
+            [
+                "dotnet-format",
+                "App.sln",
+                "--no-restore",
+                "--fix-whitespace",
+                "--fix-style",
+                "warn",
+                "--fix-analyzers",
+                "warn",
+                "--verbosity",
+                "detailed",
+                "--check",
+                "--include",
+                "src/App/Program.cs",
+                "src/App/My Folder/Util.cs",
+            ],
+            arguments,
+        )
 
     def test_diagnostics_from_a_check_that_exits_0_are_still_findings(self) -> None:
         status, lines, _ = self.run_formatter("check", FakeRunner(0, sample_log(self.root)))
@@ -215,15 +272,27 @@ class MainTests(unittest.TestCase):
 
     def test_failures_keep_the_log_and_exit_1(self) -> None:
         cases = (
-            ("check", FakeRunner(1, "Unhandled exception: System.TypeInitializationException\n"),
-             "dotnet-format exited with code 1; see the log"),
+            (
+                "check",
+                FakeRunner(1, "Unhandled exception: System.TypeInitializationException\n"),
+                "dotnet-format exited with code 1; see the log",
+            ),
             ("fix", FakeRunner(1, sample_log(self.root)), "dotnet-format exited with code 1; see the log"),
-            ("check", FakeRunner(-1, "partial\n", timed_out=True),
-             "dotnet-format did not finish within 570 seconds; see the log"),
-            ("fix", FakeRunner(-1, sample_log(self.root), timed_out=True),
-             "dotnet-format did not finish within 570 seconds; see the log"),
-            ("check", FakeRunner(2, "changed something\n"),
-             "dotnet-format reported changes it did not itemize; see the log"),
+            (
+                "check",
+                FakeRunner(-1, "partial\n", timed_out=True),
+                "dotnet-format did not finish within 570 seconds; see the log",
+            ),
+            (
+                "fix",
+                FakeRunner(-1, sample_log(self.root), timed_out=True),
+                "dotnet-format did not finish within 570 seconds; see the log",
+            ),
+            (
+                "check",
+                FakeRunner(2, "changed something\n"),
+                "dotnet-format reported changes it did not itemize; see the log",
+            ),
             ("fix", FakeRunner(2, sample_log(self.root)), "dotnet-format exited with code 2; see the log"),
             ("check", FakeRunner(3, ""), "dotnet-format exited with code 3; see the log"),
             ("fix", FakeRunner(-1073741819, ""), "dotnet-format exited with code -1073741819; see the log"),
@@ -236,8 +305,10 @@ class MainTests(unittest.TestCase):
 
     def test_a_timeout_names_the_timeout_given(self) -> None:
         runner = FakeRunner(-1, "", timed_out=True)
-        self.assert_failed(self.run_formatter("check", runner, True, "--timeout", "12.5"),
-                           "dotnet-format did not finish within 12.5 seconds; see the log")
+        self.assert_failed(
+            self.run_formatter("check", runner, True, "--timeout", "12.5"),
+            "dotnet-format did not finish within 12.5 seconds; see the log",
+        )
 
     def test_a_missing_tool_fails_without_running(self) -> None:
         runner = FakeRunner(0, "")
@@ -254,8 +325,9 @@ class MainTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 self.file_list.write_bytes(content)
                 runner = FakeRunner(0, "")
-                self.assertEqual([[f"FAILED {reason}"]], self.assert_failed(self.run_formatter("check", runner),
-                                                                            reason))
+                self.assertEqual(
+                    [[f"FAILED {reason}"]], self.assert_failed(self.run_formatter("check", runner), reason)
+                )
                 self.assertEqual([], runner.calls)
         self.file_list.unlink()
         runner = FakeRunner(0, "")
@@ -270,8 +342,9 @@ class MainTests(unittest.TestCase):
             raise FileNotFoundError(2, "The system cannot find the file specified")
 
         status, lines, errors = self.run_formatter("check", launch_fails)  # type: ignore[arg-type]
-        self.assertEqual((1, "", [["FAILED [Errno 2] The system cannot find the file specified"]]),
-                         (status, errors, lines))
+        self.assertEqual(
+            (1, "", [["FAILED [Errno 2] The system cannot find the file specified"]]), (status, errors, lines)
+        )
 
         with mock.patch.object(tempfile, "mkstemp", side_effect=OSError(28, "No space left on device")):
             self.assert_failed(self.run_formatter("check", FakeRunner(0, "")), "[Errno 28] No space left on device")
@@ -287,8 +360,11 @@ class MainTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 runner = FakeRunner(0, "")
                 output, errors = io.StringIO(), io.StringIO()
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
-                        self.assertRaises(SystemExit) as raised:
+                with (
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as raised,
+                ):
                     formatter.main(arguments, formatter.Services(run=runner, which=lambda name: name))
                 self.assertEqual(2, raised.exception.code)
                 self.assertEqual("", output.getvalue())

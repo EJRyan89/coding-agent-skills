@@ -37,7 +37,7 @@ TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
 READ_KEYS = ("name", "description", "argument-hint", "disable-model-invocation")
 # The clause that tells the model when to start a skill, as "Description" in docs/adding-a-skill.md asks.
 WHEN_CLAUSE = re.compile(r"(?i)\buse (?:it |this skill )?(?:when|whenever|before|after)\b")
-WHEN_RULE = "say what it does, then when to use it (\"Use it when ...\"); see \"Description\" in docs/adding-a-skill.md"
+WHEN_RULE = 'say what it does, then when to use it ("Use it when ..."); see "Description" in docs/adding-a-skill.md'
 
 
 def says_when(description: str) -> bool:
@@ -84,7 +84,9 @@ def _needs(source: deploy_source.Source, name: str) -> list[str]:
     own = source.skills[name]
     optional = set(own.optional_tools) | {tool for tool in own.tools if SKILL_TOOLS[tool].optional}
     needs = [f"`{tool}` (optional)" if tool in optional else f"`{tool}`" for tool in sorted({*own.tools, *optional})]
-    settings = sorted({var for skill in skills for var in source.skills[skill].required_vars if var in CONFIGURED_VARIABLES})
+    settings = sorted(
+        {var for skill in skills for var in source.skills[skill].required_vars if var in CONFIGURED_VARIABLES}
+    )
     needs.extend(f"the `{var}` setting" for var in settings)
     return needs
 
@@ -216,7 +218,9 @@ def regenerate(document: str, skills: list[Entry]) -> str:
     preamble, sections = _split(document)
     summary = _replace_block(preamble, SUMMARY, summary_block(skills))
     if summary is None:
-        raise ReferenceError(f"{REFERENCE.as_posix()}: no summary block; add {begin_marker(SUMMARY)} and {end_marker(SUMMARY)}")
+        raise ReferenceError(
+            f"{REFERENCE.as_posix()}: no summary block; add {begin_marker(SUMMARY)} and {end_marker(SUMMARY)}"
+        )
     known = {section.name for section in sections}
     for entry in skills:
         if entry.name not in known:
@@ -230,7 +234,11 @@ def regenerate(document: str, skills: list[Entry]) -> str:
         body = section.body
         if entry is not None:
             replaced = _replace_block(body, entry.name, section_block(entry))
-            body = replaced if replaced is not None else "\n" + _wrap(entry.name, section_block(entry)) + "\n" + body.lstrip("\n")
+            body = (
+                replaced
+                if replaced is not None
+                else "\n" + _wrap(entry.name, section_block(entry)) + "\n" + body.lstrip("\n")
+            )
         parts.append(f"\n\n## `{section.name}`\n" + body.rstrip("\n"))
     return "".join(parts) + "\n"
 
@@ -242,14 +250,23 @@ def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[st
         return [f"{README.as_posix()}: no 'Included skills' section"]
     section = match.group(1)
     # A row is named by the first code span in its first cell; the header and separator rows have none.
-    rows = [found.group(1) for line in section.splitlines() if line.startswith("|")
-            if (found := re.search(r"`([^`]+)`", line.split("|")[1]))]
+    rows = [
+        found.group(1)
+        for line in section.splitlines()
+        if line.startswith("|")
+        if (found := re.search(r"`([^`]+)`", line.split("|")[1]))
+    ]
     problems = [f"{README.as_posix()}: 'Included skills' has no row for `{root}`" for root in roots if root not in rows]
-    problems += [f"{README.as_posix()}: 'Included skills' row `{row}` names no selectable skill or bundle; remove it"
-                 for row in rows if row not in roots]
+    problems += [
+        f"{README.as_posix()}: 'Included skills' row `{row}` names no selectable skill or bundle; remove it"
+        for row in rows
+        if row not in roots
+    ]
     for anchor in re.findall(rf"\({re.escape(REFERENCE.as_posix())}#([^)]+)\)", section):
         if anchor not in skills:
-            problems.append(f"{README.as_posix()}: 'Included skills' links {REFERENCE.as_posix()}#{anchor}, which has no section")
+            problems.append(
+                f"{README.as_posix()}: 'Included skills' links {REFERENCE.as_posix()}#{anchor}, which has no section"
+            )
     if f"({REFERENCE.as_posix()})" not in section:
         problems.append(f"{README.as_posix()}: 'Included skills' does not link {REFERENCE.as_posix()}")
     return problems
@@ -265,7 +282,9 @@ def problems(root: Path) -> list[str]:
     document = reference.read_text(encoding="utf-8")
     found: list[str] = []
     for entry in skills:
-        if entry.argument_hint is None and "$ARGUMENTS" in (root / "skills" / entry.name / "SKILL.md").read_text(encoding="utf-8"):
+        if entry.argument_hint is None and "$ARGUMENTS" in (root / "skills" / entry.name / "SKILL.md").read_text(
+            encoding="utf-8"
+        ):
             found.append(f"skills/{entry.name}/SKILL.md reads $ARGUMENTS but declares no argument-hint")
         if not entry.user_only and not says_when(entry.description):
             found.append(f"skills/{entry.name}/SKILL.md: the model may start it, so its description must {WHEN_RULE}")
@@ -284,7 +303,9 @@ def problems(root: Path) -> list[str]:
             found.append(f"{REFERENCE.as_posix()}: no section for `{entry.name}`")
     for section in sections:
         if section.name in names and not _prose(section).strip():
-            found.append(f"{REFERENCE.as_posix()}: section `{section.name}` has no hand-written explanation after its generated block")
+            found.append(
+                f"{REFERENCE.as_posix()}: section `{section.name}` has no hand-written explanation after its generated block"
+            )
     if current != document:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")
     roots = sorted([*deploy_source.root_names(source), *source.bundles])

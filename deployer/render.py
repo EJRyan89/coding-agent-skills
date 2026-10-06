@@ -358,10 +358,7 @@ def _require_tools(units: list[ShellUnit], has_powershell: bool) -> dict[str, st
     if missing:
         raise DeployError(
             "ERROR: Tools required to validate the rendered skills were not found:",
-            *(
-                f"  - {tool} ({TOOL_PURPOSES[tool]}): {platform_support.install_hint(tool)}"
-                for tool in missing
-            ),
+            *(f"  - {tool} ({TOOL_PURPOSES[tool]}): {platform_support.install_hint(tool)}" for tool in missing),
             *platform_support.INSTALL_HELP,
             "This run installed nothing.",
         )
@@ -372,9 +369,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
     with ThreadPoolExecutor(max_workers=min(8, len(units))) as pool:
         results = list(
             pool.map(
-                lambda unit: platform_support.run_tool(
-                    [bash, "-n", platform_support.normalize(unit.path)]
-                ),
+                lambda unit: platform_support.run_tool([bash, "-n", platform_support.normalize(unit.path)]),
                 units,
             )
         )
@@ -402,8 +397,10 @@ def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
     for unit in units:
         path = platform_support.normalize(unit.path)
         if path in reported:
-            prefix = "ShellCheck failed for rendered Bash block" if unit.is_block else (
-                "ShellCheck failed for rendered content"
+            prefix = (
+                "ShellCheck failed for rendered Bash block"
+                if unit.is_block
+                else ("ShellCheck failed for rendered content")
             )
             raise DeployError(f"ERROR: {prefix}: {unit.origin}", *reported[path])
     raise DeployError("ERROR: ShellCheck failed for rendered content", *result.output.splitlines())

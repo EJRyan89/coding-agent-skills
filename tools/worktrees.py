@@ -40,8 +40,23 @@ FILE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 SEPARATOR_CHARACTERS = set(";&|()\n")
 # Git subcommands that move HEAD, or write the index or working tree, of the checkout they run in.
 WRITING_SUBCOMMANDS = {
-    "add", "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge", "mv", "pull", "rebase",
-    "reset", "restore", "revert", "rm", "stash", "switch",
+    "add",
+    "am",
+    "apply",
+    "checkout",
+    "cherry-pick",
+    "clean",
+    "commit",
+    "merge",
+    "mv",
+    "pull",
+    "rebase",
+    "reset",
+    "restore",
+    "revert",
+    "rm",
+    "stash",
+    "switch",
 }
 # git's own options that take the next word as their value.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
@@ -77,7 +92,11 @@ class UsageError(Exception):
 def git(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(cwd), *arguments],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
     )
 
 
@@ -296,8 +315,14 @@ def powershell_events(command: str, reading: Reading) -> list[dict[str, object]]
         result = subprocess.run(
             [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", powershell_reader()],
             input=base64.b64encode(command.encode("utf-8")).decode("ascii"),
-            capture_output=True, text=True, encoding="utf-8", errors="replace", env=dict(reading.environment),
-            timeout=POWERSHELL_TIMEOUT_SECONDS, check=False, **platform_support.hidden_window(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=dict(reading.environment),
+            timeout=POWERSHELL_TIMEOUT_SECONDS,
+            check=False,
+            **platform_support.hidden_window(),
         )
     except subprocess.TimeoutExpired:
         reading.notes.append(f"pwsh did not read the command within {POWERSHELL_TIMEOUT_SECONDS} seconds")
@@ -384,7 +409,8 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
             reading.notes.append(str(event.get("text")))
         elif kind == "command":
             words: list[Word] = [
-                None if word["dynamic"] else word["text"] for word in event["words"]  # type: ignore[attr-defined]
+                None if word["dynamic"] else word["text"]
+                for word in event["words"]  # type: ignore[attr-defined]
             ]
             name, arguments = command_name(words[0]), words[1:]
             if name in LOCATION_NAMES:
@@ -465,13 +491,17 @@ def guard(stream: str) -> int:
         print(f"worktrees guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
     if refused:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": DENY_REASON,
-            }
-        }))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": DENY_REASON,
+                    }
+                }
+            )
+        )
     return 0
 
 

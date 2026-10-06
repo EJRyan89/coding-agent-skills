@@ -23,7 +23,8 @@ DERIVED_PROBLEM = "Derived paths may contain only letters, digits, spaces, and /
 DERIVED_SOURCES: dict[str, tuple[str, str]] = {
     "HOME": ("the home folder", "Skills cannot be deployed into a home folder whose path has other characters."),
     "SOURCE_ROOT": (
-        "the source checkout", "Move the checkout to a path without other characters, then deploy from there."
+        "the source checkout",
+        "Move the checkout to a path without other characters, then deploy from there.",
     ),
 }
 # A --canary-home deployment never reads the configuration; each configured directory is this folder of the
@@ -45,9 +46,7 @@ def _require_allowed(key: str, value: str) -> None:
     found = _disallowed(allowlist, value) if allowlist else None
     if found is not None:
         position, char = found
-        raise DeployError(
-            f"ERROR: Config key {key} contains disallowed character '{char}' at position {position}"
-        )
+        raise DeployError(f"ERROR: Config key {key} contains disallowed character '{char}' at position {position}")
 
 
 def parse(text: str, source_id: str) -> dict[str, str]:
@@ -65,9 +64,7 @@ def parse(text: str, source_id: str) -> dict[str, str]:
             raise DeployError(f"ERROR: Config line {number}: malformed entry: {line}")
         key, value = match.groups()
         if "$" in value or "`" in value:
-            raise DeployError(
-                f"ERROR: Config key {key} contains shell-active character ($ or backtick)"
-            )
+            raise DeployError(f"ERROR: Config key {key} contains shell-active character ($ or backtick)")
         if key != SOURCE_KEY and key not in CONFIGURED_VARIABLES:
             raise DeployError(f"ERROR: Config key {key} is not a recognized variable")
         if key in values:
@@ -77,9 +74,7 @@ def parse(text: str, source_id: str) -> dict[str, str]:
     configured_source = values.get(SOURCE_KEY)
     if configured_source != source_id:
         shown = configured_source if configured_source is not None else "<missing>"
-        raise DeployError(
-            f"ERROR: Config _source_id ({shown}) does not match source.json ({source_id})"
-        )
+        raise DeployError(f"ERROR: Config _source_id ({shown}) does not match source.json ({source_id})")
     return values
 
 

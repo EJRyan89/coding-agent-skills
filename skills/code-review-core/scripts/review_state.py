@@ -69,4 +69,3 @@ def update_state(
         replacement = validate_state(update(current))
         atomic_write_json(path, replacement, validator=validate_state)
         return replacement
-

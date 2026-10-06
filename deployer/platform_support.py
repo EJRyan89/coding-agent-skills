@@ -26,7 +26,7 @@ INSTALL_HINTS = {
     "ruff": "python -m pip install -r requirements-dev.txt",
 }
 INSTALL_HELP = (
-    "For Chocolatey, Scoop, or direct downloads, see \"Installing the tools\" in",
+    'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',
     "docs/installation.md. To use Git Bash from another location, set GIT_BASH",
     "to its bash.exe.",
     "After installing, open a new terminal. Applications that were already running,",
@@ -39,10 +39,7 @@ STANDARD_COMMANDS = frozenset({"python", "powershell", "cygpath"})
 
 def ensure_supported() -> None:
     if sys.platform != "win32":
-        raise DeployError(
-            "ERROR: The deployer currently supports Windows only "
-            f"(detected platform: {sys.platform})."
-        )
+        raise DeployError(f"ERROR: The deployer currently supports Windows only (detected platform: {sys.platform}).")
 
 
 def use_utf8_output() -> None:

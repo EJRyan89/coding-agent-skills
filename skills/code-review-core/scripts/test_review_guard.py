@@ -70,8 +70,12 @@ class ReviewGuardTests(unittest.TestCase):
             with self.subTest(tool=tool):
                 self.assertIsNone(self.decide(tool, file_path=str(self.run / "work" / "csharp-review.result.json")))
                 self.assertIsNone(self.decide(tool, file_path=str(self.run / "result.json")))
-                for path in (self.run / "work" / "notes.txt", self.run / "source" / "app" / "x.result.json",
-                             self.run / "work" / "csharp-review.prompt.md", self.checkout / "result.json"):
+                for path in (
+                    self.run / "work" / "notes.txt",
+                    self.run / "source" / "app" / "x.result.json",
+                    self.run / "work" / "csharp-review.prompt.md",
+                    self.checkout / "result.json",
+                ):
                     self.assertIsNotNone(self.decide(tool, file_path=str(path)), path)
 
     def test_bash_runs_only_the_pipelines_own_self_check(self) -> None:
@@ -97,11 +101,19 @@ class ReviewGuardTests(unittest.TestCase):
 
     def test_the_hook_prints_a_deny_decision_and_fails_closed(self) -> None:
         def hook(stdin: str) -> str:
-            return subprocess.run([sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_guard.py")], input=stdin,
-                                  capture_output=True, text=True, check=True).stdout
+            return subprocess.run(
+                [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_guard.py")],
+                input=stdin,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
 
-        event = {"tool_name": "Read", "tool_input": {"file_path": str(self.checkout / "app" / "x.cs")},
-                 "cwd": str(self.outside_cwd)}
+        event = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(self.checkout / "app" / "x.cs")},
+            "cwd": str(self.outside_cwd),
+        }
         decision = json.loads(hook(json.dumps(event)))["hookSpecificOutput"]
         self.assertEqual(("PreToolUse", "deny"), (decision["hookEventName"], decision["permissionDecision"]))
         self.assertIn("may only look inside the review run folder", decision["permissionDecisionReason"])

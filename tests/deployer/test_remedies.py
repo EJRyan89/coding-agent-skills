@@ -122,8 +122,11 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.make_skill("alpha", "Test {{REPOS_ROOT}}", ["REPOS_ROOT"])
         self.write(self.config_file(), "_source_id=test/skills\nREPOS_ROOT=C:/\n")
         result = self.deploy_fails("--all", pattern="must not be a filesystem root")
-        self.assert_lines(result.output, "ERROR: REPOS_ROOT must not be a filesystem root (got: C:/)",
-                          "Run 'python deploy.py configure' to change it.")
+        self.assert_lines(
+            result.output,
+            "ERROR: REPOS_ROOT must not be a filesystem root (got: C:/)",
+            "Run 'python deploy.py configure' to change it.",
+        )
 
 
 class OwnershipRemedyTests(RemedyTestCase):
@@ -203,8 +206,17 @@ class RecoveryRemedyTests(RemedyTestCase):
         run = self.staging_run("20260101-000000-gone")
         self.write(
             run / "journal.jsonl",
-            json.dumps({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                        "retain": False, "backup_hash": ZERO_HASH}) + "\n",
+            json.dumps(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": False,
+                    "backup_hash": ZERO_HASH,
+                }
+            )
+            + "\n",
         )
         result = self.deploy_fails("--all", pattern="Recovery failed")
         self.assert_lines(
@@ -226,8 +238,16 @@ class RecoveryRemedyTests(RemedyTestCase):
         run = self.staging_run("20260101-000000-done")
         self.write(
             run / "journal.jsonl",
-            json.dumps({"op": "install", "item": "ghost", "from": "staging/ghost", "to": "skills/ghost",
-                        "staged_hash": ZERO_HASH}) + "\n",
+            json.dumps(
+                {
+                    "op": "install",
+                    "item": "ghost",
+                    "from": "staging/ghost",
+                    "to": "skills/ghost",
+                    "staged_hash": ZERO_HASH,
+                }
+            )
+            + "\n",
         )
         result = self.deploy_fails("--all", pattern="Installed destination missing for ghost")
         self.assert_lines(
@@ -300,28 +320,37 @@ class LockRemedyTests(RemedyTestCase):
         self.fixture()
         self.write_lock({"pid": 4242, "token": "old-token", "start_time": 7})
         result = self.deploy_fails("--all", pattern="Another deployment is running", probe=probe_returning(True, 7))
-        self.assert_lines(result.output, "ERROR: Another deployment is running (PID 4242).",
-                          "Wait for it to finish, then retry.")
+        self.assert_lines(
+            result.output, "ERROR: Another deployment is running (PID 4242).", "Wait for it to finish, then retry."
+        )
 
     def test_unprovable_lock_says_when_to_remove_it(self) -> None:
-        stale = (f"If no deployment is running, the lock is stale: remove {forward(self.lock_dir)}, then retry.",
-                 SEE_LOCK)
+        stale = (
+            f"If no deployment is running, the lock is stale: remove {forward(self.lock_dir)}, then retry.",
+            SEE_LOCK,
+        )
         self.fixture()
         self.write_lock(None)
-        self.assert_lines(self.deploy_fails("--all", pattern="no metadata").output,
-                          "ERROR: Lock exists but has no metadata (may be initializing).", *stale)
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="no metadata").output,
+            "ERROR: Lock exists but has no metadata (may be initializing).",
+            *stale,
+        )
         self.write(self.lock_dir / "info.json", json.dumps({"token": "x"}))
-        self.assert_lines(self.deploy_fails("--all", pattern="no PID").output,
-                          "ERROR: Lock metadata is malformed (no PID).", *stale)
+        self.assert_lines(
+            self.deploy_fails("--all", pattern="no PID").output, "ERROR: Lock metadata is malformed (no PID).", *stale
+        )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": None}))
         self.assert_lines(
             self.deploy_fails("--all", pattern="cannot be verified", probe=probe_returning(True, 7)).output,
-            "ERROR: Lock PID 4242 is alive but its process identity cannot be verified.", *stale,
+            "ERROR: Lock PID 4242 is alive but its process identity cannot be verified.",
+            *stale,
         )
         self.write(self.lock_dir / "info.json", json.dumps({"pid": 4242, "start_time": 7}))
         self.assert_lines(
             self.deploy_fails("--all", pattern="start time cannot be read", probe=probe_returning(True, None)).output,
-            "ERROR: Lock PID 4242 is alive but its start time cannot be read.", *stale,
+            "ERROR: Lock PID 4242 is alive but its start time cannot be read.",
+            *stale,
         )
 
     def test_failed_lock_initialization_says_to_retry_or_remove_the_lock(self) -> None:
@@ -364,8 +393,9 @@ class LockRemedyTests(RemedyTestCase):
             real_move(source, destination)
 
         with mock.patch("deployer.fsops.move", side_effect=failing_move):
-            result = self.deploy_fails("--all", pattern="Failed to reclaim stale lock",
-                                       probe=probe_returning(False, None))
+            result = self.deploy_fails(
+                "--all", pattern="Failed to reclaim stale lock", probe=probe_returning(False, None)
+            )
         self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
 
         calls = {"count": 0}
@@ -390,8 +420,9 @@ class RecoveryGuideTests(unittest.TestCase):
             ("When recovery fails", "Backups", "The deployment lock", "Ownership held by another source"),
             errors.RECOVERY_SECTIONS,
         )
-        headings = re.findall(r"^## (.+)$", (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8"),
-                              re.MULTILINE)
+        headings = re.findall(
+            r"^## (.+)$", (REPOSITORY_ROOT / "docs" / "recovery.md").read_text(encoding="utf-8"), re.MULTILINE
+        )
         for section in errors.RECOVERY_SECTIONS:
             self.assertIn(section, headings)
 

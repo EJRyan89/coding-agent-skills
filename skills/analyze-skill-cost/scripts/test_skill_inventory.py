@@ -73,7 +73,10 @@ class LocateTests(TemporaryTestCase):
         (self.repo / "nested").mkdir()
         completed = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), "locate", "alpha", "--home", str(self.home)],
-            cwd=self.repo / "nested", capture_output=True, text=True, check=False,
+            cwd=self.repo / "nested",
+            capture_output=True,
+            text=True,
+            check=False,
         )
         self.assertEqual(0, completed.returncode, completed.stderr)
         lines = completed.stdout.splitlines()
@@ -237,7 +240,10 @@ class InventoryTests(TemporaryTestCase):
 
     def test_a_doc_reached_only_through_another_doc_is_a_nested_reference(self) -> None:
         write(self.root / "SKILL.md", "---\nname: demo\n---\nRead [a](references/a.md).\n")
-        write(self.root / "references" / "a.md", "See `b.md`, `references/b.md`, and ${CLAUDE_SKILL_DIR}/references/b.md.\n")
+        write(
+            self.root / "references" / "a.md",
+            "See `b.md`, `references/b.md`, and ${CLAUDE_SKILL_DIR}/references/b.md.\n",
+        )
         write(self.root / "references" / "b.md", "Back to `a.md`; `missing.md`, `../outside.md`, `SKILL.md`.\n")
         self.assertEqual(
             [
@@ -246,7 +252,10 @@ class InventoryTests(TemporaryTestCase):
             ],
             self.structure_flags(),
         )
-        write(self.root / "SKILL.md", "---\nname: demo\n---\nRead `references/a.md`, then ${CLAUDE_SKILL_DIR}/references/b.md.\n")
+        write(
+            self.root / "SKILL.md",
+            "---\nname: demo\n---\nRead `references/a.md`, then ${CLAUDE_SKILL_DIR}/references/b.md.\n",
+        )
         self.assertEqual([], self.structure_flags())
 
     def test_missing_main_file_is_flagged(self) -> None:
@@ -270,14 +279,16 @@ class InventoryTests(TemporaryTestCase):
     def test_reads_outside_the_folder_and_declared_dependencies_are_reported(self) -> None:
         source = self.root / "source"
         skill = source / "skills" / "alpha"
-        write(skill / "SKILL.md",
-              "---\n"
-              "description: see `../ignored.md`\n"  # 2: frontmatter is skipped
-              "---\n"
-              "Read `../shared.md`.\n"  # 4
-              "Then read `${CLAUDE_SKILL_DIR}/../beta/SKILL.md` and `../shared.md` again.\n"  # 5: counted once
-              "See `../missing.md`.\n"  # 6
-              "Inside: `./notes.md` and `../alpha/notes.md`.\n")  # 7: inside the skill folder
+        write(
+            skill / "SKILL.md",
+            "---\n"
+            "description: see `../ignored.md`\n"  # 2: frontmatter is skipped
+            "---\n"
+            "Read `../shared.md`.\n"  # 4
+            "Then read `${CLAUDE_SKILL_DIR}/../beta/SKILL.md` and `../shared.md` again.\n"  # 5: counted once
+            "See `../missing.md`.\n"  # 6
+            "Inside: `./notes.md` and `../alpha/notes.md`.\n",
+        )  # 7: inside the skill folder
         # A plain relative path resolves against docs/, a ${CLAUDE_SKILL_DIR} one against the skill folder.
         write(skill / "docs" / "guide.md", "Also `../../shared.md` and `${CLAUDE_SKILL_DIR}/../shared.md`.\n")
         write(source / "skills" / "shared.md", "12345678\n")  # 9 bytes, ceil(9 / 4) = 3 tokens
@@ -333,7 +344,9 @@ class ToolsTests(TemporaryTestCase):
             'allowed-tools: ["Bash", "Read"]\nmodel: "haiku"': ["MODEL haiku", "ALLOWED Bash", "ALLOWED Read"],
             "allowed-tools: Bash(git status:*), Bash(git add:*) Read": ["MODEL none", "ALLOWED Bash", "ALLOWED Read"],
             "allowed-tools:\n  - Grep\n  - mcp__srv__find\nmodel: sonnet": [
-                "MODEL sonnet", "ALLOWED Grep", "ALLOWED mcp__srv__find",
+                "MODEL sonnet",
+                "ALLOWED Grep",
+                "ALLOWED mcp__srv__find",
             ],
             "name: x": ["MODEL none", "NO_ALLOWED_TOOLS"],
         }
@@ -387,14 +400,20 @@ class ToolsTests(TemporaryTestCase):
         # On Windows Claude Code may run a bash fence through its PowerShell tool, so a PowerShell grant is used.
         for fence in ("bash", "pwsh"):
             with self.subTest(fence=fence):
-                lines = self.tools(f'---\nallowed-tools: ["Bash(ls *)", "PowerShell(ls *)"]\n---\n```{fence}\nls x\n```\n')
-                self.assertEqual(["USED Bash 4", "USED PowerShell 4"],
-                                 [line for line in lines if line.startswith(("USED", "UNUSED", "MISSING"))])
+                lines = self.tools(
+                    f'---\nallowed-tools: ["Bash(ls *)", "PowerShell(ls *)"]\n---\n```{fence}\nls x\n```\n'
+                )
+                self.assertEqual(
+                    ["USED Bash 4", "USED PowerShell 4"],
+                    [line for line in lines if line.startswith(("USED", "UNUSED", "MISSING"))],
+                )
 
     def test_prose_that_implies_running_a_command_implies_either_shell(self) -> None:
         lines = self.tools('---\nallowed-tools: ["Bash(ls *)", "PowerShell(ls *)"]\n---\nRun the scripts.\n')
-        self.assertEqual(["IMPLIED Bash 4", "IMPLIED PowerShell 4"],
-                         [line for line in lines if line.startswith(("IMPLIED", "UNUSED"))])
+        self.assertEqual(
+            ["IMPLIED Bash 4", "IMPLIED PowerShell 4"],
+            [line for line in lines if line.startswith(("IMPLIED", "UNUSED"))],
+        )
 
     def implied(self, body: str, allowed: str = '["Read", "Edit", "AskUserQuestion", "Grep"]') -> list[str]:
         lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}")
@@ -436,8 +455,10 @@ class ToolsTests(TemporaryTestCase):
         )
         self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(prompt, '["Read", "Agent"]'))
         quoted = 'Give the subagent this prompt: "Read the plan and ask the user." Then report.\n'
-        self.assertEqual(["UNUSED_ALLOWED Read", "UNUSED_ALLOWED AskUserQuestion"],
-                         self.implied(quoted, '["Read", "AskUserQuestion"]'))
+        self.assertEqual(
+            ["UNUSED_ALLOWED Read", "UNUSED_ALLOWED AskUserQuestion"],
+            self.implied(quoted, '["Read", "AskUserQuestion"]'),
+        )
 
     def test_a_quoted_span_that_is_not_a_subagent_prompt_still_counts(self) -> None:
         cases = {
@@ -525,8 +546,10 @@ class ToolsTests(TemporaryTestCase):
             "```\n"
         )
         self.assertEqual(
-            ['EXPANDS 6 python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --cwd "$PWD"',
-             'EXPANDS 7 python -B x.py --home "${HOME}" --at "$(date)"'],
+            [
+                'EXPANDS 6 python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" --cwd "$PWD"',
+                'EXPANDS 7 python -B x.py --home "${HOME}" --at "$(date)"',
+            ],
             [line for line in self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}") if line.startswith("EXPANDS")],
         )
 
@@ -536,25 +559,32 @@ class ToolsTests(TemporaryTestCase):
 
     def test_without_allowed_tools_nothing_is_missing_or_unused(self) -> None:
         lines = self.tools("Use the `Read` tool.\n")
-        self.assertEqual(["MODEL none", "DESCRIPTION 0 0", "INVOCATION model", "NO_ALLOWED_TOOLS", "USED Read 1"],
-                         lines)
+        self.assertEqual(
+            ["MODEL none", "DESCRIPTION 0 0", "INVOCATION model", "NO_ALLOWED_TOOLS", "USED Read 1"], lines
+        )
 
     def test_listing_reports_the_description_every_session_loads(self) -> None:
         description = 'description: "Internal support. Not intended for direct invocation."'  # 53 characters, ceil(53 / 4) = 14 tokens
         cases = {
             "description: Run the report.": ["DESCRIPTION 15 4", "INVOCATION model"],
             "description: >-\n  Run the\n  report.": ["DESCRIPTION 15 4", "INVOCATION model"],
-            "description: 'Run the report.'\ndisable-model-invocation: 'true'": ["DESCRIPTION 15 4", "INVOCATION user-only"],
+            "description: 'Run the report.'\ndisable-model-invocation: 'true'": [
+                "DESCRIPTION 15 4",
+                "INVOCATION user-only",
+            ],
             description: ["DESCRIPTION 53 14", "INVOCATION model", "INTERNAL_LISTED"],
             f"{description}\ndisable-model-invocation: true": ["DESCRIPTION 53 14", "INVOCATION user-only"],
-            f"{description}\ndisable-model-invocation: true\nuser-invocable: false":
-                ["DESCRIPTION 53 14", "INVOCATION hidden"],
+            f"{description}\ndisable-model-invocation: true\nuser-invocable: false": [
+                "DESCRIPTION 53 14",
+                "INVOCATION hidden",
+            ],
         }
         for frontmatter, expected in cases.items():
             with self.subTest(frontmatter=frontmatter):
                 lines = self.tools(f"---\n{frontmatter}\n---\nBody.\n")
-                self.assertEqual(expected, [line for line in lines if line.startswith(("DESCRIPTION", "INVOCATION",
-                                                                                         "INTERNAL"))])
+                self.assertEqual(
+                    expected, [line for line in lines if line.startswith(("DESCRIPTION", "INVOCATION", "INTERNAL"))]
+                )
 
     def test_frontmatter_it_cannot_read_fails_with_the_reason(self) -> None:
         cases = {
@@ -632,8 +662,7 @@ class ScanTests(TemporaryTestCase):
             "Show its stdout to the user as-is.\n"  # 2
             "```bash\n"
             'python -B "${CLAUDE_SKILL_DIR}/scripts/pipeline.py" prepare\n'  # 4: the command that writes the prompt
-            "```\n"
-            + delegation,  # 6
+            "```\n" + delegation,  # 6
         )
         code, lines, error = run("scan", str(skill))
         self.assertEqual(0, code, error)
@@ -641,13 +670,18 @@ class ScanTests(TemporaryTestCase):
             [(1, "loop"), (1, "per-item-command"), (2, "relayed-output"), (6, "subagent-reply")],
             [(int(line.split()[2]), line.split()[3]) for line in lines if line.startswith("CUE ")],
         )
-        self.assertEqual([f"RUNTIME_PROMPT {skill.as_posix()} 6 " + "${CLAUDE_SKILL_DIR}/scripts/pipeline.py"],
-                         [line for line in lines if line.startswith("RUNTIME_PROMPT ")])
+        self.assertEqual(
+            [f"RUNTIME_PROMPT {skill.as_posix()} 6 " + "${CLAUDE_SKILL_DIR}/scripts/pipeline.py"],
+            [line for line in lines if line.startswith("RUNTIME_PROMPT ")],
+        )
 
         bounded = write(self.root / "bounded.md", delegation + "Each subagent must reply with exactly: DONE.\n")
         _, lines, _ = run("scan", str(bounded))
-        self.assertEqual([f"RUNTIME_PROMPT {bounded.as_posix()} 1 unknown"], lines,
-                         "a bounded reply is not flagged, and no earlier command names the writer")
+        self.assertEqual(
+            [f"RUNTIME_PROMPT {bounded.as_posix()} 1 unknown"],
+            lines,
+            "a bounded reply is not flagged, and no earlier command names the writer",
+        )
 
     def test_long_lines_are_truncated(self) -> None:
         skill = write(self.root / "SKILL.md", "For each " + "x" * 300 + "\n")

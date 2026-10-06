@@ -78,7 +78,6 @@ for line in sys.stdin:
 
 
 class HandshakeTests(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo with spaces"
@@ -114,16 +113,20 @@ class HandshakeTests(unittest.TestCase):
 
     def test_server_without_tools_capability_is_not_asked_for_tools(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("notools")})
-        self.assertEqual(
-            (0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=none"]), self._run()
-        )
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=none"]), self._run())
 
     def test_supported_older_protocol_and_paged_tools_pass(self) -> None:
         self._write(".mcp.json", "mcpServers", {"older": self._stdio("older"), "paged": self._stdio("paged")})
-        self.assertEqual((0, [
-            "HANDSHAKE_OK older source=.mcp.json protocol=2025-03-26 tools=none",
-            "HANDSHAKE_OK paged source=.mcp.json protocol=2025-06-18 tools=3",
-        ]), self._run())
+        self.assertEqual(
+            (
+                0,
+                [
+                    "HANDSHAKE_OK older source=.mcp.json protocol=2025-03-26 tools=none",
+                    "HANDSHAKE_OK paged source=.mcp.json protocol=2025-06-18 tools=3",
+                ],
+            ),
+            self._run(),
+        )
 
     def test_supported_protocol_versions_are_the_published_revisions(self) -> None:
         self.assertEqual({"2024-11-05", "2025-03-26", "2025-06-18"}, mcp_handshake.SUPPORTED_PROTOCOL_VERSIONS)
@@ -168,11 +171,15 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(["HANDSHAKE_OK docs source=.mcp.json,.vscode/mcp.json protocol=2025-06-18 tools=2"], lines)
 
     def test_failures_are_reported_per_server(self) -> None:
-        self._write(".mcp.json", "mcpServers", {
-            "crash": self._stdio("exit"),
-            "refuse": self._stdio("error"),
-            "missing": {"command": "no-such-mcp-command-for-tests"},
-        })
+        self._write(
+            ".mcp.json",
+            "mcpServers",
+            {
+                "crash": self._stdio("exit"),
+                "refuse": self._stdio("error"),
+                "missing": {"command": "no-such-mcp-command-for-tests"},
+            },
+        )
         code, lines = self._run()
         self.assertEqual(1, code)
         self.assertEqual(3, len(lines), lines)
@@ -201,9 +208,15 @@ class HandshakeTests(unittest.TestCase):
 
     def test_stderr_written_after_stdout_closes_is_still_reported(self) -> None:
         self._write(".mcp.json", "mcpServers", {"crash": self._stdio("lateexit")})
-        self.assertEqual((1, [
-            "HANDSHAKE_FAILED crash source=.mcp.json server exited before responding: boom: stderr after stdout closed"
-        ]), self._run())
+        self.assertEqual(
+            (
+                1,
+                [
+                    "HANDSHAKE_FAILED crash source=.mcp.json server exited before responding: boom: stderr after stdout closed"
+                ],
+            ),
+            self._run(),
+        )
 
     def test_unresponsive_server_times_out(self) -> None:
         self._write(".mcp.json", "mcpServers", {"slow": self._stdio("silent")})
@@ -222,11 +235,18 @@ class HandshakeTests(unittest.TestCase):
             '[mcp_servers.events]\nurl = "https://example.invalid/sse"\ntype = "sse"\n', encoding="utf-8"
         )
         self.assertEqual(
-            (0, ["SKIPPED remote source=.github/mcp.json transport=http",
-                 "SKIPPED events source=.codex/config.toml transport=sse"]),
+            (
+                0,
+                [
+                    "SKIPPED remote source=.github/mcp.json transport=http",
+                    "SKIPPED events source=.codex/config.toml transport=sse",
+                ],
+            ),
             self._run(),
         )
-        self.assertEqual((0, ["SKIPPED events source=.codex/config.toml transport=sse"]), self._run("--server", "events"))
+        self.assertEqual(
+            (0, ["SKIPPED events source=.codex/config.toml transport=sse"]), self._run("--server", "events")
+        )
 
     def test_unreadable_configs_fail_instead_of_reporting_no_servers(self) -> None:
         (self.root / ".mcp.json").write_text('{"mcpServers": {', encoding="utf-8")

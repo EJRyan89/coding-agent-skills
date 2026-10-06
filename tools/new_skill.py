@@ -69,11 +69,15 @@ def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
     for line in skill_inventory.grant_findings(skill_inventory.allowed_entries(allowed_tools), []):
         kind, entry = line.split(" ", 1)
         if kind == "UNSCOPED_ALLOWED":
-            found.append(f"allowed-tools entry {entry} grants {entry} for every command; scope it to what the skill runs")
+            found.append(
+                f"allowed-tools entry {entry} grants {entry} for every command; scope it to what the skill runs"
+            )
         else:
             twin = "PowerShell" if entry.startswith("Bash") else "Bash"
-            found.append(f"allowed-tools entry {entry} has no {twin} twin; on Windows the model may run a command "
-                         "through either shell")
+            found.append(
+                f"allowed-tools entry {entry} has no {twin} twin; on Windows the model may run a command "
+                "through either shell"
+            )
     return found
 
 
@@ -157,7 +161,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("name")
     parser.add_argument("--description", required=True, help="what the skill does and when to use it, on one line")
     parser.add_argument("--argument-hint", help="the arguments, in the notation docs/skills.md explains")
-    parser.add_argument("--user-only", action="store_true", help="only the user may start it (disable-model-invocation)")
+    parser.add_argument(
+        "--user-only", action="store_true", help="only the user may start it (disable-model-invocation)"
+    )
     parser.add_argument("--opt-in", action="store_true", help="leave it out of deploy.py --all unless chosen")
     parser.add_argument("--tool", action="append", default=[], help="an external tool it runs, from deployer/tools.py")
     parser.add_argument(

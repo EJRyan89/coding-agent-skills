@@ -8,7 +8,12 @@ from harness import DeployerTestCase, forward
 class CoreLifecycleTests(DeployerTestCase):
     def test_fresh_install_expands_tokens_creates_manifest_and_leaves_source_unchanged(self) -> None:
         self.make_source_json(shared_assets={"shared-doc.md": "owner"})
-        self.make_skill("alpha", "Path is {{HOME}}/.claude and repos at {{REPOS_ROOT}}/stuff", ["HOME", "REPOS_ROOT"], ["shared-doc.md"])
+        self.make_skill(
+            "alpha",
+            "Path is {{HOME}}/.claude and repos at {{REPOS_ROOT}}/stuff",
+            ["HOME", "REPOS_ROOT"],
+            ["shared-doc.md"],
+        )
         self.make_shared_asset("shared-doc.md", "Shared at {{HOME}}")
         self.make_config()
         self.deploy_ok("--all")
@@ -101,7 +106,9 @@ class CoreLifecycleTests(DeployerTestCase):
         (self.skills_dir / "alpha").mkdir()
         self.write(self.skills_dir / "alpha" / "SKILL.md", "---\nname: alpha\n---\n\nDifferent content\n")
         result = self.deploy_ok("--all")
-        self.assertRegex(result.output, r"SKIPPED \(1\):\n  alpha \(unmanaged and differs from the rendered skill\)\n--- ")
+        self.assertRegex(
+            result.output, r"SKIPPED \(1\):\n  alpha \(unmanaged and differs from the rendered skill\)\n--- "
+        )
         self.assertIn("+Template content", result.output)
         self.assertIn("Different content", self.skill_text("alpha"))
         self.assertNotIn("alpha", self.owned("skills"))

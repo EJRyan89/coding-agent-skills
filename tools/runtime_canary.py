@@ -79,7 +79,7 @@ KEPT = {
     "claude": "user CLAUDE.md; auto-memory folder",
     "codex": "personal skills in ~/.agents/skills and ~/.codex/skills",
     "copilot": "personal skills in ~/.agents/skills and ~/.copilot/skills; MCP servers in ~/.copilot/mcp-config.json; "
-               "session history",
+    "session history",
 }
 # How a prompt starts a skill by name: `$<skill>` in Codex, `/<skill>` elsewhere. See "Starting a skill" in
 # docs/skills.md. npm installs Codex as a .cmd file that cmd.exe runs, so the text avoids cmd's special characters.
@@ -119,7 +119,7 @@ PLATFORM_ALLOWED = {
 # path, and before each `bash -c` command, which is not a script and is left out. Git Bash names the temporary
 # directory /tmp, so cygpath, where it exists, gives the Windows paths the canary compares. It takes the place of
 # any BASH_ENV of the user's, which is ambient configuration the canary leaves out.
-BASH_RECORDER = r'''# Written by tools/runtime_canary.py: record each Bash script a runtime starts, then step aside.
+BASH_RECORDER = r"""# Written by tools/runtime_canary.py: record each Bash script a runtime starts, then step aside.
 if [ -z "${BASH_EXECUTION_STRING+set}" ] && [ -n "${RUNTIME_CANARY_SCRIPT_LOG-}" ]; then
   case ${0##*[/\\]} in
     bash | bash.exe | sh | sh.exe) ;;
@@ -140,7 +140,7 @@ if [ -z "${BASH_EXECUTION_STRING+set}" ] && [ -n "${RUNTIME_CANARY_SCRIPT_LOG-}"
       ;;
   esac
 fi
-'''
+"""
 
 
 @dataclass(frozen=True)
@@ -157,9 +157,20 @@ Runner = Callable[[list[str], Path, dict[str, str], float], Completed]
 def run_process(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
     try:
         # Codex exec reads a prompt addition from stdin until it closes.
-        process = subprocess.run(arguments, cwd=cwd, env=environment, stdin=subprocess.DEVNULL, capture_output=True,
-                                 text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
+        process = subprocess.run(
+            arguments,
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
     except subprocess.TimeoutExpired as exc:
+
         def text(value: str | bytes | None) -> str:
             return value.decode("utf-8", "replace") if isinstance(value, bytes) else value or ""
 
@@ -230,8 +241,12 @@ def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[s
     """The runtime's own environment, sign-in included, plus the Python and Bash recorders."""
     recorder = home / STATE / "recorder"
     existing = base.get("PYTHONPATH")
-    return {**base, "PYTHONPATH": f"{recorder}{os.pathsep}{existing}" if existing else str(recorder),
-            "BASH_ENV": forward(recorder / "bash_env.sh"), SCRIPT_LOG: str(script_log)}
+    return {
+        **base,
+        "PYTHONPATH": f"{recorder}{os.pathsep}{existing}" if existing else str(recorder),
+        "BASH_ENV": forward(recorder / "bash_env.sh"),
+        SCRIPT_LOG: str(script_log),
+    }
 
 
 def user_only(home: Path, skill: str) -> bool:
@@ -257,23 +272,61 @@ def supplied(runtime: str, codex_sandbox: str) -> list[str]:
     return [f"windows.sandbox={codex_sandbox}"] if runtime == "codex" else []
 
 
-def run_command(runtime: str, executable: str, skill: str, home: Path,
-                codex_sandbox: str = DEFAULT_CODEX_SANDBOX) -> list[str]:
+def run_command(
+    runtime: str, executable: str, skill: str, home: Path, codex_sandbox: str = DEFAULT_CODEX_SANDBOX
+) -> list[str]:
     text = prompt(runtime, skill)
     if runtime == "claude":
         # Project settings only, so the installed skills under ~/.claude/skills do not load beside the canary's. No
         # permission flag: the skill's allowed-tools must grant the command, as it would for a user.
-        return [executable, "-p", text, "--output-format", "stream-json", "--verbose",
-                "--setting-sources", "project,local", "--strict-mcp-config", "--no-session-persistence"]
+        return [
+            executable,
+            "-p",
+            text,
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--setting-sources",
+            "project,local",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+        ]
     if runtime == "codex":
         overrides = [item for setting in supplied(runtime, codex_sandbox) for item in ("-c", setting)]
-        return [executable, "exec", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--ephemeral",
-                "--sandbox", "workspace-write", *overrides, "--json", "-C", str(home), text]
+        return [
+            executable,
+            "exec",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--sandbox",
+            "workspace-write",
+            *overrides,
+            "--json",
+            "-C",
+            str(home),
+            text,
+        ]
     # The isolation of the Copilot review host in code-review-core, except --disallow-temp-dir, since the home is
     # a temporary directory, and with shell allowed only for Python and Bash, which is what the skills run.
-    return [executable, "--no-custom-instructions", "--no-ask-user", "--no-remote", "--no-remote-export",
-            "--disable-builtin-mcps", "--stream=off", "--output-format=json", "--allow-tool=shell(python:*)",
-            "--allow-tool=shell(bash:*)", "--deny-tool=write", "--deny-tool=url", "--deny-tool=memory", "-p", text]
+    return [
+        executable,
+        "--no-custom-instructions",
+        "--no-ask-user",
+        "--no-remote",
+        "--no-remote-export",
+        "--disable-builtin-mcps",
+        "--stream=off",
+        "--output-format=json",
+        "--allow-tool=shell(python:*)",
+        "--allow-tool=shell(bash:*)",
+        "--deny-tool=write",
+        "--deny-tool=url",
+        "--deny-tool=memory",
+        "-p",
+        text,
+    ]
 
 
 def claude_stream(output: str) -> tuple[set[str] | None, list[str]]:
@@ -308,8 +361,10 @@ def blocked_cause(runtime: str, codex_sandbox: str) -> str:
     """The likely reason a runtime's policy refused every command, and where the fix is documented."""
     if runtime != "codex":
         return ""
-    return (f"Codex ran with windows.sandbox={codex_sandbox}, so its Windows sandbox likely did not start; "
-            f"see {CODEX_SUPPORT}")
+    return (
+        f"Codex ran with windows.sandbox={codex_sandbox}, so its Windows sandbox likely did not start; "
+        f"see {CODEX_SUPPORT}"
+    )
 
 
 def discovery_lines(runtime: str, skills: list[str], found: discovery.Listing, home: Path) -> list[str]:
@@ -325,9 +380,20 @@ def discovery_lines(runtime: str, skills: list[str], found: discovery.Listing, h
     return lines
 
 
-def verdict(skill: str, home: Path, *, probes: list[dict], started: list[dict], completed: Completed,
-            denials: list[str], timeout: float, allowed: list[str] | None = None, installed: Path | None = None,
-            rejected: list[str] = (), cause: str = "") -> str:
+def verdict(
+    skill: str,
+    home: Path,
+    *,
+    probes: list[dict],
+    started: list[dict],
+    completed: Completed,
+    denials: list[str],
+    timeout: float,
+    allowed: list[str] | None = None,
+    installed: Path | None = None,
+    rejected: list[str] = (),
+    cause: str = "",
+) -> str:
     """RAN with the script and directory, BLOCKED by the runtime's policy, or FAILED with what went wrong.
 
     `started` holds the Python and Bash recorders' records. A script counts when it is under the canary's copy of
@@ -371,8 +437,17 @@ def verdict(skill: str, home: Path, *, probes: list[dict], started: list[dict], 
     return f"FAILED {quote(reason)}"
 
 
-def run_skill(runtime: str, executable: str, skill: str, home: Path, base: Mapping[str, str], runner: Runner,
-              timeout: float, allowed: list[str], codex_sandbox: str = DEFAULT_CODEX_SANDBOX) -> list[str]:
+def run_skill(
+    runtime: str,
+    executable: str,
+    skill: str,
+    home: Path,
+    base: Mapping[str, str],
+    runner: Runner,
+    timeout: float,
+    allowed: list[str],
+    codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
+) -> list[str]:
     state = home / STATE
     probe_log = state / "probe.jsonl"
     script_log = state / "scripts" / f"{runtime}-{skill}.jsonl"
@@ -380,8 +455,9 @@ def run_skill(runtime: str, executable: str, skill: str, home: Path, base: Mappi
     # sandbox creates belongs to its sandbox user, and the permissions that sandbox sets leave it unreadable here.
     probe_log.write_text("", encoding="utf-8")
     script_log.write_text("", encoding="utf-8")
-    completed = runner(run_command(runtime, executable, skill, home, codex_sandbox), home,
-                       environment(base, script_log, home), timeout)
+    completed = runner(
+        run_command(runtime, executable, skill, home, codex_sandbox), home, environment(base, script_log, home), timeout
+    )
     transcript = state / "transcripts" / f"{runtime}-{skill}.jsonl"
     transcript.write_text(completed.stdout, encoding="utf-8")
     if completed.stderr:
@@ -398,16 +474,38 @@ def run_skill(runtime: str, executable: str, skill: str, home: Path, base: Mappi
         reason = f"cannot read what the run recorded in {forward(exc.filename or probe_log)}: {exc.strerror or exc}"
         outcome = f"FAILED {quote(reason)}"
     else:
-        outcome = verdict(skill, home, probes=probes, started=started, completed=completed, denials=denials,
-                          timeout=timeout, allowed=allowed, rejected=rejections(runtime, completed),
-                          cause=blocked_cause(runtime, codex_sandbox))
-    return [*lines, f"RUNTIME {runtime} {skill} {outcome} KEPT {quote(KEPT[runtime])}",
-            f"TRANSCRIPT {runtime} {skill} {quote(forward(transcript))}"]
+        outcome = verdict(
+            skill,
+            home,
+            probes=probes,
+            started=started,
+            completed=completed,
+            denials=denials,
+            timeout=timeout,
+            allowed=allowed,
+            rejected=rejections(runtime, completed),
+            cause=blocked_cause(runtime, codex_sandbox),
+        )
+    return [
+        *lines,
+        f"RUNTIME {runtime} {skill} {outcome} KEPT {quote(KEPT[runtime])}",
+        f"TRANSCRIPT {runtime} {skill} {quote(forward(transcript))}",
+    ]
 
 
-def check_runtime(runtime: str, executable: str, skills: list[str], home: Path, base: Mapping[str, str],
-                  runner: Runner, discovery_only: bool, timeout: float, closure: Mapping[str, list[str]],
-                  codex_sandbox: str = DEFAULT_CODEX_SANDBOX, talk: discovery.Converse | None = None) -> list[str]:
+def check_runtime(
+    runtime: str,
+    executable: str,
+    skills: list[str],
+    home: Path,
+    base: Mapping[str, str],
+    runner: Runner,
+    discovery_only: bool,
+    timeout: float,
+    closure: Mapping[str, list[str]],
+    codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
+    talk: discovery.Converse | None = None,
+) -> list[str]:
     lines = []
     # Claude Code has no listing; its run reports the skills it found.
     if runtime in discovery.RUNTIMES:
@@ -425,15 +523,26 @@ def check_runtime(runtime: str, executable: str, skills: list[str], home: Path, 
         if reason:
             lines.append(f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}")
             continue
-        lines += run_skill(runtime, executable, skill, home, base, runner, timeout, closure.get(skill, [skill]),
-                           codex_sandbox)
+        lines += run_skill(
+            runtime, executable, skill, home, base, runner, timeout, closure.get(skill, [skill]), codex_sandbox
+        )
     return lines
 
 
-def canary(skills: list[str], runtimes: list[str], home: Path, *, sources: list[Path], runner: Runner | None = None,
-           which: Callable[[str], str | None] = shutil.which, base_environment: Mapping[str, str] | None = None,
-           discovery_only: bool = False, timeout: float = DEFAULT_TIMEOUT,
-           codex_sandbox: str = DEFAULT_CODEX_SANDBOX, talk: discovery.Converse | None = None) -> int:
+def canary(
+    skills: list[str],
+    runtimes: list[str],
+    home: Path,
+    *,
+    sources: list[Path],
+    runner: Runner | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    base_environment: Mapping[str, str] | None = None,
+    discovery_only: bool = False,
+    timeout: float = DEFAULT_TIMEOUT,
+    codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
+    talk: discovery.Converse | None = None,
+) -> int:
     """Deploy the sources into home, then check each runtime; print the facts and return the exit code."""
     runner = runner or run_process
     base = dict(os.environ if base_environment is None else base_environment)
@@ -461,8 +570,9 @@ def canary(skills: list[str], runtimes: list[str], home: Path, *, sources: list[
         if executable is None:
             print(f"SKIPPED {runtime} {quote(f'{runtime} is not on PATH')}")
             continue
-        for line in check_runtime(runtime, executable, ordered, home, base, runner, discovery_only, timeout, closure,
-                                  codex_sandbox, talk):
+        for line in check_runtime(
+            runtime, executable, ordered, home, base, runner, discovery_only, timeout, closure, codex_sandbox, talk
+        ):
             print(line, flush=True)
     return 0
 
@@ -477,22 +587,42 @@ def main(arguments: list[str]) -> int:
         description="Deploy into a throwaway home and check that each runtime finds and runs the skills.",
     )
     parser.add_argument("skills", nargs="*", metavar="SKILL", help="shipped skills to check besides the fixture")
-    parser.add_argument("--runtime", action="append", choices=RUNTIMES, dest="runtimes",
-                        help="check only this runtime; repeatable (default: all three)")
+    parser.add_argument(
+        "--runtime",
+        action="append",
+        choices=RUNTIMES,
+        dest="runtimes",
+        help="check only this runtime; repeatable (default: all three)",
+    )
     parser.add_argument("--discovery-only", action="store_true", help="list skills; run no model")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, metavar="SECONDS",
-                        help=f"limit for each runtime run (default: {DEFAULT_TIMEOUT})")
-    parser.add_argument("--codex-sandbox", choices=CODEX_SANDBOXES, default=DEFAULT_CODEX_SANDBOX,
-                        help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        metavar="SECONDS",
+        help=f"limit for each runtime run (default: {DEFAULT_TIMEOUT})",
+    )
+    parser.add_argument(
+        "--codex-sandbox",
+        choices=CODEX_SANDBOXES,
+        default=DEFAULT_CODEX_SANDBOX,
+        help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})",
+    )
     options = parser.parse_args(arguments)
     sources = [REPOSITORY_ROOT, FIXTURE_SOURCE]
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
     if unknown:
         parser.error(f"unknown skill: {', '.join(unknown)}")
     platform_support.use_utf8_output()
-    return canary(options.skills, options.runtimes or list(RUNTIMES), create_home(), sources=sources,
-                  discovery_only=options.discovery_only, timeout=options.timeout,
-                  codex_sandbox=options.codex_sandbox)
+    return canary(
+        options.skills,
+        options.runtimes or list(RUNTIMES),
+        create_home(),
+        sources=sources,
+        discovery_only=options.discovery_only,
+        timeout=options.timeout,
+        codex_sandbox=options.codex_sandbox,
+    )
 
 
 if __name__ == "__main__":

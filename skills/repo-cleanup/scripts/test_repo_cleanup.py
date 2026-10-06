@@ -65,8 +65,7 @@ def remove_tree(path: Path) -> None:
 
 
 def git(directory: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True,
-                            encoding="utf-8")
+    result = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr}")
     return result.stdout.strip()
@@ -111,10 +110,13 @@ def facts(lines: list[str], kind: str) -> list[list[str]]:
 
 def plan_lines(plan: dict, path: Path) -> list[str]:
     """A plan's decisions as fact lines, so tests read what it decided the way they read every other step."""
-    lines = [["BRANCH", branch["name"], branch["category"], branch["pr"], branch["sha"], branch["action"],
-              branch["detail"]] for branch in plan["branches"]]
-    lines += [["WORKTREE", entry["path"], entry["branch"], entry["action"], entry["detail"]]
-              for entry in plan["worktrees"]]
+    lines = [
+        ["BRANCH", branch["name"], branch["category"], branch["pr"], branch["sha"], branch["action"], branch["detail"]]
+        for branch in plan["branches"]
+    ]
+    lines += [
+        ["WORKTREE", entry["path"], entry["branch"], entry["action"], entry["detail"]] for entry in plan["worktrees"]
+    ]
     lines += [["FASTFORWARD", entry["branch"], entry["target"]] for entry in plan["fastforward"]]
     lines.append(["PLAN", str(path)])
     return ["\t".join(str(field) if str(field).strip() else "-" for field in line) for line in lines]
@@ -138,8 +140,10 @@ class FakeGitHub:
         if arguments[0] == "api":
             assert arguments[:3] == ["api", "--paginate", "--slurp"], arguments
             number = int(arguments[3].split("/")[4])
-            commits = [{"sha": sha, "parents": [{"sha": parent} for parent in parents]}
-                       for sha, *parents in (line.split() for line in self.commits.get(number, "").splitlines())]
+            commits = [
+                {"sha": sha, "parents": [{"sha": parent} for parent in parents]}
+                for sha, *parents in (line.split() for line in self.commits.get(number, "").splitlines())
+            ]
             return subprocess.CompletedProcess(arguments, 0, json.dumps([commits]), "")
         branch = arguments[arguments.index("--head") + 1]
         if branch in self.failing:
@@ -148,10 +152,15 @@ class FakeGitHub:
 
     def pull(self, branch: str, state: str, sha: str, commits: str = "") -> None:
         number = sum(len(pulls) for pulls in self.pulls.values()) + 1
-        self.pulls.setdefault(branch, []).append({
-            "number": number, "state": state, "headRefOid": sha,
-            "headRepository": {"name": "repo"}, "headRepositoryOwner": {"login": "owner"},
-        })
+        self.pulls.setdefault(branch, []).append(
+            {
+                "number": number,
+                "state": state,
+                "headRefOid": sha,
+                "headRepository": {"name": "repo"},
+                "headRepositoryOwner": {"login": "owner"},
+            }
+        )
         self.commits[number] = commits
 
 
@@ -177,8 +186,11 @@ class Fixture(unittest.TestCase):
         return git(directory, "rev-parse", "HEAD")
 
     def tip(self, branch: str) -> str | None:
-        result = subprocess.run(["git", "-C", str(self.clone), "rev-parse", "--verify", "--quiet",
-                                 f"refs/heads/{branch}"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "-C", str(self.clone), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip() or None
 
     def push_branch(self, name: str) -> str:
@@ -291,8 +303,10 @@ class FixtureTemplateTests(unittest.TestCase):
     def test_a_copied_fixture_matches_a_freshly_built_one_and_reaches_only_its_own_remote(self) -> None:
         def shape(root: Path) -> dict[str, str]:
             remote, other, clone = fixture_paths(root)
+
             def local(text: str) -> str:
                 return text.replace(str(root), "<root>").replace(root.as_posix(), "<root>")
+
             return {
                 f"{name} {aspect}": local(git(repository, *arguments))
                 for name, repository in (("remote", remote), ("other", other), ("clone", clone))
@@ -428,19 +442,23 @@ class PlanApplyTests(Fixture):
         self.finished_branch("release/1.0")
         planned, applied = self.clean()
         actions = {fields[0]: (fields[1], fields[2], fields[4]) for fields in facts(planned, "BRANCH")}
-        self.assertEqual({
-            "merged-gone": ("gone", "MERGED", "delete"),
-            "squashed-gone": ("gone", "MERGED", "delete"),
-            "abandoned-gone": ("gone", "CLOSED", "delete"),
-            "unproven-gone": ("gone", "NONE", "delete"),
-            "orphan-gone": ("gone", "NONE", "delete"),
-            "open-gone": ("gone", "OPEN", "keep"),
-            "failing-gone": ("gone", "UNKNOWN", "keep"),
-            "reused-gone": ("gone", "UNMATCHED", "keep"),
-            "release/1.0": ("gone", "-", "keep"),
-        }, actions)
-        self.assertEqual({"merged-gone", "orphan-gone", "squashed-gone"},
-                         {fields[0] for fields in facts(applied, "DELETED")})
+        self.assertEqual(
+            {
+                "merged-gone": ("gone", "MERGED", "delete"),
+                "squashed-gone": ("gone", "MERGED", "delete"),
+                "abandoned-gone": ("gone", "CLOSED", "delete"),
+                "unproven-gone": ("gone", "NONE", "delete"),
+                "orphan-gone": ("gone", "NONE", "delete"),
+                "open-gone": ("gone", "OPEN", "keep"),
+                "failing-gone": ("gone", "UNKNOWN", "keep"),
+                "reused-gone": ("gone", "UNMATCHED", "keep"),
+                "release/1.0": ("gone", "-", "keep"),
+            },
+            actions,
+        )
+        self.assertEqual(
+            {"merged-gone", "orphan-gone", "squashed-gone"}, {fields[0] for fields in facts(applied, "DELETED")}
+        )
         self.assertEqual([["abandoned-gone", abandoned], ["unproven-gone", unproven]], facts(applied, "UNMERGED"))
         self.assertIsNone(self.tip("squashed-gone"), "a pull request merged at the exact tip proves a squash merge")
         for name in ("abandoned-gone", "unproven-gone", "open-gone", "failing-gone", "reused-gone", "release/1.0"):
@@ -453,8 +471,9 @@ class PlanApplyTests(Fixture):
         self.assertIn("  PR history unmatched:    1 — reused-gone (kept)", summary)
         self.assertIn("  Unmerged (kept):", summary)
         self.assertIn("  Gone with open PR:", summary)
-        self.assertTrue(all(call[:2] == ["pr", "list"] or call[:2] == ["api", "--paginate"]
-                            for call in self.github.calls))
+        self.assertTrue(
+            all(call[:2] == ["pr", "list"] or call[:2] == ["api", "--paginate"] for call in self.github.calls)
+        )
 
         code, lines = self.confirm("force-delete", "abandoned-gone", "unproven-gone", "open-gone")
         self.assertEqual(0, code, lines)
@@ -463,8 +482,10 @@ class PlanApplyTests(Fixture):
         self.assertIsNone(self.tip("abandoned-gone"))
         self.assertIsNotNone(self.tip("open-gone"))
         summary = "\n".join(fields[0] for fields in facts(lines, "SUMMARY"))
-        self.assertIn("Branches deleted:        5 — merged-gone, orphan-gone, squashed-gone, abandoned-gone, "
-                      "unproven-gone", summary)
+        self.assertIn(
+            "Branches deleted:        5 — merged-gone, orphan-gone, squashed-gone, abandoned-gone, unproven-gone",
+            summary,
+        )
         self.assertNotIn("Unmerged (kept)", summary)
 
     def test_branch_that_moved_after_planning_is_preserved(self) -> None:
@@ -496,14 +517,19 @@ class PlanApplyTests(Fixture):
         git(self.clone, "worktree", "add", "--quiet", str(extended_tree), "extended-gone")
         planned, applied = self.clean()
         actions = {fields[0]: (fields[1], fields[2], fields[4]) for fields in facts(planned, "BRANCH")}
-        self.assertEqual({
-            "updated-gone": ("gone", "MERGED", "delete"),
-            "updated-in-worktree": ("gone", "MERGED", "remove-worktree"),
-            "extended-gone": ("gone", "UNMATCHED", "keep"),
-        }, actions)
+        self.assertEqual(
+            {
+                "updated-gone": ("gone", "MERGED", "delete"),
+                "updated-in-worktree": ("gone", "MERGED", "remove-worktree"),
+                "extended-gone": ("gone", "UNMATCHED", "keep"),
+            },
+            actions,
+        )
         self.assertEqual({"updated-gone", "updated-in-worktree"}, {fields[0] for fields in facts(applied, "DELETED")})
-        self.assertEqual({"updated wt": "updated-in-worktree"},
-                         {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")})
+        self.assertEqual(
+            {"updated wt": "updated-in-worktree"},
+            {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")},
+        )
         self.assertIsNone(self.tip("updated-gone"))
         self.assertFalse(updated_tree.exists())
         self.assertEqual(extended, self.tip("extended-gone"), "a later commit with real changes keeps the branch")
@@ -575,8 +601,9 @@ class PlanApplyTests(Fixture):
         code, lines = self.plan()
         self.assertEqual(0, code, lines)
         self.assertEqual(before, snapshot())
-        self.assertEqual([["behind", git(self.clone, "rev-parse", "refs/remotes/origin/behind")]],
-                         facts(lines, "FASTFORWARD"))
+        self.assertEqual(
+            [["behind", git(self.clone, "rev-parse", "refs/remotes/origin/behind")]], facts(lines, "FASTFORWARD")
+        )
         self.assertEqual([[str(self.plan_file)]], facts(lines, "PLAN"))
 
     def test_worktrees_are_removed_only_when_clean_unprotected_and_stale(self) -> None:
@@ -594,28 +621,38 @@ class PlanApplyTests(Fixture):
         outside = self.root / "outside" / "tracked wt"
         self.push_branch("tracked-work")
         kept = self.area / "kept wt"
-        for path, branch in ((clean, "feature/clean"), (squashed, "feature/squashed"), (dirty, "feature/dirty"), (protected, "hotfix"),
-                             (outside, "tracked-merged"), (kept, "tracked-work")):
+        for path, branch in (
+            (clean, "feature/clean"),
+            (squashed, "feature/squashed"),
+            (dirty, "feature/dirty"),
+            (protected, "hotfix"),
+            (outside, "tracked-merged"),
+            (kept, "tracked-work"),
+        ):
             git(self.clone, "worktree", "add", "--quiet", str(path), branch)
         (dirty / "notes.txt").write_text("unsaved\n", encoding="utf-8")
         planned, applied = self.clean()
         worktrees = {Path(fields[0]).name: (fields[1], fields[2]) for fields in facts(planned, "WORKTREE")}
-        self.assertEqual({
-            "clean wt": ("feature/clean", "remove"),
-            "squashed wt": ("feature/squashed", "remove"),
-            "dirty wt": ("feature/dirty", "dirty:1"),
-            "hotfix wt": ("hotfix", "protected"),
-            "tracked wt": ("tracked-merged", "remove"),
-            "kept wt": ("tracked-work", "keep"),
-        }, worktrees)
+        self.assertEqual(
+            {
+                "clean wt": ("feature/clean", "remove"),
+                "squashed wt": ("feature/squashed", "remove"),
+                "dirty wt": ("feature/dirty", "dirty:1"),
+                "hotfix wt": ("hotfix", "protected"),
+                "tracked wt": ("tracked-merged", "remove"),
+                "kept wt": ("tracked-work", "keep"),
+            },
+            worktrees,
+        )
         self.assertEqual(["keep", "worktree-dirty"], self.branch_fact(planned, "feature/dirty")[4:6])
         self.assertEqual(["keep", "in-worktree"], self.branch_fact(planned, "tracked-work")[4:6])
         removed = {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")}
         self.assertEqual(
             {"clean wt": "feature/clean", "squashed wt": "feature/squashed", "tracked wt": "tracked-merged"}, removed
         )
-        self.assertEqual({"feature/clean", "feature/squashed", "tracked-merged"},
-                         {fields[0] for fields in facts(applied, "DELETED")})
+        self.assertEqual(
+            {"feature/clean", "feature/squashed", "tracked-merged"}, {fields[0] for fields in facts(applied, "DELETED")}
+        )
         self.assertEqual([], facts(applied, "UNMERGED"))
         self.assertFalse(clean.exists() or squashed.exists() or outside.exists())
         pruned = [fields[0] for fields in facts(applied, "PRUNED_DIR")]
@@ -655,8 +692,9 @@ class PlanApplyTests(Fixture):
         git(self.clone, "remote", "set-url", "origin", self.remote.as_posix())
         planned, applied = self.clean()
         fields = self.branch_fact(planned, "merged-gone")
-        self.assertEqual(["UNKNOWN", fields[3], "keep", "pr-unknown: origin is not a github.com repository"],
-                         fields[2:])
+        self.assertEqual(
+            ["UNKNOWN", fields[3], "keep", "pr-unknown: origin is not a github.com repository"], fields[2:]
+        )
         self.assertEqual([], facts(applied, "DELETED"))
         self.assertEqual([], self.github.calls)
 
@@ -672,8 +710,10 @@ class SweepTests(Fixture):
     def sweep(self, services: rc.Services | None = None, *extra: str) -> tuple[int, list[str]]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            code = rc.main(["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), *extra],
-                           services or rc.Services(gh=self.github))
+            code = rc.main(
+                ["sweep", "--repos-root", str(self.repos), "--plans", str(self.root / "plans"), *extra],
+                services or rc.Services(gh=self.github),
+            )
         return code, output.getvalue().splitlines()
 
     def test_a_dirty_repository_the_user_continues_is_cleaned_in_one_sweep_without_switching(self) -> None:
@@ -725,8 +765,10 @@ class SweepTests(Fixture):
                 with self.subTest(target=target):
                     output = io.StringIO()
                     with contextlib.redirect_stdout(output):
-                        code = rc.main(["sweep", "--repos-root", str(self.repos), "--plans", str(target)],
-                                       rc.Services(gh=self.github))
+                        code = rc.main(
+                            ["sweep", "--repos-root", str(self.repos), "--plans", str(target)],
+                            rc.Services(gh=self.github),
+                        )
                     lines = output.getvalue().splitlines()
                     self.assertEqual(1, code)
                     self.assertEqual(1, len(lines), lines)
@@ -764,12 +806,24 @@ class SweepTests(Fixture):
         code, lines = self.sweep()
         self.assertEqual(1, code, "a dirty or unfetched repository needs the agent")
         root = self.repos.as_posix()
-        self.assertEqual([[f"{root}/broken repo", "fetch-failed"], [f"{root}/dirty repo", "dirty"],
-                          [f"{root}/my repo", "cleaned"], [f"{root}/quiet repo", "quiet"]], facts(lines, "REPO"))
-        self.assertEqual([["4", "cleaned=1", "quiet=1", "dirty=1", "fetch-failed=1", "error=0", "git-failed=0"]],
-                         facts(lines, "SWEPT"))
-        self.assertEqual({"PLANS", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
-                         {line.split("\t")[0] for line in lines}, "plan items and step chatter stay out")
+        self.assertEqual(
+            [
+                [f"{root}/broken repo", "fetch-failed"],
+                [f"{root}/dirty repo", "dirty"],
+                [f"{root}/my repo", "cleaned"],
+                [f"{root}/quiet repo", "quiet"],
+            ],
+            facts(lines, "REPO"),
+        )
+        self.assertEqual(
+            [["4", "cleaned=1", "quiet=1", "dirty=1", "fetch-failed=1", "error=0", "git-failed=0"]],
+            facts(lines, "SWEPT"),
+        )
+        self.assertEqual(
+            {"PLANS", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
+            {line.split("\t")[0] for line in lines},
+            "plan items and step chatter stay out",
+        )
 
         blocks = self.blocks(lines)
         plan = (self.root / "plans" / "my repo.json").as_posix()
@@ -830,7 +884,6 @@ class SweepTests(Fixture):
         self.assertEqual([[f"{root}/my repo", "quiet"], [f"{root}/other repo", "git-failed"]], facts(lines, "REPO"))
         self.assertEqual([["could not run git: git vanished"]], facts(self.blocks(lines)["other repo"], "ERROR"))
 
-
     def test_a_sweep_that_cannot_start_fails_with_one_line(self) -> None:
         self.github.authenticated = False
         code, lines = self.sweep()
@@ -888,8 +941,11 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.plan = {"repo_root": str(self.repo), "events": []}
 
     def tip(self, branch: str) -> str | None:
-        result = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--verify", "--quiet",
-                                 f"refs/heads/{branch}"], capture_output=True, text=True)
+        result = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            capture_output=True,
+            text=True,
+        )
         return result.stdout.strip() or None
 
     def add(self, name: str) -> Path:
@@ -987,8 +1043,10 @@ class UnitTests(unittest.TestCase):
 
         (area / "busy" / "empty").mkdir(parents=True)
         (area / "busy" / "keep.txt").write_text("x", encoding="utf-8")
-        self.assertEqual([(area / "busy" / "empty").as_posix()],
-                         rc.prune_empty_parents(str(area / "busy" / "empty" / "removed"), [str(area)]))
+        self.assertEqual(
+            [(area / "busy" / "empty").as_posix()],
+            rc.prune_empty_parents(str(area / "busy" / "empty" / "removed"), [str(area)]),
+        )
         self.assertTrue((area / "busy" / "keep.txt").is_file())
 
         (root / "elsewhere" / "empty").mkdir(parents=True)

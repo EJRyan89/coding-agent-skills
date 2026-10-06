@@ -61,29 +61,36 @@ class AgentDeploymentTests(DeployerTestCase):
         result = self.deploy_ok("--all")
         self.assertFalse(self.agent.exists())
         self.assertEqual({}, self.owned("agents"))
-        self.assertIn("reviewer.md (agent, no selected skill needs it)",
-                      self.report_groups(result.output, "DEPLOYED")["REMOVED"])
+        self.assertIn(
+            "reviewer.md (agent, no selected skill needs it)", self.report_groups(result.output, "DEPLOYED")["REMOVED"]
+        )
         self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
         self.deploy_ok("--all")
         self.agent.write_bytes(self.content + b"local edit\n")
         self.make_skill("alpha", "Alpha")
         result = self.deploy_ok("--all")
         self.assertEqual(self.content + b"local edit\n", self.agent.read_bytes(), "a modified agent is kept")
-        self.assertIn("reviewer.md (agent, modified since last deploy)",
-                      self.report_groups(result.output, "DEPLOYED")["PRESERVED"])
+        self.assertIn(
+            "reviewer.md (agent, modified since last deploy)",
+            self.report_groups(result.output, "DEPLOYED")["PRESERVED"],
+        )
 
     def test_an_unmanaged_agent_file_is_skipped_unless_forced(self) -> None:
         self.write(self.agent, "my own reviewer\n")
         result = self.deploy_ok("--all")
         self.assertEqual("my own reviewer\n", self.agent.read_text(encoding="utf-8"))
         self.assertEqual({}, self.owned("agents"))
-        self.assertIn("reviewer.md (agent, unmanaged and differs)", self.report_groups(result.output, "DEPLOYED")["SKIPPED"])
+        self.assertIn(
+            "reviewer.md (agent, unmanaged and differs)", self.report_groups(result.output, "DEPLOYED")["SKIPPED"]
+        )
         dry = self.deploy_ok("--all", "--dry-run")
         self.assertIn("reviewer.md (agent, differs)", self.report_groups(dry.output, "DRY RUN")["CONFLICT"])
         forced = self.deploy_ok("--all", "--force-item", "reviewer.md")
         self.assertEqual(self.content, self.agent.read_bytes())
-        self.assertIn("reviewer.md (agent, forced, was unmanaged, previous copy backed up)",
-                      self.report_groups(forced.output, "DEPLOYED")["REPLACED"])
+        self.assertIn(
+            "reviewer.md (agent, forced, was unmanaged, previous copy backed up)",
+            self.report_groups(forced.output, "DEPLOYED")["REPLACED"],
+        )
         backups = list((self.claude_agents_dir / ".backups").rglob("reviewer.md"))
         self.assertEqual(["my own reviewer\n"], [path.read_text(encoding="utf-8") for path in backups])
 
@@ -96,14 +103,22 @@ class AgentDeploymentTests(DeployerTestCase):
 
     def test_invalid_agent_sources_fail_before_any_change(self) -> None:
         cases = {
-            "unknown agent": (lambda: self.make_skill("alpha", "Alpha", agent_deps=["missing"]),
-                              "Skill 'alpha' depends on unknown agent 'missing'"),
-            "name mismatch": (lambda: self.make_agent("reviewer", declared="other"),
-                              "Agent 'reviewer' frontmatter name 'other' does not match its file name"),
-            "unreadable": (lambda: self.write(self.source / "agents" / "reviewer.md", "---\nname: reviewer\n"),
-                           "Agent 'reviewer' frontmatter cannot be read: frontmatter is not closed"),
-            "not markdown": (lambda: self.write(self.source / "agents" / "notes.txt", "x\n"),
-                             "agents may contain only <name>.md agent definitions"),
+            "unknown agent": (
+                lambda: self.make_skill("alpha", "Alpha", agent_deps=["missing"]),
+                "Skill 'alpha' depends on unknown agent 'missing'",
+            ),
+            "name mismatch": (
+                lambda: self.make_agent("reviewer", declared="other"),
+                "Agent 'reviewer' frontmatter name 'other' does not match its file name",
+            ),
+            "unreadable": (
+                lambda: self.write(self.source / "agents" / "reviewer.md", "---\nname: reviewer\n"),
+                "Agent 'reviewer' frontmatter cannot be read: frontmatter is not closed",
+            ),
+            "not markdown": (
+                lambda: self.write(self.source / "agents" / "notes.txt", "x\n"),
+                "agents may contain only <name>.md agent definitions",
+            ),
             "bad name": (lambda: self.make_agent("Bad_Name"), "Agent name 'Bad_Name' does not match naming grammar"),
         }
         for name, (break_source, message) in cases.items():
@@ -145,11 +160,23 @@ class AgentDeploymentTests(DeployerTestCase):
         self.write(self.agent, "half-installed\n")
         run = self.home / ".claude" / "deployer" / "staging" / "20260101-000000-agent"
         lines = [
-            {"op": "backup", "root": "claude-agents", "item": "reviewer.md", "from": "claude-agents/reviewer.md",
-             "to": "claude-agents/reviewer.md.deploying-bak", "retain": False, "backup_hash": sha256(self.content)},
-            {"op": "install", "root": "claude-agents", "item": "reviewer.md",
-             "from": "staging/.claude-agents/reviewer.md", "to": "claude-agents/reviewer.md",
-             "staged_hash": sha256(b"half-installed\n")},
+            {
+                "op": "backup",
+                "root": "claude-agents",
+                "item": "reviewer.md",
+                "from": "claude-agents/reviewer.md",
+                "to": "claude-agents/reviewer.md.deploying-bak",
+                "retain": False,
+                "backup_hash": sha256(self.content),
+            },
+            {
+                "op": "install",
+                "root": "claude-agents",
+                "item": "reviewer.md",
+                "from": "staging/.claude-agents/reviewer.md",
+                "to": "claude-agents/reviewer.md",
+                "staged_hash": sha256(b"half-installed\n"),
+            },
         ]
         self.write(run / "journal.jsonl", "".join(json.dumps(line, separators=(",", ":")) + "\n" for line in lines))
         result = self.deploy_ok("--all")

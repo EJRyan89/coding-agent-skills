@@ -94,8 +94,9 @@ class ConfigValidationTests(DeployerTestCase):
         home = self.other_home("José Łukasz (home)")
         result = self.deploy_into(home)
         self.assertEqual(0, result.code, result.output)
-        self.assertIn(f"Home {forward(home)}", (home / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(
-            encoding="utf-8"))
+        self.assertIn(
+            f"Home {forward(home)}", (home / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(encoding="utf-8")
+        )
 
     def test_missing_config_is_reported_and_nothing_is_touched(self) -> None:
         self.make_source_json()
@@ -243,7 +244,7 @@ class MetadataValidationTests(DeployerTestCase):
         self.write(
             skill_md,
             "---\nname: alpha\ndescription: >-\n  Folded across\n  two lines.\n"
-            "hooks:\n  PreToolUse:\n    - matcher: \"Bash\"\n---\n\nBody.\n",
+            'hooks:\n  PreToolUse:\n    - matcher: "Bash"\n---\n\nBody.\n',
         )
         self.make_config()
         result = self.deploy("--all", "--dry-run")
@@ -268,7 +269,9 @@ class MetadataValidationTests(DeployerTestCase):
     def test_skill_without_metadata_is_rejected(self) -> None:
         self.make_source_json()
         (self.source / "skills" / "orphan").mkdir()
-        self.write(self.source / "skills" / "orphan" / "SKILL.md", '---\nname: orphan\ndescription: "Orphan skill"\n---\n')
+        self.write(
+            self.source / "skills" / "orphan" / "SKILL.md", '---\nname: orphan\ndescription: "Orphan skill"\n---\n'
+        )
         self.make_config()
         self.deploy_fails("--all", pattern="has no matching deploy-meta/orphan.json")
 
@@ -387,9 +390,13 @@ class SourceCheckoutTests(DeployerTestCase):
         empty = self.root / "empty.gitconfig"
         empty.touch()
         environment = {
-            **os.environ, "GIT_CONFIG_GLOBAL": str(empty), "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
-            "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": str(empty),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Test",
+            "GIT_AUTHOR_EMAIL": "test@example.invalid",
+            "GIT_COMMITTER_NAME": "Test",
+            "GIT_COMMITTER_EMAIL": "test@example.invalid",
         }
         subprocess.run(["git", "-C", str(self.source), *arguments], check=True, capture_output=True, env=environment)
 
@@ -469,7 +476,9 @@ class CanaryHomeTests(DeployerTestCase):
         self.write(self.config_file(), "not a configuration\n")
         result = self.run_from(linked, "--canary-home", str(self.canary), "--all")
         self.assertEqual(0, result.code, result.output)
-        manifest = json.loads((self.canary / ".claude" / "skills" / ".deploy-manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads(
+            (self.canary / ".claude" / "skills" / ".deploy-manifest.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(forward(linked), forward(manifest["sources"]["test/skills"]["source_dir"]))
         self.assertTrue((self.canary / ".agents" / "skills" / "alpha" / "SKILL.md").is_file())
         rendered = (self.canary / ".claude" / "skills" / "beta" / "SKILL.md").read_text(encoding="utf-8")
@@ -492,7 +501,9 @@ class CanaryHomeTests(DeployerTestCase):
         (other / "deploy-meta" / "gamma.json").write_text("{}", encoding="utf-8")
         result = self.run_from(other, "--canary-home", str(self.canary), "--all")
         self.assertEqual(0, result.code, result.output)
-        manifest = json.loads((self.canary / ".claude" / "skills" / ".deploy-manifest.json").read_text(encoding="utf-8"))
+        manifest = json.loads(
+            (self.canary / ".claude" / "skills" / ".deploy-manifest.json").read_text(encoding="utf-8")
+        )
         self.assertEqual({"test/skills", "test/other"}, set(manifest["sources"]))
 
     def test_a_directory_outside_the_temporary_directory_is_refused_before_any_change(self) -> None:
@@ -514,8 +525,9 @@ class CanaryHomeTests(DeployerTestCase):
         (self.canary / ".claude").mkdir()
         result = self.run_from(linked, "--canary-home", str(self.canary), "--all")
         self.assertNotEqual(0, result.code, result.output)
-        self.assertIn("--canary-home must be an empty directory or one an earlier --canary-home deployment used",
-                      result.output)
+        self.assertIn(
+            "--canary-home must be an empty directory or one an earlier --canary-home deployment used", result.output
+        )
         self.assertEqual([".claude"], [entry.name for entry in self.canary.iterdir()])
 
     def test_a_relative_missing_or_file_path_and_a_junction_are_refused(self) -> None:

@@ -56,16 +56,14 @@ REVIEW_DECISIONS = {None, "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"}
 AI_VERDICTS = {"APPROVED": "Approved", "CHANGES_REQUESTED": "Changes Requested", "INCOMPLETE": "Incomplete"}
 SECTION_SUMMARIES = {
     SECTION_TO_REVIEW: "PRs you are asked to review or are reviewing where action is needed — new PR, "
-                       "or the author has responded to your feedback.",
+    "or the author has responded to your feedback.",
     SECTION_AWAITING: "PRs where you have left a review; waiting for the author to respond or push changes.",
     SECTION_DRAFTS: "Draft PRs you are asked to review or are reviewing; no action needed until the author "
-                    "marks them ready.",
+    "marks them ready.",
     SECTION_MINE: "PRs you authored. Status reflects GitHub's review decision on the PR.",
 }
 OPEN_SECTIONS = {SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_MINE}
-PULL_KEY_PATTERN = re.compile(
-    r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)"
-)
+PULL_KEY_PATTERN = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*)#([1-9][0-9]*)")
 
 
 class TrackerError(ValueError):
@@ -73,9 +71,7 @@ class TrackerError(ValueError):
 
 
 class Detector(Protocol):
-    def detect(
-        self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str
-    ) -> str: ...
+    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -102,8 +98,11 @@ def _valid_ledger(ledger: Any) -> bool:
     if not isinstance(ledger, dict) or set(ledger) != {"open", "addressed", "since", "version"}:
         return False
     opened, since, version = ledger["open"], ledger["since"], ledger["version"]
-    if not isinstance(opened, dict) or set(opened) != {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"} \
-            or not all(_count(value) for value in opened.values()):
+    if (
+        not isinstance(opened, dict)
+        or set(opened) != {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
+        or not all(_count(value) for value in opened.values())
+    ):
         return False
     if not _count(ledger["addressed"]) or not _count(version) or version < 1:
         return False
@@ -126,8 +125,12 @@ def _valid_ledger_reading(review: dict[str, Any]) -> bool:
     since = review["since_review"]
     if since is None:
         return True
-    return (isinstance(since, dict) and set(since) == {"version", "new", "addressed"}
-            and all(_count(value) for value in since.values()) and since["version"] <= ledger["version"])
+    return (
+        isinstance(since, dict)
+        and set(since) == {"version", "new", "addressed"}
+        and all(_count(value) for value in since.values())
+        and since["version"] <= ledger["version"]
+    )
 
 
 def _validate_presentation(item: dict[str, Any]) -> None:
@@ -203,9 +206,7 @@ def validate_items(value: Any) -> list[dict[str, Any]]:
         if review_state is None and item["user_review_sha"] is not None:
             raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
         if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
-            raise TrackerError(
-                f"Tracker item {key}.user_review_sha is required for {review_state}"
-            )
+            raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
         replacement = dict(item)
         replacement["repository"] = repository
         normalized.append(replacement)
@@ -245,9 +246,7 @@ def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
         if not status:
             raise TrackerError(f"Status override {key} must be non-empty")
         if status.casefold() in COMPUTED_DASHBOARD_STATES:
-            raise TrackerError(
-                f"Status override {key} duplicates a computed tracker state"
-            )
+            raise TrackerError(f"Status override {key} duplicates a computed tracker state")
         if key in normalized:
             raise TrackerError(f"Duplicate status override after normalization: {key}")
         normalized[key] = status
@@ -274,9 +273,7 @@ def _relationship(item: dict[str, Any], login_key: str) -> str | None:
 
 
 def _changed_since(item: dict[str, Any], since_sha: str, detector: Detector) -> str:
-    return detector.detect(
-        item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"]
-    )
+    return detector.detect(item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"])
 
 
 def _ai_review(item: dict[str, Any], detector: Detector) -> str:
@@ -330,9 +327,7 @@ def evaluate(
             section = _section(item, relationship, detector)
         if section is None:
             continue
-        rows.append(
-            Row(item, relationship, section, _ai_review(item, detector), key in pinned)
-        )
+        rows.append(Row(item, relationship, section, _ai_review(item, detector), key in pinned))
     return sorted(rows, key=lambda row: (row.item["repository"], row.item["number"]))
 
 
@@ -345,16 +340,18 @@ def review_candidates(rows: list[Row]) -> list[dict[str, Any]]:
             "status": row.ai_review,
         }
         for row in rows
-        if row.ai_review in {"missing", "stale"}
-        and not row.overridden
+        if row.ai_review in {"missing", "stale"} and not row.overridden
     ]
 
 
 def _findings(counts: dict[str, int] | None) -> str:
     if not counts:
         return "-"
-    parts = [f"{counts[key]}{letter}" for key, letter in (("MUST_FIX", "M"), ("SHOULD_FIX", "H"), ("SUGGESTION", "S"))
-             if counts[key]]
+    parts = [
+        f"{counts[key]}{letter}"
+        for key, letter in (("MUST_FIX", "M"), ("SHOULD_FIX", "H"), ("SUGGESTION", "S"))
+        if counts[key]
+    ]
     return " ".join(parts) or "-"
 
 
@@ -405,8 +402,13 @@ def _my_status(item: dict[str, Any]) -> str:
 
 
 def _section_lines(section: str, members: list[Row], summary: str, home: set[str]) -> list[str]:
-    lines = [f"### {_escape(section)} ({len(members)})", "",
-             "<details open>" if section in OPEN_SECTIONS else "<details>", f"<summary>{summary}</summary>", ""]
+    lines = [
+        f"### {_escape(section)} ({len(members)})",
+        "",
+        "<details open>" if section in OPEN_SECTIONS else "<details>",
+        f"<summary>{summary}</summary>",
+        "",
+    ]
     if section == SECTION_MINE:
         lines += ["| PR | Status | AI Result | Findings | AI Review |", "| :--- | :--- | :--- | :--- | :--- |"]
         for row in sorted(members, key=lambda r: (not r.item["draft"], r.item["repository"], r.item["number"])):
@@ -434,16 +436,22 @@ def render(
     home = {repository.lower() for repository in (home_repositories or set())}
     lines = [start_marker, ""]
     pinned_sections = sorted({row.section for row in rows if row.overridden}, key=str.casefold)
-    config_link = (f"[the code-review configuration](vscode://file/{quote(config_path.replace(chr(92), '/'), safe='/:')})"
-                   if config_path else "the code-review configuration")
+    config_link = (
+        f"[the code-review configuration](vscode://file/{quote(config_path.replace(chr(92), '/'), safe='/:')})"
+        if config_path
+        else "the code-review configuration"
+    )
     order = [SECTION_TO_REVIEW, SECTION_AWAITING, SECTION_DRAFTS, *pinned_sections, SECTION_MINE]
     for section in order:
         pinned = section in pinned_sections
         members = [row for row in rows if row.section == section and row.overridden == pinned]
         if not members:
             continue
-        summary = (f"Manually managed — edit `dashboard.status_overrides` in {config_link} to add or remove entries."
-                   if pinned else SECTION_SUMMARIES[section])
+        summary = (
+            f"Manually managed — edit `dashboard.status_overrides` in {config_link} to add or remove entries."
+            if pinned
+            else SECTION_SUMMARIES[section]
+        )
         heading = " ".join(word[:1].upper() + word[1:] for word in section.split()) if pinned else section
         lines += _section_lines(heading, members, summary, home)
     if not rows:
@@ -505,8 +513,13 @@ def update_dashboard_rows(
         overrides=normalize_overrides(overrides),
         removals=normalize_pull_keys(removals or [], "removal"),
     )
-    owned = render(rows, start_marker=start_marker, end_marker=end_marker,
-                   home_repositories=set(home_repositories or []), config_path=config_path)
+    owned = render(
+        rows,
+        start_marker=start_marker,
+        end_marker=end_marker,
+        home_repositories=set(home_repositories or []),
+        config_path=config_path,
+    )
     atomic_write_text(
         dashboard,
         splice(current, owned, start_marker=start_marker, end_marker=end_marker),

@@ -44,7 +44,9 @@ class GitHubSnapshotTests(unittest.TestCase):
         destination = Path(temporary.name).resolve() / "source"
         data = tarball(members)
         metadata = review_runtime.materialize_source_snapshot_from_github(
-            "owner/repo", HEAD, destination,
+            "owner/repo",
+            HEAD,
+            destination,
             fetcher=lambda repository, commit, target: target.write_bytes(data),
             changed_paths=changed,
         )
@@ -52,15 +54,18 @@ class GitHubSnapshotTests(unittest.TestCase):
 
     def test_tarball_snapshot_strips_top_folder_and_records_exclusions(self) -> None:
         big = b"x" * (review_runtime.MAX_SOURCE_FILE_BYTES + 1)
-        destination, metadata = self.snapshot({
-            "src/A.cs": b"class A {}\n",
-            "img.png": b"\x89PNG\0",
-            "C:../escape.txt": b"x",
-            "data/a:b.txt": b"x",
-            "CLAUDE.md": b"instructions",
-            "db/Changed.sql": big,
-            "db/Context.sql": big,
-        }, changed=("db/Changed.sql",))
+        destination, metadata = self.snapshot(
+            {
+                "src/A.cs": b"class A {}\n",
+                "img.png": b"\x89PNG\0",
+                "C:../escape.txt": b"x",
+                "data/a:b.txt": b"x",
+                "CLAUDE.md": b"instructions",
+                "db/Changed.sql": big,
+                "db/Context.sql": big,
+            },
+            changed=("db/Changed.sql",),
+        )
         self.assertTrue((destination / "src/A.cs").is_file())
         self.assertTrue((destination / "db/Changed.sql").is_file())
         excluded = metadata["excluded_paths"]
@@ -75,8 +80,10 @@ class GitHubSnapshotTests(unittest.TestCase):
     def test_tarball_snapshot_excludes_a_symbolic_link_and_a_fifo(self) -> None:
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-            for name, kind, link in (("node_modules", tarfile.SYMTYPE, "/opt/runtime/node_modules"),
-                                     ("run/pipe", tarfile.FIFOTYPE, "")):
+            for name, kind, link in (
+                ("node_modules", tarfile.SYMTYPE, "/opt/runtime/node_modules"),
+                ("run/pipe", tarfile.FIFOTYPE, ""),
+            ):
                 info = tarfile.TarInfo("owner-repo-ccc/" + name)
                 info.type, info.linkname = kind, link
                 archive.addfile(info)
@@ -88,7 +95,10 @@ class GitHubSnapshotTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         destination = Path(temporary.name).resolve() / "source"
         metadata = review_runtime.materialize_source_snapshot_from_github(
-            "owner/repo", HEAD, destination, fetcher=lambda repository, commit, target: target.write_bytes(data),
+            "owner/repo",
+            HEAD,
+            destination,
+            fetcher=lambda repository, commit, target: target.write_bytes(data),
             changed_paths=("node_modules",),
         )
         self.assertEqual({"node_modules": "symbolic-link", "run/pipe": "non-regular"}, metadata["excluded_paths"])
@@ -120,7 +130,9 @@ class ConfigOperationSetTests(unittest.TestCase):
             "default_repository_set": "primary",
             "repository_sets": {"primary": ["owner/one"], "tracked": ["owner/one", "owner/two"]},
             "repositories": {"owner/one": generic, "owner/two": generic},
-            "archive_root": "C:/A", "summary_root": "C:/S", "dashboard_file": "C:/D.md",
+            "archive_root": "C:/A",
+            "summary_root": "C:/S",
+            "dashboard_file": "C:/D.md",
         }
         value.update(extra)
         return validate_config(value)
@@ -129,8 +141,12 @@ class ConfigOperationSetTests(unittest.TestCase):
         config = self.config(operation_repository_sets={"update-pr-tracker": "tracked"})
         self.assertEqual(["owner/one", "owner/two"], resolve_repositories(config, operation="update-pr-tracker"))
         self.assertEqual(["owner/one"], resolve_repositories(config, operation="review-prs"))
-        self.assertEqual(["owner/one"], resolve_repositories(config, operation="update-pr-tracker", repository_set="primary"))
-        self.assertEqual(["owner/two"], resolve_repositories(config, explicit=["owner/two"], operation="update-pr-tracker"))
+        self.assertEqual(
+            ["owner/one"], resolve_repositories(config, operation="update-pr-tracker", repository_set="primary")
+        )
+        self.assertEqual(
+            ["owner/two"], resolve_repositories(config, explicit=["owner/two"], operation="update-pr-tracker")
+        )
         self.assertEqual("tracked", selected_repository_set(config, operation="update-pr-tracker"))
         self.assertEqual("primary", selected_repository_set(config, operation="review-insights"))
         self.assertEqual("tracked", selected_repository_set(config, repository_set="tracked", operation="review-prs"))
@@ -154,9 +170,16 @@ class ReviewedHeadTests(unittest.TestCase):
 
     def write_legacy(self, **overrides: object) -> None:
         value = {
-            "schema_version": 1, "kind": "legacy-review-index", "repository": "owner/repo", "pull_number": 5,
-            "reviewed_at": "2026-01-01T00:00:00+00:00", "reviewed_head_sha": "a" * 40, "verdict": "APPROVED",
-            "source_sha256": "0" * 64, "source_path": "C:/legacy/review-5.md", "source_file_sha256": "0" * 64,
+            "schema_version": 1,
+            "kind": "legacy-review-index",
+            "repository": "owner/repo",
+            "pull_number": 5,
+            "reviewed_at": "2026-01-01T00:00:00+00:00",
+            "reviewed_head_sha": "a" * 40,
+            "verdict": "APPROVED",
+            "source_sha256": "0" * 64,
+            "source_path": "C:/legacy/review-5.md",
+            "source_file_sha256": "0" * 64,
         }
         value.update(overrides)
         (self.directory / "legacy-review.json").write_text(json.dumps(value), encoding="utf-8")
@@ -164,15 +187,27 @@ class ReviewedHeadTests(unittest.TestCase):
     def test_legacy_index_counts_as_reviewed(self) -> None:
         self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
         self.write_legacy()
-        self.assertEqual({"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "ledger": None, "report": None},
-                         review_operation.reviewed_head(self.root, "owner/repo", 5))
+        self.assertEqual(
+            {
+                "head_sha": "a" * 40,
+                "source": "legacy",
+                "version": None,
+                "incomplete": False,
+                "verdict": "APPROVED",
+                "counts": None,
+                "ledger": None,
+                "report": None,
+            },
+            review_operation.reviewed_head(self.root, "owner/repo", 5),
+        )
         self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5, 6]))
 
     def test_legacy_counts_and_report_come_from_the_migrated_report(self) -> None:
         self.write_legacy()
         (self.directory / "legacy-review.md").write_text(
             "<summary><strong>MUST FIX (1)</strong></summary>\n<summary><strong>SUGGESTIONS (3)</strong></summary>\n",
-            encoding="utf-8")
+            encoding="utf-8",
+        )
         reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 3}, reviewed["counts"])
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
@@ -185,18 +220,45 @@ class ReviewedHeadTests(unittest.TestCase):
 
     def test_record_takes_precedence_over_legacy(self) -> None:
         self.write_legacy()
-        record = {"pull_request": {"head_sha": "b" * 40}, "review": {"version": 2, "verdict": "INCOMPLETE", "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, "coverage": {"unavailable_sources": ["big.sql"]}}}
+        record = {
+            "pull_request": {"head_sha": "b" * 40},
+            "review": {
+                "version": 2,
+                "verdict": "INCOMPLETE",
+                "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                "coverage": {"unavailable_sources": ["big.sql"]},
+            },
+        }
         with mock.patch.object(review_operation, "latest_record", return_value=record):
-            self.assertEqual({"head_sha": "b" * 40, "source": "record", "version": 2, "incomplete": True, "verdict": "INCOMPLETE",
-                              "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1}, "ledger": None,
-                              "report": str(self.directory / "review-v2.md")},
-                             review_operation.reviewed_head(self.root, "owner/repo", 5))
+            self.assertEqual(
+                {
+                    "head_sha": "b" * 40,
+                    "source": "record",
+                    "version": 2,
+                    "incomplete": True,
+                    "verdict": "INCOMPLETE",
+                    "counts": {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                    "ledger": None,
+                    "report": str(self.directory / "review-v2.md"),
+                },
+                review_operation.reviewed_head(self.root, "owner/repo", 5),
+            )
 
     def test_a_legacy_review_without_its_report_is_still_a_reviewed_head(self) -> None:
         self.write_legacy()
-        self.assertEqual({"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False,
-                          "verdict": "APPROVED", "counts": None, "ledger": None, "report": None},
-                         review_operation.reviewed_head(self.root, "owner/repo", 5))
+        self.assertEqual(
+            {
+                "head_sha": "a" * 40,
+                "source": "legacy",
+                "version": None,
+                "incomplete": False,
+                "verdict": "APPROVED",
+                "counts": None,
+                "ledger": None,
+                "report": None,
+            },
+            review_operation.reviewed_head(self.root, "owner/repo", 5),
+        )
         self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 6))
 
     def test_missing_watermark_starts_today(self) -> None:
@@ -216,7 +278,9 @@ class CoverageTests(unittest.TestCase):
         data = tarball({"src/A.cs": b"class A {}\n", "db/Big.sql": b"x" * 64})
         with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 32):
             review_runtime.materialize_source_snapshot_from_github(
-                "owner/repo", HEAD, root / "source",
+                "owner/repo",
+                HEAD,
+                root / "source",
                 fetcher=lambda repository, commit, target: target.write_bytes(data),
                 changed_paths=("db/Big.sql", "src/A.cs"),
             )
@@ -224,26 +288,56 @@ class CoverageTests(unittest.TestCase):
             diff.write_text(
                 "diff --git a/src/A.cs b/src/A.cs\n--- a/src/A.cs\n+++ b/src/A.cs\n@@ -1 +1,2 @@\n class A {}\n+// x\n"
                 "diff --git a/db/Big.sql b/db/Big.sql\n--- a/db/Big.sql\n+++ b/db/Big.sql\n@@ -1 +1 @@\n-y\n+x\n",
-                encoding="utf-8")
+                encoding="utf-8",
+            )
             request = review_runtime.build_adapter_request(
-                mode="initial", repository="owner/repo", pull_number=3, base_ref="main", base_sha="a" * 40,
-                head_sha=HEAD, title="t", url="https://github.com/owner/repo/pull/3", diff_path=diff,
-                source_snapshot_root=root / "source")
+                mode="initial",
+                repository="owner/repo",
+                pull_number=3,
+                base_ref="main",
+                base_sha="a" * 40,
+                head_sha=HEAD,
+                title="t",
+                url="https://github.com/owner/repo/pull/3",
+                diff_path=diff,
+                source_snapshot_root=root / "source",
+            )
         return request, root
 
     def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> dict:
         from review_records import build_record
+
         adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
-        result = {"protocol_version": 1, "repository": "owner/repo", "pull_number": 3, "head_sha": HEAD,
-                  "summary": "s", "reviewer": "generic", "status": "complete", "findings": findings,
-                  "prior_dispositions": []}
-        return build_record(review_operation.request_to_record_input(request, adapter, uncovered_files=uncovered),
-                            result, version=1, policy=self.POLICY)
+        result = {
+            "protocol_version": 1,
+            "repository": "owner/repo",
+            "pull_number": 3,
+            "head_sha": HEAD,
+            "summary": "s",
+            "reviewer": "generic",
+            "status": "complete",
+            "findings": findings,
+            "prior_dispositions": [],
+        }
+        return build_record(
+            review_operation.request_to_record_input(request, adapter, uncovered_files=uncovered),
+            result,
+            version=1,
+            policy=self.POLICY,
+        )
 
     @staticmethod
     def finding(severity: str) -> dict:
-        return {"candidate_key": "k", "severity": severity, "category": "C", "path": "src/A.cs", "line": 2,
-                "body": "b", "evidence": "e", "source": "generic"}
+        return {
+            "candidate_key": "k",
+            "severity": severity,
+            "category": "C",
+            "path": "src/A.cs",
+            "line": 2,
+            "body": "b",
+            "evidence": "e",
+            "source": "generic",
+        }
 
     def test_request_lists_changed_files_the_snapshot_could_not_provide(self) -> None:
         request, _ = self.request()
@@ -251,6 +345,7 @@ class CoverageTests(unittest.TestCase):
 
     def test_verdict_precedence_and_rendering(self) -> None:
         from review_records import RecordError, render_markdown, validate_record
+
         request, _ = self.request()
         incomplete = self.record(request, [self.finding("SUGGESTION")])
         self.assertEqual("INCOMPLETE", incomplete["review"]["verdict"])
@@ -269,24 +364,31 @@ class CoverageTests(unittest.TestCase):
 
     def test_uncovered_files_a_manifest_ignores_are_listed_without_making_the_review_incomplete(self) -> None:
         from review_records import RecordError, render_markdown, validate_record
+
         request, _ = self.request()
         request["coverage"] = {"unavailable_sources": []}
         record = self.record(request, [self.finding("SUGGESTION")], uncovered=["README.md", ".github/ci.yml"])
         self.assertEqual("APPROVED", record["review"]["verdict"], "a deliberate opt-out is not a coverage gap")
-        self.assertEqual({"unavailable_sources": [], "uncovered_files": [".github/ci.yml", "README.md"]},
-                         record["review"]["coverage"])
+        self.assertEqual(
+            {"unavailable_sources": [], "uncovered_files": [".github/ci.yml", "README.md"]},
+            record["review"]["coverage"],
+        )
         validate_record(record)
         report = render_markdown(record, record_payload_hash="0" * 64)
-        self.assertIn("> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
-                      "`uncovered` to `ignore`, so no reviewer saw them: `.github/ci.yml`, `README.md`.", report)
+        self.assertIn(
+            "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+            "`uncovered` to `ignore`, so no reviewer saw them: `.github/ci.yml`, `README.md`.",
+            report,
+        )
         self.assertNotIn("Not reviewed in full", report)
         self.assertNotIn("coverage", self.record(request, [self.finding("SUGGESTION")], uncovered=[])["review"])
 
         request, _ = self.request()
         both = self.record(request, [], uncovered=["README.md"])
         self.assertEqual("INCOMPLETE", both["review"]["verdict"])
-        self.assertEqual({"unavailable_sources": ["db/Big.sql"], "uncovered_files": ["README.md"]},
-                         both["review"]["coverage"])
+        self.assertEqual(
+            {"unavailable_sources": ["db/Big.sql"], "uncovered_files": ["README.md"]}, both["review"]["coverage"]
+        )
         validate_record(both)
         report = render_markdown(both, record_payload_hash="0" * 64)
         self.assertIn("**Not reviewed in full:**", report)
@@ -297,8 +399,10 @@ class CoverageTests(unittest.TestCase):
             broken["review"]["coverage"]["uncovered_files"] = malformed
             with self.subTest(malformed=malformed), self.assertRaisesRegex(RecordError, "coverage is malformed"):
                 validate_record(broken)
-        for coverage in ({"uncovered_files": ["README.md"]},
-                         {"unavailable_sources": [], "uncovered_files": ["README.md"], "skipped": []}):
+        for coverage in (
+            {"uncovered_files": ["README.md"]},
+            {"unavailable_sources": [], "uncovered_files": ["README.md"], "skipped": []},
+        ):
             broken = json.loads(json.dumps(record))
             broken["review"]["coverage"] = coverage
             with self.subTest(coverage=coverage), self.assertRaisesRegex(RecordError, "coverage is malformed"):
@@ -318,8 +422,14 @@ class TrackerIncompleteTests(unittest.TestCase):
             def detect(self, *args: object) -> str:
                 return self.result
 
-        item = {"repository": "owner/repo", "number": 3, "base_ref": "main", "head_sha": HEAD,
-                "reviewed_head_sha": "b" * 40, "reviewed_incomplete": True}
+        item = {
+            "repository": "owner/repo",
+            "number": 3,
+            "base_ref": "main",
+            "head_sha": HEAD,
+            "reviewed_head_sha": "b" * 40,
+            "reviewed_incomplete": True,
+        }
         self.assertEqual("incomplete", tracker._ai_review(item, Detector(UNCHANGED)))
         self.assertEqual("stale", tracker._ai_review(item, Detector(CHANGED)))
         self.assertEqual("current", tracker._ai_review({**item, "reviewed_incomplete": False}, Detector(UNCHANGED)))
@@ -328,8 +438,9 @@ class TrackerIncompleteTests(unittest.TestCase):
 class ReleaseGuidelineTests(unittest.TestCase):
     @staticmethod
     def git(path: Path, *arguments: str) -> str:
-        return subprocess.run(["git", "-C", str(path), *arguments], capture_output=True, text=True,
-                              encoding="utf-8", check=True).stdout.strip()
+        return subprocess.run(
+            ["git", "-C", str(path), *arguments], capture_output=True, text=True, encoding="utf-8", check=True
+        ).stdout.strip()
 
     def commit(self, checkout: Path, files: dict[str, str], message: str, *, orphan: str | None = None) -> str:
         if orphan:
@@ -345,13 +456,26 @@ class ReleaseGuidelineTests(unittest.TestCase):
 
     def test_specialist_guidelines_come_from_the_base_commit_when_present(self) -> None:
         import review_specialists
+
         manifest = {
-            "schema_version": 2, "id": "fixture", "protocol_version": 1, "kind": "specialists",
-            "supports": ["initial"], "required_capabilities": ["agent-delegation"],
+            "schema_version": 2,
+            "id": "fixture",
+            "protocol_version": 1,
+            "kind": "specialists",
+            "supports": ["initial"],
+            "required_capabilities": ["agent-delegation"],
             "resources": ["docs/conventions.md"],
-            "specialists": [{"id": "db-review", "category": "Database", "profile": "agents/db.md",
-                             "include": [r"\.sql$"], "exclude": [], "resources": ["docs/db.md", "docs/new.md"],
-                             "when": None}],
+            "specialists": [
+                {
+                    "id": "db-review",
+                    "category": "Database",
+                    "profile": "agents/db.md",
+                    "include": [r"\.sql$"],
+                    "exclude": [],
+                    "resources": ["docs/db.md", "docs/new.md"],
+                    "when": None,
+                }
+            ],
             "conditions": {},
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -359,14 +483,27 @@ class ReleaseGuidelineTests(unittest.TestCase):
             checkout = root / "repo"
             checkout.mkdir()
             self.git(checkout, "init", "-q", "-b", "main")
-            trusted = self.commit(checkout, {
-                ".review/manifest.json": json.dumps(manifest), "docs/conventions.md": "main conventions\n",
-                "docs/db.md": "main db rules\n", "docs/new.md": "main-only rules\n", "agents/db.md": "main profile\n",
-            }, "main")
-            release = self.commit(checkout, {
-                "docs/db.md": "release db rules\n", "docs/conventions.md": "old conventions\n",
-                "agents/db.md": "old git-based profile\n",
-            }, "release", orphan="release")
+            trusted = self.commit(
+                checkout,
+                {
+                    ".review/manifest.json": json.dumps(manifest),
+                    "docs/conventions.md": "main conventions\n",
+                    "docs/db.md": "main db rules\n",
+                    "docs/new.md": "main-only rules\n",
+                    "agents/db.md": "main profile\n",
+                },
+                "main",
+            )
+            release = self.commit(
+                checkout,
+                {
+                    "docs/db.md": "release db rules\n",
+                    "docs/conventions.md": "old conventions\n",
+                    "agents/db.md": "old git-based profile\n",
+                },
+                "release",
+                orphan="release",
+            )
             loaded = review_runtime.load_manifest_from_commit(checkout, trusted, ".review/manifest.json")
             destination = root / "reviewer"
             review_runtime.materialize_reviewer(checkout, trusted, loaded, destination, guideline_commit=release)

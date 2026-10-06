@@ -76,8 +76,9 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
         names = adapter_names(manifest.load(paths.manifest_file))
         if not names:
             where = platform_support.normalize(paths.adapter_dest_dir)
-            raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.",
-                              "Deploy first with 'python deploy.py'.")
+            raise DeployError(
+                f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
+            )
     except ParserExit as exc:
         return exc.code
     except DeployError as exc:
@@ -100,8 +101,11 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
                 continue
             if probe.outdated:
                 version, minimum = tools.format_version(probe.version), tools.format_version(probe.tool.minimum)
-                _section(label, f"OUTDATED: {label} {version} is older than {minimum}, the oldest version verify "
-                                "can read. Update it, then rerun.")
+                _section(
+                    label,
+                    f"OUTDATED: {label} {version} is older than {minimum}, the oldest version verify "
+                    "can read. Update it, then rerun.",
+                )
                 problems.append(runtime)
                 continue
             try:

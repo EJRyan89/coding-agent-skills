@@ -53,7 +53,9 @@ def read_tree(root: Path) -> dict[str, bytes]:
     """
     link = find_link(root)
     if link is not None:
-        raise DeployError(f"ERROR: Refusing to hash content containing a symlink or junction: {platform_support.normalize(link)}")
+        raise DeployError(
+            f"ERROR: Refusing to hash content containing a symlink or junction: {platform_support.normalize(link)}"
+        )
     files: dict[str, bytes] = {}
     for directory, subdirectories, names in os.walk(root, followlinks=False):
         subdirectories[:] = [name for name in subdirectories if name != "__pycache__"]

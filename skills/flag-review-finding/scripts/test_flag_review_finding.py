@@ -37,8 +37,17 @@ class FlagCliTests(unittest.TestCase):
 
     def test_add_list_and_resolve(self) -> None:
         created = self.store_cli(
-            "add", "guideline", "Clarify boundary", "--repository",
-            "example/one", "--pull", "12", "--review-version", "2", "--finding", "F001",
+            "add",
+            "guideline",
+            "Clarify boundary",
+            "--repository",
+            "example/one",
+            "--pull",
+            "12",
+            "--review-version",
+            "2",
+            "--finding",
+            "F001",
         )
         self.assert_result(created, 0, "ADDED RF-000001\n")
         stored = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
@@ -88,7 +97,9 @@ class FlagCliTests(unittest.TestCase):
         ):
             result = subprocess.run(
                 [sys.executable, "-B", str(SCRIPT), "--store", self.store, *arguments],
-                capture_output=True, env=environment, check=False,
+                capture_output=True,
+                env=environment,
+                check=False,
             )
             self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
             self.assertEqual(expected, result.stdout.decode("utf-8").replace("\r\n", "\n"))
@@ -97,7 +108,10 @@ class FlagCliTests(unittest.TestCase):
         store = Path(self._temporary.name) / "flag store" / "flags.json"
         result = subprocess.run(
             [sys.executable, "-B", str(SCRIPT), "add", "guideline", "Body"],
-            capture_output=True, text=True, encoding="utf-8", check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
             env={**os.environ, "CODE_REVIEW_FLAGS": str(store)},
         )
         self.assert_result(result, 0, "ADDED RF-000001\n")
@@ -105,10 +119,19 @@ class FlagCliTests(unittest.TestCase):
 
     def test_a_finding_without_its_review_version_fails(self) -> None:
         result = self.store_cli(
-            "add", "guideline", "Body", "--repository", "example/one", "--pull", "12", "--finding", "F001",
+            "add",
+            "guideline",
+            "Body",
+            "--repository",
+            "example/one",
+            "--pull",
+            "12",
+            "--finding",
+            "F001",
         )
         self.assert_result(
-            result, 1,
+            result,
+            1,
             "FAILED A flag that names a finding must name its repository, pull request, and review version\n",
         )
         self.assertFalse(Path(self.store).exists())

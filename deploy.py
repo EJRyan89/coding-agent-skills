@@ -11,7 +11,7 @@ def require_supported_python(version_info=sys.version_info):
     if tuple(version_info[:2]) < MINIMUM_PYTHON:
         sys.stderr.write(
             "\nERROR: Python {0}.{1} or newer is required; this is Python {2}.{3}.\n"
-            "See \"Installing the tools\" in docs/installation.md.\n\n".format(
+            'See "Installing the tools" in docs/installation.md.\n\n'.format(
                 MINIMUM_PYTHON[0], MINIMUM_PYTHON[1], version_info[0], version_info[1]
             )
         )

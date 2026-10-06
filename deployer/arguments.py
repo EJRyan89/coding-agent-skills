@@ -76,18 +76,30 @@ def deploy_parser() -> argparse.ArgumentParser:
             f"  {VERIFY_COMMAND:<17}  check that Codex and Copilot CLI find the adapters"
         ),
     )
-    parser.add_argument("--all", dest="select_all", action="store_true",
-                        help="deploy everything except uninstalled opt-in items")
-    parser.add_argument("--include", action="append", default=[], metavar="NAME",
-                        help="with --all, also deploy this opt-in item; repeatable")
+    parser.add_argument(
+        "--all", dest="select_all", action="store_true", help="deploy everything except uninstalled opt-in items"
+    )
+    parser.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="with --all, also deploy this opt-in item; repeatable",
+    )
     parser.add_argument("--dry-run", action="store_true", help="show what would change; change nothing")
     parser.add_argument("--force", action="store_true", help="replace modified or unmanaged items (backed up)")
-    parser.add_argument("--force-item", dest="force_items", action="append", default=[], metavar="NAME",
-                        help="replace one item (backed up); repeatable")
-    parser.add_argument("--migrate-from", default="", metavar="ID",
-                        help="take over items from another source ID")
-    parser.add_argument("--canary-home", default="", metavar="DIR",
-                        help="deploy into a throwaway home under the temp directory")
+    parser.add_argument(
+        "--force-item",
+        dest="force_items",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="replace one item (backed up); repeatable",
+    )
+    parser.add_argument("--migrate-from", default="", metavar="ID", help="take over items from another source ID")
+    parser.add_argument(
+        "--canary-home", default="", metavar="DIR", help="deploy into a throwaway home under the temp directory"
+    )
     return parser
 
 

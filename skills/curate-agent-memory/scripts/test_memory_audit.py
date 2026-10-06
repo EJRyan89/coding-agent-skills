@@ -57,8 +57,13 @@ class CommandLineContractTests(unittest.TestCase):
                 )
 
     def test_usage_errors_exit_2(self) -> None:
-        for arguments in (["audit"], ["reindex", "--memory-dir"], ["delete", "--memory-dir", str(self.root)],
-                          ["resolve", "--unknown"], ["forget"]):
+        for arguments in (
+            ["audit"],
+            ["reindex", "--memory-dir"],
+            ["delete", "--memory-dir", str(self.root)],
+            ["resolve", "--unknown"],
+            ["forget"],
+        ):
             with self.subTest(arguments=arguments):
                 code, stdout, stderr = run_main(*arguments)
                 self.assertEqual((2, ""), (code, stdout))
@@ -156,7 +161,10 @@ class MemoryAuditTests(unittest.TestCase):
     def test_large_unrelated_blocks_do_not_register_as_overlaps(self) -> None:
         glossary = " ".join(f"term{n} means something specific here" for n in range(200))
         write(self.repo / "docs" / "glossary.md", f"{glossary} object test class variable name\n")
-        write(self.memory_dir / "sut.md", memory("sut", "Never name the object under test sut; derive the variable name from its class."))
+        write(
+            self.memory_dir / "sut.md",
+            memory("sut", "Never name the object under test sut; derive the variable name from its class."),
+        )
         self.assertEqual([], self.by_file(self.run_audit())["sut.md"]["overlaps"])
 
     def test_extra_instruction_files_are_searched(self) -> None:
@@ -164,7 +172,10 @@ class MemoryAuditTests(unittest.TestCase):
             self.root / "user" / "CLAUDE.md",
             "- Always prefix local branches with the personal namespace followed by a kebab-case description.\n",
         )
-        write(self.memory_dir / "branch.md", memory("branch", "Prefix local branches with the personal namespace and a kebab-case description."))
+        write(
+            self.memory_dir / "branch.md",
+            memory("branch", "Prefix local branches with the personal namespace and a kebab-case description."),
+        )
         overlaps = memory_audit.audit(self.memory_dir, None, [instructions])["memories"][0]["overlaps"]
         self.assertEqual(str(instructions), overlaps[0]["file"])
 
@@ -204,8 +215,11 @@ class MemoryAuditTests(unittest.TestCase):
 
     def main_output(self, *arguments: str, environment: dict[str, str] | None = None) -> str:
         captured = io.StringIO()
-        with redirect_stdout(captured), mock.patch.dict(os.environ, environment or {}), \
-                mock.patch.object(tempfile, "tempdir", str(self.root / "Temporary Files")):
+        with (
+            redirect_stdout(captured),
+            mock.patch.dict(os.environ, environment or {}),
+            mock.patch.object(tempfile, "tempdir", str(self.root / "Temporary Files")),
+        ):
             (self.root / "Temporary Files").mkdir(exist_ok=True)
             self.assertEqual(0, memory_audit.main(["audit", "--memory-dir", str(self.memory_dir), *arguments]))
         return captured.getvalue()
@@ -269,8 +283,10 @@ class MemoryAuditTests(unittest.TestCase):
             ({"CLAUDE_CONFIG_DIR": str(config)}, ("--user-dir", str(explicit)), explicit / "CLAUDE.md"),
         )
         for environment, arguments, expected in cases:
-            with self.subTest(environment=environment, arguments=arguments), \
-                    mock.patch.object(Path, "home", return_value=home):
+            with (
+                self.subTest(environment=environment, arguments=arguments),
+                mock.patch.object(Path, "home", return_value=home),
+            ):
                 line = self.main_output(*arguments, environment=environment).strip()
                 report = json.loads(Path(line.removeprefix("REPORT ")).read_text(encoding="utf-8"))
                 self.assertEqual([str(expected)], [o["file"] for o in report["memories"][0]["overlaps"]])
@@ -425,7 +441,9 @@ class DeleteTests(unittest.TestCase):
             "../outside.md": "FAILED ../outside.md: not a file name directly inside the memory directory",
             "..\\outside.md": "FAILED ..\\outside.md: not a file name directly inside the memory directory",
             "..": "FAILED ..: not a file name directly inside the memory directory",
-            str(self.root / "outside.md"): f"FAILED {self.root / 'outside.md'}: not a file name directly inside the memory directory",
+            str(
+                self.root / "outside.md"
+            ): f"FAILED {self.root / 'outside.md'}: not a file name directly inside the memory directory",
             "sub/inner.md": "FAILED sub/inner.md: not a file name directly inside the memory directory",
             "sub": "FAILED sub: not a .md file",
             "notes.txt": "FAILED notes.txt: not a .md file",
@@ -443,7 +461,13 @@ class DeleteTests(unittest.TestCase):
     def test_every_refusal_is_reported(self) -> None:
         before = self.snapshot()
         self.assertEqual(
-            (1, ["FAILED MEMORY.md: the index is rebuilt with reindex, never deleted", "FAILED absent.md: no such file"]),
+            (
+                1,
+                [
+                    "FAILED MEMORY.md: the index is rebuilt with reindex, never deleted",
+                    "FAILED absent.md: no such file",
+                ],
+            ),
             self.delete("gone.md", "MEMORY.md", "absent.md"),
         )
         self.assertEqual(before, self.snapshot())
@@ -484,8 +508,14 @@ class DeleteTests(unittest.TestCase):
                 self.delete("gone.md", "other.md", "keep.md"),
             )
         self.assertEqual(
-            ["memory/MEMORY.md", "memory/keep.md", "memory/notes.txt", "memory/other.md", "memory/sub/inner.md",
-             "outside.md"],
+            [
+                "memory/MEMORY.md",
+                "memory/keep.md",
+                "memory/notes.txt",
+                "memory/other.md",
+                "memory/sub/inner.md",
+                "outside.md",
+            ],
             sorted(self.snapshot()),
         )
 
@@ -503,7 +533,19 @@ class ResolveTests(unittest.TestCase):
         self.managed = self.root / "managed" / "managed-settings.json"
         self.repo.mkdir()
         git("-C", str(self.repo), "init", "-q", "-b", "main")
-        git("-C", str(self.repo), "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
+        git(
+            "-C",
+            str(self.repo),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        )
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
@@ -557,9 +599,11 @@ class ResolveTests(unittest.TestCase):
 
     def resolve_lines(self, *arguments: str, cwd: Path | None = None, code: int = 0) -> list[str]:
         """Run resolve from cwd with no Claude Code environment overrides and the test's managed settings."""
-        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}), \
-                mock.patch.object(Path, "cwd", return_value=cwd or self.repo), \
-                mock.patch.object(memory_audit, "managed_settings_path", return_value=self.managed):
+        with (
+            mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}),
+            mock.patch.object(Path, "cwd", return_value=cwd or self.repo),
+            mock.patch.object(memory_audit, "managed_settings_path", return_value=self.managed),
+        ):
             for name in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME"):
                 os.environ.pop(name, None)
             result = run_main("resolve", "--home", str(self.home), *arguments)
@@ -585,7 +629,9 @@ class ResolveTests(unittest.TestCase):
         other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
         other.mkdir(parents=True)
         lines = self.resolve_lines()
-        self.assertEqual(["EXISTS no", f"CANDIDATE {other}"], [line for line in lines if line.startswith(("EXISTS", "CANDIDATE"))])
+        self.assertEqual(
+            ["EXISTS no", f"CANDIDATE {other}"], [line for line in lines if line.startswith(("EXISTS", "CANDIDATE"))]
+        )
 
     def test_command_line_reports_no_directory_as_a_result(self) -> None:
         write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "relative/path"}))
@@ -603,9 +649,7 @@ class ResolveTests(unittest.TestCase):
     def test_command_line_outside_a_repository_fails(self) -> None:
         outside = self.root / "plain folder"
         outside.mkdir()
-        self.assertEqual(
-            ["FAILED not inside a Git repository; pass --repo"], self.resolve_lines(cwd=outside, code=1)
-        )
+        self.assertEqual(["FAILED not inside a Git repository; pass --repo"], self.resolve_lines(cwd=outside, code=1))
 
     def test_invalid_or_unreadable_settings_leave_the_directory_unresolved(self) -> None:
         settings = self.home / ".claude" / "settings.json"

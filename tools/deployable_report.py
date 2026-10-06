@@ -48,8 +48,14 @@ CLAUDE = "claude"
 SIGN_IN = re.compile(r"\b(?:log(?:ged)?[ -]?in|sign(?:ed)?[ -]?in|authenticat\w*|unauthori[sz]ed|401)\b", re.IGNORECASE)
 # The programs whose versions the summary records, by the name a person knows them by.
 VERSIONED = (
-    ("Git", "git"), ("ShellCheck", "shellcheck"), ("PowerShell 7", "pwsh"), ("GitHub CLI", "gh"),
-    ("Node.js", "node"), ("npm", "npm"), ("Claude Code", "claude"), ("Codex CLI", "codex"),
+    ("Git", "git"),
+    ("ShellCheck", "shellcheck"),
+    ("PowerShell 7", "pwsh"),
+    ("GitHub CLI", "gh"),
+    ("Node.js", "node"),
+    ("npm", "npm"),
+    ("Claude Code", "claude"),
+    ("Codex CLI", "codex"),
     ("Copilot CLI", "copilot"),
 )
 Find = Callable[[str], "str | None"]
@@ -67,14 +73,17 @@ def sign_in_problem(message: str) -> bool:
     return SIGN_IN.search(message) is not None
 
 
-def check_runtimes(paths: Paths, environment: Mapping[str, str], find: Find | None = None,
-                   talk: discovery.Converse | None = None) -> list[RuntimeResult]:
+def check_runtimes(
+    paths: Paths, environment: Mapping[str, str], find: Find | None = None, talk: discovery.Converse | None = None
+) -> list[RuntimeResult]:
     """Judge every runtime against the adapters the manifest records."""
     find = find or platform_support.find_executable
     names = verify.adapter_names(manifest.load(paths.manifest_file))
     if not names:
         where = platform_support.normalize(paths.adapter_dest_dir)
-        raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'.")
+        raise DeployError(
+            f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
+        )
     results: list[RuntimeResult] = []
     # An empty working directory, so no project skill stands in for an adapter.
     workdir = Path(tempfile.mkdtemp(prefix="deployable-report-"))
@@ -90,11 +99,13 @@ def check_runtimes(paths: Paths, environment: Mapping[str, str], find: Find | No
                 status = SKIPPED if sign_in_problem(str(exc)) else FAILED
                 results.append(RuntimeResult(runtime, status, f"cannot list its skills: {exc}"))
                 continue
-            problems = [line for line in verify.runtime_lines(names, listing, paths.adapter_dest_dir)
-                        if line.action != "FOUND"]
+            problems = [
+                line for line in verify.runtime_lines(names, listing, paths.adapter_dest_dir) if line.action != "FOUND"
+            ]
             if problems:
-                shown = "; ".join(f"{line.name} {line.action}{f' ({line.detail})' if line.detail else ''}"
-                                  for line in problems)
+                shown = "; ".join(
+                    f"{line.name} {line.action}{f' ({line.detail})' if line.detail else ''}" for line in problems
+                )
                 results.append(RuntimeResult(runtime, FAILED, shown))
             else:
                 results.append(RuntimeResult(runtime, PASSED, f"{len(names)} adapters found"))
@@ -122,8 +133,11 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
     if problems:
         return RuntimeResult(CLAUDE, FAILED, "; ".join(problems))
     plural = "agent" if len(agents) == 1 else "agents"
-    return RuntimeResult(CLAUDE, PASSED, f"{len(skills)} skills and {len(agents)} {plural} in place "
-                                         "(file layout only, no session started)")
+    return RuntimeResult(
+        CLAUDE,
+        PASSED,
+        f"{len(skills)} skills and {len(agents)} {plural} in place (file layout only, no session started)",
+    )
 
 
 def exit_code(results: list[RuntimeResult], deploy_verify_exit: int) -> int:
@@ -139,8 +153,7 @@ def _run_version(arguments: list[str]) -> tuple[int, str]:
     return result.returncode, result.output
 
 
-def tool_versions(find: Find | None = None,
-                  run: RunVersion = _run_version) -> list[tuple[str, str]]:
+def tool_versions(find: Find | None = None, run: RunVersion = _run_version) -> list[tuple[str, str]]:
     find = find or platform_support.find_executable
     versions = [("Python", tools.format_version(tools.python_version()))]
     for label, name in VERSIONED:
@@ -155,8 +168,15 @@ def tool_versions(find: Find | None = None,
 
 
 def render_summary(passes: list[dict], versions: list[tuple[str, str]], notes: list[str]) -> str:
-    lines = ["## Deployability on a fresh Windows runner", "", "### Tool versions", "",
-             "| Tool | Version |", "|---|---|", *(f"| {label} | {version} |" for label, version in versions)]
+    lines = [
+        "## Deployability on a fresh Windows runner",
+        "",
+        "### Tool versions",
+        "",
+        "| Tool | Version |",
+        "|---|---|",
+        *(f"| {label} | {version} |" for label, version in versions),
+    ]
     lines += ["", "### Runtime discovery", "", "| Pass | Runtime | Result | Detail |", "|---|---|---|---|"]
     for item in passes:
         for result in item.get("results", []):

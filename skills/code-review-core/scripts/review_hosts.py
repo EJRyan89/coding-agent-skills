@@ -78,9 +78,7 @@ class HostState:
     reason: str | None = None
 
 
-def subprocess_runner(
-    arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]
-) -> ProcessResult:
+def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
     process = subprocess.run(
         list(arguments),
         cwd=cwd,
@@ -187,7 +185,9 @@ def host_state(run: Path, *, probe: Callable[[int], ProcessStatus], now: float) 
         )
     if elapsed > COPILOT_TIMEOUT_SECONDS + HOST_EXIT_GRACE_SECONDS:
         return HostState(
-            "gone", elapsed, pid,
+            "gone",
+            elapsed,
+            pid,
             reason=f"the Copilot CLI host (PID {pid}) ran past its {COPILOT_TIMEOUT_SECONDS}s limit",
         )
     return HostState("running", elapsed, pid)
@@ -226,13 +226,7 @@ def find_copilot() -> str:
     executable = shutil.which("copilot")
     if executable:
         return executable
-    candidate = (
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Microsoft"
-        / "WinGet"
-        / "Links"
-        / "copilot.exe"
-    )
+    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
     if candidate.is_file():
         return str(candidate)
     raise RuntimeContractError("GitHub Copilot CLI is not available")
@@ -276,9 +270,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise RuntimeContractError(
-            f"Copilot reviewer materialization metadata is invalid: {exc}"
-        ) from exc
+        raise RuntimeContractError(f"Copilot reviewer materialization metadata is invalid: {exc}") from exc
     if not isinstance(metadata, dict) or set(metadata) != {
         "schema_version",
         "adapter_id",
@@ -286,61 +278,37 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         "source_commit",
         "source_hashes",
     }:
-        raise RuntimeContractError(
-            "Copilot reviewer materialization metadata does not match the contract"
-        )
+        raise RuntimeContractError("Copilot reviewer materialization metadata does not match the contract")
     if metadata["schema_version"] != 1:
-        raise RuntimeContractError(
-            "Copilot reviewer materialization schema version is unsupported"
-        )
+        raise RuntimeContractError("Copilot reviewer materialization schema version is unsupported")
     source_commit = metadata["source_commit"]
-    if not isinstance(source_commit, str) or not re.fullmatch(
-        r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit
-    ):
-        raise RuntimeContractError(
-            "Copilot reviewer materialization source commit is invalid"
-        )
+    if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit):
+        raise RuntimeContractError("Copilot reviewer materialization source commit is invalid")
     relative_value = metadata.get("entrypoint")
     relative_value = _safe_relative_path(relative_value, "entrypoint")
     relative = PurePosixPath(relative_value)
     materialized_resolved = materialized_root.resolve(strict=True)
     source_hashes = metadata.get("source_hashes")
     if not isinstance(source_hashes, dict) or relative_value not in source_hashes:
-        raise RuntimeContractError(
-            "Copilot reviewer materialization source hashes are invalid"
-        )
+        raise RuntimeContractError("Copilot reviewer materialization source hashes are invalid")
     expected_files = {"materialization.json"}
     for declared_path, expected_hash in source_hashes.items():
         normalized = _safe_relative_path(declared_path, "source_hashes path")
         if normalized != declared_path or declared_path == "materialization.json":
-            raise RuntimeContractError(
-                f"Copilot reviewer materialization path is invalid: {declared_path!r}"
-            )
-        if not isinstance(expected_hash, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", expected_hash
-        ):
-            raise RuntimeContractError(
-                f"Copilot reviewer materialization hash is invalid: {declared_path}"
-            )
+            raise RuntimeContractError(f"Copilot reviewer materialization path is invalid: {declared_path!r}")
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise RuntimeContractError(f"Copilot reviewer materialization hash is invalid: {declared_path}")
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
         _require_safe_snapshot_path(materialized_root, target)
-        if not target.is_file() or not target.resolve(strict=True).is_relative_to(
-            materialized_resolved
-        ):
-            raise RuntimeContractError(
-                f"Copilot reviewer materialization file is invalid: {declared_path}"
-            )
+        if not target.is_file() or not target.resolve(strict=True).is_relative_to(materialized_resolved):
+            raise RuntimeContractError(f"Copilot reviewer materialization file is invalid: {declared_path}")
         actual_hash = hashlib.sha256(target.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
-            raise RuntimeContractError(
-                f"Copilot reviewer materialization hash does not match: {declared_path}"
-            )
+            raise RuntimeContractError(f"Copilot reviewer materialization hash does not match: {declared_path}")
         expected_files.add(declared_path)
     actual_files = _snapshot_files(materialized_root)
     if actual_files != expected_files:
-        raise RuntimeContractError(
-            "Copilot reviewer materialization file set does not match its hashes"
-        )
+        raise RuntimeContractError("Copilot reviewer materialization file set does not match its hashes")
     entrypoint = materialized_root.joinpath(*relative.parts).resolve(strict=True)
     return entrypoint
 
@@ -353,25 +321,17 @@ def copilot_command(
     materialized_root: Path,
     result_path: Path,
 ) -> list[str]:
-    negotiate_capabilities(
-        "copilot-cli", ["isolated-added-root", "read-diff", "write-result"]
-    )
+    negotiate_capabilities("copilot-cli", ["isolated-added-root", "read-diff", "write-result"])
     if not materialized_root.is_absolute() or not materialized_root.is_dir():
-        raise RuntimeContractError(
-            "Copilot materialized root must be an existing absolute directory"
-        )
+        raise RuntimeContractError("Copilot materialized root must be an existing absolute directory")
     if not run_directory.is_absolute() or not run_directory.is_dir():
-        raise RuntimeContractError(
-            "Copilot run directory must be an existing absolute directory"
-        )
+        raise RuntimeContractError("Copilot run directory must be an existing absolute directory")
     if not result_path.is_absolute():
         raise RuntimeContractError("Copilot result path must be absolute")
     run_directory_resolved = run_directory.resolve(strict=True)
     result_path_resolved = result_path.resolve(strict=False)
     if not result_path_resolved.is_relative_to(run_directory_resolved):
-        raise RuntimeContractError(
-            "Copilot result path must be inside the run directory"
-        )
+        raise RuntimeContractError("Copilot result path must be inside the run directory")
     return [
         executable,
         f"--add-dir={run_directory}",
@@ -449,13 +409,9 @@ def run_copilot(
     except OSError as exc:
         raise RuntimeContractError(f"Copilot request artifacts are invalid: {exc}") from exc
     if not diff_resolved.is_file() or not diff_resolved.is_relative_to(run_resolved):
-        raise RuntimeContractError(
-            "Copilot request diff must be a file inside the run directory"
-        )
+        raise RuntimeContractError("Copilot request diff must be a file inside the run directory")
     if not source_resolved.is_relative_to(run_resolved):
-        raise RuntimeContractError(
-            "Copilot source snapshot must be inside the run directory"
-        )
+        raise RuntimeContractError("Copilot source snapshot must be inside the run directory")
     if source_manifest != source_root / SOURCE_SNAPSHOT_MANIFEST:
         raise RuntimeContractError("Copilot source snapshot manifest path is invalid")
     if source_snapshot.get("source_commit") != head_sha:
@@ -465,21 +421,15 @@ def run_copilot(
         expected_repository=repository,
         expected_commit=head_sha,
     )
-    execution_directory, environment = isolated_copilot_environment(
-        isolation_root, base_environment
-    )
+    execution_directory, environment = isolated_copilot_environment(isolation_root, base_environment)
     executable = executable or find_copilot()
-    version_result = _run_bounded(
-        runner, [executable, "--version"], execution_directory, environment, diagnostic_path
-    )
+    version_result = _run_bounded(runner, [executable, "--version"], execution_directory, environment, diagnostic_path)
     if version_result.returncode != 0:
         raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
     version = parse_copilot_version(version_result.stdout)
     if version < MINIMUM_COPILOT_CLI_VERSION:
         minimum = ".".join(str(part) for part in MINIMUM_COPILOT_CLI_VERSION)
-        raise RuntimeContractError(
-            f"GitHub Copilot CLI {minimum} or newer is required"
-        )
+        raise RuntimeContractError(f"GitHub Copilot CLI {minimum} or newer is required")
     prompt = (
         "Perform the code review described by the request file at "
         f"{request_path}. Follow the trusted reviewer entrypoint at {entrypoint_resolved}; "

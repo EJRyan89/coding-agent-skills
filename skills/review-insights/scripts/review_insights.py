@@ -134,7 +134,9 @@ def _finding_key(record: dict[str, Any], finding: dict[str, Any]) -> FindingKey:
     return (*_review_key(record), finding["id"])
 
 
-def flags_by_finding(records: list[tuple[Path, dict[str, Any]]], flags: list[dict[str, Any]]) -> dict[FindingKey, list[str]]:
+def flags_by_finding(
+    records: list[tuple[Path, dict[str, Any]]], flags: list[dict[str, Any]]
+) -> dict[FindingKey, list[str]]:
     """Open flag IDs by the analyzed finding each names, following each flag to the review version it names."""
     reviews = {_review_key(record): record for _, record in records}
     linked: dict[FindingKey, list[str]] = {}
@@ -186,13 +188,15 @@ def finding_outcomes(archive_root: Path, records: list[tuple[Path, dict[str, Any
                     continue
                 for occurrence in ({"version": entry["version"], "id": entry["id"]}, *entry["repeats"]):
                     if occurrence["version"] == version:
-                        outcomes[(repository, number, version, occurrence["id"])] = \
-                            entry["dispositions"][-1]["disposition"]
+                        outcomes[(repository, number, version, occurrence["id"])] = entry["dispositions"][-1][
+                            "disposition"
+                        ]
     return outcomes
 
 
-def reviewer_breakdown(pairs: list[Pair], flagged: set[FindingKey],
-                       outcomes: dict[FindingKey, str]) -> list[dict[str, Any]]:
+def reviewer_breakdown(
+    pairs: list[Pair], flagged: set[FindingKey], outcomes: dict[FindingKey, str]
+) -> list[dict[str, Any]]:
     """How many of a recommendation's findings each reviewer raised on each model, how many of those an open flag
     names, and how many a later review judged addressed or still present. A finding raised by several reviewers
     counts for each, so the counts can sum past the findings."""
@@ -208,8 +212,13 @@ def reviewer_breakdown(pairs: list[Pair], flagged: set[FindingKey],
             if outcome in outcome_counts:
                 outcome_counts[outcome][pair] += 1
     return [
-        {"reviewer": reviewer, "model": model, "findings": count, "flagged_findings": flagged_counts[(reviewer, model)],
-         **{outcome: outcome_counts[outcome][(reviewer, model)] for outcome in OUTCOMES}}
+        {
+            "reviewer": reviewer,
+            "model": model,
+            "findings": count,
+            "flagged_findings": flagged_counts[(reviewer, model)],
+            **{outcome: outcome_counts[outcome][(reviewer, model)] for outcome in OUTCOMES},
+        }
         for (reviewer, model), count in sorted(
             counts.items(), key=lambda item: (-item[1], item[0][0].casefold(), item[0][1].casefold())
         )
@@ -237,19 +246,31 @@ def _repositories_text(repositories: list[str]) -> str:
 def _analyzer_recommendation(coverage: str, tool: str, rule: str, repositories: list[str]) -> str:
     where = _repositories_text(repositories)
     if coverage == "available":
-        return (f"{tool}, which {where} already has, provides {rule}, but the rule is not enforced. Enable it or raise "
-                "its severity in the analyzer's configuration so the build reports it instead of a reviewer.")
+        return (
+            f"{tool}, which {where} already has, provides {rule}, but the rule is not enforced. Enable it or raise "
+            "its severity in the analyzer's configuration so the build reports it instead of a reviewer."
+        )
     if coverage == "known":
-        return (f"{tool} provides {rule}, and {where} does not use {tool}. Consider adopting it for this rule, after "
-                "checking its license, cost, and telemetry.")
-    return (f"No existing analyzer rule catches the {rule} pattern found in {where}. Consider writing a custom {tool} "
-            "rule for it.")
+        return (
+            f"{tool} provides {rule}, and {where} does not use {tool}. Consider adopting it for this rule, after "
+            "checking its license, cost, and telemetry."
+        )
+    return (
+        f"No existing analyzer rule catches the {rule} pattern found in {where}. Consider writing a custom {tool} "
+        "rule for it."
+    )
 
 
 def _evidence(record: dict[str, Any], finding: dict[str, Any]) -> dict[str, Any]:
-    return {"repository": record["repository"].lower(), "pull_number": record["pull_request"]["number"],
-            "review_version": record["review"]["version"], "finding_id": finding["id"], "path": finding["path"],
-            "line": finding["line"], "title": finding.get("title")}
+    return {
+        "repository": record["repository"].lower(),
+        "pull_number": record["pull_request"]["number"],
+        "review_version": record["review"]["version"],
+        "finding_id": finding["id"],
+        "path": finding["path"],
+        "line": finding["line"],
+        "title": finding.get("title"),
+    }
 
 
 def analyze(
@@ -283,10 +304,13 @@ def analyze(
     # name another subject; a new subject gets a number no earlier recommendation used.
     used = [int(match.group(1)) for item in earlier.values() if (match := REC_ID.fullmatch(item.get("id", "")))]
     next_number = max(used, default=0) + 1
-    categories = sorted((key for key in groups if key[0] == "category"),
-                        key=lambda key: (-len(groups[key]), key[1].casefold()))
-    analyzers = sorted((key for key in groups if key[0] == "analyzer"),
-                       key=lambda key: (ANALYZER_COVERAGES.index(key[1]), -len(groups[key]), key[2], key[3]))
+    categories = sorted(
+        (key for key in groups if key[0] == "category"), key=lambda key: (-len(groups[key]), key[1].casefold())
+    )
+    analyzers = sorted(
+        (key for key in groups if key[0] == "analyzer"),
+        key=lambda key: (ANALYZER_COVERAGES.index(key[1]), -len(groups[key]), key[2], key[3]),
+    )
     recommendations = []
     for key in [*categories, *analyzers]:
         pairs = groups[key]
@@ -305,22 +329,33 @@ def analyze(
         }
         if key[0] == "category":
             category = key[1]
-            recommendations.append({
-                "id": identifier, "kind": "category", "category": category,
-                "recommendation": f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
-                **common,
-            })
+            recommendations.append(
+                {
+                    "id": identifier,
+                    "kind": "category",
+                    "category": category,
+                    "recommendation": f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
+                    **common,
+                }
+            )
             continue
         analyzer = spellings[key]
         repositories = sorted({record["repository"].lower() for record, _ in pairs})
-        recommendations.append({
-            "id": identifier, "kind": "analyzer", "coverage": analyzer["coverage"], "tool": analyzer["tool"],
-            "rule": analyzer["rule"], "repositories": repositories,
-            "recommendation": _analyzer_recommendation(analyzer["coverage"], analyzer["tool"], analyzer["rule"],
-                                                       repositories),
-            **common,
-            "evidence": [_evidence(record, finding) for record, finding in pairs],
-        })
+        recommendations.append(
+            {
+                "id": identifier,
+                "kind": "analyzer",
+                "coverage": analyzer["coverage"],
+                "tool": analyzer["tool"],
+                "rule": analyzer["rule"],
+                "repositories": repositories,
+                "recommendation": _analyzer_recommendation(
+                    analyzer["coverage"], analyzer["tool"], analyzer["rule"], repositories
+                ),
+                **common,
+                "evidence": [_evidence(record, finding) for record, finding in pairs],
+            }
+        )
     return {
         "record_count": len(records),
         "finding_count": sum(category_counts.values()),
@@ -334,20 +369,28 @@ def _render_recommendation(item: dict[str, Any], heading: str) -> list[str]:
     lines = [f"### {item['id']} — {heading}", "", f"Finding count: {item['finding_count']}"]
     if item["kind"] == "analyzer":
         lines.append(f"Repositories: {', '.join(item['repositories'])}")
-    lines.extend([
-        f"Decision: {item['decision']}",
-        f"Linked flags: {', '.join(item['linked_flags']) or 'none'}",
-        "",
-        item["recommendation"],
-        "",
-    ])
+    lines.extend(
+        [
+            f"Decision: {item['decision']}",
+            f"Linked flags: {', '.join(item['linked_flags']) or 'none'}",
+            "",
+            item["recommendation"],
+            "",
+        ]
+    )
     if item["reviewers"]:
-        lines.extend(["| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
-                      "| --- | --- | --- | --- | --- | --- |"])
+        lines.extend(
+            [
+                "| Reviewer | Model | Findings | Flagged | Addressed | Still present |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+        )
         for row in item["reviewers"]:
-            lines.append(f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
-                         f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
-                         f"{_outcome(row['still_present'])} |")
+            lines.append(
+                f"| {_cell(row['reviewer'])} | {_cell(row['model'])} | {row['findings']} | "
+                f"{row['flagged_findings']} | {_outcome(row['addressed'])} | "
+                f"{_outcome(row['still_present'])} |"
+            )
         lines.append("")
     if item["kind"] == "analyzer":
         lines.extend(["Findings:", ""])
@@ -391,21 +434,21 @@ def render(report: dict[str, Any]) -> str:
     for item in categories:
         lines.extend(_render_recommendation(item, item["category"]))
     if analyzers:
-        lines.extend([
-            "## Analyzer opportunities",
-            "",
-            "Findings reviewers said a diagnostic analyzer could catch, cheapest first: rules in analyzers the "
-            "repositories already have, then rules in analyzers they do not use, then patterns that would need a "
-            "custom rule.",
-            "",
-        ])
+        lines.extend(
+            [
+                "## Analyzer opportunities",
+                "",
+                "Findings reviewers said a diagnostic analyzer could catch, cheapest first: rules in analyzers the "
+                "repositories already have, then rules in analyzers they do not use, then patterns that would need a "
+                "custom rule.",
+                "",
+            ]
+        )
     for item in analyzers:
         lines.extend(_render_recommendation(item, f"{item['coverage']}: {item['rule']} ({item['tool']})"))
     lines.extend(["## Evidence", ""])
     for record in report["records"]:
-        lines.append(
-            f"- `{record['path']}` — payload `{record['payload_sha256']}`"
-        )
+        lines.append(f"- `{record['path']}` — payload `{record['payload_sha256']}`")
     lines.append("")
     return "\n".join(lines)
 
@@ -457,8 +500,11 @@ def _validate_subject(item: dict[str, Any], path: Path) -> None:
         return
     analyzer = {field: item.get(field) for field in ("coverage", "tool", "rule")}
     repositories = item.get("repositories")
-    if not valid_analyzer(analyzer) or not isinstance(repositories, list) or not repositories or any(
-        not isinstance(repository, str) for repository in repositories
+    if (
+        not valid_analyzer(analyzer)
+        or not isinstance(repositories, list)
+        or not repositories
+        or any(not isinstance(repository, str) for repository in repositories)
     ):
         raise InsightError(f"{item['id']} has an invalid analyzer subject")
     evidence = item.get("evidence")
@@ -534,8 +580,7 @@ def create_report(
     records = collect_records(archive_root, repositories, start, end)
     json_path = summary_root / repository_set / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     previous = (
-        {subject_key(item): item for item in load_report(json_path)["recommendations"]}
-        if json_path.exists() else {}
+        {subject_key(item): item for item in load_report(json_path)["recommendations"]} if json_path.exists() else {}
     )
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -655,12 +700,14 @@ def decide(
             resolve_flag(flags_path, flag_id, resolution)
             resolved.append(flag_id)
     item["decision"] = decision
-    item["decision_history"].append({
-        "decision": decision,
-        "decided_at": services.now().isoformat(),
-        "note": note,
-        "resolved_flags": resolved,
-    })
+    item["decision_history"].append(
+        {
+            "decision": decision,
+            "decided_at": services.now().isoformat(),
+            "note": note,
+            "resolved_flags": resolved,
+        }
+    )
     write_report(report_path, report)
     return resolved, skipped
 
@@ -669,16 +716,22 @@ def _print_report(report: dict[str, Any]) -> None:
     for item in report["recommendations"]:
         flags = ",".join(item["linked_flags"]) or "none"
         if item["kind"] == "category":
-            print(f"RECOMMENDATION {item['id']} {item['category']} findings={item['finding_count']} "
-                  f"decision={item['decision']} flags={flags}")
+            print(
+                f"RECOMMENDATION {item['id']} {item['category']} findings={item['finding_count']} "
+                f"decision={item['decision']} flags={flags}"
+            )
         else:
-            print(f"ANALYZER {item['id']} coverage={item['coverage']} tool={item['tool']} rule={item['rule']} "
-                  f"findings={item['finding_count']} repositories={','.join(item['repositories'])} "
-                  f"decision={item['decision']} flags={flags}")
+            print(
+                f"ANALYZER {item['id']} coverage={item['coverage']} tool={item['tool']} rule={item['rule']} "
+                f"findings={item['finding_count']} repositories={','.join(item['repositories'])} "
+                f"decision={item['decision']} flags={flags}"
+            )
         for row in item["reviewers"]:
-            print(f"REVIEWER {item['id']} {row['reviewer']} model={row['model']} "
-                  f"findings={row['findings']} flagged={row['flagged_findings']} "
-                  f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}")
+            print(
+                f"REVIEWER {item['id']} {row['reviewer']} model={row['model']} "
+                f"findings={row['findings']} flagged={row['flagged_findings']} "
+                f"addressed={_outcome(row['addressed'])} still_present={_outcome(row['still_present'])}"
+            )
         for entry in item.get("evidence", [])[:EXAMPLES_PRINTED]:
             print(f"EXAMPLE {item['id']} {_example(entry)}")
 
@@ -698,27 +751,43 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     decide_parser.add_argument("recommendation")
     subject = decide_parser.add_mutually_exclusive_group(required=True)
     subject.add_argument("--category", help="the category a RECOMMENDATION line named")
-    subject.add_argument("--analyzer", nargs=3, metavar=("COVERAGE", "TOOL", "RULE"),
-                         help="the coverage, tool, and rule an ANALYZER line named")
-    decide_parser.add_argument("--flags", required=True,
-                               help="the flags= value the line printed: comma-separated IDs or none")
+    subject.add_argument(
+        "--analyzer",
+        nargs=3,
+        metavar=("COVERAGE", "TOOL", "RULE"),
+        help="the coverage, tool, and rule an ANALYZER line named",
+    )
+    decide_parser.add_argument(
+        "--flags", required=True, help="the flags= value the line printed: comma-separated IDs or none"
+    )
     decide_parser.add_argument("decision", choices=DECISIONS)
     decide_parser.add_argument("--note")
     args = parser.parse_args(arguments)
     try:
         if args.command == "report":
             json_path, markdown_path, report = report_from_config(
-                start=args.start, end=args.end, repositories=args.repositories,
-                repository_set=args.repository_set, config_path=args.config, services=services,
+                start=args.start,
+                end=args.end,
+                repositories=args.repositories,
+                repository_set=args.repository_set,
+                config_path=args.config,
+                services=services,
             )
             print(f"REPORT {json_path}")
             print(f"MARKDOWN {markdown_path}")
             _print_report(report)
             return 0
         shown_flags = [] if args.flags == "none" else [flag for flag in args.flags.split(",") if flag]
-        resolved, skipped = decide(args.report, args.recommendation, args.category, shown_flags, args.decision,
-                                   analyzer=tuple(args.analyzer) if args.analyzer else None, note=args.note,
-                                   services=services)
+        resolved, skipped = decide(
+            args.report,
+            args.recommendation,
+            args.category,
+            shown_flags,
+            args.decision,
+            analyzer=tuple(args.analyzer) if args.analyzer else None,
+            note=args.note,
+            services=services,
+        )
         for flag_id in resolved:
             print(f"FLAG_RESOLVED {flag_id}")
         for flag_id in skipped:

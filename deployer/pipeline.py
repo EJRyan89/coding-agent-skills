@@ -167,9 +167,7 @@ def _require_variables(context: Context, selected: list[str]) -> None:
         ]
         for variable in missing:
             lines += [
-                f"  {name} -> {variable}"
-                for name in selected
-                if variable in context.source.skills[name].required_vars
+                f"  {name} -> {variable}" for name in selected if variable in context.source.skills[name].required_vars
             ]
         raise DeployError(*lines, f"Run '{CONFIGURE_COMMAND_LINE}' to set them.")
 
@@ -361,8 +359,14 @@ DRY_RUN_ACTIONS = (
 )
 
 
-def _dry_run(context: Context, selected: list[str], adapters: list[str], staged: render.Staged, plan: SharedPlan,
-             agents: list[str]) -> None:
+def _dry_run(
+    context: Context,
+    selected: list[str],
+    adapters: list[str],
+    staged: render.Staged,
+    plan: SharedPlan,
+    agents: list[str],
+) -> None:
     paths, owned = context.paths, context.owned
     lines: list[ReportLine] = []
 
@@ -383,8 +387,12 @@ def _dry_run(context: Context, selected: list[str], adapters: list[str], staged:
             elif existing == staged.skill_hash(name):
                 report(name, "ADOPT", "unmanaged, byte-identical")
             else:
-                report(name, "BOOTSTRAP DIFF", "unmanaged, differs",
-                       _tree_diff(destination, staged.skills[name], f"staged/{name}"))
+                report(
+                    name,
+                    "BOOTSTRAP DIFF",
+                    "unmanaged, differs",
+                    _tree_diff(destination, staged.skills[name], f"staged/{name}"),
+                )
         elif os.path.lexists(destination):
             report(name, "CONFLICT", "destination is not a directory")
         else:
@@ -564,13 +572,16 @@ def _plan_shared(context: Context, selected: list[str], assets: dict[str, str]) 
             for asset in skill_entry.get("shared_deps", []):
                 required_by.setdefault(asset, f"source {other}")
     retained = {
-        asset: required_by[asset] for asset in sorted(context.owned.shared) if asset not in staged and asset in required_by
+        asset: required_by[asset]
+        for asset in sorted(context.owned.shared)
+        if asset not in staged and asset in required_by
     }
     return SharedPlan(staged=staged, retained=retained)
 
 
-def _check_ownership(context: Context, selected: list[str], adapters: list[str], plan: SharedPlan,
-                     agents: list[str]) -> None:
+def _check_ownership(
+    context: Context, selected: list[str], adapters: list[str], plan: SharedPlan, agents: list[str]
+) -> None:
     data, owned, source_id, paths = context.manifest, context.owned, context.source_id, context.paths
     ownership = see_recovery("Ownership held by another source")
 
@@ -674,7 +685,16 @@ def _remove_obsolete(
             outcome.add(name, "DROPPED OWNERSHIP", "already absent", kind)
 
 
-def _replace(record: journal.Journal, root: str, base: Path, source_path: Path, name: str, staged_hash: str, existing: str | None, retain: bool) -> None:
+def _replace(
+    record: journal.Journal,
+    root: str,
+    base: Path,
+    source_path: Path,
+    name: str,
+    staged_hash: str,
+    existing: str | None,
+    retain: bool,
+) -> None:
     destination = base / name
     if existing is not None:
         record.backup(root, name, existing, retain=retain)
@@ -722,8 +742,15 @@ def _apply_item(
     return ReportLine(name, "SKIPPED", labels["unmanaged"], tuple(diff), kind)
 
 
-def _apply(context: Context, selected: list[str], adapters: list[str], staged: render.Staged, plan: SharedPlan,
-           run_id: str, agents: list[str]) -> None:
+def _apply(
+    context: Context,
+    selected: list[str],
+    adapters: list[str],
+    staged: render.Staged,
+    plan: SharedPlan,
+    run_id: str,
+    agents: list[str],
+) -> None:
     paths, owned = context.paths, context.owned
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
@@ -735,20 +762,56 @@ def _apply(context: Context, selected: list[str], adapters: list[str], staged: r
     outcome = Outcome()
     is_dir = Path.is_dir
     is_file = Path.is_file
-    _remove_obsolete(record, "claude", paths.dest_dir, owned.skills, set(selected), is_dir,
-                     ("", "deselected or absent from source", "a directory"),
-                     outcome, outcome.removed_skills, outcome.skipped_skills)
+    _remove_obsolete(
+        record,
+        "claude",
+        paths.dest_dir,
+        owned.skills,
+        set(selected),
+        is_dir,
+        ("", "deselected or absent from source", "a directory"),
+        outcome,
+        outcome.removed_skills,
+        outcome.skipped_skills,
+    )
     for asset, reason in plan.retained.items():
         outcome.add(asset, "KEPT", f"needed by {reason}", "shared asset")
-    _remove_obsolete(record, "claude", paths.dest_dir, owned.shared, plan.keep, is_file,
-                     ("shared asset", "obsolete", "a file"),
-                     outcome, outcome.removed_shared, outcome.skipped_shared)
-    _remove_obsolete(record, "agents", paths.adapter_dest_dir, owned.adapters, set(adapters), is_dir,
-                     (ADAPTER, "obsolete", "a directory"),
-                     outcome, outcome.removed_adapters, outcome.skipped_adapters)
-    _remove_obsolete(record, "claude-agents", paths.agent_dest_dir, owned.agents, set(agents), is_file,
-                     (AGENT, "no selected skill needs it", "a file"),
-                     outcome, outcome.removed_agents, outcome.skipped_agents)
+    _remove_obsolete(
+        record,
+        "claude",
+        paths.dest_dir,
+        owned.shared,
+        plan.keep,
+        is_file,
+        ("shared asset", "obsolete", "a file"),
+        outcome,
+        outcome.removed_shared,
+        outcome.skipped_shared,
+    )
+    _remove_obsolete(
+        record,
+        "agents",
+        paths.adapter_dest_dir,
+        owned.adapters,
+        set(adapters),
+        is_dir,
+        (ADAPTER, "obsolete", "a directory"),
+        outcome,
+        outcome.removed_adapters,
+        outcome.skipped_adapters,
+    )
+    _remove_obsolete(
+        record,
+        "claude-agents",
+        paths.agent_dest_dir,
+        owned.agents,
+        set(agents),
+        is_file,
+        (AGENT, "no selected skill needs it", "a file"),
+        outcome,
+        outcome.removed_agents,
+        outcome.skipped_agents,
+    )
 
     skill_labels = {
         "kind": "",
@@ -758,8 +821,17 @@ def _apply(context: Context, selected: list[str], adapters: list[str], staged: r
     }
     for name in selected:
         labels = dict(skill_labels, diff=f"staged/{name}")
-        line = _apply_item(context, record, "claude", name, staging_dir / name, staged.skill_hash(name),
-                           owned.skills.get(name), is_dir, labels)
+        line = _apply_item(
+            context,
+            record,
+            "claude",
+            name,
+            staging_dir / name,
+            staged.skill_hash(name),
+            owned.skills.get(name),
+            is_dir,
+            labels,
+        )
         _record(outcome, line, outcome.skipped_skills)
 
     adapter_labels = {
@@ -770,11 +842,19 @@ def _apply(context: Context, selected: list[str], adapters: list[str], staged: r
     }
     for name in adapters:
         if name in outcome.skipped_skills:
-            _record(outcome, ReportLine(name, "SKIPPED", SKIPPED_WITH_SKILL, kind=ADAPTER),
-                    outcome.skipped_adapters)
+            _record(outcome, ReportLine(name, "SKIPPED", SKIPPED_WITH_SKILL, kind=ADAPTER), outcome.skipped_adapters)
             continue
-        line = _apply_item(context, record, "agents", name, staging_dir / render.ADAPTER_STAGING / name,
-                           staged.adapter_hash(name), owned.adapters.get(name), is_dir, adapter_labels)
+        line = _apply_item(
+            context,
+            record,
+            "agents",
+            name,
+            staging_dir / render.ADAPTER_STAGING / name,
+            staged.adapter_hash(name),
+            owned.adapters.get(name),
+            is_dir,
+            adapter_labels,
+        )
         _record(outcome, line, outcome.skipped_adapters)
 
     shared_labels = {
@@ -784,8 +864,17 @@ def _apply(context: Context, selected: list[str], adapters: list[str], staged: r
         "unmanaged": DIFFERS,
     }
     for asset in sorted(staged.shared):
-        line = _apply_item(context, record, "claude", asset, staging_dir / asset, staged.shared_hash(asset),
-                           owned.shared.get(asset), is_file, shared_labels)
+        line = _apply_item(
+            context,
+            record,
+            "claude",
+            asset,
+            staging_dir / asset,
+            staged.shared_hash(asset),
+            owned.shared.get(asset),
+            is_file,
+            shared_labels,
+        )
         _record(outcome, line, outcome.skipped_shared)
 
     agent_labels = {
@@ -795,8 +884,17 @@ def _apply(context: Context, selected: list[str], adapters: list[str], staged: r
         "unmanaged": DIFFERS,
     }
     for name in agents:
-        line = _apply_item(context, record, "claude-agents", name, staging_dir / render.AGENT_STAGING / name,
-                           staged.agent_hash(name), owned.agents.get(name), is_file, agent_labels)
+        line = _apply_item(
+            context,
+            record,
+            "claude-agents",
+            name,
+            staging_dir / render.AGENT_STAGING / name,
+            staged.agent_hash(name),
+            owned.agents.get(name),
+            is_file,
+            agent_labels,
+        )
         _record(outcome, line, outcome.skipped_agents)
 
     _commit_manifest(context, selected, adapters, staged, plan, outcome, run_id, agents)
@@ -811,8 +909,16 @@ def _record(outcome: Outcome, line: ReportLine, skipped: set[str]) -> None:
         skipped.add(line.name)
 
 
-def _commit_manifest(context: Context, selected: list[str], adapters: list[str], staged: render.Staged,
-                     plan: SharedPlan, outcome: Outcome, run_id: str, agents: list[str]) -> None:
+def _commit_manifest(
+    context: Context,
+    selected: list[str],
+    adapters: list[str],
+    staged: render.Staged,
+    plan: SharedPlan,
+    outcome: Outcome,
+    run_id: str,
+    agents: list[str],
+) -> None:
     owned, data = context.owned, context.manifest
     skills = {
         name: {"hash": value, "shared_deps": list(owned.skill_shared_deps.get(name, []))}
@@ -820,10 +926,15 @@ def _commit_manifest(context: Context, selected: list[str], adapters: list[str],
     }
     for name in selected:
         if name not in outcome.skipped_skills:
-            skills[name] = {"hash": staged.skill_hash(name), "shared_deps": sorted(context.source.skills[name].shared_deps)}
+            skills[name] = {
+                "hash": staged.skill_hash(name),
+                "shared_deps": sorted(context.source.skills[name].shared_deps),
+            }
     for name in outcome.removed_skills:
         skills.pop(name, None)
-    shared = {name: {"hash": value, "role": owned.shared_roles.get(name, "owner")} for name, value in owned.shared.items()}
+    shared = {
+        name: {"hash": value, "role": owned.shared_roles.get(name, "owner")} for name, value in owned.shared.items()
+    }
     for asset in staged.shared:
         if asset not in outcome.skipped_shared:
             shared[asset] = {"hash": staged.shared_hash(asset), "role": "owner"}
@@ -886,7 +997,9 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
             backups.append((item, entry["backup_dest"]))
     for entry in record.entries:
         if entry["op"] == "backup" and not entry["retain"]:
-            fsops.remove(journal.root_directory(context.paths, entry.get("root", "claude")) / f"{entry['item']}.deploying-bak")
+            fsops.remove(
+                journal.root_directory(context.paths, entry.get("root", "claude")) / f"{entry['item']}.deploying-bak"
+            )
     return backups
 
 
@@ -948,7 +1061,7 @@ def _migrate(context: Context, old: str) -> None:
     if old_entry is None:
         raise DeployError(
             f"ERROR: Migration source '{old}' is not present in the manifest.",
-            f"Name a source ID listed under \"sources\" in {platform_support.normalize(paths.manifest_file)}.",
+            f'Name a source ID listed under "sources" in {platform_support.normalize(paths.manifest_file)}.',
         )
     skills = _migration_candidates(context, old_entry, "skills", "", paths.dest_dir)
     shared = _migration_candidates(context, old_entry, "shared", "shared asset", paths.dest_dir)
@@ -986,23 +1099,37 @@ def _migrate(context: Context, old: str) -> None:
         new_entry.setdefault(manifest.ADAPTERS, {})[name] = old_entry[manifest.ADAPTERS].pop(name)
     for name in agents:
         new_entry.setdefault("agents", {})[name] = old_entry["agents"].pop(name)
-    if not any(old_entry.get(key) for key in (
-        "skills", "shared", manifest.ADAPTERS, "agents", "requested_bundles", "requested_skills", "selected_skills"
-    )):
+    if not any(
+        old_entry.get(key)
+        for key in (
+            "skills",
+            "shared",
+            manifest.ADAPTERS,
+            "agents",
+            "requested_bundles",
+            "requested_skills",
+            "selected_skills",
+        )
+    ):
         del data.sources[old]
     data.save()
     print("")
     print(f"Moved ownership from '{old}' to '{context.source_id}'.")
-    print_report("MIGRATED", ("MIGRATED",), [
-        *(ReportLine(name, "MIGRATED") for name in skills),
-        *(ReportLine(name, "MIGRATED", kind="shared asset") for name in shared),
-        *(ReportLine(name, "MIGRATED", kind=ADAPTER) for name in adapters),
-        *(ReportLine(name, "MIGRATED", kind=AGENT) for name in agents),
-    ])
+    print_report(
+        "MIGRATED",
+        ("MIGRATED",),
+        [
+            *(ReportLine(name, "MIGRATED") for name in skills),
+            *(ReportLine(name, "MIGRATED", kind="shared asset") for name in shared),
+            *(ReportLine(name, "MIGRATED", kind=ADAPTER) for name in adapters),
+            *(ReportLine(name, "MIGRATED", kind=AGENT) for name in agents),
+        ],
+    )
 
 
-def _deploy(paths: Paths, options: Options, src: source.Source, values: dict[str, str], stdin: TextIO,
-            run_id: str | None) -> int:
+def _deploy(
+    paths: Paths, options: Options, src: source.Source, values: dict[str, str], stdin: TextIO, run_id: str | None
+) -> int:
     data = manifest.load(paths.manifest_file)
     context = Context(paths, options, src, values, data, data.ownership(src.source_id), stdin)
     if options.migrate_from:
@@ -1017,7 +1144,10 @@ def _deploy(paths: Paths, options: Options, src: source.Source, values: dict[str
     shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
     if shadowed:
         print("", file=sys.stderr)
-        print("WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:", file=sys.stderr)
+        print(
+            "WARNING: Higher-priority GitHub Copilot personal skills shadow generated runtime adapters:",
+            file=sys.stderr,
+        )
         for name in shadowed:
             print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
         print(
@@ -1145,8 +1275,11 @@ def run(
             paths = Paths(paths.source_dir, canary_home(options.canary_home))
         validate_managed_roots(paths)
         # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
-        values = {} if options.canary_home else config.load(
-            paths.config_file(source_id), source_id, paths.home, paths.source_dir)
+        values = (
+            {}
+            if options.canary_home
+            else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
+        )
         src = source.discover(paths, source_id)
     except ParserExit as exc:
         return exc.code
@@ -1174,8 +1307,10 @@ def run(
     if not journal.recover_incomplete(paths):
         print("", file=sys.stderr)
         print("ERROR: Recovery failed, so nothing was deployed.", file=sys.stderr)
-        print(f"Reconcile the run named above by hand, then rerun with --dry-run. {see_recovery(RECOVERY_FAILED)}",
-              file=sys.stderr)
+        print(
+            f"Reconcile the run named above by hand, then rerun with --dry-run. {see_recovery(RECOVERY_FAILED)}",
+            file=sys.stderr,
+        )
         print("", file=sys.stderr)
         held.release()
         return 1
@@ -1199,8 +1334,11 @@ def run(
             held.release()
         else:
             print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
-            print("The next run reclaims the lock and retries recovery. If that fails too, "
-                  f"reconcile the run by hand. {see_recovery(RECOVERY_FAILED)}", file=sys.stderr)
+            print(
+                "The next run reclaims the lock and retries recovery. If that fails too, "
+                f"reconcile the run by hand. {see_recovery(RECOVERY_FAILED)}",
+                file=sys.stderr,
+            )
         print("", file=sys.stderr)
         return code
     held.release()

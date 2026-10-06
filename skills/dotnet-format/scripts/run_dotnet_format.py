@@ -56,8 +56,13 @@ Runner = Callable[[Sequence[str], Path, float], Completed]
 def subprocess_runner(arguments: Sequence[str], cwd: Path, timeout: float) -> Completed:
     try:
         result = subprocess.run(
-            list(arguments), cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, timeout=timeout, check=False,
+            list(arguments),
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired as expired:
         return Completed(-1, expired.output or b"", timed_out=True)
@@ -87,8 +92,16 @@ class Diagnostic:
 
 def command(mode: str, solution: str, files: list[str], severity: str) -> list[str]:
     arguments = [
-        "dotnet-format", solution, "--no-restore", "--fix-whitespace",
-        "--fix-style", severity, "--fix-analyzers", severity, "--verbosity", "detailed",
+        "dotnet-format",
+        solution,
+        "--no-restore",
+        "--fix-whitespace",
+        "--fix-style",
+        severity,
+        "--fix-analyzers",
+        severity,
+        "--verbosity",
+        "detailed",
     ]
     if mode == "check":
         arguments.append("--check")
@@ -111,10 +124,15 @@ def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
     for line in log.splitlines():
         match = ISSUE.match(line)
         if match:
-            found.setdefault(Diagnostic(
-                display_path(match["path"], root), int(match["line"]), int(match["column"]),
-                match["severity"], match["rule"],
-            ))
+            found.setdefault(
+                Diagnostic(
+                    display_path(match["path"], root),
+                    int(match["line"]),
+                    int(match["column"]),
+                    match["severity"],
+                    match["rule"],
+                )
+            )
     return list(found)
 
 
@@ -129,8 +147,16 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
-def run(mode: str, root: Path, solution: str, file_list: Path, severity: str, timeout: float,
-        services: Services, emit: Callable[[str], None]) -> bool:
+def run(
+    mode: str,
+    root: Path,
+    solution: str,
+    file_list: Path,
+    severity: str,
+    timeout: float,
+    services: Services,
+    emit: Callable[[str], None],
+) -> bool:
     """Run dotnet-format and print its diagnostics; return whether a check found any."""
     if not services.which("dotnet-format"):
         raise Failed(INSTALL_HINT)
@@ -141,8 +167,18 @@ def run(mode: str, root: Path, solution: str, file_list: Path, severity: str, ti
         handle.write(result.output)
     diagnostics = parse_diagnostics(result.output.decode("utf-8", errors="replace"), root)
     for diagnostic in diagnostics:
-        emit("\t".join(("DIAGNOSTIC", diagnostic.path, str(diagnostic.line), str(diagnostic.column),
-                        diagnostic.severity, diagnostic.rule)))
+        emit(
+            "\t".join(
+                (
+                    "DIAGNOSTIC",
+                    diagnostic.path,
+                    str(diagnostic.line),
+                    str(diagnostic.column),
+                    diagnostic.severity,
+                    diagnostic.rule,
+                )
+            )
+        )
     rules = sorted({diagnostic.rule for diagnostic in diagnostics})
     file_count = len({diagnostic.path for diagnostic in diagnostics})
     emit(f"SUMMARY\t{len(diagnostics)}\t{file_count}\t{','.join(rules) or '-'}")
@@ -165,16 +201,32 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     parser.add_argument("--repo-root", required=True, type=Path, help="REPO_ROOT from dotnet_format_targets.py")
     parser.add_argument("--solution", required=True, help="SOLUTION path, relative to the repository root")
     parser.add_argument("--include-file", required=True, type=Path, help="FILE_LIST from dotnet_format_targets.py")
-    parser.add_argument("--severity", choices=("info", "warn", "error"), default="warn",
-                        help="lowest code-style and analyzer severity to report or fix (default: warn)")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS,
-                        help=f"seconds to wait for dotnet-format (default: {DEFAULT_TIMEOUT_SECONDS})")
+    parser.add_argument(
+        "--severity",
+        choices=("info", "warn", "error"),
+        default="warn",
+        help="lowest code-style and analyzer severity to report or fix (default: warn)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help=f"seconds to wait for dotnet-format (default: {DEFAULT_TIMEOUT_SECONDS})",
+    )
     arguments = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
-        findings = run(arguments.mode, arguments.repo_root, arguments.solution, arguments.include_file,
-                       arguments.severity, arguments.timeout, services or Services(), print)
+        findings = run(
+            arguments.mode,
+            arguments.repo_root,
+            arguments.solution,
+            arguments.include_file,
+            arguments.severity,
+            arguments.timeout,
+            services or Services(),
+            print,
+        )
     except (Failed, OSError) as error:
         print(f"FAILED {error}")
         return 1

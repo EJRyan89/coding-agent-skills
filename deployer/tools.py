@@ -37,13 +37,57 @@ DEPLOY_TOOLS = (
 # Commands every deployment already provides, so skills may run them without declaring them: Git, Bash and the
 # utilities that come with it, PowerShell 7, and the platform's own, such as Python's command name. Keep in step with
 # "Commands skills may run" in docs/adding-a-skill.md.
-STANDARD_COMMANDS = frozenset({
-    "git", "bash", "sh", "pwsh",
-    "awk", "basename", "cat", "cmp", "comm", "cp", "curl", "cut", "date", "diff", "dirname", "env",
-    "expr", "find", "grep", "gzip", "head", "ls", "mkdir", "mktemp", "mv", "od", "paste", "readlink", "realpath",
-    "rm", "rmdir", "sed", "seq", "sleep", "sort", "stat", "tail", "tar", "tee", "touch", "tr", "uniq", "wc",
-    "xargs",
-}) | platform_support.STANDARD_COMMANDS
+STANDARD_COMMANDS = (
+    frozenset(
+        {
+            "git",
+            "bash",
+            "sh",
+            "pwsh",
+            "awk",
+            "basename",
+            "cat",
+            "cmp",
+            "comm",
+            "cp",
+            "curl",
+            "cut",
+            "date",
+            "diff",
+            "dirname",
+            "env",
+            "expr",
+            "find",
+            "grep",
+            "gzip",
+            "head",
+            "ls",
+            "mkdir",
+            "mktemp",
+            "mv",
+            "od",
+            "paste",
+            "readlink",
+            "realpath",
+            "rm",
+            "rmdir",
+            "sed",
+            "seq",
+            "sleep",
+            "sort",
+            "stat",
+            "tail",
+            "tar",
+            "tee",
+            "touch",
+            "tr",
+            "uniq",
+            "wc",
+            "xargs",
+        }
+    )
+    | platform_support.STANDARD_COMMANDS
+)
 
 COPILOT = Tool(
     "copilot",

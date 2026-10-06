@@ -25,34 +25,34 @@ def rules(text: str) -> list[tuple[int, str]]:
 
 # Every kind of literal and comment, each containing braces, quotes, and directive-like lines that are not code.
 TRICKY = source(
-    "class C",                                           # 1
-    "{",                                                 # 2
-    "    #region Literals",                              # 3
-    "",                                                  # 4
-    "    void M()",                                      # 5
-    "    {",                                             # 6
-    '        var a = "{ \\" }";',                        # 7
-    '        var b = @"{ "" }',                          # 8
-    "#endregion",                                        # 9  inside a verbatim string
-    '";',                                                # 10
+    "class C",  # 1
+    "{",  # 2
+    "    #region Literals",  # 3
+    "",  # 4
+    "    void M()",  # 5
+    "    {",  # 6
+    '        var a = "{ \\" }";',  # 7
+    '        var b = @"{ "" }',  # 8
+    "#endregion",  # 9  inside a verbatim string
+    '";',  # 10
     '        var c = $"{{ {d["k"]:N2} }} {(x ? "}" : "{")}";',
-    '        var e = $@"{{ {f} ',                        # 12
-    '#endregion }}";',                                   # 13 inside an interpolated verbatim string
-    '        var g = """',                               # 14
-    "            { #endregion",                          # 15
-    "            \"\" }",                                # 16
-    '            """;',                                  # 17
-    '        var h = $$"""{{{i}}} { }""";',              # 18
-    "        char j = '{', k = '\\'', l = '\"';",        # 19
-    "        /* {",                                      # 20
-    "#endregion",                                        # 21 inside a block comment
-    "        */ // }",                                   # 22
-    "        var m = global::System.Math.PI;",           # 23
-    '        var n = $"{global::System.Math.PI}";',      # 24
-    "    }",                                             # 25
-    "",                                                  # 26
-    "    #endregion",                                    # 27
-    "}",                                                 # 28
+    '        var e = $@"{{ {f} ',  # 12
+    '#endregion }}";',  # 13 inside an interpolated verbatim string
+    '        var g = """',  # 14
+    "            { #endregion",  # 15
+    '            "" }',  # 16
+    '            """;',  # 17
+    '        var h = $$"""{{{i}}} { }""";',  # 18
+    "        char j = '{', k = '\\'', l = '\"';",  # 19
+    "        /* {",  # 20
+    "#endregion",  # 21 inside a block comment
+    "        */ // }",  # 22
+    "        var m = global::System.Math.PI;",  # 23
+    '        var n = $"{global::System.Math.PI}";',  # 24
+    "    }",  # 25
+    "",  # 26
+    "    #endregion",  # 27
+    "}",  # 28
 )
 
 
@@ -74,37 +74,37 @@ class LexerTests(unittest.TestCase):
 
     def test_multi_dollar_raw_strings_open_holes_only_at_their_brace_count(self) -> None:
         text = source('var s = $$$"""{{ {{{x}}} }}""";', "{")
-        self.assertEqual([(1, "open")],
-                         [(event.line, event.kind) for event in layout.Lexer(text).lex().events])
+        self.assertEqual([(1, "open")], [(event.line, event.kind) for event in layout.Lexer(text).lex().events])
 
 
 class RuleTests(unittest.TestCase):
     def test_endregion_must_close_in_the_scope_its_region_opened(self) -> None:
         text = source(
-            "class C",                 # 1
-            "{",                       # 2
-            "    #region Outer",       # 3
-            "",                        # 4
-            "    void A()",            # 5
-            "    {",                   # 6
-            "    #endregion",          # 7  deeper than its #region
-            "",                        # 8
-            "        #region Inner",   # 9
-            "    }",                   # 10
-            "",                        # 11
-            "    void B()",            # 12
-            "    {",                   # 13
-            "        #endregion",      # 14 same depth as #region Inner, but another method
-            "    }",                   # 15
-            "    #region Last",        # 16
-            "",                        # 17
-            "    int f;",              # 18
-            "}",                       # 19
-            "#endregion",              # 20 shallower than its #region
+            "class C",  # 1
+            "{",  # 2
+            "    #region Outer",  # 3
+            "",  # 4
+            "    void A()",  # 5
+            "    {",  # 6
+            "    #endregion",  # 7  deeper than its #region
+            "",  # 8
+            "        #region Inner",  # 9
+            "    }",  # 10
+            "",  # 11
+            "    void B()",  # 12
+            "    {",  # 13
+            "        #endregion",  # 14 same depth as #region Inner, but another method
+            "    }",  # 15
+            "    #region Last",  # 16
+            "",  # 17
+            "    int f;",  # 18
+            "}",  # 19
+            "#endregion",  # 20 shallower than its #region
         )
         found = [(violation.line + 1, violation.rule, violation.severity) for violation in layout.check_text(text)]
-        self.assertEqual([(7, "region-scope", "error"), (14, "region-scope", "error"),
-                          (20, "region-scope", "error")], found)
+        self.assertEqual(
+            [(7, "region-scope", "error"), (14, "region-scope", "error"), (20, "region-scope", "error")], found
+        )
         self.assertIn("(line 9)", layout.check_text(text)[1].message)
 
     def test_conditional_branches_do_not_double_count_braces(self) -> None:
@@ -124,43 +124,72 @@ class RuleTests(unittest.TestCase):
 
     def test_endregion_description_and_spacing_rules(self) -> None:
         text = source(
-            "class C",                  # 1
-            "{",                        # 2
-            "    #region A",            # 3
-            "",                         # 4
-            "    int a;",               # 5
-            "",                         # 6
-            "    #endregion A",         # 7  description, and no blank line before #region B
-            "    #region B",            # 8
-            "",                         # 9
-            "    int b;",               # 10
-            "",                         # 11
-            "    #endregion",           # 12 two blank lines before #region C
-            "",                         # 13
-            "",                         # 14
-            "    #region C",            # 15
-            "",                         # 16
-            "    #region Nested",       # 17
-            "",                         # 18
-            "    int c;",               # 19
-            "",                         # 20
-            "    #endregion",           # 21 directly before another #endregion: allowed
-            "    #endregion // done",   # 22 description, and a blank line before the closing brace
-            "",                         # 23
-            "}",                        # 24
+            "class C",  # 1
+            "{",  # 2
+            "    #region A",  # 3
+            "",  # 4
+            "    int a;",  # 5
+            "",  # 6
+            "    #endregion A",  # 7  description, and no blank line before #region B
+            "    #region B",  # 8
+            "",  # 9
+            "    int b;",  # 10
+            "",  # 11
+            "    #endregion",  # 12 two blank lines before #region C
+            "",  # 13
+            "",  # 14
+            "    #region C",  # 15
+            "",  # 16
+            "    #region Nested",  # 17
+            "",  # 18
+            "    int c;",  # 19
+            "",  # 20
+            "    #endregion",  # 21 directly before another #endregion: allowed
+            "    #endregion // done",  # 22 description, and a blank line before the closing brace
+            "",  # 23
+            "}",  # 24
         )
-        self.assertEqual([
-            (7, "endregion-description"), (7, "region-spacing"), (12, "region-spacing"),
-            (22, "endregion-brace-spacing"), (22, "endregion-description"),
-        ], rules(text))
+        self.assertEqual(
+            [
+                (7, "endregion-description"),
+                (7, "region-spacing"),
+                (12, "region-spacing"),
+                (22, "endregion-brace-spacing"),
+                (22, "endregion-description"),
+            ],
+            rules(text),
+        )
         fixed, applied = layout.fix_text(text)
         self.assertEqual(5, len(applied))
         self.assertEqual([], rules(fixed))
-        self.assertEqual(source(
-            "class C", "{", "    #region A", "", "    int a;", "", "    #endregion", "", "    #region B", "",
-            "    int b;", "", "    #endregion", "", "    #region C", "", "    #region Nested", "", "    int c;", "",
-            "    #endregion", "    #endregion", "}",
-        ), fixed)
+        self.assertEqual(
+            source(
+                "class C",
+                "{",
+                "    #region A",
+                "",
+                "    int a;",
+                "",
+                "    #endregion",
+                "",
+                "    #region B",
+                "",
+                "    int b;",
+                "",
+                "    #endregion",
+                "",
+                "    #region C",
+                "",
+                "    #region Nested",
+                "",
+                "    int c;",
+                "",
+                "    #endregion",
+                "    #endregion",
+                "}",
+            ),
+            fixed,
+        )
         self.assertEqual((fixed, []), layout.fix_text(fixed))
 
     def test_endregion_at_end_of_file_without_newline(self) -> None:
@@ -202,24 +231,48 @@ class FileTests(unittest.TestCase):
 
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list))
         self.assertEqual(1, status, "violations are findings")
-        self.assertEqual([
-            ["VIOLATION", "Src/With Space.cs", "7", "warning", "endregion-brace-spacing",
-             "expected no blank lines between #endregion and the closing brace, found 1"],
-            ["VIOLATION", "Src/With Space.cs", "7", "warning", "endregion-description",
-             "#endregion must not have a description; remove the trailing text"],
-            ["VIOLATION", "Legacy.cs", "4", "warning", "region-spacing",
-             "expected exactly 1 blank line between #endregion and the next #region, found 0"],
-            ["SUMMARY", "3", "2", "endregion-brace-spacing,endregion-description,region-spacing"],
-        ], lines)
+        self.assertEqual(
+            [
+                [
+                    "VIOLATION",
+                    "Src/With Space.cs",
+                    "7",
+                    "warning",
+                    "endregion-brace-spacing",
+                    "expected no blank lines between #endregion and the closing brace, found 1",
+                ],
+                [
+                    "VIOLATION",
+                    "Src/With Space.cs",
+                    "7",
+                    "warning",
+                    "endregion-description",
+                    "#endregion must not have a description; remove the trailing text",
+                ],
+                [
+                    "VIOLATION",
+                    "Legacy.cs",
+                    "4",
+                    "warning",
+                    "region-spacing",
+                    "expected exactly 1 blank line between #endregion and the next #region, found 0",
+                ],
+                ["SUMMARY", "3", "2", "endregion-brace-spacing,endregion-description,region-spacing"],
+            ],
+            lines,
+        )
 
         status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), "--fix")
         self.assertEqual(0, status, "every violation was fixed")
-        self.assertEqual([
-            ["FIXED", "Src/With Space.cs", "7", "endregion-brace-spacing"],
-            ["FIXED", "Src/With Space.cs", "7", "endregion-description"],
-            ["FIXED", "Legacy.cs", "4", "region-spacing"],
-            ["SUMMARY", "0", "0", "-"],
-        ], lines)
+        self.assertEqual(
+            [
+                ["FIXED", "Src/With Space.cs", "7", "endregion-brace-spacing"],
+                ["FIXED", "Src/With Space.cs", "7", "endregion-description"],
+                ["FIXED", "Legacy.cs", "4", "region-spacing"],
+                ["SUMMARY", "0", "0", "-"],
+            ],
+            lines,
+        )
         self.assertEqual(
             b"\xef\xbb\xbf" + b"class C\r\n{\r\n    #region A\r\n\r\n    int a;\r\n\r\n    #endregion\r\n}\r\n",
             crlf.read_bytes(),
@@ -245,8 +298,9 @@ class FileTests(unittest.TestCase):
         (self.root / "Clean.cs").write_bytes(b"class C\n{\n    #region A\n\n    int a;\n\n    #endregion\n}\n")
         for extra in ((), ("--fix",)):
             with self.subTest(extra=extra):
-                status, lines = self.main("check", "--repo-root", str(self.root),
-                                          "--file-list", str(self.file_list("Clean.cs")), *extra)
+                status, lines = self.main(
+                    "check", "--repo-root", str(self.root), "--file-list", str(self.file_list("Clean.cs")), *extra
+                )
                 self.assertEqual((0, [["SUMMARY", "0", "0", "-"]]), (status, lines))
 
     def test_a_listed_file_that_does_not_exist_fails_before_any_check_or_fix(self) -> None:
@@ -256,10 +310,8 @@ class FileTests(unittest.TestCase):
         file_list = self.file_list("Fixable.cs", "Gone/Missing.cs")
         for extra in ((), ("--fix",)):
             with self.subTest(extra=extra):
-                status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list),
-                                          *extra)
-                self.assertEqual((1, [[f"FAILED {self.root / 'Gone' / 'Missing.cs'} does not exist"]]),
-                                 (status, lines))
+                status, lines = self.main("check", "--repo-root", str(self.root), "--file-list", str(file_list), *extra)
+                self.assertEqual((1, [[f"FAILED {self.root / 'Gone' / 'Missing.cs'} does not exist"]]), (status, lines))
                 self.assertEqual(original, fixable.read_bytes())
 
     def test_an_unreadable_file_list_fails(self) -> None:
@@ -295,8 +347,11 @@ class FileTests(unittest.TestCase):
         for arguments in cases:
             with self.subTest(arguments=arguments):
                 output, errors = io.StringIO(), io.StringIO()
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
-                        self.assertRaises(SystemExit) as raised:
+                with (
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as raised,
+                ):
                     layout.main(arguments)
                 self.assertEqual(2, raised.exception.code)
                 self.assertEqual("", output.getvalue())
@@ -304,9 +359,7 @@ class FileTests(unittest.TestCase):
 
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
-SOLUTION = (
-    'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\\App\\App.csproj", "{1}"\r\nEndProject\r\n'
-)
+SOLUTION = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\\App\\App.csproj", "{1}"\r\nEndProject\r\n'
 
 
 class ConfigTests(unittest.TestCase):
@@ -326,8 +379,18 @@ class ConfigTests(unittest.TestCase):
     def run_config(self, *extra: str, solution: str = "App.sln") -> tuple[int, dict[str, list[list[str]]]]:
         output, errors = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-            status = layout.main(["config", "--repo-root", str(self.root), "--solution", solution,
-                                  "--file-list", str(self.file_list), *extra])
+            status = layout.main(
+                [
+                    "config",
+                    "--repo-root",
+                    str(self.root),
+                    "--solution",
+                    solution,
+                    "--file-list",
+                    str(self.file_list),
+                    *extra,
+                ]
+            )
         self.assertEqual("", errors.getvalue())
         grouped: dict[str, list[list[str]]] = {}
         for line in output.getvalue().splitlines():
@@ -354,8 +417,7 @@ class ConfigTests(unittest.TestCase):
         status, grouped = self.run_config()
         self.assertEqual((0, [["Roslynator.Formatting.Analyzers", "missing"]]), (status, grouped["PACKAGE"]))
         editorconfig = self.root / ".editorconfig"
-        editorconfig.write_text(editorconfig.read_text(encoding="utf-8").replace("= true", "= false"),
-                                encoding="utf-8")
+        editorconfig.write_text(editorconfig.read_text(encoding="utf-8").replace("= true", "= false"), encoding="utf-8")
         status, grouped = self.run_config()
         self.assertEqual(0, status, "another value is the repository's choice")
         self.assertIn(["insert_final_newline", "true", "other:false"], grouped["SETTING"])
@@ -389,8 +451,9 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(any(path.name == "Directory.Build.props" for path in self.root.rglob("*")))
 
     def test_respects_existing_values_sections_and_root_files(self) -> None:
-        (self.root / ".editorconfig").write_text("[*.cs]\ndotnet_diagnostic.RCS0002.severity = warning\n",
-                                                 encoding="utf-8")
+        (self.root / ".editorconfig").write_text(
+            "[*.cs]\ndotnet_diagnostic.RCS0002.severity = warning\n", encoding="utf-8"
+        )
         nested = self.root / "src" / ".editorconfig"
         nested.write_bytes(
             b"\xef\xbb\xbf# comment\r\nroot = true\r\n\r\n[*]\r\ninsert_final_newline = false\r\n\r\n"
@@ -411,9 +474,12 @@ class ConfigTests(unittest.TestCase):
         self.assertNotIn("insert_final_newline", {key for _, key, _ in added})
         content = nested.read_bytes()
         self.assertTrue(content.startswith(b"\xef\xbb\xbf# comment\r\n"))
-        self.assertTrue(content.startswith(
-            b"\xef\xbb\xbf# comment\r\nroot = true\r\n\r\n[*.cs]\r\ndotnet_diagnostic.RCS0010.severity = warning\r\n"
-        ), "the added section comes first, so the existing sections still override it")
+        self.assertTrue(
+            content.startswith(
+                b"\xef\xbb\xbf# comment\r\nroot = true\r\n\r\n[*.cs]\r\ndotnet_diagnostic.RCS0010.severity = warning\r\n"
+            ),
+            "the added section comes first, so the existing sections still override it",
+        )
         self.assertTrue(content.endswith(b"[tests/**.cs]\r\ndotnet_diagnostic.RCS0012.severity = warning"))
         self.assertNotIn(b"\n", content.replace(b"\r\n", b""))
         states = self.states(self.config(solution="src/App.sln"))
@@ -422,32 +488,39 @@ class ConfigTests(unittest.TestCase):
 
     def test_path_specific_choices_are_judged_per_changed_file_and_never_overridden(self) -> None:
         editorconfig = self.root / ".editorconfig"
-        editorconfig.write_text("root = true\n\n[src/**.cs]\ndotnet_diagnostic.RCS0041.severity = none\n",
-                                encoding="utf-8")
+        editorconfig.write_text(
+            "root = true\n\n[src/**.cs]\ndotnet_diagnostic.RCS0041.severity = none\n", encoding="utf-8"
+        )
         key = "dotnet_diagnostic.RCS0041.severity"
         self.assertEqual("other:none", self.states(self.config())[key])
         self.assertNotIn(key, {added for _, added, _ in self.config("--apply").get("ADDED", [])})
 
-        editorconfig.write_text("root = true\n\n[src/**.cs]\ndotnet_diagnostic.RCS0041.severity = none\n",
-                                encoding="utf-8")
+        editorconfig.write_text(
+            "root = true\n\n[src/**.cs]\ndotnet_diagnostic.RCS0041.severity = none\n", encoding="utf-8"
+        )
         self.changed("src/App/Program.cs", "tools/Build.cs")
         self.assertEqual("missing", self.states(self.config())[key])
         self.config("--apply")
-        self.assertEqual("none", layout.effective_settings([editorconfig], self.root / "src/App/Program.cs")
-                         [key.casefold()])
-        self.assertEqual("warning", layout.effective_settings([editorconfig], self.root / "tools/Build.cs")
-                         [key.casefold()])
+        self.assertEqual(
+            "none", layout.effective_settings([editorconfig], self.root / "src/App/Program.cs")[key.casefold()]
+        )
+        self.assertEqual(
+            "warning", layout.effective_settings([editorconfig], self.root / "tools/Build.cs")[key.casefold()]
+        )
         self.assertTrue(editorconfig.read_text(encoding="utf-8").startswith("root = true\n\n[*.cs]\n"))
 
     def test_detects_package_in_project_or_directory_files(self) -> None:
         project = self.root / "src" / "App" / "App.csproj"
-        project.write_text('<Project><ItemGroup><PackageReference Include="roslynator.formatting.analyzers" '
-                           'Version="4.12.0" /></ItemGroup></Project>\n', encoding="utf-8")
+        project.write_text(
+            '<Project><ItemGroup><PackageReference Include="roslynator.formatting.analyzers" '
+            'Version="4.12.0" /></ItemGroup></Project>\n',
+            encoding="utf-8",
+        )
         self.assertEqual([["Roslynator.Formatting.Analyzers", "present"]], self.config()["PACKAGE"])
         project.write_text(SDK_PROJECT, encoding="utf-8")
         (self.root / "Directory.Build.props").write_bytes(
             '<Project><ItemGroup><PackageReference Include="Roslynator.Formatting.Analyzers" /></ItemGroup>'
-            '</Project>\n'.encode("utf-16")
+            "</Project>\n".encode("utf-16")
         )
         self.assertEqual([["Roslynator.Formatting.Analyzers", "present"]], self.config()["PACKAGE"])
 

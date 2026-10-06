@@ -144,7 +144,9 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     for number, line in enumerate(lines, start=1):
         match = INDEX_ENTRY.match(line)
         if match:
-            entries.append({"line": str(number), "title": match.group("title"), "file": match.group("file"), "text": line})
+            entries.append(
+                {"line": str(number), "title": match.group("title"), "file": match.group("file"), "text": line}
+            )
     return entries, lines
 
 
@@ -284,7 +286,9 @@ def audit(
             "near_limit": len(index_lines) > INDEX_LINE_LIMIT * NEAR_LIMIT_FRACTION
             or index_bytes > INDEX_BYTE_LIMIT * NEAR_LIMIT_FRACTION,
             "missing_files": [entry["file"] for entry in entries if not (memory_dir / entry["file"]).is_file()],
-            "duplicate_entries": sorted({entry["file"] for entry in entries if [e["file"] for e in entries].count(entry["file"]) > 1}),
+            "duplicate_entries": sorted(
+                {entry["file"] for entry in entries if [e["file"] for e in entries].count(entry["file"]) > 1}
+            ),
         },
         "unindexed_files": [memory.file for memory in memories if not memory.indexed],
         "memories": [asdict(memory) for memory in memories],
@@ -439,9 +443,7 @@ def encode_project(path: str) -> str:
 
 def git_output(directory: Path, *arguments: str) -> str | None:
     """The stripped output of a git command run in directory, or None when it fails or prints nothing."""
-    completed = subprocess.run(
-        ["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=False
-    )
+    completed = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=False)
     output = completed.stdout.strip()
     return output if completed.returncode == 0 and output else None
 
@@ -472,7 +474,9 @@ def config_directory(home: Path, environment: dict[str, str]) -> Path:
 def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) -> dict:
     """Locate the auto-memory directory Claude Code uses for repo, following its documented order."""
     config_dir = config_directory(home, environment)
-    notes = ["A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."]
+    notes = [
+        "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
+    ]
     scopes = (
         ("managed", managed),
         ("local", repo / ".claude" / "settings.local.json"),
@@ -485,7 +489,12 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
         try:
             settings = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            return {"memory_dir": None, "source": None, "exists": False, "notes": [*notes, f"Cannot read {path}: {exc}"]}
+            return {
+                "memory_dir": None,
+                "source": None,
+                "exists": False,
+                "notes": [*notes, f"Cannot read {path}: {exc}"],
+            }
         value = settings.get("autoMemoryDirectory") if isinstance(settings, dict) else None
         if value is None:
             continue
@@ -499,7 +508,12 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
         directory = home / value[2:] if value.startswith("~/") else Path(value)
         if scope in ("local", "project"):
             notes.append("Claude Code honors a repository-level autoMemoryDirectory only after the folder is trusted.")
-        return {"memory_dir": str(directory), "source": f"autoMemoryDirectory in {scope} settings ({path})", "exists": directory.is_dir(), "notes": notes}
+        return {
+            "memory_dir": str(directory),
+            "source": f"autoMemoryDirectory in {scope} settings ({path})",
+            "exists": directory.is_dir(),
+            "notes": notes,
+        }
     projects = config_dir / "projects"
     name = environment.get("CLAUDE_CODE_PROJECT_DIR_NAME")
     if name:
@@ -628,7 +642,9 @@ def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     locate = commands.add_parser("resolve", help="locate the memory directory Claude Code uses for a repository")
-    locate.add_argument("--repo", type=Path, help="default: the root of the Git repository holding the current directory")
+    locate.add_argument(
+        "--repo", type=Path, help="default: the root of the Git repository holding the current directory"
+    )
     locate.add_argument("--home", type=Path, default=Path.home())
     inspect = commands.add_parser("audit", help="audit one memory directory")
     inspect.add_argument("--memory-dir", type=Path, required=True)

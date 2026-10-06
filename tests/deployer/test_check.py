@@ -33,8 +33,9 @@ def set_tools(test: DeployerTestCase, name: str, names: list[str], key: str = "t
 class Machine:
     """Fake tool locations and version output for one simulated machine."""
 
-    def __init__(self, missing: tuple[str, ...] = (), versions: dict[str, str] | None = None,
-                 powershell: str = "7.6.6") -> None:
+    def __init__(
+        self, missing: tuple[str, ...] = (), versions: dict[str, str] | None = None, powershell: str = "7.6.6"
+    ) -> None:
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
         self.versions = {path: output for path, output in self.installed.values()}
         for name, output in (versions or {}).items():
@@ -45,16 +46,22 @@ class Machine:
 
     def patches(self) -> contextlib.ExitStack:
         stack = contextlib.ExitStack()
-        stack.enter_context(mock.patch(
-            "deployer.platform_support.find_executable",
-            side_effect=lambda name: self.installed[name][0] if name in self.installed else None,
-        ))
+        stack.enter_context(
+            mock.patch(
+                "deployer.platform_support.find_executable",
+                side_effect=lambda name: self.installed[name][0] if name in self.installed else None,
+            )
+        )
         stack.enter_context(mock.patch("deployer.platform_support.find_bash", return_value=self.bash))
         stack.enter_context(mock.patch("deployer.platform_support.find_powershell", return_value=self.powershell))
-        stack.enter_context(mock.patch(
-            "deployer.platform_support.run_tool",
-            side_effect=lambda arguments, environment=None: platform_support.ToolResult(0, self.versions[arguments[0]]),
-        ))
+        stack.enter_context(
+            mock.patch(
+                "deployer.platform_support.run_tool",
+                side_effect=lambda arguments, environment=None: platform_support.ToolResult(
+                    0, self.versions[arguments[0]]
+                ),
+            )
+        )
         stack.enter_context(mock.patch("deployer.tools.python_version", return_value=(3, 12, 1)))
         return stack
 
@@ -127,28 +134,35 @@ class CheckCommandTests(DeployerTestCase):
     def test_optional_and_outdated_tools_are_reported_separately(self) -> None:
         groups = self.report_groups(self.check(Machine(missing=("copilot",))).output, "CHECK")
         self.assertEqual(
-            ["codex 0.160.0 (used by Codex verification)",
-             "copilot (not installed; used by operations, Copilot verification)"],
+            [
+                "codex 0.160.0 (used by Codex verification)",
+                "copilot (not installed; used by operations, Copilot verification)",
+            ],
             groups["OPTIONAL"],
         )
         self.assertNotIn("MISSING", groups)
         result = self.check(Machine(versions={"copilot": "GitHub Copilot CLI 1.0.87.\n"}))
         self.assertEqual(0, result.code, result.output)
-        self.assertEqual(["copilot 1.0.87 (needs 1.0.88 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"])
+        self.assertEqual(
+            ["copilot 1.0.87 (needs 1.0.88 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"]
+        )
 
     def test_gh_before_2_48_is_outdated_because_scripts_slurp_paginated_api_output(self) -> None:
         # gh 2.48.0 added `gh api --paginate --slurp`, which repo-cleanup and the code-review scripts rely on.
         result = self.check(Machine(versions={"gh": "gh version 2.47.0 (2024-04-03)\n"}))
         self.assertEqual(0, result.code, result.output)
         self.assertEqual(["gh 2.47.0 (needs 2.48.0 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"])
-        groups = self.report_groups(self.check(Machine(versions={"gh": "gh version 2.48.0 (2024-04-17)\n"})).output,
-                                    "CHECK")
+        groups = self.report_groups(
+            self.check(Machine(versions={"gh": "gh version 2.48.0 (2024-04-17)\n"})).output, "CHECK"
+        )
         self.assertIn("gh 2.48.0 (used by operations, reporter)", groups["FOUND"])
         self.assertNotIn("OUTDATED", groups)
 
     def test_windows_powershell_is_enough_to_deploy(self) -> None:
         groups = self.report_groups(self.check(Machine(powershell="5.1.26100.1")).output, "CHECK")
-        self.assertIn("PowerShell 5.1.26100 (enough to deploy; the validation suite needs PowerShell 7)", groups["FOUND"])
+        self.assertIn(
+            "PowerShell 5.1.26100 (enough to deploy; the validation suite needs PowerShell 7)", groups["FOUND"]
+        )
 
     def test_tools_of_uninstalled_opt_in_items_are_optional(self) -> None:
         metadata = self.source / "deploy-meta" / "formatter.json"
@@ -178,8 +192,10 @@ class CheckCommandTests(DeployerTestCase):
         )
         groups = self.report_groups(self.check(Machine(missing=("codex", "copilot"))).output, "CHECK")
         self.assertEqual(
-            ["codex (not installed; used by Codex verification)",
-             "copilot (not installed; used by Copilot verification)"],
+            [
+                "codex (not installed; used by Codex verification)",
+                "copilot (not installed; used by Copilot verification)",
+            ],
             groups["OPTIONAL"],
         )
         self.assertNotIn("MISSING", groups)
@@ -188,7 +204,9 @@ class CheckCommandTests(DeployerTestCase):
         # Codex CLI 0.88.0 is the first whose app-server skills/list answer says whether each skill is enabled.
         result = self.check(Machine(versions={"codex": "codex-cli 0.87.0\n"}))
         self.assertEqual(0, result.code, result.output)
-        self.assertEqual(["codex 0.87.0 (needs 0.88.0 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"])
+        self.assertEqual(
+            ["codex 0.87.0 (needs 0.88.0 or newer)"], self.report_groups(result.output, "CHECK")["OUTDATED"]
+        )
         groups = self.report_groups(self.check(Machine(versions={"codex": "codex-cli 0.88.0\n"})).output, "CHECK")
         self.assertIn("codex 0.88.0 (used by Codex verification)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
@@ -219,7 +237,9 @@ class CheckCommandTests(DeployerTestCase):
     def test_check_takes_no_arguments_besides_help(self) -> None:
         result = self.check(Machine(), "--all")
         self.assertEqual(1, result.code)
-        self.assertIn("ERROR: unrecognized arguments: --all\nRun 'python deploy.py check --help' for usage.", result.output)
+        self.assertIn(
+            "ERROR: unrecognized arguments: --all\nRun 'python deploy.py check --help' for usage.", result.output
+        )
         result = self.check(Machine(), "--help")
         self.assertEqual(0, result.code)
         self.assertIn("List the tools the deployer and the skills need, with their versions,\n", result.output)
@@ -266,13 +286,57 @@ class StandardCommandTests(unittest.TestCase):
     def test_standard_commands_are_the_documented_set(self) -> None:
         # "Commands skills may run" in docs/adding-a-skill.md lists these; the Windows part comes from platform_support.
         self.assertEqual(
-            frozenset({
-                "python", "git", "bash", "sh", "pwsh", "powershell",
-                "awk", "basename", "cat", "cmp", "comm", "cp", "curl", "cut", "cygpath", "date", "diff", "dirname",
-                "env", "expr", "find", "grep", "gzip", "head", "ls", "mkdir", "mktemp", "mv", "od", "paste",
-                "readlink", "realpath", "rm", "rmdir", "sed", "seq", "sleep", "sort", "stat", "tail", "tar", "tee",
-                "touch", "tr", "uniq", "wc", "xargs",
-            }),
+            frozenset(
+                {
+                    "python",
+                    "git",
+                    "bash",
+                    "sh",
+                    "pwsh",
+                    "powershell",
+                    "awk",
+                    "basename",
+                    "cat",
+                    "cmp",
+                    "comm",
+                    "cp",
+                    "curl",
+                    "cut",
+                    "cygpath",
+                    "date",
+                    "diff",
+                    "dirname",
+                    "env",
+                    "expr",
+                    "find",
+                    "grep",
+                    "gzip",
+                    "head",
+                    "ls",
+                    "mkdir",
+                    "mktemp",
+                    "mv",
+                    "od",
+                    "paste",
+                    "readlink",
+                    "realpath",
+                    "rm",
+                    "rmdir",
+                    "sed",
+                    "seq",
+                    "sleep",
+                    "sort",
+                    "stat",
+                    "tail",
+                    "tar",
+                    "tee",
+                    "touch",
+                    "tr",
+                    "uniq",
+                    "wc",
+                    "xargs",
+                }
+            ),
             tools.STANDARD_COMMANDS,
         )
 
@@ -283,8 +347,10 @@ class VersionTests(unittest.TestCase):
 
         self.assertEqual({"codex", "copilot"}, set(discovery.RUNTIMES))
         self.assertEqual(set(discovery.RUNTIMES), set(tools.VERIFY_TOOLS))
-        self.assertEqual({"codex": (0, 88, 0), "copilot": (1, 0, 88)},
-                         {name: tool.minimum for name, tool in tools.VERIFY_TOOLS.items()})
+        self.assertEqual(
+            {"codex": (0, 88, 0), "copilot": (1, 0, 88)},
+            {name: tool.minimum for name, tool in tools.VERIFY_TOOLS.items()},
+        )
         self.assertIs(tools.SKILL_TOOLS["copilot"], tools.VERIFY_TOOLS["copilot"])
         self.assertNotIn("codex", tools.SKILL_TOOLS, "no skill runs Codex CLI")
 
@@ -311,7 +377,7 @@ class VersionTests(unittest.TestCase):
             entry.require_supported_python((3, 10, 9))
         self.assertEqual(1, raised.exception.code)
         self.assertEqual(
-            '\nERROR: Python 3.11 or newer is required; this is Python 3.10.\n'
+            "\nERROR: Python 3.11 or newer is required; this is Python 3.10.\n"
             'See "Installing the tools" in docs/installation.md.\n\n',
             captured.getvalue(),
         )

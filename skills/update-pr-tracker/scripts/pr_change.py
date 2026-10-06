@@ -29,7 +29,11 @@ def tree_modes(tree: object) -> dict[str, str] | None:
         return None
     modes: dict[str, str] = {}
     for entry in tree["tree"]:
-        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str) or not isinstance(entry.get("mode"), str):
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("path"), str)
+            or not isinstance(entry.get("mode"), str)
+        ):
             return None
         modes[entry["path"]] = entry["mode"]
     return modes
@@ -54,7 +58,9 @@ def contribution_fingerprint(comparison: object, modes: dict[str, str] | None) -
             return None
         filename, status, content = entry.get("filename"), entry.get("status"), entry.get("sha")
         previous = entry.get("previous_filename") or ""
-        if not all(isinstance(value, str) and value for value in (filename, status, content)) or not isinstance(previous, str):
+        if not all(isinstance(value, str) and value for value in (filename, status, content)) or not isinstance(
+            previous, str
+        ):
             return None
         if status == "removed":
             mode = ""
@@ -76,8 +82,11 @@ def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str
             raise
         return None
     status = comparison.get("status") if isinstance(comparison, dict) else None
-    return {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status) \
-        if isinstance(status, str) else None
+    return (
+        {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status)
+        if isinstance(status, str)
+        else None
+    )
 
 
 class ChangeDetector:

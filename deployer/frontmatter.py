@@ -33,8 +33,15 @@ DOUBLE_QUOTED = re.compile(r'^"((?:[^"\\]|\\.)*)"(?:[ \t]+#.*)?$', re.DOTALL)
 SINGLE_QUOTED = re.compile(r"^'((?:[^']|'')*)'(?:[ \t]+#.*)?$", re.DOTALL)
 FLOW_ITEM = re.compile(r"""[ \t]*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,\[\]{}"'#][^,\[\]{}]*?))[ \t]*(,|$)""")
 COMMENT = re.compile(r"[ \t]+#.*$")
-UNSUPPORTED = {"{": "a flow mapping", "&": "an anchor", "*": "an alias", "!": "a tag", "%": "a directive",
-               "@": "a reserved indicator", "`": "a reserved indicator"}
+UNSUPPORTED = {
+    "{": "a flow mapping",
+    "&": "an anchor",
+    "*": "an alias",
+    "!": "a tag",
+    "%": "a directive",
+    "@": "a reserved indicator",
+    "`": "a reserved indicator",
+}
 
 
 class FrontmatterError(ValueError):

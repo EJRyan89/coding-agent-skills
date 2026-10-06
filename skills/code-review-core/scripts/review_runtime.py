@@ -30,7 +30,12 @@ BINARY_PROBE_BYTES = 8000
 SNAPSHOT_WRITE_WORKERS = 8
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
 SNAPSHOT_EXCLUSION_REASONS = {
-    "agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link", "non-regular",
+    "agent-instruction",
+    "binary",
+    "file-size-limit",
+    "unsafe-path",
+    "symbolic-link",
+    "non-regular",
 }
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
 RUNTIME_CAPABILITIES = {
@@ -147,9 +152,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeContractError(f"Adapter condition name is invalid: {name!r}")
         if not isinstance(condition, dict) or set(condition) != {"script"}:
             raise RuntimeContractError(f"Adapter condition {name} must declare only a script")
-        normalized_conditions[name] = {
-            "script": _safe_relative_path(condition["script"], f"conditions.{name}.script")
-        }
+        normalized_conditions[name] = {"script": _safe_relative_path(condition["script"], f"conditions.{name}.script")}
     specialists = value["specialists"]
     if not isinstance(specialists, list) or not specialists:
         raise RuntimeContractError("Adapter specialists must be a non-empty array")
@@ -158,12 +161,12 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     for index, specialist in enumerate(specialists):
         field = f"specialists[{index}]"
         if not isinstance(specialist, dict) or not SPECIALIST_KEYS <= set(specialist) <= (
-                SPECIALIST_KEYS | OPTIONAL_SPECIALIST_KEYS):
+            SPECIALIST_KEYS | OPTIONAL_SPECIALIST_KEYS
+        ):
             raise RuntimeContractError(f"{field} fields do not match the protocol")
         model, effort = specialist.get("model"), specialist.get("effort")
         if "model" in specialist and model not in MODEL_ALIASES | {"inherit"}:
-            raise RuntimeContractError(
-                f"{field}.model must be inherit or one of {', '.join(sorted(MODEL_ALIASES))}")
+            raise RuntimeContractError(f"{field}.model must be inherit or one of {', '.join(sorted(MODEL_ALIASES))}")
         if "effort" in specialist and effort not in REVIEWER_EFFORTS:
             raise RuntimeContractError(f"{field}.effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
         identity = specialist["id"]
@@ -261,14 +264,8 @@ def validate_adapter_manifest(value: Any) -> dict[str, Any]:
     agents = value["agent_profiles"]
     if not isinstance(resources, list) or not isinstance(agents, list):
         raise RuntimeContractError("Adapter resources and agent_profiles must be arrays")
-    normalized_resources = [
-        _safe_relative_path(item, f"resources[{index}]")
-        for index, item in enumerate(resources)
-    ]
-    normalized_agents = [
-        _safe_relative_path(item, f"agent_profiles[{index}]")
-        for index, item in enumerate(agents)
-    ]
+    normalized_resources = [_safe_relative_path(item, f"resources[{index}]") for index, item in enumerate(resources)]
+    normalized_agents = [_safe_relative_path(item, f"agent_profiles[{index}]") for index, item in enumerate(agents)]
     declared = [entrypoint, *normalized_resources, *normalized_agents]
     if len(set(declared)) != len(declared):
         raise RuntimeContractError("Adapter declares a file more than once")
@@ -285,9 +282,7 @@ def negotiate_capabilities(runtime: str, required: Iterable[str]) -> set[str]:
         raise RuntimeContractError(f"Unknown runtime host: {runtime}")
     missing = sorted(set(required) - available)
     if missing:
-        raise RuntimeContractError(
-            f"Runtime {runtime} lacks required capabilities: {', '.join(missing)}"
-        )
+        raise RuntimeContractError(f"Runtime {runtime} lacks required capabilities: {', '.join(missing)}")
     return available
 
 
@@ -309,13 +304,7 @@ def resolve_runtime(configured: str, host: str | None = None) -> str:
     ):
         if shutil.which(command):
             return runtime
-    winget_copilot = (
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Microsoft"
-        / "WinGet"
-        / "Links"
-        / "copilot.exe"
-    )
+    winget_copilot = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
     if winget_copilot.is_file():
         return "copilot-cli"
     raise RuntimeContractError("No supported local runtime host is available")
@@ -337,15 +326,11 @@ def _normalize_remote(value: str) -> str:
     return f"{match.group(1)}/{match.group(2)}".lower()
 
 
-def verify_checkout_remote(
-    checkout: Path, repository: str, runner: Runner = subprocess_runner
-) -> None:
+def verify_checkout_remote(checkout: Path, repository: str, runner: Runner = subprocess_runner) -> None:
     expected = validate_repository_identity(repository)
     actual = _normalize_remote(_run_git(checkout, runner, "remote", "get-url", "origin"))
     if actual != expected:
-        raise RuntimeContractError(
-            f"Checkout origin mismatch: expected {expected}, found {actual}"
-        )
+        raise RuntimeContractError(f"Checkout origin mismatch: expected {expected}, found {actual}")
 
 
 def resolve_trusted_commit(
@@ -552,9 +537,7 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
     current = target
     while True:
         if _is_reparse_point(current):
-            raise RuntimeContractError(
-                f"Source snapshot path contains a reparse point: {target}"
-            )
+            raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
         if current == root:
             break
         if current.parent == current:
@@ -572,15 +555,11 @@ def _snapshot_files(root: Path) -> set[str]:
         for directory in directories:
             child = current_path / directory
             if _is_reparse_point(child):
-                raise RuntimeContractError(
-                    f"Source snapshot contains a reparse-point directory: {child}"
-                )
+                raise RuntimeContractError(f"Source snapshot contains a reparse-point directory: {child}")
         for name in names:
             child = current_path / name
             if _is_reparse_point(child) or not child.is_file():
-                raise RuntimeContractError(
-                    f"Source snapshot contains a non-regular file: {child}"
-                )
+                raise RuntimeContractError(f"Source snapshot contains a non-regular file: {child}")
             files.add(child.relative_to(root).as_posix())
     return files
 
@@ -600,9 +579,7 @@ def verify_source_snapshot(
     antivirus each file read costs milliseconds, so a full pass over a large repository takes minutes.
     """
     if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
-        raise RuntimeContractError(
-            "Source snapshot root must be an existing absolute non-reparse directory"
-        )
+        raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
     metadata_path = root / SOURCE_SNAPSHOT_MANIFEST
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
@@ -637,9 +614,7 @@ def verify_source_snapshot(
         if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
             raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
         if _is_agent_instruction_path(relative):
-            raise RuntimeContractError(
-                f"Source snapshot includes an agent-instruction path: {relative}"
-            )
+            raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
         if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
             raise RuntimeContractError(f"Source snapshot hash is invalid: {relative}")
         target = root.joinpath(*PurePosixPath(relative).parts)
@@ -649,9 +624,7 @@ def verify_source_snapshot(
         except FileNotFoundError as exc:
             raise RuntimeContractError(f"Source snapshot file is missing: {relative}") from exc
         if size > MAX_CHANGED_FILE_BYTES:
-            raise RuntimeContractError(
-                f"Source snapshot file exceeds the size limit: {relative}"
-            )
+            raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
         total_bytes += size
         if total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
             raise RuntimeContractError("Source snapshot exceeds the size limit")
@@ -677,9 +650,7 @@ def verify_source_snapshot(
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
-        raise RuntimeContractError(
-            f"Source snapshot file set mismatch; missing={missing}, extra={extra}"
-        )
+        raise RuntimeContractError(f"Source snapshot file set mismatch; missing={missing}, extra={extra}")
     return metadata
 
 
@@ -787,8 +758,7 @@ def _populate_snapshot(
     }
     atomic_write_json(destination / SOURCE_SNAPSHOT_MANIFEST, metadata)
     # The hashes were computed from the bytes just written, in this process; re-reading them proves nothing more.
-    return verify_source_snapshot(destination, expected_repository=repository, expected_commit=commit,
-                                  contents=False)
+    return verify_source_snapshot(destination, expected_repository=repository, expected_commit=commit, contents=False)
 
 
 def _prepare_destination(destination: Path) -> None:
@@ -820,8 +790,13 @@ def materialize_source_snapshot(
             archive = Path(temporary) / "source.tar"
             _run_git(checkout, runner, "archive", "--format=tar", f"--output={archive}", commit)
             return _populate_snapshot(
-                archive, destination, repository=repository, commit=commit, mode="r:",
-                strip_components=0, changed_paths=frozenset(changed_paths),
+                archive,
+                destination,
+                repository=repository,
+                commit=commit,
+                mode="r:",
+                strip_components=0,
+                changed_paths=frozenset(changed_paths),
             )
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
@@ -910,8 +885,13 @@ def materialize_source_snapshot_from_github(
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
             return _populate_snapshot(
-                archive, destination, repository=repository, commit=commit, mode="r:gz",
-                strip_components=1, changed_paths=frozenset(changed_paths),
+                archive,
+                destination,
+                repository=repository,
+                commit=commit,
+                mode="r:gz",
+                strip_components=1,
+                changed_paths=frozenset(changed_paths),
             )
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)

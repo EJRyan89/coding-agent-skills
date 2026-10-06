@@ -52,7 +52,9 @@ class RemovalTests(DeployerTestCase):
         self.make_skill("alpha", "Updated")
         self.deploy_fails("--all", "--dry-run", pattern="transient backup already exists")
         self.deploy_fails("--all", pattern="transient backup already exists")
-        self.assertIn("stale backup data", (self.skills_dir / "alpha.deploying-bak" / "stale.txt").read_text(encoding="utf-8"))
+        self.assertIn(
+            "stale backup data", (self.skills_dir / "alpha.deploying-bak" / "stale.txt").read_text(encoding="utf-8")
+        )
         self.assertIn("Original", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak" / "alpha").exists())
 
@@ -153,7 +155,9 @@ class ManifestValidationTests(DeployerTestCase):
                     "role": "owner",
                 }
                 self.write_manifest(data)
-                self.deploy_fails("--all", pattern=f"Manifest entry is malformed: source 'test/skills' {kind} '../sentinel'")
+                self.deploy_fails(
+                    "--all", pattern=f"Manifest entry is malformed: source 'test/skills' {kind} '../sentinel'"
+                )
                 self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
                 data["sources"]["test/skills"][kind].pop("../sentinel")
                 self.write_manifest(data)
@@ -162,24 +166,44 @@ class ManifestValidationTests(DeployerTestCase):
         self.deployed()
         original = self.manifest()
         cases = [
-            ("Manifest entry is malformed", lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(hash="sha256:bad")),
-            ("Manifest entry is malformed: source 'test/skills' shared", lambda data: data["sources"]["test/skills"]["shared"].update(
-                {"doc.md": {"hash": "sha256:" + "0" * 64, "role": "tenant"}}
-            )),
+            (
+                "Manifest entry is malformed",
+                lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(hash="sha256:bad"),
+            ),
+            (
+                "Manifest entry is malformed: source 'test/skills' shared",
+                lambda data: data["sources"]["test/skills"]["shared"].update(
+                    {"doc.md": {"hash": "sha256:" + "0" * 64, "role": "tenant"}}
+                ),
+            ),
             ("Manifest source ID is malformed", lambda data: data["sources"].update({"../escape": {}})),
-            ("Manifest selection fields are malformed", lambda data: data["sources"]["test/skills"].update(selected_skills=["../x"])),
+            (
+                "Manifest selection fields are malformed",
+                lambda data: data["sources"]["test/skills"].update(selected_skills=["../x"]),
+            ),
             ("Manifest last_run_id is malformed", lambda data: data.update(last_run_id="../run")),
-            ("Manifest entry is malformed: source 'test/skills' skills 'alpha\\n'", lambda data: data["sources"]["test/skills"]["skills"].update(
-                {"alpha\n": data["sources"]["test/skills"]["skills"]["alpha"]}
-            )),
-            ("Manifest source ID is malformed: 'other/source\\n'", lambda data: data["sources"].update({"other/source\n": {}})),
-            ("Manifest selection fields are malformed", lambda data: data["sources"]["test/skills"].update(requested_skills=["alpha\n"])),
-            ("Manifest entry is malformed: source 'test/skills' skills 'alpha'", lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(
-                shared_deps=["../escape"]
-            )),
-            ("Manifest entry is malformed: source 'test/skills' skills 'alpha'", lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(
-                shared_deps="doc.md"
-            )),
+            (
+                "Manifest entry is malformed: source 'test/skills' skills 'alpha\\n'",
+                lambda data: data["sources"]["test/skills"]["skills"].update(
+                    {"alpha\n": data["sources"]["test/skills"]["skills"]["alpha"]}
+                ),
+            ),
+            (
+                "Manifest source ID is malformed: 'other/source\\n'",
+                lambda data: data["sources"].update({"other/source\n": {}}),
+            ),
+            (
+                "Manifest selection fields are malformed",
+                lambda data: data["sources"]["test/skills"].update(requested_skills=["alpha\n"]),
+            ),
+            (
+                "Manifest entry is malformed: source 'test/skills' skills 'alpha'",
+                lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(shared_deps=["../escape"]),
+            ),
+            (
+                "Manifest entry is malformed: source 'test/skills' skills 'alpha'",
+                lambda data: data["sources"]["test/skills"]["skills"]["alpha"].update(shared_deps="doc.md"),
+            ),
             ("Manifest last_run_id is malformed:", lambda data: data.update(last_run_id=data["last_run_id"] + "\n")),
         ]
         for index, (message, mutate) in enumerate(cases):
@@ -241,9 +265,7 @@ class ManagedRootTests(DeployerTestCase):
         self.replace_with_junction(directory, outside)
         for arguments in (("--all",), ("--all", "--dry-run")):
             self.deploy_fails(*arguments, pattern="Deployment path contains a symlink or junction")
-        self.assertEqual(
-            ["20260101-000000-keep"], sorted(path.name for path in outside.iterdir())
-        )
+        self.assertEqual(["20260101-000000-keep"], sorted(path.name for path in outside.iterdir()))
         self.assertEqual("external data\n", (outside / "20260101-000000-keep" / "data.txt").read_text(encoding="utf-8"))
 
     def test_linked_staging_root_is_not_recovered(self) -> None:
@@ -281,8 +303,9 @@ class ManagedRootTests(DeployerTestCase):
         self.home.write_text("not a directory\n", encoding="utf-8")
         with self.assertRaises(DeployError) as raised:
             validate_managed_roots(self.paths)
-        self.assertEqual((f"ERROR: Deployment path component is not a directory: {forward(self.home)}",),
-                         raised.exception.lines)
+        self.assertEqual(
+            (f"ERROR: Deployment path component is not a directory: {forward(self.home)}",), raised.exception.lines
+        )
 
     def test_configure_rejects_a_linked_config_directory(self) -> None:
         outside = self.fixture()
@@ -333,9 +356,7 @@ class SharedAssetLifecycleTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.append(self.skills_dir / "alpha" / "SKILL.md", "local edit\n")
         preview = self.deploy_ok("--dry-run", stdin="none\n").output
-        self.assertIn(
-            "shared.md (shared asset, needed by alpha)", self.report_groups(preview, "DRY RUN")["KEEP"]
-        )
+        self.assertIn("shared.md (shared asset, needed by alpha)", self.report_groups(preview, "DRY RUN")["KEEP"])
         result = self.deploy_ok(stdin="none\n")
         self.assertIn(
             "shared.md (shared asset, needed by alpha)",
@@ -503,7 +524,9 @@ class CrossSourceOwnershipTests(DeployerTestCase):
         self.make_skill("beta", "Source B skill", shared_deps=["alpha"])
         self.make_config("test/source-b")
         self.deploy_from(source_a, "--all")
-        self.deploy_fails("--all", "--dry-run", pattern="Shared asset 'alpha' collides with a skill owned by source 'test/source-a'")
+        self.deploy_fails(
+            "--all", "--dry-run", pattern="Shared asset 'alpha' collides with a skill owned by source 'test/source-a'"
+        )
         self.deploy_fails("--all", pattern="Shared asset 'alpha' collides with a skill owned by source 'test/source-a'")
         self.assertIn("Source A skill", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha" / "alpha").exists())

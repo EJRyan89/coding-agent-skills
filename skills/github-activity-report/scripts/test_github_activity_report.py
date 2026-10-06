@@ -85,7 +85,9 @@ def fetch(client: GitHubSearchClient) -> int:
     return len(client.search_all("search/issues", "q", KEY)[0])
 
 
-def client_for(run: Callable[[Sequence[str]], CommandResult], clock: float = 1000.0) -> tuple[GitHubSearchClient, Recorder]:
+def client_for(
+    run: Callable[[Sequence[str]], CommandResult], clock: float = 1000.0
+) -> tuple[GitHubSearchClient, Recorder]:
     sleeper = Recorder(clock)
     return GitHubSearchClient(run, sleeper, sleeper.clock), sleeper
 
@@ -98,9 +100,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(date(2026, 9, 1), window[-1])
 
     def test_window_rolls_over_the_year(self) -> None:
-        self.assertEqual(
-            [date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1)], months_window(date(2026, 1, 15), 3)
-        )
+        self.assertEqual([date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1)], months_window(date(2026, 1, 15), 3))
 
     def test_month_end_handles_december_leap_years_and_the_partial_current_month(self) -> None:
         self.assertEqual(date(2025, 12, 31), month_end(date(2025, 12, 1), date(2026, 5, 20)))
@@ -161,8 +161,13 @@ class SearchTests(unittest.TestCase):
 
     def test_rate_limits_widen_the_spacing_between_searches(self) -> None:
         run, _ = scripted(
-            ok(search_page([])), failed(SECONDARY_LIMIT), ok(search_page([])),
-            failed(SECONDARY_LIMIT), failed(SECONDARY_LIMIT), failed(SECONDARY_LIMIT), ok(search_page([])),
+            ok(search_page([])),
+            failed(SECONDARY_LIMIT),
+            ok(search_page([])),
+            failed(SECONDARY_LIMIT),
+            failed(SECONDARY_LIMIT),
+            failed(SECONDARY_LIMIT),
+            ok(search_page([])),
             ok(search_page([])),
         )
         client, sleeper = client_for(run)
@@ -236,8 +241,17 @@ class SearchTests(unittest.TestCase):
 
     def test_underfilled_graphql_search_is_repeated_then_fails_closed(self) -> None:
         def page(nodes: int, count: int) -> CommandResult:
-            return ok({"data": {"search": {"issueCount": count, "pageInfo": {"hasNextPage": False},
-                                           "nodes": [{"id": f"PR_{index}"} for index in range(nodes)]}}})
+            return ok(
+                {
+                    "data": {
+                        "search": {
+                            "issueCount": count,
+                            "pageInfo": {"hasNextPage": False},
+                            "nodes": [{"id": f"PR_{index}"} for index in range(nodes)],
+                        }
+                    }
+                }
+            )
 
         run, calls = scripted(page(2, 3), page(3, 3))
         client, _ = client_for(run)
@@ -371,11 +385,11 @@ class DatedSearch:
         query = parameters["q"][0]
         self.queries.append(query)
         match = SPAN.search(query)
-        key = (query[:match.start()] + query[match.end():]).strip()
+        key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         items = [item for day, item in self.dated.get(key, []) if first <= day <= last]
         page, size = int(parameters["page"][0]), int(parameters["per_page"][0])
-        return ok(search_page(items[(page - 1) * size:page * size], len(items)))
+        return ok(search_page(items[(page - 1) * size : page * size], len(items)))
 
     def graphql(self, arguments: list[str]) -> CommandResult:
         raise AssertionError("unexpected GraphQL request")
@@ -392,27 +406,48 @@ class FakeGitHub(DatedSearch):
             return self.search(values["q"], int(values.get("after", "0")))
         node_id = values["id"]
         second = self.reviews[node_id][1]
-        return ok({"data": {"node": {"id": node_id, "reviews": {
-            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": second["nodes"]}}}})
+        return ok(
+            {
+                "data": {
+                    "node": {
+                        "id": node_id,
+                        "reviews": {"pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": second["nodes"]},
+                    }
+                }
+            }
+        )
 
     def search(self, query: str, offset: int) -> CommandResult:
         """GraphQL search: pull request nodes carry the user's first page of reviews; `after` is an offset."""
         self.queries.append(query)
         match = SPAN.search(query)
-        key = (query[:match.start()] + query[match.end():]).strip()
+        key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         matches = [node for day, node in self.dated.get(key, []) if first <= day <= last]
         nodes = []
-        for node in matches[offset:offset + 100]:
+        for node in matches[offset : offset + 100]:
             pages = self.reviews.get(node.get("id"), [{"nodes": []}])
-            nodes.append(dict(node, reviews={
-                "pageInfo": {"hasNextPage": len(pages) > 1, "endCursor": "c1"}, "nodes": pages[0]["nodes"]}))
+            nodes.append(
+                dict(
+                    node,
+                    reviews={
+                        "pageInfo": {"hasNextPage": len(pages) > 1, "endCursor": "c1"},
+                        "nodes": pages[0]["nodes"],
+                    },
+                )
+            )
         more = offset + 100 < len(matches)
-        return ok({"data": {"search": {
-            "issueCount": len(matches),
-            "pageInfo": {"hasNextPage": more, "endCursor": str(offset + 100) if more else None},
-            "nodes": nodes,
-        }}})
+        return ok(
+            {
+                "data": {
+                    "search": {
+                        "issueCount": len(matches),
+                        "pageInfo": {"hasNextPage": more, "endCursor": str(offset + 100) if more else None},
+                        "nodes": nodes,
+                    }
+                }
+            }
+        )
 
 
 def review(state: str, submitted: str) -> dict[str, str]:
@@ -446,13 +481,17 @@ class CollectTests(unittest.TestCase):
             (date(2026, 4, 11), {"id": "PR_self", "author": {"login": "Octo"}}),
             (date(2026, 5, 3), {"id": "PR_2", "author": None}),
         ]
-        github.reviews["PR_1"] = [{"nodes": [
-            review("COMMENTED", "2026-03-02T09:00:00Z"),
-            review("APPROVED", "2026-03-05T09:00:00Z"),
-            review("PENDING", "2026-04-01T09:00:00Z"),
-            review("APPROVED", "2026-04-02T09:00:00Z"),
-            review("APPROVED", "2025-12-31T23:59:00Z"),
-        ]}]
+        github.reviews["PR_1"] = [
+            {
+                "nodes": [
+                    review("COMMENTED", "2026-03-02T09:00:00Z"),
+                    review("APPROVED", "2026-03-05T09:00:00Z"),
+                    review("PENDING", "2026-04-01T09:00:00Z"),
+                    review("APPROVED", "2026-04-02T09:00:00Z"),
+                    review("APPROVED", "2025-12-31T23:59:00Z"),
+                ]
+            }
+        ]
         github.reviews["PR_2"] = [
             {"nodes": [review("CHANGES_REQUESTED", "2026-05-01T09:00:00Z")]},
             {"nodes": [review("APPROVED", "2026-05-03T09:00:00Z")]},
@@ -465,7 +504,13 @@ class CollectTests(unittest.TestCase):
     def test_every_window_month_is_present_with_zero_defaults(self) -> None:
         activity = self.collect(self.fake())
         self.assertEqual(["2026-03", "2026-04", "2026-05"], activity.months)
-        for counts in (activity.authored, activity.merged, activity.commits, activity.prs_reviewed, activity.reviews_submitted):
+        for counts in (
+            activity.authored,
+            activity.merged,
+            activity.commits,
+            activity.prs_reviewed,
+            activity.reviews_submitted,
+        ):
             self.assertEqual(activity.months, list(counts))
 
     def test_each_category_is_searched_once_for_the_whole_window(self) -> None:
@@ -547,7 +592,9 @@ class CollectTests(unittest.TestCase):
         activity = self.collect(github)
         self.assertEqual(1500, activity.prs_reviewed_total)
         self.assertEqual({}, activity.capped)
-        self.assertEqual(f"{REVIEWED}2026-03-01..2026-05-20", [query for query in github.queries if "reviewed-by" in query][0])
+        self.assertEqual(
+            f"{REVIEWED}2026-03-01..2026-05-20", [query for query in github.queries if "reviewed-by" in query][0]
+        )
 
     def test_search_results_without_identity_fail_closed(self) -> None:
         github = self.fake()
@@ -622,7 +669,8 @@ class MainTests(unittest.TestCase):
         code, stdout, stderr = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
         self.assertEqual((1, "FAILED gh: HTTP 401: Bad credentials [authentication]\n"), (code, stdout))
         self.assertEqual(
-            "Querying GitHub for 12 month(s); searches are spaced 2.1s apart.\n", stderr,
+            "Querying GitHub for 12 month(s); searches are spaced 2.1s apart.\n",
+            stderr,
             "stderr carries only progress, never the failure",
         )
 

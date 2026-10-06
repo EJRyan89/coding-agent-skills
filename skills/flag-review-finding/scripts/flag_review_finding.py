@@ -28,16 +28,23 @@ BODY_LIMIT = 160
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--store", type=Path, default=default_flags_path(),
-                        help="defaults to CODE_REVIEW_FLAGS or the standard flag store")
+    parser.add_argument(
+        "--store",
+        type=Path,
+        default=default_flags_path(),
+        help="defaults to CODE_REVIEW_FLAGS or the standard flag store",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     add = commands.add_parser("add")
     add.add_argument("category")
     add.add_argument("body")
     add.add_argument("--repository")
     add.add_argument("--pull", type=int)
-    add.add_argument("--review-version", type=int,
-                     help="the version of the review whose report gave the finding ID; required with --finding")
+    add.add_argument(
+        "--review-version",
+        type=int,
+        help="the version of the review whose report gave the finding ID; required with --finding",
+    )
     add.add_argument("--finding")
     commands.add_parser("list")
     resolve = commands.add_parser("resolve")

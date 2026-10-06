@@ -78,7 +78,12 @@ TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
 # Markdown under skills/, agents/, or .claude/ is skill and agent behavior, not documentation.
 DOCUMENTATION_DIRECTORIES = ("docs/", ".github/ISSUE_TEMPLATE/")
 DOCUMENTATION_FILES = {
-    "README.md", "CONTRIBUTING.md", "SECURITY.md", "CLAUDE.md", "AGENTS.md", ".github/pull_request_template.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CLAUDE.md",
+    "AGENTS.md",
+    ".github/pull_request_template.md",
 }
 # Bash and PowerShell suites cannot be split, so they start before any shard.
 UNSPLIT_SUITE_WEIGHT = 1_000
@@ -177,10 +182,45 @@ LEADING_KEYWORDS = {"if", "then", "else", "elif", "while", "until", "do", "time"
 # Keywords whose following words, up to the next separator, are not commands: "for name in list", "case word in".
 HEADER_KEYWORDS = {"case", "for", "function", "select"}
 SHELL_BUILTINS = {
-    "alias", "break", "cd", "command", "continue", "declare", "dirs", "echo", "eval", "exec", "exit", "export",
-    "false", "getopts", "hash", "let", "local", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
-    "readonly", "return", "set", "shift", "shopt", "source", "test", "trap", "true", "type", "ulimit", "umask",
-    "unalias", "unset", "wait",
+    "alias",
+    "break",
+    "cd",
+    "command",
+    "continue",
+    "declare",
+    "dirs",
+    "echo",
+    "eval",
+    "exec",
+    "exit",
+    "export",
+    "false",
+    "getopts",
+    "hash",
+    "let",
+    "local",
+    "mapfile",
+    "popd",
+    "printf",
+    "pushd",
+    "pwd",
+    "read",
+    "readarray",
+    "readonly",
+    "return",
+    "set",
+    "shift",
+    "shopt",
+    "source",
+    "test",
+    "trap",
+    "true",
+    "type",
+    "ulimit",
+    "umask",
+    "unalias",
+    "unset",
+    "wait",
 }
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
@@ -199,7 +239,7 @@ def _split_operators(token: str) -> list[str]:
     while token:
         operator = next(op for op in SHELL_OPERATORS if token.startswith(op))
         parts.append(operator)
-        token = token[len(operator):]
+        token = token[len(operator) :]
     return parts
 
 
@@ -338,8 +378,11 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
             path for directory in directories if (directory / "SKILL.md").is_file() for path in _skill_files(directory)
         ]
         used = {command for path in own for command in _file_commands(path, known_call)}
-        reached = {command for path in _reached_dependency_scripts(root, skill, own)
-                   for command in _file_commands(path, known_call)}
+        reached = {
+            command
+            for path in _reached_dependency_scripts(root, skill, own)
+            for command in _file_commands(path, known_call)
+        }
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
         for name in sorted(declared - used - reached):
@@ -397,12 +440,13 @@ def gh_filter_problems(root: Path) -> list[str]:
                 if match:
                     found.append((number, match.group(1)))
         for number, flag in sorted(set(found)):
-            problems.append(f"{name}:{number} filters gh output with {flag}; parse its JSON in Python instead; "
-                            f"see {COMMANDS_DOC}")
+            problems.append(
+                f"{name}:{number} filters gh output with {flag}; parse its JSON in Python instead; see {COMMANDS_DOC}"
+            )
     return problems
 
 
-GRANTS_DOC = "\"Granting tools\" in docs/adding-a-skill.md"
+GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 
 
 def skill_grant_problems(root: Path) -> list[str]:
@@ -435,7 +479,9 @@ def skill_grant_problems(root: Path) -> list[str]:
                 problems.append(f"{name}:{number} no {tool} grant covers {command}; see {GRANTS_DOC}")
             elif kind == "EXPANDS":
                 number, command = detail.split(" ", 1)
-                problems.append(f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}")
+                problems.append(
+                    f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}"
+                )
     return problems
 
 
@@ -450,10 +496,10 @@ PROSE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
 BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
 # analyze-skill-cost recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
 BARE_OWN_PATH_EXEMPT = frozenset({("skills/analyze-skill-cost/SKILL.md", "scripts/")})
-SKILL_PATHS_DOC = "\"Paths to a skill's own files\" in docs/adding-a-skill.md"
+SKILL_PATHS_DOC = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
 # Git Bash takes $HOME from HOME, which need not be the profile folder the deployer installs into.
 HOME_VARIABLE = re.compile(r"\$(?:HOME\b|\{HOME\}|env:HOME\b)", re.IGNORECASE)
-AGENTS_DOC = "\"Subagent definitions\" in docs/adding-a-skill.md"
+AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 
 
 def skill_path_problems(root: Path) -> list[str]:
@@ -481,7 +527,9 @@ def skill_path_problems(root: Path) -> list[str]:
             if path.name == "SKILL.md" and directory is not None and not in_fence:
                 for span in PROSE_CODE_SPAN.findall(line):
                     if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT:
-                        problems.append(f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}")
+                        problems.append(
+                            f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
+                        )
             for match in INSTALL_PATH.finditer(line):
                 if match.group(1) in skills:
                     problems.append(
@@ -504,7 +552,7 @@ def skill_path_problems(root: Path) -> list[str]:
 # An option that names where a script writes, given a placeholder for the agent to fill in: "--output <file>",
 # "--plans=<dir>". Placeholders for paths a command printed, such as "--run <run directory>", name no output option.
 OUTPUT_PLACEHOLDER = re.compile(r"""(--(?:output(?:-[a-z]+)*|out(?:-dir)?|plans))(?:\s+|=)["']?<[^>]*>""")
-WORKING_FILES_DOC = "\"Working files\" in docs/adding-a-skill.md"
+WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
 
 
 def output_placeholder_problems(root: Path) -> list[str]:
@@ -520,24 +568,29 @@ def output_placeholder_problems(root: Path) -> list[str]:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             stripped = line.strip()
             if stripped.startswith("```"):
-                in_command_fence = (not in_command_fence
-                                    and stripped[3:].strip().casefold() in EXECUTABLE_FENCE_LANGUAGES)
+                in_command_fence = (
+                    not in_command_fence and stripped[3:].strip().casefold() in EXECUTABLE_FENCE_LANGUAGES
+                )
                 continue
             if in_command_fence:
                 for match in OUTPUT_PLACEHOLDER.finditer(line):
-                    problems.append(f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
-                                    f"and print the path; see {WORKING_FILES_DOC}")
+                    problems.append(
+                        f"{name}:{number} leaves {match.group(1)} to the agent; let the script choose "
+                        f"and print the path; see {WORKING_FILES_DOC}"
+                    )
     return problems
 
 
 # Defense in depth only: the private-name scan in docs/releasing.md runs before every release. YourName is the
 # placeholder user documentation may show; the drive-sync folder name is split so this file does not match itself.
 PRIVATE_REFERENCE = re.compile(
-    "|".join((
-        r"C:[/\\]Users[/\\](?!YourName(?:[/\\]|$))",
-        "One" + r"Drive - [^/\\\r\n]+",
-        r"github\.com[/\\][A-Za-z0-9_.-]+-internal(?:[/\\]|$)",
-    )),
+    "|".join(
+        (
+            r"C:[/\\]Users[/\\](?!YourName(?:[/\\]|$))",
+            "One" + r"Drive - [^/\\\r\n]+",
+            r"github\.com[/\\][A-Za-z0-9_.-]+-internal(?:[/\\]|$)",
+        )
+    ),
     re.IGNORECASE,
 )
 
@@ -546,7 +599,9 @@ def repository_files(root: Path) -> list[Path]:
     """Tracked files plus untracked ones Git does not ignore, which is what a commit could include."""
     listed = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-        cwd=root, capture_output=True, check=True,
+        cwd=root,
+        capture_output=True,
+        check=True,
     ).stdout.decode("utf-8")
     return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
 
@@ -567,7 +622,8 @@ def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
     hooks = settings.get("hooks")
     groups = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else []
     guarded = [
-        group for group in groups
+        group
+        for group in groups
         if any(re.search(r"tools/worktrees\.py\"? guard$", hook.get("command", "")) for hook in group.get("hooks", []))
     ]
     if not guarded:
@@ -587,13 +643,17 @@ def repository_skill_problems(root: Path) -> list[str]:
     Codex and Copilot CLI read .agents/skills, so a shim must carry the skill's own frontmatter, which is all they
     see before choosing it, and point to the skill as the authoritative workflow.
     """
+
     def frontmatter(path: Path) -> str:
         parts = path.read_text(encoding="utf-8").replace("\r\n", "\n").split("---\n", 2)
         return parts[1] if len(parts) == 3 and parts[0] == "" else ""
 
     skills = {path.parent.name: path for path in (root / ".claude" / "skills").glob("*/SKILL.md")}
     shims = {path.parent.name: path for path in (root / ".agents" / "skills").glob("*/SKILL.md")}
-    found = [f".agents/skills/{name}/SKILL.md has no .claude/skills/{name}/SKILL.md" for name in sorted(set(shims) - set(skills))]
+    found = [
+        f".agents/skills/{name}/SKILL.md has no .claude/skills/{name}/SKILL.md"
+        for name in sorted(set(shims) - set(skills))
+    ]
     for name in sorted(skills):
         shim = shims.get(name)
         if shim is None:
@@ -624,8 +684,15 @@ def fixture_source_problems(root: Path) -> list[str]:
             if metadata.stem in names:
                 found.append(f"{label} skill {metadata.stem} shares its name with a shipped skill or bundle")
         found += [f"{label}: {problem}" for problem in skill_path_problems(fixture)]
-    shipped_files = [root / "source.json", *(path for folder in ("skills", "deploy-meta", "agents")
-                                            for path in (root / folder).rglob("*") if path.is_file())]
+    shipped_files = [
+        root / "source.json",
+        *(
+            path
+            for folder in ("skills", "deploy-meta", "agents")
+            for path in (root / folder).rglob("*")
+            if path.is_file()
+        ),
+    ]
     for path in shipped_files:
         if "tests/fixtures" in path.read_text(encoding="utf-8", errors="replace").replace("\\", "/"):
             found.append(f"{path.relative_to(root).as_posix()} names tests/fixtures, which never ships")
@@ -653,8 +720,7 @@ def _platform_scanned_files(root: Path) -> list[Path]:
     files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "tests" / "run_shard.py"]
     files += [*(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
     return [
-        path for path in files
-        if path.is_file() and path.relative_to(root).as_posix() != "deployer/platform_support.py"
+        path for path in files if path.is_file() and path.relative_to(root).as_posix() != "deployer/platform_support.py"
     ]
 
 
@@ -786,8 +852,9 @@ def _contract_exemption(tree: ast.Module) -> str | None:
 
 def _mentions_failed(node: ast.expr) -> bool:
     parts = node.values if isinstance(node, ast.JoinedStr) else [node]
-    return any(isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value
-               for part in parts)
+    return any(
+        isinstance(part, ast.Constant) and isinstance(part.value, str) and "FAILED" in part.value for part in parts
+    )
 
 
 def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
@@ -800,30 +867,49 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     ]
     for function in entry_points:
         for node in ast.walk(function):
-            if (isinstance(node, ast.Return) and isinstance(node.value, ast.Constant)
-                    and type(node.value.value) is int and node.value.value not in CONTRACT_EXIT_CODES):
+            if (
+                isinstance(node, ast.Return)
+                and isinstance(node.value, ast.Constant)
+                and type(node.value.value) is int
+                and node.value.value not in CONTRACT_EXIT_CODES
+            ):
                 breaches.append((node.lineno, f"exits {node.value.value}; scripts exit only 0, 1, or 2"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         function = node.func
-        if (isinstance(function, ast.Attribute) and function.attr == "error" and id(node) in in_handler
-                and isinstance(function.value, ast.Name) and "parser" in function.value.id):
+        if (
+            isinstance(function, ast.Attribute)
+            and function.attr == "error"
+            and id(node) in in_handler
+            and isinstance(function.value, ast.Name)
+            and "parser" in function.value.id
+        ):
             breaches.append((node.lineno, "reports a failure through parser.error; print FAILED <reason> and exit 1"))
-        exits = (isinstance(function, ast.Attribute) and function.attr == "exit"
-                 and isinstance(function.value, ast.Name) and function.value.id == "sys")
+        exits = (
+            isinstance(function, ast.Attribute)
+            and function.attr == "exit"
+            and isinstance(function.value, ast.Name)
+            and function.value.id == "sys"
+        )
         if (exits or (isinstance(function, ast.Name) and function.id == "SystemExit")) and node.args:
             code = node.args[0]
             if isinstance(code, ast.Constant) and type(code.value) is int and code.value not in CONTRACT_EXIT_CODES:
                 breaches.append((node.lineno, f"exits {code.value}; scripts exit only 0, 1, or 2"))
         if isinstance(function, ast.Name) and function.id == "print" and node.args:
-            stderr = any(keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr"
-                         for keyword in node.keywords)
+            stderr = any(
+                keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr" for keyword in node.keywords
+            )
             if stderr and _mentions_failed(node.args[0]):
                 breaches.append((node.lineno, "prints FAILED on stderr; print it on stdout"))
             first = node.args[0]
-            if (not stderr and isinstance(first, ast.Call) and isinstance(first.func, ast.Attribute)
-                    and first.func.attr == "dumps" and ast.unparse(first.func.value) == "json"):
+            if (
+                not stderr
+                and isinstance(first, ast.Call)
+                and isinstance(first.func, ast.Attribute)
+                and first.func.attr == "dumps"
+                and ast.unparse(first.func.value) == "json"
+            ):
                 breaches.append((node.lineno, "prints JSON; print one fact per line"))
     return sorted(breaches)
 
@@ -859,14 +945,34 @@ def script_contract_problems(root: Path) -> list[str]:
 # functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
 # tell a Path from another receiver; the names are chosen so that none is a common method of anything else.
 FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
-    "method": frozenset({"write_bytes", "write_text", "touch", "mkdir", "unlink", "rmdir", "rename", "symlink_to",
-                         "hardlink_to"}),
-    "qualified": frozenset({
-        "os.remove", "os.unlink", "os.rename", "os.replace", "os.mkdir", "os.makedirs", "os.rmdir", "os.removedirs",
-        "os.fdopen", "os.link", "os.symlink", "shutil.rmtree", "shutil.move", "shutil.copy", "shutil.copy2",
-        "shutil.copyfile", "shutil.copytree", "tempfile.mkstemp", "tempfile.mkdtemp", "tempfile.TemporaryDirectory",
-        "tempfile.NamedTemporaryFile",
-    }),
+    "method": frozenset(
+        {"write_bytes", "write_text", "touch", "mkdir", "unlink", "rmdir", "rename", "symlink_to", "hardlink_to"}
+    ),
+    "qualified": frozenset(
+        {
+            "os.remove",
+            "os.unlink",
+            "os.rename",
+            "os.replace",
+            "os.mkdir",
+            "os.makedirs",
+            "os.rmdir",
+            "os.removedirs",
+            "os.fdopen",
+            "os.link",
+            "os.symlink",
+            "shutil.rmtree",
+            "shutil.move",
+            "shutil.copy",
+            "shutil.copy2",
+            "shutil.copyfile",
+            "shutil.copytree",
+            "tempfile.mkstemp",
+            "tempfile.mkdtemp",
+            "tempfile.TemporaryDirectory",
+            "tempfile.NamedTemporaryFile",
+        }
+    ),
 }
 # A module sanctions a write beside the code it excuses, as a module-level FSOPS_ALLOWED = {token: reason}.
 FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
@@ -881,11 +987,15 @@ def _writes_scanned_files(root: Path) -> list[Path]:
 
 def _opens_for_writing(call: ast.Call, mode_position: int) -> bool:
     """Whether open(), or a Path's open(), is given a mode that writes."""
-    mode = call.args[mode_position] if len(call.args) > mode_position else next(
-        (keyword.value for keyword in call.keywords if keyword.arg == "mode"), None
+    mode = (
+        call.args[mode_position]
+        if len(call.args) > mode_position
+        else next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
     )
-    return isinstance(mode, ast.Constant) and isinstance(mode.value, str) and any(
-        character in mode.value for character in WRITE_MODE_CHARACTERS
+    return (
+        isinstance(mode, ast.Constant)
+        and isinstance(mode.value, str)
+        and any(character in mode.value for character in WRITE_MODE_CHARACTERS)
     )
 
 
@@ -901,7 +1011,8 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
             return
         if isinstance(node, ast.ImportFrom):
             found.extend(
-                (node.lineno, f"{node.module}.{alias.name}") for alias in node.names
+                (node.lineno, f"{node.module}.{alias.name}")
+                for alias in node.names
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
         elif isinstance(node, ast.Call):
@@ -996,7 +1107,7 @@ def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
             continue
         char = text[index]
         if char == escape and quote != "'":
-            following = text[index + 1:index + 2]
+            following = text[index + 1 : index + 2]
             # An escape before a token does not quote the value the token renders to.
             if following and not TEMPLATE_TOKEN.match(text, index + 1):
                 line += following == "\n"
@@ -1128,9 +1239,7 @@ def find_powershell() -> str:
     found = shutil.which("pwsh")
     if found:
         return found
-    raise AssertionError(
-        "PowerShell 7 (pwsh) was not found in PATH. It is required for repository validation."
-    )
+    raise AssertionError("PowerShell 7 (pwsh) was not found in PATH. It is required for repository validation.")
 
 
 def find_ruff() -> str | None:
@@ -1199,9 +1308,7 @@ def tool_versions(
     return versions
 
 
-def outdated_prerequisites(
-    versions: dict[str, tuple[int, ...] | None], python: tuple[int, ...]
-) -> list[str]:
+def outdated_prerequisites(versions: dict[str, tuple[int, ...] | None], python: tuple[int, ...]) -> list[str]:
     """Describe every found tool older than its floor, or whose version cannot be read, with its install hint."""
     hints = {label: hint_key for label, hint_key, _ in PREREQUISITES}
     found = {"Python": python, **versions}
@@ -1273,9 +1380,7 @@ def append_step_summary(environment: Mapping[str, str], text: str) -> None:
             summary.write(text)
 
 
-def run_process(
-    arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT
-) -> None:
+def run_process(arguments: list[str], environment: dict[str, str] | None = None, cwd: Path = REPOSITORY_ROOT) -> None:
     merged = dict(os.environ)
     if environment:
         merged.update(environment)
@@ -1294,17 +1399,14 @@ def run_process(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            raise AssertionError(
-                f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s: {arguments[0]}"
-            ) from exc
+            raise AssertionError(f"Command timed out after {COMMAND_TIMEOUT_SECONDS}s: {arguments[0]}") from exc
         if completed.returncode != 0:
             stdout.seek(0)
             stderr.seek(0)
             output = stdout.read().decode("utf-8", "replace")
             error = stderr.read().decode("utf-8", "replace")
             raise AssertionError(
-                f"Command failed with exit code {completed.returncode}: "
-                f"{' '.join(arguments)}\n{output}\n{error}"
+                f"Command failed with exit code {completed.returncode}: {' '.join(arguments)}\n{output}\n{error}"
             )
 
 
@@ -1331,9 +1433,7 @@ def run_test_script(path: Path) -> None:
     elif suffix == ".sh":
         run_git_bash(f"bash {shell_quote(target)}")
     elif suffix == ".ps1":
-        run_process(
-            [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", target]
-        )
+        run_process([find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", target])
     else:
         raise AssertionError(f"Unsupported skill test type '{path.suffix}': {target}")
 
@@ -1356,7 +1456,9 @@ class Job:
 def regression_suites() -> list[Path]:
     """Every regression suite: the test scripts under tests/ and under each skill's scripts/."""
     roots = [REPOSITORY_ROOT / "tests", *(skill / "scripts" for skill in skill_directories())]
-    found = (path for root in roots if root.is_dir() for path in root.rglob("*") if path.is_file() and is_test_script(path))
+    found = (
+        path for root in roots if root.is_dir() for path in root.rglob("*") if path.is_file() and is_test_script(path)
+    )
     return sorted(found, key=lambda path: relative(path).casefold())
 
 
@@ -1384,8 +1486,14 @@ def suite_jobs(suites: list[Path]) -> list[Job]:
             jobs.append(Job(label, label, tests, lambda s=suite: run_test_script(s)))
             continue
         for index in range(count):
-            jobs.append(Job(f"{label} [shard {index + 1}/{count}]", label, tests / count,
-                            lambda s=suite, i=index, n=count: run_shard(s, i, n)))
+            jobs.append(
+                Job(
+                    f"{label} [shard {index + 1}/{count}]",
+                    label,
+                    tests / count,
+                    lambda s=suite, i=index, n=count: run_shard(s, i, n),
+                )
+            )
     return jobs
 
 
@@ -1422,9 +1530,11 @@ def static_format_check() -> None:
 def all_jobs() -> list[Job]:
     shell = "static shell checks (bash -n and ShellCheck on skill scripts)"
     python_format = "static format check (ruff format --check)"
-    return [Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
-            Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
-            *suite_jobs(regression_suites())]
+    return [
+        Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
+        Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
+        *suite_jobs(regression_suites()),
+    ]
 
 
 def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[tuple[Job, AssertionError]]:
@@ -1632,44 +1742,75 @@ class RepositoryValidation(unittest.TestCase):
                 encoding="utf-8",
             )
             for index in range(3):
-                completed = subprocess.run([sys.executable, "-B", str(SHARD_RUNNER), str(suite), str(index), "3"],
-                                           capture_output=True, text=True)
+                completed = subprocess.run(
+                    [sys.executable, "-B", str(SHARD_RUNNER), str(suite), str(index), "3"],
+                    capture_output=True,
+                    text=True,
+                )
                 self.assertEqual(0, completed.returncode, completed.stderr)
             entries = log.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(sorted(f"test_{number}" for number in range(7)), sorted(e for e in entries if e.startswith("test_")))
+            self.assertEqual(
+                sorted(f"test_{number}" for number in range(7)), sorted(e for e in entries if e.startswith("test_"))
+            )
             self.assertEqual(3, entries.count("module from the suite directory"))
             self.assertEqual(3, entries.count("class"))
             self.assertNotIn("ran as __main__", entries)
 
-            suite.write_text(suite.read_text(encoding="utf-8").replace("record('test_3')", "self.fail('boom')"),
-                             encoding="utf-8")
-            failing = subprocess.run([sys.executable, "-B", str(SHARD_RUNNER), str(suite), "0", "3"],
-                                     capture_output=True, text=True)
+            suite.write_text(
+                suite.read_text(encoding="utf-8").replace("record('test_3')", "self.fail('boom')"), encoding="utf-8"
+            )
+            failing = subprocess.run(
+                [sys.executable, "-B", str(SHARD_RUNNER), str(suite), "0", "3"], capture_output=True, text=True
+            )
             self.assertEqual(1, failing.returncode)
             self.assertIn("boom", failing.stderr)
-            refused = subprocess.run([sys.executable, "-B", str(SHARD_RUNNER), str(suite), "3", "3"],
-                                     capture_output=True, text=True)
+            refused = subprocess.run(
+                [sys.executable, "-B", str(SHARD_RUNNER), str(suite), "3", "3"], capture_output=True, text=True
+            )
             self.assertEqual(2, refused.returncode)
 
     def test_documentation_paths_are_classified(self) -> None:
-        for path in ("docs/skills.md", "docs/new/guide.md", "README.md", "CONTRIBUTING.md", "SECURITY.md", "CLAUDE.md",
-                     "AGENTS.md", ".github/ISSUE_TEMPLATE/bug.md", ".github/pull_request_template.md"):
+        for path in (
+            "docs/skills.md",
+            "docs/new/guide.md",
+            "README.md",
+            "CONTRIBUTING.md",
+            "SECURITY.md",
+            "CLAUDE.md",
+            "AGENTS.md",
+            ".github/ISSUE_TEMPLATE/bug.md",
+            ".github/pull_request_template.md",
+        ):
             with self.subTest(path=path):
                 self.assertTrue(is_documentation(path))
-        for path in ("skills/repo-cleanup/SKILL.md", "skills/README.md", "agents/code-review-reviewer.md",
-                     ".claude/skills/change-skill/SKILL.md", ".agents/skills/change-skill/SKILL.md",
-                     ".github/workflows/validate.yml", "tests/run_validation.py", "deployer/source.py",
-                     "source.json", "docs", "LICENSE", "readme.md"):
+        for path in (
+            "skills/repo-cleanup/SKILL.md",
+            "skills/README.md",
+            "agents/code-review-reviewer.md",
+            ".claude/skills/change-skill/SKILL.md",
+            ".agents/skills/change-skill/SKILL.md",
+            ".github/workflows/validate.yml",
+            "tests/run_validation.py",
+            "deployer/source.py",
+            "source.json",
+            "docs",
+            "LICENSE",
+            "readme.md",
+        ):
             with self.subTest(path=path):
                 self.assertFalse(is_documentation(path))
 
     def test_only_a_change_that_is_all_documentation_skips_the_suites(self) -> None:
-        self.assertEqual((True, "all 2 changed files are documentation"),
-                         documentation_only(["README.md", "docs/skills.md"]))
+        self.assertEqual(
+            (True, "all 2 changed files are documentation"), documentation_only(["README.md", "docs/skills.md"])
+        )
         for paths, reason in (
             (None, "could not be determined"),
             ([], "no changed files"),
-            (["docs/skills.md", "skills/repo-cleanup/SKILL.md"], "1 changed files are not documentation, such as skills/"),
+            (
+                ["docs/skills.md", "skills/repo-cleanup/SKILL.md"],
+                "1 changed files are not documentation, such as skills/",
+            ),
         ):
             with self.subTest(paths=paths):
                 only, why = documentation_only(paths)
@@ -1683,16 +1824,24 @@ class RepositoryValidation(unittest.TestCase):
             by_path.write_text("SOURCE = 'docs/skills.md'\n", encoding="utf-8")
             by_name.write_text("open('README.md')\n", encoding="utf-8")
             unrelated.write_text("pass\n", encoding="utf-8")
-            self.assertEqual([by_path, by_name], suites_naming(["docs/skills.md", "README.md"], [by_path, by_name, unrelated]))
+            self.assertEqual(
+                [by_path, by_name], suites_naming(["docs/skills.md", "README.md"], [by_path, by_name, unrelated])
+            )
             self.assertEqual([], suites_naming(["docs/other.md"], [by_path, by_name, unrelated]))
 
     def test_changed_files_include_commits_uncommitted_untracked_and_both_sides_of_a_rename(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository with spaces"
             root.mkdir()
-            environment = {**os.environ, "GIT_CONFIG_GLOBAL": str(Path(temporary) / "empty"), "GIT_CONFIG_NOSYSTEM": "1",
-                           "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
-                           "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid"}
+            environment = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": str(Path(temporary) / "empty"),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
             (Path(temporary) / "empty").write_text("", encoding="utf-8")
 
             def git(*arguments: str) -> None:
@@ -1710,8 +1859,9 @@ class RepositoryValidation(unittest.TestCase):
             (root / "docs" / "edited.md").write_text("changed\n", encoding="utf-8")
             (root / "docs" / "new.md").write_text("new\n", encoding="utf-8")
             with mock.patch.dict(os.environ, environment):
-                self.assertEqual(["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"],
-                                 changed_paths(root, "main"))
+                self.assertEqual(
+                    ["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"], changed_paths(root, "main")
+                )
                 self.assertIsNone(changed_paths(root, "no-such-base"))
                 self.assertIsNone(changed_paths(Path(temporary), "main"))
 
@@ -1806,12 +1956,20 @@ class RepositoryValidation(unittest.TestCase):
 
             pointer = "Read and follow `../../../.claude/skills/{}/SKILL.md`.\n"
             write(".claude/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\nBody.\n")
-            write(".agents/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\n" + pointer.format("good"))
+            write(
+                ".agents/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\n" + pointer.format("good")
+            )
             write(".claude/skills/missing/SKILL.md", "---\nname: missing\ndescription: Missing.\n---\n")
             write(".claude/skills/drifted/SKILL.md", "---\nname: drifted\ndescription: New.\n---\n")
-            write(".agents/skills/drifted/SKILL.md", "---\nname: drifted\ndescription: Old.\n---\n\n" + pointer.format("drifted"))
+            write(
+                ".agents/skills/drifted/SKILL.md",
+                "---\nname: drifted\ndescription: Old.\n---\n\n" + pointer.format("drifted"),
+            )
             write(".claude/skills/astray/SKILL.md", "---\nname: astray\ndescription: Astray.\n---\n")
-            write(".agents/skills/astray/SKILL.md", "---\nname: astray\ndescription: Astray.\n---\n\n" + pointer.format("other"))
+            write(
+                ".agents/skills/astray/SKILL.md",
+                "---\nname: astray\ndescription: Astray.\n---\n\n" + pointer.format("other"),
+            )
             write(".agents/skills/stray/SKILL.md", "---\nname: stray\ndescription: Stray.\n---\n")
             self.assertEqual(
                 [
@@ -1850,7 +2008,7 @@ class RepositoryValidation(unittest.TestCase):
                     "tests/fixtures/clash skill alpha shares its name with a shipped skill or bundle",
                     "tests/fixtures/clash skill suite shares its name with a shipped skill or bundle",
                     "tests/fixtures/clash: skills/suite/SKILL.md:2 runs a script by a bare relative path; see "
-                    "\"Paths to a skill's own files\" in docs/adding-a-skill.md",
+                    '"Paths to a skill\'s own files" in docs/adding-a-skill.md',
                     "tests/fixtures/same/source.json reuses the shipped source ID",
                     "skills/alpha/notes.md names tests/fixtures, which never ships",
                 ],
@@ -1894,8 +2052,9 @@ class RepositoryValidation(unittest.TestCase):
             )
             (scripts / "vague.py").write_text("EXIT_CONTRACT_EXEMPT = ' '\n", encoding="utf-8")
             (scripts / "test_run.py").write_text("import sys\nsys.exit(5)\n", encoding="utf-8")
-            (scripts / "tool.sh").write_text("set -e\n[ -n \"$1\" ] || exit 3\nexit 0  # exit 6 in a comment\n",
-                                             encoding="utf-8")
+            (scripts / "tool.sh").write_text(
+                'set -e\n[ -n "$1" ] || exit 3\nexit 0  # exit 6 in a comment\n', encoding="utf-8"
+            )
             (scripts / "test_tool.sh").write_text("exit 7\n", encoding="utf-8")
             doc = '"Script results" in docs/adding-a-skill.md'
             self.assertEqual(
@@ -2088,7 +2247,7 @@ class RepositoryValidation(unittest.TestCase):
                 "```\n"
                 "\n"
                 "```pwsh\n"
-                "Set-Location \"{{QUOTED}}\"; Write-Output `{{ESCAPED}}\n"
+                'Set-Location "{{QUOTED}}"; Write-Output `{{ESCAPED}}\n'
                 "```\n",
             )
             write("skills/alpha/scripts/run.sh", '#!/usr/bin/env bash\necho "{{QUOTED}}"\necho {{SCRIPT}}\n')
@@ -2137,7 +2296,7 @@ class RepositoryValidation(unittest.TestCase):
             (root / "docs").mkdir()
             guide = root / "docs" / "adding-a-skill.md"
             guide.write_text(
-                "# Adding a skill\n\n## Files\n\n`test-*` `*.test.*` `.sh` `if __name__ == \"__main__\":`\n\n"
+                '# Adding a skill\n\n## Files\n\n`test-*` `*.test.*` `.sh` `if __name__ == "__main__":`\n\n'
                 "## Validation\n\nName it `test_*`, `*_test`, or `*-test` and use `.py` or `.ps1`.\n\n## Later\n",
                 encoding="utf-8",
             )
@@ -2147,7 +2306,7 @@ class RepositoryValidation(unittest.TestCase):
                     f"{missing} `test-*`",
                     f"{missing} `*.test.*`",
                     f"{missing} `.sh`",
-                    f"{missing} `if __name__ == \"__main__\":`",
+                    f'{missing} `if __name__ == "__main__":`',
                 ],
                 suite_discovery_documentation_problems(root),
             )
@@ -2159,13 +2318,27 @@ class RepositoryValidation(unittest.TestCase):
     def test_suite_names_follow_the_documented_patterns(self) -> None:
         self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), TEST_NAME_PATTERNS)
         for name in (
-            "test_a.py", "test-a.sh", "a_test.ps1", "a-test.py", "a.test.py", "a.test.b.sh", "TEST_A.PY",
-            "Test-A.Ps1", "test_.py",
+            "test_a.py",
+            "test-a.sh",
+            "a_test.ps1",
+            "a-test.py",
+            "a.test.py",
+            "a.test.b.sh",
+            "TEST_A.PY",
+            "Test-A.Ps1",
+            "test_.py",
         ):
             with self.subTest(name=name):
                 self.assertTrue(is_test_script(Path(name)))
         for name in (
-            "a.py", "testa.py", "atest.py", "test_a.txt", "a_tests.py", "contest.py", "a.tests.py", "test_a.js",
+            "a.py",
+            "testa.py",
+            "atest.py",
+            "test_a.txt",
+            "a_tests.py",
+            "contest.py",
+            "a.tests.py",
+            "test_a.js",
         ):
             with self.subTest(name=name):
                 self.assertFalse(is_test_script(Path(name)))
@@ -2189,8 +2362,10 @@ class RepositoryValidation(unittest.TestCase):
             skills = {
                 "bare": ('["Bash"]', f'{own}x.py"'),
                 "unpaired": (json.dumps([f"Bash({own}*)"]), f'{own}x.py"'),
-                "ungranted": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
-                              f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"\ngit status'),
+                "ungranted": (
+                    json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
+                    f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"\ngit status',
+                ),
                 "none": ('["Read"]', f'{own}x.py"'),
                 "unused": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)", "Glob"]), f'{own}x.py"'),
                 "expands": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]), f'{own}x.py" --cwd "$PWD"'),
@@ -2248,7 +2423,7 @@ class RepositoryValidation(unittest.TestCase):
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/run.py" --in "data/scripts/x"\n'
                 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/lib.py"\n'
                 "```\n"
-                "Prose names `scripts/run.py`, grants `Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)`, and points at "
+                'Prose names `scripts/run.py`, grants `Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*)`, and points at '
                 "${CLAUDE_SKILL_DIR}/references/checks.md.\n"
                 "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n"
                 "Read `references/checks.md`, `./scripts/run.py`, `../core/scripts/lib.py`, and `references/`.\n"
@@ -2281,8 +2456,8 @@ class RepositoryValidation(unittest.TestCase):
                 "Mentions $HOMEPAGE and $HOME_DIR.\n",
                 encoding="utf-8",
             )
-            doc = "\"Paths to a skill's own files\" in docs/adding-a-skill.md"
-            agents_doc = "\"Subagent definitions\" in docs/adding-a-skill.md"
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            agents_doc = '"Subagent definitions" in docs/adding-a-skill.md'
             self.assertEqual(
                 [
                     f"agents/helper.md:1 names skill beta by its install path; see {doc}",
@@ -2313,7 +2488,7 @@ class RepositoryValidation(unittest.TestCase):
             root = Path(temporary)
             (root / "skills" / "alpha" / "references").mkdir(parents=True)
             (root / "skills" / "alpha" / "SKILL.md").write_text(
-                "Prose may say --output \"<file>\".\n"
+                'Prose may say --output "<file>".\n'
                 "```bash\n"
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" enumerate --output "<batch file>"\n'
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" sweep --plans <plan directory> --output=<x>\n'
@@ -2321,7 +2496,7 @@ class RepositoryValidation(unittest.TestCase):
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" install --spec "<spec file>" --plan "<plan file>"\n'
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/a.py" collect --output "$TMP/x.json"\n'
                 "```\n"
-                "```text\n--output \"<file>\"\n```\n",
+                '```text\n--output "<file>"\n```\n',
                 encoding="utf-8",
             )
             (root / "skills" / "alpha" / "references" / "notes.md").write_text(
@@ -2341,12 +2516,12 @@ class RepositoryValidation(unittest.TestCase):
 
     def test_shell_command_extraction_ignores_keywords_patterns_and_functions(self) -> None:
         script = (
-            'set -euo pipefail\n'
+            "set -euo pipefail\n"
             'BASE=$(git rev-parse HEAD | tr -d "\\r") && echo "$BASE" >/dev/null\n'
             'case "$1" in\n'
             '  main|release/*) grep -q "x|jq" file ;;\n'
             '  *) helper "rg" ;;\n'
-            'esac\n'
+            "esac\n"
             'for name in alpha beta; do basename "$name"; done\n'
             'helper() { if [ -n "$1" ]; then sed -n 1p "$1"; fi; }\n'
             'while read -r line; do printf "%s\\n" "$line" | jq .; done < list\n'
@@ -2381,7 +2556,7 @@ class RepositoryValidation(unittest.TestCase):
             )
             (scripts / "tool.ps1").write_text("gh api repos/o/r --template '{{.name}}'\n", encoding="utf-8")
             (scripts / "test_tool.py").write_text('self.assertNotIn("--jq", calls)\n', encoding="utf-8")
-            doc = "\"Commands skills may run\" in docs/adding-a-skill.md"
+            doc = '"Commands skills may run" in docs/adding-a-skill.md'
             self.assertEqual(
                 [
                     f"skills/alpha/scripts/tool.ps1:1 filters gh output with --template; parse its JSON in Python "
@@ -2412,7 +2587,9 @@ class RepositoryValidation(unittest.TestCase):
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
                 (root / "skills" / skill / "scripts").mkdir(parents=True)
             (root / "skills" / "alpha" / "SKILL.md").write_text("Prose that mentions `gh` only.\n", encoding="utf-8")
-            (root / "skills" / "alpha" / "scripts" / "run.py").write_text('run(["gh", "pr", "list"])\n', encoding="utf-8")
+            (root / "skills" / "alpha" / "scripts" / "run.py").write_text(
+                'run(["gh", "pr", "list"])\n', encoding="utf-8"
+            )
             (root / "skills" / "alpha" / "scripts" / "test_run.py").write_text('which("copilot")\n', encoding="utf-8")
             (root / "skills" / "beta" / "SKILL.md").write_text(
                 "```bash\ngit status && dotnet-format --version\n```\n", encoding="utf-8"
@@ -2486,7 +2663,7 @@ class RepositoryValidation(unittest.TestCase):
                 "canonical": '{\n    "required_vars": [],\n    "shared_deps": ["runtime-compatibility.md"]\n}\n',
                 "two-space": '{\n  "required_vars": [],\n  "shared_deps": ["runtime-compatibility.md"]\n}\n',
                 "expanded": '{\n    "required_vars": [],\n    "shared_deps": [\n        "runtime-compatibility.md"\n'
-                            "    ]\n}\n",
+                "    ]\n}\n",
                 "no-newline": '{\n    "required_vars": []\n}',
             }
             for name, text in files.items():
@@ -2509,13 +2686,9 @@ class RepositoryValidation(unittest.TestCase):
                 json.dumps({"required_vars": ["REPOS_ROOT", "HOME"]}), encoding="utf-8"
             )
             (root / "skills" / "alpha").mkdir(parents=True)
-            (root / "skills" / "alpha" / "SKILL.md").write_text(
-                "{{REPOS_ROOT}} {{SOURCE_ROOT}}\n", encoding="utf-8"
-            )
+            (root / "skills" / "alpha" / "SKILL.md").write_text("{{REPOS_ROOT}} {{SOURCE_ROOT}}\n", encoding="utf-8")
             (root / "skills" / "shared.md").write_text("{{REPOS_ROOT}} {{HOME}}\n", encoding="utf-8")
-            (root / "source.json").write_text(
-                json.dumps({"shared_assets": {"shared.md": "owner"}}), encoding="utf-8"
-            )
+            (root / "source.json").write_text(json.dumps({"shared_assets": {"shared.md": "owner"}}), encoding="utf-8")
             self.assertEqual(
                 [
                     "configure never prompts for configured variable SPARE",
@@ -2588,8 +2761,12 @@ class RepositoryValidation(unittest.TestCase):
             VALIDATION_FLOORS,
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
-        for row in ("| Python | 3.11 |", "| ShellCheck | 0.9.0 |", "| PowerShell 7 (`pwsh`) | 7.0 |",
-                    "| ruff | 0.16.10 |"):
+        for row in (
+            "| Python | 3.11 |",
+            "| ShellCheck | 0.9.0 |",
+            "| PowerShell 7 (`pwsh`) | 7.0 |",
+            "| ruff | 0.16.10 |",
+        ):
             with self.subTest(row=row):
                 self.assertIn(row, document)
 
@@ -2629,18 +2806,25 @@ class RepositoryValidation(unittest.TestCase):
         self.assertTrue(shared)
         for action in shared:
             with self.subTest(shared=action):
-                self.assertEqual(re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
-                                 re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1))
+                self.assertEqual(
+                    re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
+                    re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
+                )
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
-        for runtime, key in (("Claude Code", "claude-version"), ("Codex CLI", "codex-version"),
-                             ("GitHub Copilot CLI", "copilot-version")):
+        for runtime, key in (
+            ("Claude Code", "claude-version"),
+            ("Codex CLI", "codex-version"),
+            ("GitHub Copilot CLI", "copilot-version"),
+        ):
             with self.subTest(runtime=runtime):
                 # The third column: the maintainer's machines come first and may be ahead of the runner.
                 tested = re.search(rf"(?m)^\| {runtime} \| \S+ \| (\d+(?:\.\d+)+) \|", readme).group(1)
-                default = re.search(rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow).group(1)
+                default = re.search(
+                    rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow
+                ).group(1)
                 self.assertEqual(tested, default)
 
     def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
@@ -2716,10 +2900,17 @@ class RepositoryValidation(unittest.TestCase):
             append_step_summary({}, "ignored\n")
             self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
 
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
-    parser.add_argument("-k", dest="patterns", action="append", default=[], metavar="PATTERN",
-                        help="run only the policy checks whose name, and the suites whose path, match; repeatable")
+    parser.add_argument(
+        "-k",
+        dest="patterns",
+        action="append",
+        default=[],
+        metavar="PATTERN",
+        help="run only the policy checks whose name, and the suites whose path, match; repeatable",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="list each policy check and suite as it finishes")
     parser.add_argument("--full", action="store_true", help="run every suite even when only documentation changed")
     arguments = parser.parse_args(argv)
@@ -2742,8 +2933,10 @@ def main(argv: list[str] | None = None) -> int:
         if only:
             suites = suites_naming(paths, regression_suites())
             jobs = suite_jobs(suites)
-            mode = (f"Documentation only: {reason} since {base}. Running the policy checks and the "
-                    f"{len(suites)} suites that name a changed file; pass --full to run every suite.")
+            mode = (
+                f"Documentation only: {reason} since {base}. Running the policy checks and the "
+                f"{len(suites)} suites that name a changed file; pass --full to run every suite."
+            )
         else:
             jobs = all_jobs()
             mode = f"Full validation: {reason}."

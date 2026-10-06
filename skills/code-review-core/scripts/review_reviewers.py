@@ -90,9 +90,11 @@ def _frontmatter(text: str) -> tuple[dict[str, list[str] | None], int]:
             key, value = match.group(1).casefold(), match.group(2).strip()
             current = key if key in {"tools", "allowed-tools"} else None
             if current:
-                tools[current] = [
-                    item for item in (part.strip().strip("'\"") for part in value.strip("[]").split(",")) if item
-                ] if value else []
+                tools[current] = (
+                    [item for item in (part.strip().strip("'\"") for part in value.strip("[]").split(",")) if item]
+                    if value
+                    else []
+                )
         elif current and re.match(r"^\s+-\s+", line):
             tools[current].append(line.strip()[1:].strip().strip("'\""))
     return {}, 1
@@ -131,9 +133,11 @@ def _names_agent(stem: str, line: str) -> bool:
         return False
     if not PLAIN_WORD.fullmatch(stem):
         return True
-    return (any(word.search(span) for span in CODE_SPAN.findall(line))
-            or any(AGENT_WORD.match(line, match.end()) for match in word.finditer(line))
-            or bool(DELEGATION_TEXT.search(line) or DELEGATION_PHRASE.search(line)))
+    return (
+        any(word.search(span) for span in CODE_SPAN.findall(line))
+        or any(AGENT_WORD.match(line, match.end()) for match in word.finditer(line))
+        or bool(DELEGATION_TEXT.search(line) or DELEGATION_PHRASE.search(line))
+    )
 
 
 def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]) -> Inspection:
@@ -150,7 +154,7 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
             agents.setdefault(PurePosixPath(path).stem, []).append(path)
     evidence: list[tuple[int, str]] = []
     references: set[str] = set()
-    for number, line in enumerate(text.splitlines()[body_start - 1:], start=body_start):
+    for number, line in enumerate(text.splitlines()[body_start - 1 :], start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, " ".join(line.split())[:160]))
@@ -181,9 +185,7 @@ def repository_files(checkout: Path, commit: str, runner: Runner = subprocess_ru
     return {name for name in listing.split("\0") if name and not has_undecodable(name)}
 
 
-def inspect_configured_skill(
-    checkout: Path, commit: str, skill: str, runner: Runner = subprocess_runner
-) -> Inspection:
+def inspect_configured_skill(checkout: Path, commit: str, skill: str, runner: Runner = subprocess_runner) -> Inspection:
     files = repository_files(checkout, commit, runner)
     if skill not in files:
         raise RuntimeContractError(f"The configured review skill {skill} does not exist at {commit[:12]}")
@@ -196,16 +198,18 @@ def inspect_configured_skill(
 
 def entrypoint_manifest(reviewer_id: str, inspection: Inspection) -> dict[str, Any]:
     """Run a review skill that starts no subagents as one entrypoint reviewer, carrying the files it names."""
-    return validate_adapter_manifest({
-        "schema_version": 1,
-        "id": reviewer_id,
-        "protocol_version": ADAPTER_PROTOCOL_VERSION,
-        "supports": ["initial", "re-review"],
-        "required_capabilities": ["read-diff", "write-result"],
-        "entrypoint": inspection.skill,
-        "resources": inspection.references,
-        "agent_profiles": [],
-    })
+    return validate_adapter_manifest(
+        {
+            "schema_version": 1,
+            "id": reviewer_id,
+            "protocol_version": ADAPTER_PROTOCOL_VERSION,
+            "supports": ["initial", "re-review"],
+            "required_capabilities": ["read-diff", "write-result"],
+            "entrypoint": inspection.skill,
+            "resources": inspection.references,
+            "agent_profiles": [],
+        }
+    )
 
 
 def manifest_location(reviewer: dict[str, Any], config_path: Path, repository: str) -> Path | None:
@@ -237,13 +241,13 @@ def resolve_reviewer(
     inspection = inspect_configured_skill(checkout, commit, reviewer["skill"], runner)
     local = manifest_location(reviewer, config_path, repository)
     if local is not None:
-        return ResolvedReviewer(load_manifest_from_file(local), "local-manifest", str(local), local.parent,
-                                inspection)
+        return ResolvedReviewer(load_manifest_from_file(local), "local-manifest", str(local), local.parent, inspection)
     if inspection.delegates == "yes":
         line = f" (line {inspection.evidence[0][0]}: {inspection.evidence[0][1]})" if inspection.evidence else ""
         raise RuntimeContractError(
             f"The review skill {inspection.skill} starts its own subagents{line}, which fails when it runs as a "
             "reviewer subagent. Give it a specialists manifest (reviewer.manifest); see inspect-reviewer."
         )
-    return ResolvedReviewer(entrypoint_manifest(reviewer["id"], inspection), "skill", inspection.skill,
-                            inspection=inspection)
+    return ResolvedReviewer(
+        entrypoint_manifest(reviewer["id"], inspection), "skill", inspection.skill, inspection=inspection
+    )

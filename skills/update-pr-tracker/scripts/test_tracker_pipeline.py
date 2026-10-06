@@ -43,8 +43,10 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
         "updatedAt": "2026-03-01T00:00:00Z",
         "reviewDecision": None,
         "author": {"login": "ada", "name": "Ada Lovelace"},
-        "reviewRequests": {"pageInfo": {"hasNextPage": False},
-                           "nodes": [{"requestedReviewer": {"login": "reviewer"}}, {"requestedReviewer": {}}]},
+        "reviewRequests": {
+            "pageInfo": {"hasNextPage": False},
+            "nodes": [{"requestedReviewer": {"login": "reviewer"}}, {"requestedReviewer": {}}],
+        },
         "participants": {"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "ada"}]},
         "reviews": {"nodes": []},
     }
@@ -53,8 +55,18 @@ def pull_node(number: int, **changes: Any) -> dict[str, Any]:
 
 
 def page(nodes: list[dict[str, Any]], cursor: str | None = None) -> str:
-    return json.dumps({"data": {"repository": {"pullRequests": {
-        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}, "nodes": nodes}}}})
+    return json.dumps(
+        {
+            "data": {
+                "repository": {
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+                        "nodes": nodes,
+                    }
+                }
+            }
+        }
+    )
 
 
 class FakeGitHub:
@@ -91,20 +103,51 @@ class FakeGitHub:
 
 def archived_record(head: str) -> dict[str, Any]:
     request = {
-        "repository": "example/one", "pull_number": 2, "pull_url": "https://github.com/example/one/pull/2",
-        "title": "Change 2", "base_ref": "main", "base_sha": "d" * 40, "head_sha": head, "mode": "initial",
+        "repository": "example/one",
+        "pull_number": 2,
+        "pull_url": "https://github.com/example/one/pull/2",
+        "title": "Change 2",
+        "base_ref": "main",
+        "base_sha": "d" * 40,
+        "head_sha": head,
+        "mode": "initial",
         "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
     }
-    result = validate_adapter_result({
-        "protocol_version": 1, "repository": "example/one", "pull_number": 2, "head_sha": head,
-        "summary": "Fixture", "reviewer": "fixture", "status": "complete",
-        "findings": [{"candidate_key": "a", "severity": "MUST_FIX", "category": "Correctness", "path": "a.py",
-                      "line": 1, "body": "Fix.", "evidence": "Evidence.", "source": "fixture"}],
-        "prior_dispositions": [], "usage": None,
-    }, expected_repository="example/one", expected_number=2, expected_head_sha=head)
-    return build_record(request, result, version=1,
-                        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
-                        reviewed_at="2026-03-01T12:00:00+00:00")
+    result = validate_adapter_result(
+        {
+            "protocol_version": 1,
+            "repository": "example/one",
+            "pull_number": 2,
+            "head_sha": head,
+            "summary": "Fixture",
+            "reviewer": "fixture",
+            "status": "complete",
+            "findings": [
+                {
+                    "candidate_key": "a",
+                    "severity": "MUST_FIX",
+                    "category": "Correctness",
+                    "path": "a.py",
+                    "line": 1,
+                    "body": "Fix.",
+                    "evidence": "Evidence.",
+                    "source": "fixture",
+                }
+            ],
+            "prior_dispositions": [],
+            "usage": None,
+        },
+        expected_repository="example/one",
+        expected_number=2,
+        expected_head_sha=head,
+    )
+    return build_record(
+        request,
+        result,
+        version=1,
+        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+        reviewed_at="2026-03-01T12:00:00+00:00",
+    )
 
 
 class TrackerPipelineFixture(unittest.TestCase):
@@ -122,25 +165,41 @@ class TrackerPipelineFixture(unittest.TestCase):
         self.services = tp.Services(github=GitHubClient(runner=self.github), flags_path=lambda: self.flags_path)
         self.configure()
 
-    def configure(self, *, login: str | None = "reviewer", overrides: dict[str, str] | None = None,
-                  author_names: dict[str, str] | None = None) -> None:
-        generic = {"reviewer": {"id": "generic", "protocol_version": 1, "trusted_ref": None, "scope": "generic",
-                                "manifest_path": None}, "checkout_path": None}
+    def configure(
+        self,
+        *,
+        login: str | None = "reviewer",
+        overrides: dict[str, str] | None = None,
+        author_names: dict[str, str] | None = None,
+    ) -> None:
+        generic = {
+            "reviewer": {
+                "id": "generic",
+                "protocol_version": 1,
+                "trusted_ref": None,
+                "scope": "generic",
+                "manifest_path": None,
+            },
+            "checkout_path": None,
+        }
         self.config_path = self.root / "config.json"
-        write_config({
-            "schema_version": 1,
-            "default_repository_set": "primary",
-            "repository_sets": {"primary": ["example/one"], "tracked": ["example/one", "example/two"]},
-            "repositories": {"example/one": generic, "example/two": generic},
-            "operation_repository_sets": {"update-pr-tracker": "tracked"},
-            "archive_root": str(self.archive),
-            "local_mirror_root": None,
-            "summary_root": str(self.root / "summaries"),
-            "dashboard_file": str(self.dashboard),
-            "github_login": login,
-            "runtime": "auto",
-            "dashboard": {"status_overrides": overrides or {}, "author_names": author_names or {}},
-        }, self.config_path)
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": ["example/one"], "tracked": ["example/one", "example/two"]},
+                "repositories": {"example/one": generic, "example/two": generic},
+                "operation_repository_sets": {"update-pr-tracker": "tracked"},
+                "archive_root": str(self.archive),
+                "local_mirror_root": None,
+                "summary_root": str(self.root / "summaries"),
+                "dashboard_file": str(self.dashboard),
+                "github_login": login,
+                "runtime": "auto",
+                "dashboard": {"status_overrides": overrides or {}, "author_names": author_names or {}},
+            },
+            self.config_path,
+        )
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -149,12 +208,22 @@ class TrackerPipelineFixture(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def serve_default_pages(self) -> None:
-        reviewed = pull_node(2, author={"login": "bob", "name": "  "}, reviewDecision="REVIEW_REQUIRED",
-                             reviews={"nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]})
-        mine = pull_node(3, author={"login": "reviewer", "name": None}, isDraft=True,
-                         reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []})
+        reviewed = pull_node(
+            2,
+            author={"login": "bob", "name": "  "},
+            reviewDecision="REVIEW_REQUIRED",
+            reviews={"nodes": [{"state": "CHANGES_REQUESTED", "commit": {"oid": USER_REVIEWED}}]},
+        )
+        mine = pull_node(
+            3,
+            author={"login": "reviewer", "name": None},
+            isDraft=True,
+            reviewRequests={"pageInfo": {"hasNextPage": False}, "nodes": []},
+        )
         self.github.pages["example/one"] = [page([pull_node(1)], "cursor-1"), page([reviewed, mine])]
-        self.github.pages["example/two"] = [page([pull_node(5, author=None, url="https://github.com/example/two/pull/5")])]
+        self.github.pages["example/two"] = [
+            page([pull_node(5, author=None, url="https://github.com/example/two/pull/5")])
+        ]
 
 
 class CollectTests(TrackerPipelineFixture):
@@ -163,22 +232,42 @@ class CollectTests(TrackerPipelineFixture):
         self.serve_default_pages()
         code, out, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual(0, code, err)
-        self.assertEqual(["REPOSITORY example/one pulls=3", "REPOSITORY example/two pulls=1", f"INPUT {self.input}"],
-                         out.splitlines())
+        self.assertEqual(
+            ["REPOSITORY example/one pulls=3", "REPOSITORY example/two pulls=1", f"INPUT {self.input}"],
+            out.splitlines(),
+        )
         graphql = [call for call in self.github.calls if call[:3] == ["gh", "api", "graphql"]]
         self.assertEqual(3, len(graphql), "one call per page, no per-pull calls")
         self.assertIn("after=cursor-1", graphql[1])
         self.assertIn("login=reviewer", graphql[0])
         self.assertNotIn(["gh", "api", "user"], self.github.calls, "a configured login needs no lookup")
-        items = {f"{item['repository']}#{item['number']}": item
-                 for item in json.loads(self.input.read_text(encoding="utf-8"))}
-        self.assertEqual({
-            "repository": "example/one", "number": 1, "url": "https://github.com/example/one/pull/1",
-            "title": "Change 1", "author": "ada", "author_name": "Ada Lovelace", "requested_reviewers": ["reviewer"],
-            "participants": ["ada"], "draft": False, "base_ref": "main", "head_sha": HEAD,
-            "updated_at": "2026-03-01T00:00:00Z", "review_decision": None, "user_review_state": None,
-            "user_review_sha": None, "reviewed_head_sha": None, "reviewed_incomplete": False, "ai_review": None,
-        }, items["example/one#1"])
+        items = {
+            f"{item['repository']}#{item['number']}": item
+            for item in json.loads(self.input.read_text(encoding="utf-8"))
+        }
+        self.assertEqual(
+            {
+                "repository": "example/one",
+                "number": 1,
+                "url": "https://github.com/example/one/pull/1",
+                "title": "Change 1",
+                "author": "ada",
+                "author_name": "Ada Lovelace",
+                "requested_reviewers": ["reviewer"],
+                "participants": ["ada"],
+                "draft": False,
+                "base_ref": "main",
+                "head_sha": HEAD,
+                "updated_at": "2026-03-01T00:00:00Z",
+                "review_decision": None,
+                "user_review_state": None,
+                "user_review_sha": None,
+                "reviewed_head_sha": None,
+                "reviewed_incomplete": False,
+                "ai_review": None,
+            },
+            items["example/one#1"],
+        )
         second = items["example/one#2"]
         self.assertIsNone(second["author_name"], "a blank display name is unset")
         self.assertEqual(("CHANGES_REQUESTED", USER_REVIEWED), (second["user_review_state"], second["user_review_sha"]))
@@ -285,9 +374,18 @@ class ExitContractTests(TrackerPipelineFixture):
 
     def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "tracker_pipeline.py"), "--config", str(self.config_path),
-             *arguments],
-            capture_output=True, encoding="utf-8", errors="replace", check=False,
+            [
+                sys.executable,
+                "-B",
+                str(SCRIPT_DIRECTORY / "tracker_pipeline.py"),
+                "--config",
+                str(self.config_path),
+                *arguments,
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
         )
 
     def test_a_runtime_failure_exits_1_with_failed_on_stdout(self) -> None:
@@ -317,8 +415,15 @@ class UpdateTests(TrackerPipelineFixture):
         self.configure(overrides={"example/two#5": "on hold"}, author_names={"BOB": "Robert Tables"})
         code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
         self.assertEqual(0, code, err)
-        self.assertEqual([f"UPDATED {self.dashboard} rows=4", "CANDIDATE missing example/one#1",
-                          "CANDIDATE stale example/one#2", "CANDIDATE missing example/one#3"], out.splitlines())
+        self.assertEqual(
+            [
+                f"UPDATED {self.dashboard} rows=4",
+                "CANDIDATE missing example/one#1",
+                "CANDIDATE stale example/one#2",
+                "CANDIDATE missing example/one#3",
+            ],
+            out.splitlines(),
+        )
         content = self.dashboard.read_text(encoding="utf-8")
         self.assertTrue(content.startswith(f"# Mine\n{START}\n"))
         self.assertTrue(content.endswith(f"{END}\nNotes stay.\n"))
@@ -333,8 +438,12 @@ class UpdateTests(TrackerPipelineFixture):
 
     def collect_fixture(self, reviews: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
         """Collect and render example/one#12 of the three-version fixture with the configured user's reviews."""
-        node = pull_node(12, url="https://github.com/example/one/pull/12", headRefOid=review_fixture.HEADS[3],
-                         reviews={"nodes": reviews})
+        node = pull_node(
+            12,
+            url="https://github.com/example/one/pull/12",
+            headRefOid=review_fixture.HEADS[3],
+            reviews={"nodes": reviews},
+        )
         self.github.pages["example/one"] = [page([node])]
         self.github.pages["example/two"] = [page([])]
         code, _, err = self.run_main("collect", "--output", str(self.input))
@@ -352,12 +461,20 @@ class UpdateTests(TrackerPipelineFixture):
         review_fixture.commit_fixture(self.archive)
         heads = review_fixture.HEADS
         between = "e" * 40  # a commit after version 2's head and before version 3's
-        self.github.comparisons = {(heads[3], between): "behind", (heads[2], between): "ahead",
-                                   (heads[3], OLD_HEAD): "behind", (heads[2], OLD_HEAD): "behind",
-                                   (heads[1], OLD_HEAD): "behind"}
+        self.github.comparisons = {
+            (heads[3], between): "behind",
+            (heads[2], between): "ahead",
+            (heads[3], OLD_HEAD): "behind",
+            (heads[2], OLD_HEAD): "behind",
+            (heads[1], OLD_HEAD): "behind",
+        }
         for sha, since, cell, compared in (
-            (heads[1], {"version": 1, "new": 1, "addressed": 1}, "1M 1S open · 1 new, 1 addressed since your review",
-             0),
+            (
+                heads[1],
+                {"version": 1, "new": 1, "addressed": 1},
+                "1M 1S open · 1 new, 1 addressed since your review",
+                0,
+            ),
             (between, {"version": 2, "new": 1, "addressed": 0}, "1M 1S open · 1 new since your review", 2),
             (OLD_HEAD, {"version": 0, "new": 2, "addressed": 0}, "1M 1S open · 2 new since your review", 3),
             (heads[3], {"version": 3, "new": 0, "addressed": 0}, "1M 1S open · nothing new since your review", 0),
@@ -368,16 +485,30 @@ class UpdateTests(TrackerPipelineFixture):
                 self.github.calls.clear()
                 reviews = [{"state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
                 item, row = self.collect_fixture(reviews)
-                self.assertEqual({"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1}, "addressed": 1,
-                                  "since": 1, "version": 3}, item["ai_review"]["ledger"])
+                self.assertEqual(
+                    {
+                        "open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1},
+                        "addressed": 1,
+                        "since": 1,
+                        "version": 3,
+                    },
+                    item["ai_review"]["ledger"],
+                )
                 self.assertEqual((since, 0), (item["ai_review"]["since_review"], item["ai_review"]["flagged"]))
                 self.assertIn(f"| Changes Requested | {cell} | [AI Review]", row)
                 self.assertEqual(compared, len(self.compares()), "an exact head match needs no comparison")
 
     def test_the_findings_cell_counts_flagged_open_findings(self) -> None:
         review_fixture.commit_fixture(self.archive)
-        add_flag(self.flags_path, category="noise", body="Handled by the caller.", repository="example/one",
-                 pull_number=12, review_version=3, finding_id="F001")
+        add_flag(
+            self.flags_path,
+            category="noise",
+            body="Handled by the caller.",
+            repository="example/one",
+            pull_number=12,
+            review_version=3,
+            finding_id="F001",
+        )
         item, row = self.collect_fixture([])
         self.assertEqual(1, item["ai_review"]["flagged"])
         self.assertIn("| 1M 1S open (1 flagged) · v1–v3 |", row)
@@ -402,7 +533,6 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertTrue(out.startswith("FAILED Dashboard must contain exactly one marker pair"), out)
         self.assertEqual(original, self.dashboard.read_text(encoding="utf-8"))
 
-
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; UPDATED names the configured dashboard, whatever its path.
         self.dashboard = self.root / "dash board ← ✓.md"
@@ -411,9 +541,19 @@ class UpdateTests(TrackerPipelineFixture):
         self.input.parent.mkdir(parents=True)
         self.input.write_text("[]", encoding="utf-8")
         result = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "tracker_pipeline.py"), "--config", str(self.config_path),
-             "update", "--input", str(self.input)],
-            capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"}, check=False,
+            [
+                sys.executable,
+                "-B",
+                str(SCRIPT_DIRECTORY / "tracker_pipeline.py"),
+                "--config",
+                str(self.config_path),
+                "update",
+                "--input",
+                str(self.input),
+            ],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual([f"UPDATED {self.dashboard} rows=0"], result.stdout.decode("utf-8").splitlines())

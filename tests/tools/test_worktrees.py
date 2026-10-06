@@ -30,21 +30,31 @@ def isolated_environment(root: Path) -> dict[str, str]:
         **os.environ,
         "GIT_CONFIG_GLOBAL": str(empty),
         "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": "Test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
-        "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.invalid",
+        "GIT_AUTHOR_NAME": "Test",
+        "GIT_AUTHOR_EMAIL": "test@example.invalid",
+        "GIT_COMMITTER_NAME": "Test",
+        "GIT_COMMITTER_EMAIL": "test@example.invalid",
     }
 
 
 def run_git(cwd: Path, environment: dict[str, str], *arguments: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(cwd), *arguments], capture_output=True, text=True, env=environment,
-                          check=False)
+    return subprocess.run(
+        ["git", "-C", str(cwd), *arguments], capture_output=True, text=True, env=environment, check=False
+    )
 
 
-def run_worktrees(arguments: list[str], cwd: Path, environment: dict[str, str],
-                  stdin: str = "") -> subprocess.CompletedProcess[str]:
+def run_worktrees(
+    arguments: list[str], cwd: Path, environment: dict[str, str], stdin: str = ""
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-B", str(SCRIPT), *arguments],
-        cwd=cwd, input=stdin, capture_output=True, text=True, encoding="utf-8", env=environment, check=False,
+        cwd=cwd,
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=environment,
+        check=False,
     )
 
 
@@ -104,7 +114,8 @@ class WorktreesTestCase(unittest.TestCase):
         if value is None:
             subprocess.run(
                 ["git", "-C", str(self.hub), "config", "--unset", "coding-agent-skills.hubGuard"],
-                env=self.environment, check=False,
+                env=self.environment,
+                check=False,
             )
         else:
             self.git(self.hub, "config", "coding-agent-skills.hubGuard", value)
@@ -150,7 +161,8 @@ class FixtureTemplateTests(unittest.TestCase):
 
             return {
                 "worktrees": output(hub, "worktree", "list", "--porcelain").replace(
-                    output(hub, "rev-parse", "HEAD").strip(), "<head>"),
+                    output(hub, "rev-parse", "HEAD").strip(), "<head>"
+                ),
                 "refs": output(hub, "for-each-ref", "--format=%(refname) %(tree) %(subject)"),
                 "config": output(hub, "config", "--local", "--list"),
                 "tree common directory": output(tree, "rev-parse", "--path-format=absolute", "--git-common-dir"),
@@ -188,8 +200,11 @@ class FileGuardTests(WorktreesTestCase):
 
     def test_edits_in_a_nested_worktree_outside_the_repository_or_to_ignored_hub_files_are_allowed(self) -> None:
         for path in (
-            self.tree / "README.md", self.tree / "new.txt", self.worktrees / "not-a-worktree" / "file.txt",
-            self.root / "elsewhere.txt", self.hub / "local.json",
+            self.tree / "README.md",
+            self.tree / "new.txt",
+            self.worktrees / "not-a-worktree" / "file.txt",
+            self.root / "elsewhere.txt",
+            self.hub / "local.json",
         ):
             with self.subTest(path=str(path)):
                 self.assertIsNone(self.edit(path))
@@ -270,7 +285,9 @@ class CommandGuardTests(WorktreesTestCase):
         outside = self.root / "not-a-repository"
         outside.mkdir()
         self.assertIsNone(self.bash("git commit -m x", outside))
-        self.assertIsNone(self.decision({"tool_name": "Read", "tool_input": {"file_path": str(self.hub / "README.md")}}))
+        self.assertIsNone(
+            self.decision({"tool_name": "Read", "tool_input": {"file_path": str(self.hub / "README.md")}})
+        )
         result = self.run_script(["guard"], cwd=self.root, stdin="{not json")
         self.assertEqual(0, result.returncode)
         self.assertEqual("", result.stdout)
@@ -308,9 +325,14 @@ class CommandReadingTests(WorktreesTestCase):
         )
         self.assertEqual(
             [
-                *self.at(self.tree, "commit"), *self.at(self.hub, "add"), *self.at(self.tree, "rm"),
-                *self.at(self.hub, "mv"), *self.at(self.worktrees, "restore"), *self.at(Path.home(), "reset"),
-                *self.at(Path.home() / "sub", "revert"), *self.at(None, "clean"),
+                *self.at(self.tree, "commit"),
+                *self.at(self.hub, "add"),
+                *self.at(self.tree, "rm"),
+                *self.at(self.hub, "mv"),
+                *self.at(self.worktrees, "restore"),
+                *self.at(Path.home(), "reset"),
+                *self.at(Path.home() / "sub", "revert"),
+                *self.at(None, "clean"),
             ],
             self.read(command),
         )
@@ -322,8 +344,11 @@ class CommandReadingTests(WorktreesTestCase):
         )
         self.assertEqual(
             [
-                *self.at(self.tree, "commit"), *self.at(self.hub, "add"), *self.at(self.tree, "rm"),
-                *self.at(self.hub, "mv", "am"), *self.at(None, "reset"),
+                *self.at(self.tree, "commit"),
+                *self.at(self.hub, "add"),
+                *self.at(self.tree, "rm"),
+                *self.at(self.hub, "mv", "am"),
+                *self.at(None, "reset"),
             ],
             self.read(command),
         )
@@ -333,13 +358,16 @@ class CommandReadingTests(WorktreesTestCase):
         environment.pop("UNSET_TASK_TREE", None)
         command = (
             f"git -C '{self.tree}' commit; git \"--work-tree={self.tree}\" add .; git --work-tree '{self.tree}' rm x;"
-            " git --git-dir=.git mv a b; git -C $env:TASK_TREE reset; git -C \"$env:TASK_TREE\\..\" restore x;"
+            ' git --git-dir=.git mv a b; git -C $env:TASK_TREE reset; git -C "$env:TASK_TREE\\.." restore x;'
             " git -C \"$env:UNSET_TASK_TREE\" revert x; $env:GIT_WORK_TREE = 'elsewhere'; git clean -fd"
         )
         self.assertEqual(
             [
-                *self.at(self.tree, "commit", "add", "rm"), *self.at(None, "mv"), *self.at(self.tree, "reset"),
-                *self.at(self.worktrees, "restore"), *self.at(None, "revert", "clean"),
+                *self.at(self.tree, "commit", "add", "rm"),
+                *self.at(None, "mv"),
+                *self.at(self.tree, "reset"),
+                *self.at(self.worktrees, "restore"),
+                *self.at(None, "revert", "clean"),
             ],
             self.read(command, environment=environment),
         )
@@ -347,7 +375,7 @@ class CommandReadingTests(WorktreesTestCase):
     def test_quoting_comments_and_every_separator_are_read_as_powershell_reads_them(self) -> None:
         command = (
             'git commit -m @"\nIt\'s a "quoted" message; cd elsewhere\n"@\n'
-            "git add `\"odd name`\" || git rm x | Out-Null && git mv a b # git reset in a comment\n"
+            'git add `"odd name`" || git rm x | Out-Null && git mv a b # git reset in a comment\n'
             "& 'C:\\Program Files\\Git\\cmd\\git.exe' stash"
         )
         self.assertEqual(self.at(self.hub, "commit", "add", "rm", "mv", "stash"), self.read(command))
@@ -362,8 +390,12 @@ class CommandReadingTests(WorktreesTestCase):
         )
         self.assertEqual(
             [
-                *self.at(self.tree, "add"), *self.at(self.hub, "commit"), *self.at(self.tree, "rm"),
-                *self.at(self.hub, "mv"), *self.at(self.tree, "reset"), *self.at(self.hub, "clean"),
+                *self.at(self.tree, "add"),
+                *self.at(self.hub, "commit"),
+                *self.at(self.tree, "rm"),
+                *self.at(self.hub, "mv"),
+                *self.at(self.tree, "reset"),
+                *self.at(self.hub, "clean"),
                 *self.at(self.tree, "restore"),
             ],
             self.read(command),
@@ -372,13 +404,17 @@ class CommandReadingTests(WorktreesTestCase):
 
     def test_bash_follows_pwsh_and_git_work_tree_settings(self) -> None:
         command = (
-            f"pwsh -Command \"Set-Location '{self.tree}'; git switch x\"; git --work-tree=\"{self.tree}\" add .;"
+            f'pwsh -Command "Set-Location \'{self.tree}\'; git switch x"; git --work-tree="{self.tree}" add .;'
             f' GIT_WORK_TREE="{self.tree}" git rm x; GIT_DIR=.git git commit;'
             f' bash -c "cd \\"{self.tree}\\" && git mv a b"; git reset'
         )
         self.assertEqual(
-            [*self.at(self.tree, "switch", "add", "rm"), *self.at(None, "commit"), *self.at(self.tree, "mv"),
-             *self.at(self.hub, "reset")],
+            [
+                *self.at(self.tree, "switch", "add", "rm"),
+                *self.at(None, "commit"),
+                *self.at(self.tree, "mv"),
+                *self.at(self.hub, "reset"),
+            ],
             self.read(command, tool="Bash"),
         )
 
@@ -428,7 +464,9 @@ class NewWorktreeTests(WorktreesTestCase):
         self.assertEqual(self.git(self.hub, "rev-parse", "main"), self.git(self.tree, "rev-parse", "HEAD"))
         upstream = subprocess.run(
             ["git", "-C", str(self.tree), "rev-parse", "--abbrev-ref", "@{upstream}"],
-            capture_output=True, env=self.environment, check=False,
+            capture_output=True,
+            env=self.environment,
+            check=False,
         )
         self.assertNotEqual(0, upstream.returncode)
 

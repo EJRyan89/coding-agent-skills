@@ -24,7 +24,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
-SCRIPT_DIRECTORY =Path(__file__).resolve().parent
+SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REFERENCES = SCRIPT_DIRECTORY.parent / "references"
 PIPELINE = SCRIPT_DIRECTORY / "review_pipeline.py"
 RUN_PREFIX = "code-review-run-"
@@ -46,7 +46,7 @@ def _path(value: Any, cwd: Path) -> Path:
     if not isinstance(value, str) or not value.strip():
         raise Denied("give an absolute path inside the review run")
     match = SHELL_DRIVE.match(value)
-    text = f"{match.group(1)}:/{value[match.end():]}" if match else value
+    text = f"{match.group(1)}:/{value[match.end() :]}" if match else value
     path = Path(text)
     if not path.is_absolute():
         path = cwd / path
@@ -77,7 +77,12 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
         raise Denied(f"{tool} may only look inside the review run folder; {path} is outside it")
     if tool == "Glob":
         pattern = tool_input.get("pattern")
-        if not isinstance(pattern, str) or ".." in pattern or PureWindowsPath(pattern).anchor or pattern.startswith("/"):
+        if (
+            not isinstance(pattern, str)
+            or ".." in pattern
+            or PureWindowsPath(pattern).anchor
+            or pattern.startswith("/")
+        ):
             raise Denied("Glob patterns must be relative to the run folder path, without '..'")
 
 
@@ -85,8 +90,7 @@ def _check_write(tool_input: dict[str, Any], cwd: Path) -> None:
     path = _path(tool_input.get("file_path"), cwd)
     run = run_root(path)
     allowed = run is not None and (
-        _same(path, run / "result.json")
-        or (_same(path.parent, run / "work") and path.name.endswith(".result.json"))
+        _same(path, run / "result.json") or (_same(path.parent, run / "work") and path.name.endswith(".result.json"))
     )
     if not allowed:
         raise Denied(f"write only the result file the prompt names; {path} is not one")
@@ -130,13 +134,17 @@ def main(stream: str) -> int:
     except Exception as exc:  # fail closed: an unevaluated call could read the wrong code
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            }
-        }))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason,
+                    }
+                }
+            )
+        )
     return 0
 
 

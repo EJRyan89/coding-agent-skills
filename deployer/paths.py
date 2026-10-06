@@ -75,8 +75,14 @@ class Paths:
     @property
     def managed_roots(self) -> tuple[Path, ...]:
         """Every directory the deployer reads recovery state from or writes into, beneath HOME."""
-        return (self.dest_dir, self.adapter_dest_dir, self.agent_dest_dir, self.deployer_dir, self.config_dir,
-                self.staging_root)
+        return (
+            self.dest_dir,
+            self.adapter_dest_dir,
+            self.agent_dest_dir,
+            self.deployer_dir,
+            self.config_dir,
+            self.staging_root,
+        )
 
 
 CANARY_MARKER = ".deploy-canary-home"

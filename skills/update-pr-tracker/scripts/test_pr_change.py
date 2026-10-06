@@ -73,7 +73,9 @@ class ChangeDetectorTests(unittest.TestCase):
         self.assertEqual(UNCHANGED, detect(before, after))
 
     def test_same_edit_in_a_different_method_is_changed(self) -> None:
-        self.assertEqual(CHANGED, detect(comparison(changed("src/app.py", "blob1")), comparison(changed("src/app.py", "blob2"))))
+        self.assertEqual(
+            CHANGED, detect(comparison(changed("src/app.py", "blob1")), comparison(changed("src/app.py", "blob2")))
+        )
 
     def test_mode_only_change_is_changed(self) -> None:
         files = comparison(changed("tool.sh", "blob1"))
@@ -138,7 +140,11 @@ class ChangeDetectorTests(unittest.TestCase):
         for kind in ("prerequisite", "authentication", "rate_limit"):
             with self.subTest(kind=kind):
                 with self.assertRaises(GitHubError):
-                    detect(GitHubError("stop", kind=kind), comparison(), {REVIEWED: tree(comparison()), HEAD: tree(comparison())})
+                    detect(
+                        GitHubError("stop", kind=kind),
+                        comparison(),
+                        {REVIEWED: tree(comparison()), HEAD: tree(comparison())},
+                    )
 
     def test_requests_are_url_quoted_and_cached(self) -> None:
         client = FakeClient({REVIEWED: comparison(changed("a.py", "1")), HEAD: comparison(changed("a.py", "2"))})

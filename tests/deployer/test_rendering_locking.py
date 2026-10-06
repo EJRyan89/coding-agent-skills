@@ -130,16 +130,18 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertIn(f'"{forward(repository)}"', self.skill_text("update-coding-agent-skills"))
         self.assertTrue((self.skills_dir / "runtime-compatibility.md").is_file())
         # The code-review bundle pulls in code-review-core, which ships the reviewer subagent.
-        self.assertEqual((REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes(),
-                         (self.claude_agents_dir / "code-review-reviewer.md").read_bytes())
+        self.assertEqual(
+            (REPOSITORY_ROOT / "agents" / "code-review-reviewer.md").read_bytes(),
+            (self.claude_agents_dir / "code-review-reviewer.md").read_bytes(),
+        )
         self.assertEqual(["code-review-reviewer.md"], sorted(self.owned("agents", source_id)))
-        self.assertIn(f"read and apply `{forward(self.home)}/.claude/skills/runtime-compatibility.md`",
-                      (self.agents_dir / "review-prs" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn(
+            f"read and apply `{forward(self.home)}/.claude/skills/runtime-compatibility.md`",
+            (self.agents_dir / "review-prs" / "SKILL.md").read_text(encoding="utf-8"),
+        )
         self.assertNotIn("runtime-compatibility", self.skill_text("review-prs"), "Claude runs skip the shared read")
         owned = self.owned("skills", source_id)
-        self.assertEqual(
-            sorted(path.stem for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")), sorted(owned)
-        )
+        self.assertEqual(sorted(path.stem for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")), sorted(owned))
 
     def test_shellcheck_failure_in_script_blocks_deployment(self) -> None:
         self.make_source_json()
@@ -210,7 +212,9 @@ class RenderedExecutableTests(DeployerTestCase):
 
     def test_missing_shellcheck_blocks_rendered_bash(self) -> None:
         self.make_source_json()
-        self.make_skill("alpha", "Missing ShellCheck fixture\n\n```bash\nprintf '%s\\n' \"{{REPOS_ROOT}}\"\n```", ["REPOS_ROOT"])
+        self.make_skill(
+            "alpha", "Missing ShellCheck fixture\n\n```bash\nprintf '%s\\n' \"{{REPOS_ROOT}}\"\n```", ["REPOS_ROOT"]
+        )
         self.make_config()
         real = platform_support.find_executable
         with mock.patch(
@@ -281,7 +285,7 @@ class RenderedExecutableTests(DeployerTestCase):
         for directory in ("skills", "deployer/config"):
             (self.home / ".claude" / directory).mkdir(parents=True)
         self.make_source_json()
-        self.make_skill("alpha", "Shell fixture\n\n```bash\ncd \"{{HOME}}\" || exit\n```", ["HOME"])
+        self.make_skill("alpha", 'Shell fixture\n\n```bash\ncd "{{HOME}}" || exit\n```', ["HOME"])
         self.make_config()
         self.deploy_fails("--all", pattern="HOME \\(the home folder\\) contains disallowed character '''")
         self.assertFalse((self.skills_dir / "alpha").exists())
@@ -323,7 +327,9 @@ class LockTests(DeployerTestCase):
     def test_matching_process_identity_blocks_contention(self) -> None:
         self.fixture()
         self.write_lock({"pid": 4242, "token": "active-token", "start_time": 7})
-        self.deploy_fails("--all", pattern="Another deployment is running \\(PID 4242\\)", probe=probe_returning(True, 7))
+        self.deploy_fails(
+            "--all", pattern="Another deployment is running \\(PID 4242\\)", probe=probe_returning(True, 7)
+        )
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertTrue((self.home / ".claude" / "deployer" / ".deploy.lock.d" / "info.json").is_file())
 
@@ -331,7 +337,7 @@ class LockTests(DeployerTestCase):
         self.fixture()
         self.write_lock({"pid": 4242, "token": "x", "start_time": None})
         self.deploy_fails("--all", pattern="process identity cannot be verified", probe=probe_returning(True, 7))
-        info =self.home / ".claude" / "deployer" / ".deploy.lock.d" / "info.json"
+        info = self.home / ".claude" / "deployer" / ".deploy.lock.d" / "info.json"
         self.write(info, json.dumps({"pid": 4242, "token": "x", "start_time": 7}))
         self.deploy_fails("--all", pattern="start time cannot be read", probe=probe_returning(True, None))
 
@@ -404,7 +410,9 @@ class LockTests(DeployerTestCase):
             real_make_directory(path)
 
         with mock.patch("deployer.fsops.make_directory", side_effect=contended):
-            self.deploy_fails("--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None))
+            self.deploy_fails(
+                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+            )
         self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
         self.assertTrue(lock_dir.is_dir())
 
@@ -472,9 +480,7 @@ class DryRunTests(DeployerTestCase):
         self.make_shared_asset("shared.md", "# Revised shared asset")
         result = self.deploy_ok("--all", "--dry-run")
         groups = self.report_groups(result.output, "DRY RUN")
-        self.assertEqual(
-            {"UPDATE": ["beta"], "EXISTS": ["shared.md (shared asset)"], "UNCHANGED": ["alpha"]}, groups
-        )
+        self.assertEqual({"UPDATE": ["beta"], "EXISTS": ["shared.md (shared asset)"], "UNCHANGED": ["alpha"]}, groups)
 
     def test_dry_run_groups_actions_with_attention_first_and_sorts_each_group(self) -> None:
         self.make_source_json()
@@ -515,14 +521,7 @@ class DryRunTests(DeployerTestCase):
         self.make_config()
         result = self.deploy_ok("--all")
         self.assertIn(
-            "=== DEPLOYED ===\n"
-            "\n"
-            "INSTALLED (3):\n"
-            "  alpha\n"
-            "  beta\n"
-            "  zeta\n"
-            "\n"
-            "Run ID: ",
+            "=== DEPLOYED ===\n\nINSTALLED (3):\n  alpha\n  beta\n  zeta\n\nRun ID: ",
             result.output,
         )
 

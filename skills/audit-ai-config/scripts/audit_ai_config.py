@@ -47,11 +47,19 @@ OWNERSHIP_MARKER = "AUTO-GENERATED from CLAUDE.md"
 # Canonical vocabulary of the generated manifest (references/generated-layout.md).
 VALID_RUNTIMES: set[str] = {"claude", "codex"}
 VALID_SURFACES: set[str] = {
-    "copilot_cli", "copilot_app", "vscode", "jetbrains",
-    "cloud_agent", "code_review",
+    "copilot_cli",
+    "copilot_app",
+    "vscode",
+    "jetbrains",
+    "cloud_agent",
+    "code_review",
 }
 VALID_MCP_TARGETS: set[str] = {
-    "claude", "codex", "copilot_local", "vscode", "copilot_repository",
+    "claude",
+    "codex",
+    "copilot_local",
+    "vscode",
+    "copilot_repository",
 }
 
 # The transport table in references/generated-layout.md; test_audit_ai_config.py pins both.
@@ -108,6 +116,7 @@ class AuditResult:
 # Utilities
 # ---------------------------------------------------------------------------
 
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
 
@@ -158,6 +167,7 @@ def validate_manifest_path(path_str: str) -> str | None:
     if ".." in posix.parts:
         return f"path traversal not allowed: {path_str}"
     import fnmatch
+
     if not any(fnmatch.fnmatch(path_str, pat) for pat in MANIFEST_ALLOWED_PATHS):
         return f"path not in manifest allowlist: {path_str}"
     if path_str.startswith(".agents/skills/"):
@@ -199,40 +209,43 @@ def validate_manifest_vocabulary(manifest: dict[str, Any]) -> list[Finding]:
     if isinstance(runtimes, list):
         for r in runtimes:
             if isinstance(r, str) and r not in VALID_RUNTIMES:
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="vocabulary",
-                    path=".github/ai-config-manifest.json",
-                    message=f"Unknown runtime in manifest: '{r}'",
-                ))
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="vocabulary",
+                        path=".github/ai-config-manifest.json",
+                        message=f"Unknown runtime in manifest: '{r}'",
+                    )
+                )
     surfaces = manifest.get("surfaces", [])
     if isinstance(surfaces, list):
         for s in surfaces:
             if isinstance(s, str) and s not in VALID_SURFACES:
-                findings.append(Finding(
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="vocabulary",
+                        path=".github/ai-config-manifest.json",
+                        message=f"Unknown surface in manifest: '{s}'",
+                    )
+                )
+    for t in manifest_mcp_targets(manifest):
+        if isinstance(t, str) and t not in VALID_MCP_TARGETS:
+            findings.append(
+                Finding(
                     severity="ERROR",
                     check="vocabulary",
                     path=".github/ai-config-manifest.json",
-                    message=f"Unknown surface in manifest: '{s}'",
-                ))
-    for t in manifest_mcp_targets(manifest):
-        if isinstance(t, str) and t not in VALID_MCP_TARGETS:
-            findings.append(Finding(
-                severity="ERROR",
-                check="vocabulary",
-                path=".github/ai-config-manifest.json",
-                message=f"Unknown MCP target in manifest: '{t}'",
-            ))
+                    message=f"Unknown MCP target in manifest: '{t}'",
+                )
+            )
     return findings
 
 
 def is_redirecting_agents_md(content: str) -> bool:
     """Check if AGENTS.md is an adapter that redirects to CLAUDE.md."""
     lower = content.lower()
-    return "claude.md" in lower and (
-        "read and follow" in lower
-        or "authoritative source" in lower
-    )
+    return "claude.md" in lower and ("read and follow" in lower or "authoritative source" in lower)
 
 
 # ---------------------------------------------------------------------------
@@ -262,12 +275,14 @@ def check_inventory(root: Path) -> list[Finding]:
     for rel_path in INVENTORY_FILES:
         full = root / rel_path
         if full.is_file():
-            findings.append(Finding(
-                severity="INFO",
-                check="inventory",
-                path=rel_path,
-                message=f"Found {rel_path}",
-            ))
+            findings.append(
+                Finding(
+                    severity="INFO",
+                    check="inventory",
+                    path=rel_path,
+                    message=f"Found {rel_path}",
+                )
+            )
 
     # Recursive scans
     for name in RECURSIVE_INVENTORY_NAMES:
@@ -275,12 +290,14 @@ def check_inventory(root: Path) -> list[Finding]:
             if ".git" in found.parts:
                 continue
             rel = found.relative_to(root).as_posix()
-            findings.append(Finding(
-                severity="INFO",
-                check="inventory",
-                path=rel,
-                message=f"Found {rel}",
-            ))
+            findings.append(
+                Finding(
+                    severity="INFO",
+                    check="inventory",
+                    path=rel,
+                    message=f"Found {rel}",
+                )
+            )
 
     # Skills directories
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
@@ -288,44 +305,54 @@ def check_inventory(root: Path) -> list[Finding]:
         if d.is_dir():
             skills = [p.parent.name for p in d.glob("*/SKILL.md")]
             if skills:
-                findings.append(Finding(
-                    severity="INFO",
-                    check="inventory",
-                    path=skill_dir,
-                    message=f"Skills found: {', '.join(sorted(skills))}",
-                ))
+                findings.append(
+                    Finding(
+                        severity="INFO",
+                        check="inventory",
+                        path=skill_dir,
+                        message=f"Skills found: {', '.join(sorted(skills))}",
+                    )
+                )
 
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
         if d.is_dir():
             agents = [p.name for p in d.iterdir() if p.is_file()]
             if agents:
-                findings.append(Finding(
-                    severity="INFO", check="inventory", path=agent_dir,
-                    message=f"Custom agent files found: {', '.join(sorted(agents))}",
-                ))
+                findings.append(
+                    Finding(
+                        severity="INFO",
+                        check="inventory",
+                        path=agent_dir,
+                        message=f"Custom agent files found: {', '.join(sorted(agents))}",
+                    )
+                )
 
     # Path-specific Copilot instructions
     instructions_dir = root / ".github/instructions"
     if instructions_dir.is_dir():
         instr_files = list(instructions_dir.rglob("*.instructions.md"))
         if instr_files:
-            findings.append(Finding(
-                severity="INFO",
-                check="inventory",
-                path=".github/instructions",
-                message=f"{len(instr_files)} path-specific instruction file(s)",
-            ))
+            findings.append(
+                Finding(
+                    severity="INFO",
+                    check="inventory",
+                    path=".github/instructions",
+                    message=f"{len(instr_files)} path-specific instruction file(s)",
+                )
+            )
 
     # Generator scripts
     for candidate in GENERATOR_CANDIDATES:
         if (root / candidate).is_file():
-            findings.append(Finding(
-                severity="INFO",
-                check="inventory",
-                path=candidate,
-                message=f"Generator script found: {candidate}",
-            ))
+            findings.append(
+                Finding(
+                    severity="INFO",
+                    check="inventory",
+                    path=candidate,
+                    message=f"Generator script found: {candidate}",
+                )
+            )
 
     # AI parity workflows
     workflows_dir = root / ".github/workflows"
@@ -336,12 +363,14 @@ def check_inventory(root: Path) -> list[Finding]:
                     wf_content = read_text(wf)
                     if "ai-config" in wf_content.lower() or "ai_config" in wf_content.lower():
                         rel = wf.relative_to(root).as_posix()
-                        findings.append(Finding(
-                            severity="INFO",
-                            check="inventory",
-                            path=rel,
-                            message="AI config parity workflow found",
-                        ))
+                        findings.append(
+                            Finding(
+                                severity="INFO",
+                                check="inventory",
+                                path=rel,
+                                message="AI config parity workflow found",
+                            )
+                        )
                 except (OSError, UnicodeError):
                     pass
 
@@ -351,6 +380,7 @@ def check_inventory(root: Path) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # Copilot skills, agents, projections, and roles
 # ---------------------------------------------------------------------------
+
 
 def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
     """Read simple YAML frontmatter without executing or loading YAML tags."""
@@ -372,13 +402,13 @@ def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
             continue
         match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$", line)
         if not match:
-            findings.append(Finding("ERROR", "copilot-config", rel, offset,
-                                    "Frontmatter must use single-line key: value entries"))
+            findings.append(
+                Finding("ERROR", "copilot-config", rel, offset, "Frontmatter must use single-line key: value entries")
+            )
             continue
         key, value = match.groups()
         if key in values:
-            findings.append(Finding("ERROR", "copilot-config", rel, offset,
-                                    f"Duplicate frontmatter key '{key}'"))
+            findings.append(Finding("ERROR", "copilot-config", rel, offset, f"Duplicate frontmatter key '{key}'"))
         values[key] = value
     return values, findings
 
@@ -398,15 +428,24 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
     if not name:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires name"))
     elif name != directory_name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
-        findings.append(Finding("ERROR", "copilot-skill", rel,
-                                message="Skill name must be lowercase hyphenated and match its directory"))
+        findings.append(
+            Finding(
+                "ERROR", "copilot-skill", rel, message="Skill name must be lowercase hyphenated and match its directory"
+            )
+        )
     if not values.get("description", "").strip():
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires description"))
     if "allowed-tools" in values and not values["allowed-tools"].strip():
         findings.append(Finding("ERROR", "copilot-skill", rel, message="allowed-tools must not be empty"))
     if directory_name in COPILOT_BUILTIN_NAMES:
-        findings.append(Finding("ERROR", "collision", rel,
-                                message=f"Repository skill '{directory_name}' collides with a Copilot built-in agent"))
+        findings.append(
+            Finding(
+                "ERROR",
+                "collision",
+                rel,
+                message=f"Repository skill '{directory_name}' collides with a Copilot built-in agent",
+            )
+        )
     return findings
 
 
@@ -414,12 +453,12 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     rel = path.relative_to(root).as_posix()
     findings: list[Finding] = []
     if not (path.name.endswith(".agent.md") or path.suffix == ".md"):
-        return [Finding("ERROR", "copilot-agent", rel,
-                        message="Custom agent filenames must end in .md or .agent.md")]
+        return [Finding("ERROR", "copilot-agent", rel, message="Custom agent filenames must end in .md or .agent.md")]
     agent_id = _identifier_from_agent_filename(path)
     if not agent_id or not re.fullmatch(r"[A-Za-z0-9._-]+", agent_id):
-        findings.append(Finding("ERROR", "copilot-agent", rel,
-                                message="Custom agent filename contains unsupported characters"))
+        findings.append(
+            Finding("ERROR", "copilot-agent", rel, message="Custom agent filename contains unsupported characters")
+        )
     values, frontmatter_findings = _frontmatter(path)
     for finding in frontmatter_findings:
         finding.path = rel
@@ -428,12 +467,10 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="Agent frontmatter requires description"))
     target = values.get("target")
     if target is not None and target not in {"vscode", "github-copilot"}:
-        findings.append(Finding("ERROR", "copilot-agent", rel,
-                                message="target must be 'vscode' or 'github-copilot'"))
+        findings.append(Finding("ERROR", "copilot-agent", rel, message="target must be 'vscode' or 'github-copilot'"))
     for key in ("include-custom-instructions", "infer", "disable-model-invocation", "user-invocable"):
         if key in values and values[key] not in {"true", "false"}:
-            findings.append(Finding("ERROR", "copilot-agent", rel,
-                                    message=f"{key} must be a boolean"))
+            findings.append(Finding("ERROR", "copilot-agent", rel, message=f"{key} must be a boolean"))
     if "tools" in values:
         raw_tools = values["tools"]
         if raw_tools.startswith("["):
@@ -442,16 +479,24 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
             except json.JSONDecodeError:
                 tools = None
             if not isinstance(tools, list) or not tools or not all(isinstance(tool, str) and tool for tool in tools):
-                findings.append(Finding("ERROR", "copilot-agent", rel,
-                                        message="tools must be a non-empty string list or comma-separated string"))
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        "copilot-agent",
+                        rel,
+                        message="tools must be a non-empty string list or comma-separated string",
+                    )
+                )
         elif not raw_tools.strip():
             findings.append(Finding("ERROR", "copilot-agent", rel, message="tools must not be empty"))
     if "modelPolicy" in values and values["modelPolicy"] not in {"preferred", "required"}:
-        findings.append(Finding("ERROR", "copilot-agent", rel,
-                                message="modelPolicy must be 'preferred' or 'required'"))
+        findings.append(Finding("ERROR", "copilot-agent", rel, message="modelPolicy must be 'preferred' or 'required'"))
     if agent_id.lower() in COPILOT_BUILTIN_NAMES:
-        findings.append(Finding("ERROR", "collision", rel,
-                                message=f"Custom agent '{agent_id}' collides with a Copilot built-in agent"))
+        findings.append(
+            Finding(
+                "ERROR", "collision", rel, message=f"Custom agent '{agent_id}' collides with a Copilot built-in agent"
+            )
+        )
     return findings
 
 
@@ -459,7 +504,8 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
     """Statically validate Copilot-discovered repository skills and agents."""
     findings: list[Finding] = []
     manifest_paths = {
-        artifact.get("path") for artifact in manifest.get("artifacts", [])
+        artifact.get("path")
+        for artifact in manifest.get("artifacts", [])
         if isinstance(artifact, dict) and isinstance(artifact.get("path"), str)
     }
     for skill_dir in (".github/skills", ".claude/skills", ".agents/skills"):
@@ -471,11 +517,23 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             rel = path.relative_to(root).as_posix()
             if skill_dir == ".github/skills" and (has_ownership_marker(read_text(path)) or rel in manifest_paths):
                 if rel not in manifest_paths:
-                    findings.append(Finding("ERROR", "provenance", rel,
-                                            message="Generated Copilot skill projection is not owned by the manifest"))
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            "provenance",
+                            rel,
+                            message="Generated Copilot skill projection is not owned by the manifest",
+                        )
+                    )
                 elif not has_ownership_marker(read_text(path)):
-                    findings.append(Finding("ERROR", "provenance", rel,
-                                            message="Manifest-owned Copilot skill projection lacks an ownership marker"))
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            "provenance",
+                            rel,
+                            message="Manifest-owned Copilot skill projection lacks an ownership marker",
+                        )
+                    )
     for agent_dir in (".github/agents", ".claude/agents"):
         directory = root / agent_dir
         if not directory.is_dir():
@@ -486,11 +544,23 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             content = read_text(path)
             if has_ownership_marker(content) or rel in manifest_paths:
                 if rel not in manifest_paths:
-                    findings.append(Finding("ERROR", "provenance", rel,
-                                            message="Generated Copilot agent projection is not owned by the manifest"))
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            "provenance",
+                            rel,
+                            message="Generated Copilot agent projection is not owned by the manifest",
+                        )
+                    )
                 elif not has_ownership_marker(content):
-                    findings.append(Finding("ERROR", "provenance", rel,
-                                            message="Manifest-owned Copilot agent projection lacks an ownership marker"))
+                    findings.append(
+                        Finding(
+                            "ERROR",
+                            "provenance",
+                            rel,
+                            message="Manifest-owned Copilot agent projection lacks an ownership marker",
+                        )
+                    )
     return findings
 
 
@@ -510,7 +580,11 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
                 continue
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
-                if isinstance(target, ast.Name) and target.id in {"TARGET_RUNTIMES", "TARGET_SURFACES", "TARGET_FEATURES"}:
+                if isinstance(target, ast.Name) and target.id in {
+                    "TARGET_RUNTIMES",
+                    "TARGET_SURFACES",
+                    "TARGET_FEATURES",
+                }:
                     value = node.value
                     try:
                         literal = ast.literal_eval(value)
@@ -521,7 +595,11 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
                     values[target.id] = literal
         if len(values) != 3:
             return None, "generator-scope-incomplete"
-        return {"runtimes": values["TARGET_RUNTIMES"], "surfaces": values["TARGET_SURFACES"], "features": values["TARGET_FEATURES"]}, "independently-derived"
+        return {
+            "runtimes": values["TARGET_RUNTIMES"],
+            "surfaces": values["TARGET_SURFACES"],
+            "features": values["TARGET_FEATURES"],
+        }, "independently-derived"
     return None, "manifest-declared-only"
 
 
@@ -531,41 +609,79 @@ def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, li
     if derived is None and not (root / ".github/ai-config-manifest.json").is_file():
         # With no manifest there is no editable scope that could narrow checks; say what was skipped.
         status = "no-declared-scope"
-        findings.append(Finding("INFO", "scope", message=(
-            "No AI-config manifest or recognized generator declares target runtimes or surfaces; "
-            "target-specific checks were not run")))
+        findings.append(
+            Finding(
+                "INFO",
+                "scope",
+                message=(
+                    "No AI-config manifest or recognized generator declares target runtimes or surfaces; "
+                    "target-specific checks were not run"
+                ),
+            )
+        )
     elif derived is None:
-        findings.append(Finding("WARNING", "scope", message=(
-            "Audit scope is manifest-declared only; editable manifest scope can suppress checks "
-            f"({status})")))
+        findings.append(
+            Finding(
+                "WARNING",
+                "scope",
+                message=(
+                    f"Audit scope is manifest-declared only; editable manifest scope can suppress checks ({status})"
+                ),
+            )
+        )
     else:
         for field, expected in derived.items():
             actual = manifest.get(field)
             if actual != expected:
-                findings.append(Finding("ERROR", "scope", ".github/ai-config-manifest.json",
-                                        message=f"Manifest {field} differs from independently derived generator scope"))
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        "scope",
+                        ".github/ai-config-manifest.json",
+                        message=f"Manifest {field} differs from independently derived generator scope",
+                    )
+                )
         status = "independently-derived"
     roles = manifest.get("runtimeRoles")
     copilot_surfaces = set(manifest.get("surfaces", [])) & set(COPILOT_ROLE_BY_SURFACE)
     if copilot_surfaces and not isinstance(roles, dict):
-        findings.append(Finding("WARNING", "runtime-role", ".github/ai-config-manifest.json",
-                                message="Copilot surfaces lack explicit runtimeRoles declarations"))
+        findings.append(
+            Finding(
+                "WARNING",
+                "runtime-role",
+                ".github/ai-config-manifest.json",
+                message="Copilot surfaces lack explicit runtimeRoles declarations",
+            )
+        )
     elif isinstance(roles, dict):
         for surface in sorted(copilot_surfaces):
             role = roles.get(surface)
             expected_role = COPILOT_ROLE_BY_SURFACE[surface]
             if role not in VALID_COPILOT_ROLES:
-                findings.append(Finding("ERROR", "runtime-role", ".github/ai-config-manifest.json",
-                                        message=f"{surface} has an unknown runtime role"))
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        "runtime-role",
+                        ".github/ai-config-manifest.json",
+                        message=f"{surface} has an unknown runtime role",
+                    )
+                )
             elif role != expected_role:
-                findings.append(Finding("ERROR", "runtime-role", ".github/ai-config-manifest.json",
-                                        message=f"{surface} must declare role '{expected_role}', not '{role}'"))
+                findings.append(
+                    Finding(
+                        "ERROR",
+                        "runtime-role",
+                        ".github/ai-config-manifest.json",
+                        message=f"{surface} must declare role '{expected_role}', not '{role}'",
+                    )
+                )
     return status, findings
 
 
 # ---------------------------------------------------------------------------
 # Check 2: Authority classification
 # ---------------------------------------------------------------------------
+
 
 def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
     """Validate manifest structure recursively. Returns error messages."""
@@ -629,9 +745,7 @@ def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
             else:
                 for j, t in enumerate(targets):
                     if not isinstance(t, str):
-                        errors.append(
-                            f"mcp_servers[{i}].targets[{j}] must be a string"
-                        )
+                        errors.append(f"mcp_servers[{i}].targets[{j}] must be a string")
     roles = data.get("runtimeRoles")
     if roles is not None:
         if not isinstance(roles, dict):
@@ -644,8 +758,7 @@ def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
                     errors.append(f"runtimeRoles.{surface} must be a string")
     copilot_sections = data.get("copilot_sections")
     if copilot_sections is not None and (
-        not isinstance(copilot_sections, list)
-        or not all(isinstance(section, str) for section in copilot_sections)
+        not isinstance(copilot_sections, list) or not all(isinstance(section, str) for section in copilot_sections)
     ):
         errors.append("copilot_sections must be a list of strings when present")
     return errors
@@ -673,8 +786,11 @@ def _judge_manifest(root: Path, data: Any) -> tuple[str | None, dict[str, Any], 
     if not data.get("generatedBy") or not canonical:
         return None, {}, []
     if canonical != "CLAUDE.md":
-        return "alternative", data, [_manifest_authority_finding(
-            "INFO", f"Manifest declares alternative canonical source: {canonical}")]
+        return (
+            "alternative",
+            data,
+            [_manifest_authority_finding("INFO", f"Manifest declares alternative canonical source: {canonical}")],
+        )
     if data["generatedBy"] != "ai_config.py":
         return None, {}, []
     return _validate_claude_manifest(root, data)
@@ -686,8 +802,15 @@ def _validate_claude_manifest(root: Path, data: dict[str, Any]) -> tuple[str | N
     if schema_errors:
         return None, {}, [_manifest_authority_finding("ERROR", f"Manifest schema: {msg}") for msg in schema_errors]
     if not (root / "CLAUDE.md").is_file():
-        return None, {}, [_manifest_authority_finding(
-            "ERROR", "Manifest declares canonical source 'CLAUDE.md' but it does not exist")]
+        return (
+            None,
+            {},
+            [
+                _manifest_authority_finding(
+                    "ERROR", "Manifest declares canonical source 'CLAUDE.md' but it does not exist"
+                )
+            ],
+        )
     if not any(
         isinstance(a, dict) and isinstance(a.get("path"), str) and a["path"] != ".github/ai-config-manifest.json"
         for a in data.get("artifacts", [])
@@ -755,19 +878,24 @@ def classify_authority(root: Path) -> tuple[str, dict[str, Any], list[Finding]]:
     if manifest_signal == "alternative":
         return "alternative", manifest_data, findings
     signals = [manifest_signal] if manifest_signal else []
-    signals.extend(name for name, present in (
-        ("claude_md_exists", _has_claude_md(root)),
-        ("maintaining_section", _has_maintaining_section(root)),
-        ("generator_script", _has_generator_script(root)),
-        ("ci_parity", _has_ci_parity_workflow(root)),
-    ) if present)
+    signals.extend(
+        name
+        for name, present in (
+            ("claude_md_exists", _has_claude_md(root)),
+            ("maintaining_section", _has_maintaining_section(root)),
+            ("generator_script", _has_generator_script(root)),
+            ("ci_parity", _has_ci_parity_workflow(root)),
+        )
+        if present
+    )
     classification = _classify_signals(signals)
-    findings.append(Finding(
-        severity="INFO",
-        check="authority",
-        message=f"Authority classification: {classification} "
-                f"(signals: {', '.join(signals) or 'none'})",
-    ))
+    findings.append(
+        Finding(
+            severity="INFO",
+            check="authority",
+            message=f"Authority classification: {classification} (signals: {', '.join(signals) or 'none'})",
+        )
+    )
     return classification, manifest_data, findings
 
 
@@ -782,10 +910,7 @@ DEFAULT_COPILOT_SECTIONS: list[str] = [
     "CI / Quality Gates",
 ]
 
-COPILOT_BANNER = (
-    "> AUTO-GENERATED from CLAUDE.md. Do not edit directly"
-    " — update CLAUDE.md instead."
-)
+COPILOT_BANNER = "> AUTO-GENERATED from CLAUDE.md. Do not edit directly — update CLAUDE.md instead."
 
 
 def _extract_sections(content: str, section_names: list[str]) -> str:
@@ -811,9 +936,7 @@ def _extract_sections(content: str, section_names: list[str]) -> str:
     return "\n\n".join(parts)
 
 
-def _expected_copilot_sections_body(
-    root: Path, manifest: dict[str, Any]
-) -> str | None:
+def _expected_copilot_sections_body(root: Path, manifest: dict[str, Any]) -> str | None:
     """Return the expected sections body for copilot-instructions parity.
 
     Only the projected sections are compared — the title line is
@@ -827,9 +950,7 @@ def _expected_copilot_sections_body(
     except (OSError, UnicodeError):
         return None
     section_names = manifest.get("copilot_sections", DEFAULT_COPILOT_SECTIONS)
-    if not isinstance(section_names, list) or not all(
-        isinstance(section, str) for section in section_names
-    ):
+    if not isinstance(section_names, list) or not all(isinstance(section, str) for section in section_names):
         return None
     projected = _extract_sections(claude_content, section_names)
     if not projected:
@@ -852,7 +973,8 @@ def _expected_agents_adapter(repo_name: str) -> str:
 
 
 def _expected_skill_shim(
-    root: Path, skill_name: str,
+    root: Path,
+    skill_name: str,
 ) -> str | None:
     """Reconstruct the deterministic shim content for a skill, or None."""
     canonical = root / f".claude/skills/{skill_name}/SKILL.md"
@@ -918,7 +1040,7 @@ def _copilot_content_problem(root: Path, manifest: dict[str, Any], content: str)
         return None
     if COPILOT_BANNER not in content:
         return "Copilot instructions missing banner"
-    after_banner = content[content.index(COPILOT_BANNER) + len(COPILOT_BANNER):].strip()
+    after_banner = content[content.index(COPILOT_BANNER) + len(COPILOT_BANNER) :].strip()
     if after_banner != expected_body.strip():
         return "Copilot instructions sections do not match CLAUDE.md content"
     return None
@@ -976,6 +1098,7 @@ def check_parity(
 # Check 4: Orphan detection
 # ---------------------------------------------------------------------------
 
+
 def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -986,30 +1109,26 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
     if agents_dir.is_dir():
         canonical_names = set()
         if claude_dir.is_dir():
-            canonical_names = {
-                p.parent.name for p in claude_dir.glob("*/SKILL.md")
-            }
+            canonical_names = {p.parent.name for p in claude_dir.glob("*/SKILL.md")}
         for shim in agents_dir.glob("*/SKILL.md"):
             if shim.parent.name not in canonical_names:
                 rel = shim.relative_to(root).as_posix()
                 orphan_shims.add(rel)
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="orphan",
-                    path=rel,
-                    message="Skill shim has no matching canonical skill",
-                ))
+                findings.append(
+                    Finding(
+                        severity="WARNING",
+                        check="orphan",
+                        path=rel,
+                        message="Skill shim has no matching canonical skill",
+                    )
+                )
 
     # Marker-bearing generated files the manifest no longer lists. Copilot skill and
     # agent projections are reported by the provenance check instead.
     if manifest:
-        listed = {
-            artifact.get("path") for artifact in manifest.get("artifacts", [])
-            if isinstance(artifact, dict)
-        }
+        listed = {artifact.get("path") for artifact in manifest.get("artifacts", []) if isinstance(artifact, dict)}
         candidates = [
-            root / pattern for pattern in MANIFEST_ALLOWED_PATHS
-            if "*" not in pattern and not pattern.endswith(".json")
+            root / pattern for pattern in MANIFEST_ALLOWED_PATHS if "*" not in pattern and not pattern.endswith(".json")
         ]
         if agents_dir.is_dir():
             candidates.extend(sorted(agents_dir.glob("*/SKILL.md")))
@@ -1022,12 +1141,14 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
             except (OSError, UnicodeError):
                 continue
             if generated:
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="orphan",
-                    path=rel,
-                    message="Generated file is no longer listed in the manifest",
-                ))
+                findings.append(
+                    Finding(
+                        severity="WARNING",
+                        check="orphan",
+                        path=rel,
+                        message="Generated file is no longer listed in the manifest",
+                    )
+                )
 
     return findings
 
@@ -1035,6 +1156,7 @@ def check_orphans(root: Path, manifest: dict[str, Any] | None = None) -> list[Fi
 # ---------------------------------------------------------------------------
 # Check 5: MCP configuration
 # ---------------------------------------------------------------------------
+
 
 def _parse_mcp_json(
     path: Path,
@@ -1048,44 +1170,68 @@ def _parse_mcp_json(
     try:
         data = json.loads(read_text(path))
     except (json.JSONDecodeError, OSError, UnicodeError) as e:
-        findings.append(Finding(
-            severity="ERROR", check="mcp", path=rel_path,
-            message=f"Could not read or parse: {e}",
-        ))
+        findings.append(
+            Finding(
+                severity="ERROR",
+                check="mcp",
+                path=rel_path,
+                message=f"Could not read or parse: {e}",
+            )
+        )
         return {}, findings
     if not isinstance(data, dict):
-        findings.append(Finding(
-            severity="ERROR", check="mcp", path=rel_path,
-            message="Top-level value must be an object",
-        ))
+        findings.append(
+            Finding(
+                severity="ERROR",
+                check="mcp",
+                path=rel_path,
+                message="Top-level value must be an object",
+            )
+        )
         return {}, findings
     if wrapper_key not in data:
-        findings.append(Finding(
-            severity="WARNING", check="mcp", path=rel_path,
-            message=f"'{wrapper_key}' key not found",
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="mcp",
+                path=rel_path,
+                message=f"'{wrapper_key}' key not found",
+            )
+        )
         return {}, findings
     servers = data[wrapper_key]
     if not isinstance(servers, dict):
-        findings.append(Finding(
-            severity="ERROR", check="mcp", path=rel_path,
-            message=f"'{wrapper_key}' must be an object",
-        ))
+        findings.append(
+            Finding(
+                severity="ERROR",
+                check="mcp",
+                path=rel_path,
+                message=f"'{wrapper_key}' must be an object",
+            )
+        )
         return {}, findings
     for name, entry in servers.items():
         if not isinstance(entry, dict):
-            findings.append(Finding(
-                severity="WARNING", check="mcp", path=rel_path,
-                message=f"Server '{name}': entry must be an object, got {type(entry).__name__}",
-            ))
+            findings.append(
+                Finding(
+                    severity="WARNING",
+                    check="mcp",
+                    path=rel_path,
+                    message=f"Server '{name}': entry must be an object, got {type(entry).__name__}",
+                )
+            )
             continue
         has_command = isinstance(entry.get("command"), str) and entry["command"].strip()
         has_url = isinstance(entry.get("url"), str) and entry["url"].strip()
         if not has_command and not has_url:
-            findings.append(Finding(
-                severity="ERROR", check="mcp", path=rel_path,
-                message=f"Server '{name}': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)",
-            ))
+            findings.append(
+                Finding(
+                    severity="ERROR",
+                    check="mcp",
+                    path=rel_path,
+                    message=f"Server '{name}': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)",
+                )
+            )
     return servers, findings
 
 
@@ -1100,7 +1246,7 @@ def _check_duplicate_mcp_names(
             check="mcp",
             path=".github/mcp.json",
             message=f"Duplicate server name '{dup}' — .mcp.json takes "
-                    "precedence, making .github/mcp.json entry unreachable",
+            "precedence, making .github/mcp.json entry unreachable",
         )
         for dup in sorted(set(mcp_servers) & set(github_mcp_servers))
     ]
@@ -1154,11 +1300,12 @@ def _check_codex_http_env(codex_servers: dict[str, dict[str, Any]]) -> list[Find
             severity="ERROR",
             check="mcp",
             path=".codex/config.toml",
-            message=f"Server '{name}': {key} is STDIO-only, "
-                    "must not be present on HTTP transport",
+            message=f"Server '{name}': {key} is STDIO-only, must not be present on HTTP transport",
         )
-        for name, server in codex_servers.items() if "url" in server
-        for key in ("env", "env_vars") if key in server
+        for name, server in codex_servers.items()
+        if "url" in server
+        for key in ("env", "env_vars")
+        if key in server
     ]
 
 
@@ -1169,21 +1316,23 @@ def _check_manifest_transports(manifest: dict[str, Any]) -> list[Finding]:
         name = server.get("name", "<unnamed>")
         transport = server.get("transport", "")
         if transport not in TRANSPORT_COMPATIBILITY:
-            findings.append(Finding(
-                severity="ERROR",
-                check="mcp",
-                message=f"Server '{name}': unknown transport '{transport}'",
-            ))
+            findings.append(
+                Finding(
+                    severity="ERROR",
+                    check="mcp",
+                    message=f"Server '{name}': unknown transport '{transport}'",
+                )
+            )
             continue
         supported = TRANSPORT_COMPATIBILITY[transport]
         findings.extend(
             Finding(
                 severity="ERROR",
                 check="mcp",
-                message=f"Server '{name}': transport '{transport}' not "
-                        f"supported for target '{target}'",
+                message=f"Server '{name}': transport '{transport}' not supported for target '{target}'",
             )
-            for target in server.get("targets", []) if target not in supported
+            for target in server.get("targets", [])
+            if target not in supported
         )
     return findings
 
@@ -1197,8 +1346,7 @@ def _check_copilot_local_tools(manifest: dict[str, Any], mcp_servers: dict[str, 
             severity="ERROR",
             check="mcp",
             path=".mcp.json",
-            message=f"Server '{name}': copilot_local.tools allowlist "
-                    "cannot be enforced in shared .mcp.json",
+            message=f"Server '{name}': copilot_local.tools allowlist cannot be enforced in shared .mcp.json",
         )
         for name, server in mcp_servers.items()
         if isinstance(server, dict) and server.get("tools") is not None and server.get("tools") != ["*"]
@@ -1209,20 +1357,24 @@ def _copilot_repository_mcp_warnings(manifest: dict[str, Any]) -> list[Finding]:
     """Repository MCP lives in repository settings, which a static audit cannot read."""
     if "copilot_repository" not in manifest_mcp_targets(manifest):
         return []
-    findings = [Finding(
-        severity="WARNING",
-        check="mcp",
-        message="Copilot repository MCP (cloud agent/code review) "
-                "configured via repository settings — cannot validate statically",
-    )]
-    if "code_review" in manifest.get("surfaces", []):
-        findings.append(Finding(
+    findings = [
+        Finding(
             severity="WARNING",
             check="mcp",
-            message="Code-review tool set derived from repository allowlist "
-                    "intersected with readOnlyHint: true — cannot verify "
-                    "tool annotations statically",
-        ))
+            message="Copilot repository MCP (cloud agent/code review) "
+            "configured via repository settings — cannot validate statically",
+        )
+    ]
+    if "code_review" in manifest.get("surfaces", []):
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="mcp",
+                message="Code-review tool set derived from repository allowlist "
+                "intersected with readOnlyHint: true — cannot verify "
+                "tool annotations statically",
+            )
+        )
     return findings
 
 
@@ -1243,20 +1395,19 @@ def _check_mcp_parity(sources: list[tuple[str, dict[str, Any]]]) -> list[Finding
         base_source, base = entries[0]
         for other_source, other in entries[1:]:
             if base != other:
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="mcp",
-                    message=f"Server '{name}': connection fields differ between "
-                            f"{base_source} and {other_source}",
-                ))
+                findings.append(
+                    Finding(
+                        severity="WARNING",
+                        check="mcp",
+                        message=f"Server '{name}': connection fields differ between {base_source} and {other_source}",
+                    )
+                )
     return findings
 
 
 def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     mcp_servers, findings = _parse_mcp_json(root / ".mcp.json", ".mcp.json", "mcpServers")
-    github_mcp_servers, github_findings = _parse_mcp_json(
-        root / ".github/mcp.json", ".github/mcp.json", "mcpServers"
-    )
+    github_mcp_servers, github_findings = _parse_mcp_json(root / ".github/mcp.json", ".github/mcp.json", "mcpServers")
     findings.extend(github_findings)
     findings.extend(_check_duplicate_mcp_names(mcp_servers, github_mcp_servers))
     vscode_servers, vscode_findings = _read_vscode_mcp(root)
@@ -1267,18 +1418,23 @@ def check_mcp(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     findings.extend(_check_manifest_transports(manifest))
     findings.extend(_check_copilot_local_tools(manifest, mcp_servers))
     findings.extend(_copilot_repository_mcp_warnings(manifest))
-    findings.extend(_check_mcp_parity([
-        (".mcp.json", mcp_servers),
-        (".github/mcp.json", github_mcp_servers),
-        (".vscode/mcp.json", vscode_servers),
-        (".codex/config.toml", codex_servers),
-    ]))
+    findings.extend(
+        _check_mcp_parity(
+            [
+                (".mcp.json", mcp_servers),
+                (".github/mcp.json", github_mcp_servers),
+                (".vscode/mcp.json", vscode_servers),
+                (".codex/config.toml", codex_servers),
+            ]
+        )
+    )
     return findings
 
 
 # ---------------------------------------------------------------------------
 # Check 6: Instruction layering
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class InstructionSources:
@@ -1321,30 +1477,34 @@ def _nested_files(root: Path, name: str) -> list[Path]:
 def _layering_codex(sources: InstructionSources) -> list[Finding]:
     """How Codex reaches CLAUDE.md from the repository root."""
     if sources.agents_override and sources.agents_md and sources.agents_redirects:
-        return [Finding(
-            severity="ERROR",
-            check="layering",
-            path="AGENTS.override.md",
-            message="AGENTS.override.md masks the generated AGENTS.md adapter"
-                    " — Codex will not load CLAUDE.md through the adapter",
-        )]
+        return [
+            Finding(
+                severity="ERROR",
+                check="layering",
+                path="AGENTS.override.md",
+                message="AGENTS.override.md masks the generated AGENTS.md adapter"
+                " — Codex will not load CLAUDE.md through the adapter",
+            )
+        ]
     if sources.agents_md and sources.agents_redirects:
         return [Finding(severity="INFO", check="layering", message="Codex: AGENTS.md adapter redirects to CLAUDE.md")]
     if sources.agents_md:
-        return [Finding(
-            severity="WARNING",
-            check="layering",
-            message="Codex: non-redirecting AGENTS.md — "
-                    "CLAUDE.md not loaded through adapter",
-        )]
+        return [
+            Finding(
+                severity="WARNING",
+                check="layering",
+                message="Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter",
+            )
+        ]
     if sources.claude_md:
         return [Finding(severity="INFO", check="layering", message="Codex: no AGENTS.md, CLAUDE.md used via fallback")]
-    return [Finding(
-        severity="ERROR",
-        check="layering",
-        message="Codex: no AGENTS.md or CLAUDE.md — "
-                "no instructions available",
-    )]
+    return [
+        Finding(
+            severity="ERROR",
+            check="layering",
+            message="Codex: no AGENTS.md or CLAUDE.md — no instructions available",
+        )
+    ]
 
 
 def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[Finding]:
@@ -1355,8 +1515,8 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
             check="layering",
             path=override.relative_to(root).as_posix(),
             message="Nested AGENTS.override.md takes precedence over "
-                    "AGENTS.md in this subtree — review for conflicting "
-                    "guidance with the root adapter",
+            "AGENTS.md in this subtree — review for conflicting "
+            "guidance with the root adapter",
         )
         for override in _nested_files(root, "AGENTS.override.md")
     ]
@@ -1368,26 +1528,30 @@ def _nested_codex_instructions(root: Path, sources: InstructionSources) -> list[
                 continue
         except (OSError, UnicodeError):
             continue
-        findings.append(Finding(
-            severity="WARNING",
-            check="layering",
-            path=nested.relative_to(root).as_posix(),
-            message="Nested AGENTS.md adds instructions alongside "
-                    "the root adapter in this subtree — review "
-                    "for conflicting or redundant guidance",
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="layering",
+                path=nested.relative_to(root).as_posix(),
+                message="Nested AGENTS.md adds instructions alongside "
+                "the root adapter in this subtree — review "
+                "for conflicting or redundant guidance",
+            )
+        )
     return findings
 
 
 def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
     """The instruction files Copilot CLI and the Copilot app load."""
     effective = [
-        name for name, present in (
+        name
+        for name, present in (
             ("CLAUDE.md", sources.claude_md),
             ("AGENTS.md", sources.agents_md),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             ("GEMINI.md", sources.gemini_md),
-        ) if present
+        )
+        if present
     ]
     if effective:
         first = Finding(
@@ -1397,59 +1561,68 @@ def _layering_copilot_cli(sources: InstructionSources) -> list[Finding]:
         )
     else:
         first = Finding(severity="ERROR", check="layering", message="Copilot CLI/app: no instruction sources available")
-    return [first, Finding(
-        severity="WARNING",
-        check="layering",
-        message="Copilot CLI/app folder trust status cannot be determined "
-                "statically — .mcp.json silently skipped in untrusted directories",
-    )]
+    return [
+        first,
+        Finding(
+            severity="WARNING",
+            check="layering",
+            message="Copilot CLI/app folder trust status cannot be determined "
+            "statically — .mcp.json silently skipped in untrusted directories",
+        ),
+    ]
 
 
 def _layering_jetbrains(sources: InstructionSources) -> list[Finding]:
     """JetBrains cannot read CLAUDE.md, only Copilot instruction files."""
     if sources.copilot_instructions:
-        return [Finding(severity="INFO", check="layering", message="JetBrains: .github/copilot-instructions.md available")]
+        return [
+            Finding(severity="INFO", check="layering", message="JetBrains: .github/copilot-instructions.md available")
+        ]
     if sources.path_instructions:
-        return [Finding(
-            severity="INFO",
+        return [
+            Finding(
+                severity="INFO",
+                check="layering",
+                message="JetBrains: path-specific instructions only (no copilot-instructions.md)",
+            )
+        ]
+    return [
+        Finding(
+            severity="ERROR",
             check="layering",
-            message="JetBrains: path-specific instructions only "
-                    "(no copilot-instructions.md)",
-        )]
-    return [Finding(
-        severity="ERROR",
-        check="layering",
-        message="JetBrains: no .github/copilot-instructions.md or "
-                "path-specific instructions — JetBrains cannot "
-                "load CLAUDE.md directly",
-    )]
+            message="JetBrains: no .github/copilot-instructions.md or "
+            "path-specific instructions — JetBrains cannot "
+            "load CLAUDE.md directly",
+        )
+    ]
 
 
 def _cloud_agent_selection(sources: InstructionSources) -> Finding:
     """The one root instruction file the cloud agent selects."""
     if sources.agents_md and sources.agents_redirects:
-        return Finding(severity="INFO", check="layering", message="Cloud agent: AGENTS.md adapter redirects to CLAUDE.md")
+        return Finding(
+            severity="INFO", check="layering", message="Cloud agent: AGENTS.md adapter redirects to CLAUDE.md"
+        )
     if sources.agents_md:
         return Finding(
             severity="INFO",
             check="layering",
-            message="Cloud agent: non-redirecting AGENTS.md — "
-                    "CLAUDE.md not loaded directly",
+            message="Cloud agent: non-redirecting AGENTS.md — CLAUDE.md not loaded directly",
         )
     if sources.claude_md:
-        return Finding(severity="INFO", check="layering", message="Cloud agent: no AGENTS.md, CLAUDE.md selected directly")
+        return Finding(
+            severity="INFO", check="layering", message="Cloud agent: no AGENTS.md, CLAUDE.md selected directly"
+        )
     if sources.gemini_md:
         return Finding(
             severity="INFO",
             check="layering",
-            message="Cloud agent: no AGENTS.md or CLAUDE.md, "
-                    "GEMINI.md selected as alternative",
+            message="Cloud agent: no AGENTS.md or CLAUDE.md, GEMINI.md selected as alternative",
         )
     return Finding(
         severity="ERROR",
         check="layering",
-        message="Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md "
-                "— no instructions available",
+        message="Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md — no instructions available",
     )
 
 
@@ -1462,8 +1635,7 @@ def _layering_cloud_agent(root: Path, sources: InstructionSources) -> list[Findi
                 severity="WARNING",
                 check="layering",
                 path=nested.relative_to(root).as_posix(),
-                message="Nested AGENTS.md supersedes root adapter for "
-                        "cloud agent sessions in this subtree",
+                message="Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree",
             )
             for nested in _nested_files(root, "AGENTS.md")
         )
@@ -1474,11 +1646,13 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
     """Code review reads AGENTS.md, copilot-instructions, and path-specific instructions, but never CLAUDE.md or
     GEMINI.md, so a redirect-only AGENTS.md adds nothing."""
     review_sources = [
-        name for name, present in (
+        name
+        for name, present in (
             ("AGENTS.md", sources.agents_md and not sources.agents_redirects),
             (".github/copilot-instructions.md", sources.copilot_instructions),
             (".github/instructions", sources.path_instructions),
-        ) if present
+        )
+        if present
     ]
     if review_sources:
         first = Finding(
@@ -1491,29 +1665,31 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
             severity="ERROR",
             check="layering",
             message="Code review: no project instructions it can read — it ignores "
-                    "CLAUDE.md, and AGENTS.md "
-                    + ("only redirects to CLAUDE.md" if sources.agents_md else "is absent"),
+            "CLAUDE.md, and AGENTS.md " + ("only redirects to CLAUDE.md" if sources.agents_md else "is absent"),
         )
     findings = [
         first,
         Finding(
             severity="WARNING",
             check="layering",
-            message="Code-review custom-instructions enablement cannot "
-                    "be verified statically",
+            message="Code-review custom-instructions enablement cannot be verified statically",
         ),
         Finding(
             severity="WARNING",
             check="trust-boundary",
             message="Copilot code review loads instructions, agents, and skills from the PR head; "
-                    "this is advisory context, not a trusted-base or trusted-ref review contract",
+            "this is advisory context, not a trusted-base or trusted-ref review contract",
         ),
     ]
     if (root / ".github/skills").is_dir():
-        findings.append(Finding(
-            severity="INFO", check="layering", path=".github/skills",
-            message="Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
-        ))
+        findings.append(
+            Finding(
+                severity="INFO",
+                check="layering",
+                path=".github/skills",
+                message="Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
+            )
+        )
     return findings
 
 
@@ -1536,18 +1712,23 @@ def check_instruction_layering(
     if "code_review" in surfaces:
         findings.extend(_layering_code_review(root, sources))
     if {"copilot_cli", "copilot_app", "cloud_agent", "code_review"} & surfaces:
-        findings.append(Finding(
-            severity="WARNING", check="runtime",
-            message="Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="runtime",
+                message="Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+            )
+        )
     if "vscode" in surfaces:
-        findings.append(Finding(
-            severity="WARNING",
-            check="layering",
-            message="VS Code instruction settings (chat.useClaudeMdFile, "
-                    "chat.useAgentsMdFile, useInstructionFiles, "
-                    "includeApplyingInstructions) cannot be verified statically",
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="layering",
+                message="VS Code instruction settings (chat.useClaudeMdFile, "
+                "chat.useAgentsMdFile, useInstructionFiles, "
+                "includeApplyingInstructions) cannot be verified statically",
+            )
+        )
     return findings
 
 
@@ -1590,34 +1771,40 @@ def check_behavioral_constraints(root: Path) -> list[Finding]:
     lower = content.lower()
 
     if "never disable" not in lower and "never suppress" not in lower:
-        findings.append(Finding(
-            severity="WARNING",
-            check="behavioral",
-            path="CLAUDE.md",
-            message="No 'never disable/suppress' rule found",
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="behavioral",
+                path="CLAUDE.md",
+                message="No 'never disable/suppress' rule found",
+            )
+        )
 
     if not re.search(r"\b(?:never|do not|don't)\s+work\s*around\b", lower):
-        findings.append(Finding(
-            severity="WARNING",
-            check="behavioral",
-            path="CLAUDE.md",
-            message=(
-                "No rule forbidding workarounds for failing checks "
-                "(skip or expected-failure markers, weakened gates, TODO comments)"
-            ),
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="behavioral",
+                path="CLAUDE.md",
+                message=(
+                    "No rule forbidding workarounds for failing checks "
+                    "(skip or expected-failure markers, weakened gates, TODO comments)"
+                ),
+            )
+        )
 
     if not any(pattern.search(content) for pattern in QUALITY_GATE_PATTERNS):
-        findings.append(Finding(
-            severity="WARNING",
-            check="behavioral",
-            path="CLAUDE.md",
-            message=(
-                "No quality gate found (a coverage threshold, a lint severity level, "
-                "or a rule that every check must pass)"
-            ),
-        ))
+        findings.append(
+            Finding(
+                severity="WARNING",
+                check="behavioral",
+                path="CLAUDE.md",
+                message=(
+                    "No quality gate found (a coverage threshold, a lint severity level, "
+                    "or a rule that every check must pass)"
+                ),
+            )
+        )
 
     return findings
 
@@ -1625,6 +1812,7 @@ def check_behavioral_constraints(root: Path) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # Check 8: Ownership tracking
 # ---------------------------------------------------------------------------
+
 
 def check_ownership(
     root: Path,
@@ -1645,33 +1833,39 @@ def check_ownership(
         try:
             content = read_text(full_path)
         except (OSError, UnicodeError):
-            findings.append(Finding(
-                severity="ERROR",
-                check="ownership",
-                path=path_str,
-                message="Generated artifact exists but could not be read",
-            ))
+            findings.append(
+                Finding(
+                    severity="ERROR",
+                    check="ownership",
+                    path=path_str,
+                    message="Generated artifact exists but could not be read",
+                )
+            )
             continue
 
         if path_str.endswith(".json"):
             # JSON: ownership tracked via manifest hash
             stored_hash = artifact.get("hash")
             if not stored_hash and path_str != ".github/ai-config-manifest.json":
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="ownership",
-                    path=path_str,
-                    message="JSON artifact has no hash in manifest",
-                ))
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="ownership",
+                        path=path_str,
+                        message="JSON artifact has no hash in manifest",
+                    )
+                )
         else:
             # Comment-supporting: ownership tracked via embedded marker
             if not has_ownership_marker(content):
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="ownership",
-                    path=path_str,
-                    message="Generated file missing embedded ownership marker",
-                ))
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="ownership",
+                        path=path_str,
+                        message="Generated file missing embedded ownership marker",
+                    )
+                )
 
     return findings
 
@@ -1679,6 +1873,7 @@ def check_ownership(
 # ---------------------------------------------------------------------------
 # Check 9: User-authored collisions
 # ---------------------------------------------------------------------------
+
 
 def check_collisions(
     root: Path,
@@ -1695,13 +1890,14 @@ def check_collisions(
             except (OSError, UnicodeError):
                 content = ""
             if not has_ownership_marker(content):
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="collision",
-                    path="AGENTS.md",
-                    message="User-authored AGENTS.md would conflict with "
-                            "generated adapter",
-                ))
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="collision",
+                        path="AGENTS.md",
+                        message="User-authored AGENTS.md would conflict with generated adapter",
+                    )
+                )
 
     copilot_path = root / ".github/copilot-instructions.md"
     if copilot_path.is_file():
@@ -1712,17 +1908,22 @@ def check_collisions(
         if not has_ownership_marker(content):
             surfaces = manifest.get("surfaces", [])
             copilot_surfaces = {
-                "vscode", "jetbrains", "copilot_app", "copilot_cli",
-                "cloud_agent", "code_review",
+                "vscode",
+                "jetbrains",
+                "copilot_app",
+                "copilot_cli",
+                "cloud_agent",
+                "code_review",
             }
             if copilot_surfaces & set(surfaces):
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="collision",
-                    path=".github/copilot-instructions.md",
-                    message="User-authored copilot-instructions.md would "
-                            "conflict with generated projection",
-                ))
+                findings.append(
+                    Finding(
+                        severity="ERROR",
+                        check="collision",
+                        path=".github/copilot-instructions.md",
+                        message="User-authored copilot-instructions.md would conflict with generated projection",
+                    )
+                )
 
     return findings
 
@@ -1730,6 +1931,7 @@ def check_collisions(
 # ---------------------------------------------------------------------------
 # Known limitations that apply to this repository
 # ---------------------------------------------------------------------------
+
 
 def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     """Report each documented static-audit limitation this repository actually hits."""
@@ -1739,16 +1941,18 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
         findings.append(Finding(severity="INFO", check="limitation", path=path, message=message))
 
     artifact_paths = [
-        artifact["path"] for artifact in manifest.get("artifacts", [])
+        artifact["path"]
+        for artifact in manifest.get("artifacts", [])
         if isinstance(artifact, dict) and isinstance(artifact.get("path"), str)
     ]
     for path in sorted(artifact_paths):
         if path.endswith((".toml", ".yml", ".yaml")):
             note(path, "Only the ownership marker is checked; content drift inside this file is not detected")
-    if (manifest and "copilot_sections" not in manifest
-            and ".github/copilot-instructions.md" in artifact_paths):
-        note(".github/ai-config-manifest.json",
-             "Manifest predates copilot_sections; Copilot parity assumes the default sections")
+    if manifest and "copilot_sections" not in manifest and ".github/copilot-instructions.md" in artifact_paths:
+        note(
+            ".github/ai-config-manifest.json",
+            "Manifest predates copilot_sections; Copilot parity assumes the default sections",
+        )
     for directory in (".github/skills", ".github/agents"):
         base = root / directory
         if not base.is_dir():
@@ -1774,6 +1978,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 # ---------------------------------------------------------------------------
 # Main audit orchestrator
 # ---------------------------------------------------------------------------
+
 
 def audit(root: Path) -> AuditResult:
     """Run all audit checks and return the result."""
@@ -1832,18 +2037,13 @@ def audit(root: Path) -> AuditResult:
 # Output formatting
 # ---------------------------------------------------------------------------
 
+
 def summary_lines(findings: list[Finding]) -> list[str]:
     """Count findings per severity, then INFO findings per check."""
     severities = Counter(f.severity for f in findings)
     info_checks = Counter(f.check for f in findings if f.severity == "INFO")
-    lines = [
-        f"SUMMARY {severity} {severities[severity]}"
-        for severity in SEVERITY_ORDER
-    ]
-    lines.extend(
-        f"SUMMARY INFO {check} {info_checks[check]}"
-        for check in sorted(info_checks)
-    )
+    lines = [f"SUMMARY {severity} {severities[severity]}" for severity in SEVERITY_ORDER]
+    lines.extend(f"SUMMARY INFO {check} {info_checks[check]}" for check in sorted(info_checks))
     return lines
 
 
@@ -1903,10 +2103,9 @@ def format_json(result: AuditResult) -> str:
 # CLI
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Read-only audit of AI agent configuration"
-    )
+    parser = argparse.ArgumentParser(description="Read-only audit of AI agent configuration")
     parser.add_argument(
         "--json",
         action="store_true",

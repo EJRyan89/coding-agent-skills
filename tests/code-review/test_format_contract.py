@@ -172,12 +172,14 @@ class Fixture:
 
 def _judge(validate: Callable[[Any], Any]) -> Callable[[Any], bool]:
     """Every validator rejects with a ValueError subclass. Any other exception is a crash, and fails the test."""
+
     def accepts(value: Any) -> bool:
         try:
             validate(value)
         except ValueError:
             return False
         return True
+
     return accepts
 
 
@@ -256,11 +258,17 @@ def check_table(heading: str, rows: dict[str, Row], found: list[Instance]) -> li
         label = f"{heading}: {name}"
         values = [item.object[name] for item in present]
         if row.types is not None:
-            problems += [f"{label} has the undocumented type {json_type(value)}"
-                         for value in values if not has_type(row.types, value)]
+            problems += [
+                f"{label} has the undocumented type {json_type(value)}"
+                for value in values
+                if not has_type(row.types, value)
+            ]
         if row.values is not None:
-            problems += [f"{label} has the unlisted value {value!r}" for value in values
-                         if value not in row.values and not (value is None and "null" in (row.types or ()))]
+            problems += [
+                f"{label} has the unlisted value {value!r}"
+                for value in values
+                if value not in row.values and not (value is None and "null" in (row.types or ()))
+            ]
         problems += _required(label, name, row, found, judged)
         removable = [item for item in judged if name in item.object]
         if row.types is not None:
@@ -268,8 +276,9 @@ def check_table(heading: str, rows: dict[str, Row], found: list[Instance]) -> li
                 accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
                 problems += [f"{label} accepts {kind}, which is not documented, in {fixture}" for fixture in accepted]
             for kind in sorted(row.types):
-                if any(json_type(value) == kind or (kind, json_type(value)) == ("number", "integer")
-                       for value in values):
+                if any(
+                    json_type(value) == kind or (kind, json_type(value)) == ("number", "integer") for value in values
+                ):
                     continue
                 if not any(item.accepts(_set(name, EXAMPLES[kind])) for item in removable):
                     problems.append(f"{label} documents {kind}, which no fixture has or accepts")
@@ -293,15 +302,21 @@ def _required(label: str, name: str, row: Row, found: list[Instance], judged: li
     if row.required == "yes":
         if absent:
             return [f"{label} is required but absent from a fixture"]
-        return [f"{label} is required but removing it is accepted in {item.fixture.name}"
-                for item in judged if item.accepts(_without(name))]
+        return [
+            f"{label} is required but removing it is accepted in {item.fixture.name}"
+            for item in judged
+            if item.accepts(_without(name))
+        ]
     removed = [name] if row.partner is None else [name, row.partner]
     together = [item for item in judged if all(each in item.object for each in removed)]
     optional = absent or any(item.accepts(_without(*removed)) for item in together)
     problems = [] if optional else [f"{label} is documented as optional but no fixture lacks it or accepts that"]
     if row.required == "with":
-        problems += [f"{label} needs {row.partner} but removing it alone is accepted in {item.fixture.name}"
-                     for item in together if item.accepts(_without(name))]
+        problems += [
+            f"{label} needs {row.partner} but removing it alone is accepted in {item.fixture.name}"
+            for item in together
+            if item.accepts(_without(name))
+        ]
     if row.required == "when" and not any(not item.accepts(_without(name)) for item in judged if name in item.object):
         problems.append(f"{label} is documented as sometimes required but every fixture accepts its removal")
     return problems
@@ -318,9 +333,15 @@ def nested_tables_missing(tables: list[Table], fixtures: dict[str, list[Fixture]
                     continue
                 for item in instances((path,), fixtures):
                     value = item.object.get(name)
-                    nested = f"{path}.{name}" if isinstance(value, dict) else (
-                        f"{path}.{name}[]" if isinstance(value, list) and any(isinstance(x, dict) for x in value)
-                        else None)
+                    nested = (
+                        f"{path}.{name}"
+                        if isinstance(value, dict)
+                        else (
+                            f"{path}.{name}[]"
+                            if isinstance(value, list) and any(isinstance(x, dict) for x in value)
+                            else None
+                        )
+                    )
                     if nested and nested not in paths and nested not in missing:
                         missing.append(nested)
     return missing
@@ -330,9 +351,17 @@ def nested_tables_missing(tables: list[Table], fixtures: dict[str, list[Fixture]
 
 
 def _finding(key: str, severity: str, line: int, **extra: Any) -> dict[str, Any]:
-    return {"candidate_key": key, "severity": severity, "category": "Correctness", "path": "src/file.cs",
-            "line": line, "body": f"Problem {key} breaks the rule.", "evidence": "The added line shows it.",
-            "source": "generic", **extra}
+    return {
+        "candidate_key": key,
+        "severity": severity,
+        "category": "Correctness",
+        "path": "src/file.cs",
+        "line": line,
+        "body": f"Problem {key} breaks the rule.",
+        "evidence": "The added line shows it.",
+        "source": "generic",
+        **extra,
+    }
 
 
 def _disposition(identifier: str, value: str, key: str = "finding_id") -> dict[str, Any]:
@@ -340,23 +369,56 @@ def _disposition(identifier: str, value: str, key: str = "finding_id") -> dict[s
 
 
 COMMENTS = [
-    {"id": "C1", "author": "octocat", "path": "src/file.cs", "line": 7, "outdated": False,
-     "body": "Please handle zero.", "url": f"{URL}#discussion_r1"},
-    {"id": "C2", "author": "hubot", "path": "src/other.cs", "line": None, "outdated": True,
-     "body": "Is this still needed?", "url": f"{URL}#discussion_r2"},
+    {
+        "id": "C1",
+        "author": "octocat",
+        "path": "src/file.cs",
+        "line": 7,
+        "outdated": False,
+        "body": "Please handle zero.",
+        "url": f"{URL}#discussion_r1",
+    },
+    {
+        "id": "C2",
+        "author": "hubot",
+        "path": "src/other.cs",
+        "line": None,
+        "outdated": True,
+        "body": "Is this still needed?",
+        "url": f"{URL}#discussion_r2",
+    },
 ]
 
 
 def _record_request(mode: str, **extra: Any) -> dict[str, Any]:
-    return {"repository": "example/one", "pull_number": 12, "pull_url": URL, "title": "Improve behavior",
-            "base_ref": "main", "base_sha": "a" * 40, "head_sha": SHA, "mode": mode,
-            "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}, **extra}
+    return {
+        "repository": "example/one",
+        "pull_number": 12,
+        "pull_url": URL,
+        "title": "Improve behavior",
+        "base_ref": "main",
+        "base_sha": "a" * 40,
+        "head_sha": SHA,
+        "mode": mode,
+        "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+        **extra,
+    }
 
 
 def _result(findings: list[dict[str, Any]], dispositions: list[dict[str, Any]] = (), **extra: Any) -> dict[str, Any]:
-    return {"protocol_version": 1, "repository": "example/one", "pull_number": 12, "head_sha": SHA,
-            "summary": "Reviewed.", "reviewer": "fixture-reviewer", "status": "complete", "findings": findings,
-            "prior_dispositions": list(dispositions), "usage": None, **extra}
+    return {
+        "protocol_version": 1,
+        "repository": "example/one",
+        "pull_number": 12,
+        "head_sha": SHA,
+        "summary": "Reviewed.",
+        "reviewer": "fixture-reviewer",
+        "status": "complete",
+        "findings": findings,
+        "prior_dispositions": list(dispositions),
+        "usage": None,
+        **extra,
+    }
 
 
 def record_fixtures() -> list[dict[str, Any]]:
@@ -365,45 +427,104 @@ def record_fixtures() -> list[dict[str, Any]]:
     re-review recorded before ledgers."""
     initial = build_record(
         _record_request(
-            "initial", head_ref="feature/boundary", unavailable_sources=["assets/large.txt"],
-            uncovered_files=["build/settings.props"], github_comments=COMMENTS,
+            "initial",
+            head_ref="feature/boundary",
+            unavailable_sources=["assets/large.txt"],
+            uncovered_files=["build/settings.props"],
+            github_comments=COMMENTS,
             reviewers=[
-                {"id": "generic-review", "category": "General", "files": 3, "findings": 6, "retries": 0,
-                 "dispositions_only": False, "model": "claude-opus-5-5", "seconds": 95},
-                {"id": "database-review", "category": "Database", "files": 1, "findings": 0, "retries": 1,
-                 "dispositions_only": True},
+                {
+                    "id": "generic-review",
+                    "category": "General",
+                    "files": 3,
+                    "findings": 6,
+                    "retries": 0,
+                    "dispositions_only": False,
+                    "model": "claude-opus-5-5",
+                    "seconds": 95,
+                },
+                {
+                    "id": "database-review",
+                    "category": "Database",
+                    "files": 1,
+                    "findings": 0,
+                    "retries": 1,
+                    "dispositions_only": True,
+                },
             ],
-            patches={"src/file.cs": {"sha256": "c" * 64, "lines": 12}}),
+            patches={"src/file.cs": {"sha256": "c" * 64, "lines": 12}},
+        ),
         _result(
-            [_finding("a", "MUST_FIX", 10, title="Zero is not handled",
-                      analyzer={"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unchecked-zero"}),
-             _finding("b", "SHOULD_FIX", 20, title="Retry never stops"),
-             _finding("c", "SHOULD_FIX", 30),
-             _finding("d", "SUGGESTION", 40),
-             _finding("e", "SUGGESTION", 50),
-             _finding("f", "SHOULD_FIX", 60, repeats="a")],
-            comment_dispositions=[_disposition("C1", "still_present", "comment_id"),
-                                  _disposition("C2", "superseded", "comment_id")]),
-        version=1, policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
-        reviewed_at="2026-10-01T09:00:00+00:00")
+            [
+                _finding(
+                    "a",
+                    "MUST_FIX",
+                    10,
+                    title="Zero is not handled",
+                    analyzer={"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unchecked-zero"},
+                ),
+                _finding("b", "SHOULD_FIX", 20, title="Retry never stops"),
+                _finding("c", "SHOULD_FIX", 30),
+                _finding("d", "SUGGESTION", 40),
+                _finding("e", "SUGGESTION", 50),
+                _finding("f", "SHOULD_FIX", 60, repeats="a"),
+            ],
+            comment_dispositions=[
+                _disposition("C1", "still_present", "comment_id"),
+                _disposition("C2", "superseded", "comment_id"),
+            ],
+        ),
+        version=1,
+        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+        reviewed_at="2026-10-01T09:00:00+00:00",
+    )
     initial["artifacts"] = {"payload_sha256": "d" * 64, "markdown_sha256": "e" * 64}
     rereview = build_record(
-        _record_request("re-review", adapter={
-            "name": "one-review", "scope": "repository", "source_commit": "c" * 40,
-            "source_hashes": {".claude/skills/review/SKILL.md": "e" * 64}}, scope={
-            "requested": "auto", "used": "incremental", "reason": "4 of 40 changed lines differ",
-            "since_version": 1, "files_changed": 1, "files_total": 3, "lines_changed": 4, "lines_total": 40}),
+        _record_request(
+            "re-review",
+            adapter={
+                "name": "one-review",
+                "scope": "repository",
+                "source_commit": "c" * 40,
+                "source_hashes": {".claude/skills/review/SKILL.md": "e" * 64},
+            },
+            scope={
+                "requested": "auto",
+                "used": "incremental",
+                "reason": "4 of 40 changed lines differ",
+                "since_version": 1,
+                "files_changed": 1,
+                "files_total": 3,
+                "lines_changed": 4,
+                "lines_total": 40,
+            },
+        ),
         _result(
             [_finding("g", "SUGGESTION", 70), _finding("h", "MUST_FIX", 80, repeats="v1:F001")],
-            [_disposition("v1:F001", "still_present"), _disposition("v1:F002", "partially_addressed"),
-             _disposition("v1:F003", "addressed"), _disposition("v1:F004", "superseded"),
-             _disposition("v1:F005", "unable_to_verify")]),
-        version=2, policy={}, reviewed_at="2026-10-02T09:00:00+00:00", prior_ledger=initial["ledger"])
+            [
+                _disposition("v1:F001", "still_present"),
+                _disposition("v1:F002", "partially_addressed"),
+                _disposition("v1:F003", "addressed"),
+                _disposition("v1:F004", "superseded"),
+                _disposition("v1:F005", "unable_to_verify"),
+            ],
+        ),
+        version=2,
+        policy={},
+        reviewed_at="2026-10-02T09:00:00+00:00",
+        prior_ledger=initial["ledger"],
+    )
     uncompared = copy.deepcopy(rereview)
-    uncompared["review"]["scope"].update(used="full", reason="v1 has no patch fingerprints", files_changed=None,
-                                         lines_changed=None)
-    older = build_record(_record_request("initial"), _result([_finding("a", "SHOULD_FIX", 10)]), version=1,
-                         policy={}, reviewed_at="2026-09-01T09:00:00+00:00")
+    uncompared["review"]["scope"].update(
+        used="full", reason="v1 has no patch fingerprints", files_changed=None, lines_changed=None
+    )
+    older = build_record(
+        _record_request("initial"),
+        _result([_finding("a", "SHOULD_FIX", 10)]),
+        version=1,
+        policy={},
+        reviewed_at="2026-09-01T09:00:00+00:00",
+    )
     del older["ledger"]
     older["review"].update(version=2, mode="re-review")
     older["prior_dispositions"] = [_disposition("F001", "addressed")]
@@ -416,26 +537,57 @@ def config_fixtures() -> list[dict[str, Any]]:
     full = {
         "schema_version": 1,
         "default_repository_set": "primary",
-        "repository_sets": {"primary": ["example/one", "example/two", "example/five"],
-                            "tracked": ["example/three", "example/four"]},
+        "repository_sets": {
+            "primary": ["example/one", "example/two", "example/five"],
+            "tracked": ["example/three", "example/four"],
+        },
         "repositories": {
-            "example/one": {"reviewer": {"id": "one-review", "protocol_version": 1, "trusted_ref": "main",
-                                         "scope": "repository", "manifest_path": None,
-                                         "skill": ".claude/skills/review/SKILL.md",
-                                         "manifest": "C:\\Reviews\\reviewers\\one.json"},
-                            "checkout_path": "C:\\Repos\\One"},
-            "example/five": {"reviewer": {"id": "five-review", "protocol_version": 1, "scope": "repository",
-                                          "skill": ".claude/agents/review.md", "manifest": True},
-                             "checkout_path": "C:\\Repos\\Five"},
-            "example/two": {"reviewer": {"id": "two-review", "protocol_version": 1, "scope": "repository",
-                                         "manifest_path": ".github/review/manifest.json", "skill": None,
-                                         "manifest": None},
-                            "checkout_path": "C:\\Repos\\Two"},
+            "example/one": {
+                "reviewer": {
+                    "id": "one-review",
+                    "protocol_version": 1,
+                    "trusted_ref": "main",
+                    "scope": "repository",
+                    "manifest_path": None,
+                    "skill": ".claude/skills/review/SKILL.md",
+                    "manifest": "C:\\Reviews\\reviewers\\one.json",
+                },
+                "checkout_path": "C:\\Repos\\One",
+            },
+            "example/five": {
+                "reviewer": {
+                    "id": "five-review",
+                    "protocol_version": 1,
+                    "scope": "repository",
+                    "skill": ".claude/agents/review.md",
+                    "manifest": True,
+                },
+                "checkout_path": "C:\\Repos\\Five",
+            },
+            "example/two": {
+                "reviewer": {
+                    "id": "two-review",
+                    "protocol_version": 1,
+                    "scope": "repository",
+                    "manifest_path": ".github/review/manifest.json",
+                    "skill": None,
+                    "manifest": None,
+                },
+                "checkout_path": "C:\\Repos\\Two",
+            },
             "example/three": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}},
-            "example/four": {"reviewer": {"id": "generic", "protocol_version": 1, "trusted_ref": None,
-                                          "scope": "generic", "manifest_path": None, "skill": None,
-                                          "manifest": None},
-                             "checkout_path": None},
+            "example/four": {
+                "reviewer": {
+                    "id": "generic",
+                    "protocol_version": 1,
+                    "trusted_ref": None,
+                    "scope": "generic",
+                    "manifest_path": None,
+                    "skill": None,
+                    "manifest": None,
+                },
+                "checkout_path": None,
+            },
         },
         "archive_root": "C:\\Reviews\\Archive",
         "local_mirror_root": "C:\\Reviews\\Mirror",
@@ -448,9 +600,12 @@ def config_fixtures() -> list[dict[str, Any]]:
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
         "model_names": {"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc": "Opus 5.5"},
-        "dashboard": {"start_marker": "<!-- tracker:start -->", "end_marker": "<!-- tracker:end -->",
-                      "status_overrides": {"example/one#12": "blocked on design"},
-                      "author_names": {"octocat": "Mona Lisa"}},
+        "dashboard": {
+            "start_marker": "<!-- tracker:start -->",
+            "end_marker": "<!-- tracker:end -->",
+            "status_overrides": {"example/one#12": "blocked on design"},
+            "author_names": {"octocat": "Mona Lisa"},
+        },
     }
     minimal = {
         "schema_version": 1,
@@ -466,22 +621,44 @@ def config_fixtures() -> list[dict[str, Any]]:
 
 def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     entrypoint = {
-        "schema_version": 1, "id": "repository-review", "protocol_version": 1, "supports": ["initial", "re-review"],
+        "schema_version": 1,
+        "id": "repository-review",
+        "protocol_version": 1,
+        "supports": ["initial", "re-review"],
         "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
         "entrypoint": ".claude/skills/repository-review/SKILL.md",
         "resources": [".claude/skills/repository-review/references/rules.md"],
         "agent_profiles": [".claude/agents/repository-review.md"],
     }
     specialists = {
-        "schema_version": 2, "id": "repository-specialists", "protocol_version": 1, "kind": "specialists",
-        "supports": ["initial"], "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
+        "schema_version": 2,
+        "id": "repository-specialists",
+        "protocol_version": 1,
+        "kind": "specialists",
+        "supports": ["initial"],
+        "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
         "resources": ["docs/review/conventions.md"],
         "specialists": [
-            {"id": "database-review", "category": "Database", "profile": ".claude/agents/database-review.md",
-             "include": ["^db/.*\\.sql$"], "exclude": ["^db/generated/"], "resources": ["docs/review/database.md"],
-             "when": "compatibility-window-open", "model": "sonnet", "effort": "high"},
-            {"id": "api-review", "category": "API", "profile": ".claude/agents/api-review.md",
-             "include": ["^api/"], "exclude": [], "resources": [], "when": None},
+            {
+                "id": "database-review",
+                "category": "Database",
+                "profile": ".claude/agents/database-review.md",
+                "include": ["^db/.*\\.sql$"],
+                "exclude": ["^db/generated/"],
+                "resources": ["docs/review/database.md"],
+                "when": "compatibility-window-open",
+                "model": "sonnet",
+                "effort": "high",
+            },
+            {
+                "id": "api-review",
+                "category": "API",
+                "profile": ".claude/agents/api-review.md",
+                "include": ["^api/"],
+                "exclude": [],
+                "resources": [],
+                "when": None,
+            },
         ],
         "conditions": {"compatibility-window-open": {"script": "tools/review/compatibility_window.py"}},
         "uncovered": "ignore",
@@ -492,24 +669,54 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def flag_fixtures() -> list[dict[str, Any]]:
-    return [{
-        "schema_version": 2, "next_id": 3,
-        "flags": [
-            {"id": "RF-000001", "status": "open", "created_at": "2026-10-01T09:00:00+00:00", "resolved_at": None,
-             "repository": "example/one", "pull_number": 12, "review_version": 2, "finding_id": "F001",
-             "category": "false-positive", "body": "The zero case is handled by the caller.", "resolution": None},
-            {"id": "RF-000002", "status": "resolved", "created_at": "2026-10-01T09:00:00+00:00",
-             "resolved_at": "2026-10-03T09:00:00+00:00", "repository": None, "pull_number": None,
-             "review_version": None, "finding_id": None, "category": "missed", "body": "Reviews miss retries.",
-             "resolution": "Accepted in a review-insights decision."},
-        ],
-    }, {"schema_version": 2, "next_id": 1, "flags": []}]
+    return [
+        {
+            "schema_version": 2,
+            "next_id": 3,
+            "flags": [
+                {
+                    "id": "RF-000001",
+                    "status": "open",
+                    "created_at": "2026-10-01T09:00:00+00:00",
+                    "resolved_at": None,
+                    "repository": "example/one",
+                    "pull_number": 12,
+                    "review_version": 2,
+                    "finding_id": "F001",
+                    "category": "false-positive",
+                    "body": "The zero case is handled by the caller.",
+                    "resolution": None,
+                },
+                {
+                    "id": "RF-000002",
+                    "status": "resolved",
+                    "created_at": "2026-10-01T09:00:00+00:00",
+                    "resolved_at": "2026-10-03T09:00:00+00:00",
+                    "repository": None,
+                    "pull_number": None,
+                    "review_version": None,
+                    "finding_id": None,
+                    "category": "missed",
+                    "body": "Reviews miss retries.",
+                    "resolution": "Accepted in a review-insights decision.",
+                },
+            ],
+        },
+        {"schema_version": 2, "next_id": 1, "flags": []},
+    ]
 
 
 LEGACY_INDEX = {
-    "schema_version": 1, "kind": "legacy-review-index", "repository": "example/one", "pull_number": 12,
-    "reviewed_at": "2025-06-01T09:00:00+00:00", "reviewed_head_sha": SHA, "verdict": "APPROVED",
-    "source_sha256": "f" * 64, "source_path": "legacy-review.md", "source_file_sha256": "f" * 64,
+    "schema_version": 1,
+    "kind": "legacy-review-index",
+    "repository": "example/one",
+    "pull_number": 12,
+    "reviewed_at": "2025-06-01T09:00:00+00:00",
+    "reviewed_head_sha": SHA,
+    "verdict": "APPROVED",
+    "source_sha256": "f" * 64,
+    "source_path": "legacy-review.md",
+    "source_file_sha256": "f" * 64,
 }
 
 
@@ -520,6 +727,7 @@ def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
             folder.mkdir(parents=True)
             (folder / "legacy-review.json").write_text(json.dumps(value), encoding="utf-8")
             return legacy_index(Path(temporary), "example/one", 12) is not None
+
     return accepts
 
 
@@ -527,15 +735,25 @@ def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[st
     """Requests as `build_adapter_request` writes them: one with a head branch, prior findings, review comments, and
     a changed file the snapshot could not hold, and one with none of them."""
     diff = scratch / "diff.patch"
-    diff.write_text("diff --git a/src/file.cs b/src/file.cs\n"
-                    "diff --git a/assets/large.txt b/assets/large.txt\n", encoding="utf-8")
+    diff.write_text(
+        "diff --git a/src/file.cs b/src/file.cs\ndiff --git a/assets/large.txt b/assets/large.txt\n", encoding="utf-8"
+    )
     snapshot = {"excluded_paths": {"assets/large.txt": "file-size-limit"}}
-    common = {"repository": "example/one", "pull_number": 12, "base_ref": "main", "base_sha": "a" * 40,
-              "head_sha": SHA, "title": "Improve behavior", "url": URL, "diff_path": diff,
-              "source_snapshot_root": scratch / "snapshot"}
+    common = {
+        "repository": "example/one",
+        "pull_number": 12,
+        "base_ref": "main",
+        "base_sha": "a" * 40,
+        "head_sha": SHA,
+        "title": "Improve behavior",
+        "url": URL,
+        "diff_path": diff,
+        "source_snapshot_root": scratch / "snapshot",
+    }
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value=snapshot):
-        full = build_adapter_request(mode="re-review", prior_findings=prior, github_comments=COMMENTS,
-                                     head_ref="feature/boundary", **common)
+        full = build_adapter_request(
+            mode="re-review", prior_findings=prior, github_comments=COMMENTS, head_ref="feature/boundary", **common
+        )
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value={"excluded_paths": {}}):
         plain = build_adapter_request(mode="initial", **common)
     return [full, plain]
@@ -545,24 +763,51 @@ def adapter_fixtures() -> list[Fixture]:
     published = json.loads((REFERENCES / "fixtures" / "adapter-result.json").read_text(encoding="utf-8"))
     prior = [{"id": "v1:F001", "severity": "MUST_FIX"}, {"id": "v1:F002", "severity": "SHOULD_FIX"}]
     full = _result(
-        [_finding("a", "MUST_FIX", 10, title="Zero is not handled",
-                  analyzer={"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unchecked-zero"}),
-         _finding("b", "SHOULD_FIX", 20, repeats="a",
-                  analyzer={"coverage": "known", "tool": "Roslynator.Analyzers", "rule": "RCS1001"}),
-         _finding("c", "SUGGESTION", 30, repeats="v1:F001",
-                  analyzer={"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515"})],
+        [
+            _finding(
+                "a",
+                "MUST_FIX",
+                10,
+                title="Zero is not handled",
+                analyzer={"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unchecked-zero"},
+            ),
+            _finding(
+                "b",
+                "SHOULD_FIX",
+                20,
+                repeats="a",
+                analyzer={"coverage": "known", "tool": "Roslynator.Analyzers", "rule": "RCS1001"},
+            ),
+            _finding(
+                "c",
+                "SUGGESTION",
+                30,
+                repeats="v1:F001",
+                analyzer={"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515"},
+            ),
+        ],
         [_disposition("v1:F001", "still_present"), _disposition("v1:F002", "addressed")],
         comment_dispositions=[_disposition("C1", "partially_addressed", "comment_id")],
-        usage={"input_tokens": 1200, "output_tokens": 300})
+        usage={"input_tokens": 1200, "output_tokens": 300},
+    )
 
     def judge(repository: str, number: int, prior_findings: list[dict[str, Any]], comments: list[str]) -> Accepts:
-        return _judge(lambda value: validate_adapter_result(
-            value, expected_repository=repository, expected_number=number, expected_head_sha=SHA,
-            prior_ids=[item["id"] for item in prior_findings], comment_ids=comments,
-            prior_severities={item["id"]: item["severity"] for item in prior_findings}))
+        return _judge(
+            lambda value: validate_adapter_result(
+                value,
+                expected_repository=repository,
+                expected_number=number,
+                expected_head_sha=SHA,
+                prior_ids=[item["id"] for item in prior_findings],
+                comment_ids=comments,
+                prior_severities={item["id"]: item["severity"] for item in prior_findings},
+            )
+        )
 
-    return [Fixture("published adapter-result.json", published, judge("example/example-repository", 17, [], [])),
-            Fixture("re-review result", full, judge("example/one", 12, prior, ["C1"]))]
+    return [
+        Fixture("published adapter-result.json", published, judge("example/example-repository", 17, [], [])),
+        Fixture("re-review result", full, judge("example/one", 12, prior, ["C1"])),
+    ]
 
 
 def schema_tables(schema: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
@@ -609,15 +854,22 @@ class FormatContractTest(unittest.TestCase):
         cls.fixtures = {
             "config": [Fixture(f"config {index}", value, config) for index, value in enumerate(config_fixtures())],
             "entrypoint-manifest": [Fixture("entrypoint manifest", entrypoint, manifest)],
-            "specialists-manifest": [Fixture(f"specialists manifest {index}", value, manifest)
-                                     for index, value in enumerate(specialists)],
-            "request": [Fixture(f"request {index}", value, None)
-                        for index, value in enumerate(request_fixtures(
-                            scratch, carried_findings(records[:2], flag_fixtures()[0]["flags"])))],
-            "record": [Fixture(name, value, record)
-                       for name, value in zip(("initial record", "re-review record", "uncompared re-review record", "older record"), records)],
-            "flag-store": [Fixture(f"flag store {index}", value, flags)
-                           for index, value in enumerate(flag_fixtures())],
+            "specialists-manifest": [
+                Fixture(f"specialists manifest {index}", value, manifest) for index, value in enumerate(specialists)
+            ],
+            "request": [
+                Fixture(f"request {index}", value, None)
+                for index, value in enumerate(
+                    request_fixtures(scratch, carried_findings(records[:2], flag_fixtures()[0]["flags"]))
+                )
+            ],
+            "record": [
+                Fixture(name, value, record)
+                for name, value in zip(
+                    ("initial record", "re-review record", "uncompared re-review record", "older record"), records
+                )
+            ],
+            "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
             "legacy-index": [Fixture("legacy index", LEGACY_INDEX, legacy_accepts(scratch))],
             "adapter-result": adapter_fixtures(),
         }
@@ -661,35 +913,58 @@ class FormatContractTest(unittest.TestCase):
         row = re.search(r"^\| `number` \| integer \| yes \|.*$", text, flags=re.MULTILINE)
         self.assertIsNotNone(row, "the record's pull request table lists number as a required integer")
         for name, doctored, expected in (
-            ("optional", text.replace(row.group(0), row.group(0).replace("| yes |", "| no |")),
-             "documented as optional"),
+            (
+                "optional",
+                text.replace(row.group(0), row.group(0).replace("| yes |", "| no |")),
+                "documented as optional",
+            ),
             ("missing row", text.replace(row.group(0) + "\n", ""), "number occurs in a fixture but has no row"),
-            ("wrong type", text.replace(row.group(0), row.group(0).replace("| integer |", "| string |")),
-             "number has the undocumented type integer"),
-            ("unlisted value", text.replace("One of `APPROVED`,", "One of `PENDING`, `APPROVED`,"),
-             "lists 'PENDING', which no fixture has or accepts"),
+            (
+                "wrong type",
+                text.replace(row.group(0), row.group(0).replace("| integer |", "| string |")),
+                "number has the undocumented type integer",
+            ),
+            (
+                "unlisted value",
+                text.replace("One of `APPROVED`,", "One of `PENDING`, `APPROVED`,"),
+                "lists 'PENDING', which no fixture has or accepts",
+            ),
         ):
             with self.subTest(doctored=name):
-                problems = [problem for table in parse_tables(doctored)
-                            for problem in check_table(table.heading, table.rows,
-                                                       instances(table.paths, self.fixtures))]
+                problems = [
+                    problem
+                    for table in parse_tables(doctored)
+                    for problem in check_table(table.heading, table.rows, instances(table.paths, self.fixtures))
+                ]
                 self.assertTrue(any(expected in problem for problem in problems), problems)
 
     def test_a_nullable_or_loosely_typed_row_is_checked(self) -> None:
         rows = {"line": parse_row(["`line`", "integer", "yes", "A line."])}
         comments = instances(("record.github_comments[]",), self.fixtures)
-        self.assertIn("record.github_comments[]: line has the undocumented type null",
-                      check_table("record.github_comments[]", rows, comments))
+        self.assertIn(
+            "record.github_comments[]: line has the undocumented type null",
+            check_table("record.github_comments[]", rows, comments),
+        )
         loose = {"line": parse_row(["`line`", "integer or null or string", "yes", "A line."])}
-        self.assertIn("record.github_comments[]: line documents string, which no fixture has or accepts",
-                      check_table("record.github_comments[]", loose, comments))
+        self.assertIn(
+            "record.github_comments[]: line documents string, which no fixture has or accepts",
+            check_table("record.github_comments[]", loose, comments),
+        )
         narrow = {"line": parse_row(["`line`", "integer or null or array", "yes", "A line."])}
-        self.assertIn("record.github_comments[]: line documents array, which no fixture has or accepts",
-                      check_table("record.github_comments[]", narrow, comments))
+        self.assertIn(
+            "record.github_comments[]: line documents array, which no fixture has or accepts",
+            check_table("record.github_comments[]", narrow, comments),
+        )
 
     def test_rows_parse_their_required_value_and_listed_values(self) -> None:
-        row = parse_row(["`scope`", "string", "when the reviewer is a repository reviewer",
-                         "One of `generic` or `repository`. Defaults to `repository`."])
+        row = parse_row(
+            [
+                "`scope`",
+                "string",
+                "when the reviewer is a repository reviewer",
+                "One of `generic` or `repository`. Defaults to `repository`.",
+            ]
+        )
         self.assertEqual(("when", ("generic", "repository")), (row.required, row.values))
         row = parse_row(["`github_comments`", "array", "with `comment_dispositions`", "One of `1`, `2`, or `3`."])
         self.assertEqual(("with", "comment_dispositions", (1, 2, 3)), (row.required, row.partner, row.values))

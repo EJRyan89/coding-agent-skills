@@ -65,8 +65,13 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path) -> Completed:
     environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     try:
         result = subprocess.run(
-            list(arguments), cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
-            capture_output=True, timeout=COMMAND_TIMEOUT_SECONDS, check=False,
+            list(arguments),
+            cwd=cwd,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return Completed(127, b"")

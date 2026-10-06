@@ -49,19 +49,24 @@ def _git_output(runner: Runner, arguments: list[str]) -> subprocess.CompletedPro
 
 def branch_tips(repository_root: str, branch: str, runner: Runner = run_git) -> tuple[str, str | None]:
     """Return the branch's local tip and its fetched upstream tip, or None when it has no existing upstream."""
-    local = _git_output(runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"])
+    local = _git_output(
+        runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"]
+    )
     head = local.stdout.strip()
     if local.returncode != 0 or not SHA_PATTERN.fullmatch(head):
         raise QueryError(f"cannot resolve local branch {branch!r}")
     configured = _git_output(
-        runner, ["-C", repository_root, "for-each-ref", "--format=%(upstream)|%(upstream:track)", f"refs/heads/{branch}"]
+        runner,
+        ["-C", repository_root, "for-each-ref", "--format=%(upstream)|%(upstream:track)", f"refs/heads/{branch}"],
     )
     if configured.returncode != 0 or "|" not in configured.stdout:
         raise QueryError(f"cannot read the upstream of {branch!r}: {(configured.stderr or '').strip()}")
     upstream_ref, track = configured.stdout.strip().split("|", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
-    upstream = _git_output(runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"])
+    upstream = _git_output(
+        runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"]
+    )
     upstream_sha = upstream.stdout.strip()
     if upstream.returncode != 0 or not SHA_PATTERN.fullmatch(upstream_sha):
         raise QueryError(f"cannot resolve upstream {upstream_ref!r} of {branch!r}")
@@ -70,6 +75,7 @@ def branch_tips(repository_root: str, branch: str, runner: Runner = run_git) -> 
 
 def base_contains(repository_root: str, base_ref: str, runner: Runner = run_git) -> InBase:
     """A test of whether a commit is reachable from base_ref; a commit missing locally is not."""
+
     def contains(sha: str) -> bool:
         present = _git_output(runner, ["-C", repository_root, "cat-file", "-e", f"{sha}^{{commit}}"])
         if present.returncode != 0:
@@ -86,8 +92,10 @@ def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
     """A commit object's SHA and its parents' SHAs, or None unless every one is a full lowercase SHA."""
     if not isinstance(commit, dict) or not isinstance(commit.get("parents"), list):
         return None
-    shas = [commit.get("sha"), *(parent.get("sha") if isinstance(parent, dict) else None
-                                 for parent in commit["parents"])]
+    shas = [
+        commit.get("sha"),
+        *(parent.get("sha") if isinstance(parent, dict) else None for parent in commit["parents"]),
+    ]
     if not all(isinstance(sha, str) and SHA_PATTERN.fullmatch(sha) for sha in shas):
         return None
     return shas[0], shas[1:]
@@ -100,8 +108,10 @@ def pull_commits(repository: str, number: int, runner: Runner = run_gh) -> dict[
     except OSError as exc:
         raise QueryError(f"could not run gh: {exc}") from exc
     if result.returncode != 0:
-        raise QueryError(f"gh api for the commits of pull request {number} failed ({result.returncode}): "
-                         f"{(result.stderr or '').strip()}")
+        raise QueryError(
+            f"gh api for the commits of pull request {number} failed ({result.returncode}): "
+            f"{(result.stderr or '').strip()}"
+        )
     # --slurp wraps the pages in one array, so the output is a list of pages, each a list of commits.
     try:
         pages = json.loads(result.stdout)
@@ -140,8 +150,14 @@ def only_base_merged_after(tip: str, pull_head: str, commits: dict[str, list[str
     return False
 
 
-def classify(repository: str, branch: str, head_sha: str, upstream_sha: str | None = None,
-             runner: Runner = run_gh, in_base: InBase | None = None) -> str:
+def classify(
+    repository: str,
+    branch: str,
+    head_sha: str,
+    upstream_sha: str | None = None,
+    runner: Runner = run_gh,
+    in_base: InBase | None = None,
+) -> str:
     """Return the branch state.
 
     OPEN: any pull request with this head name is open.
@@ -159,8 +175,20 @@ def classify(repository: str, branch: str, head_sha: str, upstream_sha: str | No
             raise QueryError(f"{label} SHA must be a full lowercase commit SHA, got {sha!r}")
     try:
         result = runner(
-            ["pr", "list", "--repo", repository, "--head", branch, "--state", "all",
-             "--json", FIELDS, "--limit", str(LIMIT)]
+            [
+                "pr",
+                "list",
+                "--repo",
+                repository,
+                "--head",
+                branch,
+                "--state",
+                "all",
+                "--json",
+                FIELDS,
+                "--limit",
+                str(LIMIT),
+            ]
         )
     except OSError as exc:
         raise QueryError(f"could not run gh: {exc}") from exc
@@ -195,9 +223,13 @@ def classify(repository: str, branch: str, head_sha: str, upstream_sha: str | No
     if in_base is not None and upstream_sha in (None, head_sha):
         for pull in pulls:
             number, pull_head = pull.get("number"), pull.get("headRefOid")
-            if (pull["state"] == "MERGED" and _head_repository(pull) == expected and isinstance(number, int)
-                    and isinstance(pull_head, str) and only_base_merged_after(
-                        head_sha, pull_head, pull_commits(repository, number, runner), in_base)):
+            if (
+                pull["state"] == "MERGED"
+                and _head_repository(pull) == expected
+                and isinstance(number, int)
+                and isinstance(pull_head, str)
+                and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), in_base)
+            ):
                 return "MERGED"
     if "CLOSED" in matched:
         return "CLOSED"

@@ -316,11 +316,15 @@ def scope_violations(scan: Scan) -> list[Violation]:
         elif event.name == "endregion" and regions:
             opened, opened_scopes = regions.pop()
             if opened_scopes != tuple(scopes):
-                found.append(Violation(
-                    event.line, "error", "region-scope",
-                    f"#endregion closes outside the brace scope where its #region (line {opened + 1}) was opened",
-                    False,
-                ))
+                found.append(
+                    Violation(
+                        event.line,
+                        "error",
+                        "region-scope",
+                        f"#endregion closes outside the brace scope where its #region (line {opened + 1}) was opened",
+                        False,
+                    )
+                )
         elif event.name == "if":
             conditionals.append([tuple(scopes), None])
         elif event.name in ("elif", "else") and conditionals:
@@ -352,19 +356,38 @@ def check_text(text: str) -> list[Violation]:
         line = body(lines[index])
         keyword_end = line.index("endregion") + len("endregion")
         if line[keyword_end:].strip():
-            found.append(Violation(index, "warning", "endregion-description",
-                                   "#endregion must not have a description; remove the trailing text", True))
+            found.append(
+                Violation(
+                    index,
+                    "warning",
+                    "endregion-description",
+                    "#endregion must not have a description; remove the trailing text",
+                    True,
+                )
+            )
         blanks, following = following_blank_lines(lines, index, scan.continuation)
         if following >= len(lines) or following in scan.continuation:
             continue
         if directives.get(following) == "region" and blanks != 1:
-            found.append(Violation(index, "warning", "region-spacing",
-                                   f"expected exactly 1 blank line between #endregion and the next #region, "
-                                   f"found {blanks}", True))
+            found.append(
+                Violation(
+                    index,
+                    "warning",
+                    "region-spacing",
+                    f"expected exactly 1 blank line between #endregion and the next #region, found {blanks}",
+                    True,
+                )
+            )
         elif following not in directives and body(lines[following]).lstrip().startswith("}") and blanks:
-            found.append(Violation(index, "warning", "endregion-brace-spacing",
-                                   f"expected no blank lines between #endregion and the closing brace, "
-                                   f"found {blanks}", True))
+            found.append(
+                Violation(
+                    index,
+                    "warning",
+                    "endregion-brace-spacing",
+                    f"expected no blank lines between #endregion and the closing brace, found {blanks}",
+                    True,
+                )
+            )
     return sorted(found, key=lambda violation: (violation.line, violation.rule))
 
 
@@ -376,14 +399,14 @@ def fix_text(text: str) -> tuple[str, list[Violation]]:
     for violation in sorted(fixed, key=lambda violation: violation.line, reverse=True):
         index = violation.line
         line = lines[index]
-        ending = line[len(body(line)):]
+        ending = line[len(body(line)) :]
         if violation.rule == "endregion-description":
             keyword_end = line.index("endregion") + len("endregion")
             lines[index] = line[:keyword_end] + ending
             continue
         # Bottom-up, so the lines and continuation set above this edit are still accurate.
         _, following = following_blank_lines(lines, index, continuation)
-        lines[index + 1:following] = [ending] * (1 if violation.rule == "region-spacing" else 0)
+        lines[index + 1 : following] = [ending] * (1 if violation.rule == "region-spacing" else 0)
     return "".join(lines), fixed
 
 
@@ -402,7 +425,7 @@ def read_source(path: Path) -> Source:
     data = path.read_bytes()
     for bom, encoding in ((b"\xef\xbb\xbf", "utf-8"), (b"\xff\xfe", "utf-16-le"), (b"\xfe\xff", "utf-16-be")):
         if data.startswith(bom):
-            return Source(data[len(bom):].decode(encoding, errors="surrogatepass"), bom, encoding)
+            return Source(data[len(bom) :].decode(encoding, errors="surrogatepass"), bom, encoding)
     try:
         return Source(data.decode("utf-8"), b"", "utf-8")
     except UnicodeDecodeError:
@@ -435,8 +458,11 @@ def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], N
                 emit(f"FIXED\t{name}\t{violation.line + 1}\t{violation.rule}")
         remaining += [(name, violation) for violation in check_text(text)]
     for name, violation in remaining:
-        emit("\t".join(("VIOLATION", name, str(violation.line + 1), violation.severity, violation.rule,
-                        violation.message)))
+        emit(
+            "\t".join(
+                ("VIOLATION", name, str(violation.line + 1), violation.severity, violation.rule, violation.message)
+            )
+        )
     rules = sorted({violation.rule for _, violation in remaining})
     emit(f"SUMMARY\t{len(remaining)}\t{len({name for name, _ in remaining})}\t{','.join(rules) or '-'}")
     return bool(remaining)
@@ -498,7 +524,7 @@ def _bracket(pattern: str, start: int) -> tuple[str, int] | None:
         return None
     body = pattern[body_start:index]
     if "/" in body:
-        return re.escape(pattern[start:index + 1]), index + 1
+        return re.escape(pattern[start : index + 1]), index + 1
     members: list[str] = []
     position = 0
     while position < len(body):
@@ -545,7 +571,7 @@ def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
             out.append(bracket[0])
             index = bracket[1]
         elif char == "{" and (end := _closing_brace(pattern, index)) is not None:
-            body = pattern[index + 1:end]
+            body = pattern[index + 1 : end]
             if numbers := NUMERIC_RANGE.fullmatch(body):
                 low, high = sorted(int(value) for value in numbers.groups())
                 ranges.append((low, high))
