@@ -268,7 +268,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(3, len(calls))
 
     def test_malformed_search_responses_fail_closed(self) -> None:
-        for payload in ({"total_count": 1}, {"items": []}, [], {"items": [], "total_count": "1"}):
+        malformed: tuple[object, ...] = ({"total_count": 1}, {"items": []}, [], {"items": [], "total_count": "1"})
+        for payload in malformed:
             client, _ = client_for(scripted(ok(payload))[0])
             with self.subTest(payload=payload), self.assertRaises(GitHubActivityError) as context:
                 client.search_all("search/issues", "q", KEY)
@@ -332,11 +333,11 @@ class RetryTests(unittest.TestCase):
     def test_graphql_rate_limit_is_retried_and_other_errors_fail(self) -> None:
         limited = {"errors": [{"type": "RATE_LIMITED", "message": "slow down"}]}
         client, sleeper = client_for(scripted(ok(limited), ok({"data": {"nodes": []}}))[0])
-        self.assertEqual({"nodes": []}, client.graphql("query", {"ids": []}))
+        self.assertEqual({"nodes": []}, client.graphql("query", {"id": "PR_1"}))
         self.assertEqual([5.0], sleeper.waits)
         client, _ = client_for(scripted(ok({"errors": [{"type": "FORBIDDEN", "message": "SSO"}]}))[0])
         with self.assertRaisesRegex(GitHubActivityError, "FORBIDDEN"):
-            client.graphql("query", {"ids": []})
+            client.graphql("query", {"id": "PR_1"})
 
     def test_failures_are_classified(self) -> None:
         cases = {
@@ -390,6 +391,7 @@ class DatedSearch:
         query = parameters["q"][0]
         self.queries.append(query)
         match = SPAN.search(query)
+        assert match is not None, query
         key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         items = [item for day, item in self.dated.get(key, []) if first <= day <= last]
@@ -426,12 +428,13 @@ class FakeGitHub(DatedSearch):
         """GraphQL search: pull request nodes carry the user's first page of reviews; `after` is an offset."""
         self.queries.append(query)
         match = SPAN.search(query)
+        assert match is not None, query
         key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         matches = [node for day, node in self.dated.get(key, []) if first <= day <= last]
         nodes = []
         for node in matches[offset : offset + 100]:
-            pages = self.reviews.get(node.get("id"), [{"nodes": []}])
+            pages = self.reviews.get(node.get("id", ""), [{"nodes": []}])
             nodes.append(
                 dict(
                     node,
@@ -566,8 +569,7 @@ class CollectTests(unittest.TestCase):
             payload["data"]["search"]["nodes"][0] = {}
             return ok(payload)
 
-        github.search = hide_first
-        with self.assertRaises(GitHubActivityError) as context:
+        with mock.patch.object(github, "search", hide_first), self.assertRaises(GitHubActivityError) as context:
             self.collect(github)
         self.assertEqual("forbidden", context.exception.kind)
 
@@ -647,7 +649,8 @@ class MainTests(unittest.TestCase):
             try:
                 code = main(arguments, client, TODAY)
             except SystemExit as exit_:
-                code = int(exit_.code)
+                assert isinstance(exit_.code, int), exit_.code
+                code = exit_.code
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_prints_the_report(self) -> None:
