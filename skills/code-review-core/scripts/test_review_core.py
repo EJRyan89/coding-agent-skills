@@ -1439,6 +1439,60 @@ class RuntimeContractTests(unittest.TestCase):
                 (destination / "materialization.json").read_text(encoding="utf-8")
             )["entrypoint"])
 
+    def test_trusted_files_are_materialized_as_their_exact_committed_bytes(self) -> None:
+        crlf, latin1 = b"line one\r\nline two\r\n", b"caf\xe9\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout, trusted, _ = self._repository(root)
+            manifest = self._manifest()
+            for relative, content in ((manifest["entrypoint"], crlf), (manifest["resources"][0], latin1)):
+                (checkout / relative).write_bytes(content)
+            # Not autocrlf: the blob must hold the CRLF itself, whatever the machine's Git configuration says.
+            self._git(checkout, "-c", "core.autocrlf=false", "add", "--", manifest["entrypoint"],
+                      manifest["resources"][0])
+            self._git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                      "commit", "-m", "bytes")
+            commit = self._git(checkout, "rev-parse", "HEAD")
+            self.assertEqual(crlf, review_runtime._read_git_file(checkout, commit, manifest["entrypoint"],
+                                                                 review_runtime.subprocess_runner))
+            self.assertEqual(latin1, review_runtime._read_git_file(checkout, commit, manifest["resources"][0],
+                                                                   review_runtime.subprocess_runner))
+            destination = root / "materialized"
+            hashes = materialize_reviewer(checkout, commit, manifest, destination)
+            self.assertEqual(crlf, (destination / manifest["entrypoint"]).read_bytes())
+            self.assertEqual(latin1, (destination / manifest["resources"][0]).read_bytes())
+            expected = {
+                manifest["entrypoint"]: hashlib.sha256(b"line one\r\nline two\r\n").hexdigest(),
+                manifest["resources"][0]: hashlib.sha256(b"caf\xe9\n").hexdigest(),
+                manifest["agent_profiles"][0]: hashlib.sha256(b"Agent\n").hexdigest(),
+            }
+            self.assertEqual(expected, hashes)
+            self.assertEqual(expected, json.loads(
+                (destination / "materialization.json").read_text(encoding="utf-8"))["source_hashes"])
+            self.assertNotEqual(trusted, commit)
+
+    def test_the_git_runner_decodes_in_the_caller_and_keeps_every_byte(self) -> None:
+        # Decoding in subprocess.run happens in a reader thread on Windows, where a bad byte leaves stdout None, and
+        # in the caller on POSIX. Capturing bytes and decoding here gives both platforms the same, lossless path.
+        completed = subprocess.CompletedProcess(["git"], 0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
+        with mock.patch("review_runtime.subprocess.run", return_value=completed) as run:
+            result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"])
+        options = run.call_args.kwargs
+        self.assertTrue(options.get("capture_output"))
+        for decoding in ("text", "encoding", "errors", "universal_newlines"):
+            self.assertNotIn(decoding, options)
+        self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
+        self.assertEqual("fatal: caf�\n", result.stderr)
+        self.assertEqual(0, result.returncode)
+
+    def test_a_git_failure_never_carries_an_undecodable_byte_into_its_message(self) -> None:
+        def runner(arguments: list[str]) -> review_runtime.CommandResult:
+            return review_runtime.CommandResult(128, "caf\udce9", "")
+
+        with self.assertRaises(RuntimeContractError) as raised:
+            review_runtime._run_git(Path("checkout"), runner, "rev-parse", "HEAD")
+        self.assertEqual("caf�", str(raised.exception))
+
     def test_source_snapshot_uses_exact_head_and_excludes_agent_instructions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
