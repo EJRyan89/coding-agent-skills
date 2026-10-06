@@ -70,6 +70,18 @@ When both sources are still in use, do not migrate: the other source's next depl
 
 A name one source deploys as a skill and another as a shared asset cannot be migrated, because it would have to be both. Rename it in one source, or stop deploying it from the other.
 
+## Deploying from another checkout
+
+The manifest also records the checkout each source was deployed from. Two clones of one repository share its source ID and its configuration, so a deployment from the second would silently take over every item the first deployed: it would point the installed skills, and `update-coding-agent-skills`, at the second clone and remove whatever the second lacks. A deployment from any checkout other than the recorded one therefore refuses before it changes anything, naming both paths.
+
+If you deployed from the wrong clone, deploy from the recorded one instead. If this checkout replaces the recorded one, because you moved or re-cloned the repository, take the source over:
+
+```bash
+python deploy.py --all --take-over-source
+```
+
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose home starts empty. A linked worktree is refused whatever the flag; deploy from the main checkout.
+
 ## Configuration that no longer reads
 
 `python deploy.py configure` writes each source's configuration, and every deployment reads it strictly. If it no longer parses, for example because an update removed a variable it still sets, or it was edited by hand, deployment stops and names the problem. `configure` reads the same file, so start from an empty one:

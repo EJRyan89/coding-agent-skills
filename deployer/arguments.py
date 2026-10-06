@@ -19,8 +19,8 @@ VERIFY_COMMAND_LINE = f"{PROG} {VERIFY_COMMAND}"
 HELP_WIDTH = 80
 USAGE = (
     f"{PROG} [--all [--include NAME]] [--dry-run]\n"
-    f"                        [--force] [--force-item NAME]\n"
-    f"       {PROG} --migrate-from ID\n"
+    f"                        [--force] [--force-item NAME] [--take-over-source]\n"
+    f"       {PROG} --migrate-from ID [--take-over-source]\n"
     f"       {PROG} --canary-home DIR [--all [--include NAME]]\n"
     f"                        [--force] [--force-item NAME]\n"
     f"       {CONFIGURE_COMMAND_LINE} [--reset]\n"
@@ -70,10 +70,10 @@ def deploy_parser() -> argparse.ArgumentParser:
         description="Render, validate, and deploy this repository's skills.",
         epilog=(
             "commands:\n"
-            # Pad to the option column, which argparse sets from the longest option, "--migrate-from ID".
-            f"  {CONFIGURE_COMMAND:<17}  set the values skills need; see its --help\n"
-            f"  {CHECK_COMMAND:<17}  list the tools needed and which are missing\n"
-            f"  {VERIFY_COMMAND:<17}  check that Codex and Copilot CLI find the adapters"
+            # Pad to the option column, which argparse sets from the longest option, "--take-over-source".
+            f"  {CONFIGURE_COMMAND:<18}  set the values skills need; see its --help\n"
+            f"  {CHECK_COMMAND:<18}  list the tools needed and which are missing\n"
+            f"  {VERIFY_COMMAND:<18}  check that Codex and Copilot CLI find the adapters"
         ),
     )
     parser.add_argument(
@@ -97,6 +97,11 @@ def deploy_parser() -> argparse.ArgumentParser:
         help="replace one item (backed up); repeatable",
     )
     parser.add_argument("--migrate-from", default="", metavar="ID", help="take over items from another source ID")
+    parser.add_argument(
+        "--take-over-source",
+        action="store_true",
+        help="deploy from this checkout in place of the recorded one",
+    )
     parser.add_argument(
         "--canary-home", default="", metavar="DIR", help="deploy into a throwaway home under the temp directory"
     )

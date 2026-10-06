@@ -106,6 +106,8 @@ python deploy.py --all
 
 The dry run groups items by planned action, with anything that needs your attention, such as conflicts, first, and lists each group alphabetically. Installed items whose rendered content would not change are grouped under `UNCHANGED`, so the `UPDATE` group shows exactly what the update changes. A runtime adapter gets its own line, marked `(runtime adapter)`, only when it needs attention or does something its skill does not. The deployment itself ends with a report in the same layout, in the past tense: `SKIPPED`, `UPDATED`, `INSTALLED`, `UNCHANGED`, and so on, followed by the run ID and manifest path.
 
+Deploy from the same clone each time: the manifest records it, and a deployment from another checkout refuses. If you move or re-clone the repository, deploy once from the new checkout with `--take-over-source`; see [Deploying from another checkout](recovery.md#deploying-from-another-checkout).
+
 If an updated skill requires a new configuration value, the deployer stops and asks you to run `python deploy.py configure` first.
 
 ## Uninstalling

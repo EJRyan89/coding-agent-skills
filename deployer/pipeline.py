@@ -20,6 +20,8 @@ from .manifest import Ownership
 from .names import require_safe_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 
+TAKE_OVER_SOURCE = "--take-over-source"
+
 
 @dataclass
 class Options:
@@ -29,6 +31,7 @@ class Options:
     include: list[str] = field(default_factory=list)
     dry_run: bool = False
     migrate_from: str = ""
+    take_over_source: bool = False
     canary_home: str = ""
 
 
@@ -43,8 +46,14 @@ def parse_arguments(arguments: list[str], source_id: str) -> Options:
             raise DeployError("ERROR: --migrate-from must name a different source")
         if options.dry_run:
             raise DeployError("ERROR: --migrate-from cannot be combined with --dry-run")
+    if options.take_over_source and options.dry_run:
+        raise DeployError(f"ERROR: {TAKE_OVER_SOURCE} cannot be combined with --dry-run")
     if options.canary_home:
-        for flag, used in (("--dry-run", options.dry_run), ("--migrate-from", options.migrate_from)):
+        for flag, used in (
+            ("--dry-run", options.dry_run),
+            ("--migrate-from", options.migrate_from),
+            (TAKE_OVER_SOURCE, options.take_over_source),
+        ):
             if used:
                 raise DeployError(f"ERROR: --canary-home cannot be combined with {flag}")
     return options
@@ -1266,6 +1275,41 @@ def _print_selection(src: source.Source, selection: Selection, selected: list[st
 RECOVERY_FAILED = "When recovery fails"
 
 
+def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> None:
+    """Refuse a checkout other than the one the manifest records for this source, unless the user takes it over.
+
+    Two clones share a source ID and a configuration, so a deployment from the wrong one would silently re-point every
+    installed skill at it and remove whatever it lacks.
+    """
+    entry = manifest.load(paths.manifest_file).source(source_id) or {}
+    recorded = entry.get("source_dir")
+    if not isinstance(recorded, str) or not recorded:
+        return
+    if platform_support.same_directory(Path(recorded), paths.source_dir):
+        return
+    current = platform_support.normalize(paths.source_dir)
+    if not take_over:
+        gone = "" if Path(recorded).is_dir() else ", which no longer exists"
+        raise DeployError(
+            f"ERROR: Source '{source_id}' is deployed from {recorded}{gone}, not from this checkout, {current}.",
+            f"Deploy from {recorded}; or, if this checkout replaces it, rerun with {TAKE_OVER_SOURCE} to record this "
+            "checkout as its source.",
+            see_recovery("Deploying from another checkout"),
+        )
+    owned = ", ".join(
+        _plural(len(entry.get(kind) or {}), noun)
+        for kind, noun in (
+            ("skills", "skill"),
+            ("shared", "shared asset"),
+            (manifest.ADAPTERS, "runtime adapter"),
+            ("agents", "agent"),
+        )
+    )
+    print("")
+    print(f"Taking over source '{source_id}' from {recorded}: {owned}.")
+    print(f"This checkout, {current}, is recorded as their source when this deployment commits.")
+
+
 def run(
     arguments: list[str],
     paths: Paths,
@@ -1310,6 +1354,12 @@ def run(
         held = lock.acquire(paths, probe)
     except DeployError as exc:
         print_error(exc)
+        return exc.exit_code
+    try:
+        _reject_other_checkout(paths, source_id, options.take_over_source)
+    except DeployError as exc:
+        print_error(exc)
+        held.release()
         return exc.exit_code
     if not journal.recover_incomplete(paths):
         print("", file=sys.stderr)

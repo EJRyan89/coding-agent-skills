@@ -413,6 +413,13 @@ class LinkedWorktreeTestCase(DeployerTestCase):
         self.git("worktree", "add", "-q", "-b", "task", str(linked))
         return linked
 
+    def deploy_fails_from(self, directory: Path, *arguments: str) -> Result:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            code = pipeline.run(list(arguments), Paths(directory, self.home), stdin=io.StringIO(""))
+        self.assertNotEqual(0, code, captured.getvalue())
+        return Result(code, captured.getvalue())
+
 
 class SourceCheckoutTests(LinkedWorktreeTestCase):
     def test_deploying_from_a_linked_worktree_is_refused_before_any_change(self) -> None:
@@ -440,12 +447,104 @@ class SourceCheckoutTests(LinkedWorktreeTestCase):
         self.assertFalse(source.is_linked_worktree(self.source))
         self.deploy_ok("--all")
 
-    def deploy_fails_from(self, directory: Path, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), Paths(directory, self.home), stdin=io.StringIO(""))
-        self.assertNotEqual(0, code, captured.getvalue())
-        return Result(code, captured.getvalue())
+
+class OtherCheckoutTests(LinkedWorktreeTestCase):
+    """The manifest records the checkout each source deploys from; another checkout must take the source over."""
+
+    def deployed_clone(self) -> Path:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha from the first clone")
+        self.make_config()
+        self.deploy_ok("--all")
+        clone = self.snapshot_source("Second Clone (2)")
+        skill = clone / "skills" / "alpha" / "SKILL.md"
+        skill.write_bytes(skill.read_bytes().replace(b"first", b"second"))
+        return clone
+
+    def recorded_source_dir(self) -> str:
+        return forward(Path(self.manifest()["sources"]["test/skills"]["source_dir"]))
+
+    def refusal(self, clone: Path, gone: str = "") -> str:
+        return (
+            f"ERROR: Source 'test/skills' is deployed from {forward(self.source)}{gone}, not from this checkout, "
+            f"{forward(clone)}.\n"
+            f"Deploy from {forward(self.source)}; or, if this checkout replaces it, rerun with --take-over-source to "
+            "record this checkout as its source.\n"
+            'See "Deploying from another checkout" in docs/recovery.md.\n'
+        )
+
+    def assert_refused_unchanged(self, clone: Path, *arguments: str, gone: str = "") -> None:
+        manifest = self.manifest_file.read_bytes()
+        result = self.deploy_fails_from(clone, *arguments)
+        self.assertIn(self.refusal(clone, gone), result.output)
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.assertIn("Alpha from the first clone", self.skill_text("alpha"))
+        self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
+
+    def test_a_second_clone_of_the_same_source_is_refused_before_any_change(self) -> None:
+        clone = self.deployed_clone()
+        self.assert_refused_unchanged(clone, "--all")
+        self.deploy_ok("--all")
+
+    def test_a_recorded_checkout_that_no_longer_exists_is_named_as_gone(self) -> None:
+        clone = self.deployed_clone()
+        shutil.rmtree(self.source)
+        self.assert_refused_unchanged(clone, "--all", gone=", which no longer exists")
+
+    def test_take_over_source_records_the_new_checkout_and_deploys_from_it(self) -> None:
+        clone = self.deployed_clone()
+        result = self.deploy_from(clone, "--all", "--take-over-source")
+        self.assertIn(
+            f"Taking over source 'test/skills' from {forward(self.source)}: 1 skill, 0 shared assets, "
+            "1 runtime adapter, 0 agents.\n"
+            f"This checkout, {forward(clone)}, is recorded as their source when this deployment commits.\n",
+            result.output,
+        )
+        self.assertEqual(forward(clone), self.recorded_source_dir())
+        self.assertIn("Alpha from the second clone", self.skill_text("alpha"))
+        self.assertNotIn("Taking over", self.deploy_from(clone, "--all").output)
+        result = self.deploy_fails_from(self.source, "--all")
+        self.assertIn(f"ERROR: Source 'test/skills' is deployed from {forward(clone)}, not from this", result.output)
+
+    def test_take_over_source_from_the_recorded_checkout_changes_nothing_about_it(self) -> None:
+        self.deployed_clone()
+        result = self.deploy_ok("--all", "--take-over-source")
+        self.assertNotIn("Taking over", result.output)
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
+
+    def test_migration_from_a_second_clone_needs_take_over_source(self) -> None:
+        self.make_source_json("test/old")
+        self.make_skill("beta", "Beta")
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.remove_skill("beta")
+        clone = self.deployed_clone()
+        self.make_skill("beta", "Beta")
+        shutil.copytree(self.source / "skills" / "beta", clone / "skills" / "beta")
+        shutil.copy2(self.source / "deploy-meta" / "beta.json", clone / "deploy-meta" / "beta.json")
+        self.assert_refused_unchanged(clone, "--migrate-from", "test/old")
+        self.assertIn("beta", self.owned("skills", "test/old"))
+        result = self.deploy_from(clone, "--migrate-from", "test/old", "--take-over-source")
+        self.assertIn("Moved ownership from 'test/old' to 'test/skills'.", result.output)
+        self.assertIn("beta", self.owned("skills"))
+        self.assertEqual(forward(clone), self.recorded_source_dir())
+
+    def test_a_linked_worktree_is_refused_even_with_take_over_source(self) -> None:
+        linked = self.make_linked_worktree()
+        self.deploy_ok("--all")
+        result = self.deploy_fails_from(linked, "--all", "--take-over-source")
+        self.assertIn(f"ERROR: {forward(linked)} is a linked git worktree.", result.output)
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
+
+    def test_a_dry_run_from_a_second_clone_is_allowed(self) -> None:
+        clone = self.deployed_clone()
+        self.deploy_from(clone, "--all", "--dry-run")
+
+    def test_take_over_source_cannot_be_combined_with_a_dry_run(self) -> None:
+        self.deployed_clone()
+        self.deploy_fails(
+            "--all", "--take-over-source", "--dry-run", pattern="--take-over-source cannot be combined with --dry-run"
+        )
 
 
 class CanaryHomeTests(LinkedWorktreeTestCase):
@@ -548,11 +647,12 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
                 self.assert_untouched(self.run_from(linked, "--canary-home", value, "--all"), pattern)
         self.assertEqual([], list(target.iterdir()))
 
-    def test_dry_run_and_migration_cannot_use_a_canary_home(self) -> None:
+    def test_dry_run_migration_and_take_over_cannot_use_a_canary_home(self) -> None:
         linked = self.make_linked_worktree()
         for extra, pattern in (
             (("--dry-run",), "--canary-home cannot be combined with --dry-run"),
             (("--migrate-from", "test/old"), "--canary-home cannot be combined with --migrate-from"),
+            (("--take-over-source",), "--canary-home cannot be combined with --take-over-source"),
         ):
             with self.subTest(extra=extra):
                 self.assert_untouched(self.run_from(linked, "--canary-home", str(self.canary), *extra), pattern)

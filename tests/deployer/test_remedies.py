@@ -417,7 +417,13 @@ class RecoveryGuideTests(unittest.TestCase):
     def test_every_section_a_refusal_names_is_a_heading_of_the_guide(self) -> None:
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(
-            ("When recovery fails", "Backups", "The deployment lock", "Ownership held by another source"),
+            (
+                "When recovery fails",
+                "Backups",
+                "The deployment lock",
+                "Ownership held by another source",
+                "Deploying from another checkout",
+            ),
             errors.RECOVERY_SECTIONS,
         )
         headings = re.findall(
