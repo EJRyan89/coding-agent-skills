@@ -37,6 +37,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from deployer import platform_support
+from deployer import render
 from deployer import tools
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
@@ -57,6 +58,11 @@ EXECUTABLE_FENCE_LANGUAGES = {
 }
 EXECUTABLE_SCRIPT_EXTENSIONS = {".bash", ".cjs", ".js", ".mjs", ".ps1", ".py", ".sh", ".ts"}
 TEST_SCRIPT_EXTENSIONS = {".py", ".sh", ".ps1"}
+# A regression suite is found by its name alone, matched against the file's stem or its whole name, ignoring case.
+TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
+# Every suite runs as `python <file>`, so a Python suite without this entry point runs no tests and still exits 0.
+PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
+SKILL_GUIDE = "docs/adding-a-skill.md"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
 HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "NotebookEdit", "PowerShell", "Write"}
@@ -540,6 +546,282 @@ def fixture_source_problems(root: Path) -> list[str]:
     return found
 
 
+# What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
+PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
+    "qualified": ("sys.platform", "os.name", "os.startfile"),
+    "attribute": ("chmod", "fchmod", "lchmod", "st_file_attributes"),
+    "keyword": ("creationflags",),
+    "module": ("ctypes", "winreg", "msvcrt", "_winapi"),
+    "variable": ("LOCALAPPDATA", "USERPROFILE", "ProgramFiles", "APPDATA"),
+    "command": ("cygpath",),
+}
+# A module sanctions a use beside the code it excuses, as a module-level PLATFORM_ALLOWED = {token: reason}. An
+# allowance the module no longer needs is reported.
+PLATFORM_ALLOWANCE = "PLATFORM_ALLOWED"
+# The module that defines PLATFORM_TOKENS, which names every token on purpose.
+PLATFORM_POLICY_MODULE = "tests/run_validation.py"
+
+
+def _platform_scanned_files(root: Path) -> list[Path]:
+    """The code that runs on a user's machine or runs validation, other than platform_support itself."""
+    files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "tests" / "run_shard.py"]
+    files += [*(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
+    return [
+        path for path in files
+        if path.is_file() and path.relative_to(root).as_posix() != "deployer/platform_support.py"
+    ]
+
+
+def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[int, str]]:
+    """The platform tokens a module's code names, as (line, token), ignoring comments, docstrings, and test cases."""
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }
+    command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
+    found: list[tuple[int, str]] = []
+
+    def module_token(line: int, module: str) -> bool:
+        top = module.split(".")[0]
+        if top in PLATFORM_TOKENS["module"]:
+            found.append((line, top))
+            return True
+        return False
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.ClassDef) and any(
+            (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
+            for base in node.bases
+        ):
+            return  # A test names what it tests, and its fixtures name tokens on purpose.
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id in skipped_tables for target in targets):
+                return
+        if isinstance(node, ast.Attribute):
+            qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
+            if qualified in PLATFORM_TOKENS["qualified"]:
+                found.append((node.lineno, qualified))
+            elif node.attr in PLATFORM_TOKENS["attribute"]:
+                found.append((node.lineno, node.attr))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                module_token(node.lineno, alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if not module_token(node.lineno, module):
+                for alias in node.names:
+                    qualified = f"{module}.{alias.name}"
+                    if qualified in PLATFORM_TOKENS["qualified"]:
+                        found.append((node.lineno, qualified))
+                    elif alias.name in PLATFORM_TOKENS["attribute"]:
+                        found.append((node.lineno, alias.name))
+        elif isinstance(node, ast.keyword) and node.arg in PLATFORM_TOKENS["keyword"]:
+            found.append((node.lineno, node.arg))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+            # Equality catches an environment lookup or entry, never prose that mentions the variable.
+            if node.value in PLATFORM_TOKENS["variable"]:
+                found.append((node.lineno, node.value))
+            found.extend((node.lineno, name) for name in sorted(set(command.findall(node.value))))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
+def _platform_allowance(tree: ast.Module) -> dict[str, str] | None:
+    """A module's PLATFORM_ALLOWED, or None when it does not map each token to its reason."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == PLATFORM_ALLOWANCE for target in node.targets
+        ):
+            try:
+                allowance = ast.literal_eval(node.value)
+            except ValueError:
+                return None
+            valid = isinstance(allowance, dict) and all(
+                isinstance(token, str) and isinstance(reason, str) and reason.strip()
+                for token, reason in allowance.items()
+            )
+            return allowance if valid else None
+    return {}
+
+
+def platform_code_problems(root: Path) -> list[str]:
+    """Report operating-system-specific code outside deployer/platform_support.py, and allowances no longer needed.
+
+    CLAUDE.md keeps every operating-system-specific behavior in that one module, so a port changes only it.
+    """
+    found: set[tuple[str, int, str]] = set()
+    problems: list[str] = []
+    for path in sorted(_platform_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        allowed = _platform_allowance(tree)
+        if allowed is None:
+            problems.append(f"{name}: {PLATFORM_ALLOWANCE} must map each token to the reason it is allowed")
+            allowed = {}
+        tables = {PLATFORM_ALLOWANCE, "PLATFORM_TOKENS"} if name == PLATFORM_POLICY_MODULE else {PLATFORM_ALLOWANCE}
+        names = _platform_names(tree, tables)
+        found |= {(name, line, token) for line, token in names if token not in allowed}
+        problems += [
+            f"{name}: {PLATFORM_ALLOWANCE} allows {token}, which it no longer names"
+            for token in sorted(set(allowed) - {token for _, token in names})
+        ]
+    return [
+        f"{name}:{line} names {token}; move it behind deployer/platform_support.py"
+        for name, line, token in sorted(found)
+    ] + problems
+
+
+SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
+SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
+# A fixture executes a token in a context when it calls run_tool and one of these finders.
+SHELL_RUNNERS = {"shell": ("find_bash(",), "powershell": ("find_pwsh(", "find_powershell(")}
+SHELL_WORD_BREAKS = " \t\n;|&()"
+
+
+def _shell_units(path: Path) -> list[tuple[str, int, str]]:
+    """A shipped file's Bash and PowerShell as (context, first line, text), classified as the deployer renders it."""
+    context = render.SUFFIX_CONTEXT.get(path.suffix.casefold())
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if context in SHELL_LABELS:
+        return [(context, 1, text)]
+    if context != "markdown":
+        return []
+    units: list[tuple[str, int, str]] = []
+    fence: tuple[str, int, list[str]] | None = None
+    for number, line in enumerate(text.split("\n"), start=1):
+        trimmed = line.strip()
+        if fence is None and trimmed.startswith("```"):
+            words = trimmed[3:].split()
+            fence = (render.FENCE_CONTEXT.get(words[0].casefold(), "text") if words else "text", number + 1, [])
+        elif fence is not None and trimmed == "```":
+            if fence[0] in SHELL_LABELS:
+                units.append((fence[0], fence[1], "\n".join(fence[2])))
+            fence = None
+        elif fence is not None:
+            fence[2].append(line)
+    return units
+
+
+def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
+    """Each token outside a comment, as (line offset, name, whether it sits inside quotes).
+
+    Heredocs are not parsed, so a token in a heredoc body counts as unquoted.
+    """
+    escape = SHELL_ESCAPES[context]
+    found: list[tuple[int, str, bool]] = []
+    quote: str | None = None
+    line = 0
+    word_start = True
+    index = 0
+    while index < len(text):
+        token = TEMPLATE_TOKEN.match(text, index)
+        if token:
+            found.append((line, token.group(1), quote is not None))
+            index = token.end()
+            word_start = False
+            continue
+        char = text[index]
+        if char == escape and quote != "'":
+            following = text[index + 1:index + 2]
+            # An escape before a token does not quote the value the token renders to.
+            if following and not TEMPLATE_TOKEN.match(text, index + 1):
+                line += following == "\n"
+                index += 2
+                word_start = False
+                continue
+        elif quote is None and char == "#" and word_start:
+            end = text.find("\n", index)
+            index = len(text) if end < 0 else end
+            continue
+        elif quote is None and char in "'\"":
+            quote = char
+        elif char == quote:
+            quote = None
+        line += char == "\n"
+        word_start = quote is None and char in SHELL_WORD_BREAKS
+        index += 1
+    return found
+
+
+def _executed_shell_tokens(root: Path) -> set[tuple[str, str]]:
+    """The (context, token) pairs a tests/deployer test with a spaced value renders and then executes."""
+    executed: set[tuple[str, str]] = set()
+    for path in sorted((root / "tests" / "deployer").glob("test_*.py")):
+        text = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(text)):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not node.name.startswith("test_") or "with_spaces" not in node.name:
+                continue
+            source = ast.get_source_segment(text, node) or ""
+            if "run_tool(" not in source:
+                continue
+            for context, runners in SHELL_RUNNERS.items():
+                if any(runner in source for runner in runners):
+                    executed |= {(context, name) for name in TEMPLATE_TOKEN.findall(source)}
+    return executed
+
+
+def shell_token_problems(root: Path) -> list[str]:
+    """Report a token in shipped Bash or PowerShell outside quotes, or with no execution fixture in that language.
+
+    "Template values" in docs/adding-a-skill.md keeps tokens quoted in executable content, and CLAUDE.md asks for a
+    rendered execution fixture with representative values containing spaces.
+    """
+    unquoted: list[str] = []
+    first: dict[tuple[str, str], tuple[str, int]] = {}
+    files = sorted(
+        (path for path in (root / "skills").rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    for path in files:
+        name = path.relative_to(root).as_posix()
+        for context, start, text in _shell_units(path):
+            for offset, token, quoted in _shell_tokens(text, context):
+                line = start + offset
+                if not quoted:
+                    unquoted.append(f"{name}:{line} has {{{{{token}}}}} outside quotes in {SHELL_LABELS[context]}")
+                first.setdefault((context, token), (name, line))
+    executed = _executed_shell_tokens(root)
+    missing = sorted(
+        (name, line, token, context)
+        for (context, token), (name, line) in first.items()
+        if (context, token) not in executed
+    )
+    return unquoted + [
+        f"{name}:{line} carries {{{{{token}}}}} in {SHELL_LABELS[context]}, but no tests/deployer test named "
+        "*with_spaces* renders and executes it there"
+        for name, line, token, context in missing
+    ]
+
+
+def _markdown_section(text: str, heading: str) -> str | None:
+    lines = text.split("\n")
+    if heading not in lines:
+        return None
+    start = lines.index(heading) + 1
+    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
+    return "\n".join(lines[start:end])
+
+
+def suite_discovery_documentation_problems(root: Path) -> list[str]:
+    """Report a rule that decides whether a regression suite runs and that "Validation" in the skill guide omits."""
+    section = _markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
+    if section is None:
+        return [f'{SKILL_GUIDE} has no "Validation" section']
+    rules = [*TEST_NAME_PATTERNS, *sorted(TEST_SCRIPT_EXTENSIONS), PYTHON_ENTRY_POINT]
+    return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
+
+
 def is_executable_script(path: Path) -> bool:
     return path.suffix.casefold() in EXECUTABLE_SCRIPT_EXTENSIONS
 
@@ -551,23 +833,12 @@ def is_shell_script(path: Path) -> bool:
 def is_test_script(path: Path) -> bool:
     if path.suffix.casefold() not in TEST_SCRIPT_EXTENSIONS:
         return False
-    stem = path.stem.casefold()
-    return (
-        stem.startswith(("test_", "test-"))
-        or stem.endswith(("_test", "-test"))
-        or ".test." in path.name.casefold()
-    )
+    names = (path.stem.casefold(), path.name.casefold())
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in TEST_NAME_PATTERNS for name in names)
 
 
 def relative(path: Path) -> str:
     return path.relative_to(REPOSITORY_ROOT).as_posix()
-
-
-def to_git_bash_path(path: str) -> str:
-    normalized = path.replace("\\", "/")
-    if len(normalized) >= 2 and normalized[1] == ":":
-        return f"/{normalized[0].lower()}{normalized[2:]}"
-    return normalized
 
 
 def shell_quote(value: str) -> str:
@@ -575,29 +846,17 @@ def shell_quote(value: str) -> str:
 
 
 def find_git_bash() -> str:
-    if sys.platform == "win32":
-        found = platform_support.find_bash()
-        if found:
-            return found
-        raise AssertionError(
-            "Git Bash was not found. Install Git for Windows or set GIT_BASH; "
-            "Git Bash is required for repository validation."
-        )
-    configured = os.environ.get("GIT_BASH")
-    if configured and Path(configured).is_file():
-        return configured
-    found = shutil.which("bash")
+    found = platform_support.find_bash()
     if found:
         return found
-    raise AssertionError("bash was not found; it is required for repository validation.")
+    raise AssertionError(
+        "Git Bash was not found. Install Git for Windows or set GIT_BASH; "
+        "Git Bash is required for repository validation."
+    )
 
 
 def find_shellcheck() -> str | None:
-    found = shutil.which("shellcheck")
-    if found:
-        return found
-    winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "shellcheck.exe"
-    return str(winget) if winget.is_file() else None
+    return platform_support.find_executable("shellcheck")
 
 
 def find_powershell() -> str:
@@ -774,13 +1033,10 @@ def run_git_bash(command: str) -> None:
     prefix = ""
     shellcheck = find_shellcheck()
     if shellcheck is not None:
-        environment["SHELLCHECK_BIN_DIR"] = str(Path(shellcheck).parent)
-        prefix = (
-            'if [ -n "${SHELLCHECK_BIN_DIR:-}" ]; then '
-            'export PATH="$(cygpath -u "$SHELLCHECK_BIN_DIR" 2>/dev/null || '
-            'printf %s "$SHELLCHECK_BIN_DIR"):$PATH"; fi; '
-        )
-    root = shell_quote(to_git_bash_path(str(REPOSITORY_ROOT)))
+        # A login shell rebuilds PATH, which can drop the directory ShellCheck was found in.
+        environment["SHELLCHECK_BIN_DIR"] = platform_support.to_shell_path(str(Path(shellcheck).parent))
+        prefix = 'export PATH="$SHELLCHECK_BIN_DIR:$PATH"; '
+    root = shell_quote(platform_support.to_shell_path(str(REPOSITORY_ROOT)))
     run_process(
         [find_git_bash(), "-l", "-c", f"{prefix}set -euo pipefail; cd {root}; {command}"],
         environment,
@@ -1232,15 +1488,9 @@ class RepositoryValidation(unittest.TestCase):
     def test_python_suites_run_their_tests_when_executed(self) -> None:
         # Every suite runs as `python <file>`, so one without a __main__ entry point defines its tests, runs none,
         # and still exits 0.
-        suites = [
-            *(REPOSITORY_ROOT / "tests").rglob("test_*.py"),
-            *(path for path in SKILLS_ROOT.rglob("*.py") if is_test_script(path)),
-        ]
+        suites = [path for path in regression_suites() if path.suffix.casefold() == ".py"]
         self.assertTrue(suites)
-        missing = [
-            relative(path) for path in sorted(suites)
-            if 'if __name__ == "__main__":' not in path.read_text(encoding="utf-8")
-        ]
+        missing = [relative(path) for path in suites if PYTHON_ENTRY_POINT not in path.read_text(encoding="utf-8")]
         self.assertEqual([], missing)
 
     def test_repository_skills_have_matching_shims(self) -> None:
@@ -1306,6 +1556,194 @@ class RepositoryValidation(unittest.TestCase):
                 ],
                 fixture_source_problems(root),
             )
+
+    def test_os_specific_code_stays_in_platform_support(self) -> None:
+        # The macOS and Linux port then changes one module: deployer/platform_support.py.
+        self.assertEqual([], platform_code_problems(REPOSITORY_ROOT))
+
+    def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(relative_path: str, text: str) -> None:
+                (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative_path).write_text(text, encoding="utf-8")
+
+            write("deploy.py", "import sys\n\nif sys.platform == 'win32':\n    pass\n")
+            write(
+                "deployer/files.py",
+                '"""Docstrings may say os.chmod, USERPROFILE, or cygpath."""\n'
+                "import os\n"
+                "from os import name\n"
+                "import ctypes.wintypes\n"
+                "from msvcrt import getch\n"
+                "\n"
+                "\n"
+                "def private(path, environment):\n"
+                '    """So may a function\'s: LOCALAPPDATA."""\n'
+                "    # And comments: sys.platform, os.chmod, cygpath.\n"
+                "    path.chmod(0o600)\n"
+                '    return environment.get("LOCALAPPDATA"), {"ProgramFiles": os.name}\n',
+            )
+            write("deployer/platform_support.py", "import sys\nPLATFORM = sys.platform\n")
+            write(
+                "tools/shell.py",
+                "import subprocess\n"
+                'SNIPPET = "path=$(cygpath -m \\"$0\\")"\n'
+                'OTHER = "cygpathology is not a command"\n'
+                'subprocess.run(["x"], creationflags=0, check=False)\n',
+            )
+            write(
+                "tools/allowed.py",
+                'PLATFORM_ALLOWED = {"cygpath": "it falls back when cygpath is absent"}\n'
+                'SNIPPET = "command -v cygpath && cygpath -m x"\n'
+                'HOME = "USERPROFILE"\n',
+            )
+            write("tools/gone.py", 'PLATFORM_ALLOWED = {"cygpath": "the module no longer names it"}\n')
+            write("tools/unexplained.py", 'PLATFORM_ALLOWED = {"cygpath": " "}\nSNIPPET = "cygpath -m x"\n')
+            write(
+                "tests/run_validation.py",
+                'PLATFORM_TOKENS = {"variable": ("USERPROFILE",), "command": ("cygpath",)}\n'
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class Fixtures(unittest.TestCase):\n"
+                "    def test_names_tokens(self):\n"
+                '        self.assertEqual("USERPROFILE", "USERPROFILE")\n'
+                "\n"
+                "\n"
+                'HOME = "USERPROFILE"\n',
+            )
+            write("tests/deployer/test_platform.py", "import sys\nPLATFORM = sys.platform\n")
+            write("skills/alpha/scripts/tool.py", "import sys\nPLATFORM = sys.platform\n")
+            move = "; move it behind deployer/platform_support.py"
+            self.assertEqual(
+                [
+                    f"deploy.py:3 names sys.platform{move}",
+                    f"deployer/files.py:3 names os.name{move}",
+                    f"deployer/files.py:4 names ctypes{move}",
+                    f"deployer/files.py:5 names msvcrt{move}",
+                    f"deployer/files.py:11 names chmod{move}",
+                    f"deployer/files.py:12 names LOCALAPPDATA{move}",
+                    f"deployer/files.py:12 names ProgramFiles{move}",
+                    f"deployer/files.py:12 names os.name{move}",
+                    f"tests/run_validation.py:10 names USERPROFILE{move}",
+                    f"tools/allowed.py:3 names USERPROFILE{move}",
+                    f"tools/shell.py:2 names cygpath{move}",
+                    f"tools/shell.py:4 names creationflags{move}",
+                    f"tools/unexplained.py:2 names cygpath{move}",
+                    "tools/gone.py: PLATFORM_ALLOWED allows cygpath, which it no longer names",
+                    "tools/unexplained.py: PLATFORM_ALLOWED must map each token to the reason it is allowed",
+                ],
+                platform_code_problems(root),
+            )
+
+    def test_shell_tokens_are_quoted_and_executed_by_a_fixture(self) -> None:
+        self.assertEqual([], shell_token_problems(REPOSITORY_ROOT))
+
+    def test_shell_token_policy_detects_unquoted_and_unexecuted_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(relative_path: str, text: str) -> None:
+                (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative_path).write_text(text, encoding="utf-8")
+
+            write(
+                "skills/alpha/SKILL.md",
+                "Prose may say {{BARE}}.\n"
+                "\n"
+                "```bash\n"
+                'python -B run.py "{{QUOTED}}" \'{{SINGLE}}\' "a \\" {{STILL_QUOTED}}"\n'
+                "cd {{UNQUOTED}}/x  # but a comment may say {{IN_COMMENT}}\n"
+                "```\n"
+                "\n"
+                "```text\n"
+                "{{NOT_SHELL}}\n"
+                "```\n"
+                "\n"
+                "```pwsh\n"
+                "Set-Location \"{{QUOTED}}\"; Write-Output `{{ESCAPED}}\n"
+                "```\n",
+            )
+            write("skills/alpha/scripts/run.sh", '#!/usr/bin/env bash\necho "{{QUOTED}}"\necho {{SCRIPT}}\n')
+            write("skills/alpha/scripts/run.ps1", "Write-Output '{{PS_ONLY}}'\n")
+            write("skills/alpha/scripts/tool.py", "ROOT = {{PYTHON}}\n")
+            write(
+                "tests/deployer/test_rendering.py",
+                "class Fixtures:\n"
+                "    def test_quoted_executes_with_spaces(self):\n"
+                '        self.make_skill("alpha", "```bash\\nprintf \\"{{QUOTED}}\\"\\n```")\n'
+                "        platform_support.run_tool([platform_support.find_bash(), 'run.sh'])\n"
+                "\n"
+                "    def test_single_executes_with_spaces(self):\n"
+                '        self.make_skill("alpha", "{{SINGLE}} {{STILL_QUOTED}} {{UNQUOTED}} {{SCRIPT}}")\n'
+                "        platform_support.run_tool([platform_support.find_bash(), 'run.sh'])\n"
+                "\n"
+                "    def test_powershell_executes(self):\n"
+                '        self.make_skill("alpha", "{{PS_ONLY}}")\n'
+                "        platform_support.run_tool([platform_support.find_pwsh(path), 'run.ps1'])\n"
+                "\n"
+                "    def test_quoted_renders_in_powershell_with_spaces(self):\n"
+                '        self.make_skill("alpha", "{{QUOTED}}")\n'
+                "        platform_support.find_pwsh(path)\n",
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/SKILL.md:5 has {{UNQUOTED}} outside quotes in Bash",
+                    "skills/alpha/SKILL.md:13 has {{ESCAPED}} outside quotes in PowerShell",
+                    "skills/alpha/scripts/run.sh:3 has {{SCRIPT}} outside quotes in Bash",
+                    "skills/alpha/SKILL.md:13 carries {{ESCAPED}} in PowerShell, but no tests/deployer test named "
+                    "*with_spaces* renders and executes it there",
+                    "skills/alpha/SKILL.md:13 carries {{QUOTED}} in PowerShell, but no tests/deployer test named "
+                    "*with_spaces* renders and executes it there",
+                    "skills/alpha/scripts/run.ps1:1 carries {{PS_ONLY}} in PowerShell, but no tests/deployer test "
+                    "named *with_spaces* renders and executes it there",
+                ],
+                shell_token_problems(root),
+            )
+
+    def test_suite_discovery_rules_are_documented(self) -> None:
+        self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
+
+    def test_suite_discovery_documentation_policy_detects_each_missing_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs").mkdir()
+            guide = root / "docs" / "adding-a-skill.md"
+            guide.write_text(
+                "# Adding a skill\n\n## Files\n\n`test-*` `*.test.*` `.sh` `if __name__ == \"__main__\":`\n\n"
+                "## Validation\n\nName it `test_*`, `*_test`, or `*-test` and use `.py` or `.ps1`.\n\n## Later\n",
+                encoding="utf-8",
+            )
+            missing = 'docs/adding-a-skill.md "Validation" does not name'
+            self.assertEqual(
+                [
+                    f"{missing} `test-*`",
+                    f"{missing} `*.test.*`",
+                    f"{missing} `.sh`",
+                    f"{missing} `if __name__ == \"__main__\":`",
+                ],
+                suite_discovery_documentation_problems(root),
+            )
+            guide.write_text("# Adding a skill\n", encoding="utf-8")
+            self.assertEqual(
+                ['docs/adding-a-skill.md has no "Validation" section'], suite_discovery_documentation_problems(root)
+            )
+
+    def test_suite_names_follow_the_documented_patterns(self) -> None:
+        self.assertEqual(("test_*", "test-*", "*_test", "*-test", "*.test.*"), TEST_NAME_PATTERNS)
+        for name in (
+            "test_a.py", "test-a.sh", "a_test.ps1", "a-test.py", "a.test.py", "a.test.b.sh", "TEST_A.PY",
+            "Test-A.Ps1", "test_.py",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(is_test_script(Path(name)))
+        for name in (
+            "a.py", "testa.py", "atest.py", "test_a.txt", "a_tests.py", "contest.py", "a.tests.py", "test_a.js",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(is_test_script(Path(name)))
 
     def test_skills_run_only_standard_or_declared_commands(self) -> None:
         from deployer import tools

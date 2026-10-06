@@ -130,7 +130,7 @@ Skills run on machines where installing extra utilities may be inconvenient or n
 - PowerShell.
 - A tool from the catalogue in `deployer/tools.py`, declared in the skill's metadata as described below.
 
-`STANDARD_COMMANDS` in `deployer/tools.py` lists the first three groups exactly. Repository validation fails when a skill's scripts or Bash examples run anything else. Reach for these substitutes instead:
+`STANDARD_COMMANDS` in `deployer/tools.py` lists the first three groups exactly; the Windows-specific names among them (`python`, `powershell`, and `cygpath`) come from `deployer/platform_support.py`. Repository validation fails when a skill's scripts or Bash examples run anything else. Reach for these substitutes instead:
 
 | Instead of | Use |
 |---|---|
@@ -189,7 +189,7 @@ Use a declared variable as an uppercase token:
 
 Every token used by a selected skill must be available during deployment. The deployer rejects unresolved tokens after rendering.
 
-Substitution depends on where the token appears. In `.json` and `.toml` files, and in `json` fenced blocks in Markdown, the value is escaped as string content and the rendered file must still parse. In Bash, PowerShell, Python, and YAML files, in the matching fenced blocks, and in a Markdown file's frontmatter, a value containing quote, expansion, or escape characters is rejected rather than substituted. Markdown prose and `.txt` files receive the value unchanged. Keep tokens inside quoted strings in executable content, and add an execution fixture whenever a token appears in Bash or PowerShell.
+Substitution depends on where the token appears. In `.json` and `.toml` files, and in `json` fenced blocks in Markdown, the value is escaped as string content and the rendered file must still parse. In Bash, PowerShell, Python, and YAML files, in the matching fenced blocks, and in a Markdown file's frontmatter, a value containing quote, expansion, or escape characters is rejected rather than substituted. Markdown prose and `.txt` files receive the value unchanged. Keep tokens inside quoted strings in executable content, and add an execution fixture whenever a token appears in Bash or PowerShell: a test in `tests/deployer/` whose name contains `with_spaces`, which renders the token in that language with a value containing spaces and runs the result. Validation fails when a token in a skill's Bash or PowerShell sits outside quotes, or when no such test covers that token in that language.
 
 ## Shared assets
 
@@ -239,7 +239,7 @@ Run `python tools/skill_reference.py` to see what is still missing. Validation f
 Before adding the skill to a release:
 
 1. Add positive rendering coverage to the appropriate `tests/deployer/test_*.py` module, creating a focused module only when necessary. `tests/run_validation.py` discovers and runs every module in parallel.
-2. If the skill contains executable files, include an executable regression suite under its `scripts/` directory. Name each test entry point `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` and use `.py`, `.sh`, or `.ps1`. `tests/run_validation.py` discovers and runs these suites automatically. JavaScript or TypeScript implementations may use one of those supported test entry points as their test driver.
+2. If the skill contains executable files, include an executable regression suite under its `scripts/` directory. Name each test entry point `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` and use `.py`, `.sh`, or `.ps1`. `tests/run_validation.py` discovers and runs these suites automatically, under `tests/` and each skill's `scripts/`, by name alone: a file whose name misses the patterns never runs. It runs each suite as a program, so end a Python suite with `if __name__ == "__main__":` calling `unittest.main()`; without it the suite runs no tests and still exits 0, and validation fails. JavaScript or TypeScript implementations may use one of those supported test entry points as their test driver.
 3. Add failure cases for any new parsing, path, or execution behavior.
 4. Run the repository validation sequence:
 

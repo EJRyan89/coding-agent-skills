@@ -22,6 +22,7 @@ class ConfigureTests(DeployerTestCase):
             f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\n".encode(),
             self.config_file().read_bytes(),
         )
+        self.assertEqual([self.config_file()], list(self.config_file().parent.iterdir()))
 
     def test_unknown_argument_is_rejected_without_touching_config(self) -> None:
         self.make_source_json()

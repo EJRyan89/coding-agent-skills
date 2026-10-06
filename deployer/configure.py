@@ -38,9 +38,9 @@ def _write(config_file: Path, content: str) -> None:
     )
     temporary = Path(temporary_name)
     try:
+        # mkstemp already creates the file readable and writable by its owner only, and the replace keeps that.
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
-        os.chmod(temporary, 0o600)
         fsops.replace(temporary, config_file)
     finally:
         if temporary.exists():

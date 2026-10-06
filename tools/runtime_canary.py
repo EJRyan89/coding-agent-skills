@@ -111,6 +111,10 @@ try:
 except Exception:
     pass
 '''
+# Platform-specific names that tests/run_validation.py allows outside deployer/platform_support.py, with the reason.
+PLATFORM_ALLOWED = {
+    "cygpath": "BASH_RECORDER runs it only where `command -v` finds it, and otherwise keeps the path it has",
+}
 # Bash reads BASH_ENV before it runs a script, whether the runtime started `bash` from PATH or Git Bash by its full
 # path, and before each `bash -c` command, which is not a script and is left out. Git Bash names the temporary
 # directory /tmp, so cygpath, where it exists, gives the Windows paths the canary compares. It takes the place of

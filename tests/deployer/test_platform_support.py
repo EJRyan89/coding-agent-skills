@@ -102,6 +102,27 @@ class ShellPathTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(expected, platform_support.from_shell_path(value))
 
+    def test_drive_letter_paths_become_git_bash_drive_paths(self) -> None:
+        for value, expected in (
+            ("C:/Tools With Spaces (dev)", "/c/Tools With Spaces (dev)"),
+            ("d:/lower", "/d/lower"),
+            ("E:\\Back\\Slashes", "/e/Back/Slashes"),
+            ("C:", "/c"),
+            ("/c/already/shell", "/c/already/shell"),
+            ("relative/dir", "relative/dir"),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(expected, platform_support.to_shell_path(value))
+
+    def test_shell_paths_round_trip(self) -> None:
+        native = "C:/Work Trees (dev)/repo"
+        self.assertEqual(native, platform_support.from_shell_path(platform_support.to_shell_path(native)))
+
+
+class StandardCommandTests(unittest.TestCase):
+    def test_windows_adds_python_windows_powershell_and_cygpath(self) -> None:
+        self.assertEqual(frozenset({"python", "powershell", "cygpath"}), platform_support.STANDARD_COMMANDS)
+
 
 class HomeDirectoryTests(unittest.TestCase):
     PROFILE = r"D:\Profiles\Some One"

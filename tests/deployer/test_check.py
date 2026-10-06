@@ -205,6 +205,21 @@ class InstallationGuideTests(unittest.TestCase):
         self.assertIn("Installing the tools", re.findall(r"^## (.+)$", guide, re.MULTILINE))
 
 
+class StandardCommandTests(unittest.TestCase):
+    def test_standard_commands_are_the_documented_set(self) -> None:
+        # "Commands skills may run" in docs/adding-a-skill.md lists these; the Windows part comes from platform_support.
+        self.assertEqual(
+            frozenset({
+                "python", "git", "bash", "sh", "pwsh", "powershell",
+                "awk", "basename", "cat", "cmp", "comm", "cp", "curl", "cut", "cygpath", "date", "diff", "dirname",
+                "env", "expr", "find", "grep", "gzip", "head", "ls", "mkdir", "mktemp", "mv", "od", "paste",
+                "readlink", "realpath", "rm", "rmdir", "sed", "seq", "sleep", "sort", "stat", "tail", "tar", "tee",
+                "touch", "tr", "uniq", "wc", "xargs",
+            }),
+            tools.STANDARD_COMMANDS,
+        )
+
+
 class VersionTests(unittest.TestCase):
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
