@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from . import platform_support
 

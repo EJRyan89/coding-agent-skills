@@ -13,11 +13,12 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable
+from typing import Any
 
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_analyzers import inventory, tool_names
+from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_records import (
     ANALYZER_RULE,
     MODEL_RULE,

@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -22,7 +22,7 @@ from review_config import write_config  # noqa: E402
 from review_flags import add_flag, load_store, resolve_flag  # noqa: E402
 from review_records import build_record, validate_adapter_result  # noqa: E402
 
-DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=timezone.utc)
+DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
 
 
 def reviewer(identifier: str, model: str | None = None) -> dict:

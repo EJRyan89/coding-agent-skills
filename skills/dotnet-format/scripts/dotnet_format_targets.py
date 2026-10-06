@@ -38,9 +38,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",

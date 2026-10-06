@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from datetime import date, timedelta
 from pathlib import Path
-import re
-from typing import Any, Iterable
+from typing import Any
 
 from review_archive import commit_record, current_ledger, latest_record, list_versions, pull_directory, record_paths
 from review_config import validate_repository_identity

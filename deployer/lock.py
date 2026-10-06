@@ -6,8 +6,8 @@ import json
 import secrets
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from . import fsops, platform_support
 from .errors import DeployError, see_recovery

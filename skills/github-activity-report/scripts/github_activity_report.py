@@ -12,9 +12,10 @@ import re
 import subprocess
 import sys
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Callable, Sequence
+from datetime import UTC, date, datetime, timedelta
+from typing import Any
 from urllib.parse import quote
 
 SEARCH_PAGE_SIZE = 100
@@ -381,7 +382,7 @@ def _utc_date(timestamp: Any, context: str) -> date:
     if not isinstance(timestamp, str):
         raise GitHubActivityError(f"{context} has no timestamp", kind="malformed")
     try:
-        return datetime.fromisoformat(timestamp).astimezone(timezone.utc).date()
+        return datetime.fromisoformat(timestamp).astimezone(UTC).date()
     except ValueError as exc:
         raise GitHubActivityError(f"{context} has an invalid timestamp: {timestamp!r}", kind="malformed") from exc
 
@@ -603,7 +604,7 @@ def main(
     parser.add_argument("--user", type=_login, required=True)
     parser.add_argument("--months", type=_months, default=12)
     options = parser.parse_args(arguments)
-    current = today or datetime.now(timezone.utc).date()
+    current = today or datetime.now(UTC).date()
     print(
         f"Querying GitHub for {options.months} month(s); searches are spaced {SEARCH_INTERVAL}s apart.", file=sys.stderr
     )

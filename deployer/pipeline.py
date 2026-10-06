@@ -8,9 +8,10 @@ import secrets
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, TextIO
+from typing import TextIO
 
 from . import config, fsops, hashing, journal, lock, manifest, platform_support, render, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, PROG, ParserExit, deploy_parser
@@ -551,9 +552,12 @@ def _surviving_skills(context: Context, selected: list[str]) -> list[str]:
         destination = context.paths.dest_dir / name
         if not os.path.lexists(destination):
             continue
-        if not destination.is_dir() or hashing.find_link(destination) is not None:
-            survivors.append(name)
-        elif hashing.hash_path(destination) != owned_hash and not (name in selected and context.forced(name)):
+        if (
+            not destination.is_dir()
+            or hashing.find_link(destination) is not None
+            or hashing.hash_path(destination) != owned_hash
+            and not (name in selected and context.forced(name))
+        ):
             survivors.append(name)
     return survivors
 

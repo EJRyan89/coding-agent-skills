@@ -6,10 +6,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-from pathlib import Path
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import mcp_handshake

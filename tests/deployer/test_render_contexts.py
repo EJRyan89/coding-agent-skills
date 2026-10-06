@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-# The harness puts the repository root on sys.path so the deployer package imports.
-import harness
+import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 
 from deployer import hashing, render
 from deployer.errors import DeployError

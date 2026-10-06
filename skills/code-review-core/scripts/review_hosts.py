@@ -17,9 +17,10 @@ import re
 import secrets
 import shutil
 import subprocess
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_json
 from review_process import ProcessStatus, hidden_window, same_process

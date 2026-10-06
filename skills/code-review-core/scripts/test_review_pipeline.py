@@ -12,9 +12,10 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -27,7 +28,8 @@ from review_flags import FlagError, add_flag  # noqa: E402
 from review_github import CommandResult, GitHubClient, subprocess_runner  # noqa: E402
 from review_hosts import ProcessResult  # noqa: E402
 from review_process import ProcessStatus, process_status  # noqa: E402
-from review_runtime import CommandResult as GitResult, RuntimeContractError, validate_adapter_manifest  # noqa: E402
+from review_runtime import CommandResult as GitResult  # noqa: E402
+from review_runtime import validate_adapter_manifest
 from review_state import load_state  # noqa: E402
 
 REPOSITORY = "example/one"

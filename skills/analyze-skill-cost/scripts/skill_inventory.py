@@ -58,10 +58,10 @@ import os
 import re
 import subprocess
 import sys
-
-import frontmatter
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import frontmatter
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})

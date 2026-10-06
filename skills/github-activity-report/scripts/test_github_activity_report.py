@@ -6,9 +6,10 @@ import json
 import re
 import sys
 import unittest
+from collections.abc import Callable, Sequence
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 

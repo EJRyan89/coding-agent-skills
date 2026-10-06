@@ -5,8 +5,8 @@ import re
 import shutil
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from unittest import mock
 
 from harness import REPOSITORY_ROOT, DeployerTestCase, forward

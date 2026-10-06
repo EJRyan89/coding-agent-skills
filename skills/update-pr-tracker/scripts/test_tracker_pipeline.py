@@ -8,8 +8,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent

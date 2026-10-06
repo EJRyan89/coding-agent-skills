@@ -15,8 +15,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -140,7 +140,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
             allowed = json.dumps([f"Bash({scripts})", f"PowerShell({scripts})"])
             (source / "skills" / name / "SKILL.md").write_bytes(
                 f'---\nname: {name}\ndescription: "Skill {name}"\nallowed-tools: {allowed}\n{flags}---\n\n'
-                f'Run `{command} "{script}"`.\n'.encode("utf-8")
+                f'Run `{command} "{script}"`.\n'.encode()
             )
             (source / "deploy-meta" / f"{name}.json").write_text(json.dumps(metadata), encoding="utf-8")
             if command == "bash":

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 CORE_SCRIPTS = Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"
 sys.path.insert(0, str(CORE_SCRIPTS))

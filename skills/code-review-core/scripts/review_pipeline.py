@@ -34,10 +34,11 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any
 
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -72,7 +73,6 @@ from review_io import (
     read_json,
     working_path,
 )
-from review_process import ProcessStatus, process_status, start_detached
 from review_operation import (
     ReviewOperationError,
     commit_adapter_result,
@@ -86,7 +86,9 @@ from review_operation import (
     validate_canary_pull,
     validate_pull,
 )
+from review_process import ProcessStatus, process_status, start_detached
 from review_records import RE_REVIEW_SCOPES, RecordError, carried_findings, describe_scope, validate_adapter_result
+from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
     RUNTIME_CAPABILITIES,
@@ -105,7 +107,6 @@ from review_runtime import (
     verify_checkout_remote,
     write_adapter_request,
 )
-from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
 from review_specialists import (
     LINK_FINDING,
     SpecialistError,
@@ -123,7 +124,6 @@ from review_specialists import (
     uncovered,
 )
 from review_state import StateError, default_state_path, load_state, update_state
-
 
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1

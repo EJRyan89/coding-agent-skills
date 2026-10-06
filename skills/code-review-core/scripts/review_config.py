@@ -8,11 +8,11 @@ import ntpath
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from review_io import PersistenceError, atomic_write_json, read_json
-
 
 SCHEMA_VERSION = 1
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$")

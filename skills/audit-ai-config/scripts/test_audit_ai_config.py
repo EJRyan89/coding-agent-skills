@@ -7,15 +7,14 @@ import contextlib
 import hashlib
 import io
 import json
-from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import audit_ai_config as audit
-
 
 OWNERSHIP = audit.OWNERSHIP_MARKER
 

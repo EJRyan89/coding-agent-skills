@@ -19,10 +19,8 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 ignore = [
     "B007", "B008", "B023", "B904", "B905",
     "E402", "E501", "E731", "E741",
-    "F401", "F402", "F541",
-    "I001",
-    "SIM102", "SIM105", "SIM108", "SIM112", "SIM114", "SIM117", "SIM118", "SIM905",
-    "UP012", "UP017", "UP030", "UP032", "UP033", "UP035", "UP037",
+    "F402",
+    "SIM102", "SIM105", "SIM108", "SIM112", "SIM117", "SIM118",
 ]
 
 # mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.

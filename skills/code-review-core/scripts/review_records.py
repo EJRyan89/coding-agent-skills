@@ -6,13 +6,13 @@ import copy
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
-
 
 RECORD_SCHEMA_VERSION = 1
 ADAPTER_PROTOCOL_VERSION = 1
@@ -535,7 +535,7 @@ def build_record(
         "review": {
             "version": version,
             "mode": request["mode"],
-            "reviewed_at": reviewed_at or datetime.now(timezone.utc).isoformat(),
+            "reviewed_at": reviewed_at or datetime.now(UTC).isoformat(),
             "summary": adapter_result["summary"],
             "verdict": calculate_verdict(ledger, policy, unavailable),
             "counts": counts,
@@ -1081,8 +1081,8 @@ def _analyzer_note(analyzer: dict[str, str]) -> str:
 def _reviewed_at(value: str) -> str:
     moment = datetime.fromisoformat(value)
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(timezone.utc).strftime("%d-%b-%Y %H:%M UTC")
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).strftime("%d-%b-%Y %H:%M UTC")
 
 
 def _display_id(version: int, identifier: str) -> str:
@@ -1339,7 +1339,7 @@ def render_markdown(
             # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
             *(
                 [
-                    f"| **Reviewer models** | "
+                    "| **Reviewer models** | "
                     + "; ".join(f"{_cell(names[model])}: {_cell(_code(model))}" for model in mapped)
                     + " |"
                 ]

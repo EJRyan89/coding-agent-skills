@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock

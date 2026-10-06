@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from datetime import date
 import hashlib
 import io
 import json
@@ -14,12 +13,16 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest import mock
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 
+import review_github
+import review_io
+import review_runtime
 from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory
 from review_config import (
     ConfigurationError,
@@ -29,8 +32,6 @@ from review_config import (
     write_config,
 )
 from review_flags import FlagError, add_flag, load_store, resolve_flag
-import review_github
-import review_runtime
 from review_github import CommandResult, GitHubClient, GitHubError
 from review_hosts import (
     HostSuperseded,
@@ -40,22 +41,7 @@ from review_hosts import (
     parse_copilot_version,
     run_copilot,
 )
-import review_io
 from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json
-from review_process import ProcessStatus
-from review_records import (
-    RecordError,
-    TITLE_MAXIMUM_LENGTH,
-    build_record,
-    calculate_verdict,
-    render_markdown,
-    validate_adapter_result,
-    validate_record,
-    validate_record_pair,
-    valid_analyzer,
-    valid_title,
-    write_record_pair,
-)
 from review_operation import (
     ReviewOperationError,
     commit_adapter_result,
@@ -64,6 +50,20 @@ from review_operation import (
     safe_watermark,
     select_eligible_pulls,
     validate_canary_pull,
+)
+from review_process import ProcessStatus
+from review_records import (
+    TITLE_MAXIMUM_LENGTH,
+    RecordError,
+    build_record,
+    calculate_verdict,
+    render_markdown,
+    valid_analyzer,
+    valid_title,
+    validate_adapter_result,
+    validate_record,
+    validate_record_pair,
+    write_record_pair,
 )
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,

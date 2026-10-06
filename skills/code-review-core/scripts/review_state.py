@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
-
 
 SCHEMA_VERSION = 1
 

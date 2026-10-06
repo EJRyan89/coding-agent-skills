@@ -33,9 +33,9 @@ import functools
 import os
 import re
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -592,7 +592,7 @@ def _translate(pattern: str, ranges: list[tuple[int, int]]) -> tuple[str, bool]:
     return "".join(out), separator
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def section_glob(section: str) -> tuple[re.Pattern[str], tuple[tuple[int, int], ...]]:
     """The compiled EditorConfig glob for a section name (https://spec.editorconfig.org/#glob-expressions).
 

@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass, field
-from pathlib import Path
 import re
 import sys
 import tempfile
 import unittest
-from typing import Any, Callable
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]

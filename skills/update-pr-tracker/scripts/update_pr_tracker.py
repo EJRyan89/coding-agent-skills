@@ -24,7 +24,6 @@ from review_config import (
 from review_github import GitHubClient
 from review_io import atomic_write_text
 
-
 START_MARKER = "<!-- code-review-pr-tracker:start -->"
 END_MARKER = "<!-- code-review-pr-tracker:end -->"
 REQUIRED_FIELDS = {

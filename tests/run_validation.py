@@ -27,18 +27,16 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest import mock
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from unittest import mock
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from deployer import platform_support
-from deployer import render
-from deployer import tools
+from deployer import platform_support, render, tools
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
@@ -2433,7 +2431,7 @@ class RepositoryValidation(unittest.TestCase):
                 "unpaired": (json.dumps([f"Bash({own}*)"]), f'{own}x.py"'),
                 "ungranted": (
                     json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
-                    f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"\ngit status',
+                    'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/y.py"\ngit status',
                 ),
                 "none": ('["Read"]', f'{own}x.py"'),
                 "unused": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)", "Glob"]), f'{own}x.py"'),
