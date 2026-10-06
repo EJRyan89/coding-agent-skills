@@ -41,6 +41,20 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - Repository reviewer sources never use pull-request-head instructions, mutable working-tree substitutions, `permissionMode: bypassPermissions`, or a fallback to whichever repository happens to be the current directory.
 - Token usage and cost are never estimated or priced. A review record carries only the `usage` object a reviewer adapter returns, or null.
 
+## Safety invariants
+
+- Configuration selects symbolic runtime and reviewer identifiers, never executable commands.
+- Repository identities are always full `owner/repo` values.
+- Mutable files use validated temporary writes and atomic replacement.
+- Review records are written as linked JSON/Markdown pairs under collision-safe owner/repository paths.
+- Runtime output is untrusted until it satisfies the adapter-result schema.
+- Review, re-review, tracker, flag, and insight operations only read GitHub state. None of them posts comments, creates pending reviews, or submits review state.
+- Repository-provided reviewers are loaded only from an immutable trusted commit.
+- Review source is materialized from the exact PR head into a hash-verified snapshot. Agent configuration and instruction paths from the PR head are excluded; only reviewer-manifest files from the trusted base may instruct the reviewer.
+- The suite-owned generic reviewer and result schema are resolved in the installed `code-review-core` skill's `references/` directory. They never depend on a configured repository checkout, its current branch, or a hard-coded main-worktree path.
+
+When configuration selects `copilot-cli`, the pipeline runs the bounded host in `code-review-core/scripts/review_hosts.py`, never Copilot directly. The host requires Copilot CLI 1.0.88 or newer, verifies the exact file set and hashes of every materialized reviewer resource, requires the diff and source snapshot to be inside the isolated run directory, runs with isolated `HOME`, `USERPROFILE`, `COPILOT_HOME`, and working directory values, disables ambient instructions and MCP servers, and grants write access only to its attempt's staging file, which the host renames to the result path once it is a JSON object and the role has not been set aside. `dispatch` starts the host detached and `wait` follows it, so no runtime's command time limit stops a review. Authentication tokens inherited from the invoking environment remain available by design, so treat this as configuration isolation rather than credential isolation.
+
 ## Runtime roles
 
 | Runtime | Role | Trust boundary |

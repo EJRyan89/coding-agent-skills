@@ -251,13 +251,37 @@ class HandshakeTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("CONFIG_ERROR .vscode/mcp.json "), lines)
         self.assertEqual("HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2", lines[1])
 
-    def test_no_servers_and_non_repository(self) -> None:
+    def test_no_servers_is_a_result(self) -> None:
         self.assertEqual((0, ["NO_SERVERS"]), self._run())
-        errors = io.StringIO()
-        with contextlib.redirect_stderr(errors):
+
+    def test_a_non_repository_fails_on_stdout_with_exit_1(self) -> None:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             code = mcp_handshake.main(["--root", str(self.root / "tools")])
-        self.assertEqual(2, code)
-        self.assertIn("is not a Git repository", errors.getvalue())
+        self.assertEqual(1, code)
+        self.assertEqual([f"FAILED {self.root / 'tools'} is not a Git repository"], output.getvalue().splitlines())
+        self.assertEqual("", errors.getvalue())
+
+    def test_a_server_name_that_matches_nothing_fails(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})
+        self.assertEqual((1, ["FAILED no MCP server named absent"]), self._run("--server", "absent"))
+        (self.root / ".mcp.json").unlink()
+        self.assertEqual((1, ["FAILED no MCP server named absent"]), self._run("--server", "absent"))
+
+    def test_a_server_name_beside_an_unreadable_config_names_both(self) -> None:
+        (self.root / ".mcp.json").write_text('{"mcpServers": {', encoding="utf-8")
+        code, lines = self._run("--server", "docs")
+        self.assertEqual(1, code, lines)
+        self.assertEqual(2, len(lines), lines)
+        self.assertTrue(lines[0].startswith("CONFIG_ERROR .mcp.json Could not read or parse: "), lines)
+        self.assertEqual("FAILED no MCP server named docs", lines[1])
+
+    def test_a_usage_error_exits_2(self) -> None:
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            mcp_handshake.main(["--root", str(self.root), "--timeout", "soon"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("--timeout", errors.getvalue())
 
 
 if __name__ == "__main__":

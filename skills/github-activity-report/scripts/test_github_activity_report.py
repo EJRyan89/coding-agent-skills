@@ -617,11 +617,21 @@ class MainTests(unittest.TestCase):
                 self.assertEqual(2, code)
                 self.assertEqual([], calls)
 
-    def test_api_errors_are_reported_through_the_parser(self) -> None:
+    def test_api_errors_print_a_failed_line_and_exit_1(self) -> None:
         run, _ = scripted(failed("gh: HTTP 401: Bad credentials"))
-        code, _, stderr = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
-        self.assertEqual(2, code)
-        self.assertIn("[authentication]", stderr)
+        code, stdout, stderr = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
+        self.assertEqual((1, "FAILED gh: HTTP 401: Bad credentials [authentication]\n"), (code, stdout))
+        self.assertEqual(
+            "Querying GitHub for 12 month(s); searches are spaced 2.1s apart.\n", stderr,
+            "stderr carries only progress, never the failure",
+        )
+
+    def test_a_multi_line_failure_is_one_failed_line(self) -> None:
+        run, _ = scripted(failed("gh: HTTP 404: Not Found\n(https://api.github.com/search/issues)\n"))
+        code, stdout, _ = self.run_main(["--org", "acme", "--user", "octo"], GitHubSearchClient(run, Recorder()))
+        self.assertEqual(
+            (1, "FAILED gh: HTTP 404: Not Found (https://api.github.com/search/issues) [api]\n"), (code, stdout)
+        )
 
 
 if __name__ == "__main__":

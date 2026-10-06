@@ -7,6 +7,7 @@ import json
 import ntpath
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -427,7 +428,8 @@ def resolve_repositories(
     return normalized
 
 
-def _main() -> int:
+def _main(arguments: list[str] | None = None) -> int:
+    """Prints `VALID <path>` or `WROTE <path>` and exits 0, or a last line `FAILED <reason>` and exits 1."""
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate_parser = subparsers.add_parser("validate")
@@ -435,18 +437,26 @@ def _main() -> int:
     write_parser = subparsers.add_parser("write")
     write_parser.add_argument("input", type=Path)
     write_parser.add_argument("--output", type=Path)
-    args = parser.parse_args()
+    args = parser.parse_args(arguments)
     try:
         if args.command == "validate":
-            load_config(args.path)
+            path = args.path or default_config_path()
+            load_config(path)
+            print(f"VALID {path}")
         else:
+            path = args.output or default_config_path()
             value = json.loads(args.input.read_text(encoding="utf-8-sig"))
-            write_config(value, args.output)
+            write_config(value, path)
+            print(f"WROTE {path}")
         return 0
-    except (ConfigurationError, OSError, json.JSONDecodeError) as exc:
-        parser.error(str(exc))
-    return 2
+    except (ConfigurationError, PersistenceError, OSError, UnicodeError, json.JSONDecodeError) as exc:
+        print(f"FAILED {exc}")
+        return 1
 
 
 if __name__ == "__main__":
+    # Paths may hold characters a Windows pipe's legacy code page cannot encode.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     raise SystemExit(_main())

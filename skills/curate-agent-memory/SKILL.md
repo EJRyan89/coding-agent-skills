@@ -14,14 +14,14 @@ Memory is for facts about the user and their work that nothing else records. Rul
 Everything later deletes or rewrites files, so the target must be the store Claude Code actually uses.
 
 - **Repository**: the argument, else the current Git repository root. Worktrees of one repository share a single store.
-- **Memory directory**: use `--memory-dir` when given. Otherwise resolve it:
+- **Memory directory**: use `--memory-dir` when given. Otherwise resolve it. The command below resolves it for the current repository; when the user named another repository, add `--repo "<repository>"`:
 
   ```bash
-  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve --repo "<repository>"
+  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" resolve
   ```
 
-  It reports the directory, where it came from, whether it exists, and notes such as the `--settings` launch flag it cannot see.
-- If the result has no directory, or the directory does not exist, list its `candidates` and ask the user to choose or supply `--memory-dir`. Never guess.
+  It prints `REPO <root>`, the repository to use from here on; then `MEMORY_DIR <path>`, `SOURCE <where it came from>`, and `EXISTS yes` or `EXISTS no`, or `NO_MEMORY_DIR` when the settings name no usable directory; a `CANDIDATE <dir>` line for each memory directory it found when the resolved one does not exist; and a `NOTE` line for each caveat, such as the `--settings` launch flag it cannot see. `FAILED not inside a Git repository` means you must pass `--repo`.
+- On `NO_MEMORY_DIR` or `EXISTS no`, show the notes, list the `CANDIDATE` lines, and ask the user to choose or supply `--memory-dir`. Never guess.
 - Show the user the resolved directory and its source, and get explicit confirmation before continuing.
 
 ## Step 2: Run the mechanical audit
@@ -30,7 +30,7 @@ Everything later deletes or rewrites files, so the target must be the store Clau
 python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" audit --memory-dir "<memory dir>" --repo "<repository>"
 ```
 
-It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
+It prints `REPORT <path>`, a new JSON file in the system temporary directory; read that file. `FAILED <reason>` means it wrote no report; show the reason. Its overlaps (up to three passages in the repository's or the user's guidance per memory) are candidates only; the script cannot tell whether a passage states the same rule.
 
 ## Step 3: Verify and classify every memory
 
@@ -68,7 +68,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
   ```
 
-  It prints `DELETED <file>` for each. `FAILED <file>: <reason>` means it deleted nothing; show the reason and fix the list.
+  It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
 - For review findings, invoke `flag-review-finding` with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
@@ -76,7 +76,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" reindex --memory-dir "<memory dir>" --write
   ```
 
-  It writes the index from the memory files; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` or `NEAR_LIMIT` means the index still needs merging or moving entries.
+  It writes the index from the memory files and prints `WROTE <path>`, or `UNCHANGED`; report its `DROPPED` and `ADDED` lines. `OVER_LIMIT` (it still writes the index) or `NEAR_LIMIT` means the index still needs merging or moving entries. A last `FAILED <reason>` means it could not write the index; show the reason.
 - Do not commit, push, or open pull requests; report which repository files changed so the user can review them.
 
 ## Step 6: Re-audit and report

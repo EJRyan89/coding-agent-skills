@@ -20,6 +20,8 @@ import sys
 import tempfile
 from typing import Any
 
+EXIT_CONTRACT_EXEMPT = "Installed as .github/scripts/ai_config.py and run by other repositories' CI, which reads its exit status and stderr"
+
 
 # ---------------------------------------------------------------------------
 # Repository-specific constants — customize these for each repo

@@ -166,9 +166,9 @@ class LocateTests(TemporaryTestCase):
         for name in ("../alpha", "a/b", "", "a b"):
             with self.subTest(name=name):
                 code, lines, error = self.locate(name)
-                self.assertEqual(2, code)
-                self.assertEqual([], lines)
-                self.assertTrue(error.startswith("FAILED invalid skill name"))
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(1, len(lines))
+                self.assertTrue(lines[0].startswith("FAILED invalid skill name"))
 
     def test_git_toplevel_finds_the_root_or_nothing(self) -> None:
         git("init", "-q", str(self.repo))
@@ -310,8 +310,16 @@ class InventoryTests(TemporaryTestCase):
 
     def test_missing_directory_fails(self) -> None:
         code, lines, error = run("inventory", str(self.root / "absent"))
-        self.assertEqual((2, []), (code, lines))
-        self.assertIn("FAILED skill directory not found", error)
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED skill directory not found"))
+
+    def test_an_unreadable_file_fails_with_its_path(self) -> None:
+        write(self.root / "SKILL.md", "x")
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "Permission denied", "locked.md")):
+            code, lines, error = run("inventory", str(self.root))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(["FAILED cannot read locked.md: Permission denied"], lines)
 
 
 class ToolsTests(TemporaryTestCase):
@@ -557,17 +565,20 @@ class ToolsTests(TemporaryTestCase):
         for text, reason in cases.items():
             with self.subTest(reason=reason):
                 code, lines, error = run("tools", str(write(self.root / "SKILL.md", text)))
-                self.assertEqual((2, []), (code, lines))
-                self.assertIn(reason, error)
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual(1, len(lines))
+                self.assertTrue(lines[0].startswith("FAILED "))
+                self.assertIn(reason, lines[0])
 
     def test_keys_it_does_not_read_may_be_structured(self) -> None:
         lines = self.tools("---\ndescription: Run.\nhooks:\n  PreToolUse:\n    - matcher: Bash\n---\nBody.\n")
         self.assertEqual(["MODEL none", "DESCRIPTION 4 1", "INVOCATION model", "NO_ALLOWED_TOOLS"], lines)
 
     def test_missing_file_fails(self) -> None:
-        code, _, error = run("tools", str(self.root / "absent.md"))
-        self.assertEqual(2, code)
-        self.assertIn("FAILED skill file not found", error)
+        code, lines, error = run("tools", str(self.root / "absent.md"))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED skill file not found"))
 
 
 class ScanTests(TemporaryTestCase):
@@ -647,8 +658,33 @@ class ScanTests(TemporaryTestCase):
     def test_missing_files_fail_before_any_output(self) -> None:
         present = write(self.root / "SKILL.md", "For each item.\n")
         code, lines, error = run("scan", str(present), str(self.root / "absent.md"))
-        self.assertEqual((2, []), (code, lines))
-        self.assertIn("absent.md", error)
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual(1, len(lines))
+        self.assertTrue(lines[0].startswith("FAILED file not found"))
+        self.assertIn("absent.md", lines[0])
+
+
+class ExitContractTests(TemporaryTestCase):
+    """The process-level contract: 1 with a last stdout line FAILED for a failure, 2 for usage alone."""
+
+    def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, text=True, check=False
+        )
+
+    def test_a_missing_input_exits_1_with_failed_on_stdout(self) -> None:
+        completed = self.execute("inventory", str(self.root / "absent"))
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual("", completed.stderr)
+        self.assertTrue(completed.stdout.splitlines()[-1].startswith("FAILED skill directory not found"))
+
+    def test_a_usage_error_exits_2(self) -> None:
+        for arguments in ((), ("unknown",), ("inventory",)):
+            with self.subTest(arguments=arguments):
+                completed = self.execute(*arguments)
+                self.assertEqual(2, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertIn("usage:", completed.stderr)
 
 
 if __name__ == "__main__":

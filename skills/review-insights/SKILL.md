@@ -7,7 +7,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 # Review insights
 
-Run the commands below exactly as shown; do not read the archive, the flag store, or the scripts yourself, and never edit a report or flag by hand. Commands print one fact per line and exit 0 on success; `FAILED <reason>` on stderr with exit code 2 is an expected failure to report.
+Run the commands below exactly as shown; do not read the archive, the flag store, or the scripts yourself, and never edit a report or flag by hand. Commands print one fact per line and exit 0 on success; a last line `FAILED <reason>` is an expected failure to report.
 
 1. **Report.** Require an explicit inclusive ISO date range; never guess one. Pass the user's `--repository owner/repo` (repeatable) or `--repository-set NAME`, or neither for the configured `review-insights` set:
    ```bash

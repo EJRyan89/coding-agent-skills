@@ -21,19 +21,11 @@ Searches are spaced to stay under GitHub's search rate limits, so a 12-month rep
 
 ## Output
 
-Show the script's stdout to the user as-is: a Markdown table with one row per month and a **Total** row, followed by notes. Do not recompute, round, or reinterpret the numbers.
-
-- PRs authored and PRs merged come from GitHub search totals for pull requests created or merged in each month.
-- Commits counts distinct default-branch commits whose author email is linked to the user's account.
-- PRs reviewed counts distinct pull requests the user reviewed each month, and its total counts each pull request once. Reviews submitted counts every submitted review. Both exclude reviews on the user's own pull requests and pending reviews.
-
-- Every count covers only the organization's repositories the current token can read. GitHub search leaves out other repositories without an error, so say this when presenting the numbers as someone's total activity.
-
-If the notes contain a `WARNING` about the 1000-result Search API cap, pass it on as written. A PRs authored, PRs merged, or Commits warning names the undercounted days. A review warning names pull request update dates, not review dates, so it means both review columns may be low in any month and in their totals.
+Show the script's stdout to the user as-is: a Markdown table with one row per month and a **Total** row, followed by notes that say what each column counts. Do not recompute, round, or reinterpret the numbers, and pass on every note, including any `WARNING`, as written.
 
 ## Failures
 
-The script fails closed and never prints a partial table. On failure it exits non-zero with the reason and a kind in brackets:
+The script fails closed and never prints a partial table. On failure it prints one line, `FAILED <reason> [<kind>]`, instead of the table and exits 1:
 
 - `[prerequisite]` or `[authentication]`: install `gh` or run `gh auth login`.
 - `[forbidden]`: the token cannot read some repositories or pull requests, often because it is not SSO-authorized for the organization.

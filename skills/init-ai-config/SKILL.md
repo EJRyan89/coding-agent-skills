@@ -8,7 +8,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 Create or upgrade a repository's AI agent configuration so that every runtime-specific file is derived from one authoritative `CLAUDE.md`. Scripts do every deterministic step; you author `CLAUDE.md`, repository skills, and a JSON spec, and you ask the user the scoping questions. Never hand-create, copy, or edit generated files or the generator's Python: `--write` produces them with ownership markers, and hand-made copies collide with it.
 
-The setup commands below print one fact per line. `FAILED <reason>` on stderr with exit code 2 is an expected failure to report, not a reason to improvise. In each command, replace `<repository root>` with the repository's top-level directory.
+The setup commands below print one fact per line. A last line `FAILED <reason>` is an expected failure to report, not a reason to improvise. In each command, replace `<repository root>` with the repository's top-level directory.
 
 ## Precondition
 
@@ -58,7 +58,7 @@ Otherwise write a new JSON spec file in a new temporary directory, outside the r
 python -B "${CLAUDE_SKILL_DIR}/scripts/init_ai_config.py" --root "<repository root>" install --spec "<spec file>"
 ```
 
-On success it prints `INSTALLED .github/scripts/ai_config.py`, `INSTALLED .github/scripts/test_ai_config.py`, any `CONFIG_WARNING <message>` lines to relay, and `CONFIG_VALID`. On exit code 1 it writes nothing and prints `SPEC_ERROR`, `CONFIG_ERROR`, or `CONFLICT` lines: fix the spec or `CLAUDE.md` and rerun. Add `--replace` only when the user agrees to replace a generator that `init-ai-config` did not install, after exporting its spec.
+On success it prints `INSTALLED .github/scripts/ai_config.py`, `INSTALLED .github/scripts/test_ai_config.py`, any `CONFIG_WARNING <message>` lines to relay, and `CONFIG_VALID`. `SPEC_ERROR`, `CONFIG_ERROR`, or `CONFLICT` lines mean it wrote nothing: fix the spec or `CLAUDE.md` and rerun. Add `--replace` only when the user agrees to replace a generator that `init-ai-config` did not install, after exporting its spec.
 
 ## 7. Generate and check
 

@@ -10,7 +10,7 @@
 Every command takes --root (default: the current directory), which must be a Git repository.
 Commands print one fact per line and exit 0; install exits 1 when it prints SPEC_ERROR,
 CONFIG_ERROR, or CONFLICT lines, and writes nothing in that case. Expected failures print
-`FAILED <reason>` on stderr and exit 2.
+`FAILED <reason>` as the last line and exit 1; only a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ import fnmatch
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 import tomllib
 import types
@@ -132,7 +131,10 @@ def spec_output(explicit: Path | None) -> Path:
     explicit path inside any skills directory is refused before anything is written.
     """
     if explicit is None:
-        return Path(tempfile.mkdtemp(prefix="init-ai-config-spec-")) / "spec.json"
+        try:
+            return Path(tempfile.mkdtemp(prefix="init-ai-config-spec-")) / "spec.json"
+        except OSError as error:
+            raise SetupError(f"could not create a temporary directory: {error}") from error
     target = explicit.resolve()
     for root in (SKILLS_ROOT, *deployed_skill_roots()):
         if target.is_relative_to(root.resolve()):
@@ -524,7 +526,10 @@ def export_spec(root: Path, output: Path) -> list[str]:
             spec, missing = literal_spec(source, rel)
             defaults = template_defaults()
             spec.update({key: defaults[key] for key in missing})
-            template.write_text(output, json.dumps(spec, indent=2, ensure_ascii=False) + "\n")
+            try:
+                template.write_text(output, json.dumps(spec, indent=2, ensure_ascii=False) + "\n")
+            except OSError as error:
+                raise SetupError(f"could not write {output}: {error}") from error
             return [f"DEFAULTED {key}" for key in missing] + [f"SPEC {output}"]
     raise SetupError("no repository generator found at " + " or ".join(GENERATOR_CANDIDATES))
 
@@ -560,8 +565,8 @@ def main(arguments: list[str] | None = None) -> int:
         else:
             code, lines = install(root, args.spec, args.replace)
     except SetupError as error:
-        print(f"FAILED {error}", file=sys.stderr)
-        return 2
+        print(f"FAILED {error}")
+        return 1
     for line in lines:
         print(line)
     return code

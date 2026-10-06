@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -204,17 +207,20 @@ class ExitCodeTests(unittest.TestCase):
         _setup_conforming_repo(self.root)
         result = audit.audit(self.root)
         self.assertEqual(0, result.exit_code)
+        self.assertEqual("COMPLIANT", result.result)
 
-    def test_unconfigured_exit_2(self) -> None:
+    def test_unconfigured_is_inconclusive_with_exit_1(self) -> None:
         result = audit.audit(self.root)
-        self.assertEqual(2, result.exit_code)
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual("INCONCLUSIVE", result.result)
 
-    def test_ambiguous_exit_2(self) -> None:
+    def test_ambiguous_is_inconclusive_with_exit_1(self) -> None:
         (self.root / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
         result = audit.audit(self.root)
-        self.assertEqual(2, result.exit_code)
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual("INCONCLUSIVE", result.result)
 
-    def test_alternative_exit_2(self) -> None:
+    def test_alternative_is_inconclusive_with_exit_1(self) -> None:
         (self.root / ".github").mkdir(parents=True)
         manifest = {
             "generatedBy": "custom_gen.py",
@@ -224,7 +230,8 @@ class ExitCodeTests(unittest.TestCase):
             json.dumps(manifest), encoding="utf-8"
         )
         result = audit.audit(self.root)
-        self.assertEqual(2, result.exit_code)
+        self.assertEqual(1, result.exit_code)
+        self.assertEqual("INCONCLUSIVE", result.result)
 
     def test_error_finding_exit_1(self) -> None:
         _setup_conforming_repo(self.root)
@@ -232,6 +239,82 @@ class ExitCodeTests(unittest.TestCase):
         (self.root / ".github/copilot-instructions.md").unlink()
         result = audit.audit(self.root)
         self.assertEqual(1, result.exit_code)
+        self.assertEqual("ERRORS", result.result)
+
+    def test_inconclusive_wins_over_error_findings(self) -> None:
+        result = audit.AuditResult(
+            authority="ambiguous",
+            findings=[audit.Finding(severity="ERROR", check="manifest")],
+        )
+        self.assertEqual(("INCONCLUSIVE", 1), (result.result, result.exit_code))
+
+
+# ---------------------------------------------------------------------------
+# Command-line tests
+# ---------------------------------------------------------------------------
+
+class CommandLineTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "repo with spaces"
+        self.root.mkdir()
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _main(self, *arguments: str) -> tuple[int, list[str], str]:
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
+                mock.patch.object(sys, "argv", ["audit_ai_config.py", *arguments]):
+            code = audit.main()
+        return code, output.getvalue().splitlines(), errors.getvalue()
+
+    def test_a_non_repository_fails_on_stdout_with_exit_1(self) -> None:
+        for extra in ((), ("--json",)):
+            with self.subTest(extra=extra):
+                code, lines, errors = self._main("--root", str(self.root), *extra)
+                self.assertEqual(1, code)
+                self.assertEqual(
+                    [f"FAILED {self.root} is not a Git repository (no .git found)"], lines
+                )
+                self.assertEqual("", errors)
+
+    def test_an_inconclusive_audit_prints_its_result_line_and_exits_1(self) -> None:
+        (self.root / ".git").mkdir()
+        code, lines, errors = self._main("--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertEqual(1, lines.count("RESULT INCONCLUSIVE"), lines)
+        self.assertEqual([], [line for line in lines if line.startswith("RESULT ") and line != "RESULT INCONCLUSIVE"])
+        self.assertEqual("", errors)
+
+    def test_an_inconclusive_json_audit_exits_1_and_keeps_its_fields(self) -> None:
+        (self.root / ".git").mkdir()
+        code, lines, _ = self._main("--root", str(self.root), "--json")
+        data = json.loads("\n".join(lines))
+        self.assertEqual(1, code)
+        self.assertEqual(("unconfigured", 1), (data["authority"], data["exitCode"]))
+        self.assertEqual({"repository", "authority", "scopeStatus", "exitCode", "findings"}, set(data))
+
+    def test_a_compliant_audit_prints_its_result_line_and_exits_0(self) -> None:
+        (self.root / ".git").mkdir()
+        _setup_conforming_repo(self.root)
+        code, lines, _ = self._main("--root", str(self.root))
+        self.assertEqual(0, code, lines)
+        self.assertIn("RESULT COMPLIANT", lines)
+
+    def test_an_audit_with_errors_prints_its_result_line_and_exits_1(self) -> None:
+        (self.root / ".git").mkdir()
+        _setup_conforming_repo(self.root)
+        (self.root / ".github/copilot-instructions.md").unlink()
+        code, lines, _ = self._main("--root", str(self.root))
+        self.assertEqual(1, code)
+        self.assertIn("RESULT ERRORS", lines)
+
+    def test_a_usage_error_exits_2(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self._main("--no-such-option")
+        self.assertEqual(2, raised.exception.code)
 
 
 # ---------------------------------------------------------------------------
@@ -1603,6 +1686,11 @@ class OutputFormatTests(unittest.TestCase):
             ],
             summary,
         )
+
+    def test_markdown_result_line_precedes_the_summary(self) -> None:
+        lines = audit.format_markdown(audit.audit(self.root)).splitlines()
+        self.assertEqual(["RESULT COMPLIANT"], [line for line in lines if line.startswith("RESULT ")])
+        self.assertEqual("SUMMARY ERROR 0", lines[lines.index("RESULT COMPLIANT") + 1])
 
     def test_markdown_summary_precedes_findings(self) -> None:
         md = audit.format_markdown(audit.audit(self.root))

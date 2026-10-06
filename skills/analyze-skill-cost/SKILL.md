@@ -7,7 +7,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 Audit a named agent skill for cost and efficiency regressions and render a bucketed findings report. Read-only — no edits, no prompts.
 
-The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a missing input prints `FAILED <reason>` on stderr and exits 2. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
+The measurements are commands of `skill_inventory.py`, run exactly as shown. Each prints one fact per line, with paths in forward-slash form; a missing or unreadable input prints `FAILED <reason>` as its last line; stop and report it. Do not re-measure, re-count, or write your own code for anything a command reports. Your job is the judgment the commands cannot make.
 
 ## Step 0 — Parse `$ARGUMENTS`
 

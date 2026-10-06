@@ -18,11 +18,16 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py" --root "<repository r
 
 Add `--json` when the user wants machine-readable output.
 
-| Exit | Meaning | Report as |
+The report states its result on one line, before the `SUMMARY` lines; report by that line, not the exit code:
+
+| Line | Meaning | Report as |
 |---|---|---|
-| `0` | No `ERROR` findings and the authority is conforming | Compliant within statically verifiable scope |
-| `1` | One or more `ERROR` findings | Errors found |
-| `2` | Authority is ambiguous, unconfigured, or an alternative source (`INCONCLUSIVE`) | Inconclusive; the conforming-only checks did not run |
+| `RESULT COMPLIANT` | No `ERROR` findings and the authority is conforming | Compliant within statically verifiable scope |
+| `RESULT ERRORS` | One or more `ERROR` findings | Errors found |
+| `RESULT INCONCLUSIVE` | Authority is ambiguous, unconfigured, or an alternative source | Inconclusive; the conforming-only checks did not run |
+| `FAILED <reason>` | The root is not a Git repository; there is no report | The failure |
+
+With `--json` there is no `RESULT` line: a non-conforming `authority` is inconclusive, otherwise `exitCode` `1` means errors found.
 
 Relay the report's authority and scope status, every `ERROR` and `WARNING` finding, and every finding whose check is `limitation`, which names a documented limitation that applies to this repository. For the remaining `INFO` findings, relay only the engine's `SUMMARY` lines, which count findings per severity and `INFO` findings per check; give the full `INFO` list only when the user asks. `${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
 
@@ -34,7 +39,7 @@ Only for a conforming repository, read the instruction files the engine lists as
 - substantial overlap that duplicates `CLAUDE.md` guidance in a non-generated file, which will drift;
 - a missing dogfooding requirement, when the repository ships tools or rules that it should also apply to itself.
 
-Label these as your assessment, separate from the engine's findings, and do not change the engine's exit status because of them.
+Label these as your assessment, separate from the engine's findings, and do not change the engine's result because of them.
 
 ## 3. Optional operational validation
 
@@ -47,6 +52,6 @@ Only when the user explicitly authorizes it for a trusted repository, because bo
    python -B "${CLAUDE_SKILL_DIR}/scripts/mcp_handshake.py" --root "<repository root>"
    ```
 
-   It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so its servers were not checked: report it as a failure, never as "no servers". Pass `--server <name>` to start only one.
+   It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so its servers were not checked: report it as a failure, never as "no servers". Pass `--server <name>` to start only one; `FAILED no MCP server named <name>` means none has that name.
 
 Report the results as additional findings.

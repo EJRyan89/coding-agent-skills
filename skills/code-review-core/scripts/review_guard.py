@@ -23,7 +23,8 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
-SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
+SCRIPT_DIRECTORY =Path(__file__).resolve().parent
 REFERENCES = SCRIPT_DIRECTORY.parent / "references"
 PIPELINE = SCRIPT_DIRECTORY / "review_pipeline.py"
 RUN_PREFIX = "code-review-run-"
