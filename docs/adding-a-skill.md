@@ -116,12 +116,14 @@ A script that writes a working file, such as a batch, an input, or a plan, choos
 
 Never leave the path to the agent. Given a placeholder such as `--output "<file>"` and a skill directory it already knows, an agent writes beside `SKILL.md`, and the deployer then sees the installed skill as modified and skips it on every later update. Repository validation fails when a command fence in a skill passes a `<...>` placeholder to `--output`, `--output-<name>`, `--out`, `--out-dir`, or `--plans`. A placeholder for a path an earlier command printed, such as `--run "<run directory>"` or `--input "<input file>"`, is fine.
 
-Metadata declares the variables and shared files needed by the skill:
+### Metadata
+
+`deploy-meta/<name>.json` declares the variables and shared files needed by the skill:
 
 ```json
 {
-  "required_vars": ["REPOS_ROOT"],
-  "shared_deps": ["runtime-compatibility.md"]
+    "required_vars": ["REPOS_ROOT"],
+    "shared_deps": ["runtime-compatibility.md"]
 }
 ```
 
@@ -129,14 +131,16 @@ Metadata may also declare same-source skill dependencies and selection visibilit
 
 ```json
 {
-  "required_vars": [],
-  "shared_deps": ["runtime-compatibility.md"],
-  "skill_deps": ["code-review-core"],
-  "selectable": true
+    "required_vars": [],
+    "shared_deps": ["runtime-compatibility.md"],
+    "skill_deps": ["code-review-core"],
+    "selectable": true
 }
 ```
 
 `selectable` defaults to `true`. Set it to `false` only for an internal support skill that is reachable from a selectable skill. Dependencies must exist in this source and form an acyclic graph. The deployer expands the complete transitive dependency closure before rendering or mutation.
+
+Every metadata file has one layout, the one `tools/new_skill.py` writes: one key per line, indented four spaces, with each value on its key's line. Repository validation fails on any other layout.
 
 ### Commands skills may run
 
@@ -164,11 +168,14 @@ Declare the external tools a skill runs, beyond Git and Python, which every depl
 
 ```json
 {
-  "tools": ["gh"]
+    "tools": ["dotnet-format"],
+    "optional_tools": ["gh"]
 }
 ```
 
-The known tools are listed in `SKILL_TOOLS` in `deployer/tools.py`: currently `gh`, `copilot` (optional), and `dotnet-format`. To add one, add it there with how to find it and its minimum version, if any. `python deploy.py check` reports each declared tool and which skills use it, and deploying warns when a selected skill uses a required tool that is not installed. Repository validation fails when a skill's scripts or Bash examples run a known tool it does not declare, when it declares a tool it never runs, or when it runs a command that is neither standard nor declared.
+`tools` lists the tools the skill cannot work without. `optional_tools` lists those it uses only when they are installed, such as dotnet-format reading a pull request's base branch through `gh` before falling back to the remote's default branch; a tool may not be in both. The known tools are listed in `SKILL_TOOLS` in `deployer/tools.py`: currently `gh`, `copilot` (optional for every skill), and `dotnet-format`. To add one, add it there with how to find it and its minimum version, if any. `python deploy.py check` reports each declared tool and which skills use it, as optional when every skill using it declares it optional, and deploying warns when a selected skill requires a tool that is not installed. [`docs/skills.md`](skills.md) lists each skill's own declared tools.
+
+A skill runs what its own scripts and Bash examples run, and what the scripts of its `skill_deps` that it reaches run: a dependency script is reached when the skill's own files import it or name its path (`${CLAUDE_SKILL_DIR}/../<dependency>/scripts/<script>.py`), and so is every dependency script a reached one imports. A dependency's other tools are not the skill's: `flag-review-finding` depends on `code-review-core` but runs none of its `gh` calls, so it declares no tools. Repository validation fails when a skill's own scripts or Bash examples run a known tool it does not declare, when it declares a tool that nothing it runs or reaches runs, or when it runs a command that is neither standard nor declared.
 
 Declare an atomic selection bundle in `source.json`:
 

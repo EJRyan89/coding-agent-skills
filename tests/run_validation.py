@@ -247,41 +247,118 @@ def _shell_fences(markdown: str) -> list[str]:
     return blocks
 
 
-def _commands_run(directory: Path, known: set[str]) -> set[str]:
-    """Commands a skill's scripts and Bash examples run, ignoring its tests."""
-    names = "|".join(re.escape(name) for name in sorted(known))
-    known_call = re.compile(rf'\[\s*"({names})"')
+def _file_commands(path: Path, known_call: re.Pattern[str]) -> set[str]:
+    text = path.read_text(encoding="utf-8", errors="replace")
+    suffix = path.suffix.casefold()
     found: set[str] = set()
-    for path in directory.rglob("*"):
-        if not path.is_file() or is_test_script(path):
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        suffix = path.suffix.casefold()
-        if suffix == ".py":
-            found.update(known_call.findall(text))
-            found.update(name for match in PYTHON_COMMAND.finditer(text) for name in match.groups() if name)
-        elif suffix in {".sh", ".bash"}:
-            found.update(shell_commands(text))
-        elif suffix == ".md":
-            for block in _shell_fences(text):
-                found.update(shell_commands(block))
+    if suffix == ".py":
+        found.update(known_call.findall(text))
+        found.update(name for match in PYTHON_COMMAND.finditer(text) for name in match.groups() if name)
+    elif suffix in {".sh", ".bash"}:
+        found.update(shell_commands(text))
+    elif suffix == ".md":
+        for block in _shell_fences(text):
+            found.update(shell_commands(block))
     return found
 
 
+def _skill_files(directory: Path) -> list[Path]:
+    """A skill's files, without its tests."""
+    return sorted(path for path in directory.rglob("*") if path.is_file() and not is_test_script(path))
+
+
+IMPORTED_MODULE = re.compile(
+    r"^[ \t]*(?:from[ \t]+([A-Za-z_]\w*)[ \t]+import\b|import[ \t]+([A-Za-z_]\w*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*))",
+    re.MULTILINE,
+)
+NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
+
+
+def _referenced_scripts(path: Path) -> set[str]:
+    """Module names a file imports, and script names it gives by a path through another skill's scripts/."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    names = {name for _, name in NAMED_SCRIPT.findall(text)}
+    if path.suffix.casefold() == ".py":
+        for match in IMPORTED_MODULE.finditer(text):
+            names.update([match.group(1)] if match.group(1) else (part.strip() for part in match.group(2).split(",")))
+    return names
+
+
+def _skill_dependencies(root: Path, skill: str) -> list[str]:
+    """The skill_deps closure of a skill, from deploy-meta."""
+    found: list[str] = []
+    pending = [skill]
+    while pending:
+        metadata = root / "deploy-meta" / f"{pending.pop()}.json"
+        if not metadata.is_file():
+            continue
+        for dependency in json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []):
+            if dependency not in found and dependency != skill:
+                found.append(dependency)
+                pending.append(dependency)
+    return found
+
+
+def _reached_dependency_scripts(root: Path, skill: str, own: list[Path]) -> list[Path]:
+    """The dependency scripts a skill runs: those its own files import or name, and what those import in turn."""
+    scripts: dict[str, Path] = {}
+    for dependency in _skill_dependencies(root, skill):
+        for path in sorted((root / "skills" / dependency / "scripts").glob("*.py")):
+            if not is_test_script(path):
+                scripts.setdefault(path.stem, path)
+    own_modules = {path.stem for path in own if path.suffix.casefold() == ".py"}
+    pending = sorted({name for path in own for name in _referenced_scripts(path)} - own_modules)
+    reached: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in reached or name not in scripts:
+            continue
+        reached.add(name)
+        pending.extend(_referenced_scripts(scripts[name]))
+    return [scripts[name] for name in sorted(reached)]
+
+
 def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> list[str]:
-    """Report commands a skill runs that are neither standard nor declared, and declared tools it never runs."""
+    """Report commands a skill runs that are neither standard nor declared, and declared tools it never runs.
+
+    A skill runs what its own scripts and Bash examples run, and what the scripts of its skill_deps that it reaches
+    run: a dependency's tools are not the skill's unless it imports or names the script that runs them.
+    """
+    names = "|".join(re.escape(name) for name in sorted(known))
+    known_call = re.compile(rf'\[\s*"({names})"')
     problems: list[str] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
-        declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("tools", []))
+        document = json.loads(metadata.read_text(encoding="utf-8"))
+        declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
         directories = [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]
-        used = set().union(*(_commands_run(path, known) for path in directories if (path / "SKILL.md").is_file()))
+        own = [
+            path for directory in directories if (directory / "SKILL.md").is_file() for path in _skill_files(directory)
+        ]
+        used = {command for path in own for command in _file_commands(path, known_call)}
+        reached = {command for path in _reached_dependency_scripts(root, skill, own)
+                   for command in _file_commands(path, known_call)}
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
-        for name in sorted(declared - used):
+        for name in sorted(declared - used - reached):
             problems.append(f"skill {skill} declares tool {name} but never runs it")
         for name in sorted(used - known - standard - SHELL_BUILTINS):
             problems.append(f"skill {skill} runs {name}, which a standard install lacks; see {COMMANDS_DOC}")
+    return problems
+
+
+METADATA_DOC = '"Metadata" in docs/adding-a-skill.md'
+
+
+def metadata_format_problems(root: Path) -> list[str]:
+    """Report deploy-meta files not laid out as tools/new_skill.py writes them, so every file reads the same way."""
+    from tools import new_skill
+
+    problems: list[str] = []
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        text = metadata.read_bytes().decode("utf-8")
+        if text != new_skill.metadata_text(json.loads(text)):
+            problems.append(f"deploy-meta/{metadata.name} is not in the canonical metadata format; see {METADATA_DOC}")
     return problems
 
 
@@ -2181,6 +2258,70 @@ class RepositoryValidation(unittest.TestCase):
                     f"skill gamma runs yq, which a standard install lacks; see {doc}",
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"curl", "git"}),
+            )
+
+    def test_skill_command_policy_counts_the_dependency_scripts_a_skill_reaches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            for skill, metadata in {
+                "core": {"tools": ["copilot", "gh"], "selectable": False},
+                "named": {"tools": ["copilot", "gh"], "skill_deps": ["core"]},
+                "imports": {"optional_tools": ["gh"], "skill_deps": ["core"]},
+                "unused": {"optional_tools": ["dotnet-format"], "skill_deps": ["core"]},
+                "inherits": {"skill_deps": ["core"]},
+            }.items():
+                (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
+                (root / "skills" / skill / "scripts").mkdir(parents=True)
+                (root / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+            core = root / "skills" / "core" / "scripts"
+            (core / "pipeline.py").write_text("from github import Client\nimport store\n", encoding="utf-8")
+            (core / "github.py").write_text('run(["gh", "api"])\n', encoding="utf-8")
+            (core / "store.py").write_text("import json\n", encoding="utf-8")
+            (core / "hosts.py").write_text('shutil.which("copilot")\n', encoding="utf-8")
+            (core / "test_hosts.py").write_text("import pipeline\n", encoding="utf-8")
+            # A skill reaches pipeline.py by naming its path, and github.py through pipeline.py's import, but never
+            # hosts.py, so copilot is declared without being run.
+            (root / "skills" / "named" / "SKILL.md").write_text(
+                '```bash\npython -B "${CLAUDE_SKILL_DIR}/../core/scripts/pipeline.py" run\n```\n', encoding="utf-8"
+            )
+            (root / "skills" / "imports" / "scripts" / "run.py").write_text(
+                "sys.path.insert(0, str(CORE))\nfrom store import load\nimport github\n", encoding="utf-8"
+            )
+            (root / "skills" / "unused" / "scripts" / "run.py").write_text("import store\n", encoding="utf-8")
+            (root / "skills" / "inherits" / "scripts" / "run.py").write_text("import store\n", encoding="utf-8")
+            self.assertEqual(
+                [
+                    "skill named declares tool copilot but never runs it",
+                    "skill unused declares tool dotnet-format but never runs it",
+                ],
+                skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
+            )
+
+    def test_deploy_metadata_is_in_the_canonical_format(self) -> None:
+        self.assertEqual([], metadata_format_problems(REPOSITORY_ROOT))
+
+    def test_metadata_format_policy_detects_other_indentation_and_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            files = {
+                "canonical": '{\n    "required_vars": [],\n    "shared_deps": ["runtime-compatibility.md"]\n}\n',
+                "two-space": '{\n  "required_vars": [],\n  "shared_deps": ["runtime-compatibility.md"]\n}\n',
+                "expanded": '{\n    "required_vars": [],\n    "shared_deps": [\n        "runtime-compatibility.md"\n'
+                            "    ]\n}\n",
+                "no-newline": '{\n    "required_vars": []\n}',
+            }
+            for name, text in files.items():
+                (root / "deploy-meta" / f"{name}.json").write_text(text, encoding="utf-8", newline="")
+            doc = '"Metadata" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"deploy-meta/expanded.json is not in the canonical metadata format; see {doc}",
+                    f"deploy-meta/no-newline.json is not in the canonical metadata format; see {doc}",
+                    f"deploy-meta/two-space.json is not in the canonical metadata format; see {doc}",
+                ],
+                metadata_format_problems(root),
             )
 
     def test_deploy_variable_policy_detects_unused_and_undeclared_variables(self) -> None:

@@ -1,5 +1,5 @@
 {
-  "required_vars": [],
-  "shared_deps": ["runtime-compatibility.md"],
-  "skill_deps": ["code-review-core"]
+    "required_vars": [],
+    "shared_deps": ["runtime-compatibility.md"],
+    "skill_deps": ["code-review-core"]
 }

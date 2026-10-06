@@ -110,9 +110,11 @@ class NewSkillTestCase(unittest.TestCase):
             'allowed-tools: ["Bash(gh auth status)", "PowerShell(gh auth status)"]\ndisable-model-invocation: true\n---',
             (self.root / "skills" / "tidy" / "SKILL.md").read_text(encoding="utf-8"),
         )
+        # The canonical layout that validation holds every deploy-meta file to.
         self.assertEqual(
-            {"required_vars": [], "shared_deps": ["runtime-compatibility.md"], "tools": ["gh"], "opt_in": True},
-            json.loads((self.root / "deploy-meta" / "tidy.json").read_text(encoding="utf-8")),
+            '{\n    "required_vars": [],\n    "shared_deps": ["runtime-compatibility.md"],\n    "tools": ["gh"],\n'
+            '    "opt_in": true\n}\n',
+            (self.root / "deploy-meta" / "tidy.json").read_text(encoding="utf-8"),
         )
         self.assertIn(
             "Started by you. Opt-in: deploy it with `--include tidy`. Needs `gh`. Takes no arguments.",

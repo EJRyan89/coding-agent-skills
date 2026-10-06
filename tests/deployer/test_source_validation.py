@@ -308,6 +308,24 @@ class MetadataValidationTests(DeployerTestCase):
         self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"tools": ["gh", "copilot", "gh"]}))
         self.deploy_ok("--all")
 
+    def test_optional_tools_are_known_tools_a_skill_does_not_also_require(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"optional_tools": "gh"}))
+        self.deploy_fails("--all", pattern="deploy-meta/alpha.json has an invalid metadata shape")
+        self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"optional_tools": ["jq"]}))
+        self.deploy_fails(
+            "--all", pattern=r"Skill 'alpha' declares unknown tool 'jq' \(known tools: copilot, dotnet-format, gh\)"
+        )
+        self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"tools": ["gh"], "optional_tools": ["gh"]}))
+        self.deploy_fails("--all", pattern="Skill 'alpha' declares tool 'gh' both required and optional")
+        self.write(
+            self.source / "deploy-meta" / "alpha.json",
+            json.dumps({"tools": ["dotnet-format"], "optional_tools": ["gh"]}),
+        )
+        self.deploy_ok("--all")
+
     def test_opt_in_is_a_flag_on_menu_items_only(self) -> None:
         self.make_config()
         self.make_source_json()

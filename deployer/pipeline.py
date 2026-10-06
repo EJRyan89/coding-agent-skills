@@ -1087,10 +1087,11 @@ def _warn_missing_tools(src: source.Source, selection: Selection) -> None:
     """Warn, without stopping, when a selected skill runs a required tool that is not installed."""
     if selection.deselect_all:
         return
+    required = source.required_tools(src, selection.bundles, selection.skills)
     missing = {
         name: roots
         for name, roots in source.tool_users(src, selection.bundles, selection.skills).items()
-        if not tools.SKILL_TOOLS[name].optional and tools.SKILL_TOOLS[name].locate() is None
+        if name in required and not tools.SKILL_TOOLS[name].optional and tools.SKILL_TOOLS[name].locate() is None
     }
     if not missing:
         return
