@@ -1281,6 +1281,35 @@ def find_shellcheck() -> str | None:
     return platform_support.find_executable("shellcheck")
 
 
+# PSScriptAnalyzer is a PowerShell module, so it is found through pwsh and versioned from its module manifest.
+NEWEST_SCRIPT_ANALYZER = (
+    "Get-Module -ListAvailable PSScriptAnalyzer | Sort-Object Version -Descending | "
+    "Select-Object -First 1 -ExpandProperty Path"
+)
+MODULE_VERSION = re.compile(r"^\s*ModuleVersion\s*=\s*['\"]([0-9.]+)['\"]", re.MULTILINE | re.IGNORECASE)
+
+
+def find_psscriptanalyzer() -> str | None:
+    """The manifest of the newest PSScriptAnalyzer pwsh can load, or None when pwsh lists none."""
+    result = platform_support.run_tool(
+        [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", NEWEST_SCRIPT_ANALYZER]
+    )
+    lines = [line.strip() for line in result.output.splitlines() if line.strip()]
+    found = lines[-1] if result.returncode == 0 and lines else ""
+    return found if found.casefold().endswith(".psd1") else None
+
+
+def read_module_version(manifest: str) -> tuple[int, ...] | None:
+    """A PowerShell module's ModuleVersion, read from its manifest, which may be UTF-8 or UTF-16."""
+    try:
+        data = Path(manifest).read_bytes()
+    except OSError:
+        return None
+    text = data.decode("utf-16") if data[:2] in (b"\xff\xfe", b"\xfe\xff") else data.decode("utf-8-sig", "replace")
+    match = MODULE_VERSION.search(text)
+    return tools.parse_version(match.group(1)) if match else None
+
+
 def find_powershell() -> str:
     found = shutil.which("pwsh")
     if found:
@@ -1301,6 +1330,7 @@ def find_ruff() -> str | None:
 PREREQUISITES: tuple[tuple[str, str, Callable[[], str | None]], ...] = (
     ("Git Bash", "Git Bash", find_git_bash),
     ("ShellCheck", "ShellCheck", find_shellcheck),
+    ("PSScriptAnalyzer", "PSScriptAnalyzer", find_psscriptanalyzer),
     ("PowerShell 7 (pwsh)", "PowerShell", find_powershell),
     ("ruff", "ruff", find_ruff),
 )
@@ -1322,18 +1352,22 @@ def missing_prerequisites(
 
 
 # The oldest release of each validation tool the suite is known to work with. docs/dependency-updates.md owns these,
-# and CI installs Python, ShellCheck, and ruff at their floors. Git Bash has no floor: the shell scripts need no Bash 4.
+# and CI installs Python, ShellCheck, PSScriptAnalyzer, and ruff at their floors. Git Bash has no floor: the shell
+# scripts need no Bash 4.
 # ruff's floor is its pin in requirements-dev.txt, because a newer minor release can change the formatting style.
 DEPENDENCY_DOC = "docs/dependency-updates.md"
 VALIDATION_FLOORS: dict[str, tuple[int, ...]] = {
     "Python": tools.MINIMUM_PYTHON,
     "ShellCheck": (0, 9, 0),
+    "PSScriptAnalyzer": (1, 25, 0),
     "PowerShell 7 (pwsh)": (7, 0),
     "ruff": (0, 16, 10),
 }
 
 
 def read_tool_version(path: str) -> tuple[int, ...] | None:
+    if path.casefold().endswith(".psd1"):
+        return read_module_version(path)
     result = platform_support.run_tool([path, "--version"])
     return tools.parse_version(result.output) if result.returncode == 0 else None
 
@@ -1555,6 +1589,98 @@ def static_shell_check() -> None:
     run_git_bash(f"{checks} && shellcheck --severity=warning {arguments}")
 
 
+# PSScriptAnalyzer reads every .ps1 under these roots, and every PowerShell fence in Markdown outside tests/.
+SCRIPT_ANALYZER_ROOTS = ("tools", "tests", "skills")
+# Reads the targets from the JSON file PSSA_TARGETS names and prints one JSON array of Warning and Error findings.
+SCRIPT_ANALYZER_RUN = (
+    "$ErrorActionPreference = 'Stop'; "
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+    "Import-Module PSScriptAnalyzer -MinimumVersion $env:PSSA_FLOOR; "
+    "$targets = @(Get-Content -LiteralPath $env:PSSA_TARGETS -Raw -Encoding utf8 | ConvertFrom-Json); "
+    "$found = [Collections.Generic.List[object]]::new(); "
+    "for ($index = 0; $index -lt $targets.Count; $index++) { "
+    "$target = $targets[$index]; "
+    "$source = if ($null -ne $target.path) { @{ Path = $target.path } } else { @{ ScriptDefinition = $target.text } }; "
+    "foreach ($record in Invoke-ScriptAnalyzer @source -Severity Warning, Error) { "
+    "$found.Add([ordered]@{ target = $index; line = $record.Line; rule = $record.RuleName; "
+    'severity = "$($record.Severity)"; message = $record.Message }) } }; '
+    "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
+)
+
+
+@dataclass(frozen=True)
+class PowerShellTarget:
+    """A .ps1 file (path) or a PowerShell fence (text) for PSScriptAnalyzer, named by where its first line sits."""
+
+    name: str
+    first_line: int
+    path: Path | None
+    text: str | None
+
+
+def powershell_targets(root: Path, files: list[Path]) -> list[PowerShellTarget]:
+    """Every .ps1 under SCRIPT_ANALYZER_ROOTS, and every non-empty PowerShell fence in Markdown outside tests/."""
+    targets: list[PowerShellTarget] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        suffix = path.suffix.casefold()
+        if suffix == ".ps1" and name.split("/")[0] in SCRIPT_ANALYZER_ROOTS:
+            targets.append(PowerShellTarget(name, 1, path, None))
+        elif suffix == ".md" and not name.startswith("tests/"):
+            targets += [
+                PowerShellTarget(name, start, None, text)
+                for context, start, text in _shell_units(path)
+                if context == "powershell" and text.strip()
+            ]
+    return targets
+
+
+def script_analyzer_check(root: Path, files: list[Path]) -> None:
+    """Fail, naming each finding by file, line, and rule, when PSScriptAnalyzer warns on any PowerShell target."""
+    if find_psscriptanalyzer() is None:
+        raise AssertionError(f"PSScriptAnalyzer was not found: {platform_support.install_hint('PSScriptAnalyzer')}")
+    targets = powershell_targets(root, files)
+    if not targets:
+        return
+    with tempfile.TemporaryDirectory(prefix="psscriptanalyzer-") as directory:
+        request = Path(directory) / "targets.json"
+        request.write_text(
+            json.dumps(
+                [{"path": str(target.path) if target.path else None, "text": target.text} for target in targets]
+            ),
+            encoding="utf-8",
+        )
+        result = platform_support.run_tool(
+            [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT_ANALYZER_RUN],
+            {
+                "PSSA_TARGETS": str(request),
+                "PSSA_FLOOR": tools.format_version(VALIDATION_FLOORS["PSScriptAnalyzer"]),
+            },
+        )
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    try:
+        findings = json.loads(lines[-1]) if result.returncode == 0 and lines else None
+    except json.JSONDecodeError:
+        findings = None
+    if not isinstance(findings, list):
+        raise AssertionError(f"PSScriptAnalyzer could not run (exit code {result.returncode}):\n{result.output}")
+    if findings:
+        reported = [
+            f"  {targets[finding['target']].name}:{targets[finding['target']].first_line + finding['line'] - 1}: "
+            f"{finding['rule']} ({finding['severity']}): {finding['message']}"
+            for finding in findings
+        ]
+        raise AssertionError(
+            "PSScriptAnalyzer found these Warning and Error diagnostics. Fix each at its cause; never suppress one "
+            'with SuppressMessageAttribute or a settings file (CLAUDE.md, "Required validation"):\n'
+            + "\n".join(reported)
+        )
+
+
+def static_powershell_check() -> None:
+    script_analyzer_check(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+
+
 def ruff_format_check(root: Path, targets: list[str]) -> None:
     """Fail, naming each file, when ruff format would change any Python file under the targets in root."""
     ruff = find_ruff()
@@ -1592,10 +1718,12 @@ def static_lint_check() -> None:
 
 def all_jobs() -> list[Job]:
     shell = "static shell checks (bash -n and ShellCheck on skill scripts)"
+    powershell = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
     python_format = "static format check (ruff format --check)"
     python_lint = "static lint check (ruff check)"
     return [
         Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
+        Job(powershell, powershell, UNSPLIT_SUITE_WEIGHT, static_powershell_check),
         Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
         Job(python_lint, python_lint, UNSPLIT_SUITE_WEIGHT, static_lint_check),
         *suite_jobs(regression_suites()),
@@ -2914,15 +3042,113 @@ class RepositoryValidation(unittest.TestCase):
             ruff_lint_check(REPOSITORY_ROOT, ["deploy.py"])
         self.assertIn("ruff was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
 
+    def test_script_analyzer_names_each_file_fence_and_rule_it_finds(self) -> None:
+        unused = "function Get-Answer {\n    $unused = 1\n    'answer'\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "tools").mkdir()
+            (root / "tools" / "clean.ps1").write_text("function Get-Answer {\n    'answer'\n}\n", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs" / "clean.md").write_text("# Clean\n\n```powershell\nGet-Date\n```\n", encoding="utf-8")
+            clean = [root / "tools" / "clean.ps1", root / "docs" / "clean.md"]
+            script_analyzer_check(root, clean)
+            (root / "tools" / "bad file.ps1").write_text(unused, encoding="utf-8")
+            (root / "docs" / "bad.md").write_text(f"# Bad\n\nProse.\n\n```pwsh\n{unused}```\n", encoding="utf-8")
+            with self.assertRaises(AssertionError) as raised:
+                script_analyzer_check(root, [*clean, root / "tools" / "bad file.ps1", root / "docs" / "bad.md"])
+        message = str(raised.exception)
+        self.assertIn("tools/bad file.ps1:2: PSUseDeclaredVarsMoreThanAssignments (Warning)", message)
+        # The fence opens on line 5, so the fragment's second line is the file's seventh.
+        self.assertIn("docs/bad.md:7: PSUseDeclaredVarsMoreThanAssignments (Warning)", message)
+        self.assertNotIn("clean", message)
+        self.assertIn("never suppress", message)
+
+    def test_script_analyzer_targets_scripts_and_powershell_fences(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            files = {
+                "tools/reader.ps1": "Get-Date\n",
+                "tests/fixtures/run.ps1": "Get-Date\n",
+                "skills/alpha/scripts/run.ps1": "Get-Location\n",
+                "elsewhere/ignored.ps1": "Get-Date\n",
+                "skills/alpha/SKILL.md": "# Alpha\n\n```bash\nls\n```\n\n```PowerShell\nGet-Item '{{X}}'\n```\n",
+                "docs/guide.md": "```ps1\nGet-Date\n```\n\n```pwsh\n\n```\n",
+                "tests/fixtures/notes.md": "```powershell\nGet-Date\n```\n",
+                "notes.txt": "```powershell\nGet-Date\n```\n",
+            }
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            targets = powershell_targets(root, [root / name for name in files])
+        self.assertEqual(
+            [
+                PowerShellTarget("docs/guide.md", 2, None, "Get-Date"),
+                PowerShellTarget("skills/alpha/SKILL.md", 8, None, "Get-Item '{{X}}'"),
+                PowerShellTarget("skills/alpha/scripts/run.ps1", 1, root / "skills/alpha/scripts/run.ps1", None),
+                PowerShellTarget("tests/fixtures/run.ps1", 1, root / "tests/fixtures/run.ps1", None),
+                PowerShellTarget("tools/reader.ps1", 1, root / "tools/reader.ps1", None),
+            ],
+            targets,
+        )
+
+    def test_missing_script_analyzer_is_reported_with_the_install_command(self) -> None:
+        self.assertIn(("PSScriptAnalyzer", "PSScriptAnalyzer", find_psscriptanalyzer), PREREQUISITES)
+        install = "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'"
+        # pwsh answers but lists no module: None, not an error.
+        with (
+            mock.patch(f"{__name__}.find_powershell", return_value="C:/tools/pwsh.exe"),
+            mock.patch.object(platform_support, "run_tool", return_value=platform_support.ToolResult(0, "\n")),
+        ):
+            self.assertIsNone(find_psscriptanalyzer())
+        with mock.patch(f"{__name__}.find_psscriptanalyzer", return_value=None):
+            self.assertIn(
+                f"  - PSScriptAnalyzer: {install}",
+                missing_prerequisites((("PSScriptAnalyzer", "PSScriptAnalyzer", find_psscriptanalyzer),)),
+            )
+            with self.assertRaises(AssertionError) as raised:
+                script_analyzer_check(REPOSITORY_ROOT, [])
+        self.assertIn(f"PSScriptAnalyzer was not found: {install}", str(raised.exception))
+        self.assertEqual(
+            [f"  - PSScriptAnalyzer 1.24.0 is older than the floor 1.25.0 in docs/dependency-updates.md: {install}"],
+            outdated_prerequisites({"PSScriptAnalyzer": (1, 24, 0)}, (3, 11, 0)),
+        )
+        self.assertEqual([], outdated_prerequisites({"PSScriptAnalyzer": (1, 25, 0)}, (3, 11, 0)))
+
+    def test_script_analyzer_is_found_by_its_manifest_and_versioned_from_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "PSScriptAnalyzer with spaces" / "1.25.0" / "PSScriptAnalyzer.psd1"
+            manifest.parent.mkdir(parents=True)
+            listed = platform_support.ToolResult(0, f"WARNING: unrelated\n{manifest}\n")
+            with (
+                mock.patch(f"{__name__}.find_powershell", return_value="C:/tools/pwsh.exe"),
+                mock.patch.object(platform_support, "run_tool", return_value=listed),
+            ):
+                self.assertEqual(str(manifest), find_psscriptanalyzer())
+            body = "@{\n    RootModule = 'PSScriptAnalyzer.psm1'\n    ModuleVersion = '1.25.0'\n"
+            body += "    PowerShellVersion = '5.1'\n}\n"
+            manifest.write_text(body, encoding="utf-8-sig")
+            self.assertEqual((1, 25, 0), read_tool_version(str(manifest)))
+            manifest.write_text(body, encoding="utf-16")
+            self.assertEqual((1, 25, 0), read_tool_version(str(manifest)))
+            manifest.write_text("@{ PowerShellVersion = '5.1' }\n", encoding="utf-8")
+            self.assertIsNone(read_tool_version(str(manifest)))
+
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertEqual(
-            {"Python": (3, 11), "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 0), "ruff": (0, 16, 10)},
+            {
+                "Python": (3, 11),
+                "ShellCheck": (0, 9, 0),
+                "PSScriptAnalyzer": (1, 25, 0),
+                "PowerShell 7 (pwsh)": (7, 0),
+                "ruff": (0, 16, 10),
+            },
             VALIDATION_FLOORS,
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for row in (
             "| Python | 3.11 |",
             "| ShellCheck | 0.9.0 |",
+            "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
             "| ruff | 0.16.10 |",
         ):
@@ -2932,6 +3158,7 @@ class RepositoryValidation(unittest.TestCase):
     def test_ci_exercises_each_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
+        self.assertIn("Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force", workflow)
         self.assertIn("python-version: ['3.11', '3.x']", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff runs at its floor.
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
