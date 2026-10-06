@@ -5,8 +5,15 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from github_client import CommandResult, GitHubClient, GitHubError, subprocess_runner
+from github_client import Runner as GhRunner
 
 LIMIT = 1000
 FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner"
@@ -21,10 +28,6 @@ InBase = Callable[[str], bool]
 
 class QueryError(Exception):
     pass
-
-
-def run_gh(arguments: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["gh", *arguments], capture_output=True, text=True, encoding="utf-8")
 
 
 def _head_repository(pull: dict[str, Any]) -> str | None:
@@ -103,17 +106,25 @@ def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
     return valid[0], valid[1:]
 
 
-def pull_commits(repository: str, number: int, runner: Runner = run_gh) -> dict[str, list[str]]:
-    """Map each commit of the pull request to its parents, failing closed on any query problem."""
+def _gh(runner: GhRunner, arguments: list[str], failure: str) -> CommandResult:
+    """Run gh through the shared client, which retries rate limits; any failure is a QueryError."""
     try:
-        result = runner(["api", "--paginate", "--slurp", f"repos/{repository}/pulls/{number}/commits?per_page=100"])
+        return GitHubClient(runner).run(arguments)
+    except GitHubError as exc:
+        if exc.returncode is None:
+            raise QueryError(f"could not run gh: {exc}") from exc
+        raise QueryError(f"{failure} ({exc.returncode}): {exc}") from exc
     except OSError as exc:
         raise QueryError(f"could not run gh: {exc}") from exc
-    if result.returncode != 0:
-        raise QueryError(
-            f"gh api for the commits of pull request {number} failed ({result.returncode}): "
-            f"{(result.stderr or '').strip()}"
-        )
+
+
+def pull_commits(repository: str, number: int, runner: GhRunner = subprocess_runner) -> dict[str, list[str]]:
+    """Map each commit of the pull request to its parents, failing closed on any query problem."""
+    result = _gh(
+        runner,
+        ["api", "--paginate", "--slurp", f"repos/{repository}/pulls/{number}/commits?per_page=100"],
+        f"gh api for the commits of pull request {number} failed",
+    )
     # --slurp wraps the pages in one array, so the output is a list of pages, each a list of commits.
     try:
         pages = json.loads(result.stdout)
@@ -157,7 +168,7 @@ def classify(
     branch: str,
     head_sha: str,
     upstream_sha: str | None = None,
-    runner: Runner = run_gh,
+    runner: GhRunner = subprocess_runner,
     in_base: InBase | None = None,
 ) -> str:
     """Return the branch state.
@@ -175,27 +186,8 @@ def classify(
     for label, sha in (("head", head_sha), ("upstream", upstream_sha)):
         if sha is not None and not SHA_PATTERN.fullmatch(sha):
             raise QueryError(f"{label} SHA must be a full lowercase commit SHA, got {sha!r}")
-    try:
-        result = runner(
-            [
-                "pr",
-                "list",
-                "--repo",
-                repository,
-                "--head",
-                branch,
-                "--state",
-                "all",
-                "--json",
-                FIELDS,
-                "--limit",
-                str(LIMIT),
-            ]
-        )
-    except OSError as exc:
-        raise QueryError(f"could not run gh: {exc}") from exc
-    if result.returncode != 0:
-        raise QueryError(f"gh pr list failed ({result.returncode}): {(result.stderr or '').strip()}")
+    arguments = ["pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--json", FIELDS]
+    result = _gh(runner, [*arguments, "--limit", str(LIMIT)], "gh pr list failed")
     try:
         pulls = json.loads(result.stdout)
     except json.JSONDecodeError as exc:

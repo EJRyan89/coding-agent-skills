@@ -12,14 +12,16 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import repo_cleanup as rc
+from github_client import CommandResult
 
 REMOTE_URL = "https://github.com/owner/repo.git"
 # The repositories every Fixture test starts from, built once per process by setUpModule.
@@ -136,10 +138,12 @@ class FakeGitHub:
         self.authenticated = True
         self.calls: list[list[str]] = []
 
-    def __call__(self, arguments: list[str]) -> subprocess.CompletedProcess:
+    def __call__(self, command: Sequence[str]) -> CommandResult:
+        assert command[0] == "gh", command
+        arguments = list(command[1:])
         self.calls.append(arguments)
         if arguments[:2] == ["auth", "status"]:
-            return subprocess.CompletedProcess(arguments, 0 if self.authenticated else 1, "", "")
+            return CommandResult(0 if self.authenticated else 1, "", "")
         if arguments[0] == "api":
             assert arguments[:3] == ["api", "--paginate", "--slurp"], arguments
             number = int(arguments[3].split("/")[4])
@@ -147,11 +151,11 @@ class FakeGitHub:
                 {"sha": sha, "parents": [{"sha": parent} for parent in parents]}
                 for sha, *parents in (line.split() for line in self.commits.get(number, "").splitlines())
             ]
-            return subprocess.CompletedProcess(arguments, 0, json.dumps([commits]), "")
+            return CommandResult(0, json.dumps([commits]), "")
         branch = arguments[arguments.index("--head") + 1]
         if branch in self.failing:
-            return subprocess.CompletedProcess(arguments, 1, "", "HTTP 502")
-        return subprocess.CompletedProcess(arguments, 0, json.dumps(self.pulls.get(branch, [])), "")
+            return CommandResult(1, "", "HTTP 502")
+        return CommandResult(0, json.dumps(self.pulls.get(branch, [])), "")
 
     def pull(self, branch: str, state: str, sha: str, commits: str = "") -> None:
         number = sum(len(pulls) for pulls in self.pulls.values()) + 1

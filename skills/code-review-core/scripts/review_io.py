@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable
@@ -16,7 +17,10 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any, TypeVar
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 from review_process import ProcessStatus, process_status, same_process
+from skill_roots import deployed_skill_roots
 
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
@@ -31,19 +35,6 @@ class PersistenceError(RuntimeError):
 
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "deployed_skill_roots": "also in curate-agent-memory's memory_audit.py and repo-cleanup's repo_cleanup.py; "
-    "#27's shared core replaces the copies",
-}
-
-
-def deployed_skill_roots() -> tuple[Path, ...]:
-    """The directories the deployer owns, whatever skills directory this script runs from."""
-    home = Path.home()
-    return home / ".claude" / "skills", home / ".agents" / "skills"
 
 
 def working_path(explicit: Path | None, prefix: str, name: str) -> Path:

@@ -27,10 +27,10 @@ class ProcessStatus:
 
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
 DUPLICATION_ALLOWED = {
-    "process_status": "a copy of deployer/platform_support.py's, because a deployed skill cannot import the "
-    "deployer; #27 removes it",
-    "HiddenWindow": "a copy of deployer/platform_support.py's, because a deployed skill cannot import the "
-    "deployer; #27 removes it",
+    "process_status": "a permanent copy of deployer/platform_support.py's: a deployed skill cannot import the "
+    "deployer, and the deployer cannot import a skill; this policy keeps the two identical",
+    "HiddenWindow": "a permanent copy of deployer/platform_support.py's: a deployed skill cannot import the "
+    "deployer, and the deployer cannot import a skill; this policy keeps the two identical",
 }
 
 

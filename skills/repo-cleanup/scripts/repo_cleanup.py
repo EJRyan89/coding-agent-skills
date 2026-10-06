@@ -32,6 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import pr_status
 from console import use_utf8_output
+from github_client import GitHubClient, GitHubError, subprocess_runner
+from github_client import Runner as GhRunner
+from skill_roots import deployed_skill_roots
 
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
@@ -69,7 +72,7 @@ class Services:
     """External effects, replaceable in tests."""
 
     git: Runner = pr_status.run_git
-    gh: Runner = pr_status.run_gh
+    gh: GhRunner = subprocess_runner
 
 
 # Output ---------------------------------------------------------------------------------------------------------
@@ -251,8 +254,9 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
         entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
         repositories = [path for path in entries if path.is_dir() and (path / ".git").is_dir()]
     try:
-        authenticated = services.gh(["auth", "status"]).returncode == 0
-    except OSError:
+        GitHubClient(services.gh).run(["auth", "status"])
+        authenticated = True
+    except (GitHubError, OSError):
         authenticated = False
     if not authenticated:
         raise CleanupError("GitHub CLI not authenticated — run 'gh auth login'")
@@ -753,19 +757,6 @@ def print_summary(plan: dict[str, Any]) -> None:
 
 
 # sweep ----------------------------------------------------------------------------------------------------------
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "deployed_skill_roots": "also in code-review-core's review_io.py and curate-agent-memory's memory_audit.py; "
-    "#27's shared core replaces the copies",
-}
-
-
-def deployed_skill_roots() -> tuple[Path, ...]:
-    """The directories the deployer owns, whatever skills directory this script runs from."""
-    home = Path.home()
-    return home / ".claude" / "skills", home / ".agents" / "skills"
 
 
 def plans_directory(explicit: str | None) -> Path:

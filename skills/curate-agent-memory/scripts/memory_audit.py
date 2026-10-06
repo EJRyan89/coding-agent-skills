@@ -59,6 +59,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from skill_roots import deployed_skill_roots
 
 INDEX_NAME = "MEMORY.md"
 # Claude Code loads the first 200 lines or 25KB of MEMORY.md, whichever comes first.
@@ -597,19 +598,6 @@ def describe(exc: OSError) -> str:
 
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "deployed_skill_roots": "also in code-review-core's review_io.py and repo-cleanup's repo_cleanup.py; #27's "
-    "shared core replaces the copies",
-}
-
-
-def deployed_skill_roots() -> tuple[Path, ...]:
-    """The directories the deployer owns, whatever skills directory this script runs from."""
-    home = Path.home()
-    return home / ".claude" / "skills", home / ".agents" / "skills"
 
 
 def output_refusal(explicit: Path) -> str | None:

@@ -1,5 +1,6 @@
 {
     "required_vars": [],
     "shared_deps": [],
-    "selectable": false
+    "selectable": false,
+    "optional_tools": ["gh"]
 }

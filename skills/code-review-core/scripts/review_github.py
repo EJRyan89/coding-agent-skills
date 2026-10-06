@@ -1,82 +1,17 @@
-"""Fail-closed GitHub CLI wrapper with explicit pagination."""
+"""Pull-request-shaped GitHub reads for the code-review pipeline, over skill-core's GitHub CLI client."""
 
 from __future__ import annotations
 
-import json
-import re
-import subprocess
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+import sys
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+import github_client
+from github_client import Clock, GitHubError, Runner, Sleeper, subprocess_runner
 from review_config import validate_repository_identity
-
-
-class GitHubError(RuntimeError):
-    def __init__(self, message: str, *, kind: str = "api") -> None:
-        super().__init__(message)
-        self.kind = kind
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "CommandResult": "also in review_runtime.py and github-activity-report's github_activity_report.py; #27's "
-    "shared core replaces the copies",
-}
-
-
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-Runner = Callable[[Sequence[str]], CommandResult]
-
-
-def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
-    """Run a command; output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte."""
-    try:
-        process = subprocess.run(
-            list(arguments),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="surrogateescape",
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise GitHubError(
-            "GitHub CLI executable 'gh' was not found; install GitHub CLI and "
-            "authenticate before running code-review operations",
-            kind="prerequisite",
-        ) from exc
-    except OSError as exc:
-        raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
-    return CommandResult(process.returncode, process.stdout, process.stderr)
-
-
-# surrogateescape decodes each byte that is not UTF-8 to one of these, and never yields one otherwise.
-_UNDECODABLE = re.compile("[\udc80-\udcff]")
-
-
-def replace_undecodable(text: str) -> tuple[str, int]:
-    """`text` with each undecodable byte the runner kept as U+FFFD, and how many bytes were replaced."""
-    return _UNDECODABLE.subn("\ufffd", text)
-
-
-def _classify_failure(stderr: str) -> str:
-    lowered = stderr.casefold()
-    if "rate limit" in lowered or "http 429" in lowered:
-        return "rate_limit"
-    if "http 401" in lowered or "authentication" in lowered or "not logged" in lowered:
-        return "authentication"
-    if "http 403" in lowered:
-        return "forbidden"
-    if "http 404" in lowered or "not found" in lowered:
-        return "not_found"
-    return "api"
 
 
 def _normalize_pull(value: Any) -> dict[str, Any] | None:
@@ -130,34 +65,28 @@ query($owner: String!, $name: String!, $number: Int!, $after: String) {
 
 
 class GitHubClient:
-    def __init__(self, runner: Runner = subprocess_runner) -> None:
-        self.runner = runner
+    """The pull request reads the pipeline and the tracker make, through skill-core's GitHub CLI client.
 
-    def _run(self, arguments: Sequence[str]) -> tuple[CommandResult, int]:
-        """Run gh with its output made valid Unicode, and how many undecodable bytes stdout held.
+    That client replaces each byte that is not UTF-8 with U+FFFD, because every caller writes, fingerprints, or
+    prints what it gets, and waits out rate limits with the one backoff policy every skill shares.
+    """
 
-        GitHub output is untrusted bytes: a pull request's diff carries files in any encoding, and every caller
-        writes, fingerprints, or prints what it gets, so nothing that is not UTF-8 gets past this point.
-        """
-        result = self.runner(arguments)
-        stdout, replaced = replace_undecodable(result.stdout)
-        return CommandResult(result.returncode, stdout, replace_undecodable(result.stderr)[0]), replaced
+    def __init__(
+        self, runner: Runner = subprocess_runner, *, sleeper: Sleeper | None = None, clock: Clock | None = None
+    ) -> None:
+        self.github = github_client.GitHubClient(runner, sleeper=sleeper, clock=clock)
 
     def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
-        arguments = ["gh", "api"]
+        arguments = ["api"]
         if paginate:
             arguments.extend(["--paginate", "--slurp"])
         arguments.append(endpoint)
-        result, _ = self._run(arguments)
-        if result.returncode != 0:
-            kind = _classify_failure(result.stderr)
-            if allow_absent and kind == "not_found":
-                return None
-            raise GitHubError(result.stderr.strip() or "GitHub API request failed", kind=kind)
         try:
-            return json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+            return self.github.json(arguments)
+        except GitHubError as exc:
+            if allow_absent and exc.kind == "not_found":
+                return None
+            raise
 
     def authenticated_login(self) -> str:
         """The login of the account GitHub CLI is authenticated as."""
@@ -180,40 +109,15 @@ class GitHubClient:
         cursor: str | None = None
         seen: set[str] = set()
         while True:
-            arguments = ["gh", "api", "graphql", "-f", f"query={query}"]
+            arguments = ["api", "graphql", "-f", f"query={query}"]
             for key, value in variables.items():
                 flag = "-F" if isinstance(value, int) and not isinstance(value, bool) else "-f"
                 arguments.extend([flag, f"{key}={value}"])
             if cursor is not None:
                 arguments.extend(["-f", f"after={cursor}"])
-            result, _ = self._run(arguments)
-            if result.returncode != 0:
-                raise GitHubError(
-                    result.stderr.strip() or "GitHub GraphQL request failed", kind=_classify_failure(result.stderr)
-                )
-            try:
-                response = json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+            response = self.github.json(arguments, graphql=True)
             if not isinstance(response, dict):
                 raise GitHubError("GraphQL response has an unexpected shape", kind="malformed")
-            errors = response.get("errors")
-            if errors:
-                errors = errors if isinstance(errors, list) else [errors]
-                messages = [
-                    str(error.get("message", error)) if isinstance(error, dict) else str(error) for error in errors
-                ]
-                types = {error.get("type") for error in errors if isinstance(error, dict)}
-                kind = (
-                    "rate_limit"
-                    if "RATE_LIMITED" in types
-                    else "not_found"
-                    if "NOT_FOUND" in types
-                    else "forbidden"
-                    if "FORBIDDEN" in types
-                    else "api"
-                )
-                raise GitHubError("GraphQL: " + "; ".join(messages), kind=kind)
             page: Any = response.get("data")
             for key in connection:
                 if not isinstance(page, dict):
@@ -240,12 +144,8 @@ class GitHubClient:
 
     def api_text(self, endpoint: str, *, accept: str) -> tuple[str, int]:
         """The response as text, and how many of its bytes were not UTF-8 and became U+FFFD."""
-        result, replaced = self._run(["gh", "api", "-H", f"Accept: {accept}", endpoint])
-        if result.returncode != 0:
-            raise GitHubError(
-                result.stderr.strip() or "GitHub API request failed", kind=_classify_failure(result.stderr)
-            )
-        return result.stdout, replaced
+        result = self.github.run(["api", "-H", f"Accept: {accept}", endpoint])
+        return result.stdout, result.replaced
 
     def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
         """The pull request's unified diff as GitHub computes it against the merge base, and how many undecodable

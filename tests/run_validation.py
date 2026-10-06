@@ -377,7 +377,8 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     """Report commands a skill runs that are neither standard nor declared, and declared tools it never runs.
 
     A skill runs what its own scripts and Bash examples run, and what the scripts of its skill_deps that it reaches
-    run: a dependency's tools are not the skill's unless it imports or names the script that runs them.
+    run: a dependency's tools are not the skill's unless it imports or names the script that runs them, and then the
+    skill declares them too, so a skill that reaches skill-core's GitHub client declares gh.
     """
     names = "|".join(re.escape(name) for name in sorted(known))
     known_call = re.compile(rf'\[\s*"({names})"')
@@ -391,14 +392,16 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
             path for directory in directories if (directory / "SKILL.md").is_file() for path in _skill_files(directory)
         ]
         used = {command for path in own for command in _file_commands(path, known_call)}
-        reached = {
-            command
-            for path in _reached_dependency_scripts(root, skill, own)
-            for command in _file_commands(path, known_call)
-        }
+        reached: dict[str, Path] = {}
+        for path in _reached_dependency_scripts(root, skill, own):
+            for command in _file_commands(path, known_call):
+                reached.setdefault(command, path)
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
-        for name in sorted(declared - used - reached):
+        for name in sorted((set(reached) & known) - used - declared):
+            through = reached[name].relative_to(root).as_posix()
+            problems.append(f"skill {skill} runs {name} through {through} without declaring it in tools")
+        for name in sorted(declared - used - set(reached)):
             problems.append(f"skill {skill} declares tool {name} but never runs it")
         for name in sorted(used - known - standard - SHELL_BUILTINS):
             problems.append(f"skill {skill} runs {name}, which a standard install lacks; see {COMMANDS_DOC}")
@@ -3263,6 +3266,7 @@ class RepositoryValidation(unittest.TestCase):
                 "imports": {"optional_tools": ["gh"], "skill_deps": ["core"]},
                 "unused": {"optional_tools": ["dotnet-format"], "skill_deps": ["core"]},
                 "inherits": {"skill_deps": ["core"]},
+                "silent": {"skill_deps": ["core"]},
             }.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
                 (root / "skills" / skill / "scripts").mkdir(parents=True)
@@ -3283,9 +3287,13 @@ class RepositoryValidation(unittest.TestCase):
             )
             (root / "skills" / "unused" / "scripts" / "run.py").write_text("import store\n", encoding="utf-8")
             (root / "skills" / "inherits" / "scripts" / "run.py").write_text("import store\n", encoding="utf-8")
+            # silent reaches github.py, so gh is its tool too: a skill that reaches the shared client declares gh,
+            # and one that reaches only store.py, like inherits, declares nothing.
+            (root / "skills" / "silent" / "scripts" / "run.py").write_text("import github\n", encoding="utf-8")
             self.assertEqual(
                 [
                     "skill named declares tool copilot but never runs it",
+                    "skill silent runs gh through skills/core/scripts/github.py without declaring it in tools",
                     "skill unused declares tool dotnet-format but never runs it",
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),

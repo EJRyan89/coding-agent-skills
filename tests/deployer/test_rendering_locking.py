@@ -123,6 +123,8 @@ class RenderedExecutableTests(DeployerTestCase):
             "repo-cleanup/scripts/repo_cleanup.py",
             "skill-core/scripts/console.py",
             "skill-core/scripts/frontmatter.py",
+            "skill-core/scripts/github_client.py",
+            "skill-core/scripts/skill_roots.py",
             "update-coding-agent-skills/scripts/update.sh",
         ):
             with self.subTest(relative=relative):
@@ -132,6 +134,11 @@ class RenderedExecutableTests(DeployerTestCase):
                 )
         # analyze-skill-cost imports the reader from skill-core and ships no copy of its own.
         self.assertFalse((self.skills_dir / "analyze-skill-cost" / "scripts" / "frontmatter.py").exists())
+        # Every skill that runs gh imports skill-core's client; none ships a gh runner of its own.
+        for script in sorted(self.skills_dir.glob("*/scripts/*.py")):
+            if script.parent.parent.name != "skill-core" and not script.name.startswith("test_"):
+                with self.subTest(script=script.name):
+                    self.assertNotRegex(script.read_text(encoding="utf-8"), r'\[\s*"gh"')
         for name in ("analyze-skill-cost", "audit-ai-config", "repo-cleanup", "update-coding-agent-skills"):
             with self.subTest(skill=name):
                 self.assertNotIn("{{", self.skill_text(name))

@@ -19,15 +19,16 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_pipeline as rp
+from github_client import CommandResult, subprocess_runner
 from review_archive import latest_record, pull_directory
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config
 from review_flags import FlagError, add_flag
-from review_github import CommandResult, GitHubClient, subprocess_runner
+from review_github import GitHubClient
 from review_hosts import ProcessResult
 from review_process import ProcessStatus, process_status
-from review_runtime import CommandResult as GitResult
 from review_runtime import validate_adapter_manifest
 from review_state import load_state
 
@@ -2720,12 +2721,12 @@ class LocalCommitTests(unittest.TestCase):
         calls: list[list[str]] = []
         present = {"have"}
 
-        def runner(arguments: Sequence[str]) -> GitResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             calls.append(list(arguments))
             if "cat-file" in arguments:
-                return GitResult(0 if arguments[-1].split("^")[0] in present else 1, "", "")
+                return CommandResult(0 if arguments[-1].split("^")[0] in present else 1, "", "")
             present.add("fetched")
-            return GitResult(0, "", "")
+            return CommandResult(0, "", "")
 
         rp.ensure_local_commit(Path("C:/checkout"), "have", "refs/pull/1/head", runner)
         self.assertFalse(any("fetch" in call for call in calls))
@@ -2744,17 +2745,17 @@ class LocalCommitTests(unittest.TestCase):
         checkers: set[int] = set()
         guard = threading.Lock()
 
-        def runner(arguments: Sequence[str]) -> GitResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             if "cat-file" in arguments:
                 with guard:
                     checkers.add(threading.get_ident())
                     if len(checkers) == 2:
                         both_checked.set()
-                return GitResult(0 if "shared" in present else 1, "", "")
+                return CommandResult(0 if "shared" in present else 1, "", "")
             self.assertTrue(both_checked.wait(timeout=10), "both pull requests check before either fetches")
             fetches.append(arguments[-1])
             present.add("shared")
-            return GitResult(0, "", "")
+            return CommandResult(0, "", "")
 
         checkout = Path(self.id().replace(".", "-")).resolve()  # unique per test, so no other lock is shared
         threads = [
@@ -2771,13 +2772,13 @@ class LocalCommitTests(unittest.TestCase):
         together = threading.Barrier(2, timeout=10)
         present: set[str] = set()
 
-        def runner(arguments: Sequence[str]) -> GitResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             checkout = arguments[2]
             if "cat-file" in arguments:
-                return GitResult(0 if checkout in present else 1, "", "")
+                return CommandResult(0 if checkout in present else 1, "", "")
             together.wait()  # breaks, failing a thread, if the two fetches were serialized
             present.add(checkout)
-            return GitResult(0, "", "")
+            return CommandResult(0, "", "")
 
         errors: list[BaseException] = []
 

@@ -7,16 +7,19 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import github_client
 import review_operation
 import review_runtime
+from github_client import CommandResult, GitHubError
 from review_config import (
     ConfigurationError,
     resolve_repositories,
@@ -132,6 +135,45 @@ class GitHubSnapshotTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeContractError, "boom"):
                 review_runtime.materialize_source_snapshot_from_github("owner/repo", HEAD, destination, fetcher=failing)
             self.assertFalse(destination.exists())
+
+    def test_tarball_download_failures_are_contract_errors_and_rate_limits_are_retried(self) -> None:
+        limited = CommandResult(1, "", "gh: API rate limit exceeded (HTTP 403)")
+        cases: dict[str, list[CommandResult | GitHubError]] = {
+            "missing gh": [GitHubError(github_client.MISSING_CLI, kind="prerequisite")],
+            "not found": [CommandResult(1, "", "gh: Not Found (HTTP 404)")],
+            "rate limit, then a tarball": [limited, CommandResult(0, "", "")],
+        }
+        for case, answers in cases.items():
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                downloader = ScriptedDownloader(answers)
+                waits: list[float] = []
+                github = github_client.GitHubClient(sleeper=waits.append, downloader=downloader)
+                target = Path(temporary) / "source.tar.gz"
+                if case.startswith("rate limit"):
+                    review_runtime.github_tarball_fetcher("owner/repo", HEAD, target, github)
+                    self.assertEqual((b"archive", [5.0]), (target.read_bytes(), waits))
+                else:
+                    with self.assertRaisesRegex(RuntimeContractError, f"Cannot download owner/repo@{HEAD}") as context:
+                        review_runtime.github_tarball_fetcher("owner/repo", HEAD, target, github)
+                    self.assertIn("install GitHub CLI" if case == "missing gh" else "Not Found", str(context.exception))
+                    self.assertEqual([], waits)
+                self.assertEqual(["gh", "api", f"repos/owner/repo/tarball/{HEAD}"], downloader.calls[0])
+
+
+class ScriptedDownloader:
+    """Stands in for gh writing a tarball: each call takes the next answer, raising it if it is an error."""
+
+    def __init__(self, answers: list[CommandResult | GitHubError]) -> None:
+        self.answers = list(answers)
+        self.calls: list[list[str]] = []
+
+    def __call__(self, arguments: Sequence[str], target: Path) -> CommandResult:
+        self.calls.append(list(arguments))
+        answer = self.answers.pop(0)
+        if isinstance(answer, GitHubError):
+            raise answer
+        target.write_bytes(b"archive" if answer.returncode == 0 else b"partial")
+        return answer
 
 
 class ConfigOperationSetTests(unittest.TestCase):

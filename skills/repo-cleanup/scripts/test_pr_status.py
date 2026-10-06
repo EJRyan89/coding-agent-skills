@@ -6,11 +6,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from github_client import CommandResult
 from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
 
 TIP = "a" * 40
@@ -24,15 +27,18 @@ FOREIGN = "3" * 40
 
 
 class Recorder:
-    """A gh runner that records every call and answers it with `answer`."""
+    """A gh runner that records every call, without the leading `gh`, and answers it with `answer`."""
 
     def __init__(self, answer: Callable[[list[str]], subprocess.CompletedProcess]) -> None:
         self.answer = answer
         self.calls: list[list[str]] = []
 
-    def __call__(self, arguments: list[str]) -> subprocess.CompletedProcess:
+    def __call__(self, command: Sequence[str]) -> CommandResult:
+        assert command[0] == "gh", command
+        arguments = list(command[1:])
         self.calls.append(arguments)
-        return self.answer(arguments)
+        answer = self.answer(arguments)
+        return CommandResult(answer.returncode, answer.stdout, answer.stderr)
 
 
 def responder(stdout: str = "[]", returncode: int = 0, stderr: str = "") -> Recorder:
@@ -129,11 +135,41 @@ class ClassifyTests(unittest.TestCase):
             self.assertEqual([], run.calls)
 
     def test_missing_gh_fails_closed(self) -> None:
-        def missing(arguments: list[str]) -> subprocess.CompletedProcess:
+        def missing(arguments: Sequence[str]) -> CommandResult:
             raise FileNotFoundError("gh")
 
         with self.assertRaisesRegex(QueryError, "could not run gh"):
             classify("owner/repo", "topic", TIP, runner=missing)
+
+    def test_gh_missing_from_the_shared_runner_fails_closed(self) -> None:
+        with (
+            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            self.assertRaisesRegex(QueryError, "could not run gh: GitHub CLI executable 'gh' was not found"),
+        ):
+            classify("owner/repo", "topic", TIP)
+
+    def test_a_rate_limit_is_waited_out_before_classifying(self) -> None:
+        answers = [(1, "", "gh: API rate limit exceeded for user ID 1. (HTTP 403)"), (0, listing(pull("MERGED")), "")]
+        run = Recorder(lambda arguments: subprocess.CompletedProcess(arguments, *answers.pop(0)))
+        with mock.patch("time.sleep") as sleep:
+            self.assertEqual("MERGED", classify("owner/repo", "topic", TIP, runner=run))
+        sleep.assert_called_once_with(5.0)
+        self.assertEqual(2, len(run.calls))
+
+    def test_a_rate_limit_that_persists_fails_closed_with_the_exit_code(self) -> None:
+        run = responder("", returncode=1, stderr="gh: API rate limit exceeded (HTTP 403)")
+        with (
+            mock.patch("time.sleep"),
+            self.assertRaisesRegex(QueryError, r"gh pr list failed \(1\): .*\(gave up after 5 retries\)"),
+        ):
+            classify("owner/repo", "topic", TIP, runner=run)
+        self.assertEqual(6, len(run.calls))
+
+    def test_output_that_is_not_utf8_is_replaced_instead_of_failing(self) -> None:
+        # A pull request field gh prints can hold any bytes; strict decoding used to end the sweep with a traceback.
+        listed = json.dumps([dict(pull("MERGED"), title="TITLE")]).replace("TITLE", "caf\xe9").encode("latin-1")
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, listed, b"")):
+            self.assertEqual("MERGED", classify("owner/repo", "topic", TIP))
 
 
 def router(pulls: str, commits: str = "", returncode: int = 0, stderr: str = "") -> Recorder:
