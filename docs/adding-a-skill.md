@@ -23,7 +23,12 @@ Skill and bundle names must:
 - use only lowercase letters, digits, and hyphens, without a leading or trailing hyphen, such as `repo-cleanup` or `review-prs`;
 - not be a reserved Windows device name such as `con`, `aux`, `nul`, `com1`, or `lpt1`.
 
-The deployer rejects a name that breaks these rules before rendering anything.
+The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's [skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)) add two more:
+
+- a skill name must not contain the reserved words `anthropic` or `claude`, so `claude-helper` is refused;
+- neither a skill's name nor its description may contain an XML tag such as `<tag>` or `</tag>`. The naming grammar already keeps angle brackets out of a name; in a description, a bare `<` or `>`, as in `a < b` or `x -> y`, is not a tag and is allowed.
+
+The deployer rejects a name that breaks these rules before rendering anything, and a description with an XML tag once rendered, before changing any file. `tools/new_skill.py` refuses the same values.
 
 When a skill needs executable logic, place both its implementation and tests under:
 

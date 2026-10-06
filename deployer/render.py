@@ -13,7 +13,7 @@ from pathlib import Path
 from . import frontmatter, hashing, platform_support
 from .config import DERIVED_VARIABLES
 from .errors import DeployError
-from .source import Source
+from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag
 
 TOKEN = re.compile(r"\{\{([A-Z_][A-Z0-9_]*)\}\}")
 SUFFIX_CONTEXT = {
@@ -196,6 +196,11 @@ def _adapter_frontmatter(skill: str, rendered: bytes) -> tuple[str, bool]:
         raise DeployError(
             f"ERROR: Skill '{skill}' description is {len(description)} characters; "
             f"runtime adapters allow at most {MAX_DESCRIPTION}"
+        )
+    tag = xml_tag(description)
+    if tag:
+        raise DeployError(
+            f"ERROR: Skill '{skill}' description contains the XML tag '{tag}', {AGENT_SKILLS_RULE}", XML_TAG_REMEDY
         )
     return description, user_only
 
