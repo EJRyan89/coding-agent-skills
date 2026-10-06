@@ -50,7 +50,7 @@ A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement
 
 ## The deployment lock
 
-`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning.
+`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning. Reclaiming moves the lock aside to `~/.claude/deployer/.deploy.lock.stale.<pid>` and checks that what it moved is the lock it judged stale; if another deployment reclaimed it first and holds a fresh one, the run moves that lock back and stops with `contention`, so retry. In the rare case it cannot move it back, the message names the `.deploy.lock.stale.<pid>` directory; delete it once no deployment is running.
 
 The deployer refuses only when it cannot tell: the lock has no readable `info.json`, or its process is running but cannot be confirmed to be the deployment that took the lock. Check that no `python deploy.py` process is running, for example with `Get-Process python` in PowerShell, then delete the lock directory and rerun. Removing it while a deployment is running would let a second one interleave with it.
 
