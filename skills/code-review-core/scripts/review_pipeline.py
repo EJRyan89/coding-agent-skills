@@ -62,7 +62,15 @@ from review_hosts import (
 )
 from review_hosts import Runner as CopilotRunner
 from review_hosts import subprocess_runner as copilot_subprocess_runner
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, map_in_order, read_json, working_path
+from review_io import (
+    PersistenceError,
+    atomic_write_json,
+    atomic_write_text,
+    map_in_order,
+    read_diff,
+    read_json,
+    working_path,
+)
 from review_process import ProcessStatus, process_status, start_detached
 from review_operation import (
     ReviewOperationError,
@@ -153,6 +161,7 @@ EXPECTED_ERRORS = (
     StateError,
     FlagError,
     OSError,
+    UnicodeError,  # a decoding fault the boundary did not absorb still ends as FAILED, never a traceback
 )
 
 
@@ -321,7 +330,7 @@ def prepare(
     try:
         run.mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
-        diff = services.github.get_pull_diff(repository, number)
+        diff, undecodable = services.github.get_pull_diff(repository, number)
         # GitHub serves the diff by pull number, which follows pushes. Confirm the pull did not move after its
         # head was read, so a new diff is never archived under the old head SHA.
         current = validate_canary_pull(services.github.get_pull(repository, number), repository=repository,
@@ -332,6 +341,8 @@ def prepare(
                 f"{current['headRefOid'][:12]}); run prepare again"
             )
         atomic_write_text(diff_path, diff)
+        if undecodable:
+            notes.append(f"{undecodable} undecodable bytes replaced in the diff")
         parsed = parse_unified_diff(diff)
         changed = list(parsed)
         patches = patch_fingerprints(parsed)
@@ -574,7 +585,7 @@ def validate_reviewer(
             if pull is None:
                 lines.append(_snapshot_line(checkout, commit, [], services))
                 continue
-            changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])))
+            changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
             lines.append(f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
                          f"head={pull['headRefOid'][:12]} files={len(changed)}")
             lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services))
@@ -1025,7 +1036,7 @@ def finalize(run: Path) -> dict[str, Any]:
         result = read_json(result_path)
         request = read_json(request_path)
         roles = [{"id": state["adapter"]["name"], "category": "Repository reviewer", "dispositions_only": False,
-                  "files": list(parse_unified_diff(Path(request["diff_path"]).read_text(encoding="utf-8")))}]
+                  "files": list(parse_unified_diff(read_diff(Path(request["diff_path"]))))}]
         models = None  # the repository entrypoint protocol has no model field
     reviewers = reviewer_summaries(roles, result["findings"], state["attempts"], single=state["kind"] == "entrypoint",
                                    seconds=seconds, models=models)

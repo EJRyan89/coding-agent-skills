@@ -100,6 +100,15 @@ def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
         raise PersistenceError(f"Cannot read valid JSON from {path}: {exc}") from exc
 
 
+def read_diff(path: Path) -> str:
+    """A run's diff.patch, the one way every step reads it.
+
+    prepare writes it as valid UTF-8, its undecodable bytes already U+FFFD; a byte that is not UTF-8 all the same,
+    as in a run prepared before that, becomes U+FFFD here too rather than failing one step and not another.
+    """
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None

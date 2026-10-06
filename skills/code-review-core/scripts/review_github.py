@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
@@ -27,9 +28,11 @@ Runner = Callable[[Sequence[str]], CommandResult]
 
 
 def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
+    """Run a command; output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte."""
     try:
         process = subprocess.run(
-            list(arguments), capture_output=True, text=True, encoding="utf-8", check=False
+            list(arguments), capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+            check=False,
         )
     except FileNotFoundError as exc:
         raise GitHubError(
@@ -42,6 +45,15 @@ def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
             f"GitHub CLI could not be started: {exc}", kind="execution"
         ) from exc
     return CommandResult(process.returncode, process.stdout, process.stderr)
+
+
+# surrogateescape decodes each byte that is not UTF-8 to one of these, and never yields one otherwise.
+_UNDECODABLE = re.compile("[\udc80-\udcff]")
+
+
+def replace_undecodable(text: str) -> tuple[str, int]:
+    """`text` with each undecodable byte the runner kept as U+FFFD, and how many bytes were replaced."""
+    return _UNDECODABLE.subn("\ufffd", text)
 
 
 def _classify_failure(stderr: str) -> str:
@@ -113,12 +125,22 @@ class GitHubClient:
     def __init__(self, runner: Runner = subprocess_runner) -> None:
         self.runner = runner
 
+    def _run(self, arguments: Sequence[str]) -> tuple[CommandResult, int]:
+        """Run gh with its output made valid Unicode, and how many undecodable bytes stdout held.
+
+        GitHub output is untrusted bytes: a pull request's diff carries files in any encoding, and every caller
+        writes, fingerprints, or prints what it gets, so nothing that is not UTF-8 gets past this point.
+        """
+        result = self.runner(arguments)
+        stdout, replaced = replace_undecodable(result.stdout)
+        return CommandResult(result.returncode, stdout, replace_undecodable(result.stderr)[0]), replaced
+
     def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
         arguments = ["gh", "api"]
         if paginate:
             arguments.extend(["--paginate", "--slurp"])
         arguments.append(endpoint)
-        result = self.runner(arguments)
+        result, _ = self._run(arguments)
         if result.returncode != 0:
             kind = _classify_failure(result.stderr)
             if allow_absent and kind == "not_found":
@@ -156,7 +178,7 @@ class GitHubClient:
                 arguments.extend([flag, f"{key}={value}"])
             if cursor is not None:
                 arguments.extend(["-f", f"after={cursor}"])
-            result = self.runner(arguments)
+            result, _ = self._run(arguments)
             if result.returncode != 0:
                 raise GitHubError(
                     result.stderr.strip() or "GitHub GraphQL request failed", kind=_classify_failure(result.stderr)
@@ -199,16 +221,18 @@ class GitHubClient:
                 raise GitHubError("GraphQL pagination did not advance", kind="malformed")
             seen.add(cursor)
 
-    def api_text(self, endpoint: str, *, accept: str) -> str:
-        result = self.runner(["gh", "api", "-H", f"Accept: {accept}", endpoint])
+    def api_text(self, endpoint: str, *, accept: str) -> tuple[str, int]:
+        """The response as text, and how many of its bytes were not UTF-8 and became U+FFFD."""
+        result, replaced = self._run(["gh", "api", "-H", f"Accept: {accept}", endpoint])
         if result.returncode != 0:
             raise GitHubError(
                 result.stderr.strip() or "GitHub API request failed", kind=_classify_failure(result.stderr)
             )
-        return result.stdout
+        return result.stdout, replaced
 
-    def get_pull_diff(self, repository: str, number: int) -> str:
-        """The pull request's unified diff, exactly as GitHub computes it against the merge base."""
+    def get_pull_diff(self, repository: str, number: int) -> tuple[str, int]:
+        """The pull request's unified diff as GitHub computes it against the merge base, and how many undecodable
+        bytes in it became U+FFFD."""
         repository = validate_repository_identity(repository)
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             raise GitHubError("Pull number must be positive", kind="input")

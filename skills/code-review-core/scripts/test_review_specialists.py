@@ -422,6 +422,14 @@ class SpecialistFixture:
 
 
 class EndToEndTests(SpecialistFixture, unittest.TestCase):
+    def test_plan_reads_a_diff_with_undecodable_bytes_as_replacement_characters(self) -> None:
+        diff = self.root / "diff.patch"
+        diff.write_bytes(diff.read_bytes().replace(b"+class B {}", b"+class B {} // caf\xe9"))
+        plan = self.plan()
+        self.assertEqual(["db-review", "csharp-review"], [r["id"] for r in plan["roles"]])
+        own = (Path(plan["roles"][1]["result_file"]).parent / "csharp-review.diff").read_text(encoding="utf-8")
+        self.assertIn("+     3 | class B {} // caf\ufffd\n", own)
+
     def test_plan_dispatch_inputs_and_complete_result(self) -> None:
         plan = self.plan()
         self.assertEqual(["db-review", "csharp-review"], [r["id"] for r in plan["roles"]])
