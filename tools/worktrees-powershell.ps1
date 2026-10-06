@@ -21,7 +21,7 @@ $ErrorActionPreference = 'Stop'
 # How deep Invoke-Expression and pwsh -Command are followed; deeper nesting is left unread.
 $MaxDepth = 4
 
-function New-Word([string] $Text, [bool] $Dynamic = $false) {
+function ConvertTo-Word([string] $Text, [bool] $Dynamic = $false) {
     [ordered]@{ text = $Text; dynamic = $Dynamic }
 }
 
@@ -34,34 +34,34 @@ function Get-EnvironmentValue([VariableExpressionAst] $Variable) {
 }
 
 # The words one command element passes. `-Name:value` passes two.
-function ConvertTo-Words([CommandElementAst] $Element) {
+function Get-ElementWord([CommandElementAst] $Element) {
     $words = [Collections.Generic.List[object]]::new()
     if ($Element -is [CommandParameterAst]) {
         if ($null -eq $Element.Argument) {
-            $words.Add((New-Word $Element.Extent.Text))
+            $words.Add((ConvertTo-Word $Element.Extent.Text))
         } else {
-            $words.Add((New-Word "-$($Element.ParameterName)"))
-            $words.AddRange([object[]] (ConvertTo-Words $Element.Argument))
+            $words.Add((ConvertTo-Word "-$($Element.ParameterName)"))
+            $words.AddRange([object[]] (Get-ElementWord $Element.Argument))
         }
     } elseif ($Element -is [StringConstantExpressionAst] -or $Element -is [ConstantExpressionAst]) {
-        $words.Add((New-Word "$($Element.Value)"))
+        $words.Add((ConvertTo-Word "$($Element.Value)"))
     } elseif ($Element -is [VariableExpressionAst]) {
         $value = Get-EnvironmentValue $Element
-        $words.Add((New-Word "$value" ($null -eq $value)))
+        $words.Add((ConvertTo-Word "$value" ($null -eq $value)))
     } elseif ($Element -is [ExpandableStringExpressionAst]) {
         # Settled only when every expansion in it is an environment variable the session has set.
         $text = $Element.Value
         foreach ($nested in $Element.NestedExpressions) {
             $value = if ($nested -is [VariableExpressionAst]) { Get-EnvironmentValue $nested }
             if ($null -eq $value) {
-                $words.Add((New-Word '' $true))
+                $words.Add((ConvertTo-Word '' $true))
                 return , $words.ToArray()
             }
             $text = $text.Replace($nested.Extent.Text, $value)
         }
-        $words.Add((New-Word $text))
+        $words.Add((ConvertTo-Word $text))
     } else {
-        $words.Add((New-Word '' $true))
+        $words.Add((ConvertTo-Word '' $true))
     }
     , $words.ToArray()
 }
@@ -96,7 +96,7 @@ function Get-ChildScript([object[]] $Words) {
 
 # Appends the events of $Text to $Events and returns $null, or returns the parse error of an outermost command.
 # A nested command that does not parse runs none of itself, but the command around it still runs.
-function Read-Events([string] $Text, [int] $Depth, [Collections.Generic.List[object]] $Events) {
+function Read-CommandEvent([string] $Text, [int] $Depth, [Collections.Generic.List[object]] $Events) {
     $tokens = $null
     $errors = $null
     $ast = [Parser]::ParseInput($Text, [ref] $tokens, [ref] $errors)
@@ -128,13 +128,13 @@ function Read-Events([string] $Text, [int] $Depth, [Collections.Generic.List[obj
         $leaf = Get-CommandLeaf $node
         $words = [Collections.Generic.List[object]]::new()
         if ($null -eq $leaf) {
-            $words.Add((New-Word '' $true))
+            $words.Add((ConvertTo-Word '' $true))
         } else {
-            $words.Add((New-Word $node.GetCommandName()))
+            $words.Add((ConvertTo-Word $node.GetCommandName()))
         }
         $elements = $node.CommandElements
         for ($index = 1; $index -lt $elements.Count; $index++) {
-            $words.AddRange([object[]] (ConvertTo-Words $elements[$index]))
+            $words.AddRange([object[]] (Get-ElementWord $elements[$index]))
         }
         $Events.Add([ordered]@{ kind = 'command'; words = $words.ToArray() })
 
@@ -144,7 +144,7 @@ function Read-Events([string] $Text, [int] $Depth, [Collections.Generic.List[obj
             if ($script.Count -ne 1 -or $script[0].dynamic -or $Depth + 1 -ge $MaxDepth) {
                 $Events.Add([ordered]@{ kind = 'note'; text = "could not read the command passed to $leaf" })
             } else {
-                $null = Read-Events $script[0].text ($Depth + 1) $Events
+                $null = Read-CommandEvent $script[0].text ($Depth + 1) $Events
             }
         } elseif ($leaf -eq 'pwsh' -or $leaf -eq 'powershell') {
             $child = Get-ChildScript $words.ToArray()
@@ -156,7 +156,7 @@ function Read-Events([string] $Text, [int] $Depth, [Collections.Generic.List[obj
                 continue
             }
             $Events.Add([ordered]@{ kind = 'push' })
-            $null = Read-Events $child ($Depth + 1) $Events
+            $null = Read-CommandEvent $child ($Depth + 1) $Events
             $Events.Add([ordered]@{ kind = 'pop' })
         }
     }
@@ -165,7 +165,7 @@ function Read-Events([string] $Text, [int] $Depth, [Collections.Generic.List[obj
 
 $command = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd().Trim()))
 $events = [Collections.Generic.List[object]]::new()
-$parseError = Read-Events $command 0 $events
+$parseError = Read-CommandEvent $command 0 $events
 if ($null -ne $parseError) {
     [ordered]@{ error = $parseError } | ConvertTo-Json -Compress
 } else {
