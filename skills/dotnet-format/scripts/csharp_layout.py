@@ -704,13 +704,16 @@ def configure(root: Path, solution: Path, files: list[str], apply: bool, emit: C
         elif all(value in ACCEPTED[wanted] for value in values):
             state = "present"
         else:
-            state = "other:" + ",".join(sorted({value for value in values if value not in ACCEPTED[wanted]}))
+            # No value is None here: the first branch took that case.
+            state = "other:" + ",".join(
+                sorted({value for value in values if value is not None and value not in ACCEPTED[wanted]})
+            )
         emit(f"SETTING\t{key}\t{wanted}\t{state}")
     if not apply:
         return bool(gaps)
-    for target, settings in gaps.items():
-        insert_settings(target, settings)
-        for key, value in settings:
+    for target, missing in gaps.items():
+        insert_settings(target, missing)
+        for key, value in missing:
             emit(f"ADDED\t{target.relative_to(root).as_posix()}\t{key}\t{value}")
     return False
 

@@ -173,7 +173,7 @@ class MainTests(unittest.TestCase):
         self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
 
     def run_formatter(
-        self, mode: str, runner: FakeRunner, installed: bool = True, *extra: str
+        self, mode: str, runner: formatter.Runner, installed: bool = True, *extra: str
     ) -> tuple[int, list[list[str]], str]:
         services = formatter.Services(run=runner, which=lambda name: "dotnet-format" if installed else None)
         output, errors = io.StringIO(), io.StringIO()
@@ -340,7 +340,7 @@ class MainTests(unittest.TestCase):
         def launch_fails(arguments: Sequence[str], cwd: Path, timeout: float) -> formatter.Completed:
             raise FileNotFoundError(2, "The system cannot find the file specified")
 
-        status, lines, errors = self.run_formatter("check", launch_fails)  # type: ignore[arg-type]
+        status, lines, errors = self.run_formatter("check", launch_fails)
         self.assertEqual(
             (1, "", [["FAILED [Errno 2] The system cannot find the file specified"]]), (status, errors, lines)
         )
