@@ -434,21 +434,20 @@ def carried_findings(records: Iterable[dict[str, Any]], flags: Iterable[dict[str
     return carried
 
 
-def ledger_summary(record: dict[str, Any]) -> dict[str, Any] | None:
-    """Open entries by severity, entries addressed, the earliest version an open entry dates from, and the record's
-    version; None for a record written before ledgers, which is read as having no history."""
-    if "ledger" not in record:
-        return None
+def ledger_summary(ledger: Iterable[dict[str, Any]], version: int) -> dict[str, Any]:
+    """Open entries by severity, entries addressed, the earliest version an open entry dates from, and the version
+    whose ledger this is. For a record written before ledgers, pass the ledger `ledger_history` computes: such a
+    re-review's counts cover only the findings it raised, not a prior one it judged still present."""
     opened = {severity: 0 for severity in sorted(SEVERITIES)}
     addressed = 0
     since: int | None = None
-    for entry in record["ledger"]:
+    for entry in ledger:
         if entry["state"] == "open":
             opened[entry["severity"]] += 1
             since = entry["version"] if since is None else min(since, entry["version"])
         elif entry["state"] == "closed" and entry["dispositions"][-1]["disposition"] == "addressed":
             addressed += 1
-    return {"open": opened, "addressed": addressed, "since": since, "version": record["review"]["version"]}
+    return {"open": opened, "addressed": addressed, "since": since, "version": version}
 
 
 def flagged_entries(

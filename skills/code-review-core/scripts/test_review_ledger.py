@@ -212,13 +212,18 @@ class CarriedFindingTests(unittest.TestCase):
                 [entry(1, "F001", "MUST_FIX", "open", 3, [(2, "still_present"), (3, "still_present")])], third["ledger"]
             )
             self.assertEqual(
-                {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 3}, ledger_summary(third)
+                {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 3},
+                ledger_summary(third["ledger"], 3),
             )
-            self.assertEqual(ledger_summary(third), reviewed_head(reviews.archive, "example/one", 12)["ledger"])
+            self.assertEqual(
+                ledger_summary(third["ledger"], 3), reviewed_head(reviews.archive, "example/one", 12)["ledger"]
+            )
             fourth = reviews.commit([], [disposition("v1:F001", "addressed")])
             self.assertEqual("APPROVED", fourth["review"]["verdict"])
             self.assertEqual("closed", fourth["ledger"][0]["state"])
-            self.assertEqual({"open": NO_OPEN, "addressed": 1, "since": None, "version": 4}, ledger_summary(fourth))
+            self.assertEqual(
+                {"open": NO_OPEN, "addressed": 1, "since": None, "version": 4}, ledger_summary(fourth["ledger"], 4)
+            )
             self.assertEqual([], reviews.prior())
 
     def test_an_unverified_entry_is_offered_again_but_does_not_count(self) -> None:
@@ -283,8 +288,11 @@ class CarriedFindingTests(unittest.TestCase):
             )
             del older["ledger"]
             commit_record(reviews.archive, "example/one", 12, older, expected_latest_version=None)
-            self.assertIsNone(ledger_summary(older))
-            self.assertIsNone(reviewed_head(reviews.archive, "example/one", 12)["ledger"])
+            # The reviewed head's summary is computed from the records, never read as missing.
+            self.assertEqual(
+                {"open": {**NO_OPEN, "MUST_FIX": 1, "SHOULD_FIX": 1}, "addressed": 0, "since": 1, "version": 1},
+                reviewed_head(reviews.archive, "example/one", 12)["ledger"],
+            )
             # A record written before ledgers disposes bare IDs of the version it compared with.
             legacy = build_record(
                 record_request("re-review"),
@@ -305,13 +313,21 @@ class CarriedFindingTests(unittest.TestCase):
                 ],
                 history[2],
             )
+            # A legacy re-review's counts cover only the findings it raised, not the one it judged still present,
+            # so the summary counts the computed ledger's open entries and what it addressed.
+            self.assertEqual({**NO_OPEN, "SUGGESTION": 1}, legacy["review"]["counts"])
+            self.assertEqual(
+                {"open": {**NO_OPEN, "SHOULD_FIX": 1, "SUGGESTION": 1}, "addressed": 1, "since": 1, "version": 2},
+                reviewed_head(reviews.archive, "example/one", 12)["ledger"],
+            )
             self.assertEqual(["v1:F002", "v2:F001"], [item["id"] for item in reviews.prior()])
             third = reviews.commit([], [disposition("v1:F002", "still_present"), disposition("v2:F001", "addressed")])
             self.assertEqual(
                 [("open", 3), ("closed", 3)], [(item["state"], item["judged_in"]) for item in third["ledger"][1:]]
             )
             self.assertEqual(
-                {"open": {**NO_OPEN, "SHOULD_FIX": 1}, "addressed": 2, "since": 1, "version": 3}, ledger_summary(third)
+                {"open": {**NO_OPEN, "SHOULD_FIX": 1}, "addressed": 2, "since": 1, "version": 3},
+                ledger_summary(third["ledger"], 3),
             )
 
 
@@ -450,14 +466,17 @@ class RepeatTests(unittest.TestCase):
         )
         self.assertEqual("string", adapter["properties"]["findings"]["items"]["properties"]["repeats"]["type"])
 
-    def test_a_record_without_a_ledger_validates_and_reads_as_no_history(self) -> None:
+    def test_a_record_without_a_ledger_validates_and_is_summarized_from_its_computed_ledger(self) -> None:
         record = build_record(
             record_request(), validate(adapter_result([finding("a", "MUST_FIX")])), version=1, policy=POLICY
         )
         del record["ledger"]
         validate_record(record)
-        self.assertIsNone(ledger_summary(record))
         self.assertEqual({1: [entry(1, "F001", "MUST_FIX", "open", 1)]}, ledger_history([record]))
+        self.assertEqual(
+            {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 1},
+            ledger_summary(ledger_history([record])[1], 1),
+        )
 
 
 # Today's v1 report of the fixture, with the finding IDs in the `v<version> F<nnn>` notation.
