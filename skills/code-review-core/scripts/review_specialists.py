@@ -415,6 +415,33 @@ def _listed(paths: list[str]) -> list[str]:
     return [*paths[:OTHER_FILES_LISTED], f"... and {len(paths) - OTHER_FILES_LISTED} more in OTHER_FILES_LIST"]
 
 
+LINK_FINDING = (
+    "A pull request that commits a symbolic link, above all one to an absolute path, is itself a finding: raise it on "
+    "the link's added line."
+)
+
+
+def symbolic_links(diff: dict[str, dict[str, Any]], excluded: dict[str, str]) -> dict[str, tuple[int, str] | None]:
+    """Each changed path the snapshot left out as a symbolic link, with its added line and target from the diff.
+
+    A link's diff adds its target as the only line; None when the diff adds no line for it, as for a pure rename.
+    """
+    links: dict[str, tuple[int, str] | None] = {}
+    for path, entry in diff.items():
+        if excluded.get(path) == "symbolic-link":
+            added = entry["added"]
+            links[path] = (min(added), added[min(added)]) if added else None
+    return links
+
+
+def describe_link(path: str, link: tuple[int, str] | None) -> str:
+    """One link for a reviewer prompt; the target is untrusted, so it is quoted as a JSON string."""
+    if link is None:
+        return f"{path} (its target is not in the diff)"
+    line, target = link
+    return f"{path} -> {json.dumps(target, ensure_ascii=False)} (added line {line})"
+
+
 def render_prompt(
     role: dict[str, Any],
     *,
@@ -426,7 +453,9 @@ def render_prompt(
     self_check: str | None = None,
     local_checkout: Path | None = None,
     other_files: list[str] = (),
+    links: dict[str, tuple[int, str] | None] | None = None,
 ) -> str:
+    """`links`, from `symbolic_links`, names the symbolic links among the role's files, which it raises as findings."""
     identity = role["id"]
     if identity == GENERIC_SPECIALIST:
         instructions = role["instructions"]
@@ -467,6 +496,13 @@ def render_prompt(
             "Other files this pull request changes (outside your scope; context only):",
             *(_listed(other_files) or ["none"]),
             "",
+            *([
+                "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+                "them):",
+                *(f"- {describe_link(path, link)}" for path, link in links.items()),
+                LINK_FINDING,
+                "",
+            ] if links and not role["dispositions_only"] else []),
             inputs,
             "",
             RULES.format(checkout_rule=CHECKOUT_RULE.format(checkout=local_checkout) if local_checkout else ""),
@@ -624,6 +660,7 @@ def build_plan(
         )
         assigned[GENERIC_SPECIALIST] = unowned
         assigned_comments[GENERIC_SPECIALIST] = unowned_comments
+    links = symbolic_links(diff, snapshot["excluded_paths"])
     analyzers = inventory(source_root, snapshot["source_hashes"])
     atomic_write_json(work / ANALYZERS, analyzers)
     atomic_write_text(
@@ -651,7 +688,8 @@ def build_plan(
             render_prompt(role, request=request, work=work, trusted_root=reviewer_root, prior=assigned[identity],
                           comments=assigned_comments[identity],
                           self_check=self_check(identity) if self_check else None, local_checkout=local_checkout,
-                          other_files=[path for path in diff if path not in role["files"]]),
+                          other_files=[path for path in diff if path not in role["files"]],
+                          links={path: link for path, link in links.items() if path in role["files"]}),
         )
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION,

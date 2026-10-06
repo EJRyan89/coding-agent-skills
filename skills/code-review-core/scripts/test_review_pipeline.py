@@ -672,6 +672,73 @@ class UndecodableDiffTests(PipelineFixture):
         self.assertEqual([], list(self.temporary.iterdir()))
 
 
+class SymbolicLinkTests(PipelineFixture):
+    """A pull request that commits a symbolic link is reviewed, with the link left out of the snapshot."""
+
+    TARGET = "/opt/tool/cache"
+
+    def add_link(self, path: str = "app/cache") -> str:
+        """Commit a symbolic link to the pull request's head, through the index so no link is made on disk."""
+        target = self.root / "link-target.txt"
+        target.write_bytes(self.TARGET.encode("utf-8"))
+        blob = git(self.checkout, "hash-object", "-w", str(target))
+        git(self.checkout, "update-index", "--add", "--cacheinfo", f"120000,{blob},{path}")
+        git(self.checkout, "commit", "-m", "link")
+        head = git(self.checkout, "rev-parse", "HEAD")
+        self.github.pulls[12] = rest_pull(12, head, self.base)
+        return head
+
+    def test_a_pull_request_that_adds_a_link_is_reviewed_and_the_link_named(self) -> None:
+        self.add_link()
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn(f"NOTE {SELECTOR} snapshot excludes symbolic link app/cache", out.splitlines())
+        run = Path(out.split("\n", 1)[0].split(" ", 2)[2])
+        self.assertEqual("symbolic-link", json.loads(
+            (run / "source" / "source-snapshot.json").read_text(encoding="utf-8"))["excluded_paths"]["app/cache"])
+        self.assertFalse((run / "source" / "app" / "cache").exists())
+        state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
+        [role] = state["roles"]
+        prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
+        self.assertIn(
+            "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+            "them):\n"
+            f'- app/cache -> "{self.TARGET}" (added line 1)\n'
+            "A pull request that commits a symbolic link, above all one to an absolute path, is itself a finding: "
+            "raise it on the link's added line.\n", prompt)
+        self.write_role_result(role)
+        result = rp.finalize(run)
+        self.assertEqual("APPROVED", result["verdict"], "a deliberate exclusion is not a coverage gap")
+        self.assertIn("snapshot excludes symbolic link app/cache", result["notes"])
+        record = latest_record(self.archive, REPOSITORY, 12)
+        self.assertNotIn("coverage", record["review"], "no source was unavailable and no file left unreviewed")
+
+    def test_a_link_the_pull_request_does_not_change_gets_no_note(self) -> None:
+        git(self.checkout, "switch", "main")
+        self.add_link("tools/shared")
+        base = git(self.checkout, "rev-parse", "HEAD")
+        git(self.checkout, "switch", "feature")
+        git(self.checkout, "rebase", "main")
+        self.github.pulls[12] = rest_pull(12, git(self.checkout, "rev-parse", "HEAD"), base)
+        ready = self.prepare()
+        self.assertEqual("symbolic-link", json.loads(
+            (ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))["excluded_paths"][
+            "tools/shared"])
+        self.assertFalse(any("symbolic link" in note for note in ready["notes"]), ready["notes"])
+        self.assertNotIn("Symbolic links", Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"))
+
+    def test_an_entrypoint_reviewer_is_told_about_the_link(self) -> None:
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        self.add_link()
+        ready = self.prepare()
+        prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
+        self.assertIn(
+            " The source snapshot leaves out these symbolic links, which you read only as diff text and never follow: "
+            f'app/cache -> "{self.TARGET}" (added line 1). A pull request that commits a symbolic link, above all one '
+            "to an absolute path, is itself a finding: raise it on the link's added line.", prompt)
+        self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
+
+
 class SelfCheckTests(PipelineFixture):
     def self_check(self, run: Path, role: str) -> str:
         return f'python -B "{SCRIPT_DIRECTORY / "review_pipeline.py"}" validate-result --run "{run}" --role "{role}"'

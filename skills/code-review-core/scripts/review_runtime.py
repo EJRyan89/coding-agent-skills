@@ -29,7 +29,9 @@ MAX_SOURCE_FILE_BYTES = 1024 * 1024
 BINARY_PROBE_BYTES = 8000
 SNAPSHOT_WRITE_WORKERS = 8
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
-SNAPSHOT_EXCLUSION_REASONS = {"agent-instruction", "binary", "file-size-limit", "unsafe-path"}
+SNAPSHOT_EXCLUSION_REASONS = {
+    "agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link", "non-regular",
+}
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
 RUNTIME_CAPABILITIES = {
     "claude-code": {"agent-delegation", "read-diff", "write-result"},
@@ -686,8 +688,10 @@ def _snapshot_members(
 ) -> Iterable[tuple[str, bytes | None, str | None]]:
     """Each archive file as (path, content, None) when the snapshot keeps it, or (path, None, reason) when not.
 
-    Raises for an entry that fails the whole snapshot: a non-regular entry, the reserved manifest path, or two
-    paths a case-insensitive filesystem would merge. The count and size limits are the caller's to apply.
+    A symbolic link, and any other entry that is not a regular file or a directory, is excluded without being read,
+    written, or followed; reviewers see a link only as diff text. Raises for an entry that fails the whole
+    snapshot: the reserved manifest path, or two paths a case-insensitive filesystem would merge. The count and
+    size limits are the caller's to apply.
     """
     written: dict[str, str] = {}
     for member in source:
@@ -701,10 +705,14 @@ def _snapshot_members(
             yield name, None, "unsafe-path"
             continue
         relative = _safe_relative_path(name, "source snapshot member")
-        if not member.isfile():
-            raise RuntimeContractError(f"Source snapshot contains a non-regular entry: {relative}")
         if relative == SOURCE_SNAPSHOT_MANIFEST:
             raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
+        if member.issym():
+            yield relative, None, "symbolic-link"
+            continue
+        if not member.isfile():  # a hard link, FIFO, or device entry
+            yield relative, None, "non-regular"
+            continue
         if _is_agent_instruction_path(relative):
             yield relative, None, "agent-instruction"
             continue
@@ -975,7 +983,8 @@ COVERAGE_GAP_REASONS = {"file-size-limit", "unsafe-path"}
 def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
     """Changed files whose source the snapshot could not provide (too large, or an unsafe name).
 
-    Binary and agent-instruction exclusions are deliberate and reviewed from the diff alone.
+    Binary, agent-instruction, symbolic-link, and non-regular exclusions are deliberate and reviewed from the diff
+    alone.
     """
     from review_specialists import SpecialistError, parse_unified_diff
 
