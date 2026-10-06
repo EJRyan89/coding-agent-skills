@@ -1177,6 +1177,79 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     return sorted(found) + sorted(problems)
 
 
+MARKDOWN_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
+MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
+MARKDOWN_REFERENCE = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(?:<([^>\n]+)>|(\S+))")
+URL_SCHEME = re.compile(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|//)")
+# GitHub's heading slug keeps letters, digits, underscores, hyphens, and spaces, then turns each space into a hyphen.
+SLUG_REMOVED = re.compile(r"[^\w\- ]")
+
+
+def _outside_fences(text: str) -> list[str]:
+    """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
+    lines: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        marker = MARKDOWN_FENCE.match(line)
+        if fence is None and marker:
+            fence = marker.group(1)
+        elif fence is not None and marker and marker.group(1).startswith(fence) and line.strip() == marker.group(1):
+            fence = None
+        elif fence is None:
+            lines.append(line)
+            continue
+        lines.append("")
+    return lines
+
+
+def heading_slugs(text: str) -> set[str]:
+    """The fragment GitHub gives each heading, numbering a repeated one -1, -2, and so on."""
+    slugs: set[str] = set()
+    seen: dict[str, int] = {}
+    for line in _outside_fences(text):
+        heading = MARKDOWN_HEADING.match(line)
+        if heading:
+            slug = SLUG_REMOVED.sub("", heading.group(1).strip().lower()).replace(" ", "-")
+            slugs.add(f"{slug}-{seen[slug]}" if slug in seen else slug)
+            seen[slug] = seen.get(slug, 0) + 1
+    return slugs
+
+
+def markdown_link_problems(root: Path) -> list[str]:
+    """Report each relative link in the repository's Markdown to a missing file, or to a heading its target lacks.
+
+    Code blocks and spans are not links; URLs with a scheme are not checked. Files Git ignores, and the session
+    worktrees under .claude/worktrees/, are not read.
+    """
+    from urllib.parse import unquote
+
+    problems: list[str] = []
+    for path in sorted(repository_files(root), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.suffix.casefold() != ".md" or name.startswith(".claude/worktrees/"):
+            continue
+        for number, line in enumerate(_outside_fences(path.read_text(encoding="utf-8")), start=1):
+            text = MARKDOWN_CODE_SPAN.sub("", line)
+            for match in [*MARKDOWN_LINK.finditer(text), *MARKDOWN_REFERENCE.finditer(text)]:
+                target = match.group(1) or match.group(2)
+                if URL_SCHEME.match(target):
+                    continue
+                location, _, fragment = target.partition("#")
+                destination = path.parent / unquote(location) if location else path
+                if not destination.exists():
+                    problems.append(f"{name}:{number} links to {target}, which does not exist")
+                elif (
+                    fragment
+                    and destination.is_file()
+                    and destination.suffix.casefold() == ".md"
+                    and unquote(fragment) not in heading_slugs(destination.read_text(encoding="utf-8"))
+                ):
+                    problems.append(f"{name}:{number} links to {target}, which has no heading with that slug")
+    return problems
+
+
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
 # A fixture executes a token in a context when it calls run_tool and one of these finders.
@@ -3231,6 +3304,69 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
                     "tests/three.py": self.SHARED,
                     "tools/short.py": short,
                 }
+            ),
+        )
+
+
+class MarkdownLinkPolicy(unittest.TestCase):
+    TARGET = (
+        "# Guide\n\n## The `run_validation` step_two\n\n## Notes: (draft) & more!\n\n## Notes: (draft) & more!\n\n"
+        "```markdown\n## Not a heading\n```\n"
+    )
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, files)
+            return markdown_link_problems(root)
+
+    def test_repository_links_resolve(self) -> None:
+        self.assertEqual([], markdown_link_problems(REPOSITORY_ROOT))
+
+    def test_fragments_follow_githubs_heading_slugs(self) -> None:
+        # Backticks and punctuation go, underscores and hyphens stay, and a repeated heading is numbered.
+        index = (
+            "# Index\n\n## Local heading\n\n"
+            "See [the step](docs/target.md#the-run_validation-step_two), [notes](docs/target.md#notes-draft--more)"
+            " and [again](<docs/target.md#notes-draft--more-1>).\n"
+            "Also [here](#local-heading), [the folder](docs/), ![a picture](docs/target.md 'title'),"
+            " [away](https://example.com/missing.md#nowhere) and [mail](mailto:someone@example.com).\n"
+            "Code is not a link: `[x](missing.md)`.\n\n"
+            "```text\n[x](missing.md)\n```\n\n"
+            "[reference]: docs/target.md#guide\n"
+        )
+        self.assertEqual([], self.problems({"index.md": index, "docs/target.md": self.TARGET}))
+
+    def test_a_link_to_a_missing_file_fails(self) -> None:
+        self.assertEqual(
+            ["docs/guide.md:3 links to ../missing.md, which does not exist"],
+            self.problems({"docs/guide.md": "# Guide\n\nSee [gone](../missing.md).\n"}),
+        )
+
+    def test_a_fragment_that_names_no_heading_fails(self) -> None:
+        self.assertEqual(
+            [
+                "index.md:1 links to docs/target.md#the-run-validation-step-two, which has no heading with that slug",
+                "index.md:2 links to docs/target.md#not-a-heading, which has no heading with that slug",
+                "index.md:3 links to #missing, which has no heading with that slug",
+            ],
+            self.problems(
+                {
+                    "index.md": "[a](docs/target.md#the-run-validation-step-two)\n"
+                    "[b](docs/target.md#not-a-heading)\n"
+                    "[c](#missing)\n",
+                    "docs/target.md": self.TARGET,
+                }
+            ),
+        )
+
+    def test_ignored_and_worktree_markdown_is_not_read(self) -> None:
+        broken = "[gone](missing.md)\n"
+        self.assertEqual(
+            [],
+            self.problems(
+                {".gitignore": "ignored.md\n", "ignored.md": broken, ".claude/worktrees/feat-x/README.md": broken}
             ),
         )
 
