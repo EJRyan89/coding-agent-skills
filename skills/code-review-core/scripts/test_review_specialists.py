@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -264,7 +265,7 @@ class SymbolicLinkPromptTests(unittest.TestCase):
 
     def test_a_role_that_only_gives_dispositions_is_not_asked_for_link_findings(self) -> None:
         request = {"repository": "example/one", "mode": "re-review", "source_snapshot": {"root": "C:/source"}}
-        links = {"tools/cache": (1, "/home/dev/x")}
+        links: dict[str, tuple[int, str] | None] = {"tools/cache": (1, "/home/dev/x")}
         for dispositions_only in (False, True):
             role = {
                 "id": rs.GENERIC_SPECIALIST,
@@ -342,7 +343,7 @@ class DedupeTests(unittest.TestCase):
     def test_assemble_merges_across_specialists_keeping_the_most_severe_wording(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            plan = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {"134": "x"}}, "roles": []}
+            plan: dict[str, Any] = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {"134": "x"}}, "roles": []}
             for identity, category, severity, body in (
                 ("qualifier-review", "Qualifier", "SHOULD_FIX", QUALIFIER_134),
                 ("csharp-review", "C#", "MUST_FIX", CSHARP_134),
@@ -393,7 +394,11 @@ class DedupeTests(unittest.TestCase):
         for qualifier, csharp, expected in ((losing, None, losing), (losing, winning, winning), (None, None, None)):
             with tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                plan = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {"134": "x"}}, "roles": []}
+                plan: dict[str, Any] = {
+                    "reviewer": "fixture",
+                    "added_lines": {"Sources/Q.cs": {"134": "x"}},
+                    "roles": [],
+                }
                 for identity, category, severity, body, analyzer in (
                     ("qualifier-review", "Qualifier", "SHOULD_FIX", QUALIFIER_134, qualifier),
                     ("csharp-review", "C#", "MUST_FIX", CSHARP_134, csharp),
@@ -436,7 +441,7 @@ class RepeatLinkTests(unittest.TestCase):
     def assemble(self, roles: list[tuple[str, list[dict], list[dict]]], prior: dict[str, str] | None = None) -> dict:
         prior = self.PRIOR if prior is None else prior
         with tempfile.TemporaryDirectory() as temporary:
-            plan = {
+            plan: dict[str, Any] = {
                 "reviewer": "fixture",
                 "added_lines": {"Sources/Q.cs": {str(n): "x" for n in range(130, 140)}},
                 "roles": [],
@@ -643,7 +648,7 @@ class SpecialistFixture:
         materialize_source_snapshot(checkout, "example/one", head, snapshot)
         self.head = head
         self.request_path = self.root / "request.json"
-        self.request_args = dict(
+        self.request_args: dict[str, Any] = dict(
             repository="example/one",
             pull_number=7,
             base_ref="main",
@@ -994,7 +999,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         self.assertEqual("complete", result["status"])
 
     def test_review_comments_go_to_the_owning_specialist_and_unowned_to_generic(self) -> None:
-        comments = [
+        comments: list[dict[str, Any]] = [
             {
                 "id": "C1",
                 "author": "dev",

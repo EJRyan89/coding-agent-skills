@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -22,15 +23,20 @@ WORK = "2" * 40
 FOREIGN = "3" * 40
 
 
-def responder(stdout: str = "[]", returncode: int = 0, stderr: str = ""):
-    calls: list[list[str]] = []
+class Recorder:
+    """A gh runner that records every call and answers it with `answer`."""
 
-    def run(arguments: list[str]) -> subprocess.CompletedProcess:
-        calls.append(arguments)
-        return subprocess.CompletedProcess(["gh", *arguments], returncode, stdout, stderr)
+    def __init__(self, answer: Callable[[list[str]], subprocess.CompletedProcess]) -> None:
+        self.answer = answer
+        self.calls: list[list[str]] = []
 
-    run.calls = calls
-    return run
+    def __call__(self, arguments: list[str]) -> subprocess.CompletedProcess:
+        self.calls.append(arguments)
+        return self.answer(arguments)
+
+
+def responder(stdout: str = "[]", returncode: int = 0, stderr: str = "") -> Recorder:
+    return Recorder(lambda arguments: subprocess.CompletedProcess(["gh", *arguments], returncode, stdout, stderr))
 
 
 def pull(state: str, sha: str = TIP, owner: str = "owner", name: str = "repo") -> dict:
@@ -130,18 +136,15 @@ class ClassifyTests(unittest.TestCase):
             classify("owner/repo", "topic", TIP, runner=missing)
 
 
-def router(pulls: str, commits: str = "", returncode: int = 0, stderr: str = ""):
+def router(pulls: str, commits: str = "", returncode: int = 0, stderr: str = "") -> Recorder:
     """Answers `pr list` with pulls and the pull request commits query with commits, recording every call."""
-    calls: list[list[str]] = []
 
-    def run(arguments: list[str]) -> subprocess.CompletedProcess:
-        calls.append(arguments)
+    def answer(arguments: list[str]) -> subprocess.CompletedProcess:
         if arguments[0] == "api":
             return subprocess.CompletedProcess(["gh", *arguments], returncode, commits, stderr)
         return subprocess.CompletedProcess(["gh", *arguments], 0, pulls, "")
 
-    run.calls = calls
-    return run
+    return Recorder(answer)
 
 
 def history(*commits: tuple[str, ...], page_size: int = 100) -> str:
@@ -161,11 +164,11 @@ UPDATED = history((TIP, BASE), (UPDATE, TIP, MAIN_NOW))
 class UpdatedPullRequestTests(unittest.TestCase):
     def state(self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields) -> str:
         run = router(listing(dict(pull(state, head, **pull_fields), number=7)), commits)
-        self.run = run
+        self.runner = run
         return classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_main)
 
     def api_calls(self) -> list[list[str]]:
-        return [call for call in self.run.calls if call[0] == "api"]
+        return [call for call in self.runner.calls if call[0] == "api"]
 
     def test_merges_of_the_base_after_the_tip_still_prove_the_branch_merged(self) -> None:
         self.assertEqual("MERGED", self.state(UPDATE, UPDATED))
@@ -231,7 +234,8 @@ class UpdatedPullRequestTests(unittest.TestCase):
             json.dumps([commit]),  # one page, not an array of pages
             json.dumps([[commit], {"sha": TIP}]),
         )
-        unexpected = (
+        # Each page holds one commit the query must refuse, a commit that is not even an object among them.
+        unexpected: tuple[list[object], ...] = (
             [{"parents": []}],
             [{"sha": "not-a-sha", "parents": []}],
             [{"sha": UPDATE, "parents": [TIP]}],

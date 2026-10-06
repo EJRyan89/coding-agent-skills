@@ -23,10 +23,10 @@ class ReviewGuardTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        self.run = self.root / "code-review-run-abc"
+        self.run_directory = self.root / "code-review-run-abc"
         for folder in ("work", "source/app", "reviewer/.claude/agents"):
-            (self.run / folder).mkdir(parents=True)
-        (self.run / "run.json").write_text("{}", encoding="utf-8")
+            (self.run_directory / folder).mkdir(parents=True)
+        (self.run_directory / "run.json").write_text("{}", encoding="utf-8")
         self.checkout = self.root / "GitHub" / "product"
         (self.checkout / "app").mkdir(parents=True)
         self.outside_cwd = self.root / "GitHub"
@@ -36,12 +36,12 @@ class ReviewGuardTests(unittest.TestCase):
 
     def test_reads_are_allowed_only_inside_a_review_run_or_the_references(self) -> None:
         allowed = [
-            ("Read", {"file_path": str(self.run / "work" / "csharp-review.prompt.md")}),
-            ("Read", {"file_path": str(self.run / "source" / "app" / "Service.cs")}),
-            ("Read", {"file_path": str(self.run / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),
+            ("Read", {"file_path": str(self.run_directory / "work" / "csharp-review.prompt.md")}),
+            ("Read", {"file_path": str(self.run_directory / "source" / "app" / "Service.cs")}),
+            ("Read", {"file_path": str(self.run_directory / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),
             ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
-            ("Grep", {"pattern": "class Role", "path": str(self.run / "source")}),
-            ("Glob", {"pattern": "**/*.cs", "path": str(self.run / "source")}),
+            ("Grep", {"pattern": "class Role", "path": str(self.run_directory / "source")}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(self.run_directory / "source")}),
         ]
         for tool, tool_input in allowed:
             with self.subTest(tool=tool, input=tool_input):
@@ -54,9 +54,9 @@ class ReviewGuardTests(unittest.TestCase):
             ("Grep", {"pattern": "anything"}),  # defaults to the session's working directory
             ("Glob", {"pattern": "**/*.cs"}),
             ("Read", {"file_path": "app/Collections.cs"}),  # relative to the session's working directory
-            ("Read", {"file_path": str(self.run / ".." / "GitHub" / "product" / "app" / "Collections.cs")}),
-            ("Glob", {"pattern": "../GitHub/**", "path": str(self.run / "source")}),
-            ("Glob", {"pattern": str(self.checkout / "**"), "path": str(self.run / "source")}),
+            ("Read", {"file_path": str(self.run_directory / ".." / "GitHub" / "product" / "app" / "Collections.cs")}),
+            ("Glob", {"pattern": "../GitHub/**", "path": str(self.run_directory / "source")}),
+            ("Glob", {"pattern": str(self.checkout / "**"), "path": str(self.run_directory / "source")}),
             ("Read", {"file_path": str(self.root / "code-review-run-fake" / "x.cs")}),  # no run.json there
         ]
         for tool, tool_input in denied:
@@ -70,18 +70,20 @@ class ReviewGuardTests(unittest.TestCase):
     def test_writes_are_allowed_only_on_a_result_file(self) -> None:
         for tool in ("Write", "Edit"):
             with self.subTest(tool=tool):
-                self.assertIsNone(self.decide(tool, file_path=str(self.run / "work" / "csharp-review.result.json")))
-                self.assertIsNone(self.decide(tool, file_path=str(self.run / "result.json")))
+                self.assertIsNone(
+                    self.decide(tool, file_path=str(self.run_directory / "work" / "csharp-review.result.json"))
+                )
+                self.assertIsNone(self.decide(tool, file_path=str(self.run_directory / "result.json")))
                 for path in (
-                    self.run / "work" / "notes.txt",
-                    self.run / "source" / "app" / "x.result.json",
-                    self.run / "work" / "csharp-review.prompt.md",
+                    self.run_directory / "work" / "notes.txt",
+                    self.run_directory / "source" / "app" / "x.result.json",
+                    self.run_directory / "work" / "csharp-review.prompt.md",
                     self.checkout / "result.json",
                 ):
                     self.assertIsNotNone(self.decide(tool, file_path=str(path)), path)
 
     def test_bash_runs_only_the_pipelines_own_self_check(self) -> None:
-        command = rp.self_check_command(self.run, "csharp-review")
+        command = rp.self_check_command(self.run_directory, "csharp-review")
         self.assertIsNone(self.decide("Bash", command=command))
         for bad in (
             "cat source/app/Service.cs",
@@ -90,7 +92,7 @@ class ReviewGuardTests(unittest.TestCase):
             command.replace("validate-result", "finalize"),
             command.replace(str(rp.Path(rp.__file__).resolve()), str(self.root / "review_pipeline.py")),
             rp.self_check_command(self.checkout, "csharp-review"),
-            rp.self_check_command(self.run / "work", "csharp-review"),
+            rp.self_check_command(self.run_directory / "work", "csharp-review"),
             command.replace('"csharp-review"', '"$(whoami)"'),
         ):
             with self.subTest(command=bad):
@@ -119,7 +121,7 @@ class ReviewGuardTests(unittest.TestCase):
         decision = json.loads(hook(json.dumps(event)))["hookSpecificOutput"]
         self.assertEqual(("PreToolUse", "deny"), (decision["hookEventName"], decision["permissionDecision"]))
         self.assertIn("may only look inside the review run folder", decision["permissionDecisionReason"])
-        allowed = {**event, "tool_input": {"file_path": str(self.run / "source" / "app" / "x.cs")}}
+        allowed = {**event, "tool_input": {"file_path": str(self.run_directory / "source" / "app" / "x.cs")}}
         self.assertEqual("", hook(json.dumps(allowed)), "an allowed call prints nothing")
         self.assertEqual("deny", json.loads(hook("not json"))["hookSpecificOutput"]["permissionDecision"])
 

@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -46,13 +46,13 @@ class FakeRuntimes:
     def __init__(self) -> None:
         self.listings: dict[str, list[tuple[str, str]]] = {}
         self.actions: dict[str, Callable[[list[str], Path, dict[str, str]], Completed]] = {}
-        self.calls: list[tuple[str, list[str], Path, dict[str, str]]] = []
+        self.calls: list[tuple[str, list[str], Path, Mapping[str, str]]] = []
 
     def talk(
         self,
         arguments: list[str],
         cwd: Path,
-        environment: dict[str, str],
+        environment: Mapping[str, str],
         requests: list[str],
         answered: Callable[[str], bool] | None,
         timeout: float,
@@ -155,7 +155,7 @@ class RuntimeCanaryTestCase(unittest.TestCase):
     def canary(
         self,
         runner: FakeRuntimes,
-        skills: list[str] = (FIXTURE,),
+        skills: Sequence[str] = (FIXTURE,),
         runtimes: tuple[str, ...] = ("codex",),
         sources: list[Path] | None = None,
         environment: dict[str, str] | None = None,
@@ -398,7 +398,7 @@ class RunTests(RuntimeCanaryTestCase):
         self.assertTrue([line for line in lines if line.startswith(f"RUNTIME copilot {FIXTURE} ")])
 
     def test_a_run_without_any_script_is_a_never_ran_failure_with_its_cause(self) -> None:
-        cases = (
+        cases: tuple[tuple[Completed, list[str], str], ...] = (
             (Completed(0, "", ""), [], "never ran a script from the skill"),
             (Completed(3, "", ""), [], "exited with code 3 before running a script from the skill"),
             (
@@ -755,8 +755,8 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         def fail(*_: object) -> list[str]:
             raise discovery.ListingError("no answer within 60 seconds")
 
-        runner.talk = fail
-        lines = self.canary(runner, discovery_only=True)
+        with mock.patch.object(runner, "talk", fail):
+            lines = self.canary(runner, discovery_only=True)
         self.assertIn('DISCOVERY_FAILED codex "cannot read its skill list: no answer within 60 seconds"', lines)
 
     def test_a_runtime_not_on_path_is_skipped_and_the_others_run_without_tokens(self) -> None:

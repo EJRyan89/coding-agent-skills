@@ -7,7 +7,9 @@ import json
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -30,7 +32,7 @@ from review_records import (
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
-ADAPTER = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
+ADAPTER: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
 NO_OPEN = {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}
 
 
@@ -49,11 +51,19 @@ def finding(key: str, severity: str = "SHOULD_FIX", line: int = 10, **extra: obj
     }
 
 
+def reviewed_ledger(archive: Path) -> dict[str, Any]:
+    """The ledger summary of the pull request's reviewed head, which the test expects to exist."""
+    head = reviewed_head(archive, "example/one", 12)
+    if head is None:
+        raise AssertionError("example/one#12 has no reviewed head")
+    return head["ledger"]
+
+
 def disposition(identifier: str, value: str) -> dict:
     return {"finding_id": identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
-def adapter_result(findings: list[dict] = (), dispositions: list[dict] = ()) -> dict:
+def adapter_result(findings: Sequence[dict] = (), dispositions: Sequence[dict] = ()) -> dict:
     return {
         "protocol_version": 1,
         "repository": "example/one",
@@ -82,7 +92,7 @@ def record_request(mode: str = "initial") -> dict:
     }
 
 
-def validate(result: dict, prior: list[dict] = ()) -> dict:
+def validate(result: dict, prior: Sequence[dict] = ()) -> dict:
     return validate_adapter_result(
         result,
         expected_repository="example/one",
@@ -99,8 +109,8 @@ def entry(
     severity: str,
     state: str,
     judged_in: int,
-    dispositions: list[tuple[int, str]] = (),
-    repeats: list[tuple[int, str]] = (),
+    dispositions: Sequence[tuple[int, str]] = (),
+    repeats: Sequence[tuple[int, str]] = (),
 ) -> dict:
     return {
         "version": version,
@@ -127,8 +137,8 @@ class ArchiveFixture:
 
     def commit(
         self,
-        findings: list[dict] = (),
-        dispositions: list[dict] = (),
+        findings: Sequence[dict] = (),
+        dispositions: Sequence[dict] = (),
         *,
         mode: str = "re-review",
         used: str = "incremental",
@@ -215,9 +225,7 @@ class CarriedFindingTests(unittest.TestCase):
                 {"open": {**NO_OPEN, "MUST_FIX": 1}, "addressed": 0, "since": 1, "version": 3},
                 ledger_summary(third["ledger"], 3),
             )
-            self.assertEqual(
-                ledger_summary(third["ledger"], 3), reviewed_head(reviews.archive, "example/one", 12)["ledger"]
-            )
+            self.assertEqual(ledger_summary(third["ledger"], 3), reviewed_ledger(reviews.archive))
             fourth = reviews.commit([], [disposition("v1:F001", "addressed")])
             self.assertEqual("APPROVED", fourth["review"]["verdict"])
             self.assertEqual("closed", fourth["ledger"][0]["state"])
@@ -291,7 +299,7 @@ class CarriedFindingTests(unittest.TestCase):
             # The reviewed head's summary is computed from the records, never read as missing.
             self.assertEqual(
                 {"open": {**NO_OPEN, "MUST_FIX": 1, "SHOULD_FIX": 1}, "addressed": 0, "since": 1, "version": 1},
-                reviewed_head(reviews.archive, "example/one", 12)["ledger"],
+                reviewed_ledger(reviews.archive),
             )
             # A record written before ledgers disposes bare IDs of the version it compared with.
             legacy = build_record(
@@ -318,7 +326,7 @@ class CarriedFindingTests(unittest.TestCase):
             self.assertEqual({**NO_OPEN, "SUGGESTION": 1}, legacy["review"]["counts"])
             self.assertEqual(
                 {"open": {**NO_OPEN, "SHOULD_FIX": 1, "SUGGESTION": 1}, "addressed": 1, "since": 1, "version": 2},
-                reviewed_head(reviews.archive, "example/one", 12)["ledger"],
+                reviewed_ledger(reviews.archive),
             )
             self.assertEqual(["v1:F002", "v2:F001"], [item["id"] for item in reviews.prior()])
             third = reviews.commit([], [disposition("v1:F002", "still_present"), disposition("v2:F001", "addressed")])

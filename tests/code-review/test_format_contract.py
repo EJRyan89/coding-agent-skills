@@ -26,10 +26,10 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
@@ -48,7 +48,14 @@ REFERENCES = SCRIPTS.parent / "references"
 
 JSON_TYPES = ("null", "boolean", "integer", "number", "string", "array", "object")
 # Values of each JSON type to probe a field with, in the order they are tried.
-PROBES = (("null", None), ("string", "probe"), ("integer", 7), ("array", []), ("object", {}), ("boolean", True))
+PROBES: tuple[tuple[str, Any], ...] = (
+    ("null", None),
+    ("string", "probe"),
+    ("integer", 7),
+    ("array", []),
+    ("object", {}),
+    ("boolean", True),
+)
 # A value of each type, for a documented type no fixture has: the validator must accept it somewhere.
 EXAMPLES = {**dict(PROBES), "number": 0.5}
 UNDOCUMENTED_VALUE = "not-a-documented-value"
@@ -199,8 +206,8 @@ def _locations(value: Any, steps: list[str], prefix: tuple = ()) -> list[tuple]:
         return []
     if not many:
         return _locations(value[name], rest, (*prefix, name))
-    items = value[name] if isinstance(value[name], list) else []
-    return [found for index, item in enumerate(items) for found in _locations(item, rest, (*prefix, name, index))]
+    entries = value[name] if isinstance(value[name], list) else []
+    return [found for index, item in enumerate(entries) for found in _locations(item, rest, (*prefix, name, index))]
 
 
 def _at(value: Any, location: tuple) -> Any:
@@ -219,13 +226,20 @@ class Instance:
         return _at(self.fixture.value, self.location)
 
     def accepts(self, change: Callable[[dict[str, Any]], None]) -> bool:
+        judge = self.fixture.accepts
+        if judge is None:
+            raise AssertionError(f"{self.fixture.name} has no validator to judge a change by")
         changed = copy.deepcopy(self.fixture.value)
         change(_at(changed, self.location))
-        return self.fixture.accepts(changed)
+        return judge(changed)
 
 
 def _without(*names: str) -> Callable[[dict[str, Any]], None]:
-    return lambda target: [target.pop(name) for name in names]
+    def change(target: dict[str, Any]) -> None:
+        for name in names:
+            target.pop(name)
+
+    return change
 
 
 def _set(name: str, value: Any) -> Callable[[dict[str, Any]], None]:
@@ -233,7 +247,7 @@ def _set(name: str, value: Any) -> Callable[[dict[str, Any]], None]:
 
 
 def instances(paths: tuple[str, ...], fixtures: dict[str, list[Fixture]]) -> list[Instance]:
-    found = []
+    found: list[Instance] = []
     for path in paths:
         root, *steps = path.split(".")
         for fixture in fixtures[root]:
@@ -370,7 +384,7 @@ def _disposition(identifier: str, value: str, key: str = "finding_id") -> dict[s
     return {key: identifier, "disposition": value, "rationale": "Checked against the current code."}
 
 
-COMMENTS = [
+COMMENTS: list[dict[str, Any]] = [
     {
         "id": "C1",
         "author": "octocat",
@@ -407,7 +421,9 @@ def _record_request(mode: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def _result(findings: list[dict[str, Any]], dispositions: list[dict[str, Any]] = (), **extra: Any) -> dict[str, Any]:
+def _result(
+    findings: list[dict[str, Any]], dispositions: Sequence[dict[str, Any]] = (), **extra: Any
+) -> dict[str, Any]:
     return {
         "protocol_version": 1,
         "repository": "example/one",
@@ -741,7 +757,7 @@ def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[st
         "diff --git a/src/file.cs b/src/file.cs\ndiff --git a/assets/large.txt b/assets/large.txt\n", encoding="utf-8"
     )
     snapshot = {"excluded_paths": {"assets/large.txt": "file-size-limit"}}
-    common = {
+    common: dict[str, Any] = {
         "repository": "example/one",
         "pull_number": 12,
         "base_ref": "main",
@@ -842,6 +858,7 @@ def schema_rows(described: dict[str, Any]) -> dict[str, Row]:
 
 class FormatContractTest(unittest.TestCase):
     scratch: tempfile.TemporaryDirectory
+    fixtures: ClassVar[dict[str, list[Fixture]]]
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -915,7 +932,7 @@ class FormatContractTest(unittest.TestCase):
     def test_a_doctored_table_disagrees(self) -> None:
         text = CONTRACT.read_text(encoding="utf-8")
         row = re.search(r"^\| `number` \| integer \| yes \|.*$", text, flags=re.MULTILINE)
-        self.assertIsNotNone(row, "the record's pull request table lists number as a required integer")
+        assert row is not None, "the record's pull request table lists number as a required integer"
         for name, doctored, expected in (
             (
                 "optional",

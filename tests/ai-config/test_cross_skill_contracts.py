@@ -37,6 +37,13 @@ def literal_assignment(path: Path, name: str) -> object:
     raise AssertionError(f"{name} is not a literal assignment in {path}")
 
 
+def literal_int(path: Path, name: str) -> int:
+    value = literal_assignment(path, name)
+    if not isinstance(value, int):
+        raise AssertionError(f"{name} in {path} is not an integer literal")
+    return value
+
+
 def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
     """Each option `<parser>.add_argument` declares, with its keywords as source, however the call is wrapped."""
     options: dict[str, dict[str, str]] = {}
@@ -49,8 +56,12 @@ def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
             and node.func.value.id == parser
             and node.args
             and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
         ):
-            options[node.args[0].value] = {keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords}
+            # A keyword without a name is a ** unpacking, which names no option setting.
+            options[node.args[0].value] = {
+                keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords if keyword.arg is not None
+            }
     return options
 
 
@@ -236,13 +247,13 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("use a general-purpose subagent instead", skill)
 
     @staticmethod
-    def reviewer_hook_shells(command: str) -> dict[str, list[str | None]]:
-        """The reviewer hook's command line in each shell Claude Code may run hooks in."""
+    def reviewer_hook_shells(command: str) -> dict[str, tuple[str | None, list[str]]]:
+        """The reviewer hook's shell, if found, and its arguments in each shell Claude Code may run hooks in."""
         from deployer import platform_support
 
         return {
-            "Git Bash": [platform_support.find_bash(), "-c", command],
-            "PowerShell": [platform_support.find_pwsh(os.environ.get("PATH", "")), "-NoProfile", "-Command", command],
+            "Git Bash": (platform_support.find_bash(), ["-c", command]),
+            "PowerShell": (platform_support.find_pwsh(os.environ.get("PATH", "")), ["-NoProfile", "-Command", command]),
         }
 
     def reviewer_hook_command(self) -> str:
@@ -281,11 +292,11 @@ class CrossSkillContractTests(unittest.TestCase):
             }
             for case, (profile, traceback, error) in cases.items():
                 environment = {**os.environ, "USERPROFILE": str(profile)}
-                for shell, arguments in self.reviewer_hook_shells(command).items():
+                for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                     with self.subTest(case=case, shell=shell):
-                        self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
+                        assert executable is not None, f"{shell} is a validation prerequisite"
                         result = subprocess.run(
-                            arguments,
+                            [executable, *arguments],
                             input=event,
                             capture_output=True,
                             text=True,
@@ -336,11 +347,17 @@ class CrossSkillContractTests(unittest.TestCase):
             event = json.dumps(
                 {"tool_name": "Read", "tool_input": {"file_path": str(cwd / "json.py")}, "cwd": str(cwd)}
             )
-            for shell, arguments in self.reviewer_hook_shells(command).items():
+            for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                 with self.subTest(shell=shell):
-                    self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
+                    assert executable is not None, f"{shell} is a validation prerequisite"
                     result = subprocess.run(
-                        arguments, input=event, capture_output=True, text=True, cwd=cwd, env=environment, check=False
+                        [executable, *arguments],
+                        input=event,
+                        capture_output=True,
+                        text=True,
+                        cwd=cwd,
+                        env=environment,
+                        check=False,
                     )
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                     self.assertNotIn("HIJACKED", result.stdout)
@@ -394,7 +411,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertLessEqual(timeout, literal_assignment(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
         self.assertIn("prints `STARTED <run directory>` at once", skill)
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
 
@@ -429,7 +446,7 @@ class CrossSkillContractTests(unittest.TestCase):
         timeout, command_minutes = int(timeouts[0]), int(minutes[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
-        self.assertLessEqual(timeout, literal_assignment(pipeline, "MAX_WAIT_SECONDS"))
+        self.assertLessEqual(timeout, literal_int(pipeline, "MAX_WAIT_SECONDS"))
         self.assertIn(
             "`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 retries it.",
             workflow,

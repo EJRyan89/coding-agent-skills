@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import unittest
+from typing import Any
 
 from harness import DeployerTestCase, forward
 
@@ -130,7 +131,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_invalid_bundles_fail_before_mutation(self) -> None:
-        cases = {
+        cases: dict[str, dict[str, Any]] = {
             "contains duplicate member 'alpha'": {"operations": {"members": ["alpha", "alpha"]}},
             "references unknown member 'ghost'": {"operations": {"members": ["ghost"]}},
             "must contain a non-empty string members array": {"operations": {"members": []}},

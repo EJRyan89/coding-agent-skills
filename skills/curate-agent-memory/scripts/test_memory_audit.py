@@ -34,7 +34,8 @@ def run_main(*arguments: str) -> tuple[int, str, str]:
         try:
             code = memory_audit.main(list(arguments))
         except SystemExit as exit_:
-            code = int(exit_.code)
+            assert isinstance(exit_.code, int), exit_.code
+            code = exit_.code
     return code, stdout.getvalue(), stderr.getvalue()
 
 

@@ -429,7 +429,7 @@ class ResolveTests(unittest.TestCase):
         locked = repo.root / "Locked"
         real = os.scandir
 
-        def scandir(path: object = ".") -> object:
+        def scandir(path: str | os.PathLike[str] = ".") -> object:
             if os.path.normcase(os.fspath(path)) == os.path.normcase(str(locked)):
                 raise PermissionError(13, "Permission denied", "Locked")
             return real(path)

@@ -95,7 +95,8 @@ class FakeGitHub:
         if arguments[-1].endswith("?per_page=1"):
             # An ancestry comparison between two commits; one not served cannot be compared.
             commits = arguments[-1].removesuffix("?per_page=1").rsplit("/compare/", 1)[1]
-            status = self.comparisons.get(tuple(commits.split("...")))
+            earlier, _, later = commits.partition("...")
+            status = self.comparisons.get((earlier, later))
             if status:
                 return CommandResult(0, json.dumps({"status": status}), "")
         # Comparisons and trees are unavailable, so any changed head is "unknown" to the change detector.

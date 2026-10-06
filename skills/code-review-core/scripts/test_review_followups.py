@@ -7,8 +7,10 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,6 +40,15 @@ def tarball(members: dict[str, bytes], *, prefix: str = "owner-repo-ccc/") -> by
     return buffer.getvalue()
 
 
+def writing(data: bytes) -> Callable[[str, str, Path], None]:
+    """A tarball fetcher that writes the data to its target, whatever repository and commit it is asked for."""
+
+    def fetch(repository: str, commit: str, target: Path) -> None:
+        target.write_bytes(data)
+
+    return fetch
+
+
 class GitHubSnapshotTests(unittest.TestCase):
     def snapshot(self, members: dict[str, bytes], changed: tuple[str, ...] = ()) -> tuple[Path, dict]:
         temporary = tempfile.TemporaryDirectory()
@@ -48,7 +59,7 @@ class GitHubSnapshotTests(unittest.TestCase):
             "owner/repo",
             HEAD,
             destination,
-            fetcher=lambda repository, commit, target: target.write_bytes(data),
+            fetcher=writing(data),
             changed_paths=changed,
         )
         return destination, metadata
@@ -99,7 +110,7 @@ class GitHubSnapshotTests(unittest.TestCase):
             "owner/repo",
             HEAD,
             destination,
-            fetcher=lambda repository, commit, target: target.write_bytes(data),
+            fetcher=writing(data),
             changed_paths=("node_modules",),
         )
         self.assertEqual({"node_modules": "symbolic-link", "run/pipe": "non-regular"}, metadata["excluded_paths"])
@@ -210,6 +221,7 @@ class ReviewedHeadTests(unittest.TestCase):
             encoding="utf-8",
         )
         reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
+        assert reviewed is not None, "the migrated legacy review is the reviewed head"
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 3}, reviewed["counts"])
         # Its findings were never converted, so it cannot say how many were addressed.
         self.assertEqual(
@@ -309,7 +321,7 @@ class CoverageTests(unittest.TestCase):
                 "owner/repo",
                 HEAD,
                 root / "source",
-                fetcher=lambda repository, commit, target: target.write_bytes(data),
+                fetcher=writing(data),
                 changed_paths=("db/Big.sql", "src/A.cs"),
             )
             diff = root / "diff.patch"
@@ -335,7 +347,7 @@ class CoverageTests(unittest.TestCase):
     def record(self, request: dict, findings: list[dict], uncovered: list[str] | None = None) -> dict:
         from review_records import build_record
 
-        adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
+        adapter: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
         result = {
             "protocol_version": 1,
             "repository": "owner/repo",

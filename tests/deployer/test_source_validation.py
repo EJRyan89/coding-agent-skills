@@ -385,7 +385,9 @@ class SharedAssetValidationTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="shared asset name '../escape.md' contains path separator")
 
 
-class SourceCheckoutTests(DeployerTestCase):
+class LinkedWorktreeTestCase(DeployerTestCase):
+    """A source checkout made a git repository with a linked worktree, for the classes below."""
+
     def git(self, *arguments: str) -> None:
         empty = self.root / "empty.gitconfig"
         empty.touch()
@@ -411,6 +413,8 @@ class SourceCheckoutTests(DeployerTestCase):
         self.git("worktree", "add", "-q", "-b", "task", str(linked))
         return linked
 
+
+class SourceCheckoutTests(LinkedWorktreeTestCase):
     def test_deploying_from_a_linked_worktree_is_refused_before_any_change(self) -> None:
         linked = self.make_linked_worktree()
         result = self.deploy_fails_from(linked, "--all")
@@ -444,11 +448,8 @@ class SourceCheckoutTests(DeployerTestCase):
         return Result(code, captured.getvalue())
 
 
-class CanaryHomeTests(DeployerTestCase):
+class CanaryHomeTests(LinkedWorktreeTestCase):
     """--canary-home deploys into a throwaway home, which is allowed from a linked worktree."""
-
-    git = SourceCheckoutTests.git
-    make_linked_worktree = SourceCheckoutTests.make_linked_worktree
 
     def setUp(self) -> None:
         super().setUp()
