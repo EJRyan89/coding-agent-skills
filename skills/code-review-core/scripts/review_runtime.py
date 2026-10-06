@@ -86,10 +86,25 @@ Runner = Callable[[Sequence[str]], CommandResult]
 
 
 def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
-    process = subprocess.run(
-        list(arguments), capture_output=True, text=True, encoding="utf-8", check=False
+    """Run a command, capturing bytes and decoding them here, never in subprocess's reader threads.
+
+    stdout is UTF-8 with surrogateescape and its line endings untouched, so `stdout.encode("utf-8",
+    "surrogateescape")` is exactly what the command printed. stderr only feeds messages, so a bad byte becomes U+FFFD.
+    """
+    process = subprocess.run(list(arguments), capture_output=True, check=False)
+    return CommandResult(
+        process.returncode, process.stdout.decode("utf-8", "surrogateescape"), process.stderr.decode("utf-8", "replace")
     )
-    return CommandResult(process.returncode, process.stdout, process.stderr)
+
+
+def output_bytes(text: str) -> bytes:
+    """The exact bytes a runner decoded to `text`."""
+    return text.encode("utf-8", "surrogateescape")
+
+
+def has_undecodable(text: str) -> bool:
+    """Whether a runner's output holds a byte that is not UTF-8, which surrogateescape keeps as a lone surrogate."""
+    return any("\udc80" <= character <= "\udcff" for character in text)
 
 
 def _safe_relative_path(value: Any, field: str) -> str:
@@ -308,7 +323,7 @@ def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
     result = runner(["git", "-C", str(checkout), *arguments])
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
-        raise RuntimeContractError(detail)
+        raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
     return result.stdout.strip()
 
 
@@ -349,6 +364,7 @@ def resolve_trusted_commit(
 
 
 def _read_git_file(checkout: Path, commit: str, relative: str, runner: Runner) -> bytes:
+    """The committed blob's exact bytes; a caller that needs text decodes them inside its own UnicodeError handler."""
     mode_line = _run_git(checkout, runner, "ls-tree", commit, "--", relative)
     if not mode_line:
         raise RuntimeContractError(f"Declared reviewer file is missing: {relative}")
@@ -358,7 +374,7 @@ def _read_git_file(checkout: Path, commit: str, relative: str, runner: Runner) -
     result = runner(["git", "-C", str(checkout), "show", f"{commit}:{relative}"])
     if result.returncode != 0:
         raise RuntimeContractError(f"Cannot read declared reviewer file: {relative}")
-    return result.stdout.encode("utf-8")
+    return output_bytes(result.stdout)
 
 
 def load_manifest_from_commit(

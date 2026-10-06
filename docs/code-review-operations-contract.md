@@ -347,7 +347,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `protocol_version` | integer | yes | One of `1`. |
 | `scope` | string | yes | One of `generic` or `repository`. |
 | `source_commit` | string or null | yes | The commit a repository reviewer's files were read at; null for the generic reviewer. |
-| `source_hashes` | object | yes | Keyed by path of each loaded reviewer file; each value is its SHA-256. Empty for the generic reviewer. |
+| `source_hashes` | object | yes | Keyed by path of each loaded reviewer file; each value is the SHA-256 of its exact committed bytes. Empty for the generic reviewer. |
 | `reviewer` | string | yes | The reviewer the result named. |
 | `status` | string | yes | One of `complete`, `partial`, or `failed`. Only a complete result is archived. |
 | `usage` | object or null | yes | The usage object the reviewer returned, or null. Never estimated or priced. |

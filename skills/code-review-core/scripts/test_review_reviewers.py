@@ -36,7 +36,8 @@ def inspect(text: str, skill: str = ".claude/agents/review.md"):
 class FakeGit:
     """Answers the git commands the reviewer resolution runs, from an in-memory tree at COMMIT.
 
-    A bytes value is a file that is not UTF-8: reading it raises as `subprocess_runner` does when git prints it.
+    A bytes value is a file that is not UTF-8: it is decoded with surrogateescape, as `subprocess_runner` decodes
+    what git prints, so each undecodable byte survives as a lone surrogate.
     """
 
     def __init__(self, files: dict[str, str | bytes], modes: dict[str, str] | None = None) -> None:
@@ -59,7 +60,8 @@ class FakeGit:
             return CommandResult(0, f"{self.modes.get(path, '100644')} blob {'b' * 40}\t{path}\n", "")
         if command[0] == "show" and command[1].startswith(f"{COMMIT}:"):
             content = self.files[command[1].split(":", 1)[1]]
-            return CommandResult(0, content.decode("utf-8") if isinstance(content, bytes) else content, "")
+            text = content.decode("utf-8", "surrogateescape") if isinstance(content, bytes) else content
+            return CommandResult(0, text, "")
         return CommandResult(128, "", f"fatal: unexpected {command}")
 
 
@@ -247,6 +249,25 @@ class RepositoryTests(unittest.TestCase):
                     lambda arguments: CommandResult(128, "", "fatal: not a tree object\n"))
         self.raises("git command failed", repository_files, CHECKOUT, COMMIT,
                     lambda arguments: CommandResult(1, "", ""))
+
+    def test_a_path_that_is_not_utf8_is_left_out_of_the_listing(self) -> None:
+        # No configuration, manifest, or skill text can name such a path, so it can never be a reviewer file.
+        self.assertEqual({"ok.md"}, repository_files(CHECKOUT, COMMIT, FakeGit({"caf\udce9.md": "", "ok.md": ""})))
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+
+        def git(*arguments: str, data: bytes | None = None) -> bytes:
+            result = subprocess.run(["git", "-C", str(checkout), *arguments], input=data, capture_output=True,
+                                    check=False)
+            self.assertEqual(0, result.returncode, result.stderr)
+            return result.stdout.strip()
+
+        git("init", "-q")
+        blob = git("hash-object", "-w", "--stdin", data=b"Rules\n")
+        tree = git("mktree", "-z", data=b"100644 blob " + blob + b"\tcaf\xe9.md\x00100644 blob " + blob + b"\tok.md\x00")
+        commit = git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree",
+                     tree.decode("ascii"), "-m", "names").decode("ascii")
+        self.assertEqual({"ok.md"}, repository_files(checkout, commit))
 
     def test_inspect_configured_skill(self) -> None:
         files = {SKILL: "﻿---\ntools: Read\n---\nApply `docs/rules.md`.\n", "docs/rules.md": "Rules\n"}

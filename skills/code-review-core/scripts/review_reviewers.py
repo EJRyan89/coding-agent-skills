@@ -25,6 +25,7 @@ from review_runtime import (
     RuntimeContractError,
     _read_git_file,
     _run_git,
+    has_undecodable,
     load_manifest_from_commit,
     load_manifest_from_file,
     subprocess_runner,
@@ -146,8 +147,13 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
 
 
 def repository_files(checkout: Path, commit: str, runner: Runner = subprocess_runner) -> set[str]:
+    """Every path in the commit's tree that is UTF-8.
+
+    A path that is not can never be a reviewer file: the configuration, manifests, and skill text that name reviewer
+    files are UTF-8, so nothing can name it. It is left out rather than failing the review over an unrelated file.
+    """
     listing = _run_git(checkout, runner, "ls-tree", "-r", "--name-only", "-z", commit)
-    return {name for name in listing.split("\0") if name}
+    return {name for name in listing.split("\0") if name and not has_undecodable(name)}
 
 
 def inspect_configured_skill(

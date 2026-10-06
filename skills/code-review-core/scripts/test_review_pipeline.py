@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1337,6 +1338,54 @@ class RepositoryReviewerTests(PipelineFixture):
         self.assertEqual((1, ""), (code, err))
         self.assertTrue(out.startswith("FAILED "), out)
         self.assertIn("delegate the ROLE prompts", out)
+
+    def commit_base_bytes(self, files: dict[str, bytes]) -> str:
+        """Commit `files` byte for byte to the pull request's base and rebase its head onto them; returns the base."""
+        git(self.checkout, "switch", "main")
+        for relative, content in files.items():
+            (self.checkout / relative).write_bytes(content)
+        # Not autocrlf: the blob must hold the CRLF itself, whatever the machine's Git configuration says.
+        git(self.checkout, "-c", "core.autocrlf=false", "add", "--", *files)
+        git(self.checkout, "commit", "-m", "base bytes")
+        base = git(self.checkout, "rev-parse", "HEAD")
+        git(self.checkout, "switch", "feature")
+        git(self.checkout, "rebase", "main")
+        self.github.pulls[12] = rest_pull(12, git(self.checkout, "rev-parse", "HEAD"), base)
+        return base
+
+    def test_trusted_files_are_materialized_as_their_committed_bytes(self) -> None:
+        self.configure(self.repository_reviewer("review/specialists.json"))
+        base = self.commit_base_bytes({"review/rules.md": b"Shared\r\nrules\r\n", "review/python-guide.md": b"caf\xe9\n"})
+        ready = self.prepare()
+        reviewer = Path(ready["reviewer_root"])
+        self.assertEqual(b"Shared\r\nrules\r\n", (reviewer / "review" / "rules.md").read_bytes())
+        self.assertEqual(b"caf\xe9\n", (reviewer / "review" / "python-guide.md").read_bytes())
+        self.assertEqual(base, ready["adapter"]["source_commit"])
+        self.assertEqual({
+            "review/rules.md": hashlib.sha256(b"Shared\r\nrules\r\n").hexdigest(),
+            "review/python.md": hashlib.sha256(b"Python profile\n").hexdigest(),
+            "review/python-guide.md": hashlib.sha256(b"caf\xe9\n").hexdigest(),
+        }, ready["adapter"]["source_hashes"])
+
+    def test_a_declared_file_that_must_be_text_and_is_not_ends_as_failed(self) -> None:
+        cases = (
+            (self.repository_reviewer("review/specialists.json"), "review/specialists.json",
+             "Adapter manifest is not valid UTF-8 JSON: 'utf-8' codec can't decode byte 0xe9 in position 11: "
+             "invalid continuation byte"),
+            (self.repository_reviewer("review/specialists.json"), "review/python.md",
+             "Specialist profile review/python.md is not UTF-8 text"),
+            (self.skill_reviewer("review/solo.md"), "review/solo.md", "The review skill review/solo.md is not UTF-8 text"),
+        )
+        for reviewer, relative, reason in cases:
+            with self.subTest(relative=relative):
+                self.configure(reviewer)
+                original = git(self.checkout, "show", f"main:{relative}").encode("utf-8")
+                content = b'{"id": "caf\xe9"}' if relative.endswith(".json") else b"caf\xe9\n"
+                self.commit_base_bytes({relative: content})
+                code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+                self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
+                self.assertEqual([], list(self.temporary.iterdir()))
+                self.commit_base_bytes({relative: original + b"\n"})
 
     def test_generic_reviewer_needs_agent_delegation(self) -> None:
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"

@@ -507,7 +507,10 @@ def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[s
     """
     if "model" in specialist:
         return (None if specialist["model"] == "inherit" else specialist["model"]), None
-    text = reviewer_root.joinpath(*PurePosixPath(specialist["profile"]).parts).read_text(encoding="utf-8-sig")
+    try:
+        text = reviewer_root.joinpath(*PurePosixPath(specialist["profile"]).parts).read_text(encoding="utf-8-sig")
+    except UnicodeError as exc:
+        raise SpecialistError(f"Specialist profile {specialist['profile']} is not UTF-8 text") from exc
     return profile_model(specialist["profile"], text)
 
 
