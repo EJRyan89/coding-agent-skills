@@ -20,7 +20,7 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{RE
 
 It first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file.
 
-An `ERROR` before any `REPO` line (for example, the GitHub CLI is not signed in) stops the run. Otherwise it prints one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Exit status 2 means a helper failed in at least one repository (`helper-failed`): every block was still printed, so handle them, then report the failure and stop.
+A last line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran: report it and stop. Otherwise it prints one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
 
 ## 2. Each repository's state
 
@@ -28,7 +28,7 @@ An `ERROR` before any `REPO` line (for example, the GitHub CLI is not signed in)
 - `quiet`: nothing changed and nothing needs the user. List these repositories together on one line instead of showing a summary.
 - `dirty`: a `DIRTY_MAIN <n>` line; handle it in step 3.
 - `fetch-failed`: relay its `SUMMARY` lines.
-- `error` or `helper-failed`: report its `ERROR` line; nothing more runs for it.
+- `error` or `git-failed`: report its `ERROR` line; nothing more runs for it.
 
 A `CHECKOUT failed <reason>` line means the switch to the default branch failed; report it with that repository's summary.
 
@@ -58,7 +58,7 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" delete-local --plan "<pl
 python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
 ```
 
-Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>`.
+Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>`, or a single `FAILED <reason>` when the plan cannot be used.
 
 ## 5. Summary
 

@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 from datetime import date, timedelta
-import json
 from pathlib import Path
 import re
-import sys
 from typing import Any, Iterable
 
 from review_archive import commit_record, current_ledger, latest_record, list_versions, pull_directory, record_paths
@@ -341,24 +338,3 @@ def repository_watermark(state: dict[str, Any], repository: str, today: date) ->
     entry = state.get("repositories", {}).get(validate_repository_identity(repository), {})
     value = entry.get("merged_since")
     return date.fromisoformat(value[:10]) if isinstance(value, str) else today
-
-
-def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Report reviewed heads for pull requests.")
-    commands = parser.add_subparsers(dest="command", required=True)
-    heads = commands.add_parser("reviewed-heads")
-    heads.add_argument("--repository", required=True)
-    heads.add_argument("--archive-root", type=Path, help="defaults to the configured archive_root")
-    heads.add_argument("numbers", nargs="+", type=int)
-    args = parser.parse_args(arguments)
-    archive_root = args.archive_root
-    if archive_root is None:
-        from review_config import load_config
-        archive_root = Path(load_config()["archive_root"])
-    result = {str(n): reviewed_head(archive_root, args.repository, n) for n in args.numbers}
-    print(json.dumps(result, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

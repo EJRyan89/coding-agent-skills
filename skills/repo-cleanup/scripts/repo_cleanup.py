@@ -1,28 +1,23 @@
 """Deterministic repository cleanup steps, so the agent only relays results and asks the user's confirmations.
 
-    sweep         discover, then sync, plan, and apply every repository at once, printing only what needs the
-                  agent: decisions, failures, and summaries; plans go to a new temporary directory by default
-    discover      list the repositories to clean and check that the GitHub CLI is signed in
-    sync          switch to the default branch, fetch and prune, and fast-forward the default branch
-    plan          classify branches and worktrees without changing the repository, and write the plan file
-    apply         carry out the plan's safe actions, re-checking every recorded branch tip first
+    sweep         find the repositories to clean, then sync, plan, and apply every one at once, printing only what
+                  needs the agent: decisions, failures, and summaries; plans go to a new temporary directory by
+                  default
     delete-local  delete local-only branches the user chose to delete (git branch -d)
     force-delete  force-delete branches reported UNMERGED, after the user confirmed
     summary       print the repository's summary from the plan file
 
-Every command prints one tab-separated fact per line. Exit status 0 means continue. 1 means an ERROR line was
-printed and the repository is skipped. 3 means sync stopped: DIRTY_MAIN needs the user's decision, or the fetch
-failed. 2 means a usage or helper failure that must stop the run.
+Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned. 1 means
+something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR line,
+or a last line FAILED <reason> when the command could not run at all. 2 is a usage error.
 """
 
 from __future__ import annotations
 
 import argparse
-import functools
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -35,11 +30,9 @@ from typing import Any
 
 import pr_status
 
-SCRIPTS = Path(__file__).resolve().parent
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
-SKILLS_ROOT = SCRIPTS.parents[1]
+SKILLS_ROOT = Path(__file__).resolve().parents[2]
 PLAN_SCHEMA_VERSION = 1
-EXIT_SKIP, EXIT_FATAL, EXIT_STOP = 1, 2, 3
 RELEASE_PREFIX = "release/"
 STALE_STATES = ("MERGED", "CLOSED")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
@@ -64,38 +57,8 @@ class CleanupError(Exception):
     """An expected problem with one repository: report it and skip the repository."""
 
 
-class HelperError(Exception):
-    """A helper or Git itself could not run: stop the run."""
-
-
-@functools.lru_cache(maxsize=1)
-def find_git_bash() -> str:
-    """Git for Windows' Bash, never another bash on PATH such as WSL's."""
-    configured = os.environ.get("GIT_BASH")
-    if configured and os.path.isfile(configured):
-        return configured
-    if os.name != "nt":
-        found = shutil.which("bash")
-        if found:
-            return found
-        raise HelperError("bash was not found")
-    result = pr_status.run_git(["--exec-path"])
-    if result.returncode == 0:
-        # Git for Windows reports <root>/mingw64/libexec/git-core; its Bash is <root>/bin/bash.exe.
-        parents = Path(result.stdout.strip()).parents
-        if len(parents) >= 3 and (parents[2] / "bin" / "bash.exe").is_file():
-            return str(parents[2] / "bin" / "bash.exe")
-    candidate = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "bin" / "bash.exe"
-    if candidate.is_file():
-        return str(candidate)
-    raise HelperError("Git Bash was not found; set GIT_BASH to Git for Windows' bin/bash.exe")
-
-
-def run_bash(arguments: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        [find_git_bash(), *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace",
-        stdin=subprocess.DEVNULL,
-    )
+class GitError(Exception):
+    """Git itself could not run: report it and skip the repository."""
 
 
 @dataclass
@@ -104,7 +67,6 @@ class Services:
 
     git: Runner = pr_status.run_git
     gh: Runner = pr_status.run_gh
-    bash: Runner = run_bash
 
 
 # Output ---------------------------------------------------------------------------------------------------------
@@ -135,7 +97,7 @@ def git(services: Services, directory: str | Path, *arguments: str) -> subproces
     try:
         return services.git(["-C", str(directory), "--no-optional-locks", *arguments])
     except OSError as exc:
-        raise HelperError(f"could not run git: {exc}") from exc
+        raise GitError(f"could not run git: {exc}") from exc
 
 
 def git_output(services: Services, directory: str | Path, *arguments: str) -> str:
@@ -209,30 +171,25 @@ def name_with_owner(services: Services, root: str | Path) -> str | None:
     return None
 
 
-# Helpers --------------------------------------------------------------------------------------------------------
-
-def run_helper(services: Services, script: str, *arguments: str) -> subprocess.CompletedProcess:
-    try:
-        return services.bash([str(SCRIPTS / script), *arguments])
-    except OSError as exc:
-        raise HelperError(f"could not run {script}: {exc}") from exc
-
+# Branches and worktrees -----------------------------------------------------------------------------------------
 
 def default_branch(services: Services, root: str | Path) -> str:
-    result = run_helper(services, "resolve_default_branch.sh", str(root))
-    if result.returncode == 1:
-        raise CleanupError("cannot determine default branch")
-    branch = result.stdout.strip()
-    if result.returncode != 0 or not branch:
-        raise HelperError(f"resolve_default_branch.sh failed ({result.returncode}): {reason(result)}")
-    return branch
+    """The branch origin/HEAD names, else main or master when origin has it."""
+    head = git(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    name = head.stdout.strip().removeprefix("refs/remotes/origin/") if head.returncode == 0 else ""
+    if name and name != head.stdout.strip():
+        return name
+    for name in ("main", "master"):
+        if git(services, root, "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{name}").returncode == 0:
+            return name
+    raise CleanupError("cannot determine default branch")
 
 
-def is_protected(services: Services, branch: str, path: str) -> bool:
-    result = run_helper(services, "is_protected_worktree.sh", branch, path)
-    if result.returncode not in (0, 1):
-        raise CleanupError(f"is_protected_worktree.sh failed ({result.returncode}): {reason(result)}")
-    return result.returncode == 0
+def is_protected(branch: str, path: str) -> bool:
+    """A release branch, or a worktree with a directory named release anywhere in its path."""
+    if branch.startswith(RELEASE_PREFIX):
+        return True
+    return "/release/" in f"/{path.replace(chr(92), '/').removeprefix('/')}/"
 
 
 def pull_state(services: Services, root: str | Path, nwo: str | None, default: str, branch: str,
@@ -296,7 +253,8 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
 
 # sync -----------------------------------------------------------------------------------------------------------
 
-def sync(root: str, skip_checkout: bool, services: Services) -> int:
+def sync(root: str, skip_checkout: bool, services: Services) -> bool:
+    """Switch to the default branch, fetch and prune, and fast-forward it; False when it stopped for the user."""
     require_repository(root)
     default = default_branch(services, root)
     emit("DEFAULT", default)
@@ -304,7 +262,7 @@ def sync(root: str, skip_checkout: bool, services: Services) -> int:
     if dirty:
         emit("DIRTY_MAIN", dirty)
         if not skip_checkout:
-            return EXIT_STOP
+            return False
     if skip_checkout:
         emit("CHECKOUT", "skipped")
     elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default}":
@@ -321,10 +279,10 @@ def sync(root: str, skip_checkout: bool, services: Services) -> int:
         emit("FETCH_FAILED", error)
         for line in fetch_failed_summary(Path(root).name, error):
             emit("SUMMARY", line)
-        return EXIT_STOP
+        return False
     git_output(services, root, "worktree", "prune")
     emit("FF_DEFAULT", *fast_forward_default(services, root, default))
-    return 0
+    return True
 
 
 def fast_forward_default(services: Services, root: str, default: str) -> tuple[Any, ...]:
@@ -374,12 +332,12 @@ def evaluate_worktree(services: Services, tree: Worktree) -> dict[str, Any]:
     if tree.branch is None:
         entry["detail"] = "detached"
         return entry
+    if is_protected(tree.branch, tree.path):
+        entry["action"] = "protected"
+        return entry
     try:
-        if is_protected(services, tree.branch, tree.path):
-            entry["action"] = "protected"
-        else:
-            changed = dirty_count(services, tree.path)
-            entry["action"] = f"dirty:{changed}" if changed else "candidate"
+        changed = dirty_count(services, tree.path)
+        entry["action"] = f"dirty:{changed}" if changed else "candidate"
     except CleanupError as exc:
         entry["detail"] = str(exc)
     return entry
@@ -460,17 +418,6 @@ def default_status(services: Services, root: str, default: str) -> str:
     if ahead or behind:
         return f"ahead {ahead}" if ahead else f"behind {behind}"
     return "up to date"
-
-
-def print_plan(plan: dict[str, Any], output: str) -> None:
-    for branch in plan["branches"]:
-        emit("BRANCH", branch["name"], branch["category"], branch["pr"], branch["sha"], branch["action"],
-             branch["detail"])
-    for entry in plan["worktrees"]:
-        emit("WORKTREE", entry["path"], entry["branch"], entry["action"], entry["detail"])
-    for entry in plan["fastforward"]:
-        emit("FASTFORWARD", entry["branch"], entry["target"])
-    emit("PLAN", output)
 
 
 # Plan file ------------------------------------------------------------------------------------------------------
@@ -593,21 +540,19 @@ def prune_empty_parents(removed: str, boundaries: list[str]) -> list[str]:
 
 
 def remove_worktree(services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str) -> bool:
-    result = run_helper(services, "remove_worktree.sh", plan["repo_root"], entry["path"], entry["branch"])
-    if result.returncode in (0, 3):
-        record(plan, "REMOVED", entry["path"], entry["branch"])
-        if result.returncode == 0:
-            record(plan, "DELETED", entry["branch"])
-        elif branch_tip(services, plan["repo_root"], entry["branch"]) == sha:
-            unmerged(services, plan, entry["branch"], sha, pr)
-        else:
-            record(plan, "PRESERVED", entry["branch"], "moved")
-        return True
-    if result.returncode == 1:
-        record(plan, "PRESERVED", entry["branch"], reason(result))
+    """git worktree remove, which refuses a locked worktree or one with changes, then git branch -d."""
+    removed = git(services, plan["repo_root"], "worktree", "remove", entry["path"])
+    if removed.returncode != 0:
+        record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
+        return False
+    record(plan, "REMOVED", entry["path"], entry["branch"])
+    if git(services, plan["repo_root"], "branch", "-d", entry["branch"]).returncode == 0:
+        record(plan, "DELETED", entry["branch"])
+    elif branch_tip(services, plan["repo_root"], entry["branch"]) == sha:
+        unmerged(services, plan, entry["branch"], sha, pr)
     else:
-        record(plan, "PRESERVED", entry["branch"], f"remove_worktree.sh failed ({result.returncode}): {reason(result)}")
-    return False
+        record(plan, "PRESERVED", entry["branch"], "moved")
+    return True
 
 
 def apply(plan_path: str, services: Services) -> None:
@@ -788,7 +733,7 @@ def sweep_repository(root: str, repos_root: str, plans: str, services: Services,
     _capture.lines = lines
     result: dict[str, Any] = {"root": root, "lines": lines, "plan": None}
     try:
-        if sync(root, skip_checkout, services) == EXIT_STOP:
+        if not sync(root, skip_checkout, services):
             dirty = any(line.split("\t")[0] == "DIRTY_MAIN" for line in lines)
             return {**result, "state": "dirty" if dirty else "fetch-failed"}
         plan_path = Path(plans) / f"{Path(root).name}.json"
@@ -796,12 +741,12 @@ def sweep_repository(root: str, repos_root: str, plans: str, services: Services,
         apply(str(plan_path), services)
         state = "quiet" if is_quiet(load_plan(plan_path)) else "cleaned"
         return {**result, "state": state, "plan": plan_path.as_posix()}
-    except CleanupError as exc:
+    except (CleanupError, OSError) as exc:
         emit("ERROR", exc)
         return {**result, "state": "error"}
-    except HelperError as exc:
+    except GitError as exc:
         emit("ERROR", exc)
-        return {**result, "state": "helper-failed"}
+        return {**result, "state": "git-failed"}
     finally:
         _capture.lines = None
 
@@ -809,9 +754,9 @@ def sweep_repository(root: str, repos_root: str, plans: str, services: Services,
 def sweep(target: str | None, repos_root: str, plans: str, services: Services, skip_checkout: bool = False) -> int:
     """Clean every repository at once; print each one's decisions, failures, and summary in discovery order.
 
-    Each repository is cleaned exactly as sync, plan, and apply would, so every safety check is unchanged. A helper
-    failure in one repository no longer stops the others mid-run: every result is reported, then the sweep exits 2.
-    skip_checkout is sync's --skip-checkout: a dirty main worktree is cleaned without switching its branch.
+    Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip. A failure in one
+    repository never stops the others: every result is reported, and the sweep exits 1 when any repository needs
+    the agent. skip_checkout cleans a dirty main worktree without switching its branch.
     """
     repositories = discover(target, repos_root, services)
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
@@ -830,8 +775,8 @@ def sweep(target: str | None, repos_root: str, plans: str, services: Services, s
             elif kind == "CHECKOUT" and line.split("\t")[1] == "failed":
                 print(line)
     emit("SWEPT", len(results), *(f"{state}={states.get(state, 0)}" for state in
-                                  ("cleaned", "quiet", "dirty", "fetch-failed", "error", "helper-failed")))
-    return EXIT_FATAL if states.get("helper-failed") else 0
+                                  ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")))
+    return 0 if set(states) <= {"cleaned", "quiet"} else 1
 
 
 # CLI ------------------------------------------------------------------------------------------------------------
@@ -844,20 +789,9 @@ def build_parser() -> argparse.ArgumentParser:
     sweep_parser.add_argument("--plans", help="directory for each repository's plan file; defaults to a new "
                                               "temporary directory")
     sweep_parser.add_argument("--skip-checkout", action="store_true",
-                              help="clean a dirty main worktree without switching branches, as sync does")
+                              help="clean a dirty main worktree without switching branches")
     sweep_parser.add_argument("target", nargs="?")
-    discover_parser = commands.add_parser("discover")
-    discover_parser.add_argument("--repos-root", required=True)
-    discover_parser.add_argument("target", nargs="?")
-    sync_parser = commands.add_parser("sync")
-    sync_parser.add_argument("--repo-root", required=True)
-    sync_parser.add_argument("--skip-checkout", action="store_true")
-    plan_parser = commands.add_parser("plan")
-    plan_parser.add_argument("--repo-root", required=True)
-    plan_parser.add_argument("--repos-root", required=True)
-    plan_parser.add_argument("--output", required=True)
-    for name in ("apply", "summary"):
-        commands.add_parser(name).add_argument("--plan", required=True)
+    commands.add_parser("summary").add_argument("--plan", required=True)
     for name in ("delete-local", "force-delete"):
         confirm_parser = commands.add_parser(name)
         confirm_parser.add_argument("--plan", required=True)
@@ -870,36 +804,16 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     services = services or Services()
     try:
         if options.command == "sweep":
-            try:
-                plans = plans_directory(options.plans)
-            except ValueError as exc:
-                emit("ERROR", exc)
-                return EXIT_FATAL
+            plans = plans_directory(options.plans)
             emit("PLANS", plans.as_posix())
             return sweep(options.target, options.repos_root, str(plans), services, options.skip_checkout)
-        if options.command == "discover":
-            repositories = discover(options.target, options.repos_root, services)
-            for path in repositories:
-                emit("REPO", path)
-            emit("COUNT", len(repositories))
-        elif options.command == "sync":
-            return sync(options.repo_root, options.skip_checkout, services)
-        elif options.command == "plan":
-            plan = build_plan(options.repo_root, options.repos_root, services)
-            save_plan(options.output, plan)
-            print_plan(plan, options.output)
-        elif options.command == "apply":
-            apply(options.plan, services)
-        elif options.command == "summary":
+        if options.command == "summary":
             print_summary(load_plan(options.plan))
         else:
             confirm(options.plan, options.branches, services, force=options.command == "force-delete")
-    except CleanupError as exc:
-        emit("ERROR", exc)
-        return EXIT_SKIP
-    except HelperError as exc:
-        emit("ERROR", exc)
-        return EXIT_FATAL
+    except (CleanupError, GitError, OSError, ValueError) as exc:
+        emit("FAILED", exc)
+        return 1
     return 0
 
 

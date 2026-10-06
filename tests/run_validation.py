@@ -1479,7 +1479,7 @@ class RepositoryValidation(unittest.TestCase):
             "tests/deployer/test_frontmatter.py",
             "tests/tools/test_worktrees.py",
             "tests/ai-config/test_cross_skill_contracts.py",
-            "skills/repo-cleanup/scripts/test_remove_worktree.sh",
+            "skills/update-coding-agent-skills/scripts/test_update.sh",
             "skills/code-review-core/scripts/test_review_pipeline.py",
         ):
             self.assertIn(expected, suites)

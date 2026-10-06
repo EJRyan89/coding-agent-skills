@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -106,6 +107,17 @@ def copy_fixture(root: Path) -> None:
 
 def facts(lines: list[str], kind: str) -> list[list[str]]:
     return [line.split("\t")[1:] for line in lines if line.split("\t")[0] == kind]
+
+
+def plan_lines(plan: dict, path: Path) -> list[str]:
+    """A plan's decisions as fact lines, so tests read what it decided the way they read every other step."""
+    lines = [["BRANCH", branch["name"], branch["category"], branch["pr"], branch["sha"], branch["action"],
+              branch["detail"]] for branch in plan["branches"]]
+    lines += [["WORKTREE", entry["path"], entry["branch"], entry["action"], entry["detail"]]
+              for entry in plan["worktrees"]]
+    lines += [["FASTFORWARD", entry["branch"], entry["target"]] for entry in plan["fastforward"]]
+    lines.append(["PLAN", str(path)])
+    return ["\t".join(str(field) if str(field).strip() else "-" for field in line) for line in lines]
 
 
 class FakeGitHub:
@@ -238,15 +250,25 @@ class Fixture(unittest.TestCase):
             code = rc.main(list(arguments), rc.Services(gh=self.github))
         return code, output.getvalue().splitlines()
 
-    def sync(self, *extra: str) -> tuple[int, list[str]]:
-        return self.invoke("sync", "--repo-root", str(self.clone), *extra)
+    def step(self, action) -> tuple[object, list[str]]:
+        """Run one of the steps a sweep takes for each repository, capturing the lines it prints."""
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result = action(rc.Services(gh=self.github))
+        return result, output.getvalue().splitlines()
+
+    def sync(self, skip_checkout: bool = False) -> tuple[bool, list[str]]:
+        """Whether sync finished, so the sweep goes on to plan and apply, and the lines it printed."""
+        return self.step(lambda services: rc.sync(str(self.clone), skip_checkout, services))
 
     def plan(self) -> tuple[int, list[str]]:
-        return self.invoke("plan", "--repo-root", str(self.clone), "--repos-root", str(self.repos),
-                        "--output", str(self.plan_file))
+        plan = rc.build_plan(str(self.clone), str(self.repos), rc.Services(gh=self.github))
+        rc.save_plan(self.plan_file, plan)
+        return 0, plan_lines(plan, self.plan_file)
 
     def apply(self) -> tuple[int, list[str]]:
-        return self.invoke("apply", "--plan", str(self.plan_file))
+        _, lines = self.step(lambda services: rc.apply(str(self.plan_file), services))
+        return 0, lines
 
     def confirm(self, command: str, *branches: str) -> tuple[int, list[str]]:
         arguments = [command, "--plan", str(self.plan_file)]
@@ -255,13 +277,10 @@ class Fixture(unittest.TestCase):
         return self.invoke(*arguments)
 
     def clean(self) -> tuple[list[str], list[str]]:
-        for step in (self.sync, self.plan):
-            code, lines = step()
-            self.assertEqual(0, code, lines)
-            if step == self.plan:
-                planned = lines
-        code, applied = self.apply()
-        self.assertEqual(0, code, applied)
+        finished, lines = self.sync()
+        self.assertTrue(finished, lines)
+        _, planned = self.plan()
+        _, applied = self.apply()
         return planned, applied
 
     def branch_fact(self, planned: list[str], name: str) -> list[str]:
@@ -305,22 +324,18 @@ class FixtureTemplateTests(unittest.TestCase):
 
 
 class DiscoverTests(Fixture):
-    def discover(self, *target: str) -> tuple[int, list[str]]:
-        return self.invoke("discover", "--repos-root", str(self.repos), *target)
+    def discover(self, *target: str) -> list[str]:
+        return rc.discover(target[0] if target else None, str(self.repos), rc.Services(gh=self.github))
 
     def test_sweep_lists_directories_that_contain_a_git_directory(self) -> None:
         (self.repos / "plain folder").mkdir()
         git(self.clone, "worktree", "add", "--quiet", "-b", "linked", str(self.repos / "linked worktree"))
-        code, lines = self.discover()
-        self.assertEqual(0, code, lines)
-        self.assertEqual([[self.clone.as_posix()]], facts(lines, "REPO"))
-        self.assertEqual([["1"]], facts(lines, "COUNT"))
+        self.assertEqual([self.clone.as_posix()], self.discover())
 
     def test_target_by_name_or_absolute_path(self) -> None:
         for target in ("my repo", str(self.clone)):
             with self.subTest(target=target):
-                code, lines = self.discover(target)
-                self.assertEqual((0, [[self.clone.as_posix()]]), (code, facts(lines, "REPO")))
+                self.assertEqual([self.clone.as_posix()], self.discover(target))
 
     def test_rejects_targets_that_are_not_repositories_or_names(self) -> None:
         (self.repos / "plain folder").mkdir()
@@ -331,16 +346,13 @@ class DiscoverTests(Fixture):
             ("..", "is not a repository name or an absolute path"),
         ):
             with self.subTest(target=target):
-                code, lines = self.discover(target)
-                self.assertEqual(1, code)
-                self.assertIn(message, facts(lines, "ERROR")[0][0])
-                self.assertEqual([], facts(lines, "REPO"))
+                with self.assertRaisesRegex(rc.CleanupError, re.escape(message)):
+                    self.discover(target)
 
     def test_unauthenticated_github_cli_stops(self) -> None:
         self.github.authenticated = False
-        code, lines = self.discover()
-        self.assertEqual(1, code)
-        self.assertEqual([["GitHub CLI not authenticated — run 'gh auth login'"]], facts(lines, "ERROR"))
+        with self.assertRaisesRegex(rc.CleanupError, "^GitHub CLI not authenticated — run 'gh auth login'$"):
+            self.discover()
 
 
 class SyncTests(Fixture):
@@ -350,8 +362,8 @@ class SyncTests(Fixture):
         self.delete_remotely("pruned")
         self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
-        code, lines = self.sync()
-        self.assertEqual(0, code, lines)
+        finished, lines = self.sync()
+        self.assertTrue(finished, lines)
         self.assertEqual([["main"]], facts(lines, "DEFAULT"))
         self.assertEqual([["switched"]], facts(lines, "CHECKOUT"))
         self.assertEqual([["ok"]], facts(lines, "FF_DEFAULT"))
@@ -366,13 +378,13 @@ class SyncTests(Fixture):
         before = git(self.clone, "rev-parse", "refs/remotes/origin/main")
         upstream = self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
-        code, lines = self.sync()
-        self.assertEqual(3, code, lines)
+        finished, lines = self.sync()
+        self.assertFalse(finished, lines)
         self.assertEqual([["1"]], facts(lines, "DIRTY_MAIN"))
         self.assertEqual([], facts(lines, "CHECKOUT") + facts(lines, "FF_DEFAULT"))
         self.assertEqual(before, git(self.clone, "rev-parse", "refs/remotes/origin/main"))
-        code, lines = self.sync("--skip-checkout")
-        self.assertEqual(0, code, lines)
+        finished, lines = self.sync(skip_checkout=True)
+        self.assertTrue(finished, lines)
         self.assertEqual([["skipped"]], facts(lines, "CHECKOUT"))
         self.assertEqual([["ok"]], facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
@@ -383,8 +395,8 @@ class SyncTests(Fixture):
     def test_fetch_failure_stops_the_repository(self) -> None:
         git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
         git(self.clone, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
-        code, lines = self.sync()
-        self.assertEqual(3, code, lines)
+        finished, lines = self.sync()
+        self.assertFalse(finished, lines)
         self.assertEqual(1, len(facts(lines, "FETCH_FAILED")))
         self.assertEqual([], facts(lines, "FF_DEFAULT"))
         summary = [fields[0] for fields in facts(lines, "SUMMARY")]
@@ -395,8 +407,8 @@ class SyncTests(Fixture):
         local = self.commit(self.clone, "local main work")
         self.commit(self.other, "upstream work")
         git(self.other, "push", "--quiet", "origin", "main")
-        code, lines = self.sync()
-        self.assertEqual(0, code, lines)
+        finished, lines = self.sync()
+        self.assertTrue(finished, lines)
         self.assertEqual([["diverged", "1", "1"]], facts(lines, "FF_DEFAULT"))
         self.assertEqual(local, self.tip("main"))
 
@@ -533,17 +545,23 @@ class PlanApplyTests(Fixture):
         self.sync()
         self.plan()
         code, lines = self.confirm("delete-local", "anything")
-        self.assertEqual((1, [["run apply with this plan first"]]), (code, facts(lines, "ERROR")))
-        self.assertEqual(0, self.apply()[0])
-        code, lines = self.apply()
-        self.assertEqual((1, [["this plan was already applied; run plan again"]]), (code, facts(lines, "ERROR")))
+        self.assertEqual((1, ["FAILED\trun apply with this plan first"]), (code, lines))
+        self.apply()
+        with self.assertRaisesRegex(rc.CleanupError, "^this plan was already applied; run plan again$"):
+            self.apply()
+
+    def test_a_confirmation_with_a_missing_plan_fails_with_one_line(self) -> None:
+        code, lines = self.confirm("force-delete", "anything")
+        self.assertEqual(1, code)
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED\tcannot read plan {self.plan_file}: "), lines)
 
     def test_plan_changes_nothing_in_the_repository(self) -> None:
         self.finished_branch("merged-gone")
         self.push_branch("behind")
         self.advance_remotely("behind")
         git(self.clone, "worktree", "add", "--quiet", str(self.area / "wt"), "merged-gone")
-        self.assertEqual(0, self.sync()[0])
+        self.assertTrue(self.sync()[0])
 
         def snapshot() -> tuple[str, ...]:
             return (
@@ -710,9 +728,9 @@ class SweepTests(Fixture):
                         code = rc.main(["sweep", "--repos-root", str(self.repos), "--plans", str(target)],
                                        rc.Services(gh=self.github))
                     lines = output.getvalue().splitlines()
-                    self.assertEqual(rc.EXIT_FATAL, code)
+                    self.assertEqual(1, code)
                     self.assertEqual(1, len(lines), lines)
-                    self.assertTrue(lines[0].startswith(f"ERROR\t{target} is inside the skills directory "), lines)
+                    self.assertTrue(lines[0].startswith(f"FAILED\t{target} is inside the skills directory "), lines)
                     self.assertFalse(target.exists())
         self.assertEqual([], self.github.calls)
 
@@ -744,11 +762,11 @@ class SweepTests(Fixture):
         git(broken, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
 
         code, lines = self.sweep()
-        self.assertEqual(0, code, lines)
+        self.assertEqual(1, code, "a dirty or unfetched repository needs the agent")
         root = self.repos.as_posix()
         self.assertEqual([[f"{root}/broken repo", "fetch-failed"], [f"{root}/dirty repo", "dirty"],
                           [f"{root}/my repo", "cleaned"], [f"{root}/quiet repo", "quiet"]], facts(lines, "REPO"))
-        self.assertEqual([["4", "cleaned=1", "quiet=1", "dirty=1", "fetch-failed=1", "error=0", "helper-failed=0"]],
+        self.assertEqual([["4", "cleaned=1", "quiet=1", "dirty=1", "fetch-failed=1", "error=0", "git-failed=0"]],
                          facts(lines, "SWEPT"))
         self.assertEqual({"PLANS", "REPO", "PLAN", "SWEPT", "SUMMARY", "DIRTY_MAIN", "FETCH_FAILED", "CONFIRM_LOCAL"},
                          {line.split("\t")[0] for line in lines}, "plan items and step chatter stay out")
@@ -798,7 +816,7 @@ class SweepTests(Fixture):
         self.assertEqual(0, code, lines)
         self.assertGreaterEqual(peak, 2)
 
-    def test_a_helper_failure_reports_every_repository_then_exits_2(self) -> None:
+    def test_a_git_failure_reports_every_repository_then_exits_1(self) -> None:
         self.make_clone("other repo")
 
         def git_runner(arguments: list[str]) -> subprocess.CompletedProcess:
@@ -807,13 +825,140 @@ class SweepTests(Fixture):
             return rc.pr_status.run_git(arguments)
 
         code, lines = self.sweep(rc.Services(git=git_runner, gh=self.github))
-        self.assertEqual(2, code)
+        self.assertEqual(1, code)
         root = self.repos.as_posix()
-        self.assertEqual([[f"{root}/my repo", "quiet"], [f"{root}/other repo", "helper-failed"]], facts(lines, "REPO"))
+        self.assertEqual([[f"{root}/my repo", "quiet"], [f"{root}/other repo", "git-failed"]], facts(lines, "REPO"))
         self.assertEqual([["could not run git: git vanished"]], facts(self.blocks(lines)["other repo"], "ERROR"))
 
 
+    def test_a_sweep_that_cannot_start_fails_with_one_line(self) -> None:
+        self.github.authenticated = False
+        code, lines = self.sweep()
+        self.assertEqual(1, code, lines)
+        self.assertEqual(["PLANS", "FAILED"], [line.split("\t")[0] for line in lines])
+        self.assertEqual("FAILED\tGitHub CLI not authenticated — run 'gh auth login'", lines[-1])
+
+    def test_only_the_commands_the_skill_runs_remain(self) -> None:
+        for command in ("discover", "sync", "plan", "apply"):
+            with self.subTest(command=command), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    rc.main([command], rc.Services(gh=self.github))
+                self.assertEqual(2, raised.exception.code)
+
+
+class DefaultBranchTests(unittest.TestCase):
+    """The branch origin/HEAD names, else origin/main, else origin/master."""
+
+    def repository(self, branch: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup default ")).resolve()
+        self.addCleanup(remove_tree, root)
+        git(root, "init", "--quiet", "-b", branch)
+        git(root, "commit", "--quiet", "--allow-empty", "-m", "initial")
+        return root
+
+    def test_origin_head_names_the_default_branch(self) -> None:
+        root = self.repository("trunk")
+        git(root, "update-ref", "refs/remotes/origin/trunk", "HEAD")
+        git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+        git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/trunk")
+        self.assertEqual("trunk", rc.default_branch(rc.Services(), root))
+
+    def test_without_origin_head_main_then_master(self) -> None:
+        for branch in ("main", "master"):
+            with self.subTest(branch=branch):
+                root = self.repository("topic")
+                git(root, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
+                self.assertEqual(branch, rc.default_branch(rc.Services(), root))
+
+    def test_no_default_branch_skips_the_repository(self) -> None:
+        with self.assertRaisesRegex(rc.CleanupError, "^cannot determine default branch$"):
+            rc.default_branch(rc.Services(), self.repository("topic"))
+
+
+class RemoveWorktreeTests(unittest.TestCase):
+    """git worktree remove, then git branch -d, as apply runs them for a stale worktree."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="repo cleanup remove ")).resolve()
+        self.addCleanup(remove_tree, self.root)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        git(self.repo, "init", "--quiet", "-b", "main")
+        git(self.repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
+        self.plan = {"repo_root": str(self.repo), "events": []}
+
+    def tip(self, branch: str) -> str | None:
+        result = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--verify", "--quiet",
+                                 f"refs/heads/{branch}"], capture_output=True, text=True)
+        return result.stdout.strip() or None
+
+    def add(self, name: str) -> Path:
+        path = self.root / f"{name} wt"
+        git(self.repo, "worktree", "add", "--quiet", "-b", name, str(path))
+        return path
+
+    def remove(self, name: str, pr: str = "CLOSED") -> tuple[bool, list[list[str]], Path]:
+        path = self.root / f"{name} wt"
+        entry = {"path": str(path), "branch": name}
+        with contextlib.redirect_stdout(io.StringIO()):
+            removed = rc.remove_worktree(rc.Services(), self.plan, entry, self.tip(name), pr)
+        return removed, self.plan["events"], path
+
+    def test_a_merged_worktree_and_its_branch_are_removed(self) -> None:
+        self.add("merged")
+        removed, events, path = self.remove("merged")
+        self.assertTrue(removed)
+        self.assertEqual([["REMOVED", str(path), "merged"], ["DELETED", "merged"]], events)
+        self.assertFalse(path.exists())
+        self.assertIsNone(self.tip("merged"))
+
+    def test_a_locked_worktree_is_kept_with_gits_reason(self) -> None:
+        path = self.add("locked")
+        (path / "sentinel.txt").write_text("keep\n", encoding="utf-8")
+        git(path, "add", "sentinel.txt")
+        git(path, "commit", "--quiet", "-m", "sentinel")
+        git(self.repo, "worktree", "lock", str(path))
+        removed, events, _ = self.remove("locked")
+        self.assertFalse(removed)
+        self.assertEqual(["PRESERVED", "locked"], events[0][:2])
+        self.assertTrue(events[0][2].startswith(f"Git refused to remove worktree {path}: "), events)
+        self.assertTrue((path / "sentinel.txt").is_file())
+        self.assertIsNotNone(self.tip("locked"))
+
+    def test_untracked_work_is_kept(self) -> None:
+        path = self.add("untracked")
+        (path / "draft.txt").write_text("draft\n", encoding="utf-8")
+        removed, events, _ = self.remove("untracked")
+        self.assertFalse(removed)
+        self.assertEqual(["PRESERVED", "untracked"], events[0][:2])
+        self.assertTrue((path / "draft.txt").is_file())
+
+    def test_an_unmerged_branch_outlives_its_removed_worktree(self) -> None:
+        path = self.add("unmerged")
+        git(path, "commit", "--quiet", "--allow-empty", "-m", "work")
+        sha = self.tip("unmerged")
+        removed, events, _ = self.remove("unmerged")
+        self.assertTrue(removed)
+        self.assertEqual([["REMOVED", str(path), "unmerged"], ["UNMERGED", "unmerged", sha]], events)
+        self.assertFalse(path.exists())
+        self.assertEqual(sha, self.tip("unmerged"))
+
+
 class UnitTests(unittest.TestCase):
+    def test_release_branches_and_worktrees_under_a_release_directory_are_protected(self) -> None:
+        for branch, path, expected in (
+            ("release/4.10", "C:/GitHub/Worktrees/example/topic", True),
+            ("topic/fix", "C:/GitHub/Worktrees/example/release/4.10", True),
+            ("topic/fix", "C:\\GitHub\\Worktrees\\example\\release\\4.10", True),
+            ("topic/fix", "C:/release/example", True),
+            ("topic/fix", "/release/example", True),
+            ("topic/release-notes", "C:/GitHub/Worktrees/example/topic", False),
+            ("topic/fix", "C:/GitHub/Worktrees/example/pre-release/topic", False),
+            ("releases/1", "C:/GitHub/Worktrees/example/released", False),
+        ):
+            with self.subTest(branch=branch, path=path):
+                self.assertEqual(expected, rc.is_protected(branch, path))
+
     def test_github_remote_urls(self) -> None:
         for url, expected in (
             ("https://github.com/owner/repo.git", "owner/repo"),

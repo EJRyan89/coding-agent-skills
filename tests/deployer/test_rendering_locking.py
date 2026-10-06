@@ -117,8 +117,6 @@ class RenderedExecutableTests(DeployerTestCase):
             "audit-ai-config/scripts/audit_ai_config.py",
             "init-ai-config/scripts/ai_config_template.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
-            "repo-cleanup/scripts/resolve_default_branch.sh",
-            "repo-cleanup/scripts/is_protected_worktree.sh",
             "repo-cleanup/scripts/repo_cleanup.py",
             "update-coding-agent-skills/scripts/update.sh",
         ):

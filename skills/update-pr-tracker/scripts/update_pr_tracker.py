@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import sys
@@ -22,7 +21,7 @@ from review_config import (
     normalize_author_names,
     validate_repository_identity,
 )
-from review_github import GitHubClient, GitHubError
+from review_github import GitHubClient
 from review_io import atomic_write_text
 
 
@@ -513,44 +512,3 @@ def update_dashboard_rows(
         splice(current, owned, start_marker=start_marker, end_marker=end_marker),
     )
     return rows
-
-
-def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--dashboard", type=Path, required=True)
-    parser.add_argument("--login", required=True)
-    parser.add_argument("--start-marker", default=START_MARKER)
-    parser.add_argument("--end-marker", default=END_MARKER)
-    parser.add_argument("--overrides", type=Path)
-    parser.add_argument("--remove", action="append", default=[])
-    parser.add_argument("--print-review-candidates", action="store_true")
-    parser.add_argument("--home-repository", action="append", default=[],
-                        help="owner/repo whose pull requests render as #N instead of name#N; repeatable")
-    parser.add_argument("--config-path", help="code-review configuration file linked from pinned sections")
-    args = parser.parse_args(arguments)
-    try:
-        overrides = None
-        if args.overrides:
-            overrides = json.loads(args.overrides.read_text(encoding="utf-8-sig"))
-        candidates = update_dashboard(
-            args.input,
-            args.dashboard,
-            args.login,
-            start_marker=args.start_marker,
-            end_marker=args.end_marker,
-            overrides=overrides,
-            removals=args.remove,
-            home_repositories=[validate_repository_identity(r) for r in args.home_repository],
-            config_path=args.config_path,
-        )
-        if args.print_review_candidates:
-            print(json.dumps(candidates, ensure_ascii=False, separators=(",", ":")))
-        return 0
-    except (TrackerError, GitHubError, OSError, UnicodeError, json.JSONDecodeError) as exc:
-        parser.error(str(exc))
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
