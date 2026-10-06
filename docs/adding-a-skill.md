@@ -13,7 +13,7 @@ deploy-meta/<skill-name>.json
 
 The `name` in the `SKILL.md` frontmatter must exactly match the directory and metadata filename. Skill and shared-asset names must be unique.
 
-The deployer and the repository tools read `name`, `description`, `argument-hint`, and the invocation flags with `deployer/frontmatter.py`. Each of those may be a plain, quoted, or block (`|` or `>-`) scalar, but not a list or a nested mapping. Deployment stops with the reason when `name` cannot be read, and validation when any of them cannot. Keys they do not read, such as `hooks`, are never parsed.
+The deployer and the repository tools read `name`, `description`, `argument-hint`, and the invocation flags with `deployer/frontmatter.py`. Each of those may be a plain, quoted, or block (`|` or `>-`) scalar, but not a list or a nested mapping. Deployment stops with the reason when `name` cannot be read, and validation when any of them cannot. Keys they do not read, such as `hooks`, are never parsed. A skill script that reads frontmatter imports the same reader as `frontmatter` from the hidden `skill-core` skill, declared like its `console.py`.
 
 Claude Code loads every model-invocable skill's description into every session, and Codex and GitHub Copilot CLI read it through the skill's runtime adapter. Keep it within 1,024 characters once rendered: Copilot refuses a longer one, so deployment stops instead. Add `disable-model-invocation: true` to a skill only the user should start, such as one that deletes branches or redeploys, and also `user-invocable: false` to an internal dependency nobody starts directly. Never add either to a skill another skill invokes by name; a contract test checks this.
 

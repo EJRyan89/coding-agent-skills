@@ -387,6 +387,8 @@ def check_inventory(root: Path) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
+# Kept instead of skill-core's frontmatter.py: this audit reports, by line, forms that reader accepts, and accepts some
+# it refuses, recorded for decision in https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
 def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
     """Read simple YAML frontmatter without executing or loading YAML tags."""
     rel = path.as_posix()
