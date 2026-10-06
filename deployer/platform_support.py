@@ -232,6 +232,13 @@ def current_process_id() -> int:
     return os.getpid()
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "process_status": "skills/code-review-core/scripts/review_process.py carries a copy because a deployed skill "
+    "cannot import the deployer; #27 removes it",
+}
+
+
 def process_status(pid: int) -> ProcessStatus:
     """Report whether a process is running and, when readable, its creation time."""
     import ctypes
