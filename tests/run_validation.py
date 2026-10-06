@@ -1675,11 +1675,12 @@ def skill_directories() -> list[Path]:
 
 
 class RepositoryValidation(unittest.TestCase):
-    def test_tracked_claude_settings_hold_hooks_only(self) -> None:
-        # Tracked settings reach every developer's sessions, so they may add hooks but never decide what a
-        # developer allows; permissions and every other setting stay in user or local settings.
+    def test_tracked_claude_settings_hold_hooks_and_attribution_only(self) -> None:
+        # Tracked settings reach every developer's sessions, so they may add hooks and set the repository's
+        # commit and pull request attribution but never decide what a developer allows; permissions and every
+        # other setting stay in user or local settings.
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        self.assertLessEqual(set(settings), {"$schema", "hooks"})
+        self.assertLessEqual(set(settings), {"$schema", "hooks", "attribution"})
         self.assertEqual([], [path for path in repository_files(REPOSITORY_ROOT) if path.name == "settings.local.json"])
 
     def test_hub_guard_hook_sees_every_tool_that_edits_files_or_runs_git(self) -> None:
