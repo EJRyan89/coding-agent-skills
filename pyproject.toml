@@ -18,9 +18,9 @@ line-ending = "auto"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"]
 
-# #91's ratchet: the most complex function's score when landed. The number only goes down, never up.
+# #91's ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]
-max-complexity = 51
+max-complexity = 49
 
 # #91's ratchet: the longest function's statement count when landed. The number only goes down, never up.
 [tool.ruff.lint.pylint]

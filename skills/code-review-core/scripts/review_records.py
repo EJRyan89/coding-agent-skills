@@ -872,8 +872,8 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
         raise RecordError("Review ledger repeats of this version must be its findings with repeats")
 
 
-def validate_record(value: Any) -> dict[str, Any]:
-    allowed_top = {
+RECORD_FIELDS = frozenset(
+    {
         "schema_version",
         "repository",
         "pull_request",
@@ -885,14 +885,10 @@ def validate_record(value: Any) -> dict[str, Any]:
         "artifacts",
         "ledger",
     }
-    if not isinstance(value, dict) or set(value) - allowed_top or value.get("schema_version") != RECORD_SCHEMA_VERSION:
-        raise RecordError("Unsupported or malformed review record")
-    _validate_comments(value)
-    validate_repository_identity(value.get("repository"))
-    pull = value.get("pull_request")
-    review = value.get("review")
-    if not isinstance(pull, dict) or not isinstance(review, dict):
-        raise RecordError("Review record metadata is malformed")
+)
+
+
+def _validate_pull_request(pull: dict[str, Any]) -> None:
     pull_fields = {"number", "url", "title", "base_ref", "base_sha", "head_sha"}
     if set(pull) not in (pull_fields, pull_fields | {"head_ref"}):
         raise RecordError("Review pull-request fields are malformed")
@@ -905,16 +901,10 @@ def validate_record(value: Any) -> dict[str, Any]:
             raise RecordError(f"Review pull_request.{field} is invalid")
     _validate_sha(pull.get("base_sha"), "pull_request.base_sha")
     _validate_sha(pull.get("head_sha"), "pull_request.head_sha")
-    review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
-    # Records written before patches or scopes were recorded omit them.
-    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope"}:
-        raise RecordError("Review metadata fields are malformed")
-    if "reviewers" in review:
-        _validate_reviewers(review["reviewers"])
-    if "patches" in review:
-        _validate_patches(review["patches"])
-    if not _one_of(review.get("verdict"), {"APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"}):
-        raise RecordError("Review verdict is invalid")
+
+
+def _validate_coverage(review: dict[str, Any]) -> None:
+    """The sources a review could not reach and the files no reviewer covered; an INCOMPLETE review names a source."""
     coverage = review.get("coverage", {"unavailable_sources": []})
     unavailable = coverage.get("unavailable_sources") if isinstance(coverage, dict) else None
     # Records written before uncovered files were recorded omit them.
@@ -927,6 +917,21 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review coverage is malformed")
     if review["verdict"] == "INCOMPLETE" and not unavailable:
         raise RecordError("An INCOMPLETE review must list its unavailable sources")
+
+
+def _validate_review(review: dict[str, Any]) -> None:
+    """The review's own metadata, up to its adapter."""
+    review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
+    # Records written before patches or scopes were recorded omit them.
+    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope"}:
+        raise RecordError("Review metadata fields are malformed")
+    if "reviewers" in review:
+        _validate_reviewers(review["reviewers"])
+    if "patches" in review:
+        _validate_patches(review["patches"])
+    if not _one_of(review.get("verdict"), {"APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"}):
+        raise RecordError("Review verdict is invalid")
+    _validate_coverage(review)
     if not isinstance(review.get("version"), int) or isinstance(review["version"], bool) or review["version"] < 1:
         raise RecordError("Review version is invalid")
     if not _one_of(review.get("mode"), {"initial", "re-review"}):
@@ -936,7 +941,21 @@ def validate_record(value: Any) -> dict[str, Any]:
     _validate_timestamp(review.get("reviewed_at"))
     if not isinstance(review.get("summary"), str) or not review["summary"].strip():
         raise RecordError("Review summary is invalid")
-    adapter = review.get("adapter")
+
+
+def _validate_source_hashes(source_hashes: Any) -> None:
+    """The adapter's source files by safe relative path, each with its SHA-256 hash."""
+    if not isinstance(source_hashes, dict):
+        raise RecordError("Review adapter source_hashes is invalid")
+    for path, hash_value in source_hashes.items():
+        if not _safe_relative(path):
+            raise RecordError("Review adapter source hash path is unsafe")
+        if not isinstance(hash_value, str) or not re.fullmatch(r"[0-9a-f]{64}", hash_value):
+            raise RecordError(f"Review adapter source hash is invalid: {path}")
+
+
+def _validate_adapter(adapter: Any) -> None:
+    """Which adapter produced the review, at which source, and how it ended."""
     if not isinstance(adapter, dict) or set(adapter) != {
         "name",
         "protocol_version",
@@ -959,54 +978,54 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review adapter status is invalid")
     if adapter["source_commit"] is not None:
         _validate_sha(adapter["source_commit"], "review.adapter.source_commit")
-    source_hashes = adapter["source_hashes"]
-    if not isinstance(source_hashes, dict):
-        raise RecordError("Review adapter source_hashes is invalid")
-    for path, hash_value in source_hashes.items():
-        if (
-            not isinstance(path, str)
-            or not path
-            or path.startswith(("/", "\\"))
-            or "\\" in path
-            or ".." in Path(path).parts
-        ):
-            raise RecordError("Review adapter source hash path is unsafe")
-        if not isinstance(hash_value, str) or not re.fullmatch(r"[0-9a-f]{64}", hash_value):
-            raise RecordError(f"Review adapter source hash is invalid: {path}")
+    _validate_source_hashes(adapter["source_hashes"])
     if adapter["usage"] is not None and not isinstance(adapter["usage"], dict):
         raise RecordError("Review adapter usage is invalid")
-    findings = value.get("findings")
+
+
+def _validate_finding(finding: Any) -> None:
+    # Records written before findings carried titles or analyzer coverage remain valid.
+    if not isinstance(finding, dict) or not (
+        FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | OPTIONAL_FINDING_FIELDS
+    ):
+        raise RecordError("Review finding fields are malformed")
+    if not _one_of(finding["severity"], SEVERITIES):
+        raise RecordError(f"Review finding {finding['id']} severity is invalid")
+    if "title" in finding and not valid_title(finding["title"]):
+        raise RecordError(f"Review finding {finding['id']}.title {TITLE_RULE}")
+    if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
+        raise RecordError(f"Review finding {finding['id']}.analyzer {ANALYZER_RULE}")
+    for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
+        if not isinstance(finding[field], str) or not finding[field].strip():
+            raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
+    if not _safe_relative(finding["path"]):
+        raise RecordError(f"Review finding {finding['id']}.path is unsafe")
+    if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
+        raise RecordError(f"Review finding {finding['id']}.line is invalid")
+
+
+def _validate_findings(findings: Any) -> list[dict[str, Any]]:
+    """The findings, numbered F001 on in order, each well formed."""
     if not isinstance(findings, list):
         raise RecordError("Review findings must be an array")
     expected_ids = [f"F{index:03d}" for index in range(1, len(findings) + 1)]
     if [item.get("id") for item in findings if isinstance(item, dict)] != expected_ids:
         raise RecordError("Review finding IDs are not stable and contiguous")
     for finding in findings:
-        # Records written before findings carried titles or analyzer coverage remain valid.
-        if not isinstance(finding, dict) or not (
-            FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | OPTIONAL_FINDING_FIELDS
-        ):
-            raise RecordError("Review finding fields are malformed")
-        if not _one_of(finding["severity"], SEVERITIES):
-            raise RecordError(f"Review finding {finding['id']} severity is invalid")
-        if "title" in finding and not valid_title(finding["title"]):
-            raise RecordError(f"Review finding {finding['id']}.title {TITLE_RULE}")
-        if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
-            raise RecordError(f"Review finding {finding['id']}.analyzer {ANALYZER_RULE}")
-        for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
-            if not isinstance(finding[field], str) or not finding[field].strip():
-                raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
-        if finding["path"].startswith(("/", "\\")) or "\\" in finding["path"] or ".." in Path(finding["path"]).parts:
-            raise RecordError(f"Review finding {finding['id']}.path is unsafe")
-        if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
-            raise RecordError(f"Review finding {finding['id']}.line is invalid")
-    counts = review.get("counts")
+        _validate_finding(finding)
+    return findings
+
+
+def _validate_counts(counts: Any, findings: list[dict[str, Any]]) -> None:
     expected_counts = {
         severity: sum(item["severity"] == severity for item in findings) for severity in sorted(SEVERITIES)
     }
     if counts != expected_counts:
         raise RecordError("Review finding counts do not match findings")
-    dispositions = value.get("prior_dispositions")
+
+
+def _validate_prior_dispositions(dispositions: Any) -> None:
+    """At most one well-formed disposition per prior finding; the ledger checks which findings they judge."""
     if not isinstance(dispositions, list):
         raise RecordError("Review prior dispositions must be an array")
     disposition_ids: set[str] = set()
@@ -1025,13 +1044,40 @@ def validate_record(value: Any) -> dict[str, Any]:
             raise RecordError(f"Review prior disposition is invalid: {finding_id}")
         if not isinstance(disposition["rationale"], str) or not disposition["rationale"].strip():
             raise RecordError(f"Review prior disposition rationale is invalid: {finding_id}")
+
+
+def _validate_artifacts(artifacts: Any) -> None:
+    """The hashes of the record's payload and its Markdown report, when the pair has been written."""
+    if artifacts is None:
+        return
+    if not isinstance(artifacts, dict) or set(artifacts) != {"payload_sha256", "markdown_sha256"}:
+        raise RecordError("Review artifact hashes are malformed")
+    _validate_sha(artifacts["payload_sha256"], "artifacts.payload_sha256")
+    _validate_sha(artifacts["markdown_sha256"], "artifacts.markdown_sha256")
+
+
+def validate_record(value: Any) -> dict[str, Any]:
+    """A review record, checked part by part in a fixed order; the first fault found is the one raised."""
+    if (
+        not isinstance(value, dict)
+        or set(value) - RECORD_FIELDS
+        or value.get("schema_version") != RECORD_SCHEMA_VERSION
+    ):
+        raise RecordError("Unsupported or malformed review record")
+    _validate_comments(value)
+    validate_repository_identity(value.get("repository"))
+    pull = value.get("pull_request")
+    review = value.get("review")
+    if not isinstance(pull, dict) or not isinstance(review, dict):
+        raise RecordError("Review record metadata is malformed")
+    _validate_pull_request(pull)
+    _validate_review(review)
+    _validate_adapter(review.get("adapter"))
+    findings = _validate_findings(value.get("findings"))
+    _validate_counts(review.get("counts"), findings)
+    _validate_prior_dispositions(value.get("prior_dispositions"))
     _validate_ledger(value, review["version"], review["mode"])
-    artifacts = value.get("artifacts")
-    if artifacts is not None:
-        if not isinstance(artifacts, dict) or set(artifacts) != {"payload_sha256", "markdown_sha256"}:
-            raise RecordError("Review artifact hashes are malformed")
-        _validate_sha(artifacts["payload_sha256"], "artifacts.payload_sha256")
-        _validate_sha(artifacts["markdown_sha256"], "artifacts.markdown_sha256")
+    _validate_artifacts(value.get("artifacts"))
     return value
 
 
