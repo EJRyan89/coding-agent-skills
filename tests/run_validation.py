@@ -1250,6 +1250,34 @@ def markdown_link_problems(root: Path) -> list[str]:
     return problems
 
 
+def _needs_a_test(name: str) -> bool:
+    """Whether a repository path is a module under skills/*/scripts/, deployer/, or tools/ that a test must name."""
+    parts = name.split("/")
+    in_scope = parts[0] in {"deployer", "tools"} or (len(parts) > 3 and parts[0] == "skills" and parts[2] == "scripts")
+    return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
+
+
+def untested_module_problems(root: Path) -> list[str]:
+    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py names.
+
+    A test names a module by importing, running, or mentioning it, or by being test_<module>.py. A package's
+    __init__.py needs no test.
+    """
+    files = repository_files(root)
+    tests = [path for path in files if fnmatch.fnmatchcase(path.name, "test_*.py")]
+    texts = [path.read_text(encoding="utf-8") for path in tests]
+    test_names = {path.name for path in tests}
+    problems: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if not _needs_a_test(name) or f"test_{path.name}" in test_names:
+            continue
+        mention = re.compile(rf"\b{re.escape(path.stem)}\b")
+        if not any(mention.search(text) for text in texts):
+            problems.append(f"{name} is named by no test_*.py; add a test that imports or runs it")
+    return problems
+
+
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
 # A fixture executes a token in a context when it calls run_tool and one of these finders.
@@ -3368,6 +3396,45 @@ class MarkdownLinkPolicy(unittest.TestCase):
             self.problems(
                 {".gitignore": "ignored.md\n", "ignored.md": broken, ".claude/worktrees/feat-x/README.md": broken}
             ),
+        )
+
+
+class TestedModulePolicy(unittest.TestCase):
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            write_fixture_tree(root, files)
+            return untested_module_problems(root)
+
+    def test_every_module_is_named_by_a_test(self) -> None:
+        self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
+
+    def test_a_module_no_test_names_fails_and_is_named(self) -> None:
+        self.assertEqual(
+            ["deployer/unreached.py is named by no test_*.py; add a test that imports or runs it"],
+            self.problems(
+                {
+                    "deployer/imported.py": "",
+                    "deployer/through_cli.py": "",
+                    "deployer/unreached.py": "",
+                    "deployer/lonely.py": "",
+                    "tools/tool.py": "",
+                    "skills/s/scripts/helper.py": "",
+                    "skills/s/notes.py": "",
+                    "tests/support.py": "",
+                    "skills/s/scripts/test_s.py": "import helper\n",
+                    "tests/deployer/test_lonely.py": "pass\n",
+                    "tests/deployer/test_suite.py": "from deployer import imported\n\n"
+                    "# Runs tools/tool.py and reaches deployer.through_cli.\n"
+                    "UNREACHED_NAMES = 'unreached_by_prefix'\n",
+                }
+            ),
+        )
+
+    def test_package_initializers_need_no_test(self) -> None:
+        self.assertEqual(
+            [], self.problems({"deployer/__init__.py": "", "tools/__init__.py": "", "skills/s/scripts/__init__.py": ""})
         )
 
 
