@@ -18,9 +18,11 @@ through nextCursor, is a valid list of tools. One line per server:
     HANDSHAKE_FAILED <name> source=<files> <reason>
     SKIPPED <name> source=<files> transport=<transport>
     NO_SERVERS                          every config was readable and none declares a server
+    FAILED <reason>                     last line: the root is not a Git repository, or no server has the
+                                        name --server gives
 
-Exit 0 when every config was readable and no started server failed, 1 when a config could not be read or
-any server failed, 2 for a usage error.
+Exit 0 when every config was readable and no started server failed; 1 when a config could not be read, any
+server failed, or the run printed FAILED; 2 for a usage error.
 """
 
 from __future__ import annotations
@@ -32,7 +34,6 @@ from pathlib import Path
 import queue
 import shutil
 import subprocess
-import sys
 import threading
 import time
 import tomllib
@@ -284,13 +285,16 @@ def main(arguments: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds per server (default 30)")
     args = parser.parse_args(arguments)
     if not (args.root / ".git").exists():
-        print(f"FAILED {args.root} is not a Git repository", file=sys.stderr)
-        return 2
+        print(f"FAILED {args.root} is not a Git repository")
+        return 1
     groups, problems = group_servers(args.root.resolve(), args.server)
     for severity, source, message in problems:
         print(f"CONFIG_{severity} {source} {message}")
     failed = any(severity == "ERROR" for severity, _, _ in problems)
     if not groups:
+        if args.server is not None:
+            print(f"FAILED no MCP server named {args.server}")
+            return 1
         if not failed:
             print("NO_SERVERS")
         return 1 if failed else 0

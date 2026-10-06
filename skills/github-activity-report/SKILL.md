@@ -33,7 +33,7 @@ If the notes contain a `WARNING` about the 1000-result Search API cap, pass it o
 
 ## Failures
 
-The script fails closed and never prints a partial table. On failure it exits non-zero with the reason and a kind in brackets:
+The script fails closed and never prints a partial table. On failure it prints one line, `FAILED <reason> [<kind>]`, instead of the table and exits 1:
 
 - `[prerequisite]` or `[authentication]`: install `gh` or run `gh auth login`.
 - `[forbidden]`: the token cannot read some repositories or pull requests, often because it is not SSO-authorized for the organization.

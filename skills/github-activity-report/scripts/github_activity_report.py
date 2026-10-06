@@ -1,4 +1,8 @@
-"""Month-by-month GitHub contribution report for one user in one organization."""
+"""Month-by-month GitHub contribution report for one user in one organization.
+
+Prints the Markdown report on stdout and progress on stderr. A failure prints no table, only the line
+`FAILED <reason> [<kind>]` on stdout, and exits 1; an invalid argument exits 2.
+"""
 
 from __future__ import annotations
 
@@ -558,7 +562,9 @@ def main(arguments: list[str] | None = None, client: GitHubSearchClient | None =
     try:
         activity = collect_activity(client or GitHubSearchClient(), options.org, options.user, options.months, current)
     except GitHubActivityError as exc:
-        parser.error(f"{exc} [{exc.kind}]")
+        # The reason can carry gh's multi-line stderr; the FAILED line stays one line.
+        print(f"FAILED {' '.join(str(exc).split())} [{exc.kind}]")
+        return 1
     sys.stdout.write(render_report(activity, options.org, options.user, current))
     return 0
 

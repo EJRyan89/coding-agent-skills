@@ -13,22 +13,11 @@
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
 #                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
 #                    then the deploy output and DEPLOYED or DEPLOY_FAILED <code>
-# Exit: 0 deployed; 1 deploy failed; 2 usage; 3 dirty; 4 fetch failed; 5 checkout failed or not a
-# fast-forward; 6 stopped at a release boundary.
+#   FAILED <reason>  alone: the clone is not a repository with deploy.py, or a step failed outright
+# Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
 set -uo pipefail
 
-# Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
-# file, so the deploy below could not back up this skill's own directory. Run from a temporary copy.
-if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
-  if ! COPY=$(mktemp) || ! cp "$0" "$COPY"; then
-    echo "ERROR: cannot copy update.sh to a temporary file" >&2
-    exit 2
-  fi
-  UPDATE_SKILLS_COPY=$COPY exec bash "$COPY" "$@"
-fi
-trap 'rm -f -- "$0"' EXIT
-unset UPDATE_SKILLS_COPY
-
+# Usage is checked before any work, so a usage error never becomes a FAILED line.
 CROSS_MAJOR=
 if [ "$#" -eq 2 ] && [ "$2" = "--cross-major" ]; then
   CROSS_MAJOR=1
@@ -36,32 +25,55 @@ elif [ "$#" -ne 1 ]; then
   echo "usage: update.sh <clone containing deploy.py> [--cross-major]" >&2
   exit 2
 fi
-if [ ! -f "$1/deploy.py" ]; then
-  echo "usage: update.sh <clone containing deploy.py> [--cross-major]" >&2
-  exit 2
+
+# A command's error output as one line, for a FAILED reason.
+one_line() {
+  printf '%s' "$1" | tr -d '\r' | tr '\n' ' '
+}
+
+# Bash keeps its script open while running, and Windows refuses to rename a directory holding an open
+# file, so the deploy below could not back up this skill's own directory. Run from a temporary copy.
+if [ "${UPDATE_SKILLS_COPY:-}" != "$0" ]; then
+  if ! COPY=$(mktemp 2>&1); then
+    echo "FAILED cannot create a temporary copy of update.sh: $(one_line "$COPY")"
+    exit 1
+  fi
+  if ! ERROR=$(cp "$0" "$COPY" 2>&1); then
+    rm -f -- "$COPY"
+    echo "FAILED cannot copy update.sh to $COPY: $(one_line "$ERROR")"
+    exit 1
+  fi
+  UPDATE_SKILLS_COPY=$COPY exec bash "$COPY" "$@"
 fi
+trap 'rm -f -- "$0"' EXIT
+unset UPDATE_SKILLS_COPY
+
 CLONE=$1
+if [ ! -f "$CLONE/deploy.py" ]; then
+  echo "FAILED no deploy.py in $CLONE"
+  exit 1
+fi
 if ! git -C "$CLONE" rev-parse --git-dir >/dev/null 2>&1; then
-  echo "ERROR: not a git repository: $CLONE" >&2
-  exit 2
+  echo "FAILED not a git repository: $CLONE"
+  exit 1
 fi
 
 # Untracked files are allowed: Git refuses a fast-forward that would overwrite one.
 if ! DIRTY=$(git -C "$CLONE" status --porcelain --untracked-files=no 2>&1); then
-  echo "ERROR: git status failed: $DIRTY" >&2
-  exit 2
+  echo "FAILED git status failed: $(one_line "$DIRTY")"
+  exit 1
 fi
 if [ -n "$DIRTY" ]; then
   echo "DIRTY"
   printf '%s\n' "$DIRTY" | tr -d '\r'
-  exit 3
+  exit 1
 fi
 
 # Release tags are fetched too, so both sides' versions can be compared below.
 if ! OUTPUT=$(git -C "$CLONE" fetch --quiet --tags origin main 2>&1); then
   echo "FETCH_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 4
+  exit 1
 fi
 
 # The nearest release tag reachable from a commit, or nothing when there is none.
@@ -91,7 +103,7 @@ if [ -n "$CURRENT" ] && [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
     if [ -z "$CROSS_MAJOR" ]; then
       echo "MAJOR_UPDATE $CURRENT..$TARGET"
       git -C "$CLONE" log --oneline --no-decorate main..origin/main | tr -d '\r'
-      exit 6
+      exit 1
     fi
     CROSSED="$CURRENT..$TARGET"
   fi
@@ -100,13 +112,13 @@ fi
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 5
+  exit 1
 fi
 BEFORE=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet origin/main 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
-  exit 5
+  exit 1
 fi
 AFTER=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
 

@@ -3,11 +3,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -24,6 +25,44 @@ def write(path: Path, text: str) -> Path:
 
 def memory(name: str, body: str, kind: str = "feedback") -> str:
     return f"---\nname: {name}\ndescription: {name} description\nmetadata:\n  type: {kind}\n---\n\n{body}\n"
+
+
+def run_main(*arguments: str) -> tuple[int, str, str]:
+    """Run the command line in process; a usage error's SystemExit becomes its code."""
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            code = memory_audit.main(list(arguments))
+        except SystemExit as exit_:
+            code = int(exit_.code)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+class CommandLineContractTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def test_a_missing_memory_directory_is_a_failed_line(self) -> None:
+        absent = self.root / "absent dir"
+        for arguments in (["audit"], ["reindex"], ["delete", "keep.md"]):
+            command, *rest = arguments
+            with self.subTest(command=command):
+                self.assertEqual(
+                    (1, f"FAILED memory directory not found: {absent}\n", ""),
+                    run_main(command, "--memory-dir", str(absent), *rest),
+                )
+
+    def test_usage_errors_exit_2(self) -> None:
+        for arguments in (["audit"], ["reindex", "--memory-dir"], ["delete", "--memory-dir", str(self.root)],
+                          ["resolve", "--unknown"], ["forget"]):
+            with self.subTest(arguments=arguments):
+                code, stdout, stderr = run_main(*arguments)
+                self.assertEqual((2, ""), (code, stdout))
+                self.assertIn("usage:", stderr)
 
 
 class MemoryAuditTests(unittest.TestCase):
@@ -184,7 +223,36 @@ class MemoryAuditTests(unittest.TestCase):
         explicit = self.root / "chosen report.json"
         self.assertEqual(f"REPORT {explicit}", self.main_output("--output", str(explicit)).strip())
         self.assertTrue(explicit.is_file())
-        self.assertEqual(2, memory_audit.main(["audit", "--memory-dir", str(self.root / "absent")]))
+
+    def test_an_output_inside_a_skills_directory_is_refused_before_writing(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        skills_root = Path(memory_audit.__file__).resolve().parents[2]
+        home = self.root / "home"
+        targets = [
+            skills_root / "curate-agent-memory" / "report.json",  # beside SKILL.md
+            skills_root / "review-prs" / "report.json",
+            home / ".claude" / "skills" / "curate-agent-memory" / "report.json",
+            home / ".agents" / "skills" / "curate-agent-memory" / "report.json",
+        ]
+        with mock.patch.object(Path, "home", return_value=home):
+            for target in targets:
+                self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with self.subTest(target=target):
+                    code, stdout, stderr = run_main(
+                        "audit", "--memory-dir", str(self.memory_dir), "--output", str(target)
+                    )
+                    self.assertEqual((1, ""), (code, stderr))
+                    self.assertTrue(stdout.startswith(f"FAILED {target} is inside the skills directory "), stdout)
+                    self.assertEqual(1, len(stdout.splitlines()), stdout)
+                    self.assertFalse(target.exists())
+
+    def test_an_unwritable_output_is_a_failed_line(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        target = self.root / "no such folder" / "report.json"
+        code, stdout, stderr = run_main("audit", "--memory-dir", str(self.memory_dir), "--output", str(target))
+        self.assertEqual((1, ""), (code, stderr))
+        self.assertRegex(stdout, rf"\AFAILED cannot write {re.escape(str(target))}: [^\n]+\n\Z")
 
     def test_command_line_searches_the_claude_config_directory_by_default(self) -> None:
         rule = "Never name the object under test sut; derive the variable name from its class instead."
@@ -218,11 +286,10 @@ class ReindexTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._temporary.cleanup()
 
-    def reindex(self, *extra: str) -> list[str]:
-        captured = io.StringIO()
-        with redirect_stdout(captured):
-            self.assertEqual(0, memory_audit.main(["reindex", "--memory-dir", str(self.memory_dir), *extra]))
-        return captured.getvalue().splitlines()
+    def reindex(self, *extra: str, code: int = 0) -> list[str]:
+        result = run_main("reindex", "--memory-dir", str(self.memory_dir), *extra)
+        self.assertEqual((code, ""), (result[0], result[2]), result[1])
+        return result[1].splitlines()
 
     def snapshot(self) -> dict[str, bytes]:
         return {path.name: path.read_bytes() for path in self.memory_dir.iterdir() if path.name != "MEMORY.md"}
@@ -297,10 +364,24 @@ class ReindexTests(unittest.TestCase):
         self.assertIn("NEAR_LIMIT lines=181/200 bytes=", "\n".join(self.reindex()))
         for number in range(181, 201):
             write(self.memory_dir / f"m{number:03}.md", memory(f"m{number}", "Body."))
-        self.assertIn("OVER_LIMIT lines=201/200 bytes=", "\n".join(self.reindex()))
+        lines = self.reindex("--write", code=1)
+        self.assertIn("OVER_LIMIT lines=201/200 bytes=", "\n".join(lines))
+        self.assertEqual(f"WROTE {self.index.as_posix()}", lines[-1], "an index over the limit is still written")
 
-    def test_missing_directory_is_rejected(self) -> None:
-        self.assertEqual(2, memory_audit.main(["reindex", "--memory-dir", str(self.memory_dir / "absent")]))
+    def test_a_failed_write_is_the_last_line_and_leaves_no_temporary_file(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        with mock.patch.object(memory_audit.os, "replace", side_effect=PermissionError(13, "Access is denied")):
+            lines = self.reindex("--write", code=1)
+        self.assertEqual(
+            ["INDEX_LINE one.md", "ADDED one.md", f"FAILED cannot write {self.index.as_posix()}: Access is denied"],
+            lines,
+        )
+        self.assertEqual(["one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+
+    def test_an_unreadable_memory_is_a_failed_line(self) -> None:
+        write(self.memory_dir / "one.md", memory("one", "Body."))
+        with mock.patch.object(Path, "read_text", side_effect=PermissionError(13, "Access is denied", "one.md")):
+            self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
 
 
 class DeleteTests(unittest.TestCase):
@@ -389,8 +470,24 @@ class DeleteTests(unittest.TestCase):
         self.assertTrue((self.memory_dir / "gone.md").is_file())
         self.assertTrue(link.exists())
 
-    def test_missing_directory_is_rejected(self) -> None:
-        self.assertEqual(2, memory_audit.main(["delete", "--memory-dir", str(self.root / "absent"), "keep.md"]))
+    def test_a_failure_mid_way_reports_what_was_already_deleted(self) -> None:
+        remove = os.remove
+
+        def failing(path: Path) -> None:
+            if Path(path).name == "other.md":
+                raise PermissionError(13, "Access is denied")
+            remove(path)
+
+        with mock.patch.object(memory_audit.os, "remove", side_effect=failing):
+            self.assertEqual(
+                (1, ["DELETED gone.md", "FAILED other.md: Access is denied"]),
+                self.delete("gone.md", "other.md", "keep.md"),
+            )
+        self.assertEqual(
+            ["memory/MEMORY.md", "memory/keep.md", "memory/notes.txt", "memory/other.md", "memory/sub/inner.md",
+             "outside.md"],
+            sorted(self.snapshot()),
+        )
 
 
 def git(*arguments: str) -> None:
@@ -454,6 +551,61 @@ class ResolveTests(unittest.TestCase):
         result = self.resolve({"CLAUDE_CONFIG_DIR": str(config), "CLAUDE_CODE_PROJECT_DIR_NAME": "shared"})
         self.assertEqual(str(config / "projects" / "shared" / "memory"), result["memory_dir"])
         self.assertEqual("CLAUDE_CODE_PROJECT_DIR_NAME", result["source"])
+
+    SETTINGS_NOTE = "NOTE A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
+    DERIVED_NOTE = "NOTE The directory name is derived by convention; confirm it before changing anything."
+
+    def resolve_lines(self, *arguments: str, cwd: Path | None = None, code: int = 0) -> list[str]:
+        """Run resolve from cwd with no Claude Code environment overrides and the test's managed settings."""
+        with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}), \
+                mock.patch.object(Path, "cwd", return_value=cwd or self.repo), \
+                mock.patch.object(memory_audit, "managed_settings_path", return_value=self.managed):
+            for name in ("CLAUDE_CONFIG_DIR", "CLAUDE_CODE_PROJECT_DIR_NAME"):
+                os.environ.pop(name, None)
+            result = run_main("resolve", "--home", str(self.home), *arguments)
+        self.assertEqual((code, ""), (result[0], result[2]), result[1])
+        return result[1].splitlines()
+
+    def test_command_line_defaults_to_the_current_repository(self) -> None:
+        self.derived().mkdir(parents=True)
+        (self.repo / "src" / "deep").mkdir(parents=True)
+        root = self.repo.resolve()
+        expected = [
+            f"REPO {root}",
+            f"MEMORY_DIR {self.derived()}",
+            f"SOURCE derived from the repository's main worktree ({root})",
+            "EXISTS yes",
+            self.SETTINGS_NOTE,
+            self.DERIVED_NOTE,
+        ]
+        self.assertEqual(expected, self.resolve_lines(cwd=self.repo / "src" / "deep"))
+        self.assertEqual(expected, self.resolve_lines("--repo", str(root), cwd=self.root))
+
+    def test_command_line_lists_candidates_when_the_directory_is_missing(self) -> None:
+        other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"
+        other.mkdir(parents=True)
+        lines = self.resolve_lines()
+        self.assertEqual(["EXISTS no", f"CANDIDATE {other}"], [line for line in lines if line.startswith(("EXISTS", "CANDIDATE"))])
+
+    def test_command_line_reports_no_directory_as_a_result(self) -> None:
+        write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "relative/path"}))
+        self.assertEqual(
+            [
+                f"REPO {self.repo.resolve()}",
+                "NO_MEMORY_DIR",
+                self.SETTINGS_NOTE,
+                f"NOTE autoMemoryDirectory in {self.home / '.claude' / 'settings.json'} is not an absolute or ~/ path: "
+                "'relative/path'",
+            ],
+            self.resolve_lines(),
+        )
+
+    def test_command_line_outside_a_repository_fails(self) -> None:
+        outside = self.root / "plain folder"
+        outside.mkdir()
+        self.assertEqual(
+            ["FAILED not inside a Git repository; pass --repo"], self.resolve_lines(cwd=outside, code=1)
+        )
 
     def test_invalid_or_unreadable_settings_leave_the_directory_unresolved(self) -> None:
         settings = self.home / ".claude" / "settings.json"

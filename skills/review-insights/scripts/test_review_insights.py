@@ -106,6 +106,23 @@ class InsightFixture(unittest.TestCase):
             code = ri.main(["--config", str(self.config_path), *arguments], services=self.services)
         return code, out.getvalue(), err.getvalue()
 
+    def assertFailed(self, result: tuple[int, str, str], message: str) -> None:
+        """A failure exits 1 with a single `FAILED` line on stdout naming `message`, and nothing on stderr."""
+        code, out, err = result
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED "), lines)
+        self.assertIn(message, lines[0])
+
+    def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_insights.py"), "--config", str(self.config_path),
+             *arguments],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+            env={**os.environ, "CODE_REVIEW_FLAGS": str(self.flags)},
+        )
+
     def report(self, *arguments: str, reviewers: bool = False) -> tuple[Path, list[str]]:
         """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set."""
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31", *arguments)
@@ -274,17 +291,35 @@ class ReportTests(InsightFixture):
 
     def test_invalid_scopes_and_dates_fail(self) -> None:
         for arguments, message in (
-            (["--start", "2026-02-01", "--end", "2026-01-01"], "Start date must not be after end date"),
-            (["--start", "2026-13-01", "--end", "2026-01-01"], "Invalid ISO date"),
-            (["--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing"], "Unknown repository set"),
+            (["--start", "2026-02-01", "--end", "2026-01-01"], "FAILED Start date must not be after end date"),
+            (["--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing"],
+             "FAILED Unknown repository set"),
         ):
             with self.subTest(message=message):
-                code, out, err = self.run_main("report", *arguments)
-                self.assertEqual((2, ""), (code, out))
-                self.assertIn(f"FAILED {message}", err)
+                self.assertFailed(self.run_main("report", *arguments), message)
         with self.assertRaisesRegex(ri.InsightError, "non-empty unique"):
             ri.create_report(archive_root=self.root, summary_root=self.summary, repository_set="primary",
                              repositories=[], start=date(2026, 1, 1), end=date(2026, 1, 31))
+
+    def test_a_runtime_failure_exits_1_with_failed_on_stdout(self) -> None:
+        result = self.execute("report", "--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing")
+        self.assertEqual((1, ""), (result.returncode, result.stderr))
+        self.assertTrue(result.stdout.splitlines()[-1].startswith("FAILED Unknown repository set"), result.stdout)
+
+    def test_a_malformed_date_is_a_usage_error(self) -> None:
+        for arguments in (["--start", "2026-13-01", "--end", "2026-01-31"], ["--start", "2026-01-01", "--end", "soon"]):
+            with self.subTest(arguments=arguments):
+                result = self.execute("report", *arguments)
+                self.assertEqual((2, ""), (result.returncode, result.stdout))
+                self.assertIn("usage:", result.stderr)
+                self.assertIn("invalid ISO date", result.stderr)
+
+    def test_other_usage_errors_exit_2(self) -> None:
+        for arguments in ((), ("unknown",), ("report", "--start", "2026-01-01")):
+            with self.subTest(arguments=arguments):
+                result = self.execute(*arguments)
+                self.assertEqual((2, ""), (result.returncode, result.stdout))
+                self.assertIn("usage:", result.stderr)
 
 
 class DecideTests(InsightFixture):
@@ -340,9 +375,8 @@ class DecideTests(InsightFixture):
         self.flag("guideline")
         json_path, _ = self.report()
         before = json_path.read_text(encoding="utf-8")
-        code, _, err = self.decide(json_path, "REC-001", "Style", "none", "accepted")
-        self.assertEqual(2, code)
-        self.assertIn("REC-001 is now category 'Correctness', not category 'Style'", err)
+        self.assertFailed(self.decide(json_path, "REC-001", "Style", "none", "accepted"),
+                          "REC-001 is now category 'Correctness', not category 'Style'")
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
 
@@ -356,9 +390,8 @@ class DecideTests(InsightFixture):
         self.assertEqual([f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={shown},{later}"],
                          lines)
         before = json_path.read_text(encoding="utf-8")
-        code, out, err = self.decide(json_path, "REC-001", "Correctness", shown, "accepted")
-        self.assertEqual((2, ""), (code, out))
-        self.assertIn(f"REC-001 now links flags {shown},{later}, not {shown}", err)
+        self.assertFailed(self.decide(json_path, "REC-001", "Correctness", shown, "accepted"),
+                          f"REC-001 now links flags {shown},{later}, not {shown}")
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
         code, out, err = self.decide(json_path, "REC-001", "Correctness", f"{later},{shown}", "accepted")
@@ -432,9 +465,8 @@ class DecideTests(InsightFixture):
             with self.subTest(row=broken):
                 report["recommendations"][0]["reviewers"] = [broken]
                 json_path.write_text(json.dumps(report), encoding="utf-8")
-                code, _, err = self.decide(json_path, "REC-001", "Correctness", "none", "rejected")
-                self.assertEqual(2, code)
-                self.assertIn("REC-001.reviewers must be a list of reviewer counts", err)
+                self.assertFailed(self.decide(json_path, "REC-001", "Correctness", "none", "rejected"),
+                                  "REC-001.reviewers must be a list of reviewer counts")
 
     def test_links_in_version_two_reports_are_dropped_and_never_resolved(self) -> None:
         # A version 2 report linked a flag to whatever finding had its ID in the latest review: here a flag on the
@@ -450,9 +482,8 @@ class DecideTests(InsightFixture):
         json_path.write_text(json.dumps(report), encoding="utf-8")
         recommendation = next(item["id"] for item in report["recommendations"] if item["category"] == "Style")
         before = json_path.read_text(encoding="utf-8")
-        code, out, err = self.decide(json_path, recommendation, "Style", stale, "accepted")
-        self.assertEqual((2, ""), (code, out))
-        self.assertIn(f"{recommendation} now links flags none, not {stale}; run report again", err)
+        self.assertFailed(self.decide(json_path, recommendation, "Style", stale, "accepted"),
+                          f"{recommendation} now links flags none, not {stale}; run report again")
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         code, out, err = self.decide(json_path, recommendation, "Style", "none", "accepted")
         self.assertEqual((0, f"DECIDED {recommendation} accepted\n"), (code, out), err)
@@ -466,18 +497,17 @@ class DecideTests(InsightFixture):
         flag = self.flag("guideline")
         json_path, _ = self.report()
         before = json_path.read_text(encoding="utf-8")
-        code, _, err = self.decide(json_path, "REC-404", "Correctness", flag, "accepted")
-        self.assertEqual(2, code)
-        self.assertIn("FAILED Unknown recommendation: REC-404", err)
+        self.assertFailed(self.decide(json_path, "REC-404", "Correctness", flag, "accepted"),
+                          "FAILED Unknown recommendation: REC-404")
         self.flags.unlink()
-        code, _, err = self.decide(json_path, "REC-001", "Correctness", flag, "accepted")
-        self.assertEqual(2, code)
-        self.assertIn("Linked flags are not in the flag store", err)
+        self.assertFailed(self.decide(json_path, "REC-001", "Correctness", flag, "accepted"),
+                          "Linked flags are not in the flag store")
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         json_path.write_text(json.dumps({"schema_version": 9}), encoding="utf-8")
-        code, _, err = self.decide(json_path, "REC-001", "Style", "none", "rejected")
-        self.assertEqual(2, code)
-        self.assertIn("not a supported insights report", err)
+        self.assertFailed(self.decide(json_path, "REC-001", "Style", "none", "rejected"),
+                          "not a supported insights report")
+        self.assertFailed(self.decide(json_path.with_name("absent.json"), "REC-001", "Style", "none", "rejected"),
+                          "absent.json")
 
 
 class AnalyzerTests(InsightFixture):
@@ -546,12 +576,10 @@ class AnalyzerTests(InsightFixture):
             return self.run_main("decide", "--report", str(json_path), "REC-003", *subject, "--flags", flags, decision)
 
         before = json_path.read_text(encoding="utf-8")
-        code, _, err = decide("--category", "Style")
-        self.assertEqual(2, code)
-        self.assertIn("REC-003 is now analyzer 'available StyleCop.Analyzers SA1515', not category 'Style'", err)
-        code, _, err = decide("--analyzer", "known", "StyleCop.Analyzers", "SA1515")
-        self.assertEqual(2, code)
-        self.assertIn("not analyzer 'known StyleCop.Analyzers SA1515'", err)
+        self.assertFailed(decide("--category", "Style"),
+                          "REC-003 is now analyzer 'available StyleCop.Analyzers SA1515', not category 'Style'")
+        self.assertFailed(decide("--analyzer", "known", "StyleCop.Analyzers", "SA1515"),
+                          "not analyzer 'known StyleCop.Analyzers SA1515'")
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         code, out, err = decide("--analyzer", "available", "stylecop.analyzers", "sa1515")
         self.assertEqual(0, code, err)

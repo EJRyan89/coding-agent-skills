@@ -4,7 +4,7 @@
     decide  record one recommendation's decision in a report; an accepted one resolves its linked flags
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures print
-`FAILED <reason>` on stderr and exit 2.
+`FAILED <reason>` as the last line and exit 1; only a usage error, such as a malformed date, exits 2.
 
 There are two kinds of recommendation. A category recommendation covers every finding in one finding category. An
 analyzer recommendation covers the findings reviewers said one diagnostic analyzer rule could catch: a rule in an
@@ -93,10 +93,11 @@ class Services:
 
 
 def parse_date(value: str) -> date:
+    """An argparse type: a malformed date is a usage error, rejected before any work starts."""
     try:
         return date.fromisoformat(value)
     except ValueError as exc:
-        raise InsightError(f"Invalid ISO date: {value}") from exc
+        raise argparse.ArgumentTypeError(f"invalid ISO date: {value!r}") from exc
 
 
 def collect_records(
@@ -687,8 +688,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
     commands = parser.add_subparsers(dest="command", required=True)
     report_parser = commands.add_parser("report")
-    report_parser.add_argument("--start", required=True, help="inclusive ISO date")
-    report_parser.add_argument("--end", required=True, help="inclusive ISO date")
+    report_parser.add_argument("--start", required=True, type=parse_date, help="inclusive ISO date")
+    report_parser.add_argument("--end", required=True, type=parse_date, help="inclusive ISO date")
     scope = report_parser.add_mutually_exclusive_group()
     scope.add_argument("--repository", action="append", dest="repositories")
     scope.add_argument("--repository-set")
@@ -707,7 +708,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     try:
         if args.command == "report":
             json_path, markdown_path, report = report_from_config(
-                start=parse_date(args.start), end=parse_date(args.end), repositories=args.repositories,
+                start=args.start, end=args.end, repositories=args.repositories,
                 repository_set=args.repository_set, config_path=args.config, services=services,
             )
             print(f"REPORT {json_path}")
@@ -725,8 +726,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         print(f"DECIDED {args.recommendation} {args.decision}")
         return 0
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}", file=sys.stderr)
-        return 2
+        print(f"FAILED {exc}")
+        return 1
 
 
 if __name__ == "__main__":

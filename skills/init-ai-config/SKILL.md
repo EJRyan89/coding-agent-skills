@@ -8,7 +8,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 Create or upgrade a repository's AI agent configuration so that every runtime-specific file is derived from one authoritative `CLAUDE.md`. Scripts do every deterministic step; you author `CLAUDE.md`, repository skills, and a JSON spec, and you ask the user the scoping questions. Never hand-create, copy, or edit generated files or the generator's Python: `--write` produces them with ownership markers, and hand-made copies collide with it.
 
-The setup commands below print one fact per line. `FAILED <reason>` on stderr with exit code 2 is an expected failure to report, not a reason to improvise. In each command, replace `<repository root>` with the repository's top-level directory.
+The setup commands below print one fact per line. A last line `FAILED <reason>` is an expected failure to report, not a reason to improvise. In each command, replace `<repository root>` with the repository's top-level directory.
 
 ## Precondition
 

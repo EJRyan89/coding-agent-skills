@@ -4,8 +4,8 @@
              (by default in a new temporary directory)
     update   render the owned dashboard section from that file, with every other argument taken from the configuration
 
-Every command prints machine-readable lines and exits 0 on success. Expected failures print
-`FAILED <reason>` on stderr and exit 2.
+Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
+which any repository failed, print `FAILED <reason>` as the last line and exit 1; only a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -287,8 +287,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             failed = sum(1 for result in results.values() if not isinstance(result, int))
             if failed:
                 print(f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
-                      "and the dashboard keeps its previous rows", file=sys.stderr)
-                return 2
+                      "and the dashboard keeps its previous rows")
+                return 1
             print(f"INPUT {output}")
             return 0
         dashboard, rows = update(args.input, removals=args.remove, config_path=args.config, services=services)
@@ -298,8 +298,8 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 print(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}")
         return 0
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}", file=sys.stderr)
-        return 2
+        print(f"FAILED {exc}")
+        return 1
 
 
 if __name__ == "__main__":

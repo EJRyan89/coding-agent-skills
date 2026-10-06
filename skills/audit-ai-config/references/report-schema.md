@@ -38,19 +38,25 @@ Each finding contains:
 
 | Severity | Meaning | Exit code impact |
 |---|---|---|
-| `ERROR` | Actionable, blocks compliance. Missing generated files, drift, ownership failures. | Causes exit code 1 |
+| `ERROR` | Actionable, blocks compliance. Missing generated files, drift, ownership failures. | Causes `RESULT ERRORS` and exit code 1 |
 | `WARNING` | Should address. Manual-verification items, potential issues. | Does not change exit code |
 | `INFO` | Informational. Inventory observations, authority classification result. | Does not change exit code |
 
 ## Exit Codes
 
-| Code | Meaning |
-|---|---|
-| `0` | Compliant within statically verifiable scope |
-| `1` | One or more `ERROR`-level findings |
-| `2` | `INCONCLUSIVE` — ambiguous, unconfigured, or alternative authority; cannot confirm compliance or non-compliance |
+The Markdown report names its result on one `RESULT` line, before the `SUMMARY` lines. Key on that line, not on
+the exit code, which `ERRORS` and `INCONCLUSIVE` share:
 
-Ambiguous repositories must not return `0`.
+| Result line | Code | Meaning |
+|---|---|---|
+| `RESULT COMPLIANT` | `0` | Compliant within statically verifiable scope |
+| `RESULT ERRORS` | `1` | One or more `ERROR`-level findings |
+| `RESULT INCONCLUSIVE` | `1` | Ambiguous, unconfigured, or alternative authority; cannot confirm compliance or non-compliance |
+| `FAILED <reason>` | `1` | No report: the root is not a Git repository |
+| (usage text on stderr) | `2` | A usage error: arguments the engine rejects |
+
+Ambiguous repositories must not return `0`. `INCONCLUSIVE` takes precedence over `ERROR` findings. JSON output has no
+`RESULT` line: a non-conforming `authority` is inconclusive, otherwise `exitCode` `1` means `ERROR` findings.
 
 ## Ordering
 
@@ -66,6 +72,7 @@ Deterministic: sorted by severity (ERROR first), then by file path, then by line
 Authority: **Conforming** (manifest found)
 Scope: **independently-derived**
 
+RESULT ERRORS
 SUMMARY ERROR 1
 SUMMARY WARNING 1
 SUMMARY INFO 1

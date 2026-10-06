@@ -56,15 +56,40 @@ run_subject() {
 
 expect_status() { [ "$status" -eq "$1" ] || fail "$2: expected exit $1, got $status: $OUTPUT $(cat "$FIXTURE/stderr")"; }
 expect_first_line() { [ "$(printf '%s\n' "$OUTPUT" | head -n 1)" = "$1" ] || fail "$2: expected '$1', got: $OUTPUT"; }
+expect_no_stderr() { [ ! -s "$FIXTURE/stderr" ] || fail "$1: wrote to stderr: $(cat "$FIXTURE/stderr")"; }
+# A named failure: exit 1, one stdout line starting with the given FAILED text, nothing on stderr.
+expect_failed() {
+  expect_status 1 "$2"
+  expect_no_stderr "$2"
+  [ "$(printf '%s\n' "$OUTPUT" | wc -l | tr -d ' ')" = "1" ] || fail "$2: expected one line, got: $OUTPUT"
+  case "$OUTPUT" in
+    "$1"*) ;;
+    *) fail "$2: expected a line starting '$1', got: $OUTPUT" ;;
+  esac
+}
 expect_deployed() { [ "$(cat "$FAKE_DEPLOY_LOG")" = "--all" ] || fail "$1: deploy.py was not run once with --all"; }
 expect_not_deployed() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran"; }
 head_of() { git -C "$1" rev-parse --short "$2"; }
 
-# Usage errors.
+# Usage errors: the wrong number of arguments, on stderr with exit 2.
 run_subject
 expect_status 2 "no argument"
+[ -z "$OUTPUT" ] || fail "no argument: usage went to stdout: $OUTPUT"
+grep -q "^usage: update.sh" "$FIXTURE/stderr" || fail "no argument: usage text missing"
+run_subject "$FIXTURE" --cross-major extra
+expect_status 2 "three arguments"
+
+# A path that is not a clone is a named failure, not a usage error.
 run_subject "$FIXTURE"
-expect_status 2 "directory without deploy.py"
+expect_failed "FAILED no deploy.py in $FIXTURE" "directory without deploy.py"
+PLAIN="$FIXTURE/plain dir (no git)"
+mkdir -p "$PLAIN"
+cp "$SEED/deploy.py" "$PLAIN/deploy.py"
+export GIT_CEILING_DIRECTORIES="$FIXTURE"
+run_subject "$PLAIN"
+unset GIT_CEILING_DIRECTORIES
+expect_failed "FAILED not a git repository: $PLAIN" "not a repository"
+expect_not_deployed "not a repository"
 
 # An up-to-date clone deploys without moving, even when untracked files are present.
 new_clone
@@ -106,8 +131,9 @@ BEFORE=$(git -C "$CLONE" rev-parse origin/main)
 printf 'edit\n' >>"$CLONE/notes.txt"
 publish "fourth change"
 run_subject "$CLONE"
-expect_status 3 "dirty"
+expect_status 1 "dirty"
 expect_first_line "DIRTY" "dirty"
+expect_no_stderr "dirty"
 printf '%s\n' "$OUTPUT" | grep -q "notes.txt" || fail "dirty: changed file not listed"
 [ "$(git -C "$CLONE" rev-parse origin/main)" = "$BEFORE" ] || fail "dirty: fetched anyway"
 expect_not_deployed "dirty"
@@ -118,18 +144,52 @@ git_quiet -C "$CLONE" commit --allow-empty -m "local work"
 LOCAL=$(git -C "$CLONE" rev-parse HEAD)
 publish "fifth change"
 run_subject "$CLONE"
-expect_status 5 "diverged"
+expect_status 1 "diverged"
 expect_first_line "NOT_FAST_FORWARD" "diverged"
+expect_no_stderr "diverged"
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$LOCAL" ] || fail "diverged: main moved"
 expect_not_deployed "diverged"
+
+# A branch that cannot switch to main, here over an untracked file main tracks, is never forced.
+new_clone
+git_quiet -C "$CLONE" checkout -b topic
+git_quiet -C "$CLONE" rm --quiet notes.txt
+git_quiet -C "$CLONE" commit -m "drop notes"
+printf 'untracked copy\n' >"$CLONE/notes.txt"
+run_subject "$CLONE"
+expect_status 1 "checkout failed"
+expect_first_line "CHECKOUT_FAILED" "checkout failed"
+expect_no_stderr "checkout failed"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "checkout failed: branch switched"
+[ "$(cat "$CLONE/notes.txt")" = "untracked copy" ] || fail "checkout failed: untracked file overwritten"
+expect_not_deployed "checkout failed"
 
 # An unreachable origin is reported without deploying.
 new_clone
 git -C "$CLONE" remote set-url origin "$FIXTURE/missing.git"
 run_subject "$CLONE"
-expect_status 4 "fetch failed"
+expect_status 1 "fetch failed"
 expect_first_line "FETCH_FAILED" "fetch failed"
+expect_no_stderr "fetch failed"
 expect_not_deployed "fetch failed"
+
+# A Git command that fails outright is a named failure.
+new_clone
+printf 'not an index' >"$CLONE/.git/index"
+run_subject "$CLONE"
+expect_failed "FAILED git status failed: " "status failed"
+expect_not_deployed "status failed"
+
+# A script that cannot make its temporary copy stops before any Git command.
+new_clone
+export FAKE_DEPLOY_LOG="$FIXTURE/deploy-$case_number.log"
+: >"$FAKE_DEPLOY_LOG"
+set +e
+OUTPUT=$(TMPDIR="$FIXTURE/absent temporary directory" bash "$SUBJECT" "$CLONE" 2>"$FIXTURE/stderr")
+status=$?
+set -e
+expect_failed "FAILED cannot create a temporary copy of update.sh: " "no temporary copy"
+expect_not_deployed "no temporary copy"
 
 # A failing deploy is reported with its exit code.
 new_clone
@@ -137,6 +197,7 @@ export FAKE_DEPLOY_EXIT=7
 run_subject "$CLONE"
 unset FAKE_DEPLOY_EXIT
 expect_status 1 "deploy failed"
+expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "deploy failed"
 [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED 7" ] || fail "deploy failed: missing DEPLOY_FAILED 7: $OUTPUT"
 expect_deployed "deploy failed"
 
@@ -153,8 +214,9 @@ BEFORE=$(head_of "$CLONE" HEAD)
 publish "breaking change"
 tag_upstream v0.2.0
 run_subject "$CLONE"
-expect_status 6 "major"
+expect_status 1 "major"
 expect_first_line "MAJOR_UPDATE v0.1.0..v0.2.0" "major"
+expect_no_stderr "major"
 printf '%s\n' "$OUTPUT" | grep -q "breaking change" || fail "major: pending commit not listed"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "major: main moved"
 expect_not_deployed "major"
@@ -183,7 +245,7 @@ BEFORE=$(head_of "$CLONE" HEAD)
 publish "first stable"
 tag_upstream v1.0.0
 run_subject "$CLONE"
-expect_status 6 "to 1.0.0"
+expect_status 1 "to 1.0.0"
 expect_first_line "MAJOR_UPDATE v0.2.3..v1.0.0" "to 1.0.0"
 expect_not_deployed "to 1.0.0"
 run_subject "$CLONE" --cross-major
@@ -203,7 +265,7 @@ BEFORE=$(head_of "$CLONE" HEAD)
 publish "second major"
 tag_upstream v2.0.0
 run_subject "$CLONE"
-expect_status 6 "stable major"
+expect_status 1 "stable major"
 expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
 expect_not_deployed "stable major"

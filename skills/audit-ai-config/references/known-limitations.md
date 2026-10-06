@@ -22,9 +22,9 @@ trusted configuration artifact could close that remaining gap.
 
 ## Malformed manifests can produce conforming classification
 
-Malformed JSON and non-object manifests produce only WARNING findings and do not count as a conforming signal. With two independent authority signals (e.g., `CLAUDE.md` + maintaining section, or `CLAUDE.md` + generator script), the repository classifies as conforming with empty manifest scope. Because the warnings are not ERRORs, the audit can return exit code 0.
+Malformed JSON and non-object manifests produce only WARNING findings and do not count as a conforming signal. With two independent authority signals (e.g., `CLAUDE.md` + maintaining section, or `CLAUDE.md` + generator script), the repository classifies as conforming with empty manifest scope. Because the warnings are not ERRORs, the audit can report `RESULT COMPLIANT` (exit code 0).
 
-Separately, structurally valid JSON objects that fail schema validation (e.g., missing required fields, wrong types) produce ERROR findings and force exit code 1, though the conforming classification may still appear if other signals are present.
+Separately, structurally valid JSON objects that fail schema validation (e.g., missing required fields, wrong types) produce ERROR findings and force `RESULT ERRORS` (exit code 1), though the conforming classification may still appear if other signals are present.
 
 ## Older manifests use default Copilot sections
 

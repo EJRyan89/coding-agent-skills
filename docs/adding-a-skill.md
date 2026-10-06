@@ -93,9 +93,26 @@ Claude Code replaces `${CLAUDE_SKILL_DIR}` with the absolute directory of the sk
 
 Repository validation fails when a skill or agent names any skill through `{{HOME}}/.claude/skills/<skill>`, when a shell fence runs a script or a `SKILL.md` code span names its own file by a bare relative path, when a skill reaches `../<skill>` without declaring it in `skill_deps`, or when a skill reads another skill's `SKILL.md` or names it beside a step number or section title.
 
+### Script results
+
+Every skill script reports the same way, so a `SKILL.md` reads each one alike:
+
+| Exit | Means | Prints |
+|---|---|---|
+| 0 | The command did its job, including "nothing to do" and a state the skill polls again, such as `RUNNING`. | Its result lines. |
+| 1 | Findings the user must act on, such as violations or invalid results, or a named failure. | Its finding lines, or a last line `FAILED <reason>`. |
+| 2 | A usage error: arguments `argparse` rejects, including its `type=` checks, before any work starts. | `argparse`'s usage text on stderr. |
+
+- Every line goes to stdout, one fact per line, as `KEY value…`. A failure is a `FAILED <reason>` line on stdout, never on stderr and never through `parser.error`, which is for usage alone. A batch command names each item's failure on its own line, such as `REPOSITORY_FAILED <repository> <reason>`, and exits 1.
+- An expected error, such as a missing file, a failed `git` or `gh` call, or a directory that is not a repository, becomes a `FAILED` line, never a traceback.
+- A script prints no JSON. Data the next step reads goes to a file whose path the script prints on one line (see "Working files"). A report the skill shows the user as it is, such as `github-activity-report`'s table, stays a report.
+- No other exit codes. A `SKILL.md` keys on the printed lines, not on which nonzero code came back.
+
+A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py` answers Claude Code's hook protocol, and `init-ai-config`'s `ai_config_template.py` runs in other repositories' CI.
+
 ### Working files
 
-A script that writes a working file, such as a batch, an input, or a plan, chooses the path itself: by default a new directory from `tempfile.mkdtemp` with a prefix naming the skill, such as `review-prs-batch-`. It prints the path on one line, such as `BATCH <file>`, and the next step reads that line. An option for an explicit path may stay, but the script refuses, with its failure line and exit code 2 before writing anything, any path inside the skills directory it runs from, `~/.claude/skills`, or `~/.agents/skills`.
+A script that writes a working file, such as a batch, an input, or a plan, chooses the path itself: by default a new directory from `tempfile.mkdtemp` with a prefix naming the skill, such as `review-prs-batch-`. It prints the path on one line, such as `BATCH <file>`, and the next step reads that line. An option for an explicit path may stay, but the script refuses, with a `FAILED` line and exit code 1 before writing anything, any path inside the skills directory it runs from, `~/.claude/skills`, or `~/.agents/skills`.
 
 Never leave the path to the agent. Given a placeholder such as `--output "<file>"` and a skill directory it already knows, an agent writes beside `SKILL.md`, and the deployer then sees the installed skill as modified and skips it on every later update. Repository validation fails when a command fence in a skill passes a `<...>` placeholder to `--output`, `--output-<name>`, `--out`, `--out-dir`, or `--plans`. A placeholder for a path an earlier command printed, such as `--run "<run directory>"` or `--input "<input file>"`, is fine.
 

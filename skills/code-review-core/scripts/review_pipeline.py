@@ -15,10 +15,11 @@
     inspect-reviewer   say whether a repository's review skill runs as one reviewer or needs a manifest
     validate-reviewer  prove a repository reviewer's files, patterns, and routing without running a review
 
-Every command prints machine-readable lines and exits 0 on success. Expected failures print
-`FAILED <reason>` on stderr and exit 2. `prepare`, `check`, and `finalize` accept several pull requests
-or runs, so one call covers a group; each succeeds or fails on its own, and every line names its pull
-request.
+Every command prints machine-readable lines on stdout. It exits 0 with its result, including a state to poll
+again (`RUNNING`), and 1 with findings to act on (`RETRY`, `INVALID`, `UNFINALIZED`) or an expected failure,
+printed as a `FAILED <reason>` line on stdout. Exit 2 is only argparse's usage error, before any work.
+`prepare`, `check`, and `finalize` accept several pull requests or runs, so one call covers a group; each
+succeeds or fails on its own, and every line names its pull request.
 """
 
 from __future__ import annotations
@@ -1286,7 +1287,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             )
             for (selector, _), (result, error) in zip(items, outcomes):
                 if error is not None:
-                    print(f"FAILED {selector} {error}", file=sys.stderr)
+                    print(f"FAILED {selector} {error}")
                     failed = True
                     continue
                 if result["status"] == "skip":
@@ -1295,7 +1296,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     # This call's other pull requests may have taken longer; its reviewers all start from here.
                     mark_dispatched(result["run"])
                     _print_ready(result)
-            return 2 if failed else 0
+            return 1 if failed else 0
         if args.command == "validate-result":
             error = validate_result(args.run, args.role)
             print(f"INVALID {error}" if error else "VALID")
@@ -1310,23 +1311,22 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "wait-reviewers":
             progress, failures = wait_for_reviewers(args.runs, args.timeout, services or Services())
             for run, reason in failures.items():
-                print(f"FAILED {run} {reason}", file=sys.stderr)
-            running = False
+                print(f"FAILED {run} {reason}")
             for selector, roles in progress:
                 if all(status == "ready" for status, _ in roles.values()):
                     print(f"READY {selector}")
                 for identity, (status, elapsed) in roles.items():
                     if status != "ready":
                         print(f"{status.upper()} {selector} {identity} {elapsed}s")
-                    running = running or status == "running"
-            return 2 if failures else 1 if running else 0
+            # RUNNING and OVERDUE are states the skill acts on by polling again or checking, not failures.
+            return 1 if failures else 0
         if args.command == "unfinalized":
             pending = failed = False
             for run in args.runs:
                 try:
                     selector = unfinalized_selector(run)
                 except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}", file=sys.stderr)
+                    print(f"FAILED {run} {exc}")
                     failed = True
                     continue
                 if selector is not None:
@@ -1334,7 +1334,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     pending = True
             if not pending and not failed:
                 print("ALL_FINALIZED")
-            return 2 if pending or failed else 0
+            return 1 if pending or failed else 0
         if args.command == "dispatch":
             print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
             return 0
@@ -1344,17 +1344,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         if args.command == "wait":
             result, elapsed = wait_for_host(args.run, args.timeout, services or Services())
             if result is None:
-                print(f"RUNNING {elapsed}s")
-                return 1
+                print(f"RUNNING {elapsed}s")  # a state the skill polls again
+                return 0
             print(f"DISPATCHED {result}")
             return 0
         if args.command == "check":
-            pending = failed = False
+            retry = failed = False
             for run in args.runs:
                 try:
                     outcome = check_run(run, services)
                 except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}", file=sys.stderr)
+                    print(f"FAILED {run} {exc}")
                     failed = True
                     continue
                 selector = outcome["selector"]
@@ -1367,16 +1367,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     print(f"RUNNING {selector} {identity} {elapsed}s")
                 if not outcome["errors"] and not outcome["running"]:
                     print(f"ALL_VALID {selector}")
-                pending = pending or bool(outcome["retry"]) or bool(outcome["running"])
+                retry = retry or bool(outcome["retry"])
                 failed = failed or bool(outcome["failed"])
-            return 2 if failed else 1 if pending else 0
+            # A RETRY or FAILED line is for the skill to act on; RUNNING alone is a state it polls again.
+            return 1 if failed or retry else 0
         if args.command == "finalize":
             failed = False
             for run in args.runs:
                 try:
                     result = finalize(run)
                 except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}", file=sys.stderr)
+                    print(f"FAILED {run} {exc}")
                     failed = True
                     continue
                 for note in result["notes"]:
@@ -1387,13 +1388,13 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                         print(f"SHA256 {digest} {path}")
                 print(f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
                       f"{result['markdown']}")
-            return 2 if failed else 0
+            return 1 if failed else 0
         for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config).items():
             print(f"WATERMARK {repository} {old} -> {new}" if new else f"WATERMARK {repository} unchanged: enumeration failed")
         return 0
     except EXPECTED_ERRORS as exc:
-        print(f"FAILED {exc}", file=sys.stderr)
-        return 2
+        print(f"FAILED {exc}")
+        return 1
 
 
 if __name__ == "__main__":

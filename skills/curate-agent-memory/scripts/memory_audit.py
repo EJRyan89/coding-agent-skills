@@ -1,10 +1,19 @@
 """Audit, reindex, and delete from a Claude Code memory directory.
 
-resolve and audit are read-only and report as JSON: mechanical problems and candidate overlaps.
-They never decide what to keep or delete; the calling agent verifies every candidate. resolve prints
-its JSON; audit writes it to --output, else to a new temporary file, and prints `REPORT <path>`.
-audit searches the user's Claude configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude) unless
---user-dir names another.
+Every command prints one fact per line on stdout. An expected failure is a last line `FAILED <reason>`
+with exit code 1; a usage error exits 2.
+
+resolve and audit are read-only. They never decide what to keep or delete; the calling agent verifies
+every candidate. resolve locates the memory directory for --repo, else for the Git repository holding
+the current directory, and prints `REPO <root>`; then `MEMORY_DIR <path>`, `SOURCE <where it came
+from>`, and `EXISTS yes|no`, or `NO_MEMORY_DIR` when settings name no usable directory; one
+`CANDIDATE <dir>` per memory directory found when the resolved one does not exist; and one
+`NOTE <text>` per caveat. No directory is a result, not a failure.
+
+audit writes its JSON report of mechanical problems and candidate overlaps to --output, else to a new
+temporary file, and prints `REPORT <path>`. It refuses an --output inside the skills directory it runs
+from, ~/.claude/skills, or ~/.agents/skills, before writing anything. It searches the user's Claude
+configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude) unless --user-dir names another.
 
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
@@ -13,16 +22,20 @@ as written, an entry is dropped when its file is gone or it repeats an earlier e
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
 else the existing entry's hook, else the first line of the body; a derived hook is collapsed to
-one line of at most 150 characters.
+one line of at most 150 characters. It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
+`NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
+`UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
 
 delete removes the named memory files and nothing else. Each name must be a bare .md file name
 directly inside the memory directory: not MEMORY.md, not a path (no separator, drive, `.`, or
 `..`), not named twice, and an existing regular file, never a directory, symbolic link, or
-junction. When any name is refused it prints one `FAILED <name>: <reason>` line per refusal,
-deletes nothing, and exits 1; otherwise it prints one `DELETED <name>` line per file.
+junction. Every name is checked before any is deleted. When any name is refused it prints one
+`FAILED <name>: <reason>` line per refusal, deletes nothing, and exits 1; otherwise it prints one
+`DELETED <name>` line per file. When a deletion fails part way, the files already printed as
+DELETED are gone, a last `FAILED <name>: <reason>` names the one that failed, and the rest remain.
 
 Usage:
-  python memory_audit.py resolve --repo ROOT
+  python memory_audit.py resolve [--repo ROOT]
   python memory_audit.py audit --memory-dir DIR [--repo ROOT] [--user-dir DIR] [--instructions FILE ...] [--output FILE]
   python memory_audit.py reindex --memory-dir DIR [--write]
   python memory_audit.py delete --memory-dir DIR FILE [FILE ...]
@@ -31,6 +44,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -358,10 +372,15 @@ def reindex(memory_dir: Path) -> dict:
 
 
 def write_index(path: Path, content: str) -> None:
-    """Replace MEMORY.md atomically; nothing else in the directory is touched."""
+    """Replace MEMORY.md atomically; nothing else in the directory is touched, even when the write fails."""
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_bytes(content.encode("utf-8"))
-    os.replace(temporary, path)
+    try:
+        temporary.write_bytes(content.encode("utf-8"))
+        os.replace(temporary, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
 
 
 def refusal(memory_dir: Path, name: str) -> str | None:
@@ -418,21 +437,31 @@ def encode_project(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
+def git_output(directory: Path, *arguments: str) -> str | None:
+    """The stripped output of a git command run in directory, or None when it fails or prints nothing."""
+    completed = subprocess.run(
+        ["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=False
+    )
+    output = completed.stdout.strip()
+    return output if completed.returncode == 0 and output else None
+
+
 def main_worktree(repo: Path) -> Path | None:
     """Return the main worktree of the repository containing repo, which every worktree shares."""
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        common = git_output(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
     except OSError:
         return None
-    if completed.returncode != 0 or not completed.stdout.strip():
+    if common is None:
         return None
-    common = Path(completed.stdout.strip())
-    return common.parent if common.name == ".git" else common
+    path = Path(common)
+    return path.parent if path.name == ".git" else path
+
+
+def repository_root(directory: Path) -> Path | None:
+    """The root of the Git repository or worktree containing directory, or None outside one."""
+    root = git_output(directory, "rev-parse", "--show-toplevel")
+    return Path(root) if root else None
 
 
 def config_directory(home: Path, environment: dict[str, str]) -> Path:
@@ -487,10 +516,57 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
     return result
 
 
-def print_reindex(memory_dir: Path, write: bool) -> int:
-    """Print one fact per line: the rebuilt entries, what changed, and what was written."""
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
+def reason(exc: OSError) -> str:
+    """An expected OSError's reason on one line."""
+    return " ".join((exc.strerror or str(exc)).split())
+
+
+def describe(exc: OSError) -> str:
+    """An expected OSError as one line: its reason and the file it names."""
+    return f"{reason(exc)}: {exc.filename}" if exc.strerror and exc.filename else reason(exc)
+
+
+# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
+SKILLS_ROOT = Path(__file__).resolve().parents[2]
+
+
+def deployed_skill_roots() -> tuple[Path, ...]:
+    """The directories the deployer owns, whatever skills directory this script runs from."""
+    home = Path.home()
+    return home / ".claude" / "skills", home / ".agents" / "skills"
+
+
+def output_refusal(explicit: Path) -> str | None:
+    """Why the audit report must not be written to explicit, or None when it may be.
+
+    A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
+    explicit path inside any skills directory is refused before anything is written.
+    """
+    target = explicit.resolve()
+    for root in (SKILLS_ROOT, *deployed_skill_roots()):
+        if target.is_relative_to(root.resolve()):
+            return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    return None
+
+
+def resolve_lines(repo: Path, result: dict) -> list[str]:
+    """One fact per line: the repository, the directory and where it came from, candidates, then notes."""
+    lines = [f"REPO {repo}"]
+    if result["memory_dir"]:
+        lines += [
+            f"MEMORY_DIR {result['memory_dir']}",
+            f"SOURCE {result['source']}",
+            f"EXISTS {'yes' if result['exists'] else 'no'}",
+        ]
+    else:
+        lines.append("NO_MEMORY_DIR")
+    lines += [f"CANDIDATE {candidate}" for candidate in result.get("candidates", [])]
+    lines += [f"NOTE {' '.join(note.split())}" for note in result["notes"]]
+    return lines
+
+
+def reindex_lines(memory_dir: Path, write: bool) -> tuple[int, list[str]]:
+    """The rebuilt entries, what changed, and what was written; exit 1 when the index is over its load limit."""
     result = reindex(memory_dir)
     output = [f"INDEX_LINE {file}" for file in result["entries"]]
     output += [f"ADDED {file}" for file in result["added"]]
@@ -498,22 +574,61 @@ def print_reindex(memory_dir: Path, write: bool) -> int:
     if result["over_limit"] or result["near_limit"]:
         label = "OVER_LIMIT" if result["over_limit"] else "NEAR_LIMIT"
         output.append(f"{label} lines={result['lines']}/{INDEX_LINE_LIMIT} bytes={result['bytes']}/{INDEX_BYTE_LIMIT}")
+    code = 1 if result["over_limit"] else 0
     if not result["changed"]:
         output.append("UNCHANGED")
     elif write:
-        write_index(result["path"], result["content"])
+        try:
+            write_index(result["path"], result["content"])
+        except OSError as exc:
+            output.append(f"FAILED cannot write {result['path'].as_posix()}: {reason(exc)}")
+            return 1, output
         output.append(f"WROTE {result['path'].as_posix()}")
     else:
         output.append(f"WOULD_WRITE {result['path'].as_posix()}")
-    print("\n".join(output))
-    return 0
+    return code, output
+
+
+def audit_lines(args: argparse.Namespace) -> tuple[int, list[str]]:
+    """Write the JSON audit report to --output or a new temporary file and name it."""
+    if args.output:
+        refused = output_refusal(args.output)
+        if refused:
+            return 1, [f"FAILED {refused}"]
+    user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
+    report = json.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
+    if args.output:
+        try:
+            args.output.write_text(report, encoding="utf-8")
+        except OSError as exc:
+            return 1, [f"FAILED cannot write {args.output}: {reason(exc)}"]
+        return 0, [f"REPORT {args.output}"]
+    descriptor, name = tempfile.mkstemp(prefix="memory-audit-", suffix=".json")
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(report)
+    return 0, [f"REPORT {name}"]
+
+
+def run(args: argparse.Namespace) -> tuple[int, list[str]]:
+    if args.command == "resolve":
+        repo = args.repo or repository_root(Path.cwd())
+        if repo is None:
+            return 1, ["FAILED not inside a Git repository; pass --repo"]
+        return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))
+    if not args.memory_dir.is_dir():
+        return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
+    if args.command == "reindex":
+        return reindex_lines(args.memory_dir, args.write)
+    if args.command == "delete":
+        return delete(args.memory_dir, args.names)
+    return audit_lines(args)
 
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     locate = commands.add_parser("resolve", help="locate the memory directory Claude Code uses for a repository")
-    locate.add_argument("--repo", type=Path, required=True)
+    locate.add_argument("--repo", type=Path, help="default: the root of the Git repository holding the current directory")
     locate.add_argument("--home", type=Path, default=Path.home())
     inspect = commands.add_parser("audit", help="audit one memory directory")
     inspect.add_argument("--memory-dir", type=Path, required=True)
@@ -528,33 +643,15 @@ def main(arguments: list[str] | None = None) -> int:
     remove.add_argument("--memory-dir", type=Path, required=True)
     remove.add_argument("names", nargs="+", metavar="FILE", help="a memory file name, such as old-rule.md")
     args = parser.parse_args(arguments)
-    if args.command == "resolve":
-        result = resolve(args.repo, args.home, dict(os.environ), managed_settings_path())
-        print(json.dumps(result, indent=2))
-        return 0 if result["memory_dir"] else 2
-    if not args.memory_dir.is_dir():
-        print(f"Memory directory not found: {args.memory_dir}", file=sys.stderr)
-        return 2
-    if args.command == "reindex":
-        return print_reindex(args.memory_dir, args.write)
-    if args.command == "delete":
-        if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(encoding="utf-8")
-        code, output = delete(args.memory_dir, args.names)
-        print("\n".join(output))
-        return code
-    user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
-    report = json.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
-    if args.output:
-        args.output.write_text(report, encoding="utf-8")
-        path = args.output
-    else:
-        descriptor, name = tempfile.mkstemp(prefix="memory-audit-", suffix=".json")
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(report)
-        path = Path(name)
-    print(f"REPORT {path}")
-    return 0
+    # Lines echo memory file names, titles, and notes; a Windows pipe's legacy code page cannot encode them all.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        code, lines = run(args)
+    except OSError as exc:
+        code, lines = 1, [f"FAILED {describe(exc)}"]
+    print("\n".join(lines))
+    return code
 
 
 if __name__ == "__main__":

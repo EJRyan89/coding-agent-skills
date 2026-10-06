@@ -200,12 +200,37 @@ class InstallTests(Fixture):
 
     def test_not_a_repository_and_missing_spec_fail(self) -> None:
         code, lines, errors = self.run_command("install", "--spec", str(self.spec_path))
-        self.assertEqual((2, []), (code, lines))
-        self.assertIn("FAILED cannot read spec", errors)
+        self.assertEqual((1, ""), (code, errors))
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED cannot read spec"), lines)
         (self.root / ".git").rmdir()
-        code, _, errors = self.run_command("inventory")
-        self.assertEqual(2, code)
-        self.assertIn("is not a Git repository root", errors)
+        code, lines, errors = self.run_command("inventory")
+        self.assertEqual((1, ""), (code, errors))
+        self.assertEqual([f"FAILED {self.root.resolve()} is not a Git repository root"], lines)
+
+
+class ExitContractTests(Fixture):
+    """The process-level contract: 1 with a last stdout line FAILED for a failure, 2 for usage alone."""
+
+    def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(Path(setup.__file__).resolve()), "--root", str(self.root), *arguments],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+        )
+
+    def test_a_runtime_failure_exits_1_with_failed_on_stdout(self) -> None:
+        completed = self.execute("export-spec", "--output", str(Path(self.temp.name) / "exported.json"))
+        self.assertEqual(1, completed.returncode)
+        self.assertEqual("", completed.stderr)
+        self.assertTrue(completed.stdout.splitlines()[-1].startswith("FAILED no repository generator found"))
+
+    def test_a_usage_error_exits_2(self) -> None:
+        for arguments in ((), ("unknown",), ("install",)):
+            with self.subTest(arguments=arguments):
+                completed = self.execute(*arguments)
+                self.assertEqual(2, completed.returncode)
+                self.assertEqual("", completed.stdout)
+                self.assertIn("usage:", completed.stderr)
 
 
 class InstalledGeneratorTests(Fixture):
@@ -298,19 +323,34 @@ class ExportSpecTests(Fixture):
                 self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
                 with self.subTest(target=target):
                     code, lines, errors = self.run_command("export-spec", "--output", str(target))
-                    self.assertEqual((2, []), (code, lines))
-                    self.assertTrue(errors.startswith(f"FAILED {target} is inside the skills directory "), errors)
+                    self.assertEqual((1, ""), (code, errors))
+                    self.assertEqual(1, len(lines), lines)
+                    self.assertTrue(lines[0].startswith(f"FAILED {target} is inside the skills directory "), lines)
                     self.assertFalse(target.exists())
 
     def test_export_failures(self) -> None:
         output = Path(self.temp.name) / "exported.json"
-        code, _, errors = self.run_command("export-spec", "--output", str(output))
-        self.assertEqual(2, code)
-        self.assertIn("FAILED no repository generator found", errors)
+        code, lines, errors = self.run_command("export-spec", "--output", str(output))
+        self.assertEqual((1, ""), (code, errors))
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith("FAILED no repository generator found"), lines)
         self.write(".github/scripts/ai_config.py", "TARGET_RUNTIMES = list(BASE)\n")
-        code, _, errors = self.run_command("export-spec", "--output", str(output))
-        self.assertEqual(2, code)
-        self.assertIn("TARGET_RUNTIMES in .github/scripts/ai_config.py is not a literal value", errors)
+        code, lines, errors = self.run_command("export-spec", "--output", str(output))
+        self.assertEqual((1, ""), (code, errors))
+        self.assertEqual(
+            ["FAILED TARGET_RUNTIMES in .github/scripts/ai_config.py is not a literal value"], lines
+        )
+        self.assertFalse(output.exists())
+
+    def test_export_reports_a_spec_it_cannot_write(self) -> None:
+        self.assertEqual(0, self.install(SPEC)[0])
+        blocker = Path(self.temp.name) / "a file"
+        blocker.write_text("not a directory", encoding="utf-8")
+        output = blocker / "exported.json"
+        code, lines, errors = self.run_command("export-spec", "--output", str(output))
+        self.assertEqual((1, ""), (code, errors))
+        self.assertEqual(1, len(lines), lines)
+        self.assertTrue(lines[0].startswith(f"FAILED could not write {output}: "), lines)
         self.assertFalse(output.exists())
 
 

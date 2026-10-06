@@ -17,7 +17,7 @@ The engine never writes, modifies, or deletes files. It does not run generators,
 ## Order of Checks
 
 1. Inventory runs for every repository.
-2. Authority classification decides whether the remaining checks run. Only a **conforming** repository receives checks 3 to 12; any other classification stops the audit with exit code `2`.
+2. Authority classification decides whether the remaining checks run. Only a **conforming** repository receives checks 3 to 12; any other classification stops the audit with `RESULT INCONCLUSIVE` (exit code `1`).
 
 ## Checks
 
@@ -37,12 +37,12 @@ Independent signals:
 4. A generator script references `CLAUDE.md`.
 5. A workflow references `ai_config` together with `--check`.
 
-| Classification | Criteria | Exit |
+| Classification | Criteria | Result |
 |---|---|---|
-| **Conforming** | Signal 1 alone, or two or more of signals 2 to 5 | `0` or `1` |
-| **Alternative** | The manifest names a canonical source other than `CLAUDE.md` | `2` |
-| **Ambiguous** | Exactly one of signals 2 to 5 | `2` |
-| **Unconfigured** | No signals | `2` |
+| **Conforming** | Signal 1 alone, or two or more of signals 2 to 5 | `COMPLIANT` or `ERRORS` |
+| **Alternative** | The manifest names a canonical source other than `CLAUDE.md` | `INCONCLUSIVE` |
+| **Ambiguous** | Exactly one of signals 2 to 5 | `INCONCLUSIVE` |
+| **Unconfigured** | No signals | `INCONCLUSIVE` |
 
 A malformed or non-object manifest is a `WARNING` and is not a signal; a structurally valid manifest that fails schema validation produces `ERROR` findings.
 

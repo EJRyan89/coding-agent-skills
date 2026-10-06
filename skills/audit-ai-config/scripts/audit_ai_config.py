@@ -8,10 +8,17 @@ This engine works independently and does not depend on init-ai-config files.
 Usage:
     python audit_ai_config.py [--json] [--root <path>]
 
+The Markdown report states its result on one line, before the SUMMARY lines:
+
+    RESULT COMPLIANT      compliant within statically verifiable scope
+    RESULT ERRORS         one or more ERROR-level findings
+    RESULT INCONCLUSIVE   ambiguous, unconfigured, or alternative authority
+
 Exit codes:
-    0  Compliant within statically verifiable scope
-    1  One or more ERROR-level findings
-    2  INCONCLUSIVE — ambiguous authority model
+    0  RESULT COMPLIANT
+    1  RESULT ERRORS or RESULT INCONCLUSIVE, or a last line FAILED <reason>
+       (the root is not a Git repository)
+    2  usage error
 """
 
 from __future__ import annotations
@@ -23,7 +30,6 @@ import json
 from collections import Counter
 from pathlib import Path, PurePosixPath
 import re
-import sys
 import tomllib
 from dataclasses import dataclass, field, asdict
 from typing import Any
@@ -82,12 +88,17 @@ class AuditResult:
     findings: list[Finding] = field(default_factory=list)
 
     @property
-    def exit_code(self) -> int:
+    def result(self) -> str:
+        """COMPLIANT, ERRORS, or INCONCLUSIVE; the report prints it as a RESULT line."""
         if self.authority in ("ambiguous", "unconfigured", "alternative"):
-            return 2
+            return "INCONCLUSIVE"
         if any(f.severity == "ERROR" for f in self.findings):
-            return 1
-        return 0
+            return "ERRORS"
+        return "COMPLIANT"
+
+    @property
+    def exit_code(self) -> int:
+        return 0 if self.result == "COMPLIANT" else 1
 
     def sorted_findings(self) -> list[Finding]:
         return sorted(self.findings, key=Finding.sort_key)
@@ -1926,6 +1937,7 @@ def format_markdown(result: AuditResult) -> str:
         f"Authority: **{result.authority}**",
         f"Scope: **{result.scope_status}**",
         "",
+        f"RESULT {result.result}",
         *summary_lines(sorted_findings),
         "",
     ]
@@ -1992,11 +2004,7 @@ def main() -> int:
 
     git_marker = args.root / ".git"
     if not git_marker.exists():
-        print(
-            f"ERROR: {args.root} does not appear to be a Git repository"
-            " (no .git found)",
-            file=sys.stderr,
-        )
+        print(f"FAILED {args.root} is not a Git repository (no .git found)")
         return 1
 
     result = audit(args.root)

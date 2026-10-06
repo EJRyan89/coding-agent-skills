@@ -7,13 +7,13 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 # Update PR tracker
 
-Every step below is one command of the tracker pipeline script, run exactly as shown; do not call `gh`, write the tracker input yourself, or read the scripts to work out what to do. Commands print one fact per line and exit 0 on success; `FAILED <reason>` on stderr with exit code 2 is an expected failure to report, not a reason to improvise. Never act on GitHub: this skill does not approve, comment on, or otherwise review a pull request.
+Every step below is one command of the tracker pipeline script, run exactly as shown; do not call `gh`, write the tracker input yourself, or read the scripts to work out what to do. Commands print one fact per line and exit 0 on success; a last line `FAILED <reason>` is an expected failure to report, not a reason to improvise. Never act on GitHub: this skill does not approve, comment on, or otherwise review a pull request.
 
 1. **Collect** open pull requests, passing the user's `--repository owner/repo` (repeatable) or `--repository-set NAME`, or neither for the configured `update-pr-tracker` set:
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" collect
    ```
-   It prints `REPOSITORY <owner/repo> pulls=<count>` per repository and `INPUT <input file>`, the file it wrote under a new temporary directory. Use the same scope on every run, or rows for the other repositories disappear. If any repository prints `REPOSITORY_FAILED <owner/repo> <error>`, no input is written and the command fails: report each error and stop, so the dashboard keeps its previous rows rather than losing that repository's.
+   It prints `REPOSITORY <owner/repo> pulls=<count>` per repository and `INPUT <input file>`, the file it wrote under a new temporary directory. Use the same scope on every run, or rows for the other repositories disappear. If any repository prints `REPOSITORY_FAILED <owner/repo> <error>`, no input is written and the command ends with a `FAILED` line: report each error and stop, so the dashboard keeps its previous rows rather than losing that repository's.
 2. **Update** the dashboard from the `INPUT` file, adding `--remove "<owner/repo#number>"` for each removal and `--candidates` unless `--no-review` was given:
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" update --input "<input file>" --candidates

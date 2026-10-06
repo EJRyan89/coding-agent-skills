@@ -10,7 +10,8 @@
                                             prompts that a script writes at runtime
 
 Every command prints one fact per line in forward-slash paths. locate exits 1 after NOT_FOUND or
-AMBIGUOUS; a missing input prints FAILED <reason> on stderr and exits 2.
+AMBIGUOUS; a missing or unreadable input prints FAILED <reason> as its last line and exits 1; only a usage
+error exits 2.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -811,8 +812,12 @@ def main(arguments: list[str] | None = None) -> int:
         else:
             output = scan(args.files)
     except InputError as exc:
-        print(f"FAILED {exc}", file=sys.stderr)
-        return 2
+        print(f"FAILED {exc}")
+        return 1
+    except OSError as exc:
+        where = f" {Path(exc.filename).as_posix()}" if exc.filename else ""
+        print(f"FAILED cannot read{where}: {exc.strerror or exc}")
+        return 1
     print("\n".join(output))
     return 1 if any(line.startswith(("NOT_FOUND ", "AMBIGUOUS ")) for line in output) else 0
 

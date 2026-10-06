@@ -220,9 +220,9 @@ class CollectTests(TrackerPipelineFixture):
                 self.addCleanup(target.unlink, missing_ok=True)  # if a regression wrote it
                 with self.subTest(target=target):
                     code, out, err = self.run_main("collect", "--output", str(target))
-                    self.assertEqual(2, code)
-                    self.assertEqual("", out)
-                    self.assertTrue(err.startswith(f"FAILED {target} is inside the skills directory "), err)
+                    self.assertEqual((1, ""), (code, err))
+                    self.assertEqual(1, len(out.splitlines()), out)
+                    self.assertTrue(out.startswith(f"FAILED {target} is inside the skills directory "), out)
                     self.assertFalse(target.exists())
         self.assertEqual([], self.github.calls)
 
@@ -240,26 +240,32 @@ class CollectTests(TrackerPipelineFixture):
         self.input.write_text("[]", encoding="utf-8")
         self.github.failures["example/two"] = ("", "GraphQL: Could not resolve to a Repository (repository)")
         code, out, err = self.run_main("collect", "--output", str(self.input))
-        self.assertEqual(2, code)
-        self.assertIn("REPOSITORY example/one pulls=3", out)
-        self.assertIn("REPOSITORY_FAILED example/two GraphQL: Could not resolve", out)
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertEqual("REPOSITORY example/one pulls=3", lines[0])
+        self.assertTrue(lines[1].startswith("REPOSITORY_FAILED example/two GraphQL: Could not resolve"), lines)
+        self.assertEqual(
+            "FAILED 1 of 2 repositories could not be collected; no input was written and the dashboard keeps its "
+            "previous rows",
+            lines[-1],
+        )
         self.assertNotIn("INPUT", out)
-        self.assertIn("FAILED 1 of 2 repositories", err)
         self.assertEqual("[]", self.input.read_text(encoding="utf-8"), "the previous input is left untouched")
 
     def test_partial_nested_data_fails_its_repository(self) -> None:
         crowded = pull_node(1, participants={"pageInfo": {"hasNextPage": True}, "nodes": []})
         self.github.pages["example/one"] = [page([crowded])]
         code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
-        self.assertEqual(2, code)
+        self.assertEqual(1, code)
         self.assertIn("REPOSITORY_FAILED example/one example/one#1 has more than 100 participants", out)
+        self.assertTrue(out.splitlines()[-1].startswith("FAILED 1 of 1 repositories"), out)
         self.assertFalse(self.input.exists())
 
     def test_active_review_without_a_commit_fails_its_repository(self) -> None:
         orphan = pull_node(1, reviews={"nodes": [{"state": "APPROVED", "commit": None}]})
         self.github.pages["example/one"] = [page([orphan])]
         code, out, _ = self.run_main("collect", "--repository", "example/one", "--output", str(self.input))
-        self.assertEqual(2, code)
+        self.assertEqual(1, code)
         self.assertIn("user_review_sha is required for APPROVED", out)
 
     def test_rate_limit_stops_the_collection(self) -> None:
@@ -268,9 +274,35 @@ class CollectTests(TrackerPipelineFixture):
                 self.serve_default_pages()
                 self.github.failures = {limited: ("", "API rate limit exceeded")}
                 code, out, err = self.run_main("collect", "--output", str(self.input))
-                self.assertEqual((2, ""), (code, out))
-                self.assertIn("FAILED API rate limit exceeded", err)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertTrue(out.startswith("FAILED API rate limit exceeded"), out)
                 self.assertFalse(self.input.exists())
+
+
+class ExitContractTests(TrackerPipelineFixture):
+    """The process-level contract: 1 with a last stdout line FAILED for a failure, 2 for usage alone."""
+
+    def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "tracker_pipeline.py"), "--config", str(self.config_path),
+             *arguments],
+            capture_output=True, encoding="utf-8", errors="replace", check=False,
+        )
+
+    def test_a_runtime_failure_exits_1_with_failed_on_stdout(self) -> None:
+        result = self.execute("update", "--input", str(self.root / "absent.json"))
+        self.assertEqual((1, ""), (result.returncode, result.stderr))
+        self.assertEqual(1, len(result.stdout.splitlines()), result.stdout)
+        self.assertTrue(result.stdout.startswith("FAILED "), result.stdout)
+        self.assertIn("absent.json", result.stdout)
+
+    def test_a_usage_error_exits_2(self) -> None:
+        for arguments in ((), ("unknown",), ("update",)):
+            with self.subTest(arguments=arguments):
+                result = self.execute(*arguments)
+                self.assertEqual((2, ""), (result.returncode, result.stdout))
+                self.assertIn("usage:", result.stderr)
 
 
 class UpdateTests(TrackerPipelineFixture):
@@ -350,8 +382,8 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(1, item["ai_review"]["flagged"])
         self.assertIn("| 1M 1S open (1 flagged) · v1–v3 |", row)
         self.flags_path.write_text("{}", encoding="utf-8")
-        code, _, err = self.run_main("collect", "--output", str(self.input))
-        self.assertEqual((2, "FAILED Flag store shape is invalid\n"), (code, err))
+        code, out, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((1, "FAILED Flag store shape is invalid\n", ""), (code, out, err))
 
     def test_remove_drops_one_row_and_no_candidates_without_the_flag(self) -> None:
         self.collect()
@@ -365,8 +397,9 @@ class UpdateTests(TrackerPipelineFixture):
         original = "No markers here.\n"
         self.dashboard.write_text(original, encoding="utf-8")
         code, out, err = self.run_main("update", "--input", str(self.input))
-        self.assertEqual((2, ""), (code, out))
-        self.assertIn("FAILED Dashboard must contain exactly one marker pair", err)
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(1, len(out.splitlines()), out)
+        self.assertTrue(out.startswith("FAILED Dashboard must contain exactly one marker pair"), out)
         self.assertEqual(original, self.dashboard.read_text(encoding="utf-8"))
 
 
