@@ -3613,7 +3613,7 @@ class RepositoryValidation(unittest.TestCase):
     def test_complexity_and_statement_thresholds_only_go_down(self) -> None:
         # #91's ratchet: a pull request may lower these literals with the thresholds, never raise them.
         lint = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
-        self.assertLessEqual(lint["mccabe"]["max-complexity"], 51)
+        self.assertLessEqual(lint["mccabe"]["max-complexity"], 49)
         self.assertLessEqual(lint["pylint"]["max-statements"], 148)
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
