@@ -3052,10 +3052,18 @@ class RepositoryValidation(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
         self.assertEqual(120, configuration["line-length"])
         lint = configuration["lint"]
-        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM"], lint["select"])
+        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"], lint["select"])
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
-        self.assertEqual(["select"], sorted(lint))
+        self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
+        self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))
+        self.assertEqual(["max-statements"], sorted(lint["pylint"]))
         self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
+
+    def test_complexity_and_statement_thresholds_only_go_down(self) -> None:
+        # #91's ratchet: a pull request may lower these literals with the thresholds, never raise them.
+        lint = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
+        self.assertLessEqual(lint["mccabe"]["max-complexity"], 51)
+        self.assertLessEqual(lint["pylint"]["max-statements"], 148)
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
