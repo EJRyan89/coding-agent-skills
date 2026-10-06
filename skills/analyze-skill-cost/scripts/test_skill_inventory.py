@@ -177,7 +177,9 @@ class LocateTests(TemporaryTestCase):
     def test_git_toplevel_finds_the_root_or_nothing(self) -> None:
         git("init", "-q", str(self.repo))
         (self.repo / "sub").mkdir()
-        self.assertEqual(self.repo, skill_inventory.git_toplevel(self.repo / "sub").resolve())
+        toplevel = skill_inventory.git_toplevel(self.repo / "sub")
+        assert toplevel is not None, "a subdirectory of a repository has a top level"
+        self.assertEqual(self.repo, toplevel.resolve())
         plain = self.root / "plain"
         plain.mkdir()
         with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
