@@ -20,6 +20,7 @@ import argparse
 import ast
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path, PurePosixPath
 import re
 import sys
@@ -1902,16 +1903,33 @@ def audit(root: Path) -> AuditResult:
 # Output formatting
 # ---------------------------------------------------------------------------
 
+def summary_lines(findings: list[Finding]) -> list[str]:
+    """Count findings per severity, then INFO findings per check."""
+    severities = Counter(f.severity for f in findings)
+    info_checks = Counter(f.check for f in findings if f.severity == "INFO")
+    lines = [
+        f"SUMMARY {severity} {severities[severity]}"
+        for severity in SEVERITY_ORDER
+    ]
+    lines.extend(
+        f"SUMMARY INFO {check} {info_checks[check]}"
+        for check in sorted(info_checks)
+    )
+    return lines
+
+
 def format_markdown(result: AuditResult) -> str:
+    sorted_findings = result.sorted_findings()
     lines = [
         f"## AI Config Audit — {result.repository}",
         "",
         f"Authority: **{result.authority}**",
         f"Scope: **{result.scope_status}**",
         "",
+        *summary_lines(sorted_findings),
+        "",
     ]
 
-    sorted_findings = result.sorted_findings()
     if not sorted_findings:
         lines.append("No findings.")
         return "\n".join(lines) + "\n"

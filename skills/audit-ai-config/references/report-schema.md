@@ -66,6 +66,11 @@ Deterministic: sorted by severity (ERROR first), then by file path, then by line
 Authority: **Conforming** (manifest found)
 Scope: **independently-derived**
 
+SUMMARY ERROR 1
+SUMMARY WARNING 1
+SUMMARY INFO 1
+SUMMARY INFO inventory 1
+
 ### Findings
 
 | Severity | Check | Path | Message |
@@ -74,6 +79,10 @@ Scope: **independently-derived**
 | WARNING | mcp | (repository settings) | Copilot repository MCP cannot be validated statically |
 | INFO | inventory | CLAUDE.md | Found at repository root |
 ```
+
+The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
+printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON
+output has no summary; count its `findings` instead.
 
 ### JSON (for CI integration)
 
