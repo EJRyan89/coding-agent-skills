@@ -391,7 +391,8 @@ def reindex(memory_dir: Path) -> dict:
             continue
         seen.add(identity(file))
         meta, body = frontmatter(file)
-        existing_hook = INDEX_HOOK.match(line).group("hook")
+        hook_match = INDEX_HOOK.match(line)  # matches every line INDEX_ENTRY does
+        existing_hook = hook_match.group("hook") if hook_match else ""
         hook = one_line(meta["description"]) if meta.get("description") else existing_hook or derived_hook(body)
         lines.append(index_line(match.group("title").strip() or derived_title(meta, file), file, hook))
         entries.append(file)
