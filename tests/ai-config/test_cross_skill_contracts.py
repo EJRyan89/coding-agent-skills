@@ -32,6 +32,23 @@ def literal_assignment(path: Path, name: str) -> object:
     raise AssertionError(f"{name} is not a literal assignment in {path}")
 
 
+def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
+    """Each option `<parser>.add_argument` declares, with its keywords as source, however the call is wrapped."""
+    options: dict[str, dict[str, str]] = {}
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == parser
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            options[node.args[0].value] = {keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords}
+    return options
+
+
 def replayed_skills(text: str, own: str, names: set[str]) -> list[str]:
     """Other skills a skill's text reads the SKILL.md of, or names in a clause with a step number or section title."""
     replayed = set(re.findall(r"\.\./([a-z0-9-]+)/SKILL\.md", text)) - {own}
@@ -334,8 +351,8 @@ class CrossSkillContractTests(unittest.TestCase):
         review_prs = read("review-prs")
         self.assertIn("--pull owner/repo#number ... --re-review owner/repo#number ...", review_prs.split("---", 2)[1])
         self.assertIn("(or `--re-review` for one given with `--re-review`)", review_prs)
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('prepare_parser.add_argument("--re-review", action="append"', pipeline)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertEqual("'append'", declared_options(pipeline, "prepare_parser")["--re-review"]["action"])
 
     def test_review_prs_waits_for_the_copilot_host_in_bounded_calls(self) -> None:
         # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30 (#36).
@@ -411,8 +428,9 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn(
             "`--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`.", skill
         )
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('prepare_parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES)', pipeline)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        host = declared_options(pipeline, "prepare_parser")["--host"]
+        self.assertEqual("sorted(RUNTIME_CAPABILITIES)", host["choices"])
         runtime = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_runtime.py").read_text(encoding="utf-8")
         hosts = runtime.split("RUNTIME_CAPABILITIES = {", 1)[1].split("\n}", 1)[0]
         self.assertEqual(
