@@ -3227,7 +3227,9 @@ class RepositoryValidation(unittest.TestCase):
             with self.assertRaises(AssertionError) as raised:
                 mypy_type_check(root, ["clean.py", "module.py"], configuration)
             message = str(raised.exception)
-            self.assertRegex(message, r"(?m)^module\.py:2: error: Incompatible return value type .*\[return-value\]$")
+            # mypy ends its lines with CRLF on Windows, and `$` does not match before a carriage return.
+            named = r"(?m)^module\.py:2: error: Incompatible return value type .*\[return-value\]\r?$"
+            self.assertRegex(message, named)
             self.assertNotRegex(message, r"(?m)^clean\.py:")
             self.assertIn("type: ignore[<code>]", message)
             # No cache or other state is written into the checked tree.
