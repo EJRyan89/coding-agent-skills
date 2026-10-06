@@ -1920,6 +1920,33 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.assertEqual([], list(self.temporary.iterdir()))
                 self.commit_base_bytes({relative: original + b"\n"})
 
+    def test_a_reviewer_file_whose_frontmatter_cannot_be_read_ends_as_failed(self) -> None:
+        # A malformed grant once read as no tools, so the skill looked unable to delegate; now nothing is guessed.
+        cases = (
+            (
+                self.skill_reviewer("review/solo.md"),
+                "review/solo.md",
+                b"---\ntools:\n  read: true\n---\nReview the change.\n",
+                "The review skill review/solo.md has frontmatter that cannot be read: "
+                "tools: a nested mapping is not supported",
+            ),
+            (
+                self.repository_reviewer("review/specialists.json"),
+                "review/python.md",
+                b"---\nmodel: opus\nPython profile\n",
+                "Specialist profile review/python.md has frontmatter that cannot be read: frontmatter is not closed",
+            ),
+        )
+        for reviewer, relative, content, reason in cases:
+            with self.subTest(relative=relative):
+                self.configure(reviewer)
+                original = git(self.checkout, "show", f"main:{relative}").encode("utf-8")
+                self.commit_base_bytes({relative: content})
+                code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+                self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
+                self.assertEqual([], list(self.temporary.iterdir()))
+                self.commit_base_bytes({relative: original + b"\n"})
+
     def test_generic_reviewer_needs_agent_delegation(self) -> None:
         self.services.resolve_runtime = lambda configured, host: "copilot-cli"
         with self.assertRaisesRegex(Exception, "agent-delegation"):

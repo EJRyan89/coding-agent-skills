@@ -11,15 +11,22 @@ Inspection is deterministic: it reads the skill's frontmatter for the tools it m
 explicit signs that it starts subagents, and reports the evidence rather than guessing. A repository agent's name is
 such a sign wherever it appears as a whole word, unless the name is a plain word (`review`, `Security`): then it
 counts only where the text names an agent, in a code span, followed by "agent", or on a line that also delegates.
+
+A reviewer file's frontmatter is read by skill-core's strict frontmatter reader. A block it cannot read is a
+contract fault that fails the review, never a grant guessed from a lenient parse.
 """
 
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+import frontmatter
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
@@ -46,6 +53,8 @@ AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
 CODE_SPAN = re.compile(r"`([^`]*)`")
 PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
 PATH_TOKEN = re.compile(r"`([^`\s]+)`|\]\(([^)\s]+)\)|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
+# One entry of a tool list written as text: comma- or space-separated, with a parenthesized pattern kept whole.
+TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")
 
 
@@ -71,55 +80,34 @@ class ResolvedReviewer:
     inspection: Inspection | None = None
 
 
-# _frontmatter and frontmatter_value are kept instead of skill-core's frontmatter.py: they read files that reader
-# refuses or reads otherwise, which would change the tool grant, recorded for decision in
-# https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
-def _frontmatter(text: str) -> tuple[dict[str, list[str] | None], int]:
-    """Tool lists from a leading `---` block: `tools` (agents) and `allowed-tools` (skills).
+def _tool_grant(skill: str, text: str) -> tuple[list[str] | None, int]:
+    """The tool list a skill's frontmatter grants, from `tools` (agents) or `allowed-tools` (skills), and the line
+    number where its body starts. None is no list, so every tool is inherited.
 
-    Handles `key: A, B`, `key: ["A", "B"]`, and an indented `- A` list. Returns the lists by key and the line
-    number where the body starts.
+    A list written as text (`Read, Grep` or `Read Grep`) is split into entries, keeping `Bash(git log:*)` whole.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}, 1
-    tools: dict[str, list[str] | None] = {}
-    current: list[str] | None = None  # the list an indented `- A` line extends
-    for number, line in enumerate(lines[1:], start=2):
-        if line.strip() == "---":
-            return tools, number + 1
-        match = re.match(r"^([A-Za-z][\w-]*)\s*:\s*(.*)$", line)
-        if match:
-            key, value = match.group(1).casefold(), match.group(2).strip()
-            current = None
-            if key in {"tools", "allowed-tools"}:
-                current = (
-                    [item for item in (part.strip().strip("'\"") for part in value.strip("[]").split(",")) if item]
-                    if value
-                    else []
-                )
-                tools[key] = current
-        elif current is not None and re.match(r"^\s+-\s+", line):
-            current.append(line.strip()[1:].strip().strip("'\""))
-    return {}, 1
+    try:
+        found = frontmatter.split(text.splitlines())
+        if found is None:
+            return None, 1
+        document = frontmatter.Frontmatter(found[0])
+        value = document.value("tools") if "tools" in document else document.value("allowed-tools")
+    except frontmatter.FrontmatterError as exc:
+        raise RuntimeContractError(f"The review skill {skill} has frontmatter that cannot be read: {exc}") from exc
+    if isinstance(value, str):
+        value = TOOL_ENTRY.findall(value)
+    return value, found[1] + 1
 
 
-def frontmatter_value(text: str, key: str) -> str | None:
-    """A single `key: value` from a leading `---` block, unquoted, or None when the block or key is absent.
+def frontmatter_value(source: str, text: str, key: str) -> str | None:
+    """A single value from a reviewer file's frontmatter, or None when the frontmatter or the key is absent or empty.
 
-    A block with no closing `---` is no frontmatter, as `_frontmatter` reads it.
+    `source` names the file in the error raised when its frontmatter cannot be read.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return None
-    found: str | None = None
-    for line in lines[1:]:
-        if line.strip() == "---":
-            return found or None
-        match = re.match(r"^([A-Za-z][\w-]*)\s*:\s*(.*)$", line)
-        if match and found is None and match.group(1).casefold() == key.casefold():
-            found = match.group(2).strip().strip("'\"") or ""
-    return None
+    try:
+        return frontmatter.parse(text).string(key) or None
+    except frontmatter.FrontmatterError as exc:
+        raise RuntimeContractError(f"{source} has frontmatter that cannot be read: {exc}") from exc
 
 
 def _tool_name(spec: str) -> str:
@@ -146,8 +134,7 @@ def _names_agent(stem: str, line: str) -> bool:
 
 def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]) -> Inspection:
     """Whether a review skill starts subagents, from its tool list and its text, with the evidence."""
-    lists, body_start = _frontmatter(text)
-    tools = lists.get("tools", lists.get("allowed-tools"))
+    tools, body_start = _tool_grant(skill, text)
     names = {_tool_name(item) for item in tools} if tools is not None else None
     can_delegate = names is None or "*" in names or bool(names & DELEGATION_TOOLS)
     own = PurePosixPath(skill)
