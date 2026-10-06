@@ -6,6 +6,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -296,6 +298,21 @@ class HandshakeTests(unittest.TestCase):
         self.assertEqual(2, len(lines), lines)
         self.assertTrue(lines[0].startswith("CONFIG_ERROR .mcp.json Could not read or parse: "), lines)
         self.assertEqual("FAILED no MCP server named docs", lines[1])
+
+    def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
+        # A Windows pipe defaults to a legacy code page, and a server is reported by the name its config gives it.
+        self._write(".mcp.json", "mcpServers", {"docs → ✓": self._stdio("ok", cwd="tools")})
+        result = subprocess.run(
+            [sys.executable, "-B", str(Path(mcp_handshake.__file__).resolve()), "--root", str(self.root)],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(
+            ["HANDSHAKE_OK docs → ✓ source=.mcp.json protocol=2025-06-18 tools=2"],
+            result.stdout.decode("utf-8").splitlines(),
+        )
 
     def test_a_usage_error_exits_2(self) -> None:
         errors = io.StringIO()

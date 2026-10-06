@@ -91,7 +91,7 @@ Claude Code replaces `${CLAUDE_SKILL_DIR}` with the absolute directory of the sk
 - Claude Code replaces it only in a skill it loads, so a skill that needs another skill's procedure invokes that skill by name, as `update-pr-tracker` invokes `review-prs`; it never reads the other skill's `SKILL.md` or cites its step numbers or section titles, which break silently when that skill is renumbered or retitled.
 - A script that needs the user's Claude directory derives it, as `curate-agent-memory` does from `CLAUDE_CONFIG_DIR` or `~/.claude`, rather than taking a rendered `{{HOME}}`. Keep `{{HOME}}` for documentation that names another location, such as the user's skills root.
 
-Repository validation fails when a skill or agent names any skill through `{{HOME}}/.claude/skills/<skill>`, when a shell fence runs a script or a `SKILL.md` code span names its own file by a bare relative path, when a skill reaches `../<skill>` without declaring it in `skill_deps`, or when a skill reads another skill's `SKILL.md` or names it beside a step number or section title.
+Repository validation fails when a skill or agent names any skill through `{{HOME}}/.claude/skills/<skill>`, when a shell fence runs a script or a `SKILL.md` code span names its own file by a bare relative path, when a skill reaches `../<skill>` without declaring it in `skill_deps`, when a script puts another skill's `scripts` directory on `sys.path` without declaring that skill in `skill_deps`, or when a skill reads another skill's `SKILL.md` or names it beside a step number or section title.
 
 ### Script results
 
@@ -107,8 +107,9 @@ Every skill script reports the same way, so a `SKILL.md` reads each one alike:
 - An expected error, such as a missing file, a failed `git` or `gh` call, or a directory that is not a repository, becomes a `FAILED` line, never a traceback.
 - A script prints no JSON. Data the next step reads goes to a file whose path the script prints on one line (see "Working files"). A report the skill shows the user as it is, such as `github-activity-report`'s table, stays a report.
 - No other exit codes. A `SKILL.md` keys on the printed lines, not on which nonzero code came back.
+- Output is UTF-8. A Windows pipe defaults to a legacy code page that cannot encode every path or title a script prints, so every entry point starts its `if __name__ == "__main__":` block with `use_utf8_output()` from the hidden `skill-core` skill's `console.py`, declares `skill-core` in `skill_deps`, and imports it as "Validation" below shows. Pass `errors="replace"` for output that may hold surrogate-escaped paths, or `newline="\n"` for line endings that must not follow the platform. To test it, run the script with `PYTHONIOENCODING=cp1252` on output that code page cannot encode and compare the UTF-8 bytes it printed, not only its exit code: a traceback exits 1 too.
 
-A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py`, for example, answers Claude Code's hook protocol. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2.
+A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py`, for example, answers Claude Code's hook protocol. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2. It also fails when an entry point's `__main__` block does not start with `use_utf8_output()`, or when a script outside `skill-core` reconfigures a stream's encoding itself.
 
 ### Working files
 

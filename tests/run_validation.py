@@ -704,6 +704,74 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     return problems
 
 
+def script_dependency_problems(root: Path) -> list[str]:
+    """Report a skill script that puts another skill's scripts on sys.path without declaring it in skill_deps.
+
+    The deployer installs a skill's skill_deps closure beside it and nothing else, so an undeclared sibling is missing
+    wherever the skill is deployed without it, and the import fails at run time.
+    """
+    problems: list[str] = []
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        skill = metadata.stem
+        declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        for directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
+            for path in sorted((directory / "scripts").glob("*.py")):
+                if is_test_script(path):
+                    continue
+                for name in sorted(set(scripts_put_on_path(path.read_text(encoding="utf-8"))) - declared - {skill}):
+                    problems.append(
+                        f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
+                        f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
+                    )
+    return problems
+
+
+CONSOLE_CORE = "skill-core"
+CONSOLE_SETUP = "use_utf8_output"
+CONSOLE_DOC = '"Script results" in docs/adding-a-skill.md'
+
+
+def console_setup_problems(root: Path) -> list[str]:
+    """Report a skill entry point whose __main__ block does not start by calling skill-core's use_utf8_output(), and
+    a script that reconfigures a stream's encoding itself.
+
+    Skill output names paths and text the user wrote, which a Windows pipe's legacy code page cannot encode; one
+    function sets it up, so the copies cannot drift apart again.
+    """
+    problems: list[str] = []
+    for path in sorted((root / "skills").glob("**/scripts/*.py")):
+        if is_test_script(path) or path.parent.parent.name == CONSOLE_CORE:
+            continue
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "reconfigure"
+                and any(keyword.arg == "encoding" for keyword in node.keywords)
+            ):
+                problems.append(
+                    f"{name}:{node.lineno} reconfigures a stream itself; call {CONSOLE_SETUP}() from "
+                    f"{CONSOLE_CORE} instead; see {CONSOLE_DOC}"
+                )
+        for node in tree.body:
+            if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
+                continue
+            first = node.body[0]
+            if not (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Call)
+                and isinstance(first.value.func, ast.Name)
+                and first.value.func.id == CONSOLE_SETUP
+            ):
+                problems.append(
+                    f"{name}:{node.lineno} does not call {CONSOLE_SETUP}() first in its __main__ block; see "
+                    f"{CONSOLE_DOC}"
+                )
+    return problems
+
+
 def private_references(root: Path, files: list[Path]) -> list[str]:
     """Report each line naming a real user profile, a synced drive folder, or an internal GitHub organization."""
     found: list[str] = []
@@ -3192,6 +3260,32 @@ class RepositoryValidation(unittest.TestCase):
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
             )
 
+    def test_skill_command_policy_follows_dependencies_of_dependencies(self) -> None:
+        # code-review-core depends on skill-core, so a skill that reaches code-review-core reaches skill-core too.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            for skill, metadata in {
+                "base": {"tools": ["gh"], "selectable": False},
+                "middle": {"tools": ["gh"], "skill_deps": ["base"], "selectable": False},
+                "top": {"tools": ["gh"], "skill_deps": ["middle"]},
+                "idle": {"tools": ["gh"], "skill_deps": ["middle"]},
+            }.items():
+                (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
+                (root / "skills" / skill / "scripts").mkdir(parents=True)
+                (root / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
+            (root / "skills" / "base" / "scripts" / "client.py").write_text('run(["gh", "api"])\n', encoding="utf-8")
+            middle = root / "skills" / "middle" / "scripts"
+            (middle / "pipeline.py").write_text("import client\n", encoding="utf-8")
+            (middle / "store.py").write_text("import json\n", encoding="utf-8")
+            # top reaches base's client.py through middle's pipeline.py; idle reaches only middle's store.py.
+            (root / "skills" / "top" / "scripts" / "run.py").write_text("import pipeline\n", encoding="utf-8")
+            (root / "skills" / "idle" / "scripts" / "run.py").write_text("import store\n", encoding="utf-8")
+            self.assertEqual(
+                ["skill idle declares tool gh but never runs it"],
+                skill_command_problems(root, {"gh"}, {"git", "python"}),
+            )
+
     def test_deploy_metadata_is_in_the_canonical_format(self) -> None:
         self.assertEqual([], metadata_format_problems(REPOSITORY_ROOT))
 
@@ -3421,6 +3515,71 @@ class RepositoryValidation(unittest.TestCase):
                     "no module puts on sys.path",
                 ],
                 mypy_path_problems(root, sorted(root.rglob("*"))),
+            )
+
+    def test_skill_scripts_declare_each_sibling_they_put_on_sys_path(self) -> None:
+        self.assertEqual([], script_dependency_problems(REPOSITORY_ROOT))
+
+    def test_script_dependency_policy_detects_an_undeclared_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "deploy-meta").mkdir()
+            for skill, metadata in {"user": {"skill_deps": ["core"]}, "core": {"selectable": False}}.items():
+                (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
+                (root / "skills" / skill / "scripts").mkdir(parents=True)
+
+            def insert(skill: str) -> str:
+                return f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{skill}" / "scripts"))\n'
+
+            scripts = root / "skills" / "user" / "scripts"
+            (scripts / "user.py").write_text(insert("core") + insert("other"), encoding="utf-8")
+            # A regression suite runs from the source tree, where every skill is present.
+            (scripts / "test_user.py").write_text(insert("suite-only"), encoding="utf-8")
+            # A skill naming its own scripts directory needs no declaration.
+            (root / "skills" / "core" / "scripts" / "core.py").write_text(insert("core"), encoding="utf-8")
+            self.assertEqual(
+                [
+                    "skills/user/scripts/user.py puts other's scripts on sys.path without declaring other in "
+                    'skill_deps; see "Paths to a skill\'s own files" in docs/adding-a-skill.md'
+                ],
+                script_dependency_problems(root),
+            )
+
+    def test_skill_entry_points_set_up_the_console_through_skill_core(self) -> None:
+        self.assertEqual([], console_setup_problems(REPOSITORY_ROOT))
+
+    def test_console_setup_policy_detects_a_missing_late_or_copied_setup(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "skills" / "alpha" / "scripts"
+            scripts.mkdir(parents=True)
+            main = 'if __name__ == "__main__":\n'
+            files = {
+                "good.py": f"{main}    use_utf8_output()\n    raise SystemExit(main())\n",
+                "late.py": f"{main}    parse()\n    use_utf8_output()\n",
+                "missing.py": f"{main}    raise SystemExit(main())\n",
+                "copied.py": 'def main():\n    sys.stdout.reconfigure(encoding="utf-8")\n\n\n'
+                f"{main}    use_utf8_output()\n",
+                "library.py": "def helper():\n    return 1\n",
+                # Suites are not entry points of the skill.
+                "test_good.py": f"{main}    unittest.main()\n",
+            }
+            for name, text in files.items():
+                (scripts / name).write_text(text, encoding="utf-8")
+            core = root / "skills" / "skill-core" / "scripts"
+            core.mkdir(parents=True)
+            (core / "console.py").write_text('sys.stdout.reconfigure(encoding="utf-8")\n', encoding="utf-8")
+            doc = '"Script results" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/copied.py:2 reconfigures a stream itself; call use_utf8_output() from "
+                    f"skill-core instead; see {doc}",
+                    f"skills/alpha/scripts/late.py:1 does not call use_utf8_output() first in its __main__ block; "
+                    f"see {doc}",
+                    f"skills/alpha/scripts/missing.py:1 does not call use_utf8_output() first in its __main__ block; "
+                    f"see {doc}",
+                ],
+                console_setup_problems(root),
             )
 
     def test_repository_has_no_type_ignore_without_a_reason(self) -> None:

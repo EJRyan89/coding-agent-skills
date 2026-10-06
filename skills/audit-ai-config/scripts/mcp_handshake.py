@@ -33,13 +33,17 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import tomllib
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 from audit_ai_config import _parse_mcp_json
+from console import use_utf8_output
 
 PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
@@ -329,4 +333,5 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     raise SystemExit(main())

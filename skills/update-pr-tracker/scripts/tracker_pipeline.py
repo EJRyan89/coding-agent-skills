@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from console import use_utf8_output
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import ConfigurationError, default_config_path, load_config, resolve_repositories
@@ -335,8 +337,5 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    # Output names configured paths; a Windows pipe's legacy code page cannot encode every character they hold.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+    use_utf8_output()
     raise SystemExit(main())

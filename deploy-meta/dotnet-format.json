@@ -1,6 +1,7 @@
 {
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
+    "skill_deps": ["skill-core"],
     "tools": ["dotnet-format"],
     "optional_tools": ["gh"],
     "opt_in": true

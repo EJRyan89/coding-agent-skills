@@ -1,5 +1,6 @@
 {
     "required_vars": ["REPOS_ROOT"],
     "shared_deps": ["runtime-compatibility.md"],
+    "skill_deps": ["skill-core"],
     "tools": ["gh"]
 }

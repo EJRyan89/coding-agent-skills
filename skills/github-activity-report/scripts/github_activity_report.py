@@ -15,8 +15,13 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 
 SEARCH_PAGE_SIZE = 100
 SEARCH_RESULT_CAP = 1000
@@ -627,4 +632,5 @@ def main(
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     sys.exit(main())

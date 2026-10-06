@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -121,6 +122,22 @@ class ReviewGuardTests(unittest.TestCase):
         allowed = {**event, "tool_input": {"file_path": str(self.run / "source" / "app" / "x.cs")}}
         self.assertEqual("", hook(json.dumps(allowed)), "an allowed call prints nothing")
         self.assertEqual("deny", json.loads(hook("not json"))["hookSpecificOutput"]["permissionDecision"])
+
+    def test_a_decision_survives_a_console_that_cannot_encode_it(self) -> None:
+        # A Windows pipe defaults to a legacy code page, and a deny reason names the path the reviewer asked for.
+        outside = self.root / "repo → ✓" / "x.cs"
+        event = {"tool_name": "Read", "tool_input": {"file_path": str(outside)}, "cwd": str(self.outside_cwd)}
+        result = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_guard.py")],
+            input=json.dumps(event).encode("utf-8"),
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+        decision = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]
+        self.assertEqual("deny", decision["permissionDecision"])
+        self.assertIn(f"{outside} is outside it", decision["permissionDecisionReason"])
 
 
 if __name__ == "__main__":

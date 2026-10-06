@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import subprocess
 import sys
 import unittest
 from collections.abc import Callable
@@ -117,6 +119,7 @@ class RenderedExecutableTests(DeployerTestCase):
             "audit-ai-config/scripts/audit_ai_config.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
             "repo-cleanup/scripts/repo_cleanup.py",
+            "skill-core/scripts/console.py",
             "update-coding-agent-skills/scripts/update.sh",
         ):
             with self.subTest(relative=relative):
@@ -142,6 +145,49 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertNotIn("runtime-compatibility", self.skill_text("review-prs"), "Claude runs skip the shared read")
         owned = self.owned("skills", source_id)
         self.assertEqual(sorted(path.stem for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")), sorted(owned))
+        # skill-core is a hidden dependency: installed beside its dependents, with no adapter for any runtime.
+        self.assertFalse((self.agents_dir / "skill-core").exists())
+        # Every entry point finds skill-core where the deployer put it, and prints under a legacy code page.
+        entry_points = sorted(
+            path.relative_to(REPOSITORY_ROOT / "skills")
+            for path in (REPOSITORY_ROOT / "skills").glob("*/scripts/*.py")
+            if not path.name.startswith("test_")
+            and re.search(r'^if __name__ == "__main__":', path.read_text(encoding="utf-8"), re.MULTILINE)
+        )
+        self.assertEqual(15, len(entry_points), entry_points)
+        for relative in entry_points:
+            with self.subTest(entry_point=relative.as_posix()):
+                hook = relative.name == "review_guard.py"  # a hook reads its event on stdin and takes no options
+                result = subprocess.run(
+                    [sys.executable, "-B", str(self.skills_dir / relative), *([] if hook else ["--help"])],
+                    input=b"{}" if hook else b"",
+                    capture_output=True,
+                    env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+
+    def test_an_installation_without_skill_core_adds_it_on_update(self) -> None:
+        # The installations before #27 have no skill-core; updating one installs it with the skills that import it.
+        source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
+        self.make_config(source_id)
+        repository = self.repository_source()
+        core = self.root / "skill-core"
+        shutil.move(repository / "skills" / "skill-core", core)
+        metadata = {path: path.read_bytes() for path in (repository / "deploy-meta").glob("*.json")}
+        (repository / "deploy-meta" / "skill-core.json").unlink()
+        for path, text in metadata.items():
+            document = json.loads(text)
+            if "skill-core" in document.get("skill_deps", []):
+                document["skill_deps"].remove("skill-core")
+                path.write_text(json.dumps(document), encoding="utf-8")
+        self.deploy_from(repository, "--all", "--include", "dotnet-format")
+        self.assertFalse((self.skills_dir / "skill-core").exists())
+        shutil.move(core, repository / "skills" / "skill-core")
+        for path, text in metadata.items():
+            path.write_bytes(text)
+        groups = self.report_groups(self.deploy_from(repository, "--all", "--dry-run").output, "DRY RUN")
+        self.assertEqual(["skill-core"], groups.get("FRESH INSTALL"), groups)
 
     def test_shellcheck_failure_in_script_blocks_deployment(self) -> None:
         self.make_source_json()

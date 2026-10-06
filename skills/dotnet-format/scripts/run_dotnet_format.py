@@ -33,6 +33,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
+
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
 ISSUE = re.compile(
     r"^\s*(?P<path>.+?)\((?P<line>\d+),(?P<column>\d+)\): (?P<severity>error|warning|info|hidden) "
@@ -220,8 +224,6 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
         help=f"seconds to wait for dotnet-format (default: {DEFAULT_TIMEOUT_SECONDS})",
     )
     arguments = parser.parse_args(argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
         findings = run(
             arguments.mode,
@@ -240,4 +242,5 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
 
 
 if __name__ == "__main__":
+    use_utf8_output(errors="replace")
     sys.exit(main())
