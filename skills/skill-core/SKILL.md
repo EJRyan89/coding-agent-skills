@@ -7,4 +7,4 @@ user-invocable: false
 
 # Skill core
 
-This is a non-selectable dependency. Its `${CLAUDE_SKILL_DIR}/scripts/` folder holds Python modules that other skills' scripts import, such as `console.py`, which sets UTF-8 output for an entry point. It has no workflow to run.
+This is a non-selectable dependency. Its `${CLAUDE_SKILL_DIR}/scripts/` folder holds Python modules that other skills' scripts import, such as `console.py`, which sets UTF-8 output for an entry point, and `frontmatter.py`, which reads a SKILL.md or agent definition's frontmatter. It has no workflow to run.

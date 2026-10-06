@@ -2532,11 +2532,19 @@ class RepositoryValidation(unittest.TestCase):
                 private_references(root, [root / name for name in samples]),
             )
 
-    def test_analyze_skill_cost_carries_the_shared_frontmatter_reader_unchanged(self) -> None:
-        # A deployed skill cannot import the deployer, so analyze-skill-cost ships its own copy of the reader.
+    def test_skill_core_carries_the_shared_frontmatter_reader_unchanged(self) -> None:
+        # A deployed skill cannot import the deployer, so skill-core ships the one copy of the reader skills import.
         shared = (REPOSITORY_ROOT / "deployer" / "frontmatter.py").read_bytes()
-        copy = (SKILLS_ROOT / "analyze-skill-cost" / "scripts" / "frontmatter.py").read_bytes()
-        self.assertEqual(shared, copy, "Copy deployer/frontmatter.py to skills/analyze-skill-cost/scripts/ unchanged.")
+        copy = SKILLS_ROOT / "skill-core" / "scripts" / "frontmatter.py"
+        self.assertEqual(
+            shared, copy.read_bytes(), "Copy deployer/frontmatter.py to skills/skill-core/scripts/ unchanged."
+        )
+        # The copy sanctions its own duplication, so a second copy elsewhere would pass the duplication policy.
+        self.assertEqual(
+            [copy],
+            [path for path in sorted(SKILLS_ROOT.rglob("*.py")) if path.read_bytes() == shared],
+            "Import frontmatter from skill-core instead of carrying another copy.",
+        )
 
     def test_python_suites_run_their_tests_when_executed(self) -> None:
         # Every suite runs as `python <file>`, so one without a __main__ entry point defines its tests, runs none,

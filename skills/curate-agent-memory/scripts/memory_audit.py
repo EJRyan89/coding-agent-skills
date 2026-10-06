@@ -173,6 +173,8 @@ class Memory:
     overlaps: list[Overlap] = field(default_factory=list)
 
 
+# Kept instead of skill-core's frontmatter.py, which cannot read the nested metadata type and refuses memories this
+# reads, recorded for decision in https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting."""
     lines = text.splitlines()

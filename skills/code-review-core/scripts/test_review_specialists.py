@@ -129,6 +129,16 @@ class ManifestTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeContractError, "invalid or duplicated"):
             validate_adapter_manifest(reserved)
 
+    def test_profile_model_reads_frontmatter_the_shared_reader_would_refuse_or_read_otherwise(self) -> None:
+        # Pinned while review_reviewers.frontmatter_value is kept instead of skill-core's frontmatter.py.
+        note = (
+            "db.md asks for model 'opus # strong', which is not one of fable, haiku, opus, sonnet; "
+            "its reviewer uses the session's model"
+        )
+        self.assertEqual((None, note), rs.profile_model("db.md", "---\nmodel: opus # strong\n---\nReview.\n"))
+        self.assertEqual(("opus", None), rs.profile_model("db.md", "---\njust prose\nmodel: Opus\n---\nReview.\n"))
+        self.assertEqual((None, None), rs.profile_model("db.md", "---\nmodel: opus\n"), "unclosed is no frontmatter")
+
     def test_uncovered_is_optional_and_stays_absent_unless_given(self) -> None:
         self.assertNotIn("uncovered", validate_adapter_manifest(manifest()))
         for value in ("review", "ignore"):
