@@ -337,7 +337,7 @@ class FileTests(unittest.TestCase):
         self.assertEqual((1, [["FAILED [Errno 13] Permission denied: 'Fixable.cs'"]]), (status, lines))
 
     def test_usage_errors_exit_2_with_usage_on_stderr(self) -> None:
-        cases = (
+        cases: tuple[list[str], ...] = (
             [],
             ["check", "--file-list", "f"],
             ["config", "--repo-root", ".", "--file-list", "f"],
