@@ -36,7 +36,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 
 - No personal defaults, hard-coded organizations or repositories, implicit organization-wide queries, or repository-short-name archive paths.
 - Mutable watermarks live in per-repository state, never in the user configuration file.
-- Results are structured JSON that the core validates as [Formats](#formats) states; nothing is scraped from Markdown reports or ledgers.
+- Results are structured JSON that the core validates as [Formats](#formats) states; nothing is scraped from Markdown reports or ledgers. An unknown future schema or protocol version fails closed.
 - Executable logic lives in tested `scripts/` files, not in skill prose.
 - Repository reviewer sources never use pull-request-head instructions, mutable working-tree substitutions, `permissionMode: bypassPermissions`, or a fallback to whichever repository happens to be the current directory.
 - Token usage and cost are never estimated or priced. A review record carries only the `usage` object a reviewer adapter returns, or null.
