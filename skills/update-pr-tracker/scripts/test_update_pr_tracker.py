@@ -174,10 +174,22 @@ class LayoutTests(unittest.TestCase):
             return {"open": {"MUST_FIX": must, "SHOULD_FIX": should, "SUGGESTION": suggestion},
                     "addressed": addressed, "since": since, "version": version}
 
+        def since(version: int, new: int = 0, addressed: int = 0) -> dict:
+            return {"version": version, "new": new, "addressed": addressed}
+
+        open_since_v1 = ai("CHANGES_REQUESTED", suggestion=1) | {"ledger": ledger(1, 0, 1, addressed=3, since=1)}
         for review, expected in (
-            (ai("CHANGES_REQUESTED", suggestion=1) | {"ledger": ledger(1, 0, 1, addressed=3, since=1)},
-             "1M 1S open since v1 · 3 addressed · v3"),
-            (ai("APPROVED") | {"ledger": ledger(addressed=2)}, "none open · 2 addressed · v3"),
+            (open_since_v1 | {"since_review": since(1, 1, 1), "flagged": 0},
+             "1M 1S open · 1 new, 1 addressed since your review"),
+            (open_since_v1 | {"since_review": since(2, addressed=2), "flagged": 1},
+             "1M 1S open (1 flagged) · 2 addressed since your review"),
+            (open_since_v1 | {"since_review": since(0, 2), "flagged": 0}, "1M 1S open · 2 new since your review"),
+            (open_since_v1 | {"since_review": since(3), "flagged": 0}, "1M 1S open · nothing new since your review"),
+            (open_since_v1 | {"since_review": None, "flagged": 0}, "1M 1S open · v1–v3"),
+            (open_since_v1, "1M 1S open · v1–v3"),  # collected before since_review existed
+            (ai("APPROVED") | {"ledger": ledger(addressed=2), "since_review": None, "flagged": 0}, "none open · v3"),
+            (ai("APPROVED") | {"ledger": ledger(addressed=2), "since_review": since(1, addressed=2), "flagged": 0},
+             "none open · 2 addressed since your review"),
             (ai("CHANGES_REQUESTED", must=1) | {"ledger": ledger(1, since=1, version=1)}, "1M open · v1"),
             (ai("APPROVED", should=2) | {"ledger": None}, "2H"),
         ):
@@ -190,13 +202,25 @@ class LayoutTests(unittest.TestCase):
     def test_presentation_fields_are_validated(self) -> None:
         good = {"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 0}, "addressed": 0, "since": 1, "version": 2}
         validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {"ledger": good}}])
+        validate_items([item() | {"ai_review": ai("CHANGES_REQUESTED") | {
+            "ledger": good, "flagged": 1, "since_review": {"version": 0, "new": 1, "addressed": 0}}}])
         for field, value in (("author_name", ""), ("review_decision", "MERGED"), ("ai_review", {"verdict": "OK"}),
                              ("ai_review", ai("APPROVED") | {"counts": {"MUST_FIX": -1, "SHOULD_FIX": 0, "SUGGESTION": 0}}),
                              ("ai_review", ai("APPROVED") | {"ledger": good | {"addressed": -1}}),
                              ("ai_review", ai("APPROVED") | {"ledger": good | {"since": 3}}),
                              ("ai_review", ai("APPROVED") | {"ledger": good | {"since": None}}),
                              ("ai_review", ai("APPROVED") | {"ledger": good | {"open": {"MUST_FIX": 1}}}),
-                             ("ai_review", ai("APPROVED") | {"ledger": "1M"})):
+                             ("ai_review", ai("APPROVED") | {"ledger": "1M"}),
+                             ("ai_review", ai("APPROVED") | {"ledger": None, "since_review": None, "flagged": 0}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "flagged": 0}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "since_review": None, "flagged": 2}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "since_review": None, "flagged": True}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "flagged": 0,
+                                                             "since_review": {"version": 3, "new": 0, "addressed": 0}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "flagged": 0,
+                                                             "since_review": {"version": 1, "new": -1, "addressed": 0}}),
+                             ("ai_review", ai("APPROVED") | {"ledger": good, "flagged": 0,
+                                                             "since_review": {"version": 1, "new": 0}})):
             bad = item()
             bad[field] = value
             with self.subTest(field=field), self.assertRaises(TrackerError):

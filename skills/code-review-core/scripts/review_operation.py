@@ -178,6 +178,8 @@ def commit_adapter_result(
     patches: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
     uncovered_files: list[str] | None = None,
+    model_names: dict[str, str] | None = None,
+    flags: list[dict[str, Any]] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     request = read_json(request_path)
     result_value = read_json(result_path)
@@ -237,6 +239,8 @@ def commit_adapter_result(
                 number,
                 record,
                 expected_latest_version=local_current,
+                model_names=model_names,
+                flags=flags or [],
             )
     return commit_record(
         archive_root,
@@ -244,6 +248,8 @@ def commit_adapter_result(
         number,
         record,
         expected_latest_version=current,
+        model_names=model_names,
+        flags=flags or [],
     )
 
 

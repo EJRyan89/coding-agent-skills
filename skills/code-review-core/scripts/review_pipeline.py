@@ -46,6 +46,7 @@ from review_config import (
     resolve_repositories,
     validate_repository_identity,
 )
+from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
 from review_hosts import (
     HostSuperseded,
@@ -150,6 +151,7 @@ EXPECTED_ERRORS = (
     ArchiveError,
     PersistenceError,
     StateError,
+    FlagError,
     OSError,
 )
 
@@ -1043,6 +1045,8 @@ def finalize(run: Path) -> dict[str, Any]:
         patches=state.get("patches"),  # absent from runs prepared before patches were recorded
         scope=state.get("scope"),
         uncovered_files=state.get("uncovered_files"),  # absent from runs prepared before they were recorded
+        model_names=config["model_names"],
+        flags=load_store(default_flags_path())["flags"],
     )
     shutil.rmtree(run, ignore_errors=True)
     return {

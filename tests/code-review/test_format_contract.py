@@ -447,6 +447,7 @@ def config_fixtures() -> list[dict[str, Any]]:
         "operation_repository_sets": {"update-pr-tracker": "tracked"},
         "reviewer_effort": "high",
         "re_review_scope": {"full_share": 0.5, "full_lines": 1000},
+        "model_names": {"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc": "Opus 5.5"},
         "dashboard": {"start_marker": "<!-- tracker:start -->", "end_marker": "<!-- tracker:end -->",
                       "status_overrides": {"example/one#12": "blocked on design"},
                       "author_names": {"octocat": "Mona Lisa"}},

@@ -66,6 +66,20 @@ def contribution_fingerprint(comparison: object, modes: dict[str, str] | None) -
     return tuple(sorted(entries))
 
 
+def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str) -> bool | None:
+    """Whether commit `earlier` is `later` or one of its ancestors; None when GitHub cannot say, such as for a commit
+    a force-push removed. Failures that invalidate the whole run are raised."""
+    try:
+        comparison = client.api_json(f"repos/{repository}/compare/{earlier}...{later}?per_page=1")
+    except GitHubError as exc:
+        if exc.kind in FATAL_ERROR_KINDS:
+            raise
+        return None
+    status = comparison.get("status") if isinstance(comparison, dict) else None
+    return {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status) \
+        if isinstance(status, str) else None
+
+
 class ChangeDetector:
     def __init__(self, client: GitHubClient) -> None:
         self.client = client
