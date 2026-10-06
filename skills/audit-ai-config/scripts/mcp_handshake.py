@@ -28,6 +28,7 @@ server failed, or the run printed FAILED; 2 for a usage error.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import queue
@@ -125,6 +126,13 @@ class Session:
             encoding="utf-8",
             errors="replace",
         )
+        stdin, stdout, stderr = self.process.stdin, self.process.stdout, self.process.stderr
+        # All three were requested as pipes above; a server started without them cannot be talked to.
+        if stdin is None or stdout is None or stderr is None:
+            self.process.kill()
+            self.process.wait()
+            raise RuntimeError("could not open the server's pipes")
+        self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.stderr_tail: list[str] = []
         self.pumps = [
@@ -135,20 +143,17 @@ class Session:
             pump.start()
 
     def _pump_stdout(self) -> None:
-        assert self.process.stdout is not None
-        for line in self.process.stdout:
+        for line in self.stdout:
             self.lines.put(line)
         self.lines.put(None)
 
     def _pump_stderr(self) -> None:
-        assert self.process.stderr is not None
-        for line in self.process.stderr:
+        for line in self.stderr:
             self.stderr_tail = (self.stderr_tail + [line.strip()])[-3:]
 
     def send(self, message: dict[str, Any]) -> None:
-        assert self.process.stdin is not None
-        self.process.stdin.write(json.dumps(message) + "\n")
-        self.process.stdin.flush()
+        self.stdin.write(json.dumps(message) + "\n")
+        self.stdin.flush()
 
     def response(self, request_id: int, deadline: float) -> dict[str, Any]:
         while True:
@@ -189,11 +194,8 @@ class Session:
         return f"server exited before responding{detail}"
 
     def close(self) -> None:
-        try:
-            if self.process.stdin is not None:
-                self.process.stdin.close()
-        except OSError:
-            pass
+        with contextlib.suppress(OSError):
+            self.stdin.close()
         try:
             self.process.wait(timeout=2)
         except subprocess.TimeoutExpired:
@@ -201,9 +203,8 @@ class Session:
             self.process.wait()
         for pump in self.pumps:
             pump.join(timeout=2)
-        for stream in (self.process.stdout, self.process.stderr):
-            if stream is not None:
-                stream.close()
+        self.stdout.close()
+        self.stderr.close()
 
 
 def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:

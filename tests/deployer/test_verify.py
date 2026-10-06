@@ -227,6 +227,20 @@ class ConverseTests(DeployerTestCase):
         with self.assertRaisesRegex(ListingError, "^cannot start it: "):
             self.talk([str(self.root / "missing.exe")])
 
+    def test_a_program_started_without_its_pipes_is_stopped_and_a_listing_error(self) -> None:
+        for missing in ("stdin", "stdout"):
+            with self.subTest(missing=missing):
+                process = mock.MagicMock(spec=subprocess.Popen)
+                for pipe in ("stdin", "stdout"):
+                    setattr(process, pipe, None if pipe == missing else mock.MagicMock())
+                with (
+                    mock.patch.object(discovery.subprocess, "Popen", return_value=process),
+                    self.assertRaisesRegex(ListingError, r"^its pipes did not open$"),
+                ):
+                    self.talk([sys.executable], ['{"id": 0}'], answered=discovery.codex_answered)
+                process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with()
+
 
 class VerifyCommandTests(DeployerTestCase):
     def setUp(self) -> None:

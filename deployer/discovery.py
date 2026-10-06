@@ -74,9 +74,12 @@ def converse(
             )
         except OSError as exc:
             raise ListingError(f"cannot start it: {exc}") from exc
-        # Both are pipes, as requested above.
-        assert process.stdin is not None and process.stdout is not None
         stdin, stdout = process.stdin, process.stdout
+        # Both were requested as pipes above; a program started without them cannot be asked anything.
+        if stdin is None or stdout is None:
+            process.kill()
+            process.wait()
+            raise ListingError("its pipes did not open")
 
         def read() -> None:
             with stdout:

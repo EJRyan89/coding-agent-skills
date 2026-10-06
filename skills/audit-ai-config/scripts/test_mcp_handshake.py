@@ -221,6 +221,20 @@ class HandshakeTests(unittest.TestCase):
             self._run(),
         )
 
+    def test_a_server_started_without_its_pipes_is_stopped_and_fails(self) -> None:
+        for missing in ("stdin", "stdout", "stderr"):
+            with self.subTest(missing=missing):
+                process = mock.MagicMock(spec=subprocess.Popen)
+                for pipe in ("stdin", "stdout", "stderr"):
+                    setattr(process, pipe, None if pipe == missing else mock.MagicMock())
+                with (
+                    mock.patch.object(mcp_handshake.subprocess, "Popen", return_value=process),
+                    self.assertRaisesRegex(RuntimeError, r"^could not open the server's pipes$"),
+                ):
+                    mcp_handshake.handshake(self.root, self._stdio("ok"), 5)
+                process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with()
+
     def test_unresponsive_server_times_out(self) -> None:
         self._write(".mcp.json", "mcpServers", {"slow": self._stdio("silent")})
         output = io.StringIO()
