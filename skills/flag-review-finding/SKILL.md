@@ -9,7 +9,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 Use the configured code-review flag store through the commands below; do not edit the store or a Markdown ledger. Each command prints JSON, and a failure exits nonzero with the reason.
 
-Add a flag with a category and rationale. Associate it with a pull request and finding when it concerns one, using the full `owner/repo` identity, the finding ID from the review report (such as `F002`), and that report's review version (the `v<N>` in its **Mode** row under Review Details). When neither the user nor the conversation gives them, read the report. Finding IDs restart at `F001` in every review, so a finding needs its review version, and the command refuses `--finding` without `--review-version`. `review-insights` can resolve only flags that name a finding:
+Add a flag with a category and rationale. Associate it with a pull request and finding when it concerns one, using the full `owner/repo` identity and the finding's label in the review report, such as `v2 F002`: review version `2` and finding `F002`. A re-review report shows a finding carried from an earlier review under that review's label, so take the version from the label, never from the report's **Mode** row. When neither the user nor the conversation gives them, read the report. Finding IDs restart at `F001` in every review, so the command refuses `--finding` without `--review-version`. `review-insights` can resolve only flags that name a finding:
 
 ```bash
 python -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" add "<category>" "<rationale>" --repository "<owner/repo>" --pull "<number>" --review-version "<version>" --finding "<finding id>"

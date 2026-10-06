@@ -17,9 +17,11 @@ CORE_SCRIPTS = SCRIPT_DIRECTORY.parents[1] / "code-review-core" / "scripts"
 sys.path.insert(0, str(SCRIPT_DIRECTORY))
 sys.path.insert(0, str(CORE_SCRIPTS))
 
+import review_fixture  # noqa: E402
 import tracker_pipeline as tp  # noqa: E402
 from review_archive import commit_record  # noqa: E402
 from review_config import write_config  # noqa: E402
+from review_flags import add_flag  # noqa: E402
 from review_github import CommandResult, GitHubClient  # noqa: E402
 from review_records import build_record, validate_adapter_result  # noqa: E402
 
@@ -61,6 +63,7 @@ class FakeGitHub:
     def __init__(self) -> None:
         self.pages: dict[str, list[str]] = {}
         self.failures: dict[str, tuple[str, str]] = {}
+        self.comparisons: dict[tuple[str, str], str] = {}
         self.calls: list[list[str]] = []
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
@@ -76,6 +79,12 @@ class FakeGitHub:
             return CommandResult(0, pages[index], "")
         if arguments[-1] == "user":
             return CommandResult(0, json.dumps({"login": "reviewer"}), "")
+        if arguments[-1].endswith("?per_page=1"):
+            # An ancestry comparison between two commits; one not served cannot be compared.
+            commits = arguments[-1].removesuffix("?per_page=1").rsplit("/compare/", 1)[1]
+            status = self.comparisons.get(tuple(commits.split("...")))
+            if status:
+                return CommandResult(0, json.dumps({"status": status}), "")
         # Comparisons and trees are unavailable, so any changed head is "unknown" to the change detector.
         return CommandResult(1, "", "HTTP 404: Not Found")
 
@@ -109,7 +118,8 @@ class TrackerPipelineFixture(unittest.TestCase):
         self.dashboard.write_text(f"# Mine\n{START}\nold rows\n{END}\nNotes stay.\n", encoding="utf-8")
         self.input = self.root / "work" / "tracker input.json"
         self.github = FakeGitHub()
-        self.services = tp.Services(github=GitHubClient(runner=self.github))
+        self.flags_path = self.root / "flags" / "flags.json"
+        self.services = tp.Services(github=GitHubClient(runner=self.github), flags_path=lambda: self.flags_path)
         self.configure()
 
     def configure(self, *, login: str | None = "reviewer", overrides: dict[str, str] | None = None,
@@ -289,43 +299,59 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn(f"vscode://file/{self.config_path.as_posix().replace(' ', '%20')}", content)
         self.assertIn("### My PRs (1)", content)
 
-    def test_the_findings_cell_shows_the_ledger_of_a_three_version_review(self) -> None:
-        policy = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
-        ledger: list[dict[str, Any]] = []
-        for version, findings, dispositions in (
-            (1, [("leak", "MUST_FIX"), ("name", "SHOULD_FIX")], []),
-            (2, [], [("v1:F001", "still_present"), ("v1:F002", "addressed")]),
-            (3, [("style", "SUGGESTION")], [("v1:F001", "still_present")]),
-        ):
-            request = {
-                "repository": "example/one", "pull_number": 2, "pull_url": "https://github.com/example/one/pull/2",
-                "title": "Change 2", "base_ref": "main", "base_sha": "d" * 40, "head_sha": OLD_HEAD,
-                "mode": "initial" if version == 1 else "re-review",
-                "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
-            }
-            result = {
-                "protocol_version": 1, "repository": "example/one", "pull_number": 2, "head_sha": OLD_HEAD,
-                "summary": "Fixture", "reviewer": "fixture", "status": "complete", "usage": None,
-                "findings": [{"candidate_key": key, "severity": severity, "category": "Correctness", "path": "a.py",
-                              "line": index, "body": "Fix.", "evidence": "Evidence.", "source": "fixture"}
-                             for index, (key, severity) in enumerate(findings, start=1)],
-                "prior_dispositions": [{"finding_id": identifier, "disposition": value, "rationale": "Checked."}
-                                       for identifier, value in dispositions],
-            }
-            record = build_record(request, result, version=version, policy=policy, prior_ledger=ledger)
-            commit_record(self.archive, "example/one", 2, record,
-                          expected_latest_version=None if version == 1 else version - 1)
-            ledger = record["ledger"]
-        self.serve_default_pages()
+    def collect_fixture(self, reviews: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+        """Collect and render example/one#12 of the three-version fixture with the configured user's reviews."""
+        node = pull_node(12, url="https://github.com/example/one/pull/12", headRefOid=review_fixture.HEADS[3],
+                         reviews={"nodes": reviews})
+        self.github.pages["example/one"] = [page([node])]
+        self.github.pages["example/two"] = [page([])]
         code, _, err = self.run_main("collect", "--output", str(self.input))
         self.assertEqual(0, code, err)
-        second = next(item for item in json.loads(self.input.read_text(encoding="utf-8")) if item["number"] == 2)
-        self.assertEqual({"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1}, "addressed": 1, "since": 1,
-                          "version": 3}, second["ai_review"]["ledger"])
+        item = next(item for item in json.loads(self.input.read_text(encoding="utf-8")) if item["number"] == 12)
         code, _, err = self.run_main("update", "--input", str(self.input))
         self.assertEqual(0, code, err)
-        self.assertIn("| Changes Requested | 1M 1S open since v1 · 1 addressed · v3 | [AI Review]",
-                      self.dashboard.read_text(encoding="utf-8"))
+        row = next(line for line in self.dashboard.read_text(encoding="utf-8").splitlines() if "#12 " in line)
+        return item, row
+
+    def compares(self) -> list[list[str]]:
+        return [call for call in self.github.calls if call[-1].endswith("?per_page=1")]
+
+    def test_the_findings_cell_shows_open_findings_and_what_moved_since_the_users_review(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        heads = review_fixture.HEADS
+        between = "e" * 40  # a commit after version 2's head and before version 3's
+        self.github.comparisons = {(heads[3], between): "behind", (heads[2], between): "ahead",
+                                   (heads[3], OLD_HEAD): "behind", (heads[2], OLD_HEAD): "behind",
+                                   (heads[1], OLD_HEAD): "behind"}
+        for sha, since, cell, compared in (
+            (heads[1], {"version": 1, "new": 1, "addressed": 1}, "1M 1S open · 1 new, 1 addressed since your review",
+             0),
+            (between, {"version": 2, "new": 1, "addressed": 0}, "1M 1S open · 1 new since your review", 2),
+            (OLD_HEAD, {"version": 0, "new": 2, "addressed": 0}, "1M 1S open · 2 new since your review", 3),
+            (heads[3], {"version": 3, "new": 0, "addressed": 0}, "1M 1S open · nothing new since your review", 0),
+            (USER_REVIEWED, None, "1M 1S open · v1–v3", 1),  # GitHub cannot compare it
+            (None, None, "1M 1S open · v1–v3", 0),
+        ):
+            with self.subTest(sha=sha):
+                self.github.calls.clear()
+                reviews = [{"state": "COMMENTED", "commit": {"oid": sha}}] if sha else []
+                item, row = self.collect_fixture(reviews)
+                self.assertEqual({"open": {"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 1}, "addressed": 1,
+                                  "since": 1, "version": 3}, item["ai_review"]["ledger"])
+                self.assertEqual((since, 0), (item["ai_review"]["since_review"], item["ai_review"]["flagged"]))
+                self.assertIn(f"| Changes Requested | {cell} | [AI Review]", row)
+                self.assertEqual(compared, len(self.compares()), "an exact head match needs no comparison")
+
+    def test_the_findings_cell_counts_flagged_open_findings(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        add_flag(self.flags_path, category="noise", body="Handled by the caller.", repository="example/one",
+                 pull_number=12, review_version=3, finding_id="F001")
+        item, row = self.collect_fixture([])
+        self.assertEqual(1, item["ai_review"]["flagged"])
+        self.assertIn("| 1M 1S open (1 flagged) · v1–v3 |", row)
+        self.flags_path.write_text("{}", encoding="utf-8")
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual((2, "FAILED Flag store shape is invalid\n"), (code, err))
 
     def test_remove_drops_one_row_and_no_candidates_without_the_flag(self) -> None:
         self.collect()

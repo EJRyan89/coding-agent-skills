@@ -13,6 +13,7 @@ from pr_change import (
     UNCHANGED,
     UNKNOWN,
     ChangeDetector,
+    at_or_before,
     contribution_fingerprint,
     tree_modes,
 )
@@ -153,6 +154,38 @@ class ChangeDetectorTests(unittest.TestCase):
             ],
             client.calls,
         )
+
+
+class AncestryTests(unittest.TestCase):
+    class Client:
+        def __init__(self, answer: object) -> None:
+            self.answer = answer
+            self.calls: list[str] = []
+
+        def api_json(self, endpoint: str) -> object:
+            self.calls.append(endpoint)
+            if isinstance(self.answer, GitHubError):
+                raise self.answer
+            return self.answer
+
+    def test_a_commit_is_at_or_before_another_when_the_other_is_identical_or_ahead(self) -> None:
+        for answer, expected in (
+            ({"status": "identical"}, True),
+            ({"status": "ahead"}, True),
+            ({"status": "behind"}, False),
+            ({"status": "diverged"}, False),
+            ({"status": "unexpected"}, None),
+            ([], None),
+            (GitHubError("HTTP 404: Not Found", kind="not_found"), None),
+        ):
+            client = self.Client(answer)
+            with self.subTest(answer=answer):
+                self.assertIs(expected, at_or_before(client, "owner/repo", REVIEWED, HEAD))
+                self.assertEqual([f"repos/owner/repo/compare/{REVIEWED}...{HEAD}?per_page=1"], client.calls)
+
+    def test_a_fatal_failure_stops_the_run(self) -> None:
+        with self.assertRaises(GitHubError):
+            at_or_before(self.Client(GitHubError("rate limit", kind="rate_limit")), "owner/repo", REVIEWED, HEAD)
 
 
 if __name__ == "__main__":

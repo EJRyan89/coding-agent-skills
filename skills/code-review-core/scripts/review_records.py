@@ -411,6 +411,25 @@ def ledger_summary(record: dict[str, Any]) -> dict[str, Any] | None:
     return {"open": opened, "addressed": addressed, "since": since, "version": record["review"]["version"]}
 
 
+def flagged_entries(ledger: Iterable[dict[str, Any]], flags: Iterable[dict[str, Any]], repository: str,
+                    number: int) -> dict[str, list[dict[str, Any]]]:
+    """The flags naming each ledger entry's findings, keyed by ledger ID: a flag names the finding where the entry
+    first appeared or one of its repeats, by review version and finding ID. A resolved flag still counts, because
+    resolving one records that the improvement was handled, not that the finding stood."""
+    holders: dict[tuple[int, str], str] = {}
+    for entry in ledger:
+        for occurrence in ({"version": entry["version"], "id": entry["id"]}, *entry["repeats"]):
+            holders[(occurrence["version"], occurrence["id"])] = ledger_id(entry["version"], entry["id"])
+    flagged: dict[str, list[dict[str, Any]]] = {}
+    for flag in flags:
+        if (flag["repository"] or "").lower() != repository.lower() or flag["pull_number"] != number:
+            continue
+        holder = holders.get((flag["review_version"], flag["finding_id"]))
+        if holder is not None:
+            flagged.setdefault(holder, []).append(flag)
+    return flagged
+
+
 def calculate_verdict(
     ledger: Iterable[dict[str, Any]], policy: dict[str, Any], unavailable_sources: Iterable[str] = ()
 ) -> str:
@@ -935,6 +954,13 @@ def payload_hash(record: dict[str, Any]) -> str:
 
 
 SEVERITY_SECTIONS = (("MUST_FIX", "MUST FIX"), ("SHOULD_FIX", "SHOULD FIX"), ("SUGGESTION", "SUGGESTIONS"))
+DISPOSITION_PHRASES = {
+    "still_present": "Still present",
+    "partially_addressed": "Partially addressed",
+    "addressed": "Addressed",
+    "superseded": "Superseded",
+    "unable_to_verify": "Unable to verify",
+}
 
 
 def _code(text: str) -> str:
@@ -979,8 +1005,19 @@ def _reviewed_at(value: str) -> str:
     return moment.astimezone(timezone.utc).strftime("%d-%b-%Y %H:%M UTC")
 
 
-def _finding_block(finding: dict[str, Any], *, repeats: str | None = None) -> list[str]:
-    """One finding's collapsible block; `repeats` names the finding in this review it repeats."""
+def _display_id(version: int, identifier: str) -> str:
+    """A finding's ID as reports show it, `v1 F001`, since finding IDs restart in every review."""
+    return f"v{version} {identifier}"
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def _finding_block(finding: dict[str, Any], label: str, *, repeats: str | None = None,
+                   status: Iterable[str] = ()) -> list[str]:
+    """One finding's collapsible block, headed by its display ID. `repeats` names the finding it repeats, and
+    `status` holds the lines saying what this review found about it."""
     headline = (
         _html(finding["title"]) if "title" in finding
         else f"<code>{_html(PurePosixPath(finding['path']).name)}:{finding['line']}</code>"
@@ -997,14 +1034,17 @@ def _finding_block(finding: dict[str, Any], *, repeats: str | None = None) -> li
         evidence = [">", f"> **Evidence:** {_code(finding['evidence'])}"]
     if "analyzer" in finding:
         evidence.extend([">", f"> **Analyzer:** {_analyzer_note(finding['analyzer'])}"])
-    if "repeats" in finding and repeats is None:
-        evidence.extend([">", f"> **Repeats:** v{finding['repeats']['version']} {finding['repeats']['id']}, "
-                              "an earlier finding this review found still present"])
+    # Each status line but the last ends in a Markdown hard break, so the lines don't run together.
+    status = [f"> {line}  " for line in status]
+    if status:
+        status[-1] = status[-1].rstrip()
     prefix = f"Repeats {repeats}: " if repeats else ""
     return [
         "<details open>",
-        f"<summary>{finding['id']}. {prefix}[{_html(finding['category'])}] {headline}</summary>",
+        f"<summary>{label}. {prefix}[{_html(finding['category'])}] {headline}</summary>",
         "",
+        *status,
+        *([">"] if status else []),
         f"> **File:** {_code(finding['path'])}  ",
         *location,
         ">",
@@ -1016,12 +1056,89 @@ def _finding_block(finding: dict[str, Any], *, repeats: str | None = None) -> li
     ]
 
 
-def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
+class _Ledger:
+    """What a report needs from a pull request's records: its ledger at the rendered version, each finding by version
+    and ID, each disposition's rationale by version and ledger ID, and the flags on each entry."""
+
+    def __init__(self, record: dict[str, Any], prior_records: Iterable[dict[str, Any]],
+                 flags: Iterable[dict[str, Any]]) -> None:
+        self.version = record["review"]["version"]
+        records = [*(item for item in prior_records if item["review"]["version"] < self.version), record]
+        self.entries = record["ledger"] if "ledger" in record else ledger_history(records)[self.version]
+        self.findings = {(item["review"]["version"], finding["id"]): finding
+                         for item in records for finding in item["findings"]}
+        self.rationales = {(item["review"]["version"], disposition["finding_id"]): disposition["rationale"]
+                           for item in records for disposition in item.get("prior_dispositions", [])}
+        initial = [item["review"]["version"] for item in records if item["review"]["mode"] == "initial"]
+        self.start = max(initial) if initial else records[0]["review"]["version"]
+        self.flags = flagged_entries(self.entries, flags, record["repository"], record["pull_request"]["number"])
+
+    def finding(self, version: int, identifier: str) -> dict[str, Any]:
+        finding = self.findings.get((version, identifier))
+        if finding is None:
+            raise RecordError(f"Review v{version} with finding {identifier} is missing from the archive")
+        return finding
+
+    def raised(self, entry: dict[str, Any]) -> dict[str, Any]:
+        return self.finding(entry["version"], entry["id"])
+
+    def order(self, entry: dict[str, Any]) -> tuple[int, str, int, tuple[int, int]]:
+        finding = self.raised(entry)
+        return -SEVERITY_RANK[entry["severity"]], finding["path"].casefold(), finding["line"], _entry_key(entry)
+
+    def judgment(self, entry: dict[str, Any]) -> str:
+        """The latest disposition's phrase, version, and rationale, such as `Addressed in v2: Fixed.`"""
+        latest = entry["dispositions"][-1]
+        rationale = self.rationales.get((latest["version"], ledger_id(entry["version"], entry["id"])))
+        text = f"{DISPOSITION_PHRASES[latest['disposition']]} in v{latest['version']}"
+        return f"{text}: {_flat(rationale)}" if rationale else f"{text}."
+
+    def status(self, entry: dict[str, Any]) -> list[str]:
+        """An open or unverified entry's status line in a re-review, then a line for each flag on it."""
+        if entry["version"] == self.version:
+            lines = [f"**New in v{self.version}.**"]
+        else:
+            head = (f"**Unverified, raised in v{entry['version']}.**" if entry["state"] == "unverified"
+                    else f"**Open since v{entry['version']}.**")
+            judged = entry["dispositions"] and entry["dispositions"][-1]["version"] == self.version
+            lines = [f"{head} {self.judgment(entry)}" if judged else f"{head} Last judged in v{entry['judged_in']}."]
+        return lines + self.flag_lines(entry)
+
+    def flag_lines(self, entry: dict[str, Any]) -> list[str]:
+        return [f"**Flagged:** {flag['id']} ({_flat(flag['category'])}): {_flat(flag['body'])}"
+                for flag in self.flags.get(ledger_id(entry["version"], entry["id"]), [])]
+
+    def counts(self) -> str:
+        """Open entries, the version the oldest dates from, how many are flagged, and the entries addressed and
+        unverified, such as `2 open since v1 (1 flagged), 1 addressed`."""
+        opened = [entry for entry in self.entries if entry["state"] == "open"]
+        if opened:
+            since = min(entry["version"] for entry in opened)
+            text = f"{len(opened)} open" + (f" since v{since}" if since < self.version else "")
+            flagged = sum(ledger_id(entry["version"], entry["id"]) in self.flags for entry in opened)
+            parts = [text + (f" ({flagged} flagged)" if flagged else "")]
+        else:
+            parts = ["none open"]
+        addressed = sum(entry["state"] == "closed" and entry["dispositions"][-1]["disposition"] == "addressed"
+                        for entry in self.entries)
+        unverified = sum(entry["state"] == "unverified" for entry in self.entries)
+        parts.extend([f"{addressed} addressed"] * bool(addressed) + [f"{unverified} unverified"] * bool(unverified))
+        return ", ".join(parts)
+
+
+def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
+                    prior_records: Iterable[dict[str, Any]] = (), model_names: dict[str, str] | None = None,
+                    flags: Iterable[dict[str, Any]] = ()) -> str:
+    """The Markdown report. Its findings are the ledger's open and unverified entries, each shown from the record
+    that raised it, so a re-review needs the pull request's earlier records. `model_names` maps a reviewer's model
+    identifier to the name the Reviewers table shows, and `flags` are the flag store's flags."""
     pull = record["pull_request"]
     review = record["review"]
     adapter = review["adapter"]
+    ledger = _Ledger(record, prior_records, flags)
+    re_review = review["mode"] == "re-review"
     heading = f"# Code Review — {record['repository']}#{pull['number']}"
-    if review["mode"] == "re-review":
+    if re_review:
         heading += f" (re-review v{review['version']})"
     lines = [
         heading,
@@ -1033,7 +1150,7 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
          if pull.get("head_ref") else f"| **Base** | {_cell(_code(pull['base_ref']))} |"),
         f"| **URL** | {_cell(pull['url'])} |",
         f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
-        f"| **Verdict** | {_label(review['verdict'])} |",
+        f"| **Verdict** | {_label(review['verdict'])}{', ' + ledger.counts() if re_review else ''} |",
         *([f"| **Scope** | {_cell(describe_scope(review['scope']))} |"] if "scope" in review else []),
         "",
     ]
@@ -1052,54 +1169,11 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
             "",
         ])
     lines.extend(["---", "", "## Summary", "", review["summary"].strip(), "", "## Findings", ""])
-    if not record["findings"]:
-        lines.extend(["No findings.", ""])
-    # A repeat of a finding in this review is shown inside the finding it repeats, not counted in its own section.
-    nested: dict[str, list[dict[str, Any]]] = {}
-    for finding in record["findings"]:
-        if (finding.get("repeats") or {}).get("version") == review["version"]:
-            nested.setdefault(finding["repeats"]["id"], []).append(finding)
-    for severity, title in SEVERITY_SECTIONS:
-        group = [finding for finding in record["findings"] if finding["severity"] == severity
-                 and (finding.get("repeats") or {}).get("version") != review["version"]]
-        if not group:
-            continue
-        lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
-        for finding in group:
-            block = _finding_block(finding)
-            for repeat in nested.get(finding["id"], []):
-                block[-2:-2] = _finding_block(repeat, repeats=finding["id"])
-            lines.extend(block)
-        lines.extend(["</details>", ""])
-    carried = [entry for entry in record.get("ledger", [])
-               if entry["version"] < review["version"] and entry["state"] != "closed"]
-    if carried:
-        lines.extend([
-            "## Open Findings", "",
-            "Findings from earlier reviews that no review has closed. Open ones count toward the verdict.", "",
-            "| Entry | Severity | Category | Last judged | State |",
-            "|-------|----------|----------|-------------|-------|",
-        ])
-        for entry in carried:
-            lines.append(f"| v{entry['version']} {entry['id']} | {_label(entry['severity'])} "
-                         f"| {_cell(entry['category'])} | v{entry['judged_in']} | {_label(entry['state'])} |")
-        lines.append("")
+    lines.extend(_findings_section(ledger, re_review))
     comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
-    if record.get("prior_dispositions") or comments:
-        lines.extend(["## Prior Findings Status", ""])
-    if record.get("prior_dispositions"):
-        if comments:
-            lines.extend(["### From the previous AI review", ""])
-        lines.extend(["| # | Status | Rationale |", "|---|--------|-----------|"])
-        for disposition in record["prior_dispositions"]:
-            lines.append(
-                f"| {_cell(disposition['finding_id'])} | {_label(disposition['disposition'])} "
-                f"| {_cell(disposition['rationale'])} |"
-            )
-        lines.extend(["", _addressed(record["prior_dispositions"]), ""])
     if comments:
         lines.extend([
-            "### From GitHub PR comments", "",
+            "## Review Comments", "",
             "| # | Comment | Status | Rationale |", "|---|---------|--------|-----------|",
         ])
         for disposition in record["comment_dispositions"]:
@@ -1114,6 +1188,8 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
                 f"| {_cell(disposition['rationale'])} |"
             )
         lines.extend(["", _addressed(record["comment_dispositions"]), ""])
+    names = model_names or {}
+    mapped: list[str] = []
     if review.get("reviewers"):
         lines.extend([
             "## Reviewers", "",
@@ -1122,8 +1198,11 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
         ])
         for reviewer in review["reviewers"]:
             focus = reviewer["category"] + (" (dispositions only)" if reviewer["dispositions_only"] else "")
+            model = reviewer.get("model", "-")
+            if model in names and model not in mapped:
+                mapped.append(model)
             lines.append(
-                f"| {_cell(_code(reviewer['id']))} | {_cell(focus)} | {_cell(reviewer.get('model', '-'))} "
+                f"| {_cell(_code(reviewer['id']))} | {_cell(focus)} | {_cell(names.get(model, model))} "
                 f"| {reviewer['files']} "
                 f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} |"
             )
@@ -1139,6 +1218,9 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
         f"| **Mode** | {review['mode']} v{review['version']} |",
         f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
         f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
+        # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
+        *([f"| **Reviewer models** | "
+           + "; ".join(f"{_cell(names[model])}: {_cell(_code(model))}" for model in mapped) + " |"] if mapped else []),
         f"| **Base SHA** | `{pull['base_sha']}` |",
         f"| **Reviewed HEAD** | `{pull['head_sha']}` |",
         f"| **Record payload SHA-256** | `{record_payload_hash}` |",
@@ -1151,15 +1233,54 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str) -> str:
     return "\n".join(lines)
 
 
+def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
+    """Every open and unverified entry, grouped by severity, each shown from the finding that raised it with this
+    review's repeats of it nested inside; then, in a re-review, the entries closed since the latest initial review.
+    Only a re-review says what changed on each entry."""
+    shown = [entry for entry in ledger.entries if entry["state"] != "closed"]
+    if not shown:
+        return ["No open findings." if re_review else "No findings.", ""]
+    lines: list[str] = []
+    for severity, title in SEVERITY_SECTIONS:
+        group = sorted((entry for entry in shown if entry["severity"] == severity), key=ledger.order)
+        if not group:
+            continue
+        lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
+        for entry in group:
+            label = _display_id(entry["version"], entry["id"])
+            block = _finding_block(ledger.raised(entry), label,
+                                   status=ledger.status(entry) if re_review else ledger.flag_lines(entry))
+            for repeat in entry["repeats"]:
+                if repeat["version"] == ledger.version:
+                    block[-2:-2] = _finding_block(ledger.finding(repeat["version"], repeat["id"]),
+                                                  _display_id(repeat["version"], repeat["id"]), repeats=label)
+            lines.extend(block)
+        lines.extend(["</details>", ""])
+    closed = sorted((entry for entry in ledger.entries if entry["state"] == "closed"), key=ledger.order)
+    if re_review and closed:
+        lines.extend(["<details>", f"<summary><strong>Addressed since v{ledger.start}</strong></summary>", ""])
+        for entry in closed:
+            finding = ledger.raised(entry)
+            title = f" {_html(finding['title'])}," if "title" in finding else ""
+            location = _code(f"{finding['path']}:{finding['line']}")
+            lines.append(f"- **{_display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
+                         f"[{_html(entry['category'])}]{title} {location}. {ledger.judgment(entry)}")
+        lines.extend(["", "</details>", ""])
+    return lines
+
+
 def _addressed(dispositions: list[dict[str, Any]]) -> str:
     addressed = sum(1 for disposition in dispositions if disposition["disposition"] == "addressed")
     return f"**{addressed}/{len(dispositions)} addressed**"
 
 
-def write_record_pair(json_path: Path, markdown_path: Path, record: dict[str, Any]) -> dict[str, Any]:
+def write_record_pair(json_path: Path, markdown_path: Path, record: dict[str, Any], *,
+                      prior_records: Iterable[dict[str, Any]] = (), model_names: dict[str, str] | None = None,
+                      flags: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
     validate_record(record)
     payload_sha = payload_hash(record)
-    markdown = render_markdown(record, record_payload_hash=payload_sha)
+    markdown = render_markdown(record, record_payload_hash=payload_sha, prior_records=prior_records,
+                               model_names=model_names, flags=flags)
     markdown_sha = sha256_text(markdown)
     persisted = copy.deepcopy(record)
     persisted["artifacts"] = {
