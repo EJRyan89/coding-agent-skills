@@ -26,6 +26,8 @@ INSTALL_HINTS = {
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
     "ruff": "python -m pip install -r requirements-dev.txt",
     "mypy": "python -m pip install -r requirements-dev.txt",
+    # Validation-only too. -Force upgrades an older install and answers the untrusted-PSGallery prompt.
+    "PSScriptAnalyzer": "pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'",
 }
 INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',

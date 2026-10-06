@@ -10,6 +10,7 @@ Development and deployment are currently supported on Windows only. Contributors
 - Git for Windows, for Git Bash;
 - ShellCheck;
 - PowerShell 7 (`pwsh`);
+- the PSScriptAnalyzer module;
 - the pinned development dependencies, `ruff` and `mypy`; and
 - GitHub CLI for code-review-operation changes.
 
@@ -20,6 +21,14 @@ python -m pip install -r requirements-dev.txt
 ```
 
 They are the only ones: contributor and CI tools, pinned, while the deployer and every shipped skill stay standard-library. Validation checks formatting with `ruff format` and lints with `ruff check`, both at a line length of 120 and with the rules in `pyproject.toml`; run `python -m ruff format` on any file the first names, and fix each finding the linter names (`python -m ruff check --fix` applies the fixes ruff marks safe). No rule or file is exempt; a finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`. Function complexity (C901) and length in statements (PLR0915) are the exception: they take no `noqa`, and their ceilings in `pyproject.toml` are a ratchet (#91) that only goes down. Validation fails a change that raises either ceiling; a pull request that splits the function at a ceiling lowers it to the new maximum, and the literal its test pins, in the same change. Validation type-checks with `mypy` at its default strictness and with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each skill's `scripts/` directory, and names each error; fix it, or, where an error must stay, write `# type: ignore[<code>]  # <reason>` on its line. Regression suites are not type-checked until the second pass of #92. [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+
+Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older version and answers the untrusted-repository prompt:
+
+```powershell
+pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
+```
+
+Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, and `skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command.
 
 [Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
 

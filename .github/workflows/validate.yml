@@ -46,6 +46,7 @@ jobs:
         run: |
           choco install shellcheck --version 0.9.0 --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -ErrorAction Stop
 
       # ruff and mypy at their pins, which docs/dependency-updates.md owns and Dependabot reviews.
       - name: Install development dependencies
@@ -69,6 +70,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m mypy --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Validation loads the newest installed version; the gallery's latest shows when the pin has fallen behind.
+          $installed = (Get-Module -ListAvailable PSScriptAnalyzer -ErrorAction Stop).Version -join ', '
+          Write-Host "PSScriptAnalyzer installed: $installed; latest release: $((Find-Module PSScriptAnalyzer).Version)"
 
       - name: Run repository validation
         shell: pwsh
