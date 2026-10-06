@@ -386,7 +386,7 @@ class ParallelCallTests(unittest.TestCase):
             started: list[int] = []
             release = threading.Event()
 
-            def call(item: int) -> int:
+            def call(item: int, *, started: list[int] = started, release: threading.Event = release) -> int:
                 started.append(item)
                 if item == 1:
                     raise ValueError("stop")
@@ -466,7 +466,7 @@ class StateAndLockTests(unittest.TestCase):
                 self._old_lock(path, owner)
                 with (
                     self.assertRaisesRegex(PersistenceError, "Timed out"),
-                    ResourceLock(path, timeout_seconds=0.01, probe=lambda pid: status),
+                    ResourceLock(path, timeout_seconds=0.01, probe=lambda pid, status=status: status),
                 ):
                     pass
                 self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
@@ -482,7 +482,7 @@ class StateAndLockTests(unittest.TestCase):
                 path = Path(temporary) / "resource.lock"
                 self._old_lock(path, owner)
 
-                def probe(pid: int) -> ProcessStatus:
+                def probe(pid: int, *, status: ProcessStatus = status) -> ProcessStatus:
                     return ProcessStatus(True, 9999) if pid == os.getpid() else status
 
                 with ResourceLock(path, timeout_seconds=0.5, probe=probe):
@@ -2372,7 +2372,14 @@ class RuntimeHostTests(unittest.TestCase):
                 staging = root / "copilot-result-1.json"
                 promoted: list[tuple[Path, Path]] = []
 
-                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+                def runner(
+                    arguments: list[str],
+                    cwd: Path,
+                    environment: dict[str, str],
+                    *,
+                    case: str = case,
+                    staging: Path = staging,
+                ) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments:
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
@@ -2380,7 +2387,7 @@ class RuntimeHostTests(unittest.TestCase):
                     staging.write_text(content, encoding="utf-8")
                     return ProcessResult(0, "", "")
 
-                def promote(source: Path, target: Path) -> bool:
+                def promote(source: Path, target: Path, *, promoted: list[tuple[Path, Path]] = promoted) -> bool:
                     promoted.append((source, target))
                     return False
 
@@ -2472,7 +2479,14 @@ class RuntimeHostTests(unittest.TestCase):
                 self._write_request_with_snapshot(root, request)
                 diagnostic = root / "diagnostic.jsonl"
 
-                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+                def runner(
+                    arguments: list[str],
+                    cwd: Path,
+                    environment: dict[str, str],
+                    *,
+                    timed_out: str = timed_out,
+                    partial: bytes | None = partial,
+                ) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments and timed_out == "review":
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")

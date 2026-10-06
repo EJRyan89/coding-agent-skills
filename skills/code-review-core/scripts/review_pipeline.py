@@ -26,6 +26,7 @@ succeeds or fails on its own, and every line names its pull request.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -611,6 +612,28 @@ def _snapshot_line(checkout: Path, commit: str, changed: list[str], services: Se
     )
 
 
+def _route_condition(
+    name: str,
+    *,
+    checkout: Path,
+    repository: str,
+    head: str,
+    changed: list[str],
+    reviewer_root: Path,
+    manifest: dict[str, Any],
+    source: Path,
+    work: Path,
+    results: dict[str, bool],
+    services: Services,
+) -> bool:
+    """Evaluate one routing condition on the pull request's source snapshot, taken on first use, and record it."""
+    if not source.exists():
+        materialize_source_snapshot(checkout, repository, head, source, runner=services.git, changed_paths=changed)
+    work.mkdir(exist_ok=True)
+    results[name] = evaluate_condition(reviewer_root, manifest["conditions"][name]["script"], source, work)
+    return results[name]
+
+
 def validate_reviewer(
     repository: str,
     *,
@@ -689,19 +712,20 @@ def validate_reviewer(
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
-            source = scratch / f"source-{index}"
             results: dict[str, bool] = {}
-
-            def condition(name: str) -> bool:
-                if not source.exists():
-                    materialize_source_snapshot(
-                        checkout, repository, pull["headRefOid"], source, runner=services.git, changed_paths=changed
-                    )
-                work = scratch / f"conditions-{index}"
-                work.mkdir(exist_ok=True)
-                results[name] = evaluate_condition(root, manifest["conditions"][name]["script"], source, work)
-                return results[name]
-
+            condition = functools.partial(
+                _route_condition,
+                checkout=checkout,
+                repository=repository,
+                head=pull["headRefOid"],
+                changed=changed,
+                reviewer_root=root,
+                manifest=manifest,
+                source=scratch / f"source-{index}",
+                work=scratch / f"conditions-{index}",
+                results=results,
+                services=services,
+            )
             routes = route(manifest, changed, condition)
             lines.extend(f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items())
             specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
