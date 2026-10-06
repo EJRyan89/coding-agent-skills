@@ -121,6 +121,19 @@ class InspectionTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(expected, inspect(text).tools)
 
+    def test_frontmatter_the_shared_reader_would_refuse_or_read_otherwise(self) -> None:
+        # Pinned while this parser is kept instead of skill-core's frontmatter.py; see the comment above _frontmatter.
+        for text, tools, delegates in (
+            ("---\ntools: *\n---\nReview it.\n", ["*"], "unknown"),
+            ("---\ntools: Read\ntools: Agent\n---\nReview it.\n", ["Agent"], "unknown"),
+            ("---\nname: x\njust prose\ntools: Read\n---\nSpawn reviewers.\n", ["Read"], "no"),
+            ("---\ntools:\n  read: true\n---\nSpawn reviewers.\n", [], "no"),
+            ("---\ntools: Read # note\n---\nSpawn reviewers.\n", ["Read # note"], "no"),
+        ):
+            with self.subTest(text=text):
+                result = inspect(text)
+                self.assertEqual((tools, delegates), (result.tools, result.delegates))
+
     def test_every_delegation_branch_and_its_reason(self) -> None:
         for text, delegates, reason in (
             (

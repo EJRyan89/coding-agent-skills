@@ -71,6 +71,9 @@ class ResolvedReviewer:
     inspection: Inspection | None = None
 
 
+# _frontmatter and frontmatter_value are kept instead of skill-core's frontmatter.py: they read files that reader
+# refuses or reads otherwise, which would change the tool grant, recorded for decision in
+# https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
 def _frontmatter(text: str) -> tuple[dict[str, list[str] | None], int]:
     """Tool lists from a leading `---` block: `tools` (agents) and `allowed-tools` (skills).
 

@@ -124,6 +124,17 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertEqual("one-slug description", entry["description"])
         self.assertEqual("project", entry["type"])
 
+    def test_frontmatter_the_shared_reader_would_refuse_is_read_leniently(self) -> None:
+        # Pinned while parse_frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
+        for text, values, body in (
+            ("---\nname: n\ndescription: `x` y\n---\nBody.", {"name": "n", "description": "`x` y"}, "Body."),
+            ("---\nname: first\nname: second\n---\nBody.", {"name": "first"}, "Body."),
+            ("---\nmetadata:\n  type: user\n  type: other\n---\nBody.", {"type": "user"}, "Body."),
+            ("---\nname: open\nBody.", {}, "---\nname: open\nBody."),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual((values, body), memory_audit.parse_frontmatter(text))
+
     def test_links_resolve_by_name_or_file_stem(self) -> None:
         write(self.memory_dir / "first.md", memory("first-slug", "See [[second]], [[first-slug]] and [[missing-one]]."))
         write(self.memory_dir / "second.md", memory("other-slug", "Second."))

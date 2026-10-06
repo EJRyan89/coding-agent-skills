@@ -1077,6 +1077,38 @@ class CopilotConfigurationTests(unittest.TestCase):
         self.assertTrue(any(f.check == "copilot-agent" and "target must" in f.message for f in result.findings))
         self.assertTrue(any(f.check == "copilot-agent" and "tools must" in f.message for f in result.findings))
 
+    def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
+        # Pinned while _frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
+        single_line = "Frontmatter must use single-line key: value entries"
+        mismatch = "Skill name must be lowercase hyphenated and match its directory"
+        cases = {
+            '---\nname: "demo"\ndescription: d\n---\n': [(None, mismatch)],
+            "---\nname: demo\ndescription: >-\n  long\n  text\n---\n": [(4, single_line), (5, single_line)],
+            "---\nname: demo\ndescription: d\nmetadata:\n  author: x\n---\n": [(5, single_line)],
+            "---\nname: demo\ndescription: *bold* text\n---\n": [],
+            "---\nname: demo\nname: demo\ndescription: d\n---\n": [(3, "Duplicate frontmatter key 'name'")],
+        }
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                found = audit._validate_skill(skill, self.root)
+                self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+        tools_shape = "tools must be a non-empty string list or comma-separated string"
+        agents = {
+            "---\ndescription: d\ntools: [read, edit]\n---\n": [(None, tools_shape)],
+            '---\ndescription: d\ntools: ["read", "edit"]\n---\n': [],
+            "---\ndescription: d\ntools:\n  - read\n---\n": [(4, single_line), (None, "tools must not be empty")],
+        }
+        agent = self.root / ".github/agents/demo.agent.md"
+        agent.parent.mkdir(parents=True)
+        for text, expected in agents.items():
+            with self.subTest(text=text):
+                agent.write_text(text, encoding="utf-8")
+                found = audit._validate_agent(agent, self.root)
+                self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
     def test_agent_filename_and_description_validated(self) -> None:
         path = self.root / ".claude/agents/bad name.txt"
         path.parent.mkdir(parents=True)

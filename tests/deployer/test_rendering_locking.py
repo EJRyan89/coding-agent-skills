@@ -122,6 +122,7 @@ class RenderedExecutableTests(DeployerTestCase):
             "dotnet-format/scripts/dotnet_format_targets.py",
             "repo-cleanup/scripts/repo_cleanup.py",
             "skill-core/scripts/console.py",
+            "skill-core/scripts/frontmatter.py",
             "update-coding-agent-skills/scripts/update.sh",
         ):
             with self.subTest(relative=relative):
@@ -129,6 +130,8 @@ class RenderedExecutableTests(DeployerTestCase):
                     (REPOSITORY_ROOT / "skills" / relative).read_bytes(),
                     (self.skills_dir / relative).read_bytes(),
                 )
+        # analyze-skill-cost imports the reader from skill-core and ships no copy of its own.
+        self.assertFalse((self.skills_dir / "analyze-skill-cost" / "scripts" / "frontmatter.py").exists())
         for name in ("analyze-skill-cost", "audit-ai-config", "repo-cleanup", "update-coding-agent-skills"):
             with self.subTest(skill=name):
                 self.assertNotIn("{{", self.skill_text(name))
