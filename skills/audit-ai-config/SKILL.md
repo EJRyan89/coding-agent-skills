@@ -24,7 +24,7 @@ Add `--json` when the user wants machine-readable output.
 | `1` | One or more `ERROR` findings | Errors found |
 | `2` | Authority is ambiguous, unconfigured, or an alternative source (`INCONCLUSIVE`) | Inconclusive; the conforming-only checks did not run |
 
-Relay the report's authority, scope status, and findings in the engine's order (`ERROR`, then `WARNING`, then `INFO`). Findings whose check is `limitation` name the documented limitations that apply to this repository; tell the user about each one. `references/audit-policy.md` explains what every check covers, `references/report-schema.md` the finding format, and `references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
+Relay the report's authority, scope status, and findings in the engine's order (`ERROR`, then `WARNING`, then `INFO`). Findings whose check is `limitation` name the documented limitations that apply to this repository; tell the user about each one. `${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
 
 ## 2. Review instruction content (judgment)
 

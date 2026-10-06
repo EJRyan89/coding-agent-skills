@@ -2,7 +2,7 @@
 name: review-prs
 description: "Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated initial-review canaries, and produce validated structured reports. Use it when asked to review or re-review pull requests."
 argument-hint: "[owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ..."
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "Read", "Agent", "AskUserQuestion", "Workflow"]
+allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/../code-review-core/scripts/*)", "Agent", "AskUserQuestion", "Workflow"]
 ---
 
 # Review pull requests

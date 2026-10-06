@@ -352,6 +352,12 @@ SIBLING_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)")
 # A concrete file a skill names through its directory; a pattern such as scripts/* in a grant names none.
 SKILL_DIR_FILE = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([A-Za-z0-9._/-]+)(?![A-Za-z0-9._/*<-])")
 BARE_SCRIPT_PATH = re.compile(r"""(?:^|[\s"'=])(?:\./|\.\./[A-Za-z0-9._-]+/)?scripts/""")
+# In SKILL.md prose, a code span that names the skill's own scripts/ or references/ by a relative path. Claude Code
+# resolves it against the working directory, and Codex and Copilot against the adapter, which has neither folder.
+PROSE_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+BARE_OWN_PATH = re.compile(r"""(?:^|[\s"'=(])(?:\./|\.\./[A-Za-z0-9._-]+/)?(?:scripts|references)/""")
+# analyze-skill-cost recommends a command under `scripts/` in the skill it audits, which is not a path of its own.
+BARE_OWN_PATH_EXEMPT = frozenset({("skills/analyze-skill-cost/SKILL.md", "scripts/")})
 SKILL_PATHS_DOC = "\"Paths to a skill's own files\" in docs/adding-a-skill.md"
 # Git Bash takes $HOME from HOME, which need not be the profile folder the deployer installs into.
 HOME_VARIABLE = re.compile(r"\$(?:HOME\b|\{HOME\}|env:HOME\b)", re.IGNORECASE)
@@ -373,12 +379,17 @@ def skill_path_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path, dependencies, directory in documents:
         name = path.relative_to(root).as_posix()
-        in_shell_fence = False
+        in_fence = in_shell_fence = False
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             stripped = line.strip()
             if stripped.startswith("```"):
-                in_shell_fence = not in_shell_fence and stripped[3:].strip().casefold() in SHELL_FENCES
+                in_shell_fence = not in_fence and stripped[3:].strip().casefold() in SHELL_FENCES
+                in_fence = not in_fence
                 continue
+            if path.name == "SKILL.md" and directory is not None and not in_fence:
+                for span in PROSE_CODE_SPAN.findall(line):
+                    if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT:
+                        problems.append(f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}")
             for match in INSTALL_PATH.finditer(line):
                 if match.group(1) in skills:
                     problems.append(
@@ -1355,7 +1366,8 @@ class RepositoryValidation(unittest.TestCase):
             root = Path(temporary)
             (root / "deploy-meta").mkdir()
             (root / "agents").mkdir()
-            for skill, metadata in {"alpha": {"skill_deps": ["core"]}, "beta": {}, "core": {}}.items():
+            skills = {"alpha": {"skill_deps": ["core"]}, "beta": {}, "core": {}, "analyze-skill-cost": {}}
+            for skill, metadata in skills.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
                 (root / "skills" / skill / "scripts").mkdir(parents=True)
                 (root / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
@@ -1363,7 +1375,8 @@ class RepositoryValidation(unittest.TestCase):
             (root / "skills" / "core" / "scripts" / "lib.py").write_text("", encoding="utf-8")
             (root / "skills" / "alpha" / "references").mkdir()
             (root / "skills" / "alpha" / "references" / "checks.md").write_text(
-                "See ${CLAUDE_SKILL_DIR}/references/checks.md and ${CLAUDE_SKILL_DIR}/references/<target>.md.\n",
+                "See ${CLAUDE_SKILL_DIR}/references/checks.md and ${CLAUDE_SKILL_DIR}/references/<target>.md.\n"
+                "A reference file may describe `scripts/run.py`, which Claude Code does not expand variables in.\n",
                 encoding="utf-8",
             )
             (root / "skills" / "alpha" / "SKILL.md").write_text(
@@ -1372,10 +1385,20 @@ class RepositoryValidation(unittest.TestCase):
                 'python -B "${CLAUDE_SKILL_DIR}/scripts/run.py" --in "data/scripts/x"\n'
                 'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/lib.py"\n'
                 "```\n"
-                "Prose may name `scripts/run.py`, grant `Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)`, and point at "
+                "Prose names `scripts/run.py`, grants `Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)`, and points at "
                 "${CLAUDE_SKILL_DIR}/references/checks.md.\n"
-                "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n",
+                "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n"
+                "Read `references/checks.md`, `./scripts/run.py`, `../core/scripts/lib.py`, and `references/`.\n"
+                "Read `${CLAUDE_SKILL_DIR}/references/checks.md`; the target's `.github/scripts/x.py` and "
+                "`data/references/y` are not ours.\n"
+                "```text\n"
+                "`scripts/run.py` in an example fence\n"
+                "```\n",
                 encoding="utf-8",
+            )
+            # analyze-skill-cost describes the scripts/ convention of the skills it audits, so that span is its own.
+            (root / "skills" / "analyze-skill-cost" / "SKILL.md").write_text(
+                "Recommend a tested command under `scripts/`, never `scripts/x.py`.\n", encoding="utf-8"
             )
             (root / "skills" / "beta" / "SKILL.md").write_text(
                 "Read `{{HOME}}/.claude/skills/core/notes.md`.\n"
@@ -1403,8 +1426,14 @@ class RepositoryValidation(unittest.TestCase):
                     f"agents/helper.md:2 finds a file through $HOME; see {agents_doc}",
                     f"agents/helper.md:3 finds a file through $HOME; see {agents_doc}",
                     f"agents/helper.md:4 finds a file through $HOME; see {agents_doc}",
+                    f"skills/alpha/SKILL.md:6 names `scripts/run.py` by a bare relative path; see {doc}",
                     "skills/alpha/SKILL.md:7 names ${CLAUDE_SKILL_DIR}/references/gone.md, which does not exist",
                     "skills/alpha/SKILL.md:7 names ${CLAUDE_SKILL_DIR}/../core/scripts/old.py, which does not exist",
+                    f"skills/alpha/SKILL.md:8 names `references/checks.md` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:8 names `./scripts/run.py` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:8 names `../core/scripts/lib.py` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:8 names `references/` by a bare relative path; see {doc}",
+                    f"skills/analyze-skill-cost/SKILL.md:1 names `scripts/x.py` by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:1 names skill core by its install path; see {doc}",
                     f"skills/beta/SKILL.md:3 runs a script by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:4 runs a script by a bare relative path; see {doc}",

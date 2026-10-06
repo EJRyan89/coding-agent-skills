@@ -35,7 +35,10 @@ A bash, sh, shell, or PowerShell fence uses each of Bash and PowerShell that is 
 Windows, Claude Code may run a fence's command through either tool.
 Sentence-initial verbs such as "Read the file" or lowercase "read and apply" never count as USED,
 so they never produce MISSING_ALLOWED. They do produce IMPLIED for an allowed tool whose action the
-prose names ("read", "search", "ask", "subagent", ...), which keeps it out of UNUSED_ALLOWED.
+prose names ("read", "search", "ask", "subagent", ...), which keeps it out of UNUSED_ALLOWED. A prohibition
+names no use: an action a negation governs in its clause ("do not read", "never write, edit, or delete",
+"without asking") implies nothing. Nor does a prompt quoted for a subagent after "prompt ...:" on a line that
+names one: its verbs are the subagent's, so they neither use nor imply a tool.
 
 Shell grants: in Claude Code, allowed-tools pre-approves its entries for the turn that starts the skill; it
 restricts nothing. UNSCOPED_ALLOWED <entry> is a Bash or PowerShell entry that matches every command (bare,
@@ -100,6 +103,21 @@ IMPLIED_BY = {
     "Skill": re.compile(r"(?i)\b(?:invoke|invokes|invoking)\b"),
     "Write": re.compile(r"(?i)\b(?:write|writes|writing|create|creates)\b"),
 }
+# A prohibition names an action without needing its tool. A negator governs a later word in its clause when the word
+# follows it directly ("do not read", "without reading") or opens an item of the list it heads ("do not import X,
+# write Y, or read Z"). A clause ends at sentence punctuation, a dash, "but", or "instead"; a negator inside a
+# subordinate clause ("If it is not, ask") reaches only that clause, which ends at a comma not followed by or/and/nor.
+NEGATOR = re.compile(r"(?i)\b(?:not|never|without|cannot|\w+n't)\b")
+CLAUSE_END = re.compile(r"(?i)[.;:!?](?=\s|$)|—|\s--\s|\b(?:but|instead)\b")
+SUBORDINATOR = re.compile(
+    r"(?i)\b(?:if|when|whenever|unless|once|because|since|while|although|though|until|after|before|where|whether)\b"
+)
+SUBORDINATE_END = re.compile(r"(?i),(?!\s*(?:or|and|nor)\b)")
+GOVERNED_DIRECTLY = re.compile(r"(?i)\s*(?:to\s+)?")
+GOVERNED_LIST_ITEM = re.compile(r"(?i)(?:,\s*(?:(?:or|and|nor)\s+)?|\s(?:or|and|nor)\s+)$")
+# The prompt a skill hands a subagent, quoted after "prompt ...:" on a line that names a subagent. Its verbs are the
+# subagent's actions, not the skill's, so they neither use nor imply a tool.
+SUBAGENT_PROMPT = re.compile(r"(?i)\bprompts?\b[^`\"\n]*?:\s*(`[^`\n]+`|\"[^\"\n]+\")")
 # Wording that marks a skill as internal; such a skill should not sit in the model's skill list.
 INTERNAL_WORDING = re.compile(r"(?i)\binternal\b|not intended for direct invocation|do not invoke")
 MCP_TOOL = re.compile(r"\bmcp__[A-Za-z0-9_-]+")
@@ -607,6 +625,51 @@ def line_references(line: str, language: str | None, names: list[str], allowed: 
     return found
 
 
+def blanked(text: str, start: int, end: int) -> str:
+    return text[:start] + " " * (end - start) + text[end:]
+
+
+def without_subagent_prompts(line: str) -> str:
+    """The line with any prompt it hands a subagent blanked, keeping every other column in place."""
+    if DELEGATION.search(line):
+        for match in SUBAGENT_PROMPT.finditer(line):
+            line = blanked(line, match.start(1), match.end(1))
+    return line
+
+
+def negated_ranges(line: str) -> list[tuple[int, int]]:
+    """The column ranges each negator in the line reaches, by the rule above NEGATOR."""
+    masked = line
+    for match in CODE_SPAN.finditer(line):  # a dot in a code span ends no clause
+        masked = blanked(masked, match.start() + 1, match.end() - 1)
+    bounds = [0, *(match.end() for match in CLAUSE_END.finditer(masked)), len(masked)]
+    ranges: list[tuple[int, int]] = []
+    for start, end in zip(bounds, bounds[1:]):
+        for negator in NEGATOR.finditer(masked, start, end):
+            reach = end
+            for subordinator in SUBORDINATOR.finditer(masked, start, negator.start()):
+                closing = SUBORDINATE_END.search(masked, subordinator.end(), end)
+                if (closing.start() if closing else end) > negator.start():
+                    reach = closing.start() if closing else end
+                    break
+            ranges.append((negator.end(), reach))
+    return ranges
+
+
+def affirmed(pattern: re.Pattern[str], line: str) -> bool:
+    """Whether the line names an action of the pattern that no negation governs."""
+    ranges = negated_ranges(line)
+    return any(
+        not any(
+            start <= match.start() < end
+            and (GOVERNED_DIRECTLY.fullmatch(line[start:match.start()])
+                 or GOVERNED_LIST_ITEM.search(line[start:match.start()]))
+            for start, end in ranges
+        )
+        for match in pattern.finditer(line)
+    )
+
+
 def tools(path: Path) -> list[str]:
     if not path.is_file():
         raise InputError(f"skill file not found: {path}")
@@ -627,11 +690,13 @@ def tools(path: Path) -> list[str]:
     first_use: dict[str, int] = {}
     first_implied: dict[str, int] = {}
     for offset, (line, language) in enumerate(zip(body, languages)):
+        if language is None:
+            line = without_subagent_prompts(line)
         for name in line_references(line, language, names, allowed or []):
             first_use.setdefault(name, start + offset + 1)
         if language is None:
             for name in allowed or []:
-                if name in IMPLIED_BY and IMPLIED_BY[name].search(line):
+                if name in IMPLIED_BY and affirmed(IMPLIED_BY[name], line):
                     first_implied.setdefault(name, start + offset + 1)
     output = [f"MODEL {model or 'none'}", *listed]
     output += [f"ALLOWED {name}" for name in allowed] if allowed is not None else ["NO_ALLOWED_TOOLS"]

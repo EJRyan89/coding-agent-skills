@@ -388,6 +388,59 @@ class ToolsTests(TemporaryTestCase):
         self.assertEqual(["IMPLIED Bash 4", "IMPLIED PowerShell 4"],
                          [line for line in lines if line.startswith(("IMPLIED", "UNUSED"))])
 
+    def implied(self, body: str, allowed: str = '["Read", "Edit", "AskUserQuestion", "Grep"]') -> list[str]:
+        lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}")
+        return [line for line in lines if line.startswith(("USED", "IMPLIED", "UNUSED"))]
+
+    def test_a_prohibited_action_does_not_imply_its_tool(self) -> None:
+        cases = {
+            "Run the commands; do not read the archive or the scripts yourself.\n": "Read",
+            "Never write, modify, or delete files, and never edit a report by hand.\n": "Edit",
+            "Report the result without asking the user.\n": "AskUserQuestion",
+            "Do not import the modules, write glue code, or read the core scripts.\n": "Read",
+            "This step does not read files.\n": "Read",
+            "Never open `notes. old` or search it.\n": "Grep",  # a code span's dot ends no clause
+            "Do not cross the line, but never read it.\n": "Read",
+        }
+        for body, tool in cases.items():
+            with self.subTest(body=body):
+                self.assertIn(f"UNUSED_ALLOWED {tool}", self.implied(body))
+
+    def test_an_action_outside_the_negation_still_implies_its_tool(self) -> None:
+        cases = {
+            "If it is not a repository, ask the user which one to use.\n": "IMPLIED AskUserQuestion 4",
+            "If there is no file, or the file does not exist, list them and ask the user.\n": "IMPLIED AskUserQuestion 4",
+            "Do not count braces yourself. On failure, read the end of the log.\n": "IMPLIED Read 4",
+            "Do not count braces: read the log.\n": "IMPLIED Read 4",
+            "Do not edit the file you read.\n": "IMPLIED Read 4",
+            "Do not stop, but read the log.\n": "IMPLIED Read 4",
+            "Never guess. Search the archive.\n": "IMPLIED Grep 4",
+            "Pass `--read-only`; never edit by hand.\n": "IMPLIED Read 4",
+        }
+        for body, expected in cases.items():
+            with self.subTest(body=body):
+                self.assertIn(expected, self.implied(body))
+
+    def test_a_prompt_handed_to_a_subagent_neither_uses_nor_implies_its_tools(self) -> None:
+        prompt = (
+            "Start one subagent with the Agent tool, with exactly this prompt and nothing else: "
+            "`Read <prompt file> and follow it exactly.`\n"
+        )
+        self.assertEqual(["USED Agent 4", "UNUSED_ALLOWED Read"], self.implied(prompt, '["Read", "Agent"]'))
+        quoted = 'Give the subagent this prompt: "Read the plan and ask the user." Then report.\n'
+        self.assertEqual(["UNUSED_ALLOWED Read", "UNUSED_ALLOWED AskUserQuestion"],
+                         self.implied(quoted, '["Read", "AskUserQuestion"]'))
+
+    def test_a_quoted_span_that_is_not_a_subagent_prompt_still_counts(self) -> None:
+        cases = {
+            "Use `Read` on the plan file.\n": "USED Read 4",
+            "Answer the prompt: `Read the plan`.\n": "USED Read 4",
+            "Write the subagent's prompt file, then read it back.\n": "IMPLIED Read 4",
+        }
+        for body, expected in cases.items():
+            with self.subTest(body=body):
+                self.assertIn(expected, self.implied(body, '["Read"]'))
+
     def grants(self, allowed: str, body: str = "") -> list[str]:
         lines = self.tools(f"---\nallowed-tools: {allowed}\n---\n{body}")
         return [line for line in lines if line.startswith(("UNSCOPED", "UNPAIRED", "UNGRANTED"))]
