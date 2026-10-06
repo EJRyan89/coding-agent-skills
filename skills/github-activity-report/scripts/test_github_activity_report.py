@@ -176,7 +176,7 @@ class SearchTests(unittest.TestCase):
             fetch(client)
         expected = [SEARCH_INTERVAL, 5.0, SEARCH_INTERVAL * 1.5, 5.0, 10.0, 20.0, MAX_INTERVAL]
         self.assertEqual(len(expected), len(sleeper.waits))
-        for want, got in zip(expected, sleeper.waits):
+        for want, got in zip(expected, sleeper.waits, strict=True):
             self.assertAlmostEqual(want, got)
 
     def test_spacing_recovers_after_a_run_of_clean_searches(self) -> None:
@@ -366,9 +366,11 @@ class RetryTests(unittest.TestCase):
             self.assertEqual([], sleeper.waits)
 
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
-        with mock.patch("github_activity_report.subprocess.run", side_effect=FileNotFoundError("gh")):
-            with self.assertRaises(GitHubActivityError) as context:
-                report.subprocess_runner(["gh", "api", "user"])
+        with (
+            mock.patch("github_activity_report.subprocess.run", side_effect=FileNotFoundError("gh")),
+            self.assertRaises(GitHubActivityError) as context,
+        ):
+            report.subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
 
 

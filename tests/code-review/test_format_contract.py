@@ -868,7 +868,9 @@ class FormatContractTest(unittest.TestCase):
             "record": [
                 Fixture(name, value, record)
                 for name, value in zip(
-                    ("initial record", "re-review record", "uncompared re-review record", "older record"), records
+                    ("initial record", "re-review record", "uncompared re-review record", "older record"),
+                    records,
+                    strict=True,
                 )
             ],
             "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
@@ -885,7 +887,7 @@ class FormatContractTest(unittest.TestCase):
         return parse_tables(CONTRACT.read_text(encoding="utf-8"))
 
     def test_fixtures_are_valid(self) -> None:
-        for root, fixtures in self.fixtures.items():
+        for fixtures in self.fixtures.values():
             for fixture in fixtures:
                 with self.subTest(fixture=fixture.name):
                     self.assertTrue(fixture.accepts is None or fixture.accepts(copy.deepcopy(fixture.value)))

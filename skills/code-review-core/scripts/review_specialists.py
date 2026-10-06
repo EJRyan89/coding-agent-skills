@@ -668,8 +668,10 @@ def build_plan(
         )
     if not routes:
         reviewed = to_review(changed)
+    elif ignored:
+        reviewed = []
     else:
-        reviewed = [] if ignored else to_review(outside)
+        reviewed = to_review(outside)
     # Every review needs a role, so an incremental one in which nothing changed still records a pass.
     if not routes or reviewed or unowned or unowned_comments or not roles:
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
@@ -1038,7 +1040,7 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 duplicate["sources"].append(role["id"])
         # A role links a repeat by its own index or a prior finding ID; a merged finding keeps the first link it gets,
         # and none to itself, which two linked findings merged into one would give it.
-        for finding, item in zip(result["findings"], landed):
+        for finding, item in zip(result["findings"], landed, strict=True):
             target = finding.get("repeats")
             link = target if isinstance(target, str) else None if target is None else landed[target]
             if link is not None and link is not item and item.get("link") is None:

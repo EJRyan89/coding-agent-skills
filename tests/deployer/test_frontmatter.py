@@ -105,9 +105,8 @@ class RefusalTests(unittest.TestCase):
             "key: [a]\n  more": "one line",
         }
         for block, message in cases.items():
-            with self.subTest(block=block):
-                with self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
-                    parse(block).value("key")
+            with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, f"^key: .*{message}"):
+                parse(block).value("key")
 
     def test_unread_keys_are_never_parsed(self) -> None:
         document = parse(
@@ -137,9 +136,8 @@ class RefusalTests(unittest.TestCase):
             ("  indented first line", "line 1 belongs to no key"),
             ("name: a\nnot a key", "line 2 is not a 'key: value' line"),
         ):
-            with self.subTest(block=block):
-                with self.assertRaisesRegex(FrontmatterError, message):
-                    parse(block)
+            with self.subTest(block=block), self.assertRaisesRegex(FrontmatterError, message):
+                parse(block)
 
     def test_comments_and_blank_lines_between_keys_are_ignored(self) -> None:
         document = parse("# leading comment\n\nname: a\n# between\n\ndescription: b")

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import hashlib
 import json
 import re
@@ -173,12 +174,12 @@ def validate_manifest_path(path_str: str) -> str | None:
         segments = path_str.split("/")
         if len(segments) != 4:
             return f"skill shim path must have exactly one skill-name segment: {path_str}"
-    if path_str.startswith(".github/skills/"):
-        if len(path_str.split("/")) != 4:
-            return f"skill projection path must have exactly one skill-name segment: {path_str}"
-    if path_str.startswith((".github/agents/", ".claude/agents/")):
-        if len(path_str.split("/")) != 3 or not path_str.endswith(".md"):
-            return f"agent projection must be a direct Markdown file: {path_str}"
+    if path_str.startswith(".github/skills/") and len(path_str.split("/")) != 4:
+        return f"skill projection path must have exactly one skill-name segment: {path_str}"
+    if path_str.startswith((".github/agents/", ".claude/agents/")) and (
+        len(path_str.split("/")) != 3 or not path_str.endswith(".md")
+    ):
+        return f"agent projection must be a direct Markdown file: {path_str}"
     return None
 
 
@@ -689,17 +690,17 @@ def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
         errors.append("schemaVersion must be an integer")
     elif data["schemaVersion"] != 1:
         errors.append(f"schemaVersion {data['schemaVersion']} is not supported (expected 1)")
-    for field in ("runtimes", "surfaces", "features"):
-        val = data.get(field)
+    for name in ("runtimes", "surfaces", "features"):
+        val = data.get(name)
         if val is None:
-            errors.append(f"{field} is required")
+            errors.append(f"{name} is required")
             continue
         if not isinstance(val, list):
-            errors.append(f"{field} must be a list")
+            errors.append(f"{name} must be a list")
             continue
         for i, item in enumerate(val):
             if not isinstance(item, str):
-                errors.append(f"{field}[{i}] must be a string")
+                errors.append(f"{name}[{i}] must be a string")
     artifacts = data.get("artifacts")
     if artifacts is None:
         errors.append("artifacts is required")
@@ -990,8 +991,8 @@ def _expected_skill_shim(
     except ValueError:
         return None
     fm = lines[1:end]
-    name_lines = [l for l in fm if l.startswith("name:")]
-    desc_lines = [l for l in fm if l.startswith("description:")]
+    name_lines = [line for line in fm if line.startswith("name:")]
+    desc_lines = [line for line in fm if line.startswith("description:")]
     if len(name_lines) != 1 or len(desc_lines) != 1:
         return None
     return (
@@ -1452,10 +1453,8 @@ def _instruction_sources(root: Path) -> InstructionSources:
     agents_md = (root / "AGENTS.md").is_file()
     agents_redirects = False
     if agents_md:
-        try:
+        with contextlib.suppress(OSError, UnicodeError):
             agents_redirects = is_redirecting_agents_md(read_text(root / "AGENTS.md"))
-        except (OSError, UnicodeError):
-            pass
     instructions = root / ".github/instructions"
     return InstructionSources(
         claude_md=(root / "CLAUDE.md").is_file(),

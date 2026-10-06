@@ -358,9 +358,8 @@ class DiscoverTests(Fixture):
             ("../my repo", "is not a repository name or an absolute path"),
             ("..", "is not a repository name or an absolute path"),
         ):
-            with self.subTest(target=target):
-                with self.assertRaisesRegex(rc.CleanupError, re.escape(message)):
-                    self.discover(target)
+            with self.subTest(target=target), self.assertRaisesRegex(rc.CleanupError, re.escape(message)):
+                self.discover(target)
 
     def test_unauthenticated_github_cli_stops(self) -> None:
         self.github.authenticated = False

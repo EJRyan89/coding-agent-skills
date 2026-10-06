@@ -137,13 +137,12 @@ class ChangeDetectorTests(unittest.TestCase):
 
     def test_run_level_failures_propagate(self) -> None:
         for kind in ("prerequisite", "authentication", "rate_limit"):
-            with self.subTest(kind=kind):
-                with self.assertRaises(GitHubError):
-                    detect(
-                        GitHubError("stop", kind=kind),
-                        comparison(),
-                        {REVIEWED: tree(comparison()), HEAD: tree(comparison())},
-                    )
+            with self.subTest(kind=kind), self.assertRaises(GitHubError):
+                detect(
+                    GitHubError("stop", kind=kind),
+                    comparison(),
+                    {REVIEWED: tree(comparison()), HEAD: tree(comparison())},
+                )
 
     def test_requests_are_url_quoted_and_cached(self) -> None:
         client = FakeClient({REVIEWED: comparison(changed("a.py", "1")), HEAD: comparison(changed("a.py", "2"))})

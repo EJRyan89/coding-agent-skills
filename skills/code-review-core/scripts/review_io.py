@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -125,10 +126,8 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
                 stream.flush()
                 os.fsync(stream.fileno())
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(descriptor)
-            except OSError:
-                pass
             raise
         os.replace(temporary, path)
         temporary = None
@@ -152,10 +151,8 @@ def atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None
                 stream.flush()
                 os.fsync(stream.fileno())
         except BaseException:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(descriptor)
-            except OSError:
-                pass
             raise
         os.replace(temporary, path)
         temporary = None
@@ -234,7 +231,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 if self._reclaim_stale():
                     continue
                 if time.monotonic() >= deadline:
-                    raise PersistenceError(f"Timed out waiting for lock {self.directory}")
+                    raise PersistenceError(f"Timed out waiting for lock {self.directory}") from None
                 time.sleep(0.05)
             except PersistenceError:
                 shutil.rmtree(self.directory, ignore_errors=True)

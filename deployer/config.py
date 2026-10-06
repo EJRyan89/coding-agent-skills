@@ -132,7 +132,7 @@ def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
         values[key] = platform_support.normalize(home / folder)
         _require_allowed(key, values[key])
     values.update(derived_values(home, source_dir))
-    for key, folder in CANARY_DIRECTORIES.items():
+    for folder in CANARY_DIRECTORIES.values():
         fsops.make_directories(home / folder)
     validate_directories(values)
     return values

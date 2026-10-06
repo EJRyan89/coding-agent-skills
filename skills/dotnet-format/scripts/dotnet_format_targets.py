@@ -289,7 +289,7 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     for name in kept:
         emit(f"FILE\t{name}")
     solution, score = choose_solution(root, cwd.resolve(), owners)
-    for name, owned in zip(kept, owners):
+    for name, owned in zip(kept, owners, strict=True):
         if not owns(solution, owned):
             emit(f"OUTSIDE_SOLUTION\t{name}")
     descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")

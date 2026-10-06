@@ -2732,7 +2732,7 @@ class GeneratedLayoutReferenceTests(unittest.TestCase):
     def test_transport_table_matches_the_engine(self) -> None:
         targets = ["claude", "codex", "copilot_local", "vscode", "copilot_repository"]
         documented = {
-            row[0].strip("`"): {target for target, cell in zip(targets, row[1:]) if cell == "Yes"}
+            row[0].strip("`"): {target for target, cell in zip(targets, row[1:], strict=True) if cell == "Yes"}
             for row in self._table("### Transport compatibility")
         }
         expected = {

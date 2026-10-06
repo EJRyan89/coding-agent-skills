@@ -23,12 +23,17 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 def literal_assignment(path: Path, name: str) -> object:
     tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
     for node in tree.body:
-        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            if node.target.id == name and node.value is not None:
-                return ast.literal_eval(node.value)
-        if isinstance(node, ast.Assign):
-            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
-                return ast.literal_eval(node.value)
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+            and node.value is not None
+        ):
+            return ast.literal_eval(node.value)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
     raise AssertionError(f"{name} is not a literal assignment in {path}")
 
 
@@ -75,7 +80,7 @@ class CrossSkillContractTests(unittest.TestCase):
         for path in [*(REPOSITORY_ROOT / "skills").glob("*/SKILL.md"), *(REPOSITORY_ROOT / "agents").glob("*.md")]:
             document = skill_frontmatter.read(path)
             for key in ("allowed-tools", "tools"):
-                if key in document.keys():
+                if key in document:
                     value = document.value(key)
                     entries = value if isinstance(value, list) else str(value).split(",")
                     granted |= {entry.strip().split("(", 1)[0] for entry in entries if entry.strip()}

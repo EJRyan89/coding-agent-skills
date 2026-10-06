@@ -16,12 +16,7 @@ line-ending = "auto"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM"]
 # Findings not yet fixed when the gate was added; each later commit of #90 removes the codes it fixes.
-ignore = [
-    "B007", "B008", "B023", "B904", "B905",
-    "E501", "E731", "E741",
-    "F402",
-    "SIM102", "SIM105", "SIM108", "SIM112", "SIM117", "SIM118",
-]
+ignore = ["B023", "E501"]
 
 # mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.
 [tool.mypy]

@@ -462,7 +462,7 @@ class RunTests(RuntimeCanaryTestCase):
         }
         self.assertEqual(set(runtime_canary.RUNTIMES), set(runs))
         recorder = self.home / ".runtime-canary" / "recorder"
-        for runtime, (arguments, cwd, environment) in runs.items():
+        for runtime, (_, cwd, environment) in runs.items():
             with self.subTest(runtime=runtime):
                 self.assertEqual(self.home, cwd)
                 # The real configuration folders, and so the sign-ins, are left where they are.

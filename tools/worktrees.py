@@ -576,7 +576,7 @@ def list_worktrees() -> int:
     widths = [max(len(getattr(r, field)) for r in rows) for field in ("branch", "state", "ahead", "behind", "dirty")]
     for r in rows:
         cells = (r.branch, r.state, r.ahead, r.behind, r.dirty)
-        print("  ".join(cell.ljust(width) for cell, width in zip(cells, widths)) + "  " + r.path)
+        print("  ".join(cell.ljust(width) for cell, width in zip(cells, widths, strict=True)) + "  " + r.path)
     return 0
 
 

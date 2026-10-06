@@ -373,7 +373,7 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
                 units,
             )
         )
-    for unit, result in zip(units, results):
+    for unit, result in zip(units, results, strict=True):
         if result.returncode != 0:
             kind = "block syntax" if unit.is_block else "syntax"
             raise DeployError(

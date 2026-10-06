@@ -413,7 +413,10 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
             lines.append("| " + " | ".join([_pull_link(row, home), _my_status(row.item), *_ai_cells(row)]) + " |")
     else:
         lines += ["| Requestor | PR | AI Result | Findings | AI Review |", "| :--- | :--- | :--- | :--- | :--- |"]
-        name = lambda r: (r.item["author_name"] or r.item["author"]).strip()
+
+        def name(r: Row) -> str:
+            return (r.item["author_name"] or r.item["author"]).strip()
+
         previous = None
         for row in sorted(members, key=lambda r: (name(r).casefold(), r.item["repository"], r.item["number"])):
             requestor = _escape(name(row)) if name(row).casefold() != previous else ""

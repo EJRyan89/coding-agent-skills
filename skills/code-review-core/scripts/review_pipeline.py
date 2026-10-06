@@ -886,7 +886,7 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
     entries: list[str] = []
     count = 0
     states = [(run.resolve(), load_run(run.resolve())) for run in runs]
-    for run, state in states:
+    for _, state in states:
         if state["runtime"] == "copilot-cli":
             raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; dispatch it instead")
     for run, state in states:
@@ -956,7 +956,10 @@ def run_host(run: Path, token: str, services: Services) -> str:
     """The detached host dispatch starts: run Copilot, promote its result only while the claim holds, and record
     the outcome. Returns the outcome, or `superseded` without running when the claim no longer holds."""
     run, state, reviewer = _copilot_run(run)
-    generation = lambda: load_run(run)["attempts"][reviewer]  # noqa: E731
+
+    def generation() -> int:
+        return load_run(run)["attempts"][reviewer]
+
     with host_lock(run):
         claim = claim_holds(run, token, generation())
         if claim is None:
@@ -1242,7 +1245,7 @@ def enumerate_batch(
             entry["error"] = str(exc)
         return entry
 
-    for repository, (entry, _) in zip(selected, map_in_order(listing, selected)):
+    for repository, (entry, _) in zip(selected, map_in_order(listing, selected), strict=True):
         batch["repositories"][repository] = entry
     atomic_write_json(output, batch)
     return batch
@@ -1460,7 +1463,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 items,
                 catch=EXPECTED_ERRORS,
             )
-            for (selector, _), (result, error) in zip(items, outcomes):
+            for (selector, _), (result, error) in zip(items, outcomes, strict=True):
                 if error is not None:
                     print(f"FAILED {selector} {error}")
                     failed = True

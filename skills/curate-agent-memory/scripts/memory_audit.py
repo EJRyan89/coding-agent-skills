@@ -479,7 +479,7 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
 
 def managed_settings_path() -> Path:
     if sys.platform == "win32":
-        return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
+        return Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
     if sys.platform == "darwin":
         return Path("/Library/Application Support/ClaudeCode/managed-settings.json")
     return Path("/etc/claude-code/managed-settings.json")

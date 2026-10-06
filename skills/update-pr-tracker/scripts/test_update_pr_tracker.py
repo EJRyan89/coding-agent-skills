@@ -370,9 +370,8 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual({"On Hold": ["owner/repo#1"]}, sections(content))
         self.assertEqual([], candidates)
         for computed in ("stale", "Drafts", "awaiting response", "To Review"):
-            with self.subTest(computed=computed):
-                with self.assertRaisesRegex(TrackerError, "computed tracker state"):
-                    run([item()], overrides={"owner/repo#1": computed})
+            with self.subTest(computed=computed), self.assertRaisesRegex(TrackerError, "computed tracker state"):
+                run([item()], overrides={"owner/repo#1": computed})
 
     def test_review_candidates_list_relevant_missing_and_stale_reviews_including_drafts(self) -> None:
         missing = item(number=1)

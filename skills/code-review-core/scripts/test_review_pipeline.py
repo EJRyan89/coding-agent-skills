@@ -713,7 +713,10 @@ class GenericReviewTests(PipelineFixture):
     def test_a_workflow_restarts_every_role_clock_when_it_starts_them(self) -> None:
         with mock.patch("time.time", return_value=1_000.0):
             ready = self.prepare()
-        state = lambda: json.loads((ready["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))  # noqa: E731
+
+        def state() -> dict[str, Any]:
+            return json.loads((ready["run"] / rp.RUN_FILE).read_text(encoding="utf-8"))
+
         self.assertEqual({"generic-review": 1_000.0}, state()["dispatched_at"])
         with mock.patch("time.time", return_value=1_600.0):
             self.assertEqual(0, self.run_main("workflow", "--run", str(ready["run"]))[0])
@@ -2009,7 +2012,10 @@ class CopilotHostTests(PipelineFixture):
             {"attempt": 1, "token": token, "generation": 0, "claimed_at": 10_000.0, "pid": 4001, "start_time": 7},
             self.claim(),
         )
-        started = lambda: json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]  # noqa: E731
+
+        def started() -> dict[str, float]:
+            return json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
+
         self.assertEqual({"fixture-copilot": 3_000.0}, started())
 
         self.assertEqual(0, self.run_host()[0])
@@ -2608,7 +2614,7 @@ class CanaryTests(PipelineFixture):
         roots = [Path(root) for _, root in canaries]
         self.assertNotEqual(roots[0], roots[1])
         self.assertEqual(4, sum(line.startswith("SHA256 ") for line in out.splitlines()))
-        for root, (number, other) in zip(roots, ((12, 14), (14, 12))):
+        for root, (number, other) in zip(roots, ((12, 14), (14, 12)), strict=True):
             self.assertEqual(self.temporary, root.parent)
             self.assertIsNotNone(latest_record(root, REPOSITORY, number))
             self.assertIsNone(latest_record(root, REPOSITORY, other))

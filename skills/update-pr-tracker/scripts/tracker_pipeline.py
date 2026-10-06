@@ -242,7 +242,7 @@ def collect(
         ),
         fatal=lambda error: isinstance(error, GitHubError) and error.kind in FATAL_ERROR_KINDS,
     )
-    for repository, (collected, error) in zip(selected, outcomes):
+    for repository, (collected, error) in zip(selected, outcomes, strict=True):
         if error is not None:
             results[repository] = str(error)
             continue

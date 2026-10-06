@@ -281,9 +281,11 @@ class ConfigurationTests(unittest.TestCase):
             path = Path(temporary) / "config.json"
             write_config(valid_config(), path)
             previous = path.read_bytes()
-            with mock.patch("review_io.os.replace", side_effect=OSError("synthetic")):
-                with self.assertRaises(PersistenceError):
-                    write_config(valid_config(), path)
+            with (
+                mock.patch("review_io.os.replace", side_effect=OSError("synthetic")),
+                self.assertRaises(PersistenceError),
+            ):
+                write_config(valid_config(), path)
             self.assertEqual(previous, path.read_bytes())
 
     def test_dashboard_markers_and_threshold_boundaries_are_validated(self) -> None:
@@ -424,9 +426,8 @@ class StateAndLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             with ResourceLock(path):
-                with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                    with ResourceLock(path, timeout_seconds=0.01):
-                        pass
+                with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.01):
+                    pass
                 self.assertTrue(path.exists())
 
     def _old_lock(self, path: Path, owner: dict) -> None:
@@ -463,9 +464,11 @@ class StateAndLockTests(unittest.TestCase):
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "resource.lock"
                 self._old_lock(path, owner)
-                with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                    with ResourceLock(path, timeout_seconds=0.01, probe=lambda pid: status):
-                        pass
+                with (
+                    self.assertRaisesRegex(PersistenceError, "Timed out"),
+                    ResourceLock(path, timeout_seconds=0.01, probe=lambda pid: status),
+                ):
+                    pass
                 self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
 
     def test_old_lock_of_dead_or_reused_owner_is_reclaimed(self) -> None:
@@ -499,9 +502,11 @@ class StateAndLockTests(unittest.TestCase):
                 path / "owner.json",
                 {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1},
             )
-            with self.assertRaisesRegex(PersistenceError, "Timed out"):
-                with ResourceLock(path, timeout_seconds=0.01, probe=probe):
-                    pass
+            with (
+                self.assertRaisesRegex(PersistenceError, "Timed out"),
+                ResourceLock(path, timeout_seconds=0.01, probe=probe),
+            ):
+                pass
 
     def test_lock_probes_identity_by_default_and_never_signals(self) -> None:
         probed: list[int] = []
@@ -516,9 +521,9 @@ class StateAndLockTests(unittest.TestCase):
             with (
                 mock.patch.object(review_io, "process_status", probe),
                 mock.patch("os.kill", side_effect=AssertionError("os.kill called")),
+                ResourceLock(path, timeout_seconds=0.5),
             ):
-                with ResourceLock(path, timeout_seconds=0.5):
-                    self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
+                self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
             self.assertIn(4242, probed)
 
     def test_atomic_json_is_restrictive_and_valid(self) -> None:
@@ -1175,12 +1180,14 @@ class GitHubTests(unittest.TestCase):
         }
 
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
-        with mock.patch(
-            "review_github.subprocess.run",
-            side_effect=FileNotFoundError("gh was not found"),
+        with (
+            mock.patch(
+                "review_github.subprocess.run",
+                side_effect=FileNotFoundError("gh was not found"),
+            ),
+            self.assertRaises(GitHubError) as context,
         ):
-            with self.assertRaises(GitHubError) as context:
-                review_github.subprocess_runner(["gh", "api", "user"])
+            review_github.subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
         self.assertIn("install GitHub CLI", str(context.exception))
 
@@ -1355,7 +1362,8 @@ class GitHubTests(unittest.TestCase):
         )
         for data, text, count in cases:
             with self.subTest(data=data):
-                client = GitHubClient(lambda arguments, value=undecodable(data): CommandResult(0, value, ""))
+                value = undecodable(data)
+                client = GitHubClient(lambda arguments, value=value: CommandResult(0, value, ""))
                 self.assertEqual((text, count), client.get_pull_diff("example/one", 7))
 
     def test_json_and_errors_replace_undecodable_bytes(self) -> None:
@@ -1496,9 +1504,9 @@ class RuntimeContractTests(unittest.TestCase):
         with (
             mock.patch("review_runtime.shutil.which", return_value=None),
             mock.patch("review_runtime.Path.is_file", return_value=False),
+            self.assertRaisesRegex(RuntimeContractError, "No supported"),
         ):
-            with self.assertRaisesRegex(RuntimeContractError, "No supported"):
-                resolve_runtime("auto")
+            resolve_runtime("auto")
 
     def test_runtime_auto_prefers_the_stated_host_over_path(self) -> None:
         # A Codex session on a machine that also has claude installed must not resolve to claude-code.
@@ -1840,13 +1848,15 @@ class RuntimeContractTests(unittest.TestCase):
             instruction.rename(snapshot / "source.txt")
             manifest["source_hashes"] = {"source.txt": hashlib.sha256(content).hexdigest()}
             (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-            with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1):
-                with self.assertRaisesRegex(RuntimeContractError, "file exceeds"):
-                    verify_source_snapshot(
-                        snapshot,
-                        expected_repository="example/one",
-                        expected_commit=commit,
-                    )
+            with (
+                mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1),
+                self.assertRaisesRegex(RuntimeContractError, "file exceeds"),
+            ):
+                verify_source_snapshot(
+                    snapshot,
+                    expected_repository="example/one",
+                    expected_commit=commit,
+                )
 
     def test_source_snapshot_materialization_enforces_file_count_limit(self) -> None:
         commit = "b" * 40
@@ -1868,15 +1878,17 @@ class RuntimeContractTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "snapshot"
-            with mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_FILES", 1):
-                with self.assertRaisesRegex(RuntimeContractError, "file-count"):
-                    materialize_source_snapshot(
-                        Path(temporary) / "checkout",
-                        "example/one",
-                        commit,
-                        destination,
-                        runner=runner,
-                    )
+            with (
+                mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_FILES", 1),
+                self.assertRaisesRegex(RuntimeContractError, "file-count"),
+            ):
+                materialize_source_snapshot(
+                    Path(temporary) / "checkout",
+                    "example/one",
+                    commit,
+                    destination,
+                    runner=runner,
+                )
             self.assertFalse(destination.exists())
 
     def test_source_snapshot_excludes_binary_and_oversized_files_from_limits(self) -> None:

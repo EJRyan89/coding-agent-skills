@@ -610,7 +610,7 @@ def section_matches(section: str, relative_path: str) -> bool:
     regex, ranges = section_glob(section)
     match = regex.fullmatch(relative_path)
     return match is not None and all(
-        value is None or low <= int(value) <= high for value, (low, high) in zip(match.groups(), ranges)
+        value is None or low <= int(value) <= high for value, (low, high) in zip(match.groups(), ranges, strict=True)
     )
 
 

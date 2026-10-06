@@ -508,7 +508,10 @@ class ReleaseGuidelineTests(unittest.TestCase):
             loaded = review_runtime.load_manifest_from_commit(checkout, trusted, ".review/manifest.json")
             destination = root / "reviewer"
             review_runtime.materialize_reviewer(checkout, trusted, loaded, destination, guideline_commit=release)
-            read = lambda relative: (destination / relative).read_text(encoding="utf-8")
+
+            def read(relative: str) -> str:
+                return (destination / relative).read_text(encoding="utf-8")
+
             self.assertEqual("release db rules\n", read("docs/db.md"))
             self.assertEqual("main-only rules\n", read("docs/new.md"))
             self.assertEqual("main conventions\n", read("docs/conventions.md"))
