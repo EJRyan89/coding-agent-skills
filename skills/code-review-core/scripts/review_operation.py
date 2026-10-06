@@ -149,19 +149,22 @@ def request_to_record_input(
 
 
 def prior_severities(request: dict[str, Any]) -> dict[str, str]:
-    """Each prior finding's severity, by ID, so a result's `repeats` of it can be checked."""
+    """Each prior finding's severity, by ID, so a result's `repeats` of it can be checked.
+
+    A finding without a string severity is left out, which its readers treat alike: as an unknown severity.
+    """
     return {
-        item["id"]: item.get("severity")
+        item["id"]: item["severity"]
         for item in request.get("prior_findings") or []
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("severity"), str)
     }
 
 
 def _ids(items: Any, what: str) -> list[str]:
     if not isinstance(items, list):
         raise ReviewOperationError(f"Adapter request {what}s are invalid")
-    ids = [item.get("id") for item in items if isinstance(item, dict)]
-    if len(ids) != len(items) or any(not isinstance(value, str) for value in ids):
+    ids = [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    if len(ids) != len(items):
         raise ReviewOperationError(f"Every {what} requires an ID")
     return ids
 

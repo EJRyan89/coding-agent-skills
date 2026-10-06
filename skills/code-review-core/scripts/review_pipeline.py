@@ -331,7 +331,7 @@ def prepare(
             raise PipelineError(f"{selector} has no review yet; run review-prs --pull {selector}")
         if reviewed is not None and reviewed["head_sha"] == head and not force:
             return _skip(selector, f"head {head[:12]} is already reviewed")
-        if re_review and reviewed["source"] == "legacy":
+        if re_review and reviewed is not None and reviewed["source"] == "legacy":
             mode = "initial"
             notes.append("This initial review supersedes the migrated legacy review.")
         elif re_review:
@@ -350,8 +350,7 @@ def prepare(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    run = Path(tempfile.mkdtemp(prefix="code-review-run-")) if created else run_directory
-    run = run.resolve()
+    run = (Path(tempfile.mkdtemp(prefix="code-review-run-")) if run_directory is None else run_directory).resolve()
     if run.exists() and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
@@ -394,11 +393,14 @@ def prepare(
         notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
 
         reviewer_root: Path | None = None
+        adapter: dict[str, Any]
         if reviewer["scope"] == "generic":
             negotiate_capabilities(runtime, ["agent-delegation"])
             kind = "generic"
             adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
         else:
+            if checkout is None:  # validate_config requires a checkout for a repository reviewer
+                raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
             ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
             reviewer_commit = resolve_reviewer_commit(
                 checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
@@ -444,7 +446,7 @@ def prepare(
 
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
-        if previous is not None:
+        if previous is not None and scope is not None:  # a re-review, which always names its scope
             scope_record, review_files = choose_scope(
                 scope, previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
             )
@@ -652,18 +654,20 @@ def validate_reviewer(
     config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
     targets: list[tuple[str, dict[str, Any] | None]] = []
     for number in pulls or []:
-        pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
-        ensure_local_commit(checkout, pull["headRefOid"], f"refs/pull/{number}/head", services.git)
-        ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
+        fetched = validate_canary_pull(
+            services.github.get_pull(repository, number), repository=repository, number=number
+        )
+        ensure_local_commit(checkout, fetched["headRefOid"], f"refs/pull/{number}/head", services.git)
+        ensure_local_commit(checkout, fetched["baseRefOid"], f"refs/heads/{fetched['baseRefName']}", services.git)
         targets.append(
             (
                 resolve_reviewer_commit(
                     checkout,
-                    reviewer["trusted_ref"] or pull["baseRefOid"],
-                    head_sha=pull["headRefOid"],
+                    reviewer["trusted_ref"] or fetched["baseRefOid"],
+                    head_sha=fetched["headRefOid"],
                     runner=services.git,
                 ),
-                pull,
+                fetched,
             )
         )
     if not targets:
@@ -1489,7 +1493,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 catch=EXPECTED_ERRORS,
             )
             for (selector, _), (result, error) in zip(items, outcomes, strict=True):
-                if error is not None:
+                if error is not None or result is None:  # prepare returns a result whenever it raises nothing
                     print(f"FAILED {selector} {error}")
                     failed = True
                     continue
@@ -1501,9 +1505,9 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     _print_ready(result)
             return 1 if failed else 0
         if args.command == "validate-result":
-            error = validate_result(args.run, args.role)
-            print(f"INVALID {error}" if error else "VALID")
-            return 1 if error else 0
+            invalid = validate_result(args.run, args.role)
+            print(f"INVALID {invalid}" if invalid else "VALID")
+            return 1 if invalid else 0
         if args.command == "workflow":
             script, text, count = workflow_script(args.runs)
             print(f"WORKFLOW {script} roles={count}")
@@ -1545,11 +1549,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print(f"OUTCOME {run_host(args.run, args.token, services or Services())}")
             return 0
         if args.command == "wait":
-            result, elapsed = wait_for_host(args.run, args.timeout, services or Services())
-            if result is None:
+            dispatched, elapsed = wait_for_host(args.run, args.timeout, services or Services())
+            if dispatched is None:
                 print(f"RUNNING {elapsed}s")  # a state the skill polls again
                 return 0
-            print(f"DISPATCHED {result}")
+            print(f"DISPATCHED {dispatched}")
             return 0
         if args.command == "check":
             retry = failed = False

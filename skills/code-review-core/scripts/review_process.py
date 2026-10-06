@@ -12,6 +12,7 @@ import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -67,7 +68,13 @@ def same_process(status: ProcessStatus, recorded_start: int | None) -> bool | No
     return status.start_time == recorded_start
 
 
-def hidden_window() -> dict[str, int]:
+class HiddenWindow(TypedDict):
+    """The subprocess keyword hidden_window gives, typed so that `**hidden_window()` checks as that keyword."""
+
+    creationflags: int
+
+
+def hidden_window() -> HiddenWindow:
     """Keyword arguments for subprocess that start a console program without a window of its own."""
     return {"creationflags": CREATE_NO_WINDOW}
 

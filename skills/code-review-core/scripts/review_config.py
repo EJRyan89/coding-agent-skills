@@ -82,7 +82,7 @@ def _reject_unknown(value: dict[str, Any], allowed: set[str], field: str) -> Non
         raise ConfigurationError(f"{field} contains unknown field(s): {', '.join(unknown)}")
 
 
-def validate_repository_identity(value: str) -> str:
+def validate_repository_identity(value: object) -> str:
     if not isinstance(value, str) or not REPOSITORY_PATTERN.fullmatch(value):
         raise ConfigurationError(f"Invalid repository identity: {value!r}")
     return value.lower()
@@ -137,10 +137,10 @@ def validate_config(value: Any) -> dict[str, Any]:
             raise ConfigurationError(f"Invalid repository-set name: {name!r}")
         if not isinstance(repositories, list) or not repositories:
             raise ConfigurationError(f"Repository set '{name}' must not be empty")
-        normalized = [validate_repository_identity(item) for item in repositories]
-        if len(set(normalized)) != len(normalized):
+        members = [validate_repository_identity(item) for item in repositories]
+        if len(set(members)) != len(members):
             raise ConfigurationError(f"Repository set '{name}' contains duplicates")
-        normalized_sets[name] = normalized
+        normalized_sets[name] = members
 
     default_set = config.get("default_repository_set")
     if not isinstance(default_set, str) or default_set not in normalized_sets:

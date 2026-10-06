@@ -13,7 +13,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -404,7 +404,7 @@ after two fixes.
 OTHER_FILES_LISTED = 50
 
 
-def _listed(paths: list[str]) -> list[str]:
+def _listed(paths: Sequence[str]) -> list[str]:
     """The other changed files for a prompt, capped so a very large pull request cannot flood it."""
     if len(paths) <= OTHER_FILES_LISTED:
         return list(paths)
@@ -452,10 +452,10 @@ def render_prompt(
     work: Path,
     trusted_root: Path | None,
     prior: list[dict[str, Any]],
-    comments: list[dict[str, Any]] = (),
+    comments: Sequence[dict[str, Any]] = (),
     self_check: str | None = None,
     local_checkout: Path | None = None,
-    other_files: list[str] = (),
+    other_files: Sequence[str] = (),
     links: dict[str, tuple[int, str] | None] | None = None,
 ) -> str:
     """`links`, from `symbolic_links`, names the symbolic links among the role's files, which it raises as findings."""
@@ -587,6 +587,7 @@ def build_plan(
         raise SpecialistError("Adapter request protocol version is unsupported")
     if request.get("mode") not in {"initial", "re-review"}:
         raise SpecialistError("Adapter request mode is invalid")
+    manifest: dict[str, Any]
     if reviewer_root is None:
         manifest = {"id": "generic", "specialists": [], "conditions": {}}
         source_commit = None
@@ -612,11 +613,14 @@ def build_plan(
     if not changed:
         raise SpecialistError("The diff contains no changed files")
     conditions = manifest["conditions"]
-    routes = route(
-        manifest,
-        changed,
-        lambda name: evaluate_condition(reviewer_root, conditions[name]["script"], source_root, work),
-    )
+
+    def condition(name: str) -> bool:
+        # Only a materialized manifest declares conditions, and it has a reviewer root to run them from.
+        if reviewer_root is None:
+            raise SpecialistError(f"Condition {name} has no reviewer root to run from")
+        return evaluate_condition(reviewer_root, conditions[name]["script"], source_root, work)
+
+    routes = route(manifest, changed, condition)
     by_id = {specialist["id"]: specialist for specialist in manifest["specialists"]}
 
     def owner_of(item: dict[str, Any]) -> str | None:
@@ -646,6 +650,9 @@ def build_plan(
         if not reviewed and not assigned[identity] and not assigned_comments[identity]:
             continue  # incremental, and none of its files changed nor awaits a disposition
         specialist = by_id[identity]
+        # Only a materialized manifest declares specialists, and it has a reviewer root.
+        if reviewer_root is None:
+            raise SpecialistError(f"Specialist {identity} has no reviewer root")
         model, note = specialist_model(specialist, reviewer_root)
         notes.extend([note] if note else [])
         roles.append(

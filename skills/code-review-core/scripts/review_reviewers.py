@@ -81,22 +81,23 @@ def _frontmatter(text: str) -> tuple[dict[str, list[str] | None], int]:
     if not lines or lines[0].strip() != "---":
         return {}, 1
     tools: dict[str, list[str] | None] = {}
-    current: str | None = None
+    current: list[str] | None = None  # the list an indented `- A` line extends
     for number, line in enumerate(lines[1:], start=2):
         if line.strip() == "---":
             return tools, number + 1
         match = re.match(r"^([A-Za-z][\w-]*)\s*:\s*(.*)$", line)
         if match:
             key, value = match.group(1).casefold(), match.group(2).strip()
-            current = key if key in {"tools", "allowed-tools"} else None
-            if current:
-                tools[current] = (
+            current = None
+            if key in {"tools", "allowed-tools"}:
+                current = (
                     [item for item in (part.strip().strip("'\"") for part in value.strip("[]").split(",")) if item]
                     if value
                     else []
                 )
-        elif current and re.match(r"^\s+-\s+", line):
-            tools[current].append(line.strip()[1:].strip().strip("'\""))
+                tools[key] = current
+        elif current is not None and re.match(r"^\s+-\s+", line):
+            current.append(line.strip()[1:].strip().strip("'\""))
     return {}, 1
 
 

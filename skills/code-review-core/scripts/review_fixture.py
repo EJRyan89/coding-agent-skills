@@ -18,7 +18,7 @@ NUMBER = 12
 HEADS = {version: str(version) * 40 for version in (1, 2, 3)}
 MODEL_ARN = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/fixture"
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
-ADAPTER = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
+ADAPTER: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
 
 
 def _finding(
