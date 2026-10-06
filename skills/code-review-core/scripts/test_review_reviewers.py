@@ -165,14 +165,46 @@ class InspectionTests(unittest.TestCase):
             return inspect_skill(SKILL, f"---\nname: x\n---\n{line}\n", COMMIT, files).references
 
         self.assertEqual([".claude/agents/db-review.md"], named("Ask db-review."))
-        self.assertEqual([".claude/agents/team/sec.md"], named("Ask sec about secrets"))
-        for line in ("Ask my-db-review.", "Ask db-reviewer.", "Ask DB-REVIEW.", "Follow style.", "Read notes."):
+        self.assertEqual([".claude/agents/team/sec.md"], named("Ask `sec` about secrets"))
+        self.assertEqual([".claude/agents/team/sec.md"], named("Ask the sec agent about secrets"))
+        for line in ("Ask my-db-review.", "Ask db-reviewer.", "Ask DB-REVIEW.", "Follow style.", "Read notes.",
+                     "Ask sec about secrets"):
             with self.subTest(line=line):
                 self.assertEqual([], named(line))
         forbidden = inspect_skill(SKILL, "---\ntools: Read\n---\nAsk db-review.\n", COMMIT, files)
         self.assertEqual(("no", []), (forbidden.delegates, forbidden.evidence))
         self.assertEqual([".claude/agents/db-review.md"], forbidden.references,
                          "a named agent is still a file the skill needs")
+
+    def test_a_common_word_agent_name_in_prose_is_not_delegation(self) -> None:
+        files = {".claude/agents/review.md", ".claude/skills/x/SKILL.md"}
+        result = inspect_skill(".claude/skills/x/SKILL.md",
+                               "---\nname: x\n---\nRead the diff, then review it and report findings.\n", COMMIT, files)
+        self.assertEqual(("no", "its text never mentions starting subagents", [], []),
+                         (result.delegates, result.reason, result.evidence, result.references))
+        self.assertEqual([], entrypoint_manifest("solo", result)["resources"], "no agent file is materialized")
+
+    def test_a_common_word_agent_name_in_an_agent_context_is_delegation(self) -> None:
+        files = {".claude/agents/review.md", ".claude/agents/SecReview.md", ".claude/skills/x/SKILL.md"}
+
+        def inspected(line: str):
+            return inspect_skill(".claude/skills/x/SKILL.md", f"---\nname: x\n---\n{line}\n", COMMIT, files)
+
+        result = inspected("Start the review agent.")
+        self.assertEqual(("yes", [(4, "Start the review agent.")], [".claude/agents/review.md"]),
+                         (result.delegates, result.evidence, result.references))
+        for line in ("Ask `review` about it.", "Hand it to the review subagent.", "Pass it to the review Agent.",
+                     "Delegate the diff to review.", "Run the agent named review.", "Spawn review for each area."):
+            with self.subTest(line=line):
+                self.assertEqual(("yes", [".claude/agents/review.md"]),
+                                 (inspected(line).delegates, inspected(line).references))
+        for line in ("Start with the diff, then review it.", "Review the change.", "Run the tests and review them.",
+                     "Read `docs/review-notes.md`, then review it.", "Agents aside, review it.", "Ask Review about it."):
+            with self.subTest(line=line):
+                self.assertEqual(("no", [], []),
+                                 (inspected(line).delegates, inspected(line).evidence, inspected(line).references))
+        self.assertEqual([".claude/agents/SecReview.md"], inspected("Ask SecReview about secrets.").references,
+                         "a name that is not a plain word keeps the whole-word match")
 
     def test_an_agent_named_in_both_agent_directories_references_both_files_in_every_process(self) -> None:
         # Agents were keyed by name, so one of the two files was dropped, and which one followed the set's

@@ -8,7 +8,9 @@ A repository reviewer is configured in one of three ways:
                     the skill does not start subagents of its own (a subagent cannot start subagents)
 
 Inspection is deterministic: it reads the skill's frontmatter for the tools it may use and its text for
-explicit signs that it starts subagents, and reports the evidence rather than guessing.
+explicit signs that it starts subagents, and reports the evidence rather than guessing. A repository agent's name is
+such a sign wherever it appears as a whole word, unless the name is a plain word (`review`, `Security`): then it
+counts only where the text names an agent, in a code span, followed by "agent", or on a line that also delegates.
 """
 
 from __future__ import annotations
@@ -36,6 +38,13 @@ DELEGATION_TOOLS = {"agent", "task"}
 DELEGATION_TEXT = re.compile(
     r"\bsub-?agents?\b|\bsubagent_type\b|\b(?:Agent|Task) tool\b|\bspawn(?:s|ed|ing)?\b", re.IGNORECASE
 )
+# Wording that, on the same line, makes a plain-word agent name a reference to that agent.
+DELEGATION_PHRASE = re.compile(
+    r"\bdelegat(?:e|es|ed|ing|ion)\b|\b(?:start|launch|run|dispatch|invoke)\w*\b.*\bagents?\b", re.IGNORECASE
+)
+AGENT_WORD = re.compile(r"\s+(?:sub-?)?agents?\b", re.IGNORECASE)
+CODE_SPAN = re.compile(r"`([^`]*)`")
+PLAIN_WORD = re.compile(r"[A-Za-z][a-z]*")
 PATH_TOKEN = re.compile(r"`([^`\s]+)`|\]\(([^)\s]+)\)|(?<![\w./-])((?:[\w.-]+/)+[\w.-]+\.\w+)")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")
 
@@ -111,6 +120,22 @@ def _tool_name(spec: str) -> str:
     return spec.split("(", 1)[0].strip().casefold()
 
 
+def _names_agent(stem: str, line: str) -> bool:
+    """Whether a line names the agent whose file stem this is.
+
+    A plain word such as `review` is also ordinary prose, so it names the agent only in a code span, followed by
+    "agent", or on a line that also delegates. Any other name (`db-review`, `SecReview`) is one wherever it appears.
+    """
+    word = re.compile(rf"(?<![\w-]){re.escape(stem)}(?![\w-])")
+    if not word.search(line):
+        return False
+    if not PLAIN_WORD.fullmatch(stem):
+        return True
+    return (any(word.search(span) for span in CODE_SPAN.findall(line))
+            or any(AGENT_WORD.match(line, match.end()) for match in word.finditer(line))
+            or bool(DELEGATION_TEXT.search(line) or DELEGATION_PHRASE.search(line)))
+
+
 def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]) -> Inspection:
     """Whether a review skill starts subagents, from its tool list and its text, with the evidence."""
     lists, body_start = _frontmatter(text)
@@ -126,7 +151,7 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
     evidence: list[tuple[int, str]] = []
     references: set[str] = set()
     for number, line in enumerate(text.splitlines()[body_start - 1:], start=body_start):
-        named = [stem for stem in agents if re.search(rf"(?<![\w-]){re.escape(stem)}(?![\w-])", line)]
+        named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
             evidence.append((number, " ".join(line.split())[:160]))
         for match in PATH_TOKEN.finditer(line):

@@ -7,7 +7,9 @@ Analyzers are recognized by their configuration files and, for .NET, by analyzer
 projects (which carry the SDK's own analyzers). Where the format is one the standard library reads, the inventory
 also lists the settings that decide which rules run and how severely: MSBuild analysis properties, .editorconfig and
 .globalconfig diagnostic severities, ruff and flake8 rule selections, and ShellCheck directives. Nothing here runs an
-analyzer or executes repository code, and a file that cannot be parsed is listed as present but unread.
+analyzer or executes repository code, and a file that cannot be parsed is listed as present but unread. EditorConfig
+files are read one `key = value` per line, since the format has no continuation lines; setup.cfg and tox.ini keep
+configparser's, which are real there.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ DIAGNOSTIC_KEY = re.compile(r"dotnet_(?:analyzer_)?diagnostic(?:\.[^\s=]+)?\.sev
 GLOBAL_KEYS = frozenset({"is_global", "global_level"})
 XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 TOP_SECTION = "\x00top"
+SECTION_HEADER = re.compile(r"\[(.+)\]")
 RULE_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore")
 FLAKE8_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore", "extend_select", "extend_ignore")
 PYPROJECT_TOOLS = {"pylint": "pylint", "mypy": "mypy", "pyright": "pyright", "flake8": "flake8", "bandit": "bandit"}
@@ -143,16 +146,25 @@ def _msbuild(found: _Inventory, path: str, text: str) -> None:
 
 
 def _editorconfig(found: _Inventory, path: str, text: str) -> None:
-    parser = configparser.ConfigParser(strict=False, interpolation=None, delimiters=("=",),
-                                       comment_prefixes=("#", ";"), default_section="\x00defaults")
-    parser.optionxform = str  # type: ignore[assignment,method-assign]
-    try:
-        parser.read_string(f"[{TOP_SECTION}]\n{text}")
-    except configparser.Error:
-        found.setting(path, UNREAD)
-        return
-    for section in parser.sections():
-        for key, value in parser.items(section, raw=True):
+    # One `key = value` per line: EditorConfig has no continuation lines, so indentation means nothing. A repeated
+    # section or key merges into its first position and the last value wins.
+    sections: dict[str, dict[str, str]] = {TOP_SECTION: {}}
+    current = sections[TOP_SECTION]
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", ";")):
+            continue
+        header = SECTION_HEADER.fullmatch(stripped)
+        key, equals, value = stripped.partition("=")
+        if header:
+            current = sections.setdefault(header.group(1), {})
+        elif equals and key.strip():
+            current[key.strip()] = value.strip()
+        else:
+            found.setting(path, UNREAD)
+            return
+    for section, values in sections.items():
+        for key, value in values.items():
             if DIAGNOSTIC_KEY.fullmatch(key) or key.casefold() in GLOBAL_KEYS:
                 prefix = "" if section == TOP_SECTION else f"[{section}] "
                 found.setting(path, f"{prefix}{key} = {value}")
