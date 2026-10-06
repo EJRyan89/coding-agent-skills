@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from .errors import DeployError
 
@@ -131,7 +132,7 @@ def is_link(path: Path) -> bool:
 
 def is_reparse_point(path: Path) -> bool:
     try:
-        attributes = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
+        attributes = os.lstat(path).st_file_attributes
     except (AttributeError, OSError):
         return False
     return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
@@ -181,7 +182,13 @@ def find_pwsh(search_path: str) -> str | None:
     return shutil.which("pwsh", path=search_path) if search_path else None
 
 
-def hidden_window() -> dict[str, int]:
+class HiddenWindow(TypedDict):
+    """The subprocess.run keyword hidden_window gives, typed so that `**hidden_window()` checks as that keyword."""
+
+    creationflags: int
+
+
+def hidden_window() -> HiddenWindow:
     """Keyword arguments for subprocess.run that start a console program without a window of its own.
 
     A hook runs without a console, so a console program it starts would otherwise flash a window.

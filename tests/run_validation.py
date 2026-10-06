@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import functools
 import io
 import json
 import os
@@ -522,10 +523,10 @@ def skill_path_problems(root: Path) -> list[str]:
     ]
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
-        dependencies = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        for directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
-            if (directory / "SKILL.md").is_file():
-                documents += [(path, dependencies, directory) for path in sorted(directory.rglob("*.md"))]
+        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
+            if (skill_directory / "SKILL.md").is_file():
+                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
     problems: list[str] = []
     for path, dependencies, directory in documents:
         name = path.relative_to(root).as_posix()
@@ -556,7 +557,7 @@ def skill_path_problems(root: Path) -> list[str]:
                     problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
             for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
                 named = match.group(1).rstrip(".")  # a path may end a sentence
-                if not (directory / named).exists():
+                if directory is not None and not (directory / named).exists():
                     problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
     return problems
 
@@ -942,8 +943,9 @@ def _contract_exemption(tree: ast.Module) -> str | None:
             isinstance(target, ast.Name) and target.id == CONTRACT_EXEMPTION for target in node.targets
         ):
             value = node.value
-            valid = isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip()
-            return value.value if valid else None
+            if isinstance(value, ast.Constant) and isinstance(value.value, str) and value.value.strip():
+                return value.value
+            return None
     return ""
 
 
@@ -962,8 +964,8 @@ def _contract_breaches(tree: ast.Module) -> list[tuple[int, str]]:
     entry_points = [
         node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name in {"main", "_main"}
     ]
-    for function in entry_points:
-        for node in ast.walk(function):
+    for entry_point in entry_points:
+        for node in ast.walk(entry_point):
             if (
                 isinstance(node, ast.Return)
                 and isinstance(node.value, ast.Constant)
@@ -1338,6 +1340,14 @@ def relative(path: Path) -> str:
     return path.relative_to(REPOSITORY_ROOT).as_posix()
 
 
+def required_match(pattern: str, text: str) -> re.Match[str]:
+    """re.search for a check that fails, naming the pattern, when the text does not match it."""
+    match = re.search(pattern, text)
+    if match is None:
+        raise AssertionError(f"nothing matches {pattern!r}")
+    return match
+
+
 def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
@@ -1366,7 +1376,7 @@ def find_powershell() -> str:
 def find_ruff() -> str | None:
     """ruff from this interpreter, where requirements-dev.txt installs it even when its scripts are not on PATH."""
     try:
-        from ruff.__main__ import find_ruff_bin
+        from ruff.__main__ import find_ruff_bin  # type: ignore[import-untyped]  # ruff ships no type information
 
         return find_ruff_bin()
     except (ImportError, FileNotFoundError):
@@ -1608,11 +1618,11 @@ def suite_jobs(suites: list[Path]) -> list[Job]:
         label = relative(suite)
         count = shard_count(suite)
         if suite.suffix.casefold() != ".py":
-            jobs.append(Job(label, label, UNSPLIT_SUITE_WEIGHT, lambda s=suite: run_test_script(s)))
+            jobs.append(Job(label, label, UNSPLIT_SUITE_WEIGHT, functools.partial(run_test_script, suite)))
             continue
         tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
         if count == 1:
-            jobs.append(Job(label, label, tests, lambda s=suite: run_test_script(s)))
+            jobs.append(Job(label, label, tests, functools.partial(run_test_script, suite)))
             continue
         for index in range(count):
             jobs.append(
@@ -1620,7 +1630,7 @@ def suite_jobs(suites: list[Path]) -> list[Job]:
                     f"{label} [shard {index + 1}/{count}]",
                     label,
                     tests / count,
-                    lambda s=suite, i=index, n=count: run_shard(s, i, n),
+                    functools.partial(run_shard, suite, index, count),
                 )
             )
     return jobs
@@ -1697,12 +1707,14 @@ def type_check_jobs() -> list[Job]:
             core,
             core,
             UNSPLIT_SUITE_WEIGHT,
-            lambda: mypy_type_check(REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration),
+            functools.partial(mypy_type_check, REPOSITORY_ROOT, list(TYPE_CHECK_ROOTS), configuration),
         )
     ]
     for root in type_check_skill_roots():
         name = f"static type check (mypy {relative(root)})"
-        jobs.append(Job(name, name, UNSPLIT_SUITE_WEIGHT, lambda r=root: mypy_type_check(r, ["."], configuration)))
+        jobs.append(
+            Job(name, name, UNSPLIT_SUITE_WEIGHT, functools.partial(mypy_type_check, root, ["."], configuration))
+        )
     return jobs
 
 
@@ -1830,7 +1842,12 @@ class RepositoryValidation(unittest.TestCase):
             ["the hub guard's hook does not match the Bash tool", "the hub guard's hook does not match the Write tool"],
             hub_guard_matcher_problems(settings("Edit|MultiEdit|NotebookEdit|PowerShell")),
         )
-        for broken in (settings("Bash|PowerShell", "python -B tools/other.py guard"), {}, {"hooks": {}}):
+        broken_settings: list[dict[str, object]] = [
+            settings("Bash|PowerShell", "python -B tools/other.py guard"),
+            {},
+            {"hooks": {}},
+        ]
+        for broken in broken_settings:
             with self.subTest(settings=broken):
                 self.assertEqual(
                     ["no PreToolUse hook runs tools/worktrees.py guard"], hub_guard_matcher_problems(broken)
@@ -3039,22 +3056,23 @@ class RepositoryValidation(unittest.TestCase):
             self.assertEqual([], sorted(path.name for path in root.iterdir() if path.name.startswith(".")))
 
     def test_type_check_runs_once_per_root(self) -> None:
-        jobs = {job.name: job for job in all_jobs()}
         configuration = REPOSITORY_ROOT / "pyproject.toml"
-        core = "static type check (mypy deployer, tools, deploy.py, tests)"
-        self.assertIn(core, jobs)
         with mock.patch(f"{__name__}.mypy_type_check") as check:
+            jobs = {job.name: job for job in all_jobs()}
+            core = "static type check (mypy deployer, tools, deploy.py, tests)"
+            self.assertIn(core, jobs)
             jobs[core].run()
-        check.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests"], configuration)
-        # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
-        roots = type_check_skill_roots()
-        self.assertIn(SKILLS_ROOT / "code-review-core" / "scripts", roots)
-        self.assertNotIn(SKILLS_ROOT / "update-coding-agent-skills" / "scripts", roots)
-        for root in roots:
-            name = f"static type check (mypy {relative(root)})"
-            with self.subTest(root=name), mock.patch(f"{__name__}.mypy_type_check") as check:
-                jobs[name].run()
-                check.assert_called_once_with(root, ["."], configuration)
+            check.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "deploy.py", "tests"], configuration)
+            # Each skill whose scripts/ holds a module is its own root, checked from inside it as the skill imports.
+            roots = type_check_skill_roots()
+            self.assertIn(SKILLS_ROOT / "code-review-core" / "scripts", roots)
+            self.assertNotIn(SKILLS_ROOT / "update-coding-agent-skills" / "scripts", roots)
+            for root in roots:
+                name = f"static type check (mypy {relative(root)})"
+                with self.subTest(root=name):
+                    check.reset_mock()
+                    jobs[name].run()
+                    check.assert_called_once_with(root, ["."], configuration)
 
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
@@ -3202,7 +3220,7 @@ class RepositoryValidation(unittest.TestCase):
         workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
         # Dispatch is its only trigger, so it can never be a required status check or run on a pull request.
-        triggers = re.search(r"(?ms)^on:\n(.*?)^permissions:", workflow).group(1)
+        triggers = required_match(r"(?ms)^on:\n(.*?)^permissions:", workflow).group(1)
         self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_]+):", triggers))
         self.assertRegex(workflow, r"(?m)^permissions:\n  contents: read\n")
         self.assertNotIn("secrets.", workflow)
@@ -3219,8 +3237,8 @@ class RepositoryValidation(unittest.TestCase):
         for action in shared:
             with self.subTest(shared=action):
                 self.assertEqual(
-                    re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
-                    re.search(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
+                    required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
+                    required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
                 )
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
@@ -3233,8 +3251,8 @@ class RepositoryValidation(unittest.TestCase):
         ):
             with self.subTest(runtime=runtime):
                 # The third column: the maintainer's machines come first and may be ahead of the runner.
-                tested = re.search(rf"(?m)^\| {runtime} \| \S+ \| (\d+(?:\.\d+)+) \|", readme).group(1)
-                default = re.search(
+                tested = required_match(rf"(?m)^\| {runtime} \| \S+ \| (\d+(?:\.\d+)+) \|", readme).group(1)
+                default = required_match(
                     rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow
                 ).group(1)
                 self.assertEqual(tested, default)
@@ -3342,7 +3360,7 @@ def main(argv: list[str] | None = None) -> int:
         base = f"origin/{os.environ.get('GITHUB_BASE_REF') or 'main'}"
         paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
         only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
-        if only:
+        if only and paths is not None:
             suites = suites_naming(paths, regression_suites())
             jobs = suite_jobs(suites)
             mode = (

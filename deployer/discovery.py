@@ -74,10 +74,13 @@ def converse(
             )
         except OSError as exc:
             raise ListingError(f"cannot start it: {exc}") from exc
+        # Both are pipes, as requested above.
+        assert process.stdin is not None and process.stdout is not None
+        stdin, stdout = process.stdin, process.stdout
 
         def read() -> None:
-            with process.stdout:
-                for line in process.stdout:
+            with stdout:
+                for line in stdout:
                     lines.put(line)
             lines.put(None)
 
@@ -89,12 +92,12 @@ def converse(
             # A program that has already exited refuses its requests; its exit code and errors say why.
             with contextlib.suppress(OSError):
                 for request in requests:
-                    process.stdin.write(request + "\n")
-                process.stdin.flush()
+                    stdin.write(request + "\n")
+                stdin.flush()
                 if answered is None:
                     # The Codex app server stops at the end of stdin, before it answers, so stdin stays open
                     # until an awaited answer arrives.
-                    process.stdin.close()
+                    stdin.close()
             while True:
                 try:
                     line = lines.get(timeout=max(deadline - time.monotonic(), 0))
@@ -108,7 +111,7 @@ def converse(
                     return received
         finally:
             with contextlib.suppress(OSError):
-                process.stdin.close()
+                stdin.close()
             try:
                 process.wait(timeout=CLOSE_GRACE)
             except subprocess.TimeoutExpired:

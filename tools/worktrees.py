@@ -25,6 +25,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -284,14 +285,14 @@ def read_bash(command: str, cwd: Path | None, reading: Reading, depth: int = 0) 
             index += 1
         if index >= len(segment):
             continue
-        name = command_name(segment[index])
+        program = command_name(segment[index])
         arguments: list[Word] = list(segment[index + 1 :])
-        if name in GIT_NAMES:
+        if program in GIT_NAMES:
             record_git_call(arguments, directory, reading)
-        elif name in BASH_NAMES:
-            follow(name, bash_script(arguments), cwd, reading, depth, read_bash)
-        elif name in POWERSHELL_NAMES:
-            follow(name, powershell_script(arguments), cwd, reading, depth, read_powershell)
+        elif program in BASH_NAMES:
+            follow(program, bash_script(arguments), cwd, reading, depth, read_bash)
+        elif program in POWERSHELL_NAMES:
+            follow(program, powershell_script(arguments), cwd, reading, depth, read_powershell)
 
 
 @functools.cache
@@ -299,7 +300,7 @@ def powershell_reader() -> str:
     return POWERSHELL_READER.read_text(encoding="utf-8")
 
 
-def powershell_events(command: str, reading: Reading) -> list[dict[str, object]] | None:
+def powershell_events(command: str, reading: Reading) -> list[dict[str, Any]] | None:
     """The reader's events for one command, or None with a note saying why there are none.
 
     pwsh starts with -Command rather than -File, so no execution policy applies, and not with -EncodedCommand,
@@ -407,10 +408,7 @@ def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int
         elif kind == "note":
             reading.notes.append(str(event.get("text")))
         elif kind == "command":
-            words: list[Word] = [
-                None if word["dynamic"] else word["text"]
-                for word in event["words"]  # type: ignore[attr-defined]
-            ]
+            words: list[Word] = [None if word["dynamic"] else word["text"] for word in event["words"]]
             name, arguments = command_name(words[0]), words[1:]
             if name in LOCATION_NAMES:
                 session.cwd = location_after(session.cwd, *location_target(arguments))

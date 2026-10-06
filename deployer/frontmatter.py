@@ -231,7 +231,10 @@ def _block_sequence(lines: list[str]) -> list[str]:
         raise FrontmatterError("a block sequence's items must be indented alike")
     items = []
     for line in lines:
-        item = (SEQUENCE_ITEM.match(line.strip()).group(1) or "").strip()
+        match = SEQUENCE_ITEM.match(line.strip())
+        if match is None:
+            raise FrontmatterError("a block sequence item must start with '-'")
+        item = (match.group(1) or "").strip()
         if not item or NESTED_KEY.match(item) or item.startswith(("[", "-")):
             raise FrontmatterError("a block sequence item must be a one-line scalar")
         items.append(_scalar(item))

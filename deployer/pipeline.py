@@ -16,6 +16,7 @@ from typing import TextIO
 from . import config, fsops, hashing, journal, lock, manifest, platform_support, render, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, PROG, ParserExit, deploy_parser
 from .errors import Cancelled, DeployError, print_error, see_recovery
+from .manifest import Ownership
 from .names import require_safe_name
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 
@@ -63,7 +64,7 @@ class Context:
     source: source.Source
     config: dict[str, str]
     manifest: manifest.Manifest
-    owned: manifest.Ownership
+    owned: Ownership  # not manifest.Ownership: in this class body, manifest names the field above
     stdin: TextIO
     selection: Selection = field(default_factory=Selection)
 
