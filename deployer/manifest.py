@@ -108,7 +108,9 @@ def _validate(data: dict[str, Any], path: Path) -> None:
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
             values = entry.get(field_name, [])
-            if not isinstance(values, list) or not all(isinstance(value, str) and is_valid_name(value) for value in values):
+            if not isinstance(values, list) or not all(
+                isinstance(value, str) and is_valid_name(value) for value in values
+            ):
                 raise DeployError("ERROR: Manifest selection fields are malformed")
         for kind in OWNED_KINDS:
             items = entry.get(kind, {})
@@ -128,16 +130,12 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                     or (kind == "shared" and value.get("role", "owner") not in ("owner", "dependency"))
                     or (kind == "skills" and not _safe_names(value.get("shared_deps", [])))
                 ):
-                    raise DeployError(
-                        f"ERROR: Manifest entry is malformed: source '{source_id}' {kind} {name!r}"
-                    )
+                    raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind} {name!r}")
 
 
-def _record_owners(
-    data: dict[str, Any], kind: str, label: str, owners: dict[str, str]
-) -> None:
+def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str, str]) -> None:
     for source_id, entry in data["sources"].items():
-        for name in (entry.get(kind) or {}):
+        for name in entry.get(kind) or {}:
             if name in owners and owners[name] != source_id:
                 raise DeployError(
                     f"ERROR: {label} '{name}' is owned by both '{owners[name]}' and '{source_id}' in manifest"

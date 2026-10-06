@@ -149,8 +149,11 @@ def request_to_record_input(
 
 def prior_severities(request: dict[str, Any]) -> dict[str, str]:
     """Each prior finding's severity, by ID, so a result's `repeats` of it can be checked."""
-    return {item["id"]: item.get("severity") for item in request.get("prior_findings") or []
-            if isinstance(item, dict) and isinstance(item.get("id"), str)}
+    return {
+        item["id"]: item.get("severity")
+        for item in request.get("prior_findings") or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
 
 
 def _ids(items: Any, what: str) -> list[str]:
@@ -192,16 +195,15 @@ def commit_adapter_result(
         prior_severities=prior_severities(request),
     )
     if result["status"] != "complete":
-        raise ReviewOperationError(
-            f"Reviewer result status is {result['status']}; incomplete results are not archived"
-        )
+        raise ReviewOperationError(f"Reviewer result status is {result['status']}; incomplete results are not archived")
     repository = validate_repository_identity(request["repository"])
     number = request["pull_number"]
     archive_versions = list_versions(pull_directory(archive_root, repository, number))
     current = archive_versions[-1] if archive_versions else None
     version = 1 if current is None else current + 1
-    record_input = request_to_record_input(request, adapter, reviewers, patches=patches, scope=scope,
-                                           uncovered_files=uncovered_files)
+    record_input = request_to_record_input(
+        request, adapter, reviewers, patches=patches, scope=scope, uncovered_files=uncovered_files
+    )
     # A re-review judges and extends the archive's latest ledger; an initial review starts a fresh one.
     prior_ledger = current_ledger(archive_root, repository, number) if request["mode"] == "re-review" else []
     record = build_record(record_input, result, version=version, policy=policy, prior_ledger=prior_ledger)
@@ -226,9 +228,7 @@ def commit_adapter_result(
                 )
             record = pending
         elif local_current != current:
-            raise ReviewOperationError(
-                "Local mirror and archive versions differ; reconcile before committing"
-            )
+            raise ReviewOperationError("Local mirror and archive versions differ; reconcile before committing")
         else:
             commit_record(
                 local_mirror_root,
@@ -251,8 +251,16 @@ def commit_adapter_result(
 
 
 LEGACY_INDEX_KEYS = {
-    "schema_version", "kind", "repository", "pull_number", "reviewed_at", "reviewed_head_sha",
-    "verdict", "source_sha256", "source_path", "source_file_sha256",
+    "schema_version",
+    "kind",
+    "repository",
+    "pull_number",
+    "reviewed_at",
+    "reviewed_head_sha",
+    "verdict",
+    "source_sha256",
+    "source_path",
+    "source_file_sha256",
 }
 
 
@@ -311,15 +319,29 @@ def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str,
         review = record["review"]
         coverage = review.get("coverage") or {}
         _, markdown = record_paths(directory, review["version"])
-        return {"head_sha": record["pull_request"]["head_sha"], "source": "record", "version": review["version"],
-                "incomplete": bool(coverage.get("unavailable_sources")), "verdict": review["verdict"],
-                "counts": dict(review["counts"]), "ledger": ledger_summary(record), "report": str(markdown)}
+        return {
+            "head_sha": record["pull_request"]["head_sha"],
+            "source": "record",
+            "version": review["version"],
+            "incomplete": bool(coverage.get("unavailable_sources")),
+            "verdict": review["verdict"],
+            "counts": dict(review["counts"]),
+            "ledger": ledger_summary(record),
+            "report": str(markdown),
+        }
     legacy = legacy_index(archive_root, repository, number)
     if legacy is not None:
         report = directory / "legacy-review.md"
-        return {"head_sha": legacy["reviewed_head_sha"], "source": "legacy", "version": None, "incomplete": False,
-                "verdict": legacy["verdict"].replace(" ", "_"), "counts": legacy_counts(report), "ledger": None,
-                "report": str(report) if report.is_file() else None}
+        return {
+            "head_sha": legacy["reviewed_head_sha"],
+            "source": "legacy",
+            "version": None,
+            "incomplete": False,
+            "verdict": legacy["verdict"].replace(" ", "_"),
+            "counts": legacy_counts(report),
+            "ledger": None,
+            "report": str(report) if report.is_file() else None,
+        }
     return None
 
 

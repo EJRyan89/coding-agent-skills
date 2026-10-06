@@ -35,7 +35,8 @@ class NewSkillTestCase(unittest.TestCase):
         )
         for name in ("alpha", "beta"):
             (self.root / "skills" / name / "SKILL.md").write_text(
-                f"---\nname: {name}\ndescription: {name.capitalize()}. Use it when testing.\n---\n\nBody.\n", encoding="utf-8"
+                f"---\nname: {name}\ndescription: {name.capitalize()}. Use it when testing.\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             (self.root / "deploy-meta" / f"{name}.json").write_text(
                 json.dumps({"required_vars": [], "shared_deps": []}), encoding="utf-8"
@@ -56,7 +57,9 @@ class NewSkillTestCase(unittest.TestCase):
         reference.write_text(text.replace(marker, f"{marker}\n\nExplained."), encoding="utf-8")
 
     def snapshot(self) -> dict[str, bytes]:
-        return {path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}
+        return {
+            path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()
+        }
 
     def test_it_writes_frontmatter_metadata_and_the_generated_reference_section(self) -> None:
         remaining = new_skill.scaffold(self.root, "widget-report", DESCRIPTION, argument_hint="ORG [--months N]")
@@ -96,13 +99,23 @@ class NewSkillTestCase(unittest.TestCase):
         new_skill.scaffold(self.root, "widget-report", DESCRIPTION)
         self.add_prose("widget-report")
         readme = self.root / "README.md"
-        readme.write_text(readme.read_text(encoding="utf-8").replace("| `suite` | A bundle. |", "| `suite` | A bundle. |\n| `widget-report` | Widgets. |"), encoding="utf-8")
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace(
+                "| `suite` | A bundle. |", "| `suite` | A bundle. |\n| `widget-report` | Widgets. |"
+            ),
+            encoding="utf-8",
+        )
 
         self.assertEqual([], skill_reference.problems(self.root))
 
     def test_options_reach_the_frontmatter_and_metadata(self) -> None:
         new_skill.scaffold(
-            self.root, "tidy", "Tidy things.", user_only=True, opt_in=True, tools=["gh", "gh"],
+            self.root,
+            "tidy",
+            "Tidy things.",
+            user_only=True,
+            opt_in=True,
+            tools=["gh", "gh"],
             allowed_tools=["Bash(gh auth status)", "PowerShell(gh auth status)"],
         )
 
@@ -128,8 +141,11 @@ class NewSkillTestCase(unittest.TestCase):
             ("con", {}, "not a valid skill name"),
             ("claude-helper", {}, "reserved word 'claude', which the Agent Skills frontmatter rules forbid"),
             ("anthropic", {}, "reserved word 'anthropic'"),
-            ("fresh", {"description": "Emit <tag> markup. Use it when testing."},
-             "XML tag '<tag>', which the Agent Skills frontmatter rules forbid"),
+            (
+                "fresh",
+                {"description": "Emit <tag> markup. Use it when testing."},
+                "XML tag '<tag>', which the Agent Skills frontmatter rules forbid",
+            ),
             ("alpha", {}, "already a skill"),
             ("suite", {}, "already a skill, a bundle"),
             ("fresh", {"tools": ["jq"]}, "unknown tool jq"),

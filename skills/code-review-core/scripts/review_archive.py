@@ -98,10 +98,13 @@ def commit_record(
         json_path, markdown_path = record_paths(directory, version)
         if json_path.exists() or markdown_path.exists():
             raise PersistenceError("Review destination already exists")
-        prior_records = ([validate_record_pair(*record_paths(directory, item)) for item in versions]
-                         if record["review"]["mode"] == "re-review" else [])
+        prior_records = (
+            [validate_record_pair(*record_paths(directory, item)) for item in versions]
+            if record["review"]["mode"] == "re-review"
+            else []
+        )
         directory.mkdir(parents=True, exist_ok=True)
-        persisted = write_record_pair(json_path, markdown_path, record, prior_records=prior_records,
-                                      model_names=model_names, flags=flags)
+        persisted = write_record_pair(
+            json_path, markdown_path, record, prior_records=prior_records, model_names=model_names, flags=flags
+        )
         return json_path, markdown_path, persisted
-

@@ -115,7 +115,10 @@ class ClassifyTests(unittest.TestCase):
             ("repo", TIP, None, "owner/name"),
         ):
             run = responder("[]")
-            with self.subTest(repository=repository, sha=sha, upstream=upstream), self.assertRaisesRegex(QueryError, message):
+            with (
+                self.subTest(repository=repository, sha=sha, upstream=upstream),
+                self.assertRaisesRegex(QueryError, message),
+            ):
                 classify(repository, "topic", sha, upstream, runner=run)
             self.assertEqual([], run.calls)
 
@@ -144,7 +147,7 @@ def router(pulls: str, commits: str = "", returncode: int = 0, stderr: str = "")
 def history(*commits: tuple[str, ...], page_size: int = 100) -> str:
     """The commits as `gh api --paginate --slurp` prints them: a JSON array of pages, each an array of commits."""
     objects = [{"sha": sha, "parents": [{"sha": parent} for parent in parents]} for sha, *parents in commits]
-    return json.dumps([objects[start:start + page_size] for start in range(0, len(objects), page_size)] or [[]])
+    return json.dumps([objects[start : start + page_size] for start in range(0, len(objects), page_size)] or [[]])
 
 
 def in_main(sha: str) -> bool:
@@ -241,7 +244,8 @@ class UpdatedPullRequestTests(unittest.TestCase):
             cases[f"malformed commits for pull request 7: {re.escape(output[:20])}"] = router(merged, output)
         for page in unexpected:
             cases[f"unexpected commit for pull request 7: {re.escape(repr(page[0])[:20])}"] = router(
-                merged, json.dumps([page]))
+                merged, json.dumps([page])
+            )
         for message, run in cases.items():
             with self.subTest(message=message), self.assertRaisesRegex(QueryError, message):
                 classify("owner/repo", "topic", TIP, runner=run, in_base=in_main)
@@ -263,7 +267,10 @@ class GitFixture(unittest.TestCase):
     def git(self, *arguments: str) -> str:
         result = subprocess.run(
             ["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid", *arguments],
-            capture_output=True, text=True, encoding="utf-8", check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         )
         return result.stdout.strip()
 

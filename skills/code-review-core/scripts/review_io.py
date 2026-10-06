@@ -47,8 +47,10 @@ def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
     target = explicit.resolve()
     for root in (SKILLS_ROOT, *deployed_skill_roots()):
         if target.is_relative_to(root.resolve()):
-            raise PersistenceError(f"{explicit} is inside the skills directory {root}; omit the option to write "
-                                   "under a new temporary directory")
+            raise PersistenceError(
+                f"{explicit} is inside the skills directory {root}; omit the option to write "
+                "under a new temporary directory"
+            )
     return explicit
 
 
@@ -113,9 +115,7 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
             os.chmod(temporary, mode)
@@ -142,9 +142,7 @@ def atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-        )
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
             os.chmod(temporary, mode)
@@ -215,9 +213,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         try:
             self.directory.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise PersistenceError(
-                f"Cannot prepare lock parent {self.directory.parent}: {exc}"
-            ) from exc
+            raise PersistenceError(f"Cannot prepare lock parent {self.directory.parent}: {exc}") from exc
         start_time = self.probe(os.getpid()).start_time
         while True:
             try:
@@ -264,9 +260,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                 recorded_start = None
             if same_process(self.probe(pid), recorded_start) is not False:
                 return False
-            stale = self.directory.with_name(
-                f"{self.directory.name}.stale.{secrets.token_hex(8)}"
-            )
+            stale = self.directory.with_name(f"{self.directory.name}.stale.{secrets.token_hex(8)}")
             os.replace(self.directory, stale)
             shutil.rmtree(stale)
             return True
@@ -284,6 +278,4 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             self.directory.rmdir()
             self._held = False
         except OSError as release_error:
-            raise PersistenceError(
-                f"Cannot safely release lock {self.directory}: {release_error}"
-            ) from release_error
+            raise PersistenceError(f"Cannot safely release lock {self.directory}: {release_error}") from release_error

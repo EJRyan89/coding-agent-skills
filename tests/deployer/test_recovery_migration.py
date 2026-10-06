@@ -45,10 +45,25 @@ class RecoveryTests(DeployerTestCase):
         corrupted = hashing.hash_path(self.skills_dir / "alpha")
         self.write(
             self.staging_run("20260101-000000-fake") / "journal.jsonl",
-            journal_line({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                          "retain": False, "backup_hash": original})
-            + journal_line({"op": "install", "item": "alpha", "from": "staging/alpha", "to": "skills/alpha",
-                            "staged_hash": corrupted}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": False,
+                    "backup_hash": original,
+                }
+            )
+            + journal_line(
+                {
+                    "op": "install",
+                    "item": "alpha",
+                    "from": "staging/alpha",
+                    "to": "skills/alpha",
+                    "staged_hash": corrupted,
+                }
+            ),
         )
         result = self.deploy_ok("--all")
         self.assertIn("Recovering uncommitted run 20260101-000000-fake (rolling back)...", result.output)
@@ -64,10 +79,27 @@ class RecoveryTests(DeployerTestCase):
         corrupted = hashing.hash_path(self.agents_dir / "alpha")
         self.write(
             self.staging_run("20260101-000000-adapter") / "journal.jsonl",
-            journal_line({"op": "backup", "root": "agents", "item": "alpha", "from": "agents/alpha",
-                          "to": "agents/alpha.deploying-bak", "retain": False, "backup_hash": original})
-            + journal_line({"op": "install", "root": "agents", "item": "alpha", "from": f"{staging_label}/alpha",
-                            "to": "agents/alpha", "staged_hash": corrupted}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "root": "agents",
+                    "item": "alpha",
+                    "from": "agents/alpha",
+                    "to": "agents/alpha.deploying-bak",
+                    "retain": False,
+                    "backup_hash": original,
+                }
+            )
+            + journal_line(
+                {
+                    "op": "install",
+                    "root": "agents",
+                    "item": "alpha",
+                    "from": f"{staging_label}/alpha",
+                    "to": "agents/alpha",
+                    "staged_hash": corrupted,
+                }
+            ),
         )
         result = self.deploy_ok("--all")
         self.assertIn("Recovering uncommitted run 20260101-000000-adapter (rolling back)...", result.output)
@@ -100,8 +132,9 @@ class RecoveryTests(DeployerTestCase):
         )
         self.assertTrue(all(journal.valid_entry(entry, run_id) for entry in entries))
         staging = self.home / "staging-run"
-        render.Staged(skills={"alpha": {"SKILL.md": b"a"}}, adapters={"alpha": {"SKILL.md": b"b"}},
-                      agents={"reviewer.md": b"c"}).write(staging)
+        render.Staged(
+            skills={"alpha": {"SKILL.md": b"a"}}, adapters={"alpha": {"SKILL.md": b"b"}}, agents={"reviewer.md": b"c"}
+        ).write(staging)
         self.assertEqual({"alpha", ".agent-adapters", ".claude-agents"}, {path.name for path in staging.iterdir()})
         self.assertTrue((staging / ".agent-adapters" / "alpha" / "SKILL.md").is_file())
         self.assertTrue((staging / ".claude-agents" / "reviewer.md").is_file())
@@ -109,16 +142,24 @@ class RecoveryTests(DeployerTestCase):
     def test_journals_written_with_earlier_staging_labels_stay_valid(self) -> None:
         run_id = "20260101-000000-label"
         adapter = {"op": "install", "root": "agents", "item": "alpha", "to": "agents/alpha", "staged_hash": ZERO_HASH}
-        agent = {"op": "install", "root": "claude-agents", "item": "reviewer.md", "to": "claude-agents/reviewer.md",
-                 "staged_hash": ZERO_HASH}
+        agent = {
+            "op": "install",
+            "root": "claude-agents",
+            "item": "reviewer.md",
+            "to": "claude-agents/reviewer.md",
+            "staged_hash": ZERO_HASH,
+        }
         for label in ("staging-adapters", "staging-wrappers"):
             self.assertTrue(journal.valid_entry({**adapter, "from": f"{label}/alpha"}, run_id), label)
         self.assertTrue(journal.valid_entry({**agent, "from": "staging-claude-agents/reviewer.md"}, run_id))
         self.assertFalse(journal.valid_entry({**adapter, "from": "staging-other/alpha"}, run_id))
         self.assertFalse(journal.valid_entry({**adapter, "from": "staging/.claude-agents/alpha"}, run_id))
         self.assertFalse(journal.valid_entry({**agent, "from": "staging-wrappers/reviewer.md"}, run_id))
-        self.assertFalse(journal.valid_entry({**adapter, "root": "claude", "from": "staging-wrappers/alpha",
-                                              "to": "skills/alpha"}, run_id))
+        self.assertFalse(
+            journal.valid_entry(
+                {**adapter, "root": "claude", "from": "staging-wrappers/alpha", "to": "skills/alpha"}, run_id
+            )
+        )
 
     def test_apply_time_failure_rolls_back_the_current_journal_immediately(self) -> None:
         self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))
@@ -156,10 +197,25 @@ class RecoveryTests(DeployerTestCase):
         journal = self.staging_run("20260101-000000-gone") / "journal.jsonl"
         self.write(
             journal,
-            journal_line({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                          "retain": False, "backup_hash": ZERO_HASH})
-            + journal_line({"op": "install", "item": "alpha", "from": "staging/alpha", "to": "skills/alpha",
-                            "staged_hash": ZERO_HASH}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": False,
+                    "backup_hash": ZERO_HASH,
+                }
+            )
+            + journal_line(
+                {
+                    "op": "install",
+                    "item": "alpha",
+                    "from": "staging/alpha",
+                    "to": "skills/alpha",
+                    "staged_hash": ZERO_HASH,
+                }
+            ),
         )
         result = self.deploy_fails("--all", pattern="Both alpha and backup are missing during rollback")
         self.assertIn("ERROR: Recovery failed, so nothing was deployed.", result.output)
@@ -174,10 +230,25 @@ class RecoveryTests(DeployerTestCase):
         journal = self.staging_run(run_id) / "journal.jsonl"
         self.write(
             journal,
-            journal_line({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                          "retain": False, "backup_hash": original})
-            + journal_line({"op": "install", "item": "alpha", "from": "staging/alpha", "to": "skills/alpha",
-                            "staged_hash": ZERO_HASH}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": False,
+                    "backup_hash": original,
+                }
+            )
+            + journal_line(
+                {
+                    "op": "install",
+                    "item": "alpha",
+                    "from": "staging/alpha",
+                    "to": "skills/alpha",
+                    "staged_hash": ZERO_HASH,
+                }
+            ),
         )
         self.deploy_fails("--all", pattern="Install verification failed")
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
@@ -195,8 +266,15 @@ class RecoveryTests(DeployerTestCase):
         sentinel = self.sentinel()
         self.write(
             self.staging_run("20260101-000000-trav") / "journal.jsonl",
-            journal_line({"op": "install", "item": "../sentinel", "from": "staging/../sentinel",
-                          "to": "skills/../sentinel", "staged_hash": ZERO_HASH}),
+            journal_line(
+                {
+                    "op": "install",
+                    "item": "../sentinel",
+                    "from": "staging/../sentinel",
+                    "to": "skills/../sentinel",
+                    "staged_hash": ZERO_HASH,
+                }
+            ),
         )
         self.deploy_fails("--all", pattern="Malformed journal entry")
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
@@ -206,8 +284,15 @@ class RecoveryTests(DeployerTestCase):
         sentinel = self.sentinel()
         self.write(
             self.staging_run("20260101-000000-bslash") / "journal.jsonl",
-            journal_line({"op": "install", "item": "..\\sentinel", "from": "staging/..\\sentinel",
-                          "to": "skills/..\\sentinel", "staged_hash": ZERO_HASH}),
+            journal_line(
+                {
+                    "op": "install",
+                    "item": "..\\sentinel",
+                    "from": "staging/..\\sentinel",
+                    "to": "skills/..\\sentinel",
+                    "staged_hash": ZERO_HASH,
+                }
+            ),
         )
         self.deploy_fails("--all", pattern="Malformed journal entry")
         self.assertTrue(sentinel.is_file())
@@ -218,9 +303,17 @@ class RecoveryTests(DeployerTestCase):
         journal = self.staging_run("20260101-000000-bdest") / "journal.jsonl"
         self.write(
             journal,
-            journal_line({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                          "retain": True, "backup_hash": hashing.hash_path(self.skills_dir / "alpha"),
-                          "backup_dest": "..\\sentinel"}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": True,
+                    "backup_hash": hashing.hash_path(self.skills_dir / "alpha"),
+                    "backup_dest": "..\\sentinel",
+                }
+            ),
         )
         self.deploy_fails("--all", pattern="Malformed journal entry")
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
@@ -243,8 +336,17 @@ class RecoveryTests(DeployerTestCase):
         self.write_manifest(data)
         self.write(
             self.staging_run(run_id) / "journal.jsonl",
-            journal_line({"op": "backup", "item": "alpha", "from": "skills/alpha", "to": "skills/alpha.deploying-bak",
-                          "retain": True, "backup_hash": backup_hash, "backup_dest": f".backups/{run_id}/alpha"}),
+            journal_line(
+                {
+                    "op": "backup",
+                    "item": "alpha",
+                    "from": "skills/alpha",
+                    "to": "skills/alpha.deploying-bak",
+                    "retain": True,
+                    "backup_hash": backup_hash,
+                    "backup_dest": f".backups/{run_id}/alpha",
+                }
+            ),
         )
         self.deploy_fails("--all", pattern="Backup path contains a symlink or junction")
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
@@ -273,7 +375,10 @@ class MigrationTests(DeployerTestCase):
                             "old-only": {"hash": hashing.hash_path(self.skills_dir / "old-only")},
                         },
                         "shared": {
-                            "shared-doc.md": {"hash": hashing.hash_path(self.skills_dir / "shared-doc.md"), "role": "owner"}
+                            "shared-doc.md": {
+                                "hash": hashing.hash_path(self.skills_dir / "shared-doc.md"),
+                                "role": "owner",
+                            }
                         },
                     }
                 },
@@ -282,9 +387,7 @@ class MigrationTests(DeployerTestCase):
         result = self.deploy_ok("--migrate-from", "old/source")
         self.assertIn("Moved ownership from 'old/source' to 'new/source'.", result.output)
         self.assertIn(
-            "MIGRATED (2):\n"
-            "  alpha\n"
-            "  shared-doc.md (shared asset)\n",
+            "MIGRATED (2):\n  alpha\n  shared-doc.md (shared asset)\n",
             result.output,
         )
         sources = self.manifest()["sources"]
@@ -304,9 +407,14 @@ class MigrationTests(DeployerTestCase):
         self.write_manifest(
             {
                 "manifest_version": 6,
-                "sources": {"old/source": {"source_dir": "old", "selected_skills": ["alpha"],
-                                           "skills": {"alpha": {"hash": hashing.hash_path(self.skills_dir / "alpha")}},
-                                           "shared": {}}},
+                "sources": {
+                    "old/source": {
+                        "source_dir": "old",
+                        "selected_skills": ["alpha"],
+                        "skills": {"alpha": {"hash": hashing.hash_path(self.skills_dir / "alpha")}},
+                        "shared": {},
+                    }
+                },
             }
         )
         self.append(self.skills_dir / "alpha" / "SKILL.md", "modified\n")

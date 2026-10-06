@@ -50,14 +50,28 @@ class ListingError(Exception):
 Converse = Callable[[list[str], Path, Mapping[str, str], list[str], "Callable[[str], bool] | None", float], list[str]]
 
 
-def converse(arguments: list[str], cwd: Path, environment: Mapping[str, str], requests: list[str],
-             answered: Callable[[str], bool] | None, timeout: float) -> list[str]:
+def converse(
+    arguments: list[str],
+    cwd: Path,
+    environment: Mapping[str, str],
+    requests: list[str],
+    answered: Callable[[str], bool] | None,
+    timeout: float,
+) -> list[str]:
     lines: queue.Queue[str | None] = queue.Queue()
     with tempfile.TemporaryFile() as errors:
         try:
-            process = subprocess.Popen(arguments, cwd=cwd, env=dict(environment), stdin=subprocess.PIPE,
-                                       stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8",
-                                       errors="replace")
+            process = subprocess.Popen(
+                arguments,
+                cwd=cwd,
+                env=dict(environment),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=errors,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         except OSError as exc:
             raise ListingError(f"cannot start it: {exc}") from exc
 
@@ -139,8 +153,11 @@ def parse_copilot(output: str) -> Listing:
 def codex_requests(cwd: Path) -> list[str]:
     """The app server's handshake, then a request for the skills it finds from `cwd`."""
     messages = [
-        {"method": "initialize", "id": 0,
-         "params": {"clientInfo": {"name": "coding-agent-skills", "title": "coding-agent-skills", "version": "1"}}},
+        {
+            "method": "initialize",
+            "id": 0,
+            "params": {"clientInfo": {"name": "coding-agent-skills", "title": "coding-agent-skills", "version": "1"}},
+        },
         {"method": "initialized"},
         {"method": "skills/list", "id": CODEX_LIST_ID, "params": {"cwds": [str(cwd)]}},
     ]
@@ -183,14 +200,22 @@ def parse_codex(lines: list[str]) -> Listing:
     return found
 
 
-def list_skills(runtime: str, executable: str, cwd: Path, environment: Mapping[str, str],
-                timeout: float = DEFAULT_TIMEOUT, talk: Converse | None = None) -> Listing:
+def list_skills(
+    runtime: str,
+    executable: str,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout: float = DEFAULT_TIMEOUT,
+    talk: Converse | None = None,
+) -> Listing:
     """The skills `runtime` finds when started in `cwd`; raise ListingError when it cannot say."""
     talk = talk or converse
     if runtime == "codex":
-        return parse_codex(talk([executable, "app-server"], cwd, environment, codex_requests(cwd), codex_answered,
-                                timeout))
+        return parse_codex(
+            talk([executable, "app-server"], cwd, environment, codex_requests(cwd), codex_answered, timeout)
+        )
     if runtime == "copilot":
-        return parse_copilot("\n".join(talk([executable, "skill", "list", "--json"], cwd, environment, [], None,
-                                            timeout)))
+        return parse_copilot(
+            "\n".join(talk([executable, "skill", "list", "--json"], cwd, environment, [], None, timeout))
+        )
     raise ValueError(f"no skill listing for {runtime}")

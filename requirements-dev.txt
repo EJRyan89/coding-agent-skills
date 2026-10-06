@@ -1,0 +1,5 @@
+# Development dependencies for validation and CI only; the deployer and shipped skills stay standard-library.
+# Install with: python -m pip install -r requirements-dev.txt
+# docs/dependency-updates.md owns these pins; Dependabot reviews them weekly.
+ruff==0.16.10
+mypy==2.4.0

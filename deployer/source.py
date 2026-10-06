@@ -158,15 +158,11 @@ def _reject_links(skills_src: Path) -> None:
         try:
             entries = sorted(os.scandir(directory), key=lambda entry: entry.name)
         except OSError as exc:
-            raise DeployError(
-                f"ERROR: Could not validate reparse points in deployable source tree: {exc}"
-            ) from exc
+            raise DeployError(f"ERROR: Could not validate reparse points in deployable source tree: {exc}") from exc
         for entry in entries:
             path = Path(entry.path)
             if entry.is_symlink():
-                raise DeployError(
-                    f"ERROR: Symlink found in deployable source tree: {platform_support.normalize(path)}"
-                )
+                raise DeployError(f"ERROR: Symlink found in deployable source tree: {platform_support.normalize(path)}")
             if platform_support.is_reparse_point(path):
                 raise DeployError(
                     f"ERROR: Reparse point found in deployable source tree: {platform_support.normalize(path)}"
@@ -202,13 +198,10 @@ def _discover_directories(paths: Paths) -> dict[str, Path]:
         shown = platform_support.normalize(skill_md)
         if len(relative) not in (1, 2):
             raise DeployError(
-                "ERROR: SKILL.md must be directly under skills/<name> or "
-                f"skills/<category>/<name>: {shown}"
+                f"ERROR: SKILL.md must be directly under skills/<name> or skills/<category>/<name>: {shown}"
             )
         if len(relative) == 2 and (skills_src / relative[0] / "SKILL.md").is_file():
-            raise DeployError(
-                f"ERROR: Skill directory '{relative[0]}' contains another SKILL.md: {shown}"
-            )
+            raise DeployError(f"ERROR: Skill directory '{relative[0]}' contains another SKILL.md: {shown}")
         name = found_dir.name
         if name in directories:
             raise DeployError(
@@ -238,9 +231,7 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         raise DeployError(f"ERROR: deploy-meta/{name}.json has no matching skill directory")
     declared = frontmatter_name(directory / "SKILL.md", f"Skill '{name}'")
     if declared != name:
-        raise DeployError(
-            f"ERROR: Skill '{name}' frontmatter name '{declared}' does not match directory"
-        )
+        raise DeployError(f"ERROR: Skill '{name}' frontmatter name '{declared}' does not match directory")
     metadata = _load_json(paths.meta_dir / f"{name}.json")
     shape_error = DeployError(f"ERROR: deploy-meta/{name}.json has an invalid metadata shape", METADATA_SHAPE)
     if not isinstance(metadata, dict):
@@ -254,9 +245,14 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     selectable = metadata.get("selectable", True)
     opt_in = metadata.get("opt_in", False)
     if (
-        required is None or shared is None or dependencies is None or tools is None or optional_tools is None
+        required is None
+        or shared is None
+        or dependencies is None
+        or tools is None
+        or optional_tools is None
         or agents is None
-        or not isinstance(selectable, bool) or not isinstance(opt_in, bool)
+        or not isinstance(selectable, bool)
+        or not isinstance(opt_in, bool)
     ):
         raise shape_error
     if opt_in and not selectable:
@@ -273,7 +269,15 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
     if both:
         raise DeployError(f"ERROR: Skill '{name}' declares tool '{both[0]}' both required and optional")
     return Skill(
-        name, directory, required, shared, dependencies, selectable, sorted(set(tools)), opt_in, agents,
+        name,
+        directory,
+        required,
+        shared,
+        dependencies,
+        selectable,
+        sorted(set(tools)),
+        opt_in,
+        agents,
         sorted(set(optional_tools)),
     )
 
@@ -291,19 +295,11 @@ def _load_bundles(document: dict[str, Any], source: Source) -> None:
             raise DeployError(f"ERROR: Bundle '{bundle}' collides with a skill name")
         definition = bundles[bundle]
         members = definition.get("members") if isinstance(definition, dict) else None
-        if (
-            not isinstance(members, list)
-            or not members
-            or not all(isinstance(member, str) for member in members)
-        ):
-            raise DeployError(
-                f"ERROR: Bundle '{bundle}' must contain a non-empty string members array"
-            )
+        if not isinstance(members, list) or not members or not all(isinstance(member, str) for member in members):
+            raise DeployError(f"ERROR: Bundle '{bundle}' must contain a non-empty string members array")
         duplicates = sorted({member for member in members if members.count(member) > 1})
         if duplicates:
-            raise DeployError(
-                f"ERROR: Bundle '{bundle}' contains duplicate member '{duplicates[0]}'"
-            )
+            raise DeployError(f"ERROR: Bundle '{bundle}' contains duplicate member '{duplicates[0]}'")
         for member in members:
             if member not in source.skills:
                 raise DeployError(f"ERROR: Bundle '{bundle}' references unknown member '{member}'")
@@ -311,8 +307,7 @@ def _load_bundles(document: dict[str, Any], source: Source) -> None:
                 raise DeployError(f"ERROR: Bundle '{bundle}' member '{member}' is not selectable")
             if member in source.skill_bundle:
                 raise DeployError(
-                    f"ERROR: Skill '{member}' belongs to both "
-                    f"'{source.skill_bundle[member]}' and '{bundle}'"
+                    f"ERROR: Skill '{member}' belongs to both '{source.skill_bundle[member]}' and '{bundle}'"
                 )
             if source.skills[member].opt_in:
                 raise DeployError(
@@ -334,9 +329,7 @@ def _validate_dependencies(source: Source) -> None:
             if dependency not in source.skills:
                 raise DeployError(f"ERROR: Skill '{name}' depends on unknown skill '{dependency}'")
             if dependency in seen:
-                raise DeployError(
-                    f"ERROR: Skill '{name}' contains duplicate skill dependency '{dependency}'"
-                )
+                raise DeployError(f"ERROR: Skill '{name}' contains duplicate skill dependency '{dependency}'")
             seen.add(dependency)
     state: dict[str, int] = {}
     stack: list[str] = []

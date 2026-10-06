@@ -47,8 +47,10 @@ class FakeRuntimes:
         if runtime in self.errors:
             raise discovery.ListingError(self.errors[runtime])
         if runtime == "codex":
-            skills = [{"name": name, "path": str(self.adapters / name / "SKILL.md"), "enabled": True}
-                      for name in self.listed[runtime]]
+            skills = [
+                {"name": name, "path": str(self.adapters / name / "SKILL.md"), "enabled": True}
+                for name in self.listed[runtime]
+            ]
             return [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [{"skills": skills}]}})]
         skills = [{"name": name, "path": str(self.adapters / name), "enabled": True} for name in self.listed[runtime]]
         return [json.dumps(skills)]
@@ -61,17 +63,19 @@ class DeployableReportTests(unittest.TestCase):
         self.home = root / "Home With Spaces"
         self.paths = Paths(root / "source", self.home)
         self.paths.manifest_file.parent.mkdir(parents=True)
-        entry = {"wrappers": {name: {"hash": HASH} for name in ADAPTERS},
-                 "skills": {name: {"hash": HASH} for name in ADAPTERS},
-                 "agents": {AGENT: {"hash": HASH}}}
+        entry = {
+            "wrappers": {name: {"hash": HASH} for name in ADAPTERS},
+            "skills": {name: {"hash": HASH} for name in ADAPTERS},
+            "agents": {AGENT: {"hash": HASH}},
+        }
         for name in ADAPTERS:
             (self.paths.dest_dir / name).mkdir(parents=True)
             (self.paths.dest_dir / name / "SKILL.md").write_text(f"# {name}\n", encoding="utf-8")
         self.paths.agent_dest_dir.mkdir(parents=True)
         (self.paths.agent_dest_dir / AGENT).write_text("---\nname: reviewer\n---\n", encoding="utf-8")
         self.paths.manifest_file.write_text(
-            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {SOURCE_ID: entry}}),
-            encoding="utf-8")
+            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {SOURCE_ID: entry}}), encoding="utf-8"
+        )
         self.fake = FakeRuntimes(self.paths.adapter_dest_dir)
         self.results_file = root / "results.json"
         self.summary_file = root / "summary.md"
@@ -90,16 +94,28 @@ class DeployableReportTests(unittest.TestCase):
         return code, output.getvalue()
 
     def verify(self, deploy_exit: int = 0, label: str = "first deploy") -> tuple[int, str]:
-        return self.run_main("verify", "--label", label, "--deploy-verify-exit", str(deploy_exit),
-                             "--results", str(self.results_file), "--home", str(self.home),
-                             "--source", str(self.paths.source_dir))
+        return self.run_main(
+            "verify",
+            "--label",
+            label,
+            "--deploy-verify-exit",
+            str(deploy_exit),
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        )
 
     # -- classification -------------------------------------------------------------------------------------
 
     def test_every_adapter_found_passes_both_runtimes(self) -> None:
         results = self.check()
-        self.assertEqual({"codex": report.PASSED, "copilot": report.PASSED},
-                         {runtime: result.status for runtime, result in results.items()})
+        self.assertEqual(
+            {"codex": report.PASSED, "copilot": report.PASSED},
+            {runtime: result.status for runtime, result in results.items()},
+        )
         self.assertEqual(0, report.exit_code(list(results.values()), 0))
 
     def test_a_missing_adapter_fails_that_runtime_and_names_it(self) -> None:
@@ -128,8 +144,11 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual(1, report.exit_code(list(results.values()), 1))
 
     def test_only_a_request_to_sign_in_is_a_sign_in_problem(self) -> None:
-        for message in ("no answer within 120 seconds", "it refused the skills/list request: bad",
-                        "cannot start it: [WinError 2] The system cannot find the file specified"):
+        for message in (
+            "no answer within 120 seconds",
+            "it refused the skills/list request: bad",
+            "cannot start it: [WinError 2] The system cannot find the file specified",
+        ):
             with self.subTest(message=message):
                 self.assertFalse(report.sign_in_problem(message))
         for message in ("Error: not authenticated", "please sign in first", "401 Unauthorized", "run copilot login"):
@@ -169,7 +188,8 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_a_manifest_without_adapters_is_an_error(self) -> None:
         self.paths.manifest_file.write_text(
-            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8")
+            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8"
+        )
         code, output = self.verify()
         self.assertEqual(1, code)
         self.assertIn("no runtime adapters", output.lower())
@@ -181,24 +201,34 @@ class DeployableReportTests(unittest.TestCase):
         original = (report.platform_support.find_executable, discovery.converse)
         report.platform_support.find_executable = self.fake.find
         discovery.converse = self.fake.talk
-        self.addCleanup(lambda: (setattr(report.platform_support, "find_executable", original[0]),
-                                 setattr(discovery, "converse", original[1])))
+        self.addCleanup(
+            lambda: (
+                setattr(report.platform_support, "find_executable", original[0]),
+                setattr(discovery, "converse", original[1]),
+            )
+        )
         code, output = self.verify(deploy_exit=1)
         self.assertEqual(0, code, output)
         self.assertIn("PASSED codex", output)
         self.assertIn("SKIPPED copilot", output)
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
         self.assertEqual("first deploy", recorded[0]["label"])
-        self.assertEqual({"codex": "PASSED", "copilot": "SKIPPED"},
-                         {item["runtime"]: item["status"] for item in recorded[0]["results"]})
+        self.assertEqual(
+            {"codex": "PASSED", "copilot": "SKIPPED"},
+            {item["runtime"]: item["status"] for item in recorded[0]["results"]},
+        )
 
     def test_a_second_pass_is_appended_to_the_results(self) -> None:
         self.results_file.write_text(json.dumps([{"label": "first deploy", "results": []}]), encoding="utf-8")
         original = (report.platform_support.find_executable, discovery.converse)
         report.platform_support.find_executable = self.fake.find
         discovery.converse = self.fake.talk
-        self.addCleanup(lambda: (setattr(report.platform_support, "find_executable", original[0]),
-                                 setattr(discovery, "converse", original[1])))
+        self.addCleanup(
+            lambda: (
+                setattr(report.platform_support, "find_executable", original[0]),
+                setattr(discovery, "converse", original[1]),
+            )
+        )
         self.verify(label="after reinstall")
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
         self.assertEqual(["first deploy", "after reinstall"], [item["label"] for item in recorded])
@@ -236,18 +266,46 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_a_manifest_without_skills_is_an_error(self) -> None:
         self.paths.manifest_file.write_text(
-            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8")
-        code, output = self.run_main("layout", "--label", "first deploy", "--results", str(self.results_file),
-                                     "--home", str(self.home), "--source", str(self.paths.source_dir))
+            json.dumps({"manifest_version": manifest.MANIFEST_VERSION, "sources": {}}), encoding="utf-8"
+        )
+        code, output = self.run_main(
+            "layout",
+            "--label",
+            "first deploy",
+            "--results",
+            str(self.results_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+        )
         self.assertEqual(1, code)
         self.assertIn("no skills are deployed", output.lower())
 
     def test_the_layout_result_joins_the_pass_with_the_same_label(self) -> None:
-        self.results_file.write_text(json.dumps([{"label": "first deploy", "results": [
-            {"runtime": "codex", "status": "PASSED", "detail": "2 adapters found"}]}]), encoding="utf-8")
+        self.results_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "label": "first deploy",
+                        "results": [{"runtime": "codex", "status": "PASSED", "detail": "2 adapters found"}],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
-            code, output = self.run_main("layout", "--label", "first deploy", "--results", str(self.results_file),
-                                         "--home", str(self.home), "--source", str(self.paths.source_dir))
+            code, output = self.run_main(
+                "layout",
+                "--label",
+                "first deploy",
+                "--results",
+                str(self.results_file),
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.paths.source_dir),
+            )
         self.assertEqual(0, code, output)
         self.assertIn("PASSED claude", output)
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
@@ -257,33 +315,72 @@ class DeployableReportTests(unittest.TestCase):
     def test_a_layout_failure_exits_non_zero_and_is_still_recorded(self) -> None:
         (self.paths.dest_dir / "alpha" / "SKILL.md").unlink()
         with mock.patch.object(report.platform_support, "find_executable", side_effect=self.fake.find):
-            code, _ = self.run_main("layout", "--label", "after reinstall", "--results", str(self.results_file),
-                                    "--home", str(self.home), "--source", str(self.paths.source_dir))
+            code, _ = self.run_main(
+                "layout",
+                "--label",
+                "after reinstall",
+                "--results",
+                str(self.results_file),
+                "--home",
+                str(self.home),
+                "--source",
+                str(self.paths.source_dir),
+            )
         self.assertEqual(1, code)
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
-        self.assertEqual(("after reinstall", "claude", "FAILED"),
-                         (recorded[0]["label"], recorded[0]["results"][0]["runtime"],
-                          recorded[0]["results"][0]["status"]))
+        self.assertEqual(
+            ("after reinstall", "claude", "FAILED"),
+            (recorded[0]["label"], recorded[0]["results"][0]["runtime"], recorded[0]["results"][0]["status"]),
+        )
 
     # -- summary --------------------------------------------------------------------------------------------
 
     def test_the_summary_lists_versions_results_and_notes_and_appends(self) -> None:
         self.summary_file.write_text("# Earlier step\n", encoding="utf-8")
-        self.results_file.write_text(json.dumps([{
-            "label": "first deploy",
-            "results": [{"runtime": "codex", "status": "PASSED", "detail": "2 adapters found"},
-                        {"runtime": "copilot", "status": "SKIPPED", "detail": "not logged in"}],
-        }]), encoding="utf-8")
+        self.results_file.write_text(
+            json.dumps(
+                [
+                    {
+                        "label": "first deploy",
+                        "results": [
+                            {"runtime": "codex", "status": "PASSED", "detail": "2 adapters found"},
+                            {"runtime": "copilot", "status": "SKIPPED", "detail": "not logged in"},
+                        ],
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
         versions = [("Python", "3.11.9"), ("Codex CLI", "0.160.0"), ("Copilot CLI", "not installed")]
-        text = report.render_summary(json.loads(self.results_file.read_text(encoding="utf-8")), versions,
-                                     ["Codex sandbox set to elevated"])
-        for expected in ("| Python | 3.11.9 |", "| Codex CLI | 0.160.0 |", "| Copilot CLI | not installed |",
-                         "first deploy", "PASSED", "SKIPPED", "not logged in", "Codex sandbox set to elevated"):
+        text = report.render_summary(
+            json.loads(self.results_file.read_text(encoding="utf-8")), versions, ["Codex sandbox set to elevated"]
+        )
+        for expected in (
+            "| Python | 3.11.9 |",
+            "| Codex CLI | 0.160.0 |",
+            "| Copilot CLI | not installed |",
+            "first deploy",
+            "PASSED",
+            "SKIPPED",
+            "not logged in",
+            "Codex sandbox set to elevated",
+        ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, text)
-        code, _ = self.run_main("summary", "--results", str(self.results_file), "--summary", str(self.summary_file),
-                                "--home", str(self.home), "--source", str(self.paths.source_dir),
-                                "--note", "Codex sandbox set to elevated", "--no-probe")
+        code, _ = self.run_main(
+            "summary",
+            "--results",
+            str(self.results_file),
+            "--summary",
+            str(self.summary_file),
+            "--home",
+            str(self.home),
+            "--source",
+            str(self.paths.source_dir),
+            "--note",
+            "Codex sandbox set to elevated",
+            "--no-probe",
+        )
         self.assertEqual(0, code)
         written = self.summary_file.read_text(encoding="utf-8")
         self.assertTrue(written.startswith("# Earlier step\n"))

@@ -65,14 +65,16 @@ ANALYZER_RULE = (
 # A re-review asks for one of these scopes and runs as `full` or `incremental`. Its record keeps what was asked,
 # what ran, why, and how much changed since the version it compared with (null when it could not compare).
 RE_REVIEW_SCOPES = ("auto", "full", "incremental")
-SCOPE_FIELDS = frozenset({"requested", "used", "reason", "since_version", "files_changed", "files_total",
-                          "lines_changed", "lines_total"})
+SCOPE_FIELDS = frozenset(
+    {"requested", "used", "reason", "since_version", "files_changed", "files_total", "lines_changed", "lines_total"}
+)
 PATCH_FIELDS = frozenset({"sha256", "lines"})
 
 
 def _one_line(value: Any, maximum: int) -> bool:
-    return isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum \
-        and len(value.splitlines()) == 1
+    return (
+        isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum and len(value.splitlines()) == 1
+    )
 
 
 def valid_title(value: Any) -> bool:
@@ -236,8 +238,12 @@ def validate_adapter_result(
     return value
 
 
-def _validate_result_repeats(findings: list[dict[str, Any]], dispositions: list[dict[str, Any]],
-                             prior_severities: dict[str, str], prior_ids: set[str]) -> None:
+def _validate_result_repeats(
+    findings: list[dict[str, Any]],
+    dispositions: list[dict[str, Any]],
+    prior_severities: dict[str, str],
+    prior_ids: set[str],
+) -> None:
     """Each `repeats` names exactly one finding that is at least as severe and not itself a repeat. A prior finding
     it repeats must have been judged still present, at least in part."""
     keys = {finding["candidate_key"]: finding for finding in findings}
@@ -258,8 +264,10 @@ def _validate_result_repeats(findings: list[dict[str, Any]], dispositions: list[
             severity = keys[target]["severity"]
         elif target in prior_ids:
             if judged.get(target) not in OPEN_DISPOSITIONS:
-                raise RecordError(f"Finding {key} repeats prior finding {target}, so that finding's disposition must "
-                                  "be still_present or partially_addressed")
+                raise RecordError(
+                    f"Finding {key} repeats prior finding {target}, so that finding's disposition must "
+                    "be still_present or partially_addressed"
+                )
             severity = prior_severities.get(target)
             if severity not in SEVERITY_RANK:
                 raise RecordError(f"Finding {key} repeats prior finding {target}, whose severity is unknown")
@@ -319,9 +327,16 @@ def extend_ledger(
     findings = list(findings)
     for finding in findings:
         if "repeats" not in finding:
-            entry = {"version": version, "id": finding["id"], "severity": finding["severity"],
-                     "category": finding["category"], "state": "open", "judged_in": version, "dispositions": [],
-                     "repeats": []}
+            entry = {
+                "version": version,
+                "id": finding["id"],
+                "severity": finding["severity"],
+                "category": finding["category"],
+                "state": "open",
+                "judged_in": version,
+                "dispositions": [],
+                "repeats": [],
+            }
             ledger.append(entry)
             entries[ledger_id(version, finding["id"])] = entry
     for finding in findings:
@@ -348,8 +363,9 @@ def _legacy_ledger(base: list[dict[str, Any]], record: dict[str, Any], compared:
         if holder is not None:
             dispositions.setdefault(holder, {"finding_id": holder, "disposition": disposition["disposition"]})
     findings = [{key: value for key, value in finding.items() if key != "repeats"} for finding in record["findings"]]
-    return extend_ledger(base, version=record["review"]["version"], findings=findings,
-                         prior_dispositions=dispositions.values())
+    return extend_ledger(
+        base, version=record["review"]["version"], findings=findings, prior_dispositions=dispositions.values()
+    )
 
 
 def ledger_history(records: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
@@ -364,15 +380,15 @@ def ledger_history(records: Iterable[dict[str, Any]]) -> dict[int, list[dict[str
         elif review["mode"] == "initial" or previous is None:
             ledger = _legacy_ledger([], record, 0)
         else:
-            ledger = _legacy_ledger(history[previous], record, (review.get("scope") or {}).get("since_version",
-                                                                                               previous))
+            ledger = _legacy_ledger(
+                history[previous], record, (review.get("scope") or {}).get("since_version", previous)
+            )
         history[review["version"]] = ledger
         previous = review["version"]
     return history
 
 
-def carried_findings(records: Iterable[dict[str, Any]],
-                     flags: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
+def carried_findings(records: Iterable[dict[str, Any]], flags: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """The prior findings a re-review disposes: every open or unverified entry of the latest ledger, where it was
     last reported. A finding a review only judged stays here until a review closes it. An entry with flags in the
     flag store (`flags`) carries each one's ID, category, and rationale, so the reviewer can weigh it."""
@@ -388,17 +404,33 @@ def carried_findings(records: Iterable[dict[str, Any]],
         if entry["state"] == "closed":
             continue
         where = entry["repeats"][-1] if entry["repeats"] else entry
-        finding = next((item for item in (by_version.get(where["version"]) or {}).get("findings", [])
-                        if item["id"] == where["id"]), None)
+        finding = next(
+            (
+                item
+                for item in (by_version.get(where["version"]) or {}).get("findings", [])
+                if item["id"] == where["id"]
+            ),
+            None,
+        )
         if finding is None:
             raise RecordError(f"Review v{where['version']} with finding {where['id']} is missing from the archive")
         identifier = ledger_id(entry["version"], entry["id"])
-        flags_on = [{"id": flag["id"], "category": flag["category"], "rationale": flag["body"]}
-                    for flag in flagged.get(identifier, [])]
-        carried.append({"id": identifier, "severity": entry["severity"],
-                        "category": entry["category"], "path": finding["path"], "line": finding["line"],
-                        **({"title": finding["title"]} if "title" in finding else {}), "body": finding["body"],
-                        **({"flags": flags_on} if flags_on else {})})
+        flags_on = [
+            {"id": flag["id"], "category": flag["category"], "rationale": flag["body"]}
+            for flag in flagged.get(identifier, [])
+        ]
+        carried.append(
+            {
+                "id": identifier,
+                "severity": entry["severity"],
+                "category": entry["category"],
+                "path": finding["path"],
+                "line": finding["line"],
+                **({"title": finding["title"]} if "title" in finding else {}),
+                "body": finding["body"],
+                **({"flags": flags_on} if flags_on else {}),
+            }
+        )
     return carried
 
 
@@ -419,8 +451,9 @@ def ledger_summary(record: dict[str, Any]) -> dict[str, Any] | None:
     return {"open": opened, "addressed": addressed, "since": since, "version": record["review"]["version"]}
 
 
-def flagged_entries(ledger: Iterable[dict[str, Any]], flags: Iterable[dict[str, Any]], repository: str,
-                    number: int) -> dict[str, list[dict[str, Any]]]:
+def flagged_entries(
+    ledger: Iterable[dict[str, Any]], flags: Iterable[dict[str, Any]], repository: str, number: int
+) -> dict[str, list[dict[str, Any]]]:
     """The flags naming each ledger entry's findings, keyed by ledger ID: a flag names the finding where the entry
     first appeared or one of its repeats, by review version and finding ID. A resolved flag still counts, because
     resolving one records that the improvement was handled, not that the finding stood."""
@@ -480,8 +513,12 @@ def build_record(
             finding["repeats"] = {"version": int(prior.group(1)), "id": prior.group(2)}
         else:
             raise RecordError(f"Finding {finding['candidate_key']} repeats an unknown finding: {target}")
-    ledger = extend_ledger(prior_ledger or [], version=version, findings=findings,
-                           prior_dispositions=adapter_result.get("prior_dispositions", []))
+    ledger = extend_ledger(
+        prior_ledger or [],
+        version=version,
+        findings=findings,
+        prior_dispositions=adapter_result.get("prior_dispositions", []),
+    )
     counts = {severity: sum(item["severity"] == severity for item in findings) for severity in sorted(SEVERITIES)}
     unavailable = sorted(request.get("unavailable_sources", []))
     record = {
@@ -554,8 +591,11 @@ def _duration(seconds: int | None) -> str:
 
 def _path_set(paths: Any) -> bool:
     """A list of distinct non-empty paths."""
-    return (isinstance(paths, list) and all(isinstance(path, str) and path for path in paths)
-            and len(set(paths)) == len(paths))
+    return (
+        isinstance(paths, list)
+        and all(isinstance(path, str) and path for path in paths)
+        and len(set(paths)) == len(paths)
+    )
 
 
 def _validate_reviewers(reviewers: Any) -> None:
@@ -564,8 +604,10 @@ def _validate_reviewers(reviewers: Any) -> None:
         raise RecordError("Review reviewers must be a non-empty array")
     seen: set[str] = set()
     for reviewer in reviewers:
-        if not isinstance(reviewer, dict) \
-                or not REVIEWER_FIELDS <= set(reviewer) <= REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS:
+        if (
+            not isinstance(reviewer, dict)
+            or not REVIEWER_FIELDS <= set(reviewer) <= REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS
+        ):
             raise RecordError("Review reviewer fields are malformed")
         if not isinstance(reviewer["id"], str) or not reviewer["id"] or reviewer["id"] in seen:
             raise RecordError("Review reviewer IDs must be unique non-empty strings")
@@ -583,8 +625,13 @@ def _validate_reviewers(reviewers: Any) -> None:
 
 
 def _safe_relative(path: Any) -> bool:
-    return (isinstance(path, str) and bool(path) and not path.startswith(("/", "\\")) and "\\" not in path
-            and ".." not in Path(path).parts)
+    return (
+        isinstance(path, str)
+        and bool(path)
+        and not path.startswith(("/", "\\"))
+        and "\\" not in path
+        and ".." not in Path(path).parts
+    )
 
 
 def _validate_patches(patches: Any) -> None:
@@ -594,9 +641,13 @@ def _validate_patches(patches: Any) -> None:
     for path, patch in patches.items():
         if not _safe_relative(path):
             raise RecordError("Review patch path is unsafe")
-        if not isinstance(patch, dict) or set(patch) != PATCH_FIELDS \
-                or not isinstance(patch["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", patch["sha256"]) \
-                or not _count(patch["lines"]):
+        if (
+            not isinstance(patch, dict)
+            or set(patch) != PATCH_FIELDS
+            or not isinstance(patch["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", patch["sha256"])
+            or not _count(patch["lines"])
+        ):
             raise RecordError(f"Review patch for {path} is malformed")
 
 
@@ -615,9 +666,16 @@ def _validate_scope(scope: Any, review: dict[str, Any]) -> None:
     if not _count(scope["files_total"]) or not _count(scope["lines_total"]):
         raise RecordError("Review scope totals must be non-negative integers")
     compared = scope["files_changed"] is not None
-    if compared != (scope["lines_changed"] is not None) or compared and not (
-            _count(scope["files_changed"]) and scope["files_changed"] <= scope["files_total"]
-            and _count(scope["lines_changed"]) and scope["lines_changed"] <= scope["lines_total"]):
+    if (
+        compared != (scope["lines_changed"] is not None)
+        or compared
+        and not (
+            _count(scope["files_changed"])
+            and scope["files_changed"] <= scope["files_total"]
+            and _count(scope["lines_changed"])
+            and scope["lines_changed"] <= scope["lines_total"]
+        )
+    ):
         raise RecordError("Review scope changed counts must both be null or both be within their totals")
     if scope["used"] == "incremental" and not compared:
         raise RecordError("An incremental re-review must have compared with an earlier version")
@@ -628,8 +686,10 @@ def describe_scope(scope: dict[str, Any]) -> str:
     if scope["files_changed"] is None:
         compared = f"could not compare with v{scope['since_version']}"
     else:
-        compared = (f"{scope['files_changed']} of {scope['files_total']} files and {scope['lines_changed']} of "
-                    f"{scope['lines_total']} changed lines differ from v{scope['since_version']}")
+        compared = (
+            f"{scope['files_changed']} of {scope['files_total']} files and {scope['lines_changed']} of "
+            f"{scope['lines_total']} changed lines differ from v{scope['since_version']}"
+        )
     return f"{scope['used']}, {compared} (requested {scope['requested']}: {scope['reason']})"
 
 
@@ -645,8 +705,11 @@ def _validate_comments(record: dict[str, Any]) -> None:
     for comment in comments:
         if not isinstance(comment, dict) or set(comment) != set(COMMENT_FIELDS):
             raise RecordError("Review comment fields are malformed")
-        if not isinstance(comment["id"], str) or not re.fullmatch(r"C[1-9][0-9]*", comment["id"]) \
-                or comment["id"] in ids:
+        if (
+            not isinstance(comment["id"], str)
+            or not re.fullmatch(r"C[1-9][0-9]*", comment["id"])
+            or comment["id"] in ids
+        ):
             raise RecordError("Review comment IDs must be unique C<n> values")
         ids.add(comment["id"])
         for field in ("author", "path", "body", "url"):
@@ -661,33 +724,53 @@ def _validate_comments(record: dict[str, Any]) -> None:
 
 def _reference(value: Any, latest: int) -> bool:
     """A `{version, id}` reference to a finding in this review or an earlier one."""
-    return (isinstance(value, dict) and set(value) == {"version", "id"} and _count(value["version"])
-            and 1 <= value["version"] <= latest and isinstance(value["id"], str)
-            and FINDING_ID.fullmatch(value["id"]) is not None)
+    return (
+        isinstance(value, dict)
+        and set(value) == {"version", "id"}
+        and _count(value["version"])
+        and 1 <= value["version"] <= latest
+        and isinstance(value["id"], str)
+        and FINDING_ID.fullmatch(value["id"]) is not None
+    )
 
 
 def _validate_ledger_entry(entry: Any, version: int) -> None:
-    if not isinstance(entry, dict) or set(entry) != LEDGER_FIELDS or not _count(entry["version"]) \
-            or entry["version"] < 1 or not isinstance(entry["id"], str) or not FINDING_ID.fullmatch(entry["id"]):
+    if (
+        not isinstance(entry, dict)
+        or set(entry) != LEDGER_FIELDS
+        or not _count(entry["version"])
+        or entry["version"] < 1
+        or not isinstance(entry["id"], str)
+        or not FINDING_ID.fullmatch(entry["id"])
+    ):
         raise RecordError("Review ledger entry fields are malformed")
     label = ledger_id(entry["version"], entry["id"])
     if entry["version"] > version:
         raise RecordError(f"Review ledger entry {label} is after this review")
-    if not _one_of(entry["severity"], SEVERITIES) or not isinstance(entry["category"], str) \
-            or not entry["category"].strip():
+    if (
+        not _one_of(entry["severity"], SEVERITIES)
+        or not isinstance(entry["category"], str)
+        or not entry["category"].strip()
+    ):
         raise RecordError(f"Review ledger entry {label} severity or category is invalid")
     dispositions = entry["dispositions"]
     if not isinstance(dispositions, list) or any(
-            not isinstance(item, dict) or set(item) != {"version", "disposition"} or not _count(item["version"])
-            or not _one_of(item["disposition"], DISPOSITIONS) for item in dispositions):
+        not isinstance(item, dict)
+        or set(item) != {"version", "disposition"}
+        or not _count(item["version"])
+        or not _one_of(item["disposition"], DISPOSITIONS)
+        for item in dispositions
+    ):
         raise RecordError(f"Review ledger entry {label} dispositions are malformed")
     versions = [item["version"] for item in dispositions]
     if versions != sorted(set(versions)) or any(not entry["version"] < item <= version for item in versions):
         raise RecordError(f"Review ledger entry {label} dispositions are malformed")
     repeats = entry["repeats"]
-    if not isinstance(repeats, list) or any(not _reference(item, version) or item["version"] < entry["version"]
-                                            for item in repeats) \
-            or len({(item["version"], item["id"]) for item in repeats}) != len(repeats):
+    if (
+        not isinstance(repeats, list)
+        or any(not _reference(item, version) or item["version"] < entry["version"] for item in repeats)
+        or len({(item["version"], item["id"]) for item in repeats}) != len(repeats)
+    ):
         raise RecordError(f"Review ledger entry {label} repeats are malformed")
     state, judged_in = entry_state(entry)
     if entry["state"] != state:
@@ -728,8 +811,12 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
             raise RecordError(f"Review ledger entry for {identifier} does not match the finding")
     if {key[1] for key in entries if key[0] == version} != {i for i, f in findings.items() if "repeats" not in f}:
         raise RecordError("Review ledger entries of this version must be its findings without repeats")
-    judged = {ledger_id(entry["version"], entry["id"]): item["disposition"]
-              for entry in ledger for item in entry["dispositions"] if item["version"] == version}
+    judged = {
+        ledger_id(entry["version"], entry["id"]): item["disposition"]
+        for entry in ledger
+        for item in entry["dispositions"]
+        if item["version"] == version
+    }
     given = {item["finding_id"]: item["disposition"] for item in record["prior_dispositions"]}
     if judged != given:
         raise RecordError("Review prior dispositions do not match the ledger")
@@ -755,16 +842,22 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
             if entry is None:
                 raise RecordError(f"Review finding {identifier} repeats an unknown finding: {ledger_id(*key)}")
             if given.get(ledger_id(*key)) not in OPEN_DISPOSITIONS:
-                raise RecordError(f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
-                                  "be still_present or partially_addressed")
+                raise RecordError(
+                    f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
+                    "be still_present or partially_addressed"
+                )
             severity = entry["severity"]
         if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
             raise RecordError(f"Review finding {identifier} repeats a less severe finding")
         if {"version": version, "id": identifier} not in entries[key]["repeats"]:
             raise RecordError(f"Review finding {identifier} is not in its target's ledger entry")
         linked.append((identifier, key))
-    listed = [(item["id"], (entry["version"], entry["id"]))
-              for entry in ledger for item in entry["repeats"] if item["version"] == version]
+    listed = [
+        (item["id"], (entry["version"], entry["id"]))
+        for entry in ledger
+        for item in entry["repeats"]
+        if item["version"] == version
+    ]
     if sorted(listed) != sorted(linked):
         raise RecordError("Review ledger repeats of this version must be its findings with repeats")
 
@@ -782,11 +875,7 @@ def validate_record(value: Any) -> dict[str, Any]:
         "artifacts",
         "ledger",
     }
-    if (
-        not isinstance(value, dict)
-        or set(value) - allowed_top
-        or value.get("schema_version") != RECORD_SCHEMA_VERSION
-    ):
+    if not isinstance(value, dict) or set(value) - allowed_top or value.get("schema_version") != RECORD_SCHEMA_VERSION:
         raise RecordError("Unsupported or malformed review record")
     _validate_comments(value)
     validate_repository_identity(value.get("repository"))
@@ -799,11 +888,7 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review pull-request fields are malformed")
     if "head_ref" in pull and (not isinstance(pull["head_ref"], str) or not pull["head_ref"].strip()):
         raise RecordError("Review pull_request.head_ref is invalid")
-    if (
-        not isinstance(pull.get("number"), int)
-        or isinstance(pull["number"], bool)
-        or pull["number"] < 1
-    ):
+    if not isinstance(pull.get("number"), int) or isinstance(pull["number"], bool) or pull["number"] < 1:
         raise RecordError("Review pull number is invalid")
     for field in ("url", "title", "base_ref"):
         if not isinstance(pull[field], str) or not pull[field].strip():
@@ -832,11 +917,7 @@ def validate_record(value: Any) -> dict[str, Any]:
         raise RecordError("Review coverage is malformed")
     if review["verdict"] == "INCOMPLETE" and not unavailable:
         raise RecordError("An INCOMPLETE review must list its unavailable sources")
-    if (
-        not isinstance(review.get("version"), int)
-        or isinstance(review["version"], bool)
-        or review["version"] < 1
-    ):
+    if not isinstance(review.get("version"), int) or isinstance(review["version"], bool) or review["version"] < 1:
         raise RecordError("Review version is invalid")
     if not _one_of(review.get("mode"), {"initial", "re-review"}):
         raise RecordError("Review mode is invalid")
@@ -908,22 +989,13 @@ def validate_record(value: Any) -> dict[str, Any]:
         for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
             if not isinstance(finding[field], str) or not finding[field].strip():
                 raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
-        if (
-            finding["path"].startswith(("/", "\\"))
-            or "\\" in finding["path"]
-            or ".." in Path(finding["path"]).parts
-        ):
+        if finding["path"].startswith(("/", "\\")) or "\\" in finding["path"] or ".." in Path(finding["path"]).parts:
             raise RecordError(f"Review finding {finding['id']}.path is unsafe")
-        if (
-            not isinstance(finding["line"], int)
-            or isinstance(finding["line"], bool)
-            or finding["line"] < 1
-        ):
+        if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
             raise RecordError(f"Review finding {finding['id']}.line is invalid")
     counts = review.get("counts")
     expected_counts = {
-        severity: sum(item["severity"] == severity for item in findings)
-        for severity in sorted(SEVERITIES)
+        severity: sum(item["severity"] == severity for item in findings) for severity in sorted(SEVERITIES)
     }
     if counts != expected_counts:
         raise RecordError("Review finding counts do not match findings")
@@ -1022,20 +1094,24 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def _finding_block(finding: dict[str, Any], label: str, *, repeats: str | None = None,
-                   status: Iterable[str] = ()) -> list[str]:
+def _finding_block(
+    finding: dict[str, Any], label: str, *, repeats: str | None = None, status: Iterable[str] = ()
+) -> list[str]:
     """One finding's collapsible block, headed by its display ID. `repeats` names the finding it repeats, and
     `status` holds the lines saying what this review found about it."""
     headline = (
-        _html(finding["title"]) if "title" in finding
+        _html(finding["title"])
+        if "title" in finding
         else f"<code>{_html(PurePosixPath(finding['path']).name)}:{finding['line']}</code>"
     )
     # A specialist's evidence is the added line itself, so it joins the line number instead of
     # repeating the location on a line of its own; other evidence stays after the body.
     added_prefix = f"{finding['path']}:{finding['line']} adds: "
     if finding["evidence"].startswith(added_prefix):
-        location = [f"> **Line {finding['line']}:** {_code(finding['evidence'][len(added_prefix):])} "
-                    f"| **Source:** {_html(finding['source'])}"]
+        location = [
+            f"> **Line {finding['line']}:** {_code(finding['evidence'][len(added_prefix) :])} "
+            f"| **Source:** {_html(finding['source'])}"
+        ]
         evidence = []
     else:
         location = [f"> **Line:** {finding['line']} | **Source:** {_html(finding['source'])}"]
@@ -1068,15 +1144,20 @@ class _Ledger:
     """What a report needs from a pull request's records: its ledger at the rendered version, each finding by version
     and ID, each disposition's rationale by version and ledger ID, and the flags on each entry."""
 
-    def __init__(self, record: dict[str, Any], prior_records: Iterable[dict[str, Any]],
-                 flags: Iterable[dict[str, Any]]) -> None:
+    def __init__(
+        self, record: dict[str, Any], prior_records: Iterable[dict[str, Any]], flags: Iterable[dict[str, Any]]
+    ) -> None:
         self.version = record["review"]["version"]
         records = [*(item for item in prior_records if item["review"]["version"] < self.version), record]
         self.entries = record["ledger"] if "ledger" in record else ledger_history(records)[self.version]
-        self.findings = {(item["review"]["version"], finding["id"]): finding
-                         for item in records for finding in item["findings"]}
-        self.rationales = {(item["review"]["version"], disposition["finding_id"]): disposition["rationale"]
-                           for item in records for disposition in item.get("prior_dispositions", [])}
+        self.findings = {
+            (item["review"]["version"], finding["id"]): finding for item in records for finding in item["findings"]
+        }
+        self.rationales = {
+            (item["review"]["version"], disposition["finding_id"]): disposition["rationale"]
+            for item in records
+            for disposition in item.get("prior_dispositions", [])
+        }
         initial = [item["review"]["version"] for item in records if item["review"]["mode"] == "initial"]
         self.start = max(initial) if initial else records[0]["review"]["version"]
         self.flags = flagged_entries(self.entries, flags, record["repository"], record["pull_request"]["number"])
@@ -1106,15 +1187,20 @@ class _Ledger:
         if entry["version"] == self.version:
             lines = [f"**New in v{self.version}.**"]
         else:
-            head = (f"**Unverified, raised in v{entry['version']}.**" if entry["state"] == "unverified"
-                    else f"**Open since v{entry['version']}.**")
+            head = (
+                f"**Unverified, raised in v{entry['version']}.**"
+                if entry["state"] == "unverified"
+                else f"**Open since v{entry['version']}.**"
+            )
             judged = entry["dispositions"] and entry["dispositions"][-1]["version"] == self.version
             lines = [f"{head} {self.judgment(entry)}" if judged else f"{head} Last judged in v{entry['judged_in']}."]
         return lines + self.flag_lines(entry)
 
     def flag_lines(self, entry: dict[str, Any]) -> list[str]:
-        return [f"**Flagged:** {flag['id']} ({_flat(flag['category'])}): {_flat(flag['body'])}"
-                for flag in self.flags.get(ledger_id(entry["version"], entry["id"]), [])]
+        return [
+            f"**Flagged:** {flag['id']} ({_flat(flag['category'])}): {_flat(flag['body'])}"
+            for flag in self.flags.get(ledger_id(entry["version"], entry["id"]), [])
+        ]
 
     def counts(self) -> str:
         """Open entries, the version the oldest dates from, how many are flagged, and the entries addressed and
@@ -1127,16 +1213,23 @@ class _Ledger:
             parts = [text + (f" ({flagged} flagged)" if flagged else "")]
         else:
             parts = ["none open"]
-        addressed = sum(entry["state"] == "closed" and entry["dispositions"][-1]["disposition"] == "addressed"
-                        for entry in self.entries)
+        addressed = sum(
+            entry["state"] == "closed" and entry["dispositions"][-1]["disposition"] == "addressed"
+            for entry in self.entries
+        )
         unverified = sum(entry["state"] == "unverified" for entry in self.entries)
         parts.extend([f"{addressed} addressed"] * bool(addressed) + [f"{unverified} unverified"] * bool(unverified))
         return ", ".join(parts)
 
 
-def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
-                    prior_records: Iterable[dict[str, Any]] = (), model_names: dict[str, str] | None = None,
-                    flags: Iterable[dict[str, Any]] = ()) -> str:
+def render_markdown(
+    record: dict[str, Any],
+    *,
+    record_payload_hash: str,
+    prior_records: Iterable[dict[str, Any]] = (),
+    model_names: dict[str, str] | None = None,
+    flags: Iterable[dict[str, Any]] = (),
+) -> str:
     """The Markdown report. Its findings are the ledger's open and unverified entries, each shown from the record
     that raised it, so a re-review needs the pull request's earlier records. `model_names` maps a reviewer's model
     identifier to the name the Reviewers table shows, and `flags` are the flag store's flags."""
@@ -1154,8 +1247,11 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
         "| | |",
         "|---|---|",
         f"| **Title** | {_cell(pull['title'])} |",
-        (f"| **Branch** | {_cell(_code(pull['head_ref']))} → {_cell(_code(pull['base_ref']))} |"
-         if pull.get("head_ref") else f"| **Base** | {_cell(_code(pull['base_ref']))} |"),
+        (
+            f"| **Branch** | {_cell(_code(pull['head_ref']))} → {_cell(_code(pull['base_ref']))} |"
+            if pull.get("head_ref")
+            else f"| **Base** | {_cell(_code(pull['base_ref']))} |"
+        ),
         f"| **URL** | {_cell(pull['url'])} |",
         f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
         f"| **Verdict** | {_label(review['verdict'])}{', ' + ledger.counts() if re_review else ''} |",
@@ -1164,26 +1260,36 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
     ]
     unavailable = (review.get("coverage") or {}).get("unavailable_sources", [])
     if unavailable:
-        lines.extend([
-            "> **Not reviewed in full:** these changed files were too large or could not be represented safely, "
-            "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
-            "",
-        ])
+        lines.extend(
+            [
+                "> **Not reviewed in full:** these changed files were too large or could not be represented safely, "
+                "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
+                "",
+            ]
+        )
     uncovered = (review.get("coverage") or {}).get("uncovered_files", [])
     if uncovered:
-        lines.extend([
-            "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
-            "`uncovered` to `ignore`, so no reviewer saw them: " + ", ".join(_code(path) for path in uncovered) + ".",
-            "",
-        ])
+        lines.extend(
+            [
+                "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+                "`uncovered` to `ignore`, so no reviewer saw them: "
+                + ", ".join(_code(path) for path in uncovered)
+                + ".",
+                "",
+            ]
+        )
     lines.extend(["---", "", "## Summary", "", review["summary"].strip(), "", "## Findings", ""])
     lines.extend(_findings_section(ledger, re_review))
     comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
     if comments:
-        lines.extend([
-            "## Review Comments", "",
-            "| # | Comment | Status | Rationale |", "|---|---------|--------|-----------|",
-        ])
+        lines.extend(
+            [
+                "## Review Comments",
+                "",
+                "| # | Comment | Status | Rationale |",
+                "|---|---------|--------|-----------|",
+            ]
+        )
         for disposition in record["comment_dispositions"]:
             comment = comments[disposition["comment_id"]]
             location = comment["path"] + (f":{comment['line']}" if comment["line"] else "")
@@ -1199,11 +1305,14 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
     names = model_names or {}
     mapped: list[str] = []
     if review.get("reviewers"):
-        lines.extend([
-            "## Reviewers", "",
-            "| Reviewer | Focus | Model | Files | Findings | Retries | Time |",
-            "|----------|-------|-------|-------|----------|---------|------|",
-        ])
+        lines.extend(
+            [
+                "## Reviewers",
+                "",
+                "| Reviewer | Focus | Model | Files | Findings | Retries | Time |",
+                "|----------|-------|-------|-------|----------|---------|------|",
+            ]
+        )
         for reviewer in review["reviewers"]:
             focus = reviewer["category"] + (" (dispositions only)" if reviewer["dispositions_only"] else "")
             model = reviewer.get("model", "-")
@@ -1215,29 +1324,38 @@ def render_markdown(record: dict[str, Any], *, record_payload_hash: str,
                 f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} |"
             )
         lines.append("")
-    lines.extend([
-        "---",
-        "",
-        "<details>",
-        "<summary><strong>Review Details</strong></summary>",
-        "",
-        "| | |",
-        "|---|---|",
-        f"| **Mode** | {review['mode']} v{review['version']} |",
-        f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
-        f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
-        # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
-        *([f"| **Reviewer models** | "
-           + "; ".join(f"{_cell(names[model])}: {_cell(_code(model))}" for model in mapped) + " |"] if mapped else []),
-        f"| **Base SHA** | `{pull['base_sha']}` |",
-        f"| **Reviewed HEAD** | `{pull['head_sha']}` |",
-        f"| **Record payload SHA-256** | `{record_payload_hash}` |",
-        "",
-        "</details>",
-        "",
-        f"<!-- reviewed_head_sha: {pull['head_sha']} -->",
-        "",
-    ])
+    lines.extend(
+        [
+            "---",
+            "",
+            "<details>",
+            "<summary><strong>Review Details</strong></summary>",
+            "",
+            "| | |",
+            "|---|---|",
+            f"| **Mode** | {review['mode']} v{review['version']} |",
+            f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
+            f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
+            # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
+            *(
+                [
+                    f"| **Reviewer models** | "
+                    + "; ".join(f"{_cell(names[model])}: {_cell(_code(model))}" for model in mapped)
+                    + " |"
+                ]
+                if mapped
+                else []
+            ),
+            f"| **Base SHA** | `{pull['base_sha']}` |",
+            f"| **Reviewed HEAD** | `{pull['head_sha']}` |",
+            f"| **Record payload SHA-256** | `{record_payload_hash}` |",
+            "",
+            "</details>",
+            "",
+            f"<!-- reviewed_head_sha: {pull['head_sha']} -->",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -1256,12 +1374,16 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
         lines.extend(["<details open>", f"<summary><strong>{title} ({len(group)})</strong></summary>", ""])
         for entry in group:
             label = _display_id(entry["version"], entry["id"])
-            block = _finding_block(ledger.raised(entry), label,
-                                   status=ledger.status(entry) if re_review else ledger.flag_lines(entry))
+            block = _finding_block(
+                ledger.raised(entry), label, status=ledger.status(entry) if re_review else ledger.flag_lines(entry)
+            )
             for repeat in entry["repeats"]:
                 if repeat["version"] == ledger.version:
-                    block[-2:-2] = _finding_block(ledger.finding(repeat["version"], repeat["id"]),
-                                                  _display_id(repeat["version"], repeat["id"]), repeats=label)
+                    block[-2:-2] = _finding_block(
+                        ledger.finding(repeat["version"], repeat["id"]),
+                        _display_id(repeat["version"], repeat["id"]),
+                        repeats=label,
+                    )
             lines.extend(block)
         lines.extend(["</details>", ""])
     closed = sorted((entry for entry in ledger.entries if entry["state"] == "closed"), key=ledger.order)
@@ -1271,8 +1393,10 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
             finding = ledger.raised(entry)
             title = f" {_html(finding['title'])}," if "title" in finding else ""
             location = _code(f"{finding['path']}:{finding['line']}")
-            lines.append(f"- **{_display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
-                         f"[{_html(entry['category'])}]{title} {location}. {ledger.judgment(entry)}")
+            lines.append(
+                f"- **{_display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
+                f"[{_html(entry['category'])}]{title} {location}. {ledger.judgment(entry)}"
+            )
         lines.extend(["", "</details>", ""])
     return lines
 
@@ -1282,13 +1406,20 @@ def _addressed(dispositions: list[dict[str, Any]]) -> str:
     return f"**{addressed}/{len(dispositions)} addressed**"
 
 
-def write_record_pair(json_path: Path, markdown_path: Path, record: dict[str, Any], *,
-                      prior_records: Iterable[dict[str, Any]] = (), model_names: dict[str, str] | None = None,
-                      flags: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+def write_record_pair(
+    json_path: Path,
+    markdown_path: Path,
+    record: dict[str, Any],
+    *,
+    prior_records: Iterable[dict[str, Any]] = (),
+    model_names: dict[str, str] | None = None,
+    flags: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
     validate_record(record)
     payload_sha = payload_hash(record)
-    markdown = render_markdown(record, record_payload_hash=payload_sha, prior_records=prior_records,
-                               model_names=model_names, flags=flags)
+    markdown = render_markdown(
+        record, record_payload_hash=payload_sha, prior_records=prior_records, model_names=model_names, flags=flags
+    )
     markdown_sha = sha256_text(markdown)
     persisted = copy.deepcopy(record)
     persisted["artifacts"] = {

@@ -14,10 +14,21 @@ from review_io import ResourceLock, atomic_write_json, read_json
 
 # Version 2 adds review_version, so a finding ID names one review; finding IDs restart at F001 in every review.
 SCHEMA_VERSION = 2
-FIELDS = frozenset({
-    "id", "status", "created_at", "resolved_at", "repository", "pull_number", "review_version", "finding_id",
-    "category", "body", "resolution",
-})
+FIELDS = frozenset(
+    {
+        "id",
+        "status",
+        "created_at",
+        "resolved_at",
+        "repository",
+        "pull_number",
+        "review_version",
+        "finding_id",
+        "category",
+        "body",
+        "resolution",
+    }
+)
 
 
 class FlagError(ValueError):
@@ -59,9 +70,7 @@ def validate_store(value: Any) -> dict[str, Any]:
         if flag["repository"] is not None:
             validate_repository_identity(flag["repository"])
         if flag["pull_number"] is not None and (
-            not isinstance(flag["pull_number"], int)
-            or isinstance(flag["pull_number"], bool)
-            or flag["pull_number"] < 1
+            not isinstance(flag["pull_number"], int) or isinstance(flag["pull_number"], bool) or flag["pull_number"] < 1
         ):
             raise FlagError("Flag pull number is invalid")
         if flag["review_version"] is not None and (
@@ -102,10 +111,14 @@ def _positive(value: Any) -> bool:
 def upgrade_store(value: Any) -> Any:
     """A version 1 store as version 2: its flags name no review version, so none of them can be linked to a finding."""
     if isinstance(value, dict) and value.get("schema_version") == 1 and isinstance(value.get("flags"), list):
-        value = {**value, "schema_version": SCHEMA_VERSION, "flags": [
-            {**flag, "review_version": None} if isinstance(flag, dict) and "review_version" not in flag else flag
-            for flag in value["flags"]
-        ]}
+        value = {
+            **value,
+            "schema_version": SCHEMA_VERSION,
+            "flags": [
+                {**flag, "review_version": None} if isinstance(flag, dict) and "review_version" not in flag else flag
+                for flag in value["flags"]
+            ],
+        }
     return value
 
 
@@ -133,9 +146,7 @@ def add_flag(
     if repository is not None:
         repository = validate_repository_identity(repository)
     if pull_number is not None and (
-        not isinstance(pull_number, int)
-        or isinstance(pull_number, bool)
-        or pull_number < 1
+        not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1
     ):
         raise FlagError("Pull number must be positive")
     lock = path.parent / ".locks" / "flags.lock"

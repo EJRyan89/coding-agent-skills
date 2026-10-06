@@ -79,15 +79,50 @@ CODE_SPAN = re.compile(r"`([^`\n]+)`")
 SHELL_FENCES = frozenset({"bash", "sh", "shell", "console"})
 POWERSHELL_FENCES = frozenset({"powershell", "pwsh", "ps1"})
 KNOWN_TOOLS = (
-    "Agent", "AskUserQuestion", "Bash", "BashOutput", "Edit", "EnterWorktree", "ExitPlanMode", "ExitWorktree",
-    "Glob", "Grep", "KillShell", "LS", "Monitor", "MultiEdit", "NotebookEdit", "NotebookRead", "PowerShell",
-    "Read", "Skill", "SlashCommand", "Task", "TodoWrite", "WebFetch", "WebSearch", "Write",
+    "Agent",
+    "AskUserQuestion",
+    "Bash",
+    "BashOutput",
+    "Edit",
+    "EnterWorktree",
+    "ExitPlanMode",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "KillShell",
+    "LS",
+    "Monitor",
+    "MultiEdit",
+    "NotebookEdit",
+    "NotebookRead",
+    "PowerShell",
+    "Read",
+    "Skill",
+    "SlashCommand",
+    "Task",
+    "TodoWrite",
+    "WebFetch",
+    "WebSearch",
+    "Write",
 )
 # Tool names that are also English or technical words need a tool-use context to count.
-CONTEXT_FREE_TOOLS = frozenset({
-    "AskUserQuestion", "BashOutput", "EnterWorktree", "ExitPlanMode", "ExitWorktree", "KillShell", "MultiEdit",
-    "NotebookEdit", "NotebookRead", "SlashCommand", "TodoWrite", "WebFetch", "WebSearch",
-})
+CONTEXT_FREE_TOOLS = frozenset(
+    {
+        "AskUserQuestion",
+        "BashOutput",
+        "EnterWorktree",
+        "ExitPlanMode",
+        "ExitWorktree",
+        "KillShell",
+        "MultiEdit",
+        "NotebookEdit",
+        "NotebookRead",
+        "SlashCommand",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+    }
+)
 # Runtime-neutral prose names actions rather than tools. A matching verb in prose implies an allowed tool
 # is needed, which keeps it out of UNUSED_ALLOWED, but never reports it as MISSING_ALLOWED.
 IMPLIED_BY = {
@@ -320,17 +355,27 @@ def fence_commands(body: list[str], languages: list[str | None], start: int) -> 
 def grant_findings(entries: list[tuple[str, str | None]], commands: list[tuple[int, str]]) -> list[str]:
     """Shell grants that scope nothing or lack their twin, and fence commands no grant of a shell covers."""
     shell = [(name, pattern) for name, pattern in entries if name in SHELL_TOOLS]
-    output = [f"UNSCOPED_ALLOWED {entry_text(name, pattern)}" for name, pattern in shell
-              if pattern is None or pattern.strip() in UNSCOPED_PATTERNS]
-    scoped = [(name, pattern) for name, pattern in shell if pattern is not None and pattern.strip() not in UNSCOPED_PATTERNS]
+    output = [
+        f"UNSCOPED_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in shell
+        if pattern is None or pattern.strip() in UNSCOPED_PATTERNS
+    ]
+    scoped = [
+        (name, pattern) for name, pattern in shell if pattern is not None and pattern.strip() not in UNSCOPED_PATTERNS
+    ]
     twin = {"Bash": "PowerShell", "PowerShell": "Bash"}
-    output += [f"UNPAIRED_ALLOWED {entry_text(name, pattern)}" for name, pattern in scoped
-               if (twin[name], pattern) not in shell]
+    output += [
+        f"UNPAIRED_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in scoped
+        if (twin[name], pattern) not in shell
+    ]
     for number, command in commands:
         for tool in SHELL_TOOLS:
             patterns = [pattern for name, pattern in shell if name == tool]
-            if patterns and not any(pattern is None or pattern.strip() in UNSCOPED_PATTERNS or grants(pattern, command)
-                                    for pattern in patterns):
+            if patterns and not any(
+                pattern is None or pattern.strip() in UNSCOPED_PATTERNS or grants(pattern, command)
+                for pattern in patterns
+            ):
                 output.append(f"UNGRANTED {tool} {number} {command}")
     output += [f"EXPANDS {number} {command}" for number, command in commands if SHELL_EXPANSION.search(command)]
     return output
@@ -524,7 +569,9 @@ def nested_flags(directory: Path, texts: dict[str, tuple[str, str]]) -> list[str
     for relative, (kind, text) in texts.items():
         if kind == "main":
             lines = text.splitlines()
-            linked.update(target for _, _, target in inside_references(root, root / relative, lines[body_start(lines):]))
+            linked.update(
+                target for _, _, target in inside_references(root, root / relative, lines[body_start(lines) :])
+            )
     flags: list[str] = []
     for relative, (kind, text) in texts.items():
         if kind != "doc":
@@ -602,7 +649,9 @@ def duplicate_flags(texts: dict[str, tuple[str, str]]) -> list[str]:
                     first[body] = f"{path}:{line}"
             if len(body) >= 3:
                 needle = "\n" + "\n".join(body) + "\n"
-                flags.extend(f"INLINED_HELPER {path}:{line} {helper}" for helper, code in helpers.items() if needle in code)
+                flags.extend(
+                    f"INLINED_HELPER {path}:{line} {helper}" for helper, code in helpers.items() if needle in code
+                )
     return flags
 
 
@@ -620,7 +669,10 @@ def line_references(line: str, language: str | None, names: list[str], allowed: 
         if (
             any(re.match(rf"{escaped}(?:$|[\s(])", span) for span in spans)
             or re.search(rf"(?<![\w-]){escaped}(?:\(|\s+(?:tools?|calls?|invocations?)\b)", line)
-            or ((name in CONTEXT_FREE_TOOLS or name.startswith("mcp__")) and re.search(rf"(?<![\w-]){escaped}(?![\w-])", line))
+            or (
+                (name in CONTEXT_FREE_TOOLS or name.startswith("mcp__"))
+                and re.search(rf"(?<![\w-]){escaped}(?![\w-])", line)
+            )
         ):
             found.append(name)
     return found
@@ -663,8 +715,10 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
     return any(
         not any(
             start <= match.start() < end
-            and (GOVERNED_DIRECTLY.fullmatch(line[start:match.start()])
-                 or GOVERNED_LIST_ITEM.search(line[start:match.start()]))
+            and (
+                GOVERNED_DIRECTLY.fullmatch(line[start : match.start()])
+                or GOVERNED_LIST_ITEM.search(line[start : match.start()])
+            )
             for start, end in ranges
         )
         for match in pattern.finditer(line)
@@ -770,8 +824,11 @@ def delegation_lines(path: Path, lines: list[str], languages: list[str | None], 
     """Delegations whose reply is never bounded, and subagent prompts that a script writes at runtime."""
     output: list[str] = []
     prose = [index for index in range(start, len(lines)) if languages[index] is None]
-    delegations = [index for index in prose if DELEGATION.search(lines[index])
-                   or line_references(lines[index], None, ["Agent", "Task"], [])]
+    delegations = [
+        index
+        for index in prose
+        if DELEGATION.search(lines[index]) or line_references(lines[index], None, ["Agent", "Task"], [])
+    ]
     if delegations and not any(REPLY_BOUND.search(lines[index]) for index in prose):
         text = lines[delegations[0]].strip()
         excerpt = text if len(text) <= 160 else text[:157] + "..."
@@ -780,8 +837,13 @@ def delegation_lines(path: Path, lines: list[str], languages: list[str | None], 
         if not RUNTIME_PROMPT.search(lines[index]):
             continue
         writer = next(
-            (match.group(0) for earlier in range(index - 1, -1, -1) if languages[earlier] is not None
-             for match in [SCRIPT_PATH.search(lines[earlier])] if match),
+            (
+                match.group(0)
+                for earlier in range(index - 1, -1, -1)
+                if languages[earlier] is not None
+                for match in [SCRIPT_PATH.search(lines[earlier])]
+                if match
+            ),
             "unknown",
         )
         output.append(f"RUNTIME_PROMPT {posix(path)} {index + 1} {writer}")

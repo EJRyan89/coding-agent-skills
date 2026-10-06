@@ -27,11 +27,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertNotRegex(menu, r"(?m)^  \[ \] [0-9]+\. (alpha|beta|core)$")
         result = self.deploy_ok(stdin=self.selection_number("operations", bundle=True) + "\n")
         self.assertIn(
-            "Selected 1 item (3 skills):\n"
-            "  operations (bundle)\n"
-            "    alpha\n"
-            "    beta\n"
-            "    core (dependency)\n",
+            "Selected 1 item (3 skills):\n  operations (bundle)\n    alpha\n    beta\n    core (dependency)\n",
             result.output,
         )
         for name in ("alpha", "beta", "core"):
@@ -118,7 +114,11 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "public").exists())
         self.make_config()
         self.deploy_ok("--all")
-        for path in (self.skills_dir / "middle" / "SKILL.md", self.skills_dir / "core" / "SKILL.md", self.skills_dir / "shared.md"):
+        for path in (
+            self.skills_dir / "middle" / "SKILL.md",
+            self.skills_dir / "core" / "SKILL.md",
+            self.skills_dir / "shared.md",
+        ):
             self.assertTrue(path.is_file())
 
     def test_dependency_cycles_fail_before_mutation(self) -> None:
@@ -272,15 +272,22 @@ class BundleAndDependencyTests(DeployerTestCase):
 
     def test_adapter_carries_the_rendered_description_but_not_allowed_tools(self) -> None:
         self.make_source_json()
-        self.make_skill("alpha", "Alpha", ["REPOS_ROOT"],
-                        description="Sweep every repo under {{REPOS_ROOT}} — use when asked to tidy branches.")
+        self.make_skill(
+            "alpha",
+            "Alpha",
+            ["REPOS_ROOT"],
+            description="Sweep every repo under {{REPOS_ROOT}} — use when asked to tidy branches.",
+        )
         self.make_config(repos_root=self.home / "My Repos (work)")
         self.deploy_ok("--all")
         adapter = self.adapter("alpha")
         expected = f"Sweep every repo under {forward(self.home)}/My Repos (work) — use when asked to tidy branches."
         self.assertEqual(expected, adapter.string("description"))
-        self.assertEqual(["name", "description"], adapter.keys(),
-                         "Copilot cannot scope allowed-tools; see Granting tools in docs/adding-a-skill.md")
+        self.assertEqual(
+            ["name", "description"],
+            adapter.keys(),
+            "Copilot cannot scope allowed-tools; see Granting tools in docs/adding-a-skill.md",
+        )
         self.assertEqual(["SKILL.md"], [path.name for path in (self.agents_dir / "alpha").rglob("*")])
 
     def test_adapter_quotes_a_description_that_plain_yaml_would_misread(self) -> None:
@@ -293,17 +300,22 @@ class BundleAndDependencyTests(DeployerTestCase):
 
     def test_user_only_adapter_cannot_be_selected_by_purpose_on_any_runtime(self) -> None:
         self.make_source_json()
-        self.make_skill("alpha", "Alpha", description='"Delete stale branches across every repository."',
-                        user_only=True)
+        self.make_skill(
+            "alpha", "Alpha", description='"Delete stale branches across every repository."', user_only=True
+        )
         self.make_config()
         self.deploy_ok("--all")
         adapter = self.adapter("alpha")
-        self.assertEqual("Runtime adapter for the authoritative alpha skill, which only the user starts.",
-                         adapter.string("description"))
+        self.assertEqual(
+            "Runtime adapter for the authoritative alpha skill, which only the user starts.",
+            adapter.string("description"),
+        )
         self.assertEqual("true", adapter.string("disable-model-invocation"), "GitHub Copilot CLI's switch")
-        self.assertEqual("policy:\n  allow_implicit_invocation: false\n",
-                         (self.agents_dir / "alpha" / "agents" / "openai.yaml").read_text(encoding="utf-8"),
-                         "Codex's switch")
+        self.assertEqual(
+            "policy:\n  allow_implicit_invocation: false\n",
+            (self.agents_dir / "alpha" / "agents" / "openai.yaml").read_text(encoding="utf-8"),
+            "Codex's switch",
+        )
         self.make_skill("alpha", "Alpha", description='"Delete stale branches across every repository."')
         self.deploy_ok("--all")
         self.assertEqual("Delete stale branches across every repository.", self.adapter("alpha").string("description"))
@@ -319,10 +331,11 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse((self.agents_dir / "alpha").exists())
 
-
     def test_description_with_an_xml_tag_stops_before_any_change(self) -> None:
         self.make_source_json()
-        self.make_skill("alpha", "Alpha", description='"Compare a < b and c > d, then map x -> y. Use it when sorting."')
+        self.make_skill(
+            "alpha", "Alpha", description='"Compare a < b and c > d, then map x -> y. Use it when sorting."'
+        )
         self.make_skill("beta", "Beta", description='"Wrap the answer in <tag> markup. Use it when testing."')
         self.make_config()
         result = self.deploy_fails(
@@ -343,8 +356,11 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.remove_skill("beta")
         self.make_source_json()
         self.deploy_ok("--all")
-        self.assertEqual("Compare a < b and c > d, then map x -> y. Use it when sorting.",
-                         self.adapter("alpha").string("description"))
+        self.assertEqual(
+            "Compare a < b and c > d, then map x -> y. Use it when sorting.",
+            self.adapter("alpha").string("description"),
+        )
+
 
 class SelectionTests(DeployerTestCase):
     def test_invalid_and_out_of_range_selections_are_rejected(self) -> None:
@@ -410,7 +426,10 @@ class OptInTests(DeployerTestCase):
     def test_include_needs_all_and_a_known_name(self) -> None:
         self.deploy_fails("--include", "lint", "--dry-run", pattern="--include can only be used with --all")
         self.deploy_fails(
-            "--all", "--include", "missing", "--dry-run",
+            "--all",
+            "--include",
+            "missing",
+            "--dry-run",
             pattern="--include names no bundle or skill in this source: missing",
         )
         self.deploy_fails(

@@ -73,8 +73,8 @@ from review_runtime import (
     materialize_reviewer,
     materialize_source_snapshot,
     negotiate_capabilities,
+    resolve_reviewer_commit,
     resolve_runtime,
-    resolve_trusted_commit,
     validate_adapter_manifest,
     verify_checkout_remote,
     verify_source_snapshot,
@@ -202,9 +202,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_repository_reviewer_requires_checkout_and_safe_manifest(self) -> None:
         config = valid_config()
         reviewer = config["repositories"]["example/one"]["reviewer"]
-        reviewer.update(
-            {"id": "specialist", "scope": "repository", "manifest_path": "../adapter.json"}
-        )
+        reviewer.update({"id": "specialist", "scope": "repository", "manifest_path": "../adapter.json"})
         with self.assertRaisesRegex(ConfigurationError, "unsafe"):
             validate_config(config)
         reviewer["manifest_path"] = ".review/adapter.json"
@@ -220,7 +218,12 @@ class ConfigurationTests(unittest.TestCase):
         def reviewer_config(**fields: object) -> dict:
             config = valid_config()
             config["repositories"]["example/one"]["reviewer"] = {
-                "id": "team", "protocol_version": 1, "trusted_ref": None, "scope": "repository", **fields}
+                "id": "team",
+                "protocol_version": 1,
+                "trusted_ref": None,
+                "scope": "repository",
+                **fields,
+            }
             return config
 
         for fields in (
@@ -231,8 +234,10 @@ class ConfigurationTests(unittest.TestCase):
         ):
             with self.subTest(fields=fields):
                 reviewer = validate_config(reviewer_config(**fields))["repositories"]["example/one"]["reviewer"]
-                self.assertEqual({"manifest_path", "skill", "manifest"} & set(fields),
-                                 {key for key in ("manifest_path", "skill", "manifest") if reviewer[key] is not None})
+                self.assertEqual(
+                    {"manifest_path", "skill", "manifest"} & set(fields),
+                    {key for key in ("manifest_path", "skill", "manifest") if reviewer[key] is not None},
+                )
         for fields, message in (
             ({}, "needs skill"),
             ({"manifest": True}, "needs skill"),
@@ -247,8 +252,10 @@ class ConfigurationTests(unittest.TestCase):
         generic["repositories"]["example/one"]["reviewer"]["skill"] = "review.md"
         with self.assertRaisesRegex(ConfigurationError, "generic scope"):
             validate_config(generic)
-        self.assertEqual(Path("C:/Config/reviewers/example/one/manifest.json"),
-                         default_manifest_path(Path("C:/Config/config.json"), "Example/One"))
+        self.assertEqual(
+            Path("C:/Config/reviewers/example/one/manifest.json"),
+            default_manifest_path(Path("C:/Config/config.json"), "Example/One"),
+        )
 
     def test_re_review_scope_thresholds_have_defaults_and_are_validated(self) -> None:
         self.assertEqual({"full_share": 0.5, "full_lines": 1000}, validate_config(valid_config())["re_review_scope"])
@@ -303,9 +310,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_dashboard_overrides_cannot_duplicate_computed_states(self) -> None:
         config = valid_config()
-        config["dashboard"] = {
-            "status_overrides": {"example/one#12": "stale"}
-        }
+        config["dashboard"] = {"status_overrides": {"example/one#12": "stale"}}
         with self.assertRaisesRegex(ConfigurationError, "computed tracker state"):
             validate_config(config)
         config["dashboard"]["status_overrides"]["example/one#12"] = "on hold"
@@ -507,8 +512,9 @@ class StateAndLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             self._old_lock(path, {"pid": 4242, "start_time": 1234})
-            with mock.patch.object(review_io, "process_status", probe), mock.patch(
-                "os.kill", side_effect=AssertionError("os.kill called")
+            with (
+                mock.patch.object(review_io, "process_status", probe),
+                mock.patch("os.kill", side_effect=AssertionError("os.kill called")),
             ):
                 with ResourceLock(path, timeout_seconds=0.5):
                     self.assertEqual(1234, read_json(path / "owner.json")["start_time"])
@@ -526,9 +532,7 @@ class StateAndLockTests(unittest.TestCase):
 class RecordTests(unittest.TestCase):
     def test_adapter_schema_matches_runtime_finding_contract(self) -> None:
         schema = json.loads(
-            (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(
-                encoding="utf-8"
-            )
+            (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(encoding="utf-8")
         )
         finding = schema["properties"]["findings"]["items"]
         self.assertFalse(finding["additionalProperties"])
@@ -581,8 +585,9 @@ class RecordTests(unittest.TestCase):
                 validate_record(tampered)
 
     def test_finding_analyzer_is_optional_but_validated_in_results_records_and_schema(self) -> None:
-        schema = json.loads((SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json")
-                            .read_text(encoding="utf-8"))
+        schema = json.loads(
+            (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(encoding="utf-8")
+        )
         analyzer = schema["properties"]["findings"]["items"]["properties"]["analyzer"]
         self.assertEqual(["available", "known", "custom-candidate"], analyzer["properties"]["coverage"]["enum"])
         self.assertEqual({"coverage", "tool", "rule"}, set(analyzer["required"]))
@@ -611,8 +616,10 @@ class RecordTests(unittest.TestCase):
             by_schema = (
                 coverage in analyzer["properties"]["coverage"]["enum"]
                 and all(re.fullmatch(name_pattern, text) for text in (tool, rule))
-                and (coverage != "custom-candidate"
-                     or (len(rule) <= custom_rule["maxLength"] and re.fullmatch(custom_rule["pattern"], rule)))
+                and (
+                    coverage != "custom-candidate"
+                    or (len(rule) <= custom_rule["maxLength"] and re.fullmatch(custom_rule["pattern"], rule))
+                )
             )
             self.assertEqual(accepted, bool(by_schema), value)
         self.assertFalse(valid_analyzer({"coverage": "known", "tool": "x", "rule": "y", "extra": 1}))
@@ -624,17 +631,25 @@ class RecordTests(unittest.TestCase):
                 result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
             )
 
-        self.assertNotIn("analyzer", build_record(valid_request(), validate(valid_adapter_result()), version=1,
-                                                  policy={})["findings"][0])
+        self.assertNotIn(
+            "analyzer",
+            build_record(valid_request(), validate(valid_adapter_result()), version=1, policy={})["findings"][0],
+        )
         covered = valid_adapter_result()
         coverage = {"coverage": "available", "tool": "Microsoft.CodeAnalysis.NetAnalyzers", "rule": "CA2000"}
         covered["findings"][0]["analyzer"] = coverage
         record = build_record(valid_request(), validate(covered), version=1, policy={})
         self.assertEqual(coverage, validate_record(record)["findings"][0]["analyzer"])
         markdown = render_markdown(record, record_payload_hash="0" * 64)
-        self.assertIn("> **Analyzer:** `CA2000` in `Microsoft.CodeAnalysis.NetAnalyzers`, which the repository "
-                      "already has, would catch this if enforced.\n", markdown)
-        for bad in ({"coverage": "known", "tool": "x"}, {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "A B"}):
+        self.assertIn(
+            "> **Analyzer:** `CA2000` in `Microsoft.CodeAnalysis.NetAnalyzers`, which the repository "
+            "already has, would catch this if enforced.\n",
+            markdown,
+        )
+        for bad in (
+            {"coverage": "known", "tool": "x"},
+            {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "A B"},
+        ):
             result = valid_adapter_result()
             result["findings"][0]["analyzer"] = bad
             with self.assertRaisesRegex(RecordError, "analyzer must be an object with exactly coverage"):
@@ -650,8 +665,7 @@ class RecordTests(unittest.TestCase):
 
     def test_published_adapter_fixture_satisfies_protocol(self) -> None:
         result = json.loads(
-            (SCRIPT_DIRECTORY.parent / "references" / "fixtures" / "adapter-result.json")
-            .read_text(encoding="utf-8")
+            (SCRIPT_DIRECTORY.parent / "references" / "fixtures" / "adapter-result.json").read_text(encoding="utf-8")
         )
         validate_adapter_result(
             result,
@@ -672,28 +686,45 @@ class RecordTests(unittest.TestCase):
             )
 
     def test_comment_dispositions_are_required_except_from_older_repository_reviewers(self) -> None:
-        arguments = {"expected_repository": "example/one", "expected_number": 12, "expected_head_sha": "b" * 40,
-                     "comment_ids": ["C1", "C2"]}
+        arguments = {
+            "expected_repository": "example/one",
+            "expected_number": 12,
+            "expected_head_sha": "b" * 40,
+            "comment_ids": ["C1", "C2"],
+        }
         with self.assertRaisesRegex(RecordError, r"Comment dispositions mismatch; missing=\['C1', 'C2'\]"):
             validate_adapter_result(valid_adapter_result(), **arguments)
         # A repository entrypoint reviewer that predates comment dispositions may omit them all...
         validate_adapter_result(valid_adapter_result(), require_comment_dispositions=False, **arguments)
         # ...but one that gives any must cover every comment exactly once.
-        partial = {**valid_adapter_result(), "comment_dispositions": [
-            {"comment_id": "C1", "disposition": "addressed", "rationale": "Done."}]}
+        partial = {
+            **valid_adapter_result(),
+            "comment_dispositions": [{"comment_id": "C1", "disposition": "addressed", "rationale": "Done."}],
+        }
         with self.assertRaisesRegex(RecordError, r"missing=\['C2'\]"):
             validate_adapter_result(partial, require_comment_dispositions=False, **arguments)
 
     def test_record_patches_and_re_review_scope_are_validated(self) -> None:
         patches = {"src/file.cs": {"sha256": "c" * 64, "lines": 3}}
-        scope = {"requested": "auto", "used": "incremental", "reason": "a small change", "since_version": 1,
-                 "files_changed": 1, "files_total": 1, "lines_changed": 3, "lines_total": 3}
+        scope = {
+            "requested": "auto",
+            "used": "incremental",
+            "reason": "a small change",
+            "since_version": 1,
+            "files_changed": 1,
+            "files_total": 1,
+            "lines_changed": 3,
+            "lines_total": 3,
+        }
         request = {**valid_request(), "mode": "re-review", "patches": patches, "scope": scope}
         record = build_record(request, valid_adapter_result(), version=2, policy={})
         validate_record(record)
         self.assertEqual((patches, scope), (record["review"]["patches"], record["review"]["scope"]))
-        self.assertIn("| **Scope** | incremental, 1 of 1 files and 3 of 3 changed lines differ from v1 (requested "
-                      "auto: a small change) |\n", render_markdown(record, record_payload_hash="0" * 64))
+        self.assertIn(
+            "| **Scope** | incremental, 1 of 1 files and 3 of 3 changed lines differ from v1 (requested "
+            "auto: a small change) |\n",
+            render_markdown(record, record_payload_hash="0" * 64),
+        )
         uncompared = copy.deepcopy(record)
         uncompared["review"]["scope"].update(used="full", files_changed=None, lines_changed=None)
         validate_record(uncompared)
@@ -712,8 +743,10 @@ class RecordTests(unittest.TestCase):
             (lambda r: r["review"]["scope"].update(files_total=-1), "totals must be non-negative"),
             (lambda r: r["review"]["scope"].update(files_changed=2), "within their totals"),
             (lambda r: r["review"]["scope"].update(lines_changed=None), "both be null"),
-            (lambda r: r["review"]["scope"].update(files_changed=None, lines_changed=None),
-             "incremental re-review must have compared"),
+            (
+                lambda r: r["review"]["scope"].update(files_changed=None, lines_changed=None),
+                "incremental re-review must have compared",
+            ),
             (lambda r: r["review"]["scope"].pop("reason"), "scope fields are malformed"),
         ):
             broken = copy.deepcopy(record)
@@ -724,12 +757,34 @@ class RecordTests(unittest.TestCase):
         self.assertFalse({"patches", "scope"} & set(without["review"]), "older records have neither")
 
     def test_record_comments_and_reviewers_are_validated(self) -> None:
-        request = {**valid_request(), "reviewers": [{"id": "generic-review", "category": "General", "files": 2,
-                                                     "findings": 1, "retries": 0, "dispositions_only": False}],
-                   "github_comments": [{"id": "C1", "author": "dev", "path": "src/file.cs", "line": None,
-                                        "outdated": False, "body": "Why?", "url": "https://example.invalid/1"}]}
-        result = {**valid_adapter_result(), "comment_dispositions": [
-            {"comment_id": "C1", "disposition": "still_present", "rationale": "Unchanged."}]}
+        request = {
+            **valid_request(),
+            "reviewers": [
+                {
+                    "id": "generic-review",
+                    "category": "General",
+                    "files": 2,
+                    "findings": 1,
+                    "retries": 0,
+                    "dispositions_only": False,
+                }
+            ],
+            "github_comments": [
+                {
+                    "id": "C1",
+                    "author": "dev",
+                    "path": "src/file.cs",
+                    "line": None,
+                    "outdated": False,
+                    "body": "Why?",
+                    "url": "https://example.invalid/1",
+                }
+            ],
+        }
+        result = {
+            **valid_adapter_result(),
+            "comment_dispositions": [{"comment_id": "C1", "disposition": "still_present", "rationale": "Unchanged."}],
+        }
         record = build_record(request, result, version=1, policy={"request_changes_for": ["MUST_FIX"]})
         validate_record(record)
         for mutate, message in (
@@ -761,13 +816,16 @@ class RecordTests(unittest.TestCase):
 
         result["prior_dispositions"] = [{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Fixed."}]
         first = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
-        markdown = render_markdown(build_record({**request, "mode": "re-review"}, result, version=2, policy={},
-                                                prior_ledger=first["ledger"]),
-                                   record_payload_hash="0" * 64, prior_records=[first])
+        markdown = render_markdown(
+            build_record({**request, "mode": "re-review"}, result, version=2, policy={}, prior_ledger=first["ledger"]),
+            record_payload_hash="0" * 64,
+            prior_records=[first],
+        )
         # Prior findings are shown with the findings; review comments keep a section of their own.
         self.assertLess(markdown.index("Addressed in v2: Fixed."), markdown.index("## Review Comments"))
-        self.assertIn("| [C1](https://example.invalid/1) | @dev on `src/file.cs`: Why? | STILL PRESENT | Unchanged. |",
-                      markdown)
+        self.assertIn(
+            "| [C1](https://example.invalid/1) | @dev on `src/file.cs`: Why? | STILL PRESENT | Unchanged. |", markdown
+        )
         self.assertIn("## Reviewers", markdown)
         self.assertLess(markdown.index("## Review Comments"), markdown.index("## Reviewers"))
         self.assertLess(markdown.index("## Reviewers"), markdown.index("Review Details</strong>"))
@@ -779,10 +837,18 @@ class RecordTests(unittest.TestCase):
         for mutate, message in (
             (lambda r: r.update(status=["complete"]), "status is invalid"),
             (lambda r: r["findings"][0].update(severity=["MUST_FIX"]), "Invalid finding severity"),
-            (lambda r: r.update(prior_dispositions=[{"finding_id": "F001", "disposition": ["addressed"],
-                                                     "rationale": "x"}]), "Invalid disposition"),
-            (lambda r: r.update(comment_dispositions=[{"comment_id": ["C1"], "disposition": "addressed",
-                                                       "rationale": "x"}]), "unique strings"),
+            (
+                lambda r: r.update(
+                    prior_dispositions=[{"finding_id": "F001", "disposition": ["addressed"], "rationale": "x"}]
+                ),
+                "Invalid disposition",
+            ),
+            (
+                lambda r: r.update(
+                    comment_dispositions=[{"comment_id": ["C1"], "disposition": "addressed", "rationale": "x"}]
+                ),
+                "unique strings",
+            ),
         ):
             result = valid_adapter_result()
             result["prior_dispositions"] = [{"finding_id": "F001", "disposition": "addressed", "rationale": "x"}]
@@ -866,9 +932,7 @@ class RecordTests(unittest.TestCase):
             write_record_pair(json_path, markdown_path, record)
             validated = validate_record_pair(json_path, markdown_path)
             self.assertEqual("F001", validated["findings"][0]["id"])
-            markdown_path.write_text(
-                markdown_path.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8"
-            )
+            markdown_path.write_text(markdown_path.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RecordError, "Markdown hash mismatch"):
                 validate_record_pair(json_path, markdown_path)
 
@@ -878,19 +942,34 @@ class RecordTests(unittest.TestCase):
         request["title"] = "Fix | split"
         result = valid_adapter_result()
         result["findings"] = [
-            {**result["findings"][0], "candidate_key": "late", "severity": "SUGGESTION", "path": "src/z.cs",
-             "line": 9, "body": "Prefer a constant.", "evidence": "z.cs:9 adds: x"},
-            {**result["findings"][0], "candidate_key": "early", "severity": "MUST_FIX", "category": "A<B>",
-             "path": "src/a.cs", "line": 3, "title": "List<T> & friends leak",
-             "body": "First paragraph.\n\nSecond paragraph.",
-             "evidence": "a.cs:3 adds: f(`x`) | y"},
+            {
+                **result["findings"][0],
+                "candidate_key": "late",
+                "severity": "SUGGESTION",
+                "path": "src/z.cs",
+                "line": 9,
+                "body": "Prefer a constant.",
+                "evidence": "z.cs:9 adds: x",
+            },
+            {
+                **result["findings"][0],
+                "candidate_key": "early",
+                "severity": "MUST_FIX",
+                "category": "A<B>",
+                "path": "src/a.cs",
+                "line": 3,
+                "title": "List<T> & friends leak",
+                "body": "First paragraph.\n\nSecond paragraph.",
+                "evidence": "a.cs:3 adds: f(`x`) | y",
+            },
         ]
         result["prior_dispositions"] = [
             {"finding_id": "v2:F001", "disposition": "partially_addressed", "rationale": "One | of two."}
         ]
         prior = build_record(valid_request(), valid_adapter_result(), version=2, policy={})
-        record = build_record(request, result, version=3, policy={}, reviewed_at="2026-10-01T23:26:42+02:00",
-                              prior_ledger=prior["ledger"])
+        record = build_record(
+            request, result, version=3, policy={}, reviewed_at="2026-10-01T23:26:42+02:00", prior_ledger=prior["ledger"]
+        )
         markdown = render_markdown(record, record_payload_hash="0" * 64, prior_records=[prior])
         self.assertTrue(markdown.startswith("# Code Review — example/one#12 (re-review v3)\n\n| | |\n|---|---|\n"))
         for expected in (
@@ -917,8 +996,9 @@ class RecordTests(unittest.TestCase):
         self.assertIn("| **Base** | `main` |", markdown)
         empty = valid_adapter_result()
         empty["findings"] = []
-        markdown = render_markdown(build_record(valid_request(), empty, version=1, policy={}),
-                                   record_payload_hash="0" * 64)
+        markdown = render_markdown(
+            build_record(valid_request(), empty, version=1, policy={}), record_payload_hash="0" * 64
+        )
         self.assertIn("## Findings\n\nNo findings.\n", markdown)
         self.assertNotIn("<details open>", markdown)
         self.assertNotIn("Prior Findings Status", markdown)
@@ -1057,9 +1137,16 @@ class FlagTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "flags.json"
             legacy = {
-                "id": "RF-000001", "status": "open", "created_at": "2026-01-16T00:00:00+00:00",
-                "resolved_at": None, "repository": "example/one", "pull_number": 12, "finding_id": "F001",
-                "category": "Guideline", "body": "Body.", "resolution": None,
+                "id": "RF-000001",
+                "status": "open",
+                "created_at": "2026-01-16T00:00:00+00:00",
+                "resolved_at": None,
+                "repository": "example/one",
+                "pull_number": 12,
+                "finding_id": "F001",
+                "category": "Guideline",
+                "body": "Body.",
+                "resolution": None,
             }
             path.write_text(json.dumps({"schema_version": 1, "next_id": 2, "flags": [legacy]}), encoding="utf-8")
             self.assertEqual({**legacy, "review_version": None}, load_store(path)["flags"][0])
@@ -1074,9 +1161,7 @@ class FlagTests(unittest.TestCase):
 
 class GitHubTests(unittest.TestCase):
     @staticmethod
-    def _api_pull(
-        number: int, *, state: str = "open", merged_at: str | None = None
-    ) -> dict:
+    def _api_pull(number: int, *, state: str = "open", merged_at: str | None = None) -> dict:
         return {
             "number": number,
             "title": f"Pull {number}",
@@ -1116,9 +1201,18 @@ class GitHubTests(unittest.TestCase):
 
     @staticmethod
     def _graphql_page(numbers: list[int], cursor: str | None) -> str:
-        return json.dumps({"data": {"repository": {"pullRequests": {
-            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
-            "nodes": [{"number": number} for number in numbers]}}}})
+        return json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor},
+                            "nodes": [{"number": number} for number in numbers],
+                        }
+                    }
+                }
+            }
+        )
 
     def test_graphql_connection_is_paginated_until_complete(self) -> None:
         calls: list[list[str]] = []
@@ -1130,20 +1224,39 @@ class GitHubTests(unittest.TestCase):
             return CommandResult(0, pages[after], "")
 
         nodes = GitHubClient(runner).graphql_nodes(
-            "query($after: String) { x }", {"owner": "example", "name": "one"}, ("repository", "pullRequests"))
+            "query($after: String) { x }", {"owner": "example", "name": "one"}, ("repository", "pullRequests")
+        )
         self.assertEqual([1, 2, 3], [node["number"] for node in nodes])
-        self.assertEqual(["gh", "api", "graphql", "-f", "query=query($after: String) { x }",
-                          "-f", "owner=example", "-f", "name=one"], calls[0])
+        self.assertEqual(
+            [
+                "gh",
+                "api",
+                "graphql",
+                "-f",
+                "query=query($after: String) { x }",
+                "-f",
+                "owner=example",
+                "-f",
+                "name=one",
+            ],
+            calls[0],
+        )
         self.assertEqual(["-f", "after=c1"], calls[1][-2:])
 
     def test_graphql_failures_never_return_partial_nodes(self) -> None:
         connection = ("repository", "pullRequests")
         cases = (
-            (CommandResult(0, json.dumps({"errors": [{"type": "RATE_LIMITED", "message": "slow down"}]}), ""),
-             "rate_limit", "slow down"),
+            (
+                CommandResult(0, json.dumps({"errors": [{"type": "RATE_LIMITED", "message": "slow down"}]}), ""),
+                "rate_limit",
+                "slow down",
+            ),
             (CommandResult(0, json.dumps({"data": {"repository": None}}), ""), "not_found", "was not found"),
-            (CommandResult(0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": []}}}}), ""),
-             "malformed", "unexpected shape"),
+            (
+                CommandResult(0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": []}}}}), ""),
+                "malformed",
+                "unexpected shape",
+            ),
             (CommandResult(0, self._graphql_page([1], "same"), ""), "malformed", "did not advance"),
             (CommandResult(1, "", "HTTP 401: Bad credentials"), "authentication", "Bad credentials"),
             (CommandResult(0, "not-json", ""), "malformed", "malformed JSON"),
@@ -1156,8 +1269,10 @@ class GitHubTests(unittest.TestCase):
                 self.assertEqual(kind, context.exception.kind)
 
     def test_authenticated_login_is_shape_checked(self) -> None:
-        self.assertEqual("octo", GitHubClient(
-            lambda arguments: CommandResult(0, json.dumps({"login": "octo"}), "")).authenticated_login())
+        self.assertEqual(
+            "octo",
+            GitHubClient(lambda arguments: CommandResult(0, json.dumps({"login": "octo"}), "")).authenticated_login(),
+        )
         with self.assertRaisesRegex(GitHubError, "unexpected shape"):
             GitHubClient(lambda arguments: CommandResult(0, json.dumps({}), "")).authenticated_login()
 
@@ -1174,17 +1289,13 @@ class GitHubTests(unittest.TestCase):
         self.assertNotIn("--paginate", calls[0])
         with self.assertRaisesRegex(GitHubError, "positive"):
             GitHubClient(runner).get_pull("example/one", 0)
-        malformed = GitHubClient(
-            lambda arguments: CommandResult(0, json.dumps([]), "")
-        )
+        malformed = GitHubClient(lambda arguments: CommandResult(0, json.dumps([]), ""))
         with self.assertRaisesRegex(GitHubError, "unexpected shape"):
             malformed.get_pull("example/one", 42)
 
     def test_closed_unmerged_pulls_are_ineligible(self) -> None:
         closed = self._api_pull(42, state="closed")
-        client = GitHubClient(
-            lambda arguments: CommandResult(0, json.dumps(closed), "")
-        )
+        client = GitHubClient(lambda arguments: CommandResult(0, json.dumps(closed), ""))
         with self.assertRaisesRegex(GitHubError, "closed without being merged"):
             client.get_pull("example/one", 42)
 
@@ -1216,18 +1327,19 @@ class GitHubTests(unittest.TestCase):
         )
         for stderr, expected in cases:
             with self.subTest(stderr=stderr):
-                client = GitHubClient(
-                    lambda arguments, message=stderr: CommandResult(1, "", message)
-                )
+                client = GitHubClient(lambda arguments, message=stderr: CommandResult(1, "", message))
                 with self.assertRaises(GitHubError) as context:
                     client.api_json("repos/example/one")
                 self.assertEqual(expected, context.exception.kind)
 
     def test_runner_decodes_bytes_that_are_not_utf8_without_losing_them(self) -> None:
-        result = review_github.subprocess_runner([
-            sys.executable, "-c",
-            "import sys; sys.stdout.buffer.write(b'caf\\xe9'); sys.stderr.buffer.write(b'bad \\xff')",
-        ])
+        result = review_github.subprocess_runner(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'caf\\xe9'); sys.stderr.buffer.write(b'bad \\xff')",
+            ]
+        )
         self.assertEqual((0, "caf\udce9", "bad \udcff"), (result.returncode, result.stdout, result.stderr))
 
     def test_the_diff_replaces_and_counts_each_undecodable_byte(self) -> None:
@@ -1248,14 +1360,26 @@ class GitHubTests(unittest.TestCase):
     def test_json_and_errors_replace_undecodable_bytes(self) -> None:
         body = b'{"login": "caf\xe9"}'.decode("utf-8", "surrogateescape")
         self.assertEqual("caf\ufffd", GitHubClient(lambda arguments: CommandResult(0, body, "")).authenticated_login())
-        page = json.dumps({"data": {"repository": {"pullRequests": {
-            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{"body": "BODY"}]}}}})
+        page = json.dumps(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            "nodes": [{"body": "BODY"}],
+                        }
+                    }
+                }
+            }
+        )
         page = page.replace("BODY", b"caf\xe9".decode("utf-8", "surrogateescape"))
         nodes = GitHubClient(lambda arguments: CommandResult(0, page, "")).graphql_nodes(
-            "query", {}, ("repository", "pullRequests"))
+            "query", {}, ("repository", "pullRequests")
+        )
         self.assertEqual([{"body": "caf\ufffd"}], nodes)
-        failing = GitHubClient(lambda arguments: CommandResult(
-            1, "", b"HTTP 404: caf\xe9 not found".decode("utf-8", "surrogateescape")))
+        failing = GitHubClient(
+            lambda arguments: CommandResult(1, "", b"HTTP 404: caf\xe9 not found".decode("utf-8", "surrogateescape"))
+        )
         with self.assertRaises(GitHubError) as context:
             failing.get_pull_diff("example/one", 7)
         # The message reaches a strict UTF-8 stderr as a FAILED line, so it must encode.
@@ -1363,12 +1487,14 @@ class RuntimeContractTests(unittest.TestCase):
             side_effect=lambda command: "C:/tools/codex.exe" if command == "codex" else None,
         ):
             self.assertEqual("codex", resolve_runtime("auto"))
-        with mock.patch("review_runtime.shutil.which", return_value=None), mock.patch(
-            "review_runtime.Path.is_file", return_value=True
+        with (
+            mock.patch("review_runtime.shutil.which", return_value=None),
+            mock.patch("review_runtime.Path.is_file", return_value=True),
         ):
             self.assertEqual("copilot-cli", resolve_runtime("auto"))
-        with mock.patch("review_runtime.shutil.which", return_value=None), mock.patch(
-            "review_runtime.Path.is_file", return_value=False
+        with (
+            mock.patch("review_runtime.shutil.which", return_value=None),
+            mock.patch("review_runtime.Path.is_file", return_value=False),
         ):
             with self.assertRaisesRegex(RuntimeContractError, "No supported"):
                 resolve_runtime("auto")
@@ -1417,28 +1543,23 @@ class RuntimeContractTests(unittest.TestCase):
             root = Path(temporary)
             checkout, trusted, head = self._repository(root)
             verify_checkout_remote(checkout, "example/one")
-            resolved = resolve_trusted_commit(
-                checkout, trusted, head_sha=head
-            )
+            resolved = resolve_reviewer_commit(checkout, trusted, head_sha=head)
             self.assertEqual(trusted, resolved)
-            manifest = load_manifest_from_commit(
-                checkout, trusted, ".review/adapter.json"
-            )
+            manifest = load_manifest_from_commit(checkout, trusted, ".review/adapter.json")
             destination = root / "materialized"
-            hashes = materialize_reviewer(
-                checkout, trusted, manifest, destination
-            )
+            hashes = materialize_reviewer(checkout, trusted, manifest, destination)
             self.assertEqual(3, len(hashes))
             self.assertEqual(
                 "# Trusted fixture\n",
                 (destination / manifest["entrypoint"]).read_text(encoding="utf-8"),
             )
-            self.assertEqual(trusted, json.loads(
-                (destination / "materialization.json").read_text(encoding="utf-8")
-            )["source_commit"])
-            self.assertEqual(manifest["entrypoint"], json.loads(
-                (destination / "materialization.json").read_text(encoding="utf-8")
-            )["entrypoint"])
+            self.assertEqual(
+                trusted, json.loads((destination / "materialization.json").read_text(encoding="utf-8"))["source_commit"]
+            )
+            self.assertEqual(
+                manifest["entrypoint"],
+                json.loads((destination / "materialization.json").read_text(encoding="utf-8"))["entrypoint"],
+            )
 
     def test_trusted_files_are_materialized_as_their_exact_committed_bytes(self) -> None:
         crlf, latin1 = b"line one\r\nline two\r\n", b"caf\xe9\n"
@@ -1449,15 +1570,25 @@ class RuntimeContractTests(unittest.TestCase):
             for relative, content in ((manifest["entrypoint"], crlf), (manifest["resources"][0], latin1)):
                 (checkout / relative).write_bytes(content)
             # Not autocrlf: the blob must hold the CRLF itself, whatever the machine's Git configuration says.
-            self._git(checkout, "-c", "core.autocrlf=false", "add", "--", manifest["entrypoint"],
-                      manifest["resources"][0])
-            self._git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                      "commit", "-m", "bytes")
+            self._git(
+                checkout, "-c", "core.autocrlf=false", "add", "--", manifest["entrypoint"], manifest["resources"][0]
+            )
+            self._git(
+                checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "bytes"
+            )
             commit = self._git(checkout, "rev-parse", "HEAD")
-            self.assertEqual(crlf, review_runtime._read_git_file(checkout, commit, manifest["entrypoint"],
-                                                                 review_runtime.subprocess_runner))
-            self.assertEqual(latin1, review_runtime._read_git_file(checkout, commit, manifest["resources"][0],
-                                                                   review_runtime.subprocess_runner))
+            self.assertEqual(
+                crlf,
+                review_runtime._read_git_file(
+                    checkout, commit, manifest["entrypoint"], review_runtime.subprocess_runner
+                ),
+            )
+            self.assertEqual(
+                latin1,
+                review_runtime._read_git_file(
+                    checkout, commit, manifest["resources"][0], review_runtime.subprocess_runner
+                ),
+            )
             destination = root / "materialized"
             hashes = materialize_reviewer(checkout, commit, manifest, destination)
             self.assertEqual(crlf, (destination / manifest["entrypoint"]).read_bytes())
@@ -1468,8 +1599,10 @@ class RuntimeContractTests(unittest.TestCase):
                 manifest["agent_profiles"][0]: hashlib.sha256(b"Agent\n").hexdigest(),
             }
             self.assertEqual(expected, hashes)
-            self.assertEqual(expected, json.loads(
-                (destination / "materialization.json").read_text(encoding="utf-8"))["source_hashes"])
+            self.assertEqual(
+                expected,
+                json.loads((destination / "materialization.json").read_text(encoding="utf-8"))["source_hashes"],
+            )
             self.assertNotEqual(trusted, commit)
 
     def test_the_git_runner_decodes_in_the_caller_and_keeps_every_byte(self) -> None:
@@ -1517,9 +1650,7 @@ class RuntimeContractTests(unittest.TestCase):
             )
             head = self._git(checkout, "rev-parse", "HEAD")
             destination = root / "snapshot"
-            metadata = materialize_source_snapshot(
-                checkout, "example/one", head, destination
-            )
+            metadata = materialize_source_snapshot(checkout, "example/one", head, destination)
             self.assertTrue((destination / "src" / "Example.cs").is_file())
             self.assertFalse((destination / "CLAUDE.md").exists())
             self.assertFalse((destination / ".claude").exists())
@@ -1536,9 +1667,7 @@ class RuntimeContractTests(unittest.TestCase):
                 expected_repository="example/one",
                 expected_commit=head,
             )
-            (destination / "src" / "Example.cs").write_text(
-                "tampered\n", encoding="utf-8"
-            )
+            (destination / "src" / "Example.cs").write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeContractError, "hash mismatch"):
                 verify_source_snapshot(
                     destination,
@@ -1571,8 +1700,16 @@ class RuntimeContractTests(unittest.TestCase):
                 target.parent.mkdir(exist_ok=True)
                 target.write_text(f"content {index}\n" * (index + 1), encoding="utf-8")
             self._git(checkout, "add", ".")
-            self._git(checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-                      "commit", "-m", "many files")
+            self._git(
+                checkout,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-m",
+                "many files",
+            )
             head = self._git(checkout, "rev-parse", "HEAD")
             destination = root / "snapshot"
             metadata = materialize_source_snapshot(checkout, "example/one", head, destination)
@@ -1583,6 +1720,7 @@ class RuntimeContractTests(unittest.TestCase):
     @staticmethod
     def _archive_runner(commit: str, entries: list[tuple[str, bytes, str]]):
         """A git runner whose `archive` writes `entries`, each (name, tar type, link name), as a tar."""
+
         def runner(arguments: list[str]) -> CommandResult:
             if arguments[-3:] == ["remote", "get-url", "origin"]:
                 return CommandResult(0, "https://github.com/example/one.git\n", "")
@@ -1607,24 +1745,34 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_source_snapshot_excludes_links_and_other_non_regular_entries(self) -> None:
         commit = "b" * 40
-        runner = self._archive_runner(commit, [
-            ("src/A.cs", tarfile.REGTYPE, "class A {}\n"),
-            ("tools/cache", tarfile.SYMTYPE, "/home/dev/.cache/tool"),
-            ("src/Hard.cs", tarfile.LNKTYPE, "src/A.cs"),
-            ("run/pipe", tarfile.FIFOTYPE, ""),
-            ("dev/tty", tarfile.CHRTYPE, ""),
-        ])
+        runner = self._archive_runner(
+            commit,
+            [
+                ("src/A.cs", tarfile.REGTYPE, "class A {}\n"),
+                ("tools/cache", tarfile.SYMTYPE, "/home/dev/.cache/tool"),
+                ("src/Hard.cs", tarfile.LNKTYPE, "src/A.cs"),
+                ("run/pipe", tarfile.FIFOTYPE, ""),
+                ("dev/tty", tarfile.CHRTYPE, ""),
+            ],
+        )
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "snapshot"
             metadata = materialize_source_snapshot(
-                Path(temporary) / "checkout", "example/one", commit, destination, runner=runner,
+                Path(temporary) / "checkout",
+                "example/one",
+                commit,
+                destination,
+                runner=runner,
             )
-            self.assertEqual({
-                "tools/cache": "symbolic-link",
-                "src/Hard.cs": "non-regular",
-                "run/pipe": "non-regular",
-                "dev/tty": "non-regular",
-            }, metadata["excluded_paths"])
+            self.assertEqual(
+                {
+                    "tools/cache": "symbolic-link",
+                    "src/Hard.cs": "non-regular",
+                    "run/pipe": "non-regular",
+                    "dev/tty": "non-regular",
+                },
+                metadata["excluded_paths"],
+            )
             self.assertEqual(["src/A.cs"], list(metadata["source_hashes"]))
             self.assertEqual(
                 sorted([SOURCE_SNAPSHOT_MANIFEST, "src/A.cs"]),
@@ -1643,8 +1791,10 @@ class RuntimeContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual([], review_runtime.unavailable_sources(diff, metadata))
-        self.assertEqual({"agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link",
-                          "non-regular"}, review_runtime.SNAPSHOT_EXCLUSION_REASONS)
+        self.assertEqual(
+            {"agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link", "non-regular"},
+            review_runtime.SNAPSHOT_EXCLUSION_REASONS,
+        )
         self.assertEqual({"file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
@@ -1654,7 +1804,11 @@ class RuntimeContractTests(unittest.TestCase):
             destination = Path(temporary) / "snapshot"
             with self.assertRaisesRegex(RuntimeContractError, "reserved snapshot path"):
                 materialize_source_snapshot(
-                    Path(temporary) / "checkout", "example/one", commit, destination, runner=runner,
+                    Path(temporary) / "checkout",
+                    "example/one",
+                    commit,
+                    destination,
+                    runner=runner,
                 )
             self.assertFalse(destination.exists())
 
@@ -1671,14 +1825,10 @@ class RuntimeContractTests(unittest.TestCase):
                 "schema_version": 1,
                 "repository": "example/one",
                 "source_commit": commit,
-                "source_hashes": {
-                    "CLAUDE.md": hashlib.sha256(content).hexdigest()
-                },
+                "source_hashes": {"CLAUDE.md": hashlib.sha256(content).hexdigest()},
                 "excluded_paths": {},
             }
-            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(
-                json.dumps(manifest), encoding="utf-8"
-            )
+            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
             with self.assertRaisesRegex(RuntimeContractError, "agent-instruction"):
                 verify_source_snapshot(
                     snapshot,
@@ -1687,12 +1837,8 @@ class RuntimeContractTests(unittest.TestCase):
                 )
 
             instruction.rename(snapshot / "source.txt")
-            manifest["source_hashes"] = {
-                "source.txt": hashlib.sha256(content).hexdigest()
-            }
-            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(
-                json.dumps(manifest), encoding="utf-8"
-            )
+            manifest["source_hashes"] = {"source.txt": hashlib.sha256(content).hexdigest()}
+            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
             with mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1):
                 with self.assertRaisesRegex(RuntimeContractError, "file exceeds"):
                     verify_source_snapshot(
@@ -1710,11 +1856,7 @@ class RuntimeContractTests(unittest.TestCase):
             if "rev-parse" in arguments:
                 return CommandResult(0, commit + "\n", "")
             if "archive" in arguments:
-                output = next(
-                    item.split("=", 1)[1]
-                    for item in arguments
-                    if item.startswith("--output=")
-                )
+                output = next(item.split("=", 1)[1] for item in arguments if item.startswith("--output="))
                 with tarfile.open(output, mode="w") as archive:
                     for name in ("one.txt", "two.txt"):
                         path = Path(temporary) / name
@@ -1757,15 +1899,12 @@ class RuntimeContractTests(unittest.TestCase):
             )
             head = self._git(checkout, "rev-parse", "HEAD")
             destination = root / "snapshot"
-            with mock.patch.object(review_runtime, "MAX_SOURCE_FILE_BYTES", 64), mock.patch.object(
-                review_runtime, "MAX_SOURCE_SNAPSHOT_BYTES", 64
+            with (
+                mock.patch.object(review_runtime, "MAX_SOURCE_FILE_BYTES", 64),
+                mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_BYTES", 64),
             ):
-                metadata = materialize_source_snapshot(
-                    checkout, "example/one", head, destination
-                )
-                verify_source_snapshot(
-                    destination, expected_repository="example/one", expected_commit=head
-                )
+                metadata = materialize_source_snapshot(checkout, "example/one", head, destination)
+                verify_source_snapshot(destination, expected_repository="example/one", expected_commit=head)
             self.assertEqual("binary", metadata["excluded_paths"]["assets/image.bin"])
             self.assertEqual("file-size-limit", metadata["excluded_paths"]["assets/large.txt"])
             self.assertFalse((destination / "assets").exists())
@@ -1813,9 +1952,9 @@ class RuntimeContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             checkout, trusted, head = self._repository(Path(temporary))
             with self.assertRaisesRegex(RuntimeContractError, "Pull-request refs"):
-                resolve_trusted_commit(checkout, "refs/pull/1/head", head_sha=head)
+                resolve_reviewer_commit(checkout, "refs/pull/1/head", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "pull-request head"):
-                resolve_trusted_commit(checkout, "HEAD", head_sha=head)
+                resolve_reviewer_commit(checkout, "HEAD", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "origin mismatch"):
                 verify_checkout_remote(checkout, "different/one")
 
@@ -1837,23 +1976,17 @@ class ReviewOperationTests(unittest.TestCase):
         }
 
     def test_single_pull_canary_selector_is_explicit_and_bounded(self) -> None:
-        self.assertEqual(
-            ("example/one", 42), parse_pull_selector("Example/One#42")
-        )
+        self.assertEqual(("example/one", 42), parse_pull_selector("Example/One#42"))
         for value in ("example/one", "example/one#0", "#42", "example/one#42#43"):
             with self.subTest(value=value), self.assertRaises(ReviewOperationError):
                 parse_pull_selector(value)
-        selected = validate_canary_pull(
-            self._pull(42), repository="example/one", number=42
-        )
+        selected = validate_canary_pull(self._pull(42), repository="example/one", number=42)
         self.assertEqual(42, selected["number"])
         draft = self._pull(42)
         draft["isDraft"] = True
         self.assertTrue(validate_canary_pull(draft, repository="example/one", number=42)["isDraft"])
         with self.assertRaisesRegex(ReviewOperationError, "does not match"):
-            validate_canary_pull(
-                self._pull(41), repository="example/one", number=42
-            )
+            validate_canary_pull(self._pull(41), repository="example/one", number=42)
 
     def test_selection_skips_current_heads_and_old_merges(self) -> None:
         pulls = [
@@ -2056,9 +2189,7 @@ class RuntimeHostTests(unittest.TestCase):
                     "schema_version": 1,
                     "repository": "example/one",
                     "source_commit": head_sha,
-                    "source_hashes": {
-                        "Example.cs": hashlib.sha256(source_content).hexdigest()
-                    },
+                    "source_hashes": {"Example.cs": hashlib.sha256(source_content).hexdigest()},
                     "excluded_paths": {},
                 }
             ),
@@ -2116,18 +2247,14 @@ class RuntimeHostTests(unittest.TestCase):
                 ["view", "grep", "glob", "edit", "create"],
                 command[available_tools + 1 : available_tools + 6],
             )
-            self.assertIn(
-                f"--allow-tool=write({(root / 'result.json').as_posix()})", command
-            )
+            self.assertIn(f"--allow-tool=write({(root / 'result.json').as_posix()})", command)
 
     def test_copilot_rejects_result_outside_run_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             run_directory = root / "run"
             run_directory.mkdir()
-            with self.assertRaisesRegex(
-                RuntimeContractError, "result path must be inside the run directory"
-            ):
+            with self.assertRaisesRegex(RuntimeContractError, "result path must be inside the run directory"):
                 copilot_command(
                     "copilot",
                     prompt="Review",
@@ -2161,16 +2288,15 @@ class RuntimeHostTests(unittest.TestCase):
                 )
 
     def test_copilot_version_parser_and_winget_fallback(self) -> None:
-        self.assertEqual(
-            (1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.0.88")
-        )
+        self.assertEqual((1, 0, 88), parse_copilot_version("GitHub Copilot CLI 1.0.88"))
         with tempfile.TemporaryDirectory() as temporary:
             local_app_data = Path(temporary)
             winget = local_app_data / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
             winget.parent.mkdir(parents=True)
             winget.write_bytes(b"fixture")
-            with mock.patch("review_hosts.shutil.which", return_value=None), mock.patch.dict(
-                os.environ, {"LOCALAPPDATA": str(local_app_data)}
+            with (
+                mock.patch("review_hosts.shutil.which", return_value=None),
+                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}),
             ):
                 self.assertEqual(str(winget), find_copilot())
 
@@ -2186,9 +2312,7 @@ class RuntimeHostTests(unittest.TestCase):
             isolation = root / "isolation"
             invocations: list[tuple[list[str], Path, dict[str, str]]] = []
 
-            def runner(
-                arguments: list[str], cwd: Path, environment: dict[str, str]
-            ) -> ProcessResult:
+            def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
                 invocations.append((list(arguments), cwd, dict(environment)))
                 if "--version" in arguments:
                     return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
@@ -2220,9 +2344,7 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertEqual(isolation / "workspace", cwd)
             self.assertEqual(str(isolation / "home"), environment["HOME"])
             self.assertEqual(str(isolation / "home"), environment["USERPROFILE"])
-            self.assertEqual(
-                str(isolation / "copilot-home"), environment["COPILOT_HOME"]
-            )
+            self.assertEqual(str(isolation / "copilot-home"), environment["COPILOT_HOME"])
             self.assertEqual("test-token", environment["GH_TOKEN"])
             self.assertIn(str(entrypoint.resolve()), command[-1])
 
@@ -2237,9 +2359,7 @@ class RuntimeHostTests(unittest.TestCase):
                 staging = root / "copilot-result-1.json"
                 promoted: list[tuple[Path, Path]] = []
 
-                def runner(
-                    arguments: list[str], cwd: Path, environment: dict[str, str]
-                ) -> ProcessResult:
+                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments:
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
@@ -2313,9 +2433,7 @@ class RuntimeHostTests(unittest.TestCase):
             request = root / "request.json"
             self._write_request_with_snapshot(root, request)
 
-            def runner(
-                arguments: list[str], cwd: Path, environment: dict[str, str]
-            ) -> ProcessResult:
+            def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
                 del cwd, environment
                 self.assertIn("--version", arguments)
                 return ProcessResult(0, "GitHub Copilot CLI 1.0.87\n", "")
@@ -2341,9 +2459,7 @@ class RuntimeHostTests(unittest.TestCase):
                 self._write_request_with_snapshot(root, request)
                 diagnostic = root / "diagnostic.jsonl"
 
-                def runner(
-                    arguments: list[str], cwd: Path, environment: dict[str, str]
-                ) -> ProcessResult:
+                def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
                     del cwd, environment
                     if "--version" in arguments and timed_out == "review":
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")

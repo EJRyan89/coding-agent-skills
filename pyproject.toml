@@ -1,0 +1,14 @@
+# Tool configuration for contributors and CI. Nothing here is installed, so there is no [project] table;
+# requirements-dev.txt pins the tools and docs/dependency-updates.md owns the decision.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+# mypy is pinned in requirements-dev.txt but not yet run; #92 adds its configuration and the validation gate.
+[tool.mypy]

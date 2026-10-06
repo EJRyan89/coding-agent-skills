@@ -54,9 +54,7 @@ def _setup_conforming_repo(root: Path) -> None:
         "## CI / Quality Gates\n\n"
         "80% coverage required. Never disable linting rules.\n"
     )
-    (root / ".github/copilot-instructions.md").write_text(
-        copilot_content, encoding="utf-8"
-    )
+    (root / ".github/copilot-instructions.md").write_text(copilot_content, encoding="utf-8")
     agents_content = (
         f"<!-- {OWNERSHIP}. Do not edit directly"
         " — update CLAUDE.md instead. -->\n\n"
@@ -79,13 +77,10 @@ def _setup_conforming_repo(root: Path) -> None:
         "Resolve all relative paths and supporting resources"
         " from `../../../.claude/skills/demo/`.\n"
     )
-    (root / ".agents/skills/demo/SKILL.md").write_text(
-        shim_content, encoding="utf-8"
-    )
+    (root / ".agents/skills/demo/SKILL.md").write_text(shim_content, encoding="utf-8")
 
     (root / ".claude/skills/demo/SKILL.md").write_text(
-        "---\nname: demo\ndescription: Test skill.\n---\n\n"
-        "Canonical workflow.\n",
+        "---\nname: demo\ndescription: Test skill.\n---\n\nCanonical workflow.\n",
         encoding="utf-8",
     )
 
@@ -104,17 +99,15 @@ def _setup_conforming_repo(root: Path) -> None:
             {"path": ".agents/skills/demo/SKILL.md"},
         ],
     }
-    (root / ".github/ai-config-manifest.json").write_text(
-        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
-    )
+    (root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
 # Authority classification tests
 # ---------------------------------------------------------------------------
 
-class AuthorityClassificationTests(unittest.TestCase):
 
+class AuthorityClassificationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -133,9 +126,7 @@ class AuthorityClassificationTests(unittest.TestCase):
             "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRun the generator.\n",
             encoding="utf-8",
         )
-        (self.root / ".github/scripts/ai_config.py").write_text(
-            "# Reads CLAUDE.md\n", encoding="utf-8"
-        )
+        (self.root / ".github/scripts/ai_config.py").write_text("# Reads CLAUDE.md\n", encoding="utf-8")
         cls, _, _ = audit.classify_authority(self.root)
         self.assertEqual("conforming", cls)
 
@@ -154,18 +145,14 @@ class AuthorityClassificationTests(unittest.TestCase):
             "generatedBy": "custom_gen.py",
             "canonicalSource": "AGENTS.md",
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, _ = audit.classify_authority(self.root)
         self.assertEqual("alternative", cls)
 
     def test_ambiguous_no_false_drift(self) -> None:
         """Ambiguous repo should not produce drift findings."""
         (self.root / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
-        (self.root / "AGENTS.md").write_text(
-            "# Custom AGENTS.md\n", encoding="utf-8"
-        )
+        (self.root / "AGENTS.md").write_text("# Custom AGENTS.md\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertEqual("ambiguous", result.authority)
         self.assertFalse(
@@ -180,9 +167,7 @@ class AuthorityClassificationTests(unittest.TestCase):
             "generatedBy": "gen.py",
             "canonicalSource": "AGENTS.md",
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertEqual("alternative", result.authority)
         self.assertFalse(
@@ -195,8 +180,8 @@ class AuthorityClassificationTests(unittest.TestCase):
 # Exit code tests
 # ---------------------------------------------------------------------------
 
-class ExitCodeTests(unittest.TestCase):
 
+class ExitCodeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -227,9 +212,7 @@ class ExitCodeTests(unittest.TestCase):
             "generatedBy": "custom_gen.py",
             "canonicalSource": "AGENTS.md",
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertEqual(1, result.exit_code)
         self.assertEqual("INCONCLUSIVE", result.result)
@@ -254,8 +237,8 @@ class ExitCodeTests(unittest.TestCase):
 # Command-line tests
 # ---------------------------------------------------------------------------
 
-class CommandLineTests(unittest.TestCase):
 
+class CommandLineTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "repo with spaces"
@@ -266,8 +249,11 @@ class CommandLineTests(unittest.TestCase):
 
     def _main(self, *arguments: str) -> tuple[int, list[str], str]:
         output, errors = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
-                mock.patch.object(sys, "argv", ["audit_ai_config.py", *arguments]):
+        with (
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(errors),
+            mock.patch.object(sys, "argv", ["audit_ai_config.py", *arguments]),
+        ):
             code = audit.main()
         return code, output.getvalue().splitlines(), errors.getvalue()
 
@@ -276,9 +262,7 @@ class CommandLineTests(unittest.TestCase):
             with self.subTest(extra=extra):
                 code, lines, errors = self._main("--root", str(self.root), *extra)
                 self.assertEqual(1, code)
-                self.assertEqual(
-                    [f"FAILED {self.root} is not a Git repository (no .git found)"], lines
-                )
+                self.assertEqual([f"FAILED {self.root} is not a Git repository (no .git found)"], lines)
                 self.assertEqual("", errors)
 
     def test_an_inconclusive_audit_prints_its_result_line_and_exits_1(self) -> None:
@@ -322,8 +306,8 @@ class CommandLineTests(unittest.TestCase):
 # Parity validation tests
 # ---------------------------------------------------------------------------
 
-class ParityTests(unittest.TestCase):
 
+class ParityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -336,10 +320,7 @@ class ParityTests(unittest.TestCase):
         (self.root / ".github/copilot-instructions.md").unlink()
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "missing" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "missing" in f.message.lower() for f in result.findings),
         )
 
     def test_json_hash_mismatch_is_conflict(self) -> None:
@@ -354,96 +335,55 @@ class ParityTests(unittest.TestCase):
         self.assertTrue(len(errors) > 0)
 
     def test_manifest_path_traversal_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "../outside/evil.md"})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "path traversal" in f.message
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "path traversal" in f.message for f in result.findings),
         )
 
     def test_manifest_absolute_path_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "/etc/passwd"})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "absolute path" in f.message
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "absolute path" in f.message for f in result.findings),
         )
 
     def test_manifest_backslash_traversal_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "..\\outside\\file.md"})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "backslash" in f.message
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "backslash" in f.message for f in result.findings),
         )
 
     def test_manifest_drive_qualified_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "C:/Windows/System32"})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "drive-qualified" in f.message
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "drive-qualified" in f.message for f in result.findings),
         )
 
     def test_manifest_path_outside_allowlist_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": "src/main.py"})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.severity == "ERROR" and "allowlist" in f.message
-                for f in result.findings
-            ),
+            any(f.severity == "ERROR" and "allowlist" in f.message for f in result.findings),
         )
 
     def test_ownership_marker_missing(self) -> None:
-        (self.root / "AGENTS.md").write_text(
-            "# Plain AGENTS.md\n\nNo marker.\n", encoding="utf-8"
-        )
+        (self.root / "AGENTS.md").write_text("# Plain AGENTS.md\n\nNo marker.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check in ("ownership", "collision", "parity")
-                and f.severity == "ERROR"
-                for f in result.findings
-            ),
+            any(f.check in ("ownership", "collision", "parity") and f.severity == "ERROR" for f in result.findings),
         )
 
 
@@ -451,8 +391,8 @@ class ParityTests(unittest.TestCase):
 # Orphan detection tests
 # ---------------------------------------------------------------------------
 
-class OrphanTests(unittest.TestCase):
 
+class OrphanTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -469,11 +409,7 @@ class OrphanTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "orphan"
-                and "orphan" in f.path
-                for f in result.findings
-            ),
+            any(f.check == "orphan" and "orphan" in f.path for f in result.findings),
         )
 
 
@@ -481,8 +417,8 @@ class OrphanTests(unittest.TestCase):
 # MCP configuration tests
 # ---------------------------------------------------------------------------
 
-class McpTests(unittest.TestCase):
 
+class McpTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -495,17 +431,12 @@ class McpTests(unittest.TestCase):
         (self.root / ".mcp.json").write_text("{bad json", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp" and f.severity == "ERROR" and ".mcp.json" in (f.path or "")
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and f.severity == "ERROR" and ".mcp.json" in (f.path or "") for f in result.findings),
         )
 
     def test_malformed_codex_toml(self) -> None:
         (self.root / ".codex").mkdir(exist_ok=True)
-        (self.root / ".codex/config.toml").write_text(
-            "invalid [[ toml", encoding="utf-8"
-        )
+        (self.root / ".codex/config.toml").write_text("invalid [[ toml", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
@@ -540,152 +471,90 @@ class McpTests(unittest.TestCase):
 
     def test_vscode_mcp_wrong_schema(self) -> None:
         (self.root / ".vscode").mkdir(exist_ok=True)
-        (self.root / ".vscode/mcp.json").write_text(
-            '{"mcpServers": {}}', encoding="utf-8"
-        )
+        (self.root / ".vscode/mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp" and "servers" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "servers" in f.message.lower() for f in result.findings),
         )
 
     def test_duplicate_server_names(self) -> None:
-        (self.root / ".mcp.json").write_text(
-            '{"mcpServers": {"srv": {"command": "a"}}}', encoding="utf-8"
-        )
-        (self.root / ".github/mcp.json").write_text(
-            '{"mcpServers": {"srv": {"command": "b"}}}', encoding="utf-8"
-        )
+        (self.root / ".mcp.json").write_text('{"mcpServers": {"srv": {"command": "a"}}}', encoding="utf-8")
+        (self.root / ".github/mcp.json").write_text('{"mcpServers": {"srv": {"command": "b"}}}', encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp" and "Duplicate" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "Duplicate" in f.message for f in result.findings),
         )
 
     def test_sse_codex_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
-        manifest["mcp_servers"] = [
-            {"name": "bad", "transport": "sse", "targets": ["codex"]}
-        ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest["mcp_servers"] = [{"name": "bad", "transport": "sse", "targets": ["codex"]}]
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "sse" in f.message
-                and "codex" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "sse" in f.message and "codex" in f.message for f in result.findings),
         )
 
     def test_local_claude_rejected(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
-        manifest["mcp_servers"] = [
-            {"name": "bad", "transport": "local", "targets": ["claude"]}
-        ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
+        manifest["mcp_servers"] = [{"name": "bad", "transport": "local", "targets": ["claude"]}]
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "local" in f.message
-                and "claude" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "local" in f.message and "claude" in f.message for f in result.findings),
         )
 
     def test_codex_http_env_rejected(self) -> None:
         (self.root / ".codex").mkdir(exist_ok=True)
         (self.root / ".codex/config.toml").write_text(
-            '[mcp_servers.srv]\n'
-            'url = "http://localhost:8080"\n'
-            '[mcp_servers.srv.env]\n'
-            'KEY = "value"\n',
+            '[mcp_servers.srv]\nurl = "http://localhost:8080"\n[mcp_servers.srv.env]\nKEY = "value"\n',
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp" and "STDIO-only" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "STDIO-only" in f.message for f in result.findings),
         )
 
     def test_copilot_repository_emits_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["copilot_repository"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "mcp"
-                and f.severity == "WARNING"
-                and "repository" in f.message.lower()
+                f.check == "mcp" and f.severity == "WARNING" and "repository" in f.message.lower()
                 for f in result.findings
             ),
         )
 
     def test_code_review_repository_mcp_readonlyhint_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["code_review"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["copilot_repository"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "readOnlyHint" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "readOnlyHint" in f.message for f in result.findings),
         )
 
     def test_copilot_local_tools_allowlist_reported(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / ".mcp.json").write_text(
             '{"mcpServers": {"srv": {"command": "a", "tools": ["tool_a"]}}}',
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "allowlist" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "allowlist" in f.message.lower() for f in result.findings),
         )
 
     def test_mcp_json_non_dict_toplevel(self) -> None:
@@ -693,12 +562,7 @@ class McpTests(unittest.TestCase):
         (self.root / ".mcp.json").write_text("[]", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and f.severity == "ERROR"
-                and "object" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and f.severity == "ERROR" and "object" in f.message.lower() for f in result.findings),
         )
 
     def test_mcp_parity_includes_cwd_env(self) -> None:
@@ -714,12 +578,7 @@ class McpTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "differ" in f.message.lower()
-                and "srv" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "differ" in f.message.lower() and "srv" in f.message for f in result.findings),
         )
 
     def test_codex_toml_included_in_parity(self) -> None:
@@ -735,12 +594,7 @@ class McpTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "differ" in f.message.lower()
-                and "srv" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "differ" in f.message.lower() and "srv" in f.message for f in result.findings),
         )
 
     def test_mcp_json_missing_mcpservers_key(self) -> None:
@@ -749,72 +603,56 @@ class McpTests(unittest.TestCase):
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "mcp"
-                and f.severity == "WARNING"
-                and "mcpServers" in f.message
-                and "not found" in f.message
+                f.check == "mcp" and f.severity == "WARNING" and "mcpServers" in f.message and "not found" in f.message
                 for f in result.findings
             ),
         )
 
     def test_mcp_json_non_dict_server_entry(self) -> None:
         """Non-dict server entry should produce WARNING, not crash."""
-        (self.root / ".mcp.json").write_text(
-            '{"mcpServers": {"srv": "not-a-dict"}}', encoding="utf-8"
-        )
+        (self.root / ".mcp.json").write_text('{"mcpServers": {"srv": "not-a-dict"}}', encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "mcp"
-                and f.severity == "WARNING"
-                and "srv" in f.message
-                and "object" in f.message.lower()
+                f.check == "mcp" and f.severity == "WARNING" and "srv" in f.message and "object" in f.message.lower()
                 for f in result.findings
             ),
         )
 
     def test_mcp_json_omitted_tools_reported_unrestricted(self) -> None:
         """Server with omitted tools field is unrestricted for copilot_local."""
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
-        (self.root / ".mcp.json").write_text(
-            '{"mcpServers": {"srv": {"command": "a"}}}', encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / ".mcp.json").write_text('{"mcpServers": {"srv": {"command": "a"}}}', encoding="utf-8")
         result = audit.audit(self.root)
         # Omitted tools = unrestricted, which is fine (no allowlist to reject)
         mcp_errors = [
-            f for f in result.findings
+            f
+            for f in result.findings
             if f.check == "mcp" and f.severity == "ERROR" and "allowlist" in f.message.lower()
         ]
         self.assertEqual(0, len(mcp_errors))
 
     def test_mcp_json_wildcard_tools_not_rejected(self) -> None:
         """tools: ["*"] is unrestricted — not a restricted allowlist."""
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["claude", "copilot_local"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / ".mcp.json").write_text(
             '{"mcpServers": {"srv": {"command": "a", "tools": ["*"]}}}',
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         mcp_errors = [
-            f for f in result.findings
+            f
+            for f in result.findings
             if f.check == "mcp" and f.severity == "ERROR" and "allowlist" in f.message.lower()
         ]
         self.assertEqual(0, len(mcp_errors))
@@ -824,8 +662,8 @@ class McpTests(unittest.TestCase):
 # Instruction layering tests
 # ---------------------------------------------------------------------------
 
-class InstructionLayeringTests(unittest.TestCase):
 
+class InstructionLayeringTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -835,155 +673,89 @@ class InstructionLayeringTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_cloud_agent_adapter_redirects(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering" and "redirects" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "redirects" in f.message for f in result.findings),
         )
 
     def test_cloud_agent_no_agents_md(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
         manifest["runtimes"] = ["claude"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "AGENTS.md").unlink()
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "directly" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "directly" in f.message for f in result.findings),
         )
 
     def test_cloud_agent_non_redirecting_agents_md(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "AGENTS.md").write_text(
-            f"<!-- {OWNERSHIP} -->\n\n"
-            "# Custom instructions\n\nDo something else.\n",
+            f"<!-- {OWNERSHIP} -->\n\n# Custom instructions\n\nDo something else.\n",
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "non-redirecting" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "non-redirecting" in f.message for f in result.findings),
         )
 
     def test_nested_agents_md_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["cloud_agent"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / "src").mkdir(exist_ok=True)
-        (self.root / "src/AGENTS.md").write_text(
-            "# Nested\n\nSubtree instructions.\n", encoding="utf-8"
-        )
+        (self.root / "src/AGENTS.md").write_text("# Nested\n\nSubtree instructions.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "Nested" in f.message
-                and "supersedes" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "Nested" in f.message and "supersedes" in f.message for f in result.findings),
         )
 
     def test_code_review_emits_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["code_review"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "code-review" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "code-review" in f.message.lower() for f in result.findings),
         )
 
     def test_vscode_emits_settings_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["vscode"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "useClaudeMdFile" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "useClaudeMdFile" in f.message for f in result.findings),
         )
 
     def test_copilot_local_folder_trust_warning(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_cli"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "layering"
-                and "trust" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "layering" and "trust" in f.message.lower() for f in result.findings),
         )
-
 
     def test_codex_override_masks_adapter(self) -> None:
-        (self.root / "AGENTS.override.md").write_text(
-            "# Override\n\nCustom instructions.\n", encoding="utf-8"
-        )
+        (self.root / "AGENTS.override.md").write_text("# Override\n\nCustom instructions.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "layering"
-                and f.severity == "ERROR"
-                and "override" in f.message.lower()
+                f.check == "layering" and f.severity == "ERROR" and "override" in f.message.lower()
                 for f in result.findings
             ),
         )
 
     def test_codex_nested_override_warning(self) -> None:
         (self.root / "src").mkdir(exist_ok=True)
-        (self.root / "src/AGENTS.override.md").write_text(
-            "# Subtree override\n\nCustom.\n", encoding="utf-8"
-        )
+        (self.root / "src/AGENTS.override.md").write_text("# Subtree override\n\nCustom.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
@@ -997,9 +769,7 @@ class InstructionLayeringTests(unittest.TestCase):
 
     def test_codex_nested_agents_md_warning(self) -> None:
         (self.root / "src").mkdir(exist_ok=True)
-        (self.root / "src/AGENTS.md").write_text(
-            "# Subtree instructions\n\nNon-redirecting.\n", encoding="utf-8"
-        )
+        (self.root / "src/AGENTS.md").write_text("# Subtree instructions\n\nNon-redirecting.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
@@ -1012,20 +782,14 @@ class InstructionLayeringTests(unittest.TestCase):
         )
 
     def test_jetbrains_no_instructions_error(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["jetbrains"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / ".github/copilot-instructions.md").unlink()
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "layering"
-                and f.severity == "ERROR"
-                and "jetbrains" in f.message.lower()
+                f.check == "layering" and f.severity == "ERROR" and "jetbrains" in f.message.lower()
                 for f in result.findings
             ),
         )
@@ -1043,12 +807,7 @@ class InstructionLayeringTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "mcp"
-                and "differ" in f.message.lower()
-                and "srv" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "mcp" and "differ" in f.message.lower() and "srv" in f.message for f in result.findings),
         )
 
     def test_parity_deterministic_content_mismatch(self) -> None:
@@ -1062,9 +821,7 @@ class InstructionLayeringTests(unittest.TestCase):
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "parity"
-                and f.severity == "ERROR"
-                and "deterministic" in f.message.lower()
+                f.check == "parity" and f.severity == "ERROR" and "deterministic" in f.message.lower()
                 for f in result.findings
             ),
         )
@@ -1072,15 +829,11 @@ class InstructionLayeringTests(unittest.TestCase):
     def test_parity_copilot_instructions_drift(self) -> None:
         """copilot-instructions.md with marker but wrong sections is flagged."""
         # Remove the hash so the deterministic content comparison is reached
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         for artifact in manifest["artifacts"]:
             if artifact["path"] == ".github/copilot-instructions.md":
                 artifact.pop("hash", None)
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         (self.root / ".github/copilot-instructions.md").write_text(
             f"# Custom Title\n\n"
             f"> {audit.OWNERSHIP_MARKER}. Do not edit directly"
@@ -1102,32 +855,23 @@ class InstructionLayeringTests(unittest.TestCase):
     def test_parity_copilot_instructions_custom_title_passes(self) -> None:
         """Custom title with correct sections should NOT trigger parity error."""
         # Remove the hash so the deterministic content comparison is reached
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         for artifact in manifest["artifacts"]:
             if artifact["path"] == ".github/copilot-instructions.md":
                 artifact.pop("hash", None)
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         # Rewrite with a custom title but keep the same sections from CLAUDE.md
         claude_content = audit.read_text(self.root / "CLAUDE.md")
-        sections = audit._extract_sections(
-            claude_content, audit.DEFAULT_COPILOT_SECTIONS
-        )
+        sections = audit._extract_sections(claude_content, audit.DEFAULT_COPILOT_SECTIONS)
         (self.root / ".github/copilot-instructions.md").write_text(
-            f"# Totally Custom Title\n\n"
-            f"{audit.COPILOT_BANNER}\n\n"
-            f"{sections}\n",
+            f"# Totally Custom Title\n\n{audit.COPILOT_BANNER}\n\n{sections}\n",
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         parity_errors = [
-            f for f in result.findings
-            if f.check == "parity"
-            and f.severity == "ERROR"
-            and f.path == ".github/copilot-instructions.md"
+            f
+            for f in result.findings
+            if f.check == "parity" and f.severity == "ERROR" and f.path == ".github/copilot-instructions.md"
         ]
         self.assertEqual(0, len(parity_errors), parity_errors)
 
@@ -1141,9 +885,7 @@ class InstructionLayeringTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         claude_content = audit.read_text(self.root / "CLAUDE.md")
-        sections = audit._extract_sections(
-            claude_content, manifest["copilot_sections"]
-        )
+        sections = audit._extract_sections(claude_content, manifest["copilot_sections"])
         (self.root / ".github/copilot-instructions.md").write_text(
             f"# Custom Title\n\n{audit.COPILOT_BANNER}\n\n{sections}\n",
             encoding="utf-8",
@@ -1151,7 +893,8 @@ class InstructionLayeringTests(unittest.TestCase):
 
         result = audit.audit(self.root)
         parity_errors = [
-            finding for finding in result.findings
+            finding
+            for finding in result.findings
             if finding.check == "parity"
             and finding.severity == "ERROR"
             and finding.path == ".github/copilot-instructions.md"
@@ -1163,8 +906,8 @@ class InstructionLayeringTests(unittest.TestCase):
 # Behavioral constraints tests
 # ---------------------------------------------------------------------------
 
-class BehavioralConstraintTests(unittest.TestCase):
 
+class BehavioralConstraintTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1175,10 +918,7 @@ class BehavioralConstraintTests(unittest.TestCase):
 
     def test_never_disable_present(self) -> None:
         result = audit.audit(self.root)
-        behavioral_warnings = [
-            f for f in result.findings
-            if f.check == "behavioral" and "never" in f.message.lower()
-        ]
+        behavioral_warnings = [f for f in result.findings if f.check == "behavioral" and "never" in f.message.lower()]
         self.assertEqual(0, len(behavioral_warnings))
 
     def test_never_disable_missing(self) -> None:
@@ -1189,10 +929,7 @@ class BehavioralConstraintTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "behavioral" and "never" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "behavioral" and "never" in f.message.lower() for f in result.findings),
         )
 
     def test_workaround_rule_missing_and_present(self) -> None:
@@ -1203,8 +940,7 @@ class BehavioralConstraintTests(unittest.TestCase):
 
         def workaround_warnings() -> list:
             return [
-                f for f in audit.audit(self.root).findings
-                if f.check == "behavioral" and "workarounds" in f.message
+                f for f in audit.audit(self.root).findings if f.check == "behavioral" and "workarounds" in f.message
             ]
 
         (self.root / "CLAUDE.md").write_text(body, encoding="utf-8")
@@ -1224,22 +960,17 @@ class BehavioralConstraintTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "behavioral" and "quality gate" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "behavioral" and "quality gate" in f.message.lower() for f in result.findings),
         )
 
     def test_quality_gate_requires_an_actual_gate(self) -> None:
-        base = (
-            "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRun the generator.\n\n"
-            "Never disable anything.\n\n"
-        )
+        base = "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRun the generator.\n\nNever disable anything.\n\n"
 
         def gate_warnings(text: str) -> list:
             (self.root / "CLAUDE.md").write_text(base + text + "\n", encoding="utf-8")
             return [
-                f for f in audit.audit(self.root).findings
+                f
+                for f in audit.audit(self.root).findings
                 if f.check == "behavioral" and "quality gate" in f.message.lower()
             ]
 
@@ -1268,8 +999,8 @@ class BehavioralConstraintTests(unittest.TestCase):
 # Collision tests
 # ---------------------------------------------------------------------------
 
-class CollisionTests(unittest.TestCase):
 
+class CollisionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1279,15 +1010,10 @@ class CollisionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_user_authored_agents_md_collision(self) -> None:
-        (self.root / "AGENTS.md").write_text(
-            "# My custom AGENTS.md\n\nUser content.\n", encoding="utf-8"
-        )
+        (self.root / "AGENTS.md").write_text("# My custom AGENTS.md\n\nUser content.\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "collision" and "AGENTS.md" in (f.path or "")
-                for f in result.findings
-            ),
+            any(f.check == "collision" and "AGENTS.md" in (f.path or "") for f in result.findings),
         )
 
     def test_user_authored_copilot_instructions_collision(self) -> None:
@@ -1296,11 +1022,7 @@ class CollisionTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check in ("collision", "parity")
-                and f.severity == "ERROR"
-                for f in result.findings
-            ),
+            any(f.check in ("collision", "parity") and f.severity == "ERROR" for f in result.findings),
         )
 
 
@@ -1308,8 +1030,8 @@ class CollisionTests(unittest.TestCase):
 # Copilot configuration, provenance, and scope tests
 # ---------------------------------------------------------------------------
 
-class CopilotConfigurationTests(unittest.TestCase):
 
+class CopilotConfigurationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1335,14 +1057,8 @@ class CopilotConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
         result = audit.audit(self.root)
-        self.assertTrue(any(
-            f.check == "copilot-agent" and "target must" in f.message
-            for f in result.findings
-        ))
-        self.assertTrue(any(
-            f.check == "copilot-agent" and "tools must" in f.message
-            for f in result.findings
-        ))
+        self.assertTrue(any(f.check == "copilot-agent" and "target must" in f.message for f in result.findings))
+        self.assertTrue(any(f.check == "copilot-agent" and "tools must" in f.message for f in result.findings))
 
     def test_agent_filename_and_description_validated(self) -> None:
         path = self.root / ".claude/agents/bad name.txt"
@@ -1370,10 +1086,9 @@ class CopilotConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
         result = audit.audit(self.root)
-        self.assertTrue(any(
-            f.check == "provenance" and "not owned by the manifest" in f.message
-            for f in result.findings
-        ))
+        self.assertTrue(
+            any(f.check == "provenance" and "not owned by the manifest" in f.message for f in result.findings)
+        )
 
     def test_manifest_projection_requires_marker_and_hash(self) -> None:
         projection = self.root / ".github/agents/project-agent.agent.md"
@@ -1381,16 +1096,17 @@ class CopilotConfigurationTests(unittest.TestCase):
         content = "---\ndescription: Project agent.\n---\n"
         projection.write_text(content, encoding="utf-8")
         manifest = self._manifest()
-        manifest["artifacts"].append({
-            "path": ".github/agents/project-agent.agent.md",
-            "hash": _content_hash(content),
-        })
+        manifest["artifacts"].append(
+            {
+                "path": ".github/agents/project-agent.agent.md",
+                "hash": _content_hash(content),
+            }
+        )
         self._write_manifest(manifest)
         result = audit.audit(self.root)
-        self.assertTrue(any(
-            f.check == "provenance" and "lacks an ownership marker" in f.message
-            for f in result.findings
-        ))
+        self.assertTrue(
+            any(f.check == "provenance" and "lacks an ownership marker" in f.message for f in result.findings)
+        )
 
     def test_roles_distinguish_copilot_surfaces(self) -> None:
         manifest = self._manifest()
@@ -1402,18 +1118,15 @@ class CopilotConfigurationTests(unittest.TestCase):
         }
         self._write_manifest(manifest)
         result = audit.audit(self.root)
-        self.assertTrue(any(
-            f.check == "runtime-role" and "cloud_agent must declare" in f.message
-            for f in result.findings
-        ))
+        self.assertTrue(
+            any(f.check == "runtime-role" and "cloud_agent must declare" in f.message for f in result.findings)
+        )
 
     def test_scope_is_derived_from_literal_generator_constants(self) -> None:
         script = self.root / ".github/scripts/ai_config.py"
         script.parent.mkdir(parents=True)
         script.write_text(
-            "TARGET_RUNTIMES = ['claude', 'codex']\n"
-            "TARGET_SURFACES = ['copilot_cli']\n"
-            "TARGET_FEATURES = []\n",
+            "TARGET_RUNTIMES = ['claude', 'codex']\nTARGET_SURFACES = ['copilot_cli']\nTARGET_FEATURES = []\n",
             encoding="utf-8",
         )
         result = audit.audit(self.root)
@@ -1443,18 +1156,15 @@ class CopilotConfigurationTests(unittest.TestCase):
         manifest["surfaces"] = ["code_review"]
         self._write_manifest(manifest)
         result = audit.audit(self.root)
-        self.assertTrue(any(
-            f.check == "trust-boundary" and "PR head" in f.message
-            for f in result.findings
-        ))
+        self.assertTrue(any(f.check == "trust-boundary" and "PR head" in f.message for f in result.findings))
 
 
 # ---------------------------------------------------------------------------
 # Manifest safety tests
 # ---------------------------------------------------------------------------
 
-class ManifestSafetyTests(unittest.TestCase):
 
+class ManifestSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1465,16 +1175,10 @@ class ManifestSafetyTests(unittest.TestCase):
 
     def test_manifest_non_object_json_audit(self) -> None:
         """#23: Non-object JSON manifest produces WARNING, no crash."""
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            "[]", encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text("[]", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "authority"
-                and "not a JSON object" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "authority" and "not a JSON object" in f.message for f in result.findings),
         )
 
     def test_manifest_wrong_generator_identity(self) -> None:
@@ -1489,9 +1193,7 @@ class ManifestSafetyTests(unittest.TestCase):
             "mcp_servers": [],
             "artifacts": [],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, _ = audit.classify_authority(self.root)
         self.assertNotEqual("conforming", cls)
 
@@ -1507,9 +1209,7 @@ class ManifestSafetyTests(unittest.TestCase):
             "mcp_servers": [],
             "artifacts": [],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, findings = audit.classify_authority(self.root)
         self.assertNotEqual("conforming", cls)
         self.assertTrue(
@@ -1528,9 +1228,7 @@ class ManifestSafetyTests(unittest.TestCase):
             "mcp_servers": [],
             "artifacts": [42, "bad"],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, findings = audit.classify_authority(self.root)
         self.assertNotEqual("conforming", cls)
         self.assertTrue(
@@ -1544,9 +1242,7 @@ class ManifestSafetyTests(unittest.TestCase):
             "canonicalSource": "CLAUDE.md",
             "schemaVersion": 1,
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, findings = audit.classify_authority(self.root)
         self.assertNotEqual("conforming", cls)
         schema_findings = [f for f in findings if "required" in f.message.lower()]
@@ -1557,8 +1253,8 @@ class ManifestSafetyTests(unittest.TestCase):
 # Vocabulary validation tests
 # ---------------------------------------------------------------------------
 
-class VocabularyTests(unittest.TestCase):
 
+class VocabularyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1568,65 +1264,41 @@ class VocabularyTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_unknown_surface_in_manifest_is_error(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["surfaces"] = ["copilot_local"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(
-                f.check == "vocabulary"
-                and f.severity == "ERROR"
-                and "copilot_local" in f.message
+                f.check == "vocabulary" and f.severity == "ERROR" and "copilot_local" in f.message
                 for f in result.findings
             ),
         )
 
     def test_unknown_runtime_in_manifest_is_error(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["runtimes"] = ["claude", "unknown_runtime"]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "vocabulary"
-                and "unknown_runtime" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "vocabulary" and "unknown_runtime" in f.message for f in result.findings),
         )
 
     def test_unknown_mcp_target_in_manifest_is_error(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["mcp_servers"] = [
             {"name": "srv", "targets": ["bad_target"], "transport": "stdio"},
         ]
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "vocabulary"
-                and "bad_target" in f.message
-                for f in result.findings
-            ),
+            any(f.check == "vocabulary" and "bad_target" in f.message for f in result.findings),
         )
 
     def test_valid_vocabulary_passes(self) -> None:
         """Default conforming repo uses valid vocabulary — no vocabulary errors."""
         result = audit.audit(self.root)
-        vocab_errors = [
-            f for f in result.findings if f.check == "vocabulary"
-        ]
+        vocab_errors = [f for f in result.findings if f.check == "vocabulary"]
         self.assertEqual(0, len(vocab_errors))
 
 
@@ -1634,8 +1306,8 @@ class VocabularyTests(unittest.TestCase):
 # Output format tests
 # ---------------------------------------------------------------------------
 
-class OutputFormatTests(unittest.TestCase):
 
+class OutputFormatTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1672,10 +1344,7 @@ class OutputFormatTests(unittest.TestCase):
                 audit.Finding(severity="INFO", check="limitation"),
             ],
         )
-        summary = [
-            line for line in audit.format_markdown(result).splitlines()
-            if line.startswith("SUMMARY ")
-        ]
+        summary = [line for line in audit.format_markdown(result).splitlines() if line.startswith("SUMMARY ")]
         self.assertEqual(
             [
                 "SUMMARY ERROR 1",
@@ -1719,17 +1388,15 @@ class OutputFormatTests(unittest.TestCase):
         result = audit.audit(self.root)
         sorted_f = result.sorted_findings()
         for i in range(len(sorted_f) - 1):
-            self.assertLessEqual(
-                sorted_f[i].sort_key(), sorted_f[i + 1].sort_key()
-            )
+            self.assertLessEqual(sorted_f[i].sort_key(), sorted_f[i + 1].sort_key())
 
 
 # ---------------------------------------------------------------------------
 # Read-only guarantee test
 # ---------------------------------------------------------------------------
 
-class ReadOnlyGuaranteeTest(unittest.TestCase):
 
+class ReadOnlyGuaranteeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1754,15 +1421,12 @@ class ReadOnlyGuaranteeTest(unittest.TestCase):
                 rel = f.relative_to(self.root).as_posix()
                 after[rel] = f.read_text(encoding="utf-8")
 
-        self.assertEqual(sorted(before.keys()), sorted(after.keys()),
-                         "Files created or deleted during audit")
+        self.assertEqual(sorted(before.keys()), sorted(after.keys()), "Files created or deleted during audit")
         for rel in before:
-            self.assertEqual(before[rel], after[rel],
-                             f"File modified during audit: {rel}")
+            self.assertEqual(before[rel], after[rel], f"File modified during audit: {rel}")
 
 
 class SchemaVersionTests(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1772,51 +1436,31 @@ class SchemaVersionTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_schema_version_mismatch_not_conforming(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["schemaVersion"] = 999
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                f.check == "authority" and "schema" in f.message.lower()
-                for f in result.findings
-            ),
+            any(f.check == "authority" and "schema" in f.message.lower() for f in result.findings),
         )
 
     def test_artifact_non_string_path_caught(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": 42})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                "path must be a string" in f.message
-                for f in result.findings
-            ),
+            any("path must be a string" in f.message for f in result.findings),
         )
-
 
     def test_invalid_manifest_schema_blocks_conforming(self) -> None:
         """Manifest with bad schema + 2 other signals: manifest not counted."""
         temp = tempfile.TemporaryDirectory()
         root = Path(temp.name)
         (root / ".github/scripts").mkdir(parents=True, exist_ok=True)
-        claude_content = (
-            "# CLAUDE.md\n\n"
-            "## Maintaining AI Agent Config\n\nRun the generator.\n"
-        )
+        claude_content = "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRun the generator.\n"
         (root / "CLAUDE.md").write_text(claude_content, encoding="utf-8")
-        (root / ".github/scripts/ai_config.py").write_text(
-            "# Reads CLAUDE.md\n", encoding="utf-8"
-        )
+        (root / ".github/scripts/ai_config.py").write_text("# Reads CLAUDE.md\n", encoding="utf-8")
         manifest = {
             "generatedBy": "ai_config.py",
             "canonicalSource": "CLAUDE.md",
@@ -1827,12 +1471,9 @@ class SchemaVersionTests(unittest.TestCase):
             "mcp_servers": [],
             "artifacts": [],
         }
-        (root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, findings = audit.classify_authority(root)
-        self.assertEqual("conforming", cls,
-            "Should be conforming via 2 non-manifest signals")
+        self.assertEqual("conforming", cls, "Should be conforming via 2 non-manifest signals")
         self.assertTrue(
             any("schema" in f.message.lower() for f in findings),
             "Should have schema warning",
@@ -1841,24 +1482,16 @@ class SchemaVersionTests(unittest.TestCase):
 
     def test_manifest_artifact_non_string_path_no_crash(self) -> None:
         """Artifact with non-string path produces finding, not crash."""
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": 42})
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(
-                "path must be a string" in f.message
-                for f in result.findings
-            ),
+            any("path must be a string" in f.message for f in result.findings),
         )
 
 
 class EmptyManifestAuthorityTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1878,9 +1511,7 @@ class EmptyManifestAuthorityTest(unittest.TestCase):
             "artifacts": [],
             "mcp_servers": [],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
             any(f.severity == "ERROR" for f in result.findings),
@@ -1889,9 +1520,7 @@ class EmptyManifestAuthorityTest(unittest.TestCase):
         self.assertNotEqual(0, result.exit_code)
 
     def test_self_referencing_manifest_not_conforming(self) -> None:
-        (self.root / "CLAUDE.md").write_text(
-            "# CLAUDE.md\n\n## Overview\n\nTest.\n", encoding="utf-8"
-        )
+        (self.root / "CLAUDE.md").write_text("# CLAUDE.md\n\n## Overview\n\nTest.\n", encoding="utf-8")
         manifest = {
             "generatedBy": "ai_config.py",
             "schemaVersion": 1,
@@ -1904,20 +1533,15 @@ class EmptyManifestAuthorityTest(unittest.TestCase):
             ],
             "mcp_servers": [],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(f.severity == "ERROR" and "no derived" in f.message.lower()
-                for f in result.findings),
+            any(f.severity == "ERROR" and "no derived" in f.message.lower() for f in result.findings),
             [f.message for f in result.findings],
         )
 
     def test_empty_artifacts_with_claude_md_not_conforming(self) -> None:
-        (self.root / "CLAUDE.md").write_text(
-            "# CLAUDE.md\n\n## Overview\n\nTest.\n", encoding="utf-8"
-        )
+        (self.root / "CLAUDE.md").write_text("# CLAUDE.md\n\n## Overview\n\nTest.\n", encoding="utf-8")
         manifest = {
             "generatedBy": "ai_config.py",
             "schemaVersion": 1,
@@ -1928,19 +1552,15 @@ class EmptyManifestAuthorityTest(unittest.TestCase):
             "artifacts": [],
             "mcp_servers": [],
         }
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(f.severity == "ERROR" and "no derived" in f.message.lower()
-                for f in result.findings),
+            any(f.severity == "ERROR" and "no derived" in f.message.lower() for f in result.findings),
             [f.message for f in result.findings],
         )
 
 
 class JsonHashAuthorityTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1950,26 +1570,16 @@ class JsonHashAuthorityTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_hashless_json_artifact_blocks_authority(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["artifacts"].append({"path": ".mcp.json"})
-        (self.root / ".mcp.json").write_text(
-            '{"mcpServers": {}}\n', encoding="utf-8"
-        )
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         cls, _, findings = audit.classify_authority(self.root)
-        schema_errors = [
-            f for f in findings
-            if f.severity == "ERROR" and "hash" in f.message.lower()
-        ]
+        schema_errors = [f for f in findings if f.severity == "ERROR" and "hash" in f.message.lower()]
         self.assertTrue(schema_errors, [f.message for f in findings])
 
 
 class BoolSchemaVersionTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -1979,23 +1589,17 @@ class BoolSchemaVersionTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_bool_schema_version_not_conforming(self) -> None:
-        manifest = json.loads(
-            audit.read_text(self.root / ".github/ai-config-manifest.json")
-        )
+        manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
         manifest["schemaVersion"] = True
-        (self.root / ".github/ai-config-manifest.json").write_text(
-            json.dumps(manifest), encoding="utf-8"
-        )
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(
-            any(f.severity == "ERROR" and "schema" in f.message.lower()
-                for f in result.findings),
+            any(f.severity == "ERROR" and "schema" in f.message.lower() for f in result.findings),
             [f.message for f in result.findings],
         )
 
 
 class UnreadableArtifactTest(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -2005,13 +1609,10 @@ class UnreadableArtifactTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_unreadable_artifact_produces_error_not_crash(self) -> None:
-        (self.root / ".github/copilot-instructions.md").write_bytes(
-            b"\x80\x81 invalid utf-8"
-        )
+        (self.root / ".github/copilot-instructions.md").write_bytes(b"\x80\x81 invalid utf-8")
         result = audit.audit(self.root)
         error_findings = [
-            f for f in result.findings
-            if f.severity == "ERROR" and "could not be read" in f.message.lower()
+            f for f in result.findings if f.severity == "ERROR" and "could not be read" in f.message.lower()
         ]
         self.assertTrue(
             error_findings,
@@ -2020,7 +1621,6 @@ class UnreadableArtifactTest(unittest.TestCase):
 
 
 class UnlistedGeneratedFileTests(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -2031,8 +1631,7 @@ class UnlistedGeneratedFileTests(unittest.TestCase):
 
     def _orphans(self) -> list[str]:
         return sorted(
-            f.path for f in audit.audit(self.root).findings
-            if f.check == "orphan" and "no longer listed" in f.message
+            f.path for f in audit.audit(self.root).findings if f.check == "orphan" and "no longer listed" in f.message
         )
 
     def test_listed_artifacts_are_not_orphans(self) -> None:
@@ -2044,7 +1643,7 @@ class UnlistedGeneratedFileTests(unittest.TestCase):
         workflow.write_text(f"# {OWNERSHIP}. Do not edit.\nname: AI Config Parity\n", encoding="utf-8")
         user_toml = self.root / ".codex/config.toml"
         user_toml.parent.mkdir(parents=True)
-        user_toml.write_text("model = \"x\"\n", encoding="utf-8")
+        user_toml.write_text('model = "x"\n', encoding="utf-8")
         self.assertEqual([".github/workflows/ai-config-parity.yml"], self._orphans())
 
     def test_unlisted_shim_with_canonical_skill_is_orphan_once(self) -> None:
@@ -2066,7 +1665,6 @@ class UnlistedGeneratedFileTests(unittest.TestCase):
 
 
 class CodeReviewSourceTests(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -2081,7 +1679,8 @@ class CodeReviewSourceTests(unittest.TestCase):
 
     def _review_findings(self) -> list[tuple[str, str]]:
         return [
-            (f.severity, f.message) for f in audit.audit(self.root).findings
+            (f.severity, f.message)
+            for f in audit.audit(self.root).findings
             if f.check == "layering" and f.message.startswith("Code review:")
         ]
 
@@ -2110,7 +1709,6 @@ class CodeReviewSourceTests(unittest.TestCase):
 
 
 class LimitationTests(unittest.TestCase):
-
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -2120,15 +1718,16 @@ class LimitationTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _limitations(self) -> list[tuple[str | None, str]]:
-        return sorted(
-            (f.path, f.message) for f in audit.audit(self.root).findings
-            if f.check == "limitation"
-        )
+        return sorted((f.path, f.message) for f in audit.audit(self.root).findings if f.check == "limitation")
 
     def test_conforming_fixture_hits_only_the_old_manifest_limitation(self) -> None:
         self.assertEqual(
-            [(".github/ai-config-manifest.json",
-              "Manifest predates copilot_sections; Copilot parity assumes the default sections")],
+            [
+                (
+                    ".github/ai-config-manifest.json",
+                    "Manifest predates copilot_sections; Copilot parity assumes the default sections",
+                )
+            ],
             self._limitations(),
         )
 
@@ -2152,11 +1751,15 @@ class LimitationTests(unittest.TestCase):
         nested.write_text("{}\n", encoding="utf-8")
         self.assertEqual(
             [
-                (".codex/config.toml",
-                 "Only the ownership marker is checked; content drift inside this file is not detected"),
+                (
+                    ".codex/config.toml",
+                    "Only the ownership marker is checked; content drift inside this file is not detected",
+                ),
                 (".github/instructions", "Path-specific instructions are not checked for contradictions or overlap"),
-                (".github/skills/demo/SKILL.md",
-                 "Generated Copilot projection is provenance-checked only, not reconstructed"),
+                (
+                    ".github/skills/demo/SKILL.md",
+                    "Generated Copilot projection is provenance-checked only, not reconstructed",
+                ),
                 ("tools/.mcp.json", "Nested .mcp.json files are not validated"),
             ],
             self._limitations(),
@@ -2248,122 +1851,357 @@ LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
 }
 
 MCP_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
-    'every_source': [
-        ('WARNING', 'mcp', '.mcp.json', "Server 'beta': entry must be an object, got str"),
-        ('ERROR', 'mcp', '.mcp.json', "Server 'gamma': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)"),
-        ('ERROR', 'mcp', '.github/mcp.json', "Duplicate server name 'alpha' — .mcp.json takes precedence, making .github/mcp.json entry unreachable"),
-        ('ERROR', 'mcp', '.codex/config.toml', "Server 'web': env is STDIO-only, must not be present on HTTP transport"),
-        ('ERROR', 'mcp', '.codex/config.toml', "Server 'web': env_vars is STDIO-only, must not be present on HTTP transport"),
-        ('ERROR', 'mcp', None, "Server 'odd': unknown transport 'carrier'"),
-        ('ERROR', 'mcp', None, "Server 'local-only': transport 'local' not supported for target 'claude'"),
-        ('ERROR', 'mcp', '.mcp.json', "Server 'alpha': copilot_local.tools allowlist cannot be enforced in shared .mcp.json"),
-        ('WARNING', 'mcp', None, 'Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically'),
-        ('WARNING', 'mcp', None, 'Code-review tool set derived from repository allowlist intersected with readOnlyHint: true — cannot verify tool annotations statically'),
-        ('WARNING', 'mcp', None, "Server 'alpha': connection fields differ between .mcp.json and .github/mcp.json"),
+    "every_source": [
+        ("WARNING", "mcp", ".mcp.json", "Server 'beta': entry must be an object, got str"),
+        ("ERROR", "mcp", ".mcp.json", "Server 'gamma': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)"),
+        (
+            "ERROR",
+            "mcp",
+            ".github/mcp.json",
+            "Duplicate server name 'alpha' — .mcp.json takes precedence, making .github/mcp.json entry unreachable",
+        ),
+        (
+            "ERROR",
+            "mcp",
+            ".codex/config.toml",
+            "Server 'web': env is STDIO-only, must not be present on HTTP transport",
+        ),
+        (
+            "ERROR",
+            "mcp",
+            ".codex/config.toml",
+            "Server 'web': env_vars is STDIO-only, must not be present on HTTP transport",
+        ),
+        ("ERROR", "mcp", None, "Server 'odd': unknown transport 'carrier'"),
+        ("ERROR", "mcp", None, "Server 'local-only': transport 'local' not supported for target 'claude'"),
+        (
+            "ERROR",
+            "mcp",
+            ".mcp.json",
+            "Server 'alpha': copilot_local.tools allowlist cannot be enforced in shared .mcp.json",
+        ),
+        (
+            "WARNING",
+            "mcp",
+            None,
+            "Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically",
+        ),
+        (
+            "WARNING",
+            "mcp",
+            None,
+            "Code-review tool set derived from repository allowlist intersected with readOnlyHint: true — cannot verify tool annotations statically",
+        ),
+        ("WARNING", "mcp", None, "Server 'alpha': connection fields differ between .mcp.json and .github/mcp.json"),
     ],
-    'top_level_lists': [
-        ('ERROR', 'mcp', '.mcp.json', 'Top-level value must be an object'),
-        ('WARNING', 'mcp', '.github/mcp.json', "'mcpServers' key not found"),
-        ('ERROR', 'mcp', '.vscode/mcp.json', 'Top-level value must be an object'),
+    "top_level_lists": [
+        ("ERROR", "mcp", ".mcp.json", "Top-level value must be an object"),
+        ("WARNING", "mcp", ".github/mcp.json", "'mcpServers' key not found"),
+        ("ERROR", "mcp", ".vscode/mcp.json", "Top-level value must be an object"),
     ],
-    'wrong_wrappers': [
-        ('ERROR', 'mcp', '.mcp.json', 'Could not read or parse:'),
-        ('ERROR', 'mcp', '.github/mcp.json', "'mcpServers' must be an object"),
-        ('ERROR', 'mcp', '.vscode/mcp.json', "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"),
+    "wrong_wrappers": [
+        ("ERROR", "mcp", ".mcp.json", "Could not read or parse:"),
+        ("ERROR", "mcp", ".github/mcp.json", "'mcpServers' must be an object"),
+        ("ERROR", "mcp", ".vscode/mcp.json", "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"),
     ],
-    'vscode_servers_not_an_object': [
-        ('ERROR', 'mcp', '.vscode/mcp.json', "'servers' must be an object"),
-        ('ERROR', 'mcp', '.codex/config.toml', 'Invalid TOML:'),
+    "vscode_servers_not_an_object": [
+        ("ERROR", "mcp", ".vscode/mcp.json", "'servers' must be an object"),
+        ("ERROR", "mcp", ".codex/config.toml", "Invalid TOML:"),
     ],
-    'vscode_unparseable': [
-        ('ERROR', 'mcp', '.vscode/mcp.json', 'Could not read or parse:'),
+    "vscode_unparseable": [
+        ("ERROR", "mcp", ".vscode/mcp.json", "Could not read or parse:"),
     ],
-    'nothing': [],
+    "nothing": [],
 }
 LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
-    'everything': [
-        ('ERROR', 'layering', 'AGENTS.override.md', 'AGENTS.override.md masks the generated AGENTS.md adapter — Codex will not load CLAUDE.md through the adapter'),
-        ('WARNING', 'layering', 'sub/AGENTS.override.md', 'Nested AGENTS.override.md takes precedence over AGENTS.md in this subtree — review for conflicting guidance with the root adapter'),
-        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md adds instructions alongside the root adapter in this subtree — review for conflicting or redundant guidance'),
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, GEMINI.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('INFO', 'layering', None, 'JetBrains: .github/copilot-instructions.md available'),
-        ('INFO', 'layering', None, 'Cloud agent: AGENTS.md adapter redirects to CLAUDE.md'),
-        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree'),
-        ('INFO', 'layering', None, 'Code review: effective sources: .github/copilot-instructions.md'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('INFO', 'layering', '.github/skills', 'Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "everything": [
+        (
+            "ERROR",
+            "layering",
+            "AGENTS.override.md",
+            "AGENTS.override.md masks the generated AGENTS.md adapter — Codex will not load CLAUDE.md through the adapter",
+        ),
+        (
+            "WARNING",
+            "layering",
+            "sub/AGENTS.override.md",
+            "Nested AGENTS.override.md takes precedence over AGENTS.md in this subtree — review for conflicting guidance with the root adapter",
+        ),
+        (
+            "WARNING",
+            "layering",
+            "sub/AGENTS.md",
+            "Nested AGENTS.md adds instructions alongside the root adapter in this subtree — review for conflicting or redundant guidance",
+        ),
+        (
+            "INFO",
+            "layering",
+            None,
+            "Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, GEMINI.md",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        ("INFO", "layering", None, "JetBrains: .github/copilot-instructions.md available"),
+        ("INFO", "layering", None, "Cloud agent: AGENTS.md adapter redirects to CLAUDE.md"),
+        (
+            "WARNING",
+            "layering",
+            "sub/AGENTS.md",
+            "Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree",
+        ),
+        ("INFO", "layering", None, "Code review: effective sources: .github/copilot-instructions.md"),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "INFO",
+            "layering",
+            ".github/skills",
+            "Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'redirect_with_nested_redirect': [
-        ('INFO', 'layering', None, 'Codex: AGENTS.md adapter redirects to CLAUDE.md'),
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
-        ('INFO', 'layering', None, 'Cloud agent: AGENTS.md adapter redirects to CLAUDE.md'),
-        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree'),
-        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md only redirects to CLAUDE.md'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "redirect_with_nested_redirect": [
+        ("INFO", "layering", None, "Codex: AGENTS.md adapter redirects to CLAUDE.md"),
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly",
+        ),
+        ("INFO", "layering", None, "Cloud agent: AGENTS.md adapter redirects to CLAUDE.md"),
+        (
+            "WARNING",
+            "layering",
+            "sub/AGENTS.md",
+            "Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree",
+        ),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md only redirects to CLAUDE.md",
+        ),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'plain_agents_and_path_instructions': [
-        ('WARNING', 'layering', None, 'Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter'),
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: AGENTS.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('INFO', 'layering', None, 'JetBrains: path-specific instructions only (no copilot-instructions.md)'),
-        ('INFO', 'layering', None, 'Cloud agent: non-redirecting AGENTS.md — CLAUDE.md not loaded directly'),
-        ('INFO', 'layering', None, 'Code review: effective sources: AGENTS.md, .github/instructions'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "plain_agents_and_path_instructions": [
+        ("WARNING", "layering", None, "Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter"),
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: AGENTS.md"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        ("INFO", "layering", None, "JetBrains: path-specific instructions only (no copilot-instructions.md)"),
+        ("INFO", "layering", None, "Cloud agent: non-redirecting AGENTS.md — CLAUDE.md not loaded directly"),
+        ("INFO", "layering", None, "Code review: effective sources: AGENTS.md, .github/instructions"),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'claude_only': [
-        ('INFO', 'layering', None, 'Codex: no AGENTS.md, CLAUDE.md used via fallback'),
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
-        ('INFO', 'layering', None, 'Cloud agent: no AGENTS.md, CLAUDE.md selected directly'),
-        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "claude_only": [
+        ("INFO", "layering", None, "Codex: no AGENTS.md, CLAUDE.md used via fallback"),
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: CLAUDE.md"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly",
+        ),
+        ("INFO", "layering", None, "Cloud agent: no AGENTS.md, CLAUDE.md selected directly"),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
+        ),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'gemini_only': [
-        ('ERROR', 'layering', None, 'Codex: no AGENTS.md or CLAUDE.md — no instructions available'),
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: GEMINI.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
-        ('INFO', 'layering', None, 'Cloud agent: no AGENTS.md or CLAUDE.md, GEMINI.md selected as alternative'),
-        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "gemini_only": [
+        ("ERROR", "layering", None, "Codex: no AGENTS.md or CLAUDE.md — no instructions available"),
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: GEMINI.md"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly",
+        ),
+        ("INFO", "layering", None, "Cloud agent: no AGENTS.md or CLAUDE.md, GEMINI.md selected as alternative"),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
+        ),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'nothing': [
-        ('ERROR', 'layering', None, 'Codex: no AGENTS.md or CLAUDE.md — no instructions available'),
-        ('ERROR', 'layering', None, 'Copilot CLI/app: no instruction sources available'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
-        ('ERROR', 'layering', None, 'Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md — no instructions available'),
-        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
-        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
-        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
-        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    "nothing": [
+        ("ERROR", "layering", None, "Codex: no AGENTS.md or CLAUDE.md — no instructions available"),
+        ("ERROR", "layering", None, "Copilot CLI/app: no instruction sources available"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly",
+        ),
+        ("ERROR", "layering", None, "Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md — no instructions available"),
+        (
+            "ERROR",
+            "layering",
+            None,
+            "Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent",
+        ),
+        ("WARNING", "layering", None, "Code-review custom-instructions enablement cannot be verified statically"),
+        (
+            "WARNING",
+            "trust-boundary",
+            None,
+            "Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically",
+        ),
     ],
-    'copilot_app_only': [
-        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md'),
-        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
-        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+    "copilot_app_only": [
+        ("INFO", "layering", None, "Copilot CLI/app: effective sources: CLAUDE.md"),
+        (
+            "WARNING",
+            "layering",
+            None,
+            "Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories",
+        ),
+        (
+            "WARNING",
+            "runtime",
+            None,
+            "Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+        ),
     ],
-    'no_targets': [],
+    "no_targets": [],
 }
 
 
@@ -2391,9 +2229,7 @@ class FindingSequenceTests(unittest.TestCase):
         self.assertEqual(set(LAYERING_SCENARIOS), set(LAYERING_EXPECTED))
         for name, (files, manifest) in LAYERING_SCENARIOS.items():
             with self.subTest(scenario=name):
-                self.assertEqual(
-                    LAYERING_EXPECTED[name], self._rows(audit.check_instruction_layering, files, manifest)
-                )
+                self.assertEqual(LAYERING_EXPECTED[name], self._rows(audit.check_instruction_layering, files, manifest))
 
 
 # ---------------------------------------------------------------------------
@@ -2410,8 +2246,14 @@ PARITY_WORKFLOW = "steps:\n  - run: python .github/scripts/ai_config.py --check\
 
 def _manifest(**overrides) -> str:
     manifest = {
-        "generatedBy": "ai_config.py", "schemaVersion": 1, "canonicalSource": "CLAUDE.md",
-        "runtimes": [], "surfaces": [], "features": [], "mcp_servers": [], "artifacts": [{"path": "AGENTS.md"}],
+        "generatedBy": "ai_config.py",
+        "schemaVersion": 1,
+        "canonicalSource": "CLAUDE.md",
+        "runtimes": [],
+        "surfaces": [],
+        "features": [],
+        "mcp_servers": [],
+        "artifacts": [{"path": "AGENTS.md"}],
     }
     manifest.update(overrides)
     return json.dumps({key: value for key, value in manifest.items() if value is not None})
@@ -2512,15 +2354,17 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
             ".mcp.json": "{}\n",
             ".github/mcp.json": "[]\n",
         },
-        {"artifacts": [
-            {"path": ".github/copilot-instructions.md"},
-            {"path": "AGENTS.md"},
-            {"path": ".agents/skills/demo/SKILL.md"},
-            {"path": ".agents/skills/orphan/SKILL.md"},
-            {"path": ".codex/config.toml"},
-            {"path": ".mcp.json", "hash": _content_hash("{}\n")},
-            {"path": ".github/mcp.json"},
-        ]},
+        {
+            "artifacts": [
+                {"path": ".github/copilot-instructions.md"},
+                {"path": "AGENTS.md"},
+                {"path": ".agents/skills/demo/SKILL.md"},
+                {"path": ".agents/skills/orphan/SKILL.md"},
+                {"path": ".codex/config.toml"},
+                {"path": ".mcp.json", "hash": _content_hash("{}\n")},
+                {"path": ".github/mcp.json"},
+            ]
+        },
     ),
     "every_artifact_drifts": (
         {
@@ -2534,21 +2378,23 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
             ".mcp.json": "{}\n",
             ".vscode/mcp.json": "# no marker\n",
         },
-        {"artifacts": [
-            {"path": ""},
-            {},
-            {"path": "../outside.md"},
-            {"path": "README.md"},
-            {"path": ".github/skills/a/b/SKILL.md"},
-            {"path": ".github/mcp.json"},
-            {"path": ".codex/config.toml"},
-            {"path": ".mcp.json", "hash": "0" * 64},
-            {"path": ".github/agents/reviewer.md", "hash": _content_hash("# Reviewer\n")},
-            {"path": ".github/copilot-instructions.md"},
-            {"path": "AGENTS.md"},
-            {"path": ".agents/skills/demo/SKILL.md"},
-            {"path": ".vscode/mcp.json"},
-        ]},
+        {
+            "artifacts": [
+                {"path": ""},
+                {},
+                {"path": "../outside.md"},
+                {"path": "README.md"},
+                {"path": ".github/skills/a/b/SKILL.md"},
+                {"path": ".github/mcp.json"},
+                {"path": ".codex/config.toml"},
+                {"path": ".mcp.json", "hash": "0" * 64},
+                {"path": ".github/agents/reviewer.md", "hash": _content_hash("# Reviewer\n")},
+                {"path": ".github/copilot-instructions.md"},
+                {"path": "AGENTS.md"},
+                {"path": ".agents/skills/demo/SKILL.md"},
+                {"path": ".vscode/mcp.json"},
+            ]
+        },
     ),
     "hash_mismatch_hides_missing_marker": (
         {".github/agents/reviewer.md": "# Reviewer\n"},
@@ -2595,108 +2441,223 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
             ".claude/skills/binary/SKILL.md": UNDECODABLE,
             ".agents/skills/binary/SKILL.md": MARKED,
         },
-        {"artifacts": [
-            {"path": ".agents/skills/nofront/SKILL.md"},
-            {"path": ".agents/skills/open/SKILL.md"},
-            {"path": ".agents/skills/twice/SKILL.md"},
-            {"path": ".agents/skills/binary/SKILL.md"},
-        ]},
+        {
+            "artifacts": [
+                {"path": ".agents/skills/nofront/SKILL.md"},
+                {"path": ".agents/skills/open/SKILL.md"},
+                {"path": ".agents/skills/twice/SKILL.md"},
+                {"path": ".agents/skills/binary/SKILL.md"},
+            ]
+        },
     ),
     "no_artifacts": ({}, {}),
 }
 
 AUTHORITY_EXPECTED: dict[str, tuple[str, str, list[tuple[str, str, str | None, str]]]] = {
-    'nothing': ('unconfigured', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
-    ]),
-    'manifest_with_every_signal': ('conforming', 'manifest', [
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: manifest, claude_md_exists, maintaining_section, generator_script, ci_parity)'),
-    ]),
-    'manifest_and_plain_claude': ('conforming', 'manifest', [
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: manifest, claude_md_exists)'),
-    ]),
-    'manifest_not_an_object': ('unconfigured', 'empty', [
-        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest is not a JSON object'),
-        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
-    ]),
-    'manifest_malformed': ('ambiguous', 'empty', [
-        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest exists but is malformed'),
-        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
-    ]),
-    'manifest_undecodable': ('unconfigured', 'empty', [
-        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest exists but is malformed'),
-        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
-    ]),
-    'manifest_schema_errors': ('conforming', 'empty', [
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: schemaVersion must be an integer'),
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: runtimes is required'),
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: surfaces must be a list'),
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: features[0] must be a string'),
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: mcp_servers is required'),
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: claude_md_exists, maintaining_section)'),
-    ]),
-    'manifest_canonical_missing': ('conforming', 'empty', [
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', "Manifest declares canonical source 'CLAUDE.md' but it does not exist"),
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: generator_script, ci_parity)'),
-    ]),
-    'manifest_without_derived_artifacts': ('ambiguous', 'empty', [
-        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest declares no derived artifacts'),
-        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
-    ]),
-    'generator_declares_alternative_source': ('alternative', 'manifest', [
-        ('INFO', 'authority', '.github/ai-config-manifest.json', 'Manifest declares alternative canonical source: AGENTS.md'),
-    ]),
-    'other_generator_declares_alternative_source': ('alternative', 'manifest', [
-        ('INFO', 'authority', '.github/ai-config-manifest.json', 'Manifest declares alternative canonical source: AGENTS.md'),
-    ]),
-    'other_generator_declares_claude': ('conforming', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: claude_md_exists, maintaining_section)'),
-    ]),
-    'generator_without_canonical_source': ('unconfigured', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
-    ]),
-    'claude_undecodable': ('ambiguous', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
-    ]),
-    'signals_that_do_not_count': ('unconfigured', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
-    ]),
-    'generator_and_ci_without_claude': ('conforming', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: conforming (signals: generator_script, ci_parity)'),
-    ]),
-    'ci_only': ('ambiguous', 'empty', [
-        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: ci_parity)'),
-    ]),
+    "nothing": (
+        "unconfigured",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    "manifest_with_every_signal": (
+        "conforming",
+        "manifest",
+        [
+            (
+                "INFO",
+                "authority",
+                None,
+                "Authority classification: conforming (signals: manifest, claude_md_exists, maintaining_section, generator_script, ci_parity)",
+            ),
+        ],
+    ),
+    "manifest_and_plain_claude": (
+        "conforming",
+        "manifest",
+        [
+            ("INFO", "authority", None, "Authority classification: conforming (signals: manifest, claude_md_exists)"),
+        ],
+    ),
+    "manifest_not_an_object": (
+        "unconfigured",
+        "empty",
+        [
+            ("WARNING", "authority", ".github/ai-config-manifest.json", "Manifest is not a JSON object"),
+            ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    "manifest_malformed": (
+        "ambiguous",
+        "empty",
+        [
+            ("WARNING", "authority", ".github/ai-config-manifest.json", "Manifest exists but is malformed"),
+            ("INFO", "authority", None, "Authority classification: ambiguous (signals: claude_md_exists)"),
+        ],
+    ),
+    "manifest_undecodable": (
+        "unconfigured",
+        "empty",
+        [
+            ("WARNING", "authority", ".github/ai-config-manifest.json", "Manifest exists but is malformed"),
+            ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    "manifest_schema_errors": (
+        "conforming",
+        "empty",
+        [
+            (
+                "ERROR",
+                "authority",
+                ".github/ai-config-manifest.json",
+                "Manifest schema: schemaVersion must be an integer",
+            ),
+            ("ERROR", "authority", ".github/ai-config-manifest.json", "Manifest schema: runtimes is required"),
+            ("ERROR", "authority", ".github/ai-config-manifest.json", "Manifest schema: surfaces must be a list"),
+            ("ERROR", "authority", ".github/ai-config-manifest.json", "Manifest schema: features[0] must be a string"),
+            ("ERROR", "authority", ".github/ai-config-manifest.json", "Manifest schema: mcp_servers is required"),
+            (
+                "INFO",
+                "authority",
+                None,
+                "Authority classification: conforming (signals: claude_md_exists, maintaining_section)",
+            ),
+        ],
+    ),
+    "manifest_canonical_missing": (
+        "conforming",
+        "empty",
+        [
+            (
+                "ERROR",
+                "authority",
+                ".github/ai-config-manifest.json",
+                "Manifest declares canonical source 'CLAUDE.md' but it does not exist",
+            ),
+            ("INFO", "authority", None, "Authority classification: conforming (signals: generator_script, ci_parity)"),
+        ],
+    ),
+    "manifest_without_derived_artifacts": (
+        "ambiguous",
+        "empty",
+        [
+            ("ERROR", "authority", ".github/ai-config-manifest.json", "Manifest declares no derived artifacts"),
+            ("INFO", "authority", None, "Authority classification: ambiguous (signals: claude_md_exists)"),
+        ],
+    ),
+    "generator_declares_alternative_source": (
+        "alternative",
+        "manifest",
+        [
+            (
+                "INFO",
+                "authority",
+                ".github/ai-config-manifest.json",
+                "Manifest declares alternative canonical source: AGENTS.md",
+            ),
+        ],
+    ),
+    "other_generator_declares_alternative_source": (
+        "alternative",
+        "manifest",
+        [
+            (
+                "INFO",
+                "authority",
+                ".github/ai-config-manifest.json",
+                "Manifest declares alternative canonical source: AGENTS.md",
+            ),
+        ],
+    ),
+    "other_generator_declares_claude": (
+        "conforming",
+        "empty",
+        [
+            (
+                "INFO",
+                "authority",
+                None,
+                "Authority classification: conforming (signals: claude_md_exists, maintaining_section)",
+            ),
+        ],
+    ),
+    "generator_without_canonical_source": (
+        "unconfigured",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    "claude_undecodable": (
+        "ambiguous",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: ambiguous (signals: claude_md_exists)"),
+        ],
+    ),
+    "signals_that_do_not_count": (
+        "unconfigured",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: unconfigured (signals: none)"),
+        ],
+    ),
+    "generator_and_ci_without_claude": (
+        "conforming",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: conforming (signals: generator_script, ci_parity)"),
+        ],
+    ),
+    "ci_only": (
+        "ambiguous",
+        "empty",
+        [
+            ("INFO", "authority", None, "Authority classification: ambiguous (signals: ci_parity)"),
+        ],
+    ),
 }
 PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
-    'every_artifact_matches': [],
-    'every_artifact_drifts': [
-        ('ERROR', 'parity', '', 'Manifest path rejected: empty path'),
-        ('ERROR', 'parity', '', 'Manifest path rejected: empty path'),
-        ('ERROR', 'parity', '../outside.md', 'Manifest path rejected: path traversal not allowed: ../outside.md'),
-        ('ERROR', 'parity', 'README.md', 'Manifest path rejected: path not in manifest allowlist: README.md'),
-        ('ERROR', 'parity', '.github/skills/a/b/SKILL.md', 'Manifest path rejected: skill projection path must have exactly one skill-name segment: .github/skills/a/b/SKILL.md'),
-        ('ERROR', 'parity', '.github/mcp.json', 'Generated artifact missing: .github/mcp.json'),
-        ('ERROR', 'parity', '.codex/config.toml', 'Generated artifact exists but could not be read'),
-        ('ERROR', 'parity', '.mcp.json', 'JSON artifact modified (hash mismatch with manifest)'),
-        ('ERROR', 'parity', '.github/agents/reviewer.md', 'Generated file missing ownership marker'),
-        ('ERROR', 'parity', '.github/copilot-instructions.md', 'Copilot instructions missing banner'),
-        ('ERROR', 'parity', 'AGENTS.md', 'Content does not match deterministic template'),
-        ('ERROR', 'parity', '.agents/skills/demo/SKILL.md', 'Content does not match deterministic template'),
+    "every_artifact_matches": [],
+    "every_artifact_drifts": [
+        ("ERROR", "parity", "", "Manifest path rejected: empty path"),
+        ("ERROR", "parity", "", "Manifest path rejected: empty path"),
+        ("ERROR", "parity", "../outside.md", "Manifest path rejected: path traversal not allowed: ../outside.md"),
+        ("ERROR", "parity", "README.md", "Manifest path rejected: path not in manifest allowlist: README.md"),
+        (
+            "ERROR",
+            "parity",
+            ".github/skills/a/b/SKILL.md",
+            "Manifest path rejected: skill projection path must have exactly one skill-name segment: .github/skills/a/b/SKILL.md",
+        ),
+        ("ERROR", "parity", ".github/mcp.json", "Generated artifact missing: .github/mcp.json"),
+        ("ERROR", "parity", ".codex/config.toml", "Generated artifact exists but could not be read"),
+        ("ERROR", "parity", ".mcp.json", "JSON artifact modified (hash mismatch with manifest)"),
+        ("ERROR", "parity", ".github/agents/reviewer.md", "Generated file missing ownership marker"),
+        ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
+        ("ERROR", "parity", "AGENTS.md", "Content does not match deterministic template"),
+        ("ERROR", "parity", ".agents/skills/demo/SKILL.md", "Content does not match deterministic template"),
     ],
-    'hash_mismatch_hides_missing_marker': [
-        ('ERROR', 'parity', '.github/agents/reviewer.md', 'JSON artifact modified (hash mismatch with manifest)'),
+    "hash_mismatch_hides_missing_marker": [
+        ("ERROR", "parity", ".github/agents/reviewer.md", "JSON artifact modified (hash mismatch with manifest)"),
     ],
-    'copilot_sections_differ': [
-        ('ERROR', 'parity', '.github/copilot-instructions.md', 'Copilot instructions sections do not match CLAUDE.md content'),
+    "copilot_sections_differ": [
+        (
+            "ERROR",
+            "parity",
+            ".github/copilot-instructions.md",
+            "Copilot instructions sections do not match CLAUDE.md content",
+        ),
     ],
-    'copilot_custom_sections_match': [],
-    'copilot_without_claude': [],
-    'copilot_with_undecodable_claude': [],
-    'copilot_sections_invalid': [],
-    'copilot_sections_absent_from_claude': [],
-    'shims_without_a_reconstructable_canonical': [],
-    'no_artifacts': [],
+    "copilot_custom_sections_match": [],
+    "copilot_without_claude": [],
+    "copilot_with_undecodable_claude": [],
+    "copilot_sections_invalid": [],
+    "copilot_sections_absent_from_claude": [],
+    "shims_without_a_reconstructable_canonical": [],
+    "no_artifacts": [],
 }
 
 

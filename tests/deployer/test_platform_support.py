@@ -51,9 +51,12 @@ class FindBashTests(DeployerTestCase):
         git_root = self.root / "scoop" / "apps" / "git" / "2.56.0"
         bash = self.make_bash(git_root)
         exec_path = f"{platform_support.normalize(git_root)}/mingw64/libexec/git-core\n"
-        with self.which(r"C:\Users\YourName\scoop\shims\git.exe"), mock.patch(
-            "deployer.platform_support.run_tool", return_value=platform_support.ToolResult(0, exec_path)
-        ) as run_tool:
+        with (
+            self.which(r"C:\Users\YourName\scoop\shims\git.exe"),
+            mock.patch(
+                "deployer.platform_support.run_tool", return_value=platform_support.ToolResult(0, exec_path)
+            ) as run_tool,
+        ):
             self.assertEqual(bash, Path(platform_support.find_bash()))
         run_tool.assert_called_once_with([r"C:\Users\YourName\scoop\shims\git.exe", "--exec-path"])
 
@@ -64,8 +67,10 @@ class FindBashTests(DeployerTestCase):
     def test_git_without_bash_beside_it_is_not_enough(self) -> None:
         exec_path = f"{platform_support.normalize(self.root / 'MinGit')}/mingw64/libexec/git-core\n"
         for result in (platform_support.ToolResult(0, exec_path), platform_support.ToolResult(1, "")):
-            with self.subTest(returncode=result.returncode), self.which("git.exe"), mock.patch(
-                "deployer.platform_support.run_tool", return_value=result
+            with (
+                self.subTest(returncode=result.returncode),
+                self.which("git.exe"),
+                mock.patch("deployer.platform_support.run_tool", return_value=result),
             ):
                 self.assertIsNone(platform_support.find_bash())
 

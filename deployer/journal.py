@@ -114,7 +114,10 @@ def valid_entry(entry: Any, run_id: str) -> bool:
         if not hashing.HASH_PATTERN.fullmatch(str(entry.get("staged_hash", ""))):
             return False
         stagings = (staging, *LEGACY_STAGING.get(root, ()))
-        return entry.get("from") in {f"{label}/{item}" for label in stagings} and entry.get("to") == f"{destination}/{item}"
+        return (
+            entry.get("from") in {f"{label}/{item}" for label in stagings}
+            and entry.get("to") == f"{destination}/{item}"
+        )
     if op == "preserve":
         return (
             entry.get("from") == f"{destination}/{item}.deploying-bak"

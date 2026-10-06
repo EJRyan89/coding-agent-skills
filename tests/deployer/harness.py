@@ -114,7 +114,7 @@ class DeployerTestCase(unittest.TestCase):
         flags = "disable-model-invocation: true\n" if user_only else ""
         (directory / "SKILL.md").write_bytes(
             (
-                f'---\nname: {name}\ndescription: {description}\nallowed-tools: {ALLOWED_TOOLS}\n{flags}---\n\n'
+                f"---\nname: {name}\ndescription: {description}\nallowed-tools: {ALLOWED_TOOLS}\n{flags}---\n\n"
                 f"{content}\n"
             ).encode("utf-8")
         )
@@ -131,8 +131,10 @@ class DeployerTestCase(unittest.TestCase):
 
     def make_agent(self, name: str, body: str = "Review the change.", declared: str | None = None) -> bytes:
         """A Claude Code subagent definition under agents/; returns its exact bytes."""
-        content = (f"---\nname: {declared or name}\ndescription: Test agent {name}\ntools: Read, Write\n"
-                   f"model: inherit\n---\n\n{body}\n").encode("utf-8")
+        content = (
+            f"---\nname: {declared or name}\ndescription: Test agent {name}\ntools: Read, Write\n"
+            f"model: inherit\n---\n\n{body}\n"
+        ).encode("utf-8")
         target = self.source / "agents" / f"{name}.md"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
@@ -165,7 +167,8 @@ class DeployerTestCase(unittest.TestCase):
         shutil.copy2(REPOSITORY_ROOT / "source.json", destination / "source.json")
         for directory in ("skills", "deploy-meta", "agents"):
             shutil.copytree(
-                REPOSITORY_ROOT / directory, destination / directory,
+                REPOSITORY_ROOT / directory,
+                destination / directory,
                 ignore=shutil.ignore_patterns("__pycache__", "*.py[cod]"),
             )
         return destination

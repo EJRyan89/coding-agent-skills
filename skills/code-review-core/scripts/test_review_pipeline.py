@@ -42,8 +42,15 @@ SPECIALIST_MANIFEST = {
     "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
     "resources": ["review/rules.md"],
     "specialists": [
-        {"id": "python-review", "category": "Python", "profile": "review/python.md",
-         "include": [r"\.py$"], "exclude": [], "resources": ["review/python-guide.md"], "when": None},
+        {
+            "id": "python-review",
+            "category": "Python",
+            "profile": "review/python.md",
+            "include": [r"\.py$"],
+            "exclude": [],
+            "resources": ["review/python-guide.md"],
+            "when": None,
+        },
     ],
     "conditions": {},
 }
@@ -57,8 +64,11 @@ ENTRYPOINT_MANIFEST = {
     "resources": ["review/rules.md"],
     "agent_profiles": [],
 }
-COPILOT_MANIFEST = {**ENTRYPOINT_MANIFEST, "id": "fixture-copilot",
-                    "required_capabilities": ["isolated-added-root", "read-diff", "write-result"]}
+COPILOT_MANIFEST = {
+    **ENTRYPOINT_MANIFEST,
+    "id": "fixture-copilot",
+    "required_capabilities": ["isolated-added-root", "read-diff", "write-result"],
+}
 
 
 DELEGATING_SKILL = (
@@ -85,44 +95,70 @@ def workflow_output(out: str) -> tuple[Path, str, list[dict[str, Any]]]:
     assert header.startswith("WORKFLOW "), out
     script = Path(header.removeprefix("WORKFLOW ").rsplit(" roles=", 1)[0])
     begin, end = lines.index(rp.SCRIPT_BEGIN), lines.index(rp.SCRIPT_END)
-    text = "\n".join(lines[begin + 1:end]) + "\n"
+    text = "\n".join(lines[begin + 1 : end]) + "\n"
     runs = json.loads(text.split("const RUNS = ", 1)[1].split("\nconst [BEFORE", 1)[0])
     before, after, sep = json.loads(text.split("const [BEFORE, AFTER, SEP] = ", 1)[1].split("\n", 1)[0])
     roles = [
         {"label": f"{pull} {identity}", "task": before + run + sep + prompt + after, "model": model, "effort": effort}
-        for pull, run, entries in runs for identity, prompt, model, effort in entries
+        for pull, run, entries in runs
+        for identity, prompt, model, effort in entries
     ]
     return script, text, roles
 
 
 def git(path: Path, *arguments: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-         *arguments],
-        capture_output=True, text=True, encoding="utf-8", check=False,
+        ["git", "-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
     )
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
 
 
-def rest_pull(number: int, head: str, base: str, *, state: str = "open", merged_at: str | None = None,
-              draft: bool = False) -> dict[str, Any]:
+def rest_pull(
+    number: int, head: str, base: str, *, state: str = "open", merged_at: str | None = None, draft: bool = False
+) -> dict[str, Any]:
     return {
-        "number": number, "title": f"Change {number}", "html_url": f"https://github.com/{REPOSITORY}/pull/{number}",
-        "state": state, "draft": draft, "merged_at": merged_at,
-        "base": {"ref": "main", "sha": base}, "head": {"ref": f"feature-{number}", "sha": head},
+        "number": number,
+        "title": f"Change {number}",
+        "html_url": f"https://github.com/{REPOSITORY}/pull/{number}",
+        "state": state,
+        "draft": draft,
+        "merged_at": merged_at,
+        "base": {"ref": "main", "sha": base},
+        "head": {"ref": f"feature-{number}", "sha": head},
     }
 
 
-def thread(author: str | None, body: str, *, path: str = "app/service.py", line: int | None = 1,
-           original_line: int | None = None, resolved: bool = False, outdated: bool = False,
-           kind: str = "User") -> dict[str, Any]:
+def thread(
+    author: str | None,
+    body: str,
+    *,
+    path: str = "app/service.py",
+    line: int | None = 1,
+    original_line: int | None = None,
+    resolved: bool = False,
+    outdated: bool = False,
+    kind: str = "User",
+) -> dict[str, Any]:
     """A GraphQL reviewThreads node whose first comment is `body`."""
-    first = {"body": body, "url": f"https://example.invalid/c/{body.split()[0]}",
-             "author": None if author is None else {"__typename": kind, "login": author}}
-    return {"isResolved": resolved, "isOutdated": outdated, "path": path, "line": line,
-            "originalLine": original_line, "comments": {"nodes": [first]}}
+    first = {
+        "body": body,
+        "url": f"https://example.invalid/c/{body.split()[0]}",
+        "author": None if author is None else {"__typename": kind, "login": author},
+    }
+    return {
+        "isResolved": resolved,
+        "isOutdated": outdated,
+        "path": path,
+        "line": line,
+        "originalLine": original_line,
+        "comments": {"nodes": [first]},
+    }
 
 
 class FakeGitHub:
@@ -154,8 +190,17 @@ class FakeGitHub:
             if self.diff_error is not None:
                 raise self.diff_error
             # Through the real runner, so a committed byte that is not UTF-8 arrives as it would from gh.
-            diff = subprocess_runner(["git", "-C", str(self.checkout), "diff", "--src-prefix=a/", "--dst-prefix=b/",
-                                      f"{pull['base']['sha']}...{pull['head']['sha']}"])
+            diff = subprocess_runner(
+                [
+                    "git",
+                    "-C",
+                    str(self.checkout),
+                    "diff",
+                    "--src-prefix=a/",
+                    "--dst-prefix=b/",
+                    f"{pull['base']['sha']}...{pull['head']['sha']}",
+                ]
+            )
             if diff.returncode != 0:
                 raise AssertionError(diff.stderr)
             if self.after_diff is not None:
@@ -266,8 +311,9 @@ class PipelineFixture(unittest.TestCase):
         )
         self.state_path = self.root / "state" / "state.json"
         self.flags_path = self.root / "flags" / "flags.json"
-        patcher = mock.patch.dict(os.environ, {"CODE_REVIEW_STATE": str(self.state_path),
-                                               "CODE_REVIEW_FLAGS": str(self.flags_path)})
+        patcher = mock.patch.dict(
+            os.environ, {"CODE_REVIEW_STATE": str(self.state_path), "CODE_REVIEW_FLAGS": str(self.flags_path)}
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
         self.archive = self.root / "archive"
@@ -293,29 +339,45 @@ class PipelineFixture(unittest.TestCase):
     def configure(self, reviewer: dict[str, Any] | None = None, *, checkout: bool = True, **settings: Any) -> None:
         """Write the fixture configuration; `settings` adds or replaces top-level entries."""
         self.config_path = self.root / "config.json"
-        write_config({
-            "schema_version": 1,
-            "default_repository_set": "primary",
-            "repository_sets": {"primary": [REPOSITORY]},
-            "repositories": {REPOSITORY: {
-                "reviewer": reviewer or {"id": "generic", "protocol_version": 1, "trusted_ref": None,
-                                         "scope": "generic", "manifest_path": None},
-                "checkout_path": str(self.checkout) if checkout else None,
-            }},
-            "archive_root": str(self.archive),
-            "local_mirror_root": None,
-            "summary_root": str(self.root / "summaries"),
-            "dashboard_file": str(self.root / "dashboard.md"),
-            "github_login": "reviewer",
-            "runtime": "auto",
-            "verdict_policy": POLICY,
-            "dashboard": {},
-            **settings,
-        }, self.config_path)
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": [REPOSITORY]},
+                "repositories": {
+                    REPOSITORY: {
+                        "reviewer": reviewer
+                        or {
+                            "id": "generic",
+                            "protocol_version": 1,
+                            "trusted_ref": None,
+                            "scope": "generic",
+                            "manifest_path": None,
+                        },
+                        "checkout_path": str(self.checkout) if checkout else None,
+                    }
+                },
+                "archive_root": str(self.archive),
+                "local_mirror_root": None,
+                "summary_root": str(self.root / "summaries"),
+                "dashboard_file": str(self.root / "dashboard.md"),
+                "github_login": "reviewer",
+                "runtime": "auto",
+                "verdict_policy": POLICY,
+                "dashboard": {},
+                **settings,
+            },
+            self.config_path,
+        )
 
     def repository_reviewer(self, manifest_path: str) -> dict[str, Any]:
-        return {"id": "fixture", "protocol_version": 1, "trusted_ref": None, "scope": "repository",
-                "manifest_path": manifest_path}
+        return {
+            "id": "fixture",
+            "protocol_version": 1,
+            "trusted_ref": None,
+            "scope": "repository",
+            "manifest_path": manifest_path,
+        }
 
     def skill_reviewer(self, skill: str, manifest: Any = None) -> dict[str, Any]:
         reviewer = {"id": "team", "protocol_version": 1, "trusted_ref": None, "scope": "repository", "skill": skill}
@@ -323,42 +385,74 @@ class PipelineFixture(unittest.TestCase):
             reviewer["manifest"] = manifest
         return reviewer
 
-    def local_manifest(self, *, path: Path | None = None, specialists: list[dict[str, Any]] | None = None,
-                       **settings: Any) -> Path:
+    def local_manifest(
+        self, *, path: Path | None = None, specialists: list[dict[str, Any]] | None = None, **settings: Any
+    ) -> Path:
         """A specialists manifest kept outside the repository, with its condition script beside it; `settings` adds
         optional top-level entries."""
         path = path or self.root / "local reviewers" / "manifest.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         (path.parent / "window.py").write_text(WINDOW_SCRIPT, encoding="utf-8")
-        path.write_text(json.dumps({
-            "schema_version": 2, "id": "team-specialists", "protocol_version": 1, "kind": "specialists",
-            "supports": ["initial", "re-review"], "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
-            "resources": ["review/rules.md"],
-            "specialists": specialists or [
-                {"id": "python-reviewer", "category": "Python", "profile": ".claude/agents/python-reviewer.md",
-                 "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
-            ],
-            "conditions": {"window": {"script": "window.py"}},
-            **settings,
-        }), encoding="utf-8")
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "id": "team-specialists",
+                    "protocol_version": 1,
+                    "kind": "specialists",
+                    "supports": ["initial", "re-review"],
+                    "required_capabilities": ["agent-delegation", "read-diff", "write-result"],
+                    "resources": ["review/rules.md"],
+                    "specialists": specialists
+                    or [
+                        {
+                            "id": "python-reviewer",
+                            "category": "Python",
+                            "profile": ".claude/agents/python-reviewer.md",
+                            "include": [r"\.py$"],
+                            "exclude": [],
+                            "resources": [],
+                            "when": "window",
+                        },
+                    ],
+                    "conditions": {"window": {"script": "window.py"}},
+                    **settings,
+                }
+            ),
+            encoding="utf-8",
+        )
         return path
 
     def prepare(self, selector: str = SELECTOR, **options: Any) -> dict[str, Any]:
         return rp.prepare(selector, config_path=self.config_path, services=self.services, **options)
 
     @staticmethod
-    def write_role_result(role: dict[str, Any], *, findings: list[dict[str, Any]] | None = None,
-                          dispositions: list[dict[str, Any]] | None = None,
-                          model: str | None = "fixture-model") -> None:
+    def write_role_result(
+        role: dict[str, Any],
+        *,
+        findings: list[dict[str, Any]] | None = None,
+        dispositions: list[dict[str, Any]] | None = None,
+        model: str | None = "fixture-model",
+    ) -> None:
         """A reviewer's result; `model=None` leaves the model out."""
-        result = {"summary": "Reviewed the change.", "findings": findings or [], "prior_dispositions": dispositions or []}
-        Path(role["result_file"]).write_text(json.dumps(result if model is None else {"model": model, **result}),
-                                             encoding="utf-8")
+        result = {
+            "summary": "Reviewed the change.",
+            "findings": findings or [],
+            "prior_dispositions": dispositions or [],
+        }
+        Path(role["result_file"]).write_text(
+            json.dumps(result if model is None else {"model": model, **result}), encoding="utf-8"
+        )
 
     @staticmethod
     def finding(line: int = 2) -> dict[str, Any]:
-        return {"path": "app/service.py", "line": line, "severity": "SHOULD_FIX",
-                "title": "Empty input returns an int", "body": "Callers expect a float total."}
+        return {
+            "path": "app/service.py",
+            "line": line,
+            "severity": "SHOULD_FIX",
+            "title": "Empty input returns an int",
+            "body": "Callers expect a float total.",
+        }
 
     @staticmethod
     def finish_after(run: Path, role: dict[str, Any], seconds: float) -> None:
@@ -378,14 +472,20 @@ class GenericReviewTests(PipelineFixture):
         # A reviewer read half its context files from the local working copy, which may be on another branch.
         ready = self.prepare()
         prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
-        self.assertIn(f"- Never read anything under {self.checkout}. It is a local working copy, possibly on another\n"
-                      "  branch, not the code under review; read source only under SOURCE_ROOT.", prompt)
+        self.assertIn(
+            f"- Never read anything under {self.checkout}. It is a local working copy, possibly on another\n"
+            "  branch, not the code under review; read source only under SOURCE_ROOT.",
+            prompt,
+        )
         self.assertFalse(any("runs inside" in note for note in ready["notes"]), "this test runs outside the checkout")
         self.configure(checkout=False)
         self.github.pulls[12] = rest_pull(12, self.head, self.base)
-        with mock.patch("review_pipeline.materialize_source_snapshot_from_github",
-                        side_effect=lambda repository, head, source, **_: rp.materialize_source_snapshot(
-                            self.checkout, repository, head, source)):
+        with mock.patch(
+            "review_pipeline.materialize_source_snapshot_from_github",
+            side_effect=lambda repository, head, source, **_: rp.materialize_source_snapshot(
+                self.checkout, repository, head, source
+            ),
+        ):
             ready = self.prepare(force=True)
         prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
         self.assertNotIn("Never read anything under", prompt, "no checkout is configured")
@@ -397,9 +497,12 @@ class GenericReviewTests(PipelineFixture):
         self.addCleanup(os.chdir, previous)
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
-        self.assertIn(f"NOTE {SELECTOR} This session runs inside {self.checkout}, so its CLAUDE.md files and project "
-                      "memory load into every reviewer on every turn; start review sessions from a directory outside "
-                      "the checkout.", out.splitlines())
+        self.assertIn(
+            f"NOTE {SELECTOR} This session runs inside {self.checkout}, so its CLAUDE.md files and project "
+            "memory load into every reviewer on every turn; start review sessions from a directory outside "
+            "the checkout.",
+            out.splitlines(),
+        )
 
     def test_prepare_never_reads_back_the_snapshot_it_wrote(self) -> None:
         # Under real-time antivirus every file read costs milliseconds; three re-reads took minutes on a large
@@ -431,7 +534,7 @@ class GenericReviewTests(PipelineFixture):
         self.assertEqual("generic-review", role_id)
         prompt_text = Path(prompt).read_text(encoding="utf-8")
         self.assertIn("general-purpose reviewer", prompt_text)
-        self.assertIn("\"model\": \"<the exact model ID your system prompt says you are running on", prompt_text)
+        self.assertIn('"model": "<the exact model ID your system prompt says you are running on', prompt_text)
         self.assertIn(str(SCRIPT_DIRECTORY.parent / "references" / "generic-reviewer.md"), prompt_text)
         self.assertIn("TRUSTED_ROOT=none", prompt_text)
         request = json.loads((run / "request.json").read_text(encoding="utf-8"))
@@ -449,8 +552,9 @@ class GenericReviewTests(PipelineFixture):
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual(self.head, record["pull_request"]["head_sha"])
         self.assertEqual("feature-12", record["pull_request"]["head_ref"])
-        self.assertEqual({"name": "generic", "scope": "generic"},
-                         {k: record["review"]["adapter"][k] for k in ("name", "scope")})
+        self.assertEqual(
+            {"name": "generic", "scope": "generic"}, {k: record["review"]["adapter"][k] for k in ("name", "scope")}
+        )
         self.assertEqual("F001", record["findings"][0]["id"])
         self.assertFalse(run.exists(), "a finalized run directory is removed")
 
@@ -471,8 +575,7 @@ class GenericReviewTests(PipelineFixture):
         def tarball(repository: str, commit: str, target: Path) -> None:
             fetched.append((repository, commit))
             archive = self.root / "export.tar"
-            git(self.checkout, "archive", "--format=tar.gz", "--prefix=example-one-abc/", f"--output={archive}",
-                commit)
+            git(self.checkout, "archive", "--format=tar.gz", "--prefix=example-one-abc/", f"--output={archive}", commit)
             target.write_bytes(archive.read_bytes())
 
         self.services.fetch_tarball = tarball
@@ -489,12 +592,29 @@ class GenericReviewTests(PipelineFixture):
         ]
         ready = self.prepare()
         request = json.loads((ready["run"] / "request.json").read_text(encoding="utf-8"))
-        self.assertEqual([
-            {"id": "C1", "author": "someone", "path": "app/service.py", "line": 2, "outdated": False,
-             "body": "Is zero right here?", "url": "https://example.invalid/c/Is"},
-            {"id": "C2", "author": "ghost", "path": "app/other.py", "line": 7, "outdated": True,
-             "body": "From a deleted account", "url": "https://example.invalid/c/From"},
-        ], request["github_comments"])
+        self.assertEqual(
+            [
+                {
+                    "id": "C1",
+                    "author": "someone",
+                    "path": "app/service.py",
+                    "line": 2,
+                    "outdated": False,
+                    "body": "Is zero right here?",
+                    "url": "https://example.invalid/c/Is",
+                },
+                {
+                    "id": "C2",
+                    "author": "ghost",
+                    "path": "app/other.py",
+                    "line": 7,
+                    "outdated": True,
+                    "body": "From a deleted account",
+                    "url": "https://example.invalid/c/From",
+                },
+            ],
+            request["github_comments"],
+        )
         role = ready["roles"][0]
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn('"id": "C1"', prompt)
@@ -504,21 +624,32 @@ class GenericReviewTests(PipelineFixture):
         code, out, _ = self.run_main("check", "--run", str(ready["run"]))
         self.assertEqual(1, code)
         self.assertIn("comment_dispositions must be an array", out)
-        Path(role["result_file"]).write_text(json.dumps({
-            "model": "fixture-model", "summary": "Reviewed.", "findings": [], "prior_dispositions": [],
-            "comment_dispositions": [
-                {"comment_id": "C1", "disposition": "addressed", "rationale": "Empty input now returns 0."},
-                {"comment_id": "C2", "disposition": "superseded", "rationale": "The file was rewritten."},
-            ],
-        }), encoding="utf-8")
+        Path(role["result_file"]).write_text(
+            json.dumps(
+                {
+                    "model": "fixture-model",
+                    "summary": "Reviewed.",
+                    "findings": [],
+                    "prior_dispositions": [],
+                    "comment_dispositions": [
+                        {"comment_id": "C1", "disposition": "addressed", "rationale": "Empty input now returns 0."},
+                        {"comment_id": "C2", "disposition": "superseded", "rationale": "The file was rewritten."},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         rp.finalize(ready["run"])
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual(["C1", "C2"], [comment["id"] for comment in record["github_comments"]])
         self.assertEqual("addressed", record["comment_dispositions"][0]["disposition"])
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn("## Review Comments\n\n| # | Comment | Status | Rationale |", markdown)
-        self.assertIn("| [C1](https://example.invalid/c/Is) | @someone on `app/service.py:2`: Is zero right here? "
-                      "| ADDRESSED | Empty input now returns 0. |", markdown)
+        self.assertIn(
+            "| [C1](https://example.invalid/c/Is) | @someone on `app/service.py:2`: Is zero right here? "
+            "| ADDRESSED | Empty input now returns 0. |",
+            markdown,
+        )
         self.assertIn("@ghost on `app/other.py:7` (outdated)", markdown)
         self.assertNotIn("Addressed since", markdown, "no prior findings in an initial review")
 
@@ -532,17 +663,33 @@ class GenericReviewTests(PipelineFixture):
         self.finish_after(ready["run"], ready["roles"][0], 125.4)
         rp.finalize(ready["run"])
         record = latest_record(self.archive, REPOSITORY, 12)
-        self.assertEqual([{"id": "generic-review", "category": "General", "files": 2, "findings": 1, "retries": 1,
-                           "dispositions_only": False, "seconds": 125, "model": "claude-haiku-4-5"}],
-                         record["review"]["reviewers"])
+        self.assertEqual(
+            [
+                {
+                    "id": "generic-review",
+                    "category": "General",
+                    "files": 2,
+                    "findings": 1,
+                    "retries": 1,
+                    "dispositions_only": False,
+                    "seconds": 125,
+                    "model": "claude-haiku-4-5",
+                }
+            ],
+            record["review"]["reviewers"],
+        )
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn("| Reviewer | Focus | Model | Files | Findings | Retries | Time |", markdown)
         self.assertIn("| `generic-review` | General | claude-haiku-4-5 | 2 | 1 | 1 | 2m 05s |", markdown)
 
     def test_a_result_must_name_its_model(self) -> None:
         ready = self.prepare()
-        for model, reason in ((None, "model must be a single non-blank line"), ("", "model must be"),
-                              ("two\nlines", "model must be"), ("x" * 201, "model must be")):
+        for model, reason in (
+            (None, "model must be a single non-blank line"),
+            ("", "model must be"),
+            ("two\nlines", "model must be"),
+            ("x" * 201, "model must be"),
+        ):
             with self.subTest(model=model):
                 self.write_role_result(ready["roles"][0], findings=[self.finding()], model=model)
                 code, out, _ = self.run_main("validate-result", "--run", str(ready["run"]), "--role", "generic-review")
@@ -550,8 +697,9 @@ class GenericReviewTests(PipelineFixture):
                 self.assertIn(reason, out)
                 self.assertIn("write the model ID your system prompt names", out)
         self.write_role_result(ready["roles"][0], findings=[self.finding()], model="unknown")
-        self.assertEqual("VALID\n", self.run_main("validate-result", "--run", str(ready["run"]),
-                                                   "--role", "generic-review")[1])
+        self.assertEqual(
+            "VALID\n", self.run_main("validate-result", "--run", str(ready["run"]), "--role", "generic-review")[1]
+        )
 
     def test_prepare_times_reviewers_from_when_it_prints_their_roles(self) -> None:
         with mock.patch.object(rp, "mark_dispatched", wraps=rp.mark_dispatched) as marked:
@@ -612,8 +760,9 @@ class GenericReviewTests(PipelineFixture):
         # A runtime failure is a FAILED line on stdout and exit 1; stderr carries only usage errors.
         code, out, err = self.run_main("prepare", "--pull", "example/other#3")
         self.assertEqual((1, ""), (code, err))
-        self.assertTrue(out.splitlines()[-1].startswith(
-            "FAILED example/other#3 example/other is not a configured repository"), out)
+        self.assertTrue(
+            out.splitlines()[-1].startswith("FAILED example/other#3 example/other is not a configured repository"), out
+        )
 
 
 class UndecodableDiffTests(PipelineFixture):
@@ -629,11 +778,23 @@ class UndecodableDiffTests(PipelineFixture):
         return head
 
     def entrypoint_result(self, ready: dict[str, Any], head: str) -> None:
-        Path(ready["result_path"]).write_text(json.dumps({
-            "protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": head,
-            "summary": "Fine.", "reviewer": "fixture-review", "status": "complete", "findings": [],
-            "prior_dispositions": [], "usage": None,
-        }), encoding="utf-8")
+        Path(ready["result_path"]).write_text(
+            json.dumps(
+                {
+                    "protocol_version": 1,
+                    "repository": REPOSITORY,
+                    "pull_number": 12,
+                    "head_sha": head,
+                    "summary": "Fine.",
+                    "reviewer": "fixture-review",
+                    "status": "complete",
+                    "findings": [],
+                    "prior_dispositions": [],
+                    "usage": None,
+                }
+            ),
+            encoding="utf-8",
+        )
         self.finish_after(ready["run"], ready["roles"][0], 5)
 
     def test_prepare_replaces_undecodable_bytes_and_says_how_many(self) -> None:
@@ -667,8 +828,9 @@ class UndecodableDiffTests(PipelineFixture):
         self.github.diff_error = UnicodeDecodeError("utf-8", b"caf\xe9", 3, 4, "invalid continuation byte")
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual((1, ""), (code, err))
-        self.assertEqual(f"FAILED {SELECTOR} 'utf-8' codec can't decode byte 0xe9 in position 3: "
-                         "invalid continuation byte\n", out)
+        self.assertEqual(
+            f"FAILED {SELECTOR} 'utf-8' codec can't decode byte 0xe9 in position 3: invalid continuation byte\n", out
+        )
         self.assertEqual([], list(self.temporary.iterdir()))
 
 
@@ -694,8 +856,12 @@ class SymbolicLinkTests(PipelineFixture):
         self.assertEqual((0, ""), (code, err))
         self.assertIn(f"NOTE {SELECTOR} snapshot excludes symbolic link app/cache", out.splitlines())
         run = Path(out.split("\n", 1)[0].split(" ", 2)[2])
-        self.assertEqual("symbolic-link", json.loads(
-            (run / "source" / "source-snapshot.json").read_text(encoding="utf-8"))["excluded_paths"]["app/cache"])
+        self.assertEqual(
+            "symbolic-link",
+            json.loads((run / "source" / "source-snapshot.json").read_text(encoding="utf-8"))["excluded_paths"][
+                "app/cache"
+            ],
+        )
         self.assertFalse((run / "source" / "app" / "cache").exists())
         state = json.loads((run / rp.RUN_FILE).read_text(encoding="utf-8"))
         [role] = state["roles"]
@@ -705,7 +871,9 @@ class SymbolicLinkTests(PipelineFixture):
             "them):\n"
             f'- app/cache -> "{self.TARGET}" (added line 1)\n'
             "A pull request that commits a symbolic link, above all one to an absolute path, is itself a finding: "
-            "raise it on the link's added line.\n", prompt)
+            "raise it on the link's added line.\n",
+            prompt,
+        )
         self.write_role_result(role)
         result = rp.finalize(run)
         self.assertEqual("APPROVED", result["verdict"], "a deliberate exclusion is not a coverage gap")
@@ -721,9 +889,12 @@ class SymbolicLinkTests(PipelineFixture):
         git(self.checkout, "rebase", "main")
         self.github.pulls[12] = rest_pull(12, git(self.checkout, "rev-parse", "HEAD"), base)
         ready = self.prepare()
-        self.assertEqual("symbolic-link", json.loads(
-            (ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))["excluded_paths"][
-            "tools/shared"])
+        self.assertEqual(
+            "symbolic-link",
+            json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))[
+                "excluded_paths"
+            ]["tools/shared"],
+        )
         self.assertFalse(any("symbolic link" in note for note in ready["notes"]), ready["notes"])
         self.assertNotIn("Symbolic links", Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"))
 
@@ -735,7 +906,9 @@ class SymbolicLinkTests(PipelineFixture):
         self.assertIn(
             " The source snapshot leaves out these symbolic links, which you read only as diff text and never follow: "
             f'app/cache -> "{self.TARGET}" (added line 1). A pull request that commits a symbolic link, above all one '
-            "to an absolute path, is itself a finding: raise it on the link's added line.", prompt)
+            "to an absolute path, is itself a finding: raise it on the link's added line.",
+            prompt,
+        )
         self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
 
 
@@ -749,8 +922,9 @@ class SelfCheckTests(PipelineFixture):
         command = self.self_check(ready["run"], "generic-review")
         self.assertIn(" ", str(ready["run"]), "the fixture run path must contain a space")
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
-        self.assertIn(f"Before replying, check RESULT_FILE with this command, the one command you may run:\n"
-                      f"{command}\n", prompt)
+        self.assertIn(
+            f"Before replying, check RESULT_FILE with this command, the one command you may run:\n{command}\n", prompt
+        )
         self.assertIn("stop\nafter two fixes.\nAfter writing RESULT_FILE, reply with exactly: WROTE", prompt)
 
         self.write_role_result(role, findings=[self.finding()])
@@ -808,7 +982,10 @@ class WorkflowTests(PipelineFixture):
         _, _, roles = workflow_output(out)
         self.assertEqual(["medium"], [role["effort"] for role in roles])
         for bad in ("fast", "", 3, True):
-            with self.subTest(bad=bad), self.assertRaisesRegex(ConfigurationError, "reviewer_effort must be null or one of"):
+            with (
+                self.subTest(bad=bad),
+                self.assertRaisesRegex(ConfigurationError, "reviewer_effort must be null or one of"),
+            ):
                 validate_config({**config, "reviewer_effort": bad})
 
     def test_one_script_starts_every_role_of_several_runs(self) -> None:
@@ -826,19 +1003,30 @@ class WorkflowTests(PipelineFixture):
         self.assertNotIn("`", text, "no template literals, so Windows paths are never read as escapes")
         self.assertIn(" ", first["roles"][0]["prompt_file"], "fixture prompt paths must contain a space")
         # Each Workflow task is exactly the task a native subagent gets.
-        self.assertEqual([
-            {"label": "example/one#12 generic-review",
-             "task": f"Read {first['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
-             "model": None, "effort": None},
-            {"label": "example/one#13 generic-review",
-             "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
-             "model": None, "effort": None},
-        ], roles)
+        self.assertEqual(
+            [
+                {
+                    "label": "example/one#12 generic-review",
+                    "task": f"Read {first['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
+                    "model": None,
+                    "effort": None,
+                },
+                {
+                    "label": "example/one#13 generic-review",
+                    "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
+                    "model": None,
+                    "effort": None,
+                },
+            ],
+            roles,
+        )
         self.assertLess(len(text), 2000, "the orchestrator copies this text, so it stays compact")
         # The generic reviewer has no profile, so no model: the agent call passes one only when a role names it.
-        self.assertIn("agent(role.task, { label: role.label, phase: 'Review', agentType,\n"
-                      "    ...(role.model ? { model: role.model } : {}), ...(role.effort ? { effort: role.effort } : {}) })",
-                      text)
+        self.assertIn(
+            "agent(role.task, { label: role.label, phase: 'Review', agentType,\n"
+            "    ...(role.model ? { model: role.model } : {}), ...(role.effort ? { effort: role.effort } : {}) })",
+            text,
+        )
         self.assertNotIn('"medium"', text, "no reviewer_effort is configured, so no role names one")
         # Each role runs as the deployed reviewer agent, falling back to general-purpose when the session lacks it.
         self.assertIn("start(role, 'code-review-reviewer').catch(() => start(role, 'general-purpose'))", text)
@@ -895,7 +1083,7 @@ class WaitReviewersTests(PipelineFixture):
         return self.run_main("wait-reviewers", *self.runs(*readies), "--timeout", timeout)
 
     def test_a_role_without_a_result_is_running_until_the_timeout_and_never_longer(self) -> None:
-        ready, = self.start()
+        (ready,) = self.start()
         self.clock.now += 30
         # RUNNING is a state the skill polls again, not a failure: exit 0.
         self.assertEqual((0, f"RUNNING {SELECTOR} generic-review 120s\n", ""), self.wait(ready))
@@ -904,7 +1092,7 @@ class WaitReviewersTests(PipelineFixture):
 
     def test_a_result_written_during_the_wait_ends_it_and_the_review_is_recorded_in_the_same_turn(self) -> None:
         # The whole Workflow path from the pipeline's side: no step waits for a notification in a later turn.
-        ready, = self.start()
+        (ready,) = self.start()
         role = ready["roles"][0]
 
         def reviewer_finishes() -> None:
@@ -923,7 +1111,7 @@ class WaitReviewersTests(PipelineFixture):
         self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", *self.runs(ready)))
 
     def test_an_invalid_result_is_left_to_its_reviewer_and_to_check(self) -> None:
-        ready, = self.start()
+        (ready,) = self.start()
         role = ready["roles"][0]
         self.write_role_result(role, findings=[self.finding(line=1)])  # line 1 is unchanged context
         run_file = ready["run"] / rp.RUN_FILE
@@ -949,13 +1137,15 @@ class WaitReviewersTests(PipelineFixture):
         self.assertEqual(["python-review", "python-style", "generic-review"], [role["id"] for role in first["roles"]])
         for role in [*first["roles"][1:], *second["roles"]]:
             self.write_role_result(role)
-        self.assertEqual((0, f"RUNNING {SELECTOR} python-review 4s\nREADY example/one#13\n", ""),
-                         self.wait(first, second, timeout="4"))
+        self.assertEqual(
+            (0, f"RUNNING {SELECTOR} python-review 4s\nREADY example/one#13\n", ""),
+            self.wait(first, second, timeout="4"),
+        )
 
     def test_a_role_past_the_reviewer_limit_is_overdue_and_check_retries_it(self) -> None:
         # A backstop for a Workflow whose completion never reaches the session: the wait always ends.
         self.assertEqual(3600, rp.REVIEWER_LIMIT_SECONDS)
-        ready, = self.start()
+        (ready,) = self.start()
         self.clock.now += 3600 - 5
         self.assertEqual((0, f"OVERDUE {SELECTOR} generic-review 3601s\n", ""), self.wait(ready))
         self.assertEqual(10_000.0 + 3601, self.clock.now, "it stops waiting once nothing is running")
@@ -991,7 +1181,8 @@ class UnfinalizedTests(PipelineFixture):
         runs = ["--run", str(first["run"]), "--run", str(second["run"])]
         self.assertEqual(
             (1, f"UNFINALIZED {SELECTOR} {first['run']}\nUNFINALIZED example/one#13 {second['run']}\n", ""),
-            self.run_main("unfinalized", *runs))
+            self.run_main("unfinalized", *runs),
+        )
         self.write_role_result(first["roles"][0], findings=[self.finding()])
         self.assertEqual(0, self.run_main("finalize", "--run", str(first["run"]))[0])
         self.assertEqual((1, f"UNFINALIZED example/one#13 {second['run']}\n", ""), self.run_main("unfinalized", *runs))
@@ -1003,8 +1194,10 @@ class UnfinalizedTests(PipelineFixture):
         ready = self.prepare()
         self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])  # no result: one rerun
         self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])  # the rerun wrote none either
-        self.assertEqual((1, f"UNFINALIZED {SELECTOR} {ready['run']}\n", ""),
-                         self.run_main("unfinalized", "--run", str(ready["run"])))
+        self.assertEqual(
+            (1, f"UNFINALIZED {SELECTOR} {ready['run']}\n", ""),
+            self.run_main("unfinalized", "--run", str(ready["run"])),
+        )
 
     def test_a_directory_that_is_not_a_prepared_run_fails(self) -> None:
         other = self.root / "not a run"
@@ -1017,22 +1210,43 @@ class UnfinalizedTests(PipelineFixture):
 class RetryTests(PipelineFixture):
     def test_unhashable_disposition_values_are_retried_not_crashes(self) -> None:
         self.github.threads = [thread("dev", "Why zero?", line=2)]
-        for bad in ({"comment_id": ["C1"], "disposition": "addressed", "rationale": "x"},
-                    {"comment_id": "C1", "disposition": ["addressed"], "rationale": "x"}):
+        for bad in (
+            {"comment_id": ["C1"], "disposition": "addressed", "rationale": "x"},
+            {"comment_id": "C1", "disposition": ["addressed"], "rationale": "x"},
+        ):
             with self.subTest(bad=bad):
                 ready = self.prepare(force=True)
                 role = ready["roles"][0]
-                Path(role["result_file"]).write_text(json.dumps({
-                    "model": "fixture-model", "summary": "Reviewed.", "findings": [], "prior_dispositions": [], "comment_dispositions": [bad],
-                }), encoding="utf-8")
+                Path(role["result_file"]).write_text(
+                    json.dumps(
+                        {
+                            "model": "fixture-model",
+                            "summary": "Reviewed.",
+                            "findings": [],
+                            "prior_dispositions": [],
+                            "comment_dispositions": [bad],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 code, out, _ = self.run_main("check", "--run", str(ready["run"]))
                 self.assertEqual(1, code, out)
                 self.assertTrue(out.startswith(f"RETRY {SELECTOR} generic-review {role['prompt_file']} "), out)
         ready = self.prepare(force=True)
-        Path(ready["roles"][0]["result_file"]).write_text(json.dumps({
-            "model": "fixture-model", "summary": "Reviewed.", "findings": [], "comment_dispositions": [],
-            "prior_dispositions": [{"finding_id": {"id": "F001"}, "disposition": "addressed", "rationale": "x"}],
-        }), encoding="utf-8")
+        Path(ready["roles"][0]["result_file"]).write_text(
+            json.dumps(
+                {
+                    "model": "fixture-model",
+                    "summary": "Reviewed.",
+                    "findings": [],
+                    "comment_dispositions": [],
+                    "prior_dispositions": [
+                        {"finding_id": {"id": "F001"}, "disposition": "addressed", "rationale": "x"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])
 
     def test_invalid_result_is_set_aside_and_retried_once(self) -> None:
@@ -1075,8 +1289,10 @@ class ReReviewTests(PipelineFixture):
 
         self.write_role_result(role)
         self.assertEqual(1, self.run_main("check", "--run", str(ready["run"]))[0])
-        self.write_role_result(role, dispositions=[
-            {"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}])
+        self.write_role_result(
+            role,
+            dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
+        )
         rp.finalize(ready["run"])
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual((2, "re-review"), (record["review"]["version"], record["review"]["mode"]))
@@ -1084,25 +1300,44 @@ class ReReviewTests(PipelineFixture):
 
     def test_the_report_names_configured_models_and_marks_flagged_findings(self) -> None:
         self.record_initial_review()
-        add_flag(self.flags_path, category="noise", body="Callers accept an int.", repository=REPOSITORY,
-                 pull_number=12, review_version=1, finding_id="F001")
+        add_flag(
+            self.flags_path,
+            category="noise",
+            body="Callers accept an int.",
+            repository=REPOSITORY,
+            pull_number=12,
+            review_version=1,
+            finding_id="F001",
+        )
         self.configure(model_names={"fixture-model": "Fixture Model"})
         self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
         ready = self.prepare(re_review=True, scope="full")
-        self.write_role_result(ready["roles"][0], dispositions=[
-            {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Still an int."}])
+        self.write_role_result(
+            ready["roles"][0],
+            dispositions=[{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Still an int."}],
+        )
         self.flags_path.write_text("{}", encoding="utf-8")
         with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
             rp.finalize(ready["run"])
         self.assertEqual(1, latest_record(self.archive, REPOSITORY, 12)["review"]["version"], "nothing archived")
         self.flags_path.unlink()
-        add_flag(self.flags_path, category="noise", body="Callers accept an int.", repository=REPOSITORY,
-                 pull_number=12, review_version=1, finding_id="F001")
+        add_flag(
+            self.flags_path,
+            category="noise",
+            body="Callers accept an int.",
+            repository=REPOSITORY,
+            pull_number=12,
+            review_version=1,
+            finding_id="F001",
+        )
         rp.finalize(ready["run"])
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review-v2.md").read_text(encoding="utf-8")
         self.assertIn("| **Verdict** | APPROVED, 1 open since v1 (1 flagged) |", markdown)
-        self.assertIn("> **Open since v1.** Still present in v2: Still an int.  \n"
-                      "> **Flagged:** RF-000001 (noise): Callers accept an int.\n", markdown)
+        self.assertIn(
+            "> **Open since v1.** Still present in v2: Still an int.  \n"
+            "> **Flagged:** RF-000001 (noise): Callers accept an int.\n",
+            markdown,
+        )
         self.assertIn("| General | Fixture Model |", markdown)
         self.assertIn("| **Reviewer models** | Fixture Model: `fixture-model` |", markdown)
 
@@ -1111,28 +1346,44 @@ class ReReviewTests(PipelineFixture):
         self.write_role_result(ready["roles"][0], findings=[{**self.finding(), "severity": "MUST_FIX"}])
         rp.finalize(ready["run"])
         self.assertEqual("CHANGES_REQUESTED", latest_record(self.archive, REPOSITORY, 12)["review"]["verdict"])
-        add_flag(self.flags_path, category="false-positive", body="Every caller converts the total to float.",
-                 repository=REPOSITORY, pull_number=12, review_version=1, finding_id="F001")
+        add_flag(
+            self.flags_path,
+            category="false-positive",
+            body="Every caller converts the total to float.",
+            repository=REPOSITORY,
+            pull_number=12,
+            review_version=1,
+            finding_id="F001",
+        )
         self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
         ready = self.prepare(re_review=True, scope="full")
         request = json.loads(Path(ready["request_path"]).read_text(encoding="utf-8"))
-        flags = [{"id": "RF-000001", "category": "false-positive",
-                  "rationale": "Every caller converts the total to float."}]
+        flags = [
+            {"id": "RF-000001", "category": "false-positive", "rationale": "Every caller converts the total to float."}
+        ]
         self.assertEqual(flags, request["prior_findings"][0]["flags"])
         role = ready["roles"][0]
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn(json.dumps(request["prior_findings"], indent=2, ensure_ascii=False), prompt)
         self.assertIn("A prior finding's `flags` are the user's judgment", prompt)
 
-        self.write_role_result(role, dispositions=[
-            {"finding_id": "v1:F001", "disposition": "superseded",
-             "rationale": "RF-000001 holds: every caller converts the total to float."}])
+        self.write_role_result(
+            role,
+            dispositions=[
+                {
+                    "finding_id": "v1:F001",
+                    "disposition": "superseded",
+                    "rationale": "RF-000001 holds: every caller converts the total to float.",
+                }
+            ],
+        )
         rp.finalize(ready["run"])
         record = latest_record(self.archive, REPOSITORY, 12)
         self.assertEqual("APPROVED", record["review"]["verdict"])
         self.assertEqual(("closed", 2), (record["ledger"][0]["state"], record["ledger"][0]["judged_in"]))
-        self.assertEqual("RF-000001 holds: every caller converts the total to float.",
-                         record["prior_dispositions"][0]["rationale"])
+        self.assertEqual(
+            "RF-000001 holds: every caller converts the total to float.", record["prior_dispositions"][0]["rationale"]
+        )
 
     def test_a_re_review_is_not_prepared_from_a_malformed_flag_store(self) -> None:
         self.record_initial_review()
@@ -1159,27 +1410,46 @@ class ReReviewTests(PipelineFixture):
         self.push({"CLAUDE.md": "Changed again\n"})
         code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--scope", "incremental")
         self.assertEqual(0, code, err)
-        self.assertIn(f"NOTE {SELECTOR} Scope incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 "
-                      "(requested incremental: an incremental re-review was requested).\n", out)
+        self.assertIn(
+            f"NOTE {SELECTOR} Scope incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 "
+            "(requested incremental: an incremental re-review was requested).\n",
+            out,
+        )
         run = next(line.split(" ", 2)[2] for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual([("generic-review", ["CLAUDE.md"], False)], self.planned(run))
         role = rp.load_run(Path(run))["roles"][0]
-        self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"),
-                      "a finding in an unchanged file still needs its disposition")
-        self.write_role_result(role, dispositions=[
-            {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}])
+        self.assertIn(
+            '"id": "v1:F001"',
+            Path(role["prompt_file"]).read_text(encoding="utf-8"),
+            "a finding in an unchanged file still needs its disposition",
+        )
+        self.write_role_result(
+            role, dispositions=[{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}]
+        )
         code, out, err = self.run_main("finalize", "--run", run)
         self.assertEqual(0, code, err)
         review = latest_record(self.archive, REPOSITORY, 12)["review"]
-        self.assertEqual({"requested": "incremental", "used": "incremental", "since_version": 1, "files_changed": 1,
-                          "files_total": 2, "lines_changed": 2, "lines_total": 4},
-                         {key: value for key, value in review["scope"].items() if key != "reason"})
+        self.assertEqual(
+            {
+                "requested": "incremental",
+                "used": "incremental",
+                "since_version": 1,
+                "files_changed": 1,
+                "files_total": 2,
+                "lines_changed": 2,
+                "lines_total": 4,
+            },
+            {key: value for key, value in review["scope"].items() if key != "reason"},
+        )
         self.assertEqual(first["app/service.py"], review["patches"]["app/service.py"])
         self.assertNotEqual(first["CLAUDE.md"], review["patches"]["CLAUDE.md"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
         report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
-        self.assertIn("| **Scope** | incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 (requested "
-                      "incremental: an incremental re-review was requested) |\n", report)
+        self.assertIn(
+            "| **Scope** | incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 (requested "
+            "incremental: an incremental re-review was requested) |\n",
+            report,
+        )
 
     def test_a_must_fix_only_judged_still_present_is_offered_again_and_keeps_requesting_changes(self) -> None:
         ready = self.prepare()
@@ -1193,17 +1463,34 @@ class ReReviewTests(PipelineFixture):
             role = rp.load_run(Path(run))["roles"][0]
             # Version 2 reports no findings, so version 3 sees the finding only through the ledger.
             self.assertIn('"id": "v1:F001"', Path(role["prompt_file"]).read_text(encoding="utf-8"), version)
-            self.write_role_result(role, dispositions=[
-                {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}])
+            self.write_role_result(
+                role,
+                dispositions=[{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}],
+            )
             code, out, err = self.run_main("finalize", "--run", run)
             self.assertEqual(0, code, err)
         record = latest_record(self.archive, REPOSITORY, 12)
-        self.assertEqual((3, [], "CHANGES_REQUESTED"),
-                         (record["review"]["version"], record["findings"], record["review"]["verdict"]))
-        self.assertEqual([{"version": 1, "id": "F001", "severity": "MUST_FIX", "category": "General", "state": "open",
-                           "judged_in": 3, "dispositions": [{"version": 2, "disposition": "still_present"},
-                                                            {"version": 3, "disposition": "still_present"}],
-                           "repeats": []}], record["ledger"])
+        self.assertEqual(
+            (3, [], "CHANGES_REQUESTED"), (record["review"]["version"], record["findings"], record["review"]["verdict"])
+        )
+        self.assertEqual(
+            [
+                {
+                    "version": 1,
+                    "id": "F001",
+                    "severity": "MUST_FIX",
+                    "category": "General",
+                    "state": "open",
+                    "judged_in": 3,
+                    "dispositions": [
+                        {"version": 2, "disposition": "still_present"},
+                        {"version": 3, "disposition": "still_present"},
+                    ],
+                    "repeats": [],
+                }
+            ],
+            record["ledger"],
+        )
 
     def test_an_unchanged_specialist_only_gives_dispositions_or_is_left_out(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
@@ -1224,14 +1511,18 @@ class ReReviewTests(PipelineFixture):
         without = self.prepare("example/one#13", re_review=True, scope="incremental")
         self.assertEqual([("generic-review", ["CLAUDE.md", "app/service.py"], True)], self.planned(without["run"]))
         full = self.prepare("example/one#13", re_review=True, scope="full")
-        self.assertEqual([("python-review", ["app/service.py"], False), ("generic-review", ["CLAUDE.md"], False)],
-                         self.planned(full["run"]))
+        self.assertEqual(
+            [("python-review", ["app/service.py"], False), ("generic-review", ["CLAUDE.md"], False)],
+            self.planned(full["run"]),
+        )
         # A changed file no specialist covers is reviewed by the generic reviewer, beside a specialist that only
         # gives dispositions for its unchanged file.
         self.push({"CLAUDE.md": "Changed again\n"}, 12, 13)
         with_prior = self.prepare(SELECTOR, re_review=True, scope="incremental")
-        self.assertEqual([("python-review", ["app/service.py"], True), ("generic-review", ["CLAUDE.md"], False)],
-                         self.planned(with_prior["run"]))
+        self.assertEqual(
+            [("python-review", ["app/service.py"], True), ("generic-review", ["CLAUDE.md"], False)],
+            self.planned(with_prior["run"]),
+        )
         without = self.prepare("example/one#13", re_review=True, scope="incremental")
         self.assertEqual([("generic-review", ["CLAUDE.md"], False)], self.planned(without["run"]))
 
@@ -1253,38 +1544,60 @@ class ReReviewTests(PipelineFixture):
         patches = {"a.py": {"sha256": "a" * 64, "lines": 30}, "b.py": {"sha256": "b" * 64, "lines": 70}}
 
         def previous(*changed: str, recorded: bool = True) -> dict[str, Any]:
-            earlier = {path: {**patch, "sha256": "0" * 64} if path in changed else patch
-                       for path, patch in patches.items()}
+            earlier = {
+                path: {**patch, "sha256": "0" * 64} if path in changed else patch for path, patch in patches.items()
+            }
             return {"review": {"version": 3, **({"patches": earlier} if recorded else {})}}
 
         defaults = {"full_share": 0.5, "full_lines": 1000}
         for requested, earlier, thresholds, entrypoint, used, review_files, reason in (
             ("auto", previous("a.py"), defaults, False, "incremental", {"a.py"}, "under the full-review thresholds"),
             ("auto", previous("b.py"), defaults, False, "full", None, "at least 50% of the changed lines differ"),
-            ("auto", previous("a.py"), {"full_share": 0.5, "full_lines": 30}, False, "full", None,
-             "at least 30 changed lines differ"),
+            (
+                "auto",
+                previous("a.py"),
+                {"full_share": 0.5, "full_lines": 30},
+                False,
+                "full",
+                None,
+                "at least 30 changed lines differ",
+            ),
             ("full", previous("a.py"), defaults, False, "full", None, "a full re-review was requested"),
-            ("incremental", previous("b.py"), defaults, False, "incremental", {"b.py"},
-             "an incremental re-review was requested"),
+            (
+                "incremental",
+                previous("b.py"),
+                defaults,
+                False,
+                "incremental",
+                {"b.py"},
+                "an incremental re-review was requested",
+            ),
             ("incremental", previous("a.py", recorded=False), defaults, False, "full", None, "recorded no patches"),
             ("incremental", previous("a.py"), defaults, True, "full", None, "one entrypoint"),
         ):
             with self.subTest(requested=requested, used=used, reason=reason):
-                scope, files = rp.choose_scope(requested, earlier, patches, thresholds=thresholds,
-                                               entrypoint=entrypoint)
+                scope, files = rp.choose_scope(
+                    requested, earlier, patches, thresholds=thresholds, entrypoint=entrypoint
+                )
                 self.assertEqual((used, review_files, 3), (scope["used"], files, scope["since_version"]))
                 self.assertIn(reason, scope["reason"])
         scope, _ = rp.choose_scope("auto", previous(recorded=False), patches, thresholds=defaults, entrypoint=False)
-        self.assertEqual((None, 2, None, 100),
-                         (scope["files_changed"], scope["files_total"], scope["lines_changed"], scope["lines_total"]))
+        self.assertEqual(
+            (None, 2, None, 100),
+            (scope["files_changed"], scope["files_total"], scope["lines_changed"], scope["lines_total"]),
+        )
         # A file the earlier review did not see counts as changed; with no changed lines, the share counts files.
-        scope, files = rp.choose_scope("auto", previous(), {"img.png": {"sha256": "c" * 64, "lines": 0}},
-                                       thresholds=defaults, entrypoint=False)
+        scope, files = rp.choose_scope(
+            "auto", previous(), {"img.png": {"sha256": "c" * 64, "lines": 0}}, thresholds=defaults, entrypoint=False
+        )
         self.assertEqual(("full", 1, 0, None), (scope["used"], scope["files_changed"], scope["lines_changed"], files))
 
     def test_a_re_review_needs_a_scope_and_only_a_re_review_takes_one(self) -> None:
-        for arguments in (["--re-review", SELECTOR], ["--pull", SELECTOR, "--scope", "full"],
-                          ["--re-review", SELECTOR, "--scope", "most"]):
+        for arguments in (
+            ["--re-review", SELECTOR],
+            ["--pull", SELECTOR, "--scope", "full"],
+            ["--re-review", SELECTOR, "--scope", "most"],
+        ):
             with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as raised:
                 self.run_main("prepare", *arguments)
             self.assertEqual(2, raised.exception.code)
@@ -1299,34 +1612,58 @@ class ReReviewTests(PipelineFixture):
         self.github.pulls[12] = rest_pull(12, new_head, self.base)
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         self.github.pulls[14] = rest_pull(14, self.head, self.base)
-        code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--pull", "example/one#13",
-                                       "--re-review", "example/one#14", "--scope", "full")
+        code, out, err = self.run_main(
+            "prepare",
+            "--re-review",
+            SELECTOR,
+            "--pull",
+            "example/one#13",
+            "--re-review",
+            "example/one#14",
+            "--scope",
+            "full",
+        )
         self.assertEqual((1, ""), (code, err))
         self.assertIn("\nFAILED example/one#14 example/one#14 has no review yet", "\n" + out)
         runs = dict(line.removeprefix("RUN ").split(" ", 1) for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual(["example/one#13", "example/one#12"], list(runs), "every --pull, then every --re-review")
-        modes = {selector: json.loads((Path(run) / "request.json").read_text(encoding="utf-8"))["mode"]
-                 for selector, run in runs.items()}
+        modes = {
+            selector: json.loads((Path(run) / "request.json").read_text(encoding="utf-8"))["mode"]
+            for selector, run in runs.items()
+        }
         self.assertEqual({"example/one#13": "initial", "example/one#12": "re-review"}, modes)
 
         prior = rp.load_run(Path(runs["example/one#12"]))["roles"][0]
-        self.write_role_result(prior, dispositions=[
-            {"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}])
+        self.write_role_result(
+            prior,
+            dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
+        )
         self.write_role_result(rp.load_run(Path(runs["example/one#13"]))["roles"][0])
         code, out, err = self.run_main("finalize", "--run", runs["example/one#13"], "--run", runs["example/one#12"])
         self.assertEqual(0, code, err)
-        self.assertEqual((2, "re-review"), (latest_record(self.archive, REPOSITORY, 12)["review"]["version"],
-                                            latest_record(self.archive, REPOSITORY, 12)["review"]["mode"]))
-        self.assertEqual((1, "initial"), (latest_record(self.archive, REPOSITORY, 13)["review"]["version"],
-                                          latest_record(self.archive, REPOSITORY, 13)["review"]["mode"]))
+        self.assertEqual(
+            (2, "re-review"),
+            (
+                latest_record(self.archive, REPOSITORY, 12)["review"]["version"],
+                latest_record(self.archive, REPOSITORY, 12)["review"]["mode"],
+            ),
+        )
+        self.assertEqual(
+            (1, "initial"),
+            (
+                latest_record(self.archive, REPOSITORY, 13)["review"]["version"],
+                latest_record(self.archive, REPOSITORY, 13)["review"]["mode"],
+            ),
+        )
 
     def test_prepare_resolves_the_runtime_from_the_stated_host_and_records_both(self) -> None:
         asked: list[tuple[str, str | None]] = []
         self.services.resolve_runtime = lambda configured, host: asked.append((configured, host)) or "codex"
         code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--host", "codex")
         self.assertEqual(0, code, err)
-        state = json.loads((Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")) / rp.RUN_FILE)
-                           .read_text(encoding="utf-8"))
+        state = json.loads(
+            (Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")) / rp.RUN_FILE).read_text(encoding="utf-8")
+        )
         self.assertEqual([("auto", "codex")], asked)
         self.assertEqual(("codex", "codex"), (state["host"], state["runtime"]))
 
@@ -1342,9 +1679,11 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual([], self.github.calls, "nothing is fetched for a refused command")
 
     def test_prepare_refuses_a_pull_request_named_twice(self) -> None:
-        for arguments in (["--pull", SELECTOR, "--re-review", SELECTOR, "--scope", "full"],
-                          ["--pull", SELECTOR, "--pull", SELECTOR],
-                          ["--re-review", "Example/One#12", "--re-review", SELECTOR, "--scope", "full"]):
+        for arguments in (
+            ["--pull", SELECTOR, "--re-review", SELECTOR, "--scope", "full"],
+            ["--pull", SELECTOR, "--pull", SELECTOR],
+            ["--re-review", "Example/One#12", "--re-review", SELECTOR, "--scope", "full"],
+        ):
             with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as raised:
                 self.run_main("prepare", *arguments)
             self.assertEqual(2, raised.exception.code)
@@ -1357,11 +1696,23 @@ class ReReviewTests(PipelineFixture):
     def test_legacy_review_is_superseded_by_an_initial_review(self) -> None:
         directory = pull_directory(self.archive, REPOSITORY, 12)
         directory.mkdir(parents=True)
-        (directory / "legacy-review.json").write_text(json.dumps({
-            "schema_version": 1, "kind": "legacy-review-index", "repository": REPOSITORY, "pull_number": 12,
-            "reviewed_at": "2026-01-01T00:00:00Z", "reviewed_head_sha": "d" * 40, "verdict": "APPROVED",
-            "source_sha256": "e" * 64, "source_path": "legacy.md", "source_file_sha256": "f" * 64,
-        }), encoding="utf-8")
+        (directory / "legacy-review.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "kind": "legacy-review-index",
+                    "repository": REPOSITORY,
+                    "pull_number": 12,
+                    "reviewed_at": "2026-01-01T00:00:00Z",
+                    "reviewed_head_sha": "d" * 40,
+                    "verdict": "APPROVED",
+                    "source_sha256": "e" * 64,
+                    "source_path": "legacy.md",
+                    "source_file_sha256": "f" * 64,
+                }
+            ),
+            encoding="utf-8",
+        )
         ready = self.prepare(re_review=True, scope="full")
         self.assertEqual("initial", ready["mode"])
         self.assertIn("supersedes the migrated legacy review", ready["notes"][0])
@@ -1378,12 +1729,17 @@ class RepositoryReviewerTests(PipelineFixture):
         # The head's attempt to rewrite the profile is reviewed as a change, while the profile itself comes from
         # the base: no specialist covers it, so the generic reviewer does, with CLAUDE.md.
         self.assertEqual(["python-review", "generic-review"], [role["id"] for role in ready["roles"]])
-        self.assertEqual("CLAUDE.md\nreview/python.md\n",
-                         (Path(ready["run"]) / "work" / "generic-review.files.txt").read_text(encoding="utf-8"))
-        self.assertIn(f'validate-result --run "{ready["run"]}" --role "python-review"\n',
-                      Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"))
-        self.assertEqual("Python profile\n",
-                         (Path(ready["reviewer_root"]) / "review" / "python.md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            "CLAUDE.md\nreview/python.md\n",
+            (Path(ready["run"]) / "work" / "generic-review.files.txt").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            f'validate-result --run "{ready["run"]}" --role "python-review"\n',
+            Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            "Python profile\n", (Path(ready["reviewer_root"]) / "review" / "python.md").read_text(encoding="utf-8")
+        )
         self.assertEqual(self.base, ready["adapter"]["source_commit"])
         for role in ready["roles"]:
             self.write_role_result(role)
@@ -1401,19 +1757,46 @@ class RepositoryReviewerTests(PipelineFixture):
         self.assertIn(f"Write only the protocol result JSON to {ready['result_path']}", prompt)
         self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
         script = SCRIPT_DIRECTORY / "review_pipeline.py"
-        self.assertIn(f'the one command you may run: python -B "{script}" validate-result --run "{ready["run"]}" '
-                      f'--role "fixture-review" It prints VALID', prompt)
-        Path(ready["result_path"]).write_text(json.dumps({
-            "protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": self.head,
-            "summary": "Fine.", "reviewer": "fixture-review", "status": "complete", "findings": [],
-            "prior_dispositions": [], "usage": None,
-        }), encoding="utf-8")
+        self.assertIn(
+            f'the one command you may run: python -B "{script}" validate-result --run "{ready["run"]}" '
+            f'--role "fixture-review" It prints VALID',
+            prompt,
+        )
+        Path(ready["result_path"]).write_text(
+            json.dumps(
+                {
+                    "protocol_version": 1,
+                    "repository": REPOSITORY,
+                    "pull_number": 12,
+                    "head_sha": self.head,
+                    "summary": "Fine.",
+                    "reviewer": "fixture-review",
+                    "status": "complete",
+                    "findings": [],
+                    "prior_dispositions": [],
+                    "usage": None,
+                }
+            ),
+            encoding="utf-8",
+        )
         self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(ready["run"]))[1])
         self.finish_after(ready["run"], ready["roles"][0], 42)
         self.assertEqual("APPROVED", rp.finalize(ready["run"])["verdict"])
         record = latest_record(self.archive, REPOSITORY, 12)
-        self.assertEqual([{"id": "fixture-review", "category": "Repository reviewer", "files": 2, "findings": 0,
-                           "retries": 0, "dispositions_only": False, "seconds": 42}], record["review"]["reviewers"])
+        self.assertEqual(
+            [
+                {
+                    "id": "fixture-review",
+                    "category": "Repository reviewer",
+                    "files": 2,
+                    "findings": 0,
+                    "retries": 0,
+                    "dispositions_only": False,
+                    "seconds": 42,
+                }
+            ],
+            record["review"]["reviewers"],
+        )
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         # The entrypoint result protocol has no model field, so its reviewer's model shows as unknown.
         self.assertIn("| `fixture-review` | Repository reviewer | - | 2 | 0 | 0 | 42s |", markdown)
@@ -1422,9 +1805,19 @@ class RepositoryReviewerTests(PipelineFixture):
         self.configure(self.repository_reviewer("review/entrypoint.json"))
         self.github.threads = [thread("dev", "Why zero?", line=2)]
         ready = self.prepare()
-        result = {"protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": self.head,
-                  "summary": "Fine.", "reviewer": "fixture-review", "status": "complete", "findings": [],
-                  "prior_dispositions": [], "comment_dispositions": [], "usage": None}
+        result = {
+            "protocol_version": 1,
+            "repository": REPOSITORY,
+            "pull_number": 12,
+            "head_sha": self.head,
+            "summary": "Fine.",
+            "reviewer": "fixture-review",
+            "status": "complete",
+            "findings": [],
+            "prior_dispositions": [],
+            "comment_dispositions": [],
+            "usage": None,
+        }
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         code, out, _ = self.run_main("check", "--run", str(ready["run"]))
         self.assertEqual(1, code)
@@ -1458,26 +1851,41 @@ class RepositoryReviewerTests(PipelineFixture):
 
     def test_trusted_files_are_materialized_as_their_committed_bytes(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
-        base = self.commit_base_bytes({"review/rules.md": b"Shared\r\nrules\r\n", "review/python-guide.md": b"caf\xe9\n"})
+        base = self.commit_base_bytes(
+            {"review/rules.md": b"Shared\r\nrules\r\n", "review/python-guide.md": b"caf\xe9\n"}
+        )
         ready = self.prepare()
         reviewer = Path(ready["reviewer_root"])
         self.assertEqual(b"Shared\r\nrules\r\n", (reviewer / "review" / "rules.md").read_bytes())
         self.assertEqual(b"caf\xe9\n", (reviewer / "review" / "python-guide.md").read_bytes())
         self.assertEqual(base, ready["adapter"]["source_commit"])
-        self.assertEqual({
-            "review/rules.md": hashlib.sha256(b"Shared\r\nrules\r\n").hexdigest(),
-            "review/python.md": hashlib.sha256(b"Python profile\n").hexdigest(),
-            "review/python-guide.md": hashlib.sha256(b"caf\xe9\n").hexdigest(),
-        }, ready["adapter"]["source_hashes"])
+        self.assertEqual(
+            {
+                "review/rules.md": hashlib.sha256(b"Shared\r\nrules\r\n").hexdigest(),
+                "review/python.md": hashlib.sha256(b"Python profile\n").hexdigest(),
+                "review/python-guide.md": hashlib.sha256(b"caf\xe9\n").hexdigest(),
+            },
+            ready["adapter"]["source_hashes"],
+        )
 
     def test_a_declared_file_that_must_be_text_and_is_not_ends_as_failed(self) -> None:
         cases = (
-            (self.repository_reviewer("review/specialists.json"), "review/specialists.json",
-             "Adapter manifest is not valid UTF-8 JSON: 'utf-8' codec can't decode byte 0xe9 in position 11: "
-             "invalid continuation byte"),
-            (self.repository_reviewer("review/specialists.json"), "review/python.md",
-             "Specialist profile review/python.md is not UTF-8 text"),
-            (self.skill_reviewer("review/solo.md"), "review/solo.md", "The review skill review/solo.md is not UTF-8 text"),
+            (
+                self.repository_reviewer("review/specialists.json"),
+                "review/specialists.json",
+                "Adapter manifest is not valid UTF-8 JSON: 'utf-8' codec can't decode byte 0xe9 in position 11: "
+                "invalid continuation byte",
+            ),
+            (
+                self.repository_reviewer("review/specialists.json"),
+                "review/python.md",
+                "Specialist profile review/python.md is not UTF-8 text",
+            ),
+            (
+                self.skill_reviewer("review/solo.md"),
+                "review/solo.md",
+                "The review skill review/solo.md is not UTF-8 text",
+            ),
         )
         for reviewer, relative, reason in cases:
             with self.subTest(relative=relative):
@@ -1531,8 +1939,9 @@ class CopilotHostTests(PipelineFixture):
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
         self.run_directory = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
-        self.assertEqual([f"RUN {SELECTOR} {self.run_directory}", f"HOST copilot-cli {self.run_directory}"],
-                         out.splitlines())
+        self.assertEqual(
+            [f"RUN {SELECTOR} {self.run_directory}", f"HOST copilot-cli {self.run_directory}"], out.splitlines()
+        )
         self.run = str(self.run_directory)
         self.result = self.run_directory / "result.json"
 
@@ -1558,15 +1967,27 @@ class CopilotHostTests(PipelineFixture):
         return ProcessResult(0, '{"type":"assistant.message"}\n', "")
 
     def valid_result(self) -> dict[str, Any]:
-        return {"protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": self.head,
-                "summary": "Fine.", "reviewer": "fixture-copilot", "status": "complete", "findings": [],
-                "prior_dispositions": [], "comment_dispositions": [], "usage": None}
+        return {
+            "protocol_version": 1,
+            "repository": REPOSITORY,
+            "pull_number": 12,
+            "head_sha": self.head,
+            "summary": "Fine.",
+            "reviewer": "fixture-copilot",
+            "status": "complete",
+            "findings": [],
+            "prior_dispositions": [],
+            "comment_dispositions": [],
+            "usage": None,
+        }
 
     def run_host(self, index: int = -1) -> tuple[int, str, str]:
         """Run a host dispatch launched, in this process, with the arguments dispatch gave it."""
         arguments = self.launched[index]
-        self.assertEqual([sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "host", "--run",
-                          self.run], arguments[:6])
+        self.assertEqual(
+            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "host", "--run", self.run],
+            arguments[:6],
+        )
         return self.run_main(*arguments[3:])
 
     def claim(self) -> dict[str, Any]:
@@ -1581,14 +2002,17 @@ class CopilotHostTests(PipelineFixture):
         self.assertEqual(1, len(self.launched))
         self.assertEqual(0, self.copilot_calls, "dispatch only starts the host; it never runs Copilot itself")
         token = self.launched[0][self.launched[0].index("--token") + 1]
-        self.assertEqual({"attempt": 1, "token": token, "generation": 0, "claimed_at": 10_000.0, "pid": 4001,
-                          "start_time": 7}, self.claim())
+        self.assertEqual(
+            {"attempt": 1, "token": token, "generation": 0, "claimed_at": 10_000.0, "pid": 4001, "start_time": 7},
+            self.claim(),
+        )
         started = lambda: json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]  # noqa: E731
         self.assertEqual({"fixture-copilot": 3_000.0}, started())
 
         self.assertEqual(0, self.run_host()[0])
-        self.assertEqual((0, f"DISPATCHED {self.result}\n", ""), self.run_main("wait", "--run", self.run,
-                                                                               "--timeout", "90"))
+        self.assertEqual(
+            (0, f"DISPATCHED {self.result}\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "90")
+        )
         self.assertEqual(self.valid_result(), json.loads(self.result.read_text(encoding="utf-8")))
         self.assertFalse((self.run_directory / "copilot-result-1.json").exists(), "the staging file was promoted")
         self.assertTrue((self.run_directory / "copilot-isolation-1").is_dir())
@@ -1666,8 +2090,9 @@ class CopilotHostTests(PipelineFixture):
         self.run_main("dispatch", "--run", self.run)
         self.clock.now += 42
         # Only RUNNING lines: a state the skill polls again, so exit 0; a RETRY or FAILED line makes it 1.
-        self.assertEqual((0, f"RUNNING {SELECTOR} fixture-copilot 42s\n", ""),
-                         self.run_main("check", "--run", self.run))
+        self.assertEqual(
+            (0, f"RUNNING {SELECTOR} fixture-copilot 42s\n", ""), self.run_main("check", "--run", self.run)
+        )
         self.assertEqual({"fixture-copilot": 0}, self.attempts(), "a running host's role is not set aside")
         self.assertEqual([], list(self.run_directory.glob("result.json*")))
 
@@ -1680,8 +2105,10 @@ class CopilotHostTests(PipelineFixture):
         with self.assertRaises(KeyboardInterrupt):
             self.run_main("dispatch", "--run", self.run)
         self.assertIsNone(self.claim()["pid"])
-        self.assertEqual((1, "FAILED fixture-copilot: the Copilot CLI host is still starting\n", ""),
-                         self.run_main("dispatch", "--run", self.run))
+        self.assertEqual(
+            (1, "FAILED fixture-copilot: the Copilot CLI host is still starting\n", ""),
+            self.run_main("dispatch", "--run", self.run),
+        )
         self.assertEqual((0, f"RUNNING {SELECTOR} fixture-copilot 0s\n", ""), self.run_main("check", "--run", self.run))
 
         self.clock.now += 61  # the host never recorded itself, so check sets the role aside
@@ -1731,8 +2158,9 @@ class CopilotHostTests(PipelineFixture):
         empty = self.root / "no copilot"
         empty.mkdir()
         with mock.patch.dict(os.environ, {"PATH": str(Path(sys.executable).parent), "LOCALAPPDATA": str(empty)}):
-            self.services = rp.Services(github=self.services.github, resolve_runtime=self.services.resolve_runtime,
-                                        today=self.services.today)
+            self.services = rp.Services(
+                github=self.services.github, resolve_runtime=self.services.resolve_runtime, today=self.services.today
+            )
             self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
             pid = self.claim()["pid"]
             self.addCleanup(self.until_ended, pid)  # it holds its log open until it exits
@@ -1761,8 +2189,12 @@ class ProfileModelTests(PipelineFixture):
         git(self.checkout, "switch", "-c", "trusted", self.base)
         manifest = json.loads(json.dumps(SPECIALIST_MANIFEST))
         manifest["specialists"][0].update(settings)
-        self.write({"review/python.md": f"---\nname: python\n{header}---\n\nPython profile\n",
-                    "review/specialists.json": json.dumps(manifest)})
+        self.write(
+            {
+                "review/python.md": f"---\nname: python\n{header}---\n\nPython profile\n",
+                "review/specialists.json": json.dumps(manifest),
+            }
+        )
         git(self.checkout, "add", ".")
         git(self.checkout, "commit", "-m", "profile model")
         trusted = git(self.checkout, "rev-parse", "HEAD")
@@ -1786,8 +2218,10 @@ class ProfileModelTests(PipelineFixture):
         _, _, roles = workflow_output(out)
         # The generic reviewer of CLAUDE.md, which no specialist covers, keeps the session's model and the
         # configured effort.
-        self.assertEqual([(f"{SELECTOR} python-review", "haiku", "low"), (f"{SELECTOR} generic-review", None, "high")],
-                         [(role["label"], role["model"], role["effort"]) for role in roles])
+        self.assertEqual(
+            [(f"{SELECTOR} python-review", "haiku", "low"), (f"{SELECTOR} generic-review", None, "high")],
+            [(role["label"], role["model"], role["effort"]) for role in roles],
+        )
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1 model=haiku effort=low", out.splitlines())
@@ -1800,8 +2234,10 @@ class ProfileModelTests(PipelineFixture):
         self.assertNotIn("NOTE", out, "the profile's unusable model is not even consulted")
         run = out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
         _, _, roles = workflow_output(self.run_main("workflow", "--run", run)[1])
-        self.assertEqual([(f"{SELECTOR} python-review", None, None), (f"{SELECTOR} generic-review", None, None)],
-                         [(role["label"], role["model"], role["effort"]) for role in roles])
+        self.assertEqual(
+            [(f"{SELECTOR} python-review", None, None), (f"{SELECTOR} generic-review", None, None)],
+            [(role["label"], role["model"], role["effort"]) for role in roles],
+        )
 
     def test_invalid_manifest_model_or_effort_is_rejected(self) -> None:
         specialist = SPECIALIST_MANIFEST["specialists"][0]
@@ -1814,10 +2250,14 @@ class ProfileModelTests(PipelineFixture):
             with self.subTest(settings=settings), self.assertRaisesRegex(Exception, message):
                 validate_adapter_manifest({**SPECIALIST_MANIFEST, "specialists": [{**specialist, **settings}]})
         validated = validate_adapter_manifest(
-            {**SPECIALIST_MANIFEST, "specialists": [{**specialist, "model": "opus", "effort": "max"}]})
+            {**SPECIALIST_MANIFEST, "specialists": [{**specialist, "model": "opus", "effort": "max"}]}
+        )
         self.assertEqual(("opus", "max"), (validated["specialists"][0]["model"], validated["specialists"][0]["effort"]))
-        self.assertNotIn("model", validate_adapter_manifest(SPECIALIST_MANIFEST)["specialists"][0],
-                         "a manifest without the settings validates as before")
+        self.assertNotIn(
+            "model",
+            validate_adapter_manifest(SPECIALIST_MANIFEST)["specialists"][0],
+            "a manifest without the settings validates as before",
+        )
 
     def test_prepare_names_the_profile_model_and_workflow_and_retries_carry_it(self) -> None:
         self.trusted_profile("model: Sonnet\ntools: Read, Grep\n")
@@ -1855,13 +2295,19 @@ class ProfileModelTests(PipelineFixture):
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
         self.assertNotIn("MODEL ", out)
-        self.assertIn(f"NOTE {SELECTOR} review/python.md asks for model 'claude-sonnet-5', which is not one of "
-                      "fable, haiku, opus, sonnet; its reviewer uses the session's model", out.splitlines())
+        self.assertIn(
+            f"NOTE {SELECTOR} review/python.md asks for model 'claude-sonnet-5', which is not one of "
+            "fable, haiku, opus, sonnet; its reviewer uses the session's model",
+            out.splitlines(),
+        )
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1", out.splitlines())
-        self.assertIn("NOTE review/python.md asks for model 'claude-sonnet-5', which is not one of "
-                      "fable, haiku, opus, sonnet; its reviewer uses the session's model", out.splitlines())
+        self.assertIn(
+            "NOTE review/python.md asks for model 'claude-sonnet-5', which is not one of "
+            "fable, haiku, opus, sonnet; its reviewer uses the session's model",
+            out.splitlines(),
+        )
 
     def test_validate_reviewer_shows_the_model_each_route_will_use(self) -> None:
         self.trusted_profile("model: haiku\n")
@@ -1881,25 +2327,46 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertIn("SKILL .claude/agents/team-review.md", lines)
         self.assertIn("TOOLS inherited (all)", lines)
         self.assertIn("DELEGATES yes it may start subagents and its text says it does", lines)
-        self.assertIn("EVIDENCE 7 2. For each changed Python file, start the python-reviewer subagent with the diff.",
-                      lines)
+        self.assertIn(
+            "EVIDENCE 7 2. For each changed Python file, start the python-reviewer subagent with the diff.", lines
+        )
         self.assertIn("REFERENCES .claude/agents/python-reviewer.md", lines)
         self.assertEqual("VERDICT manifest-required", lines[-1])
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; a skill line quoted as EVIDENCE may hold any character.
-        self.commit({".claude/agents/team-review.md": DELEGATING_SKILL.replace(
-            "with the diff.", "with the diff. ← Results received: ✓")})
+        self.commit(
+            {
+                ".claude/agents/team-review.md": DELEGATING_SKILL.replace(
+                    "with the diff.", "with the diff. ← Results received: ✓"
+                )
+            }
+        )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md"))
         result = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "--config", str(self.config_path),
-             "inspect-reviewer", "--repository", REPOSITORY, "--ref", "feature"],
-            capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"}, check=False,
+            [
+                sys.executable,
+                "-B",
+                str(SCRIPT_DIRECTORY / "review_pipeline.py"),
+                "--config",
+                str(self.config_path),
+                "inspect-reviewer",
+                "--repository",
+                REPOSITORY,
+                "--ref",
+                "feature",
+            ],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
         lines = result.stdout.decode("utf-8").splitlines()
-        self.assertIn("EVIDENCE 7 2. For each changed Python file, start the python-reviewer subagent with the diff. "
-                      "← Results received: ✓", lines)
+        self.assertIn(
+            "EVIDENCE 7 2. For each changed Python file, start the python-reviewer subagent with the diff. "
+            "← Results received: ✓",
+            lines,
+        )
         self.assertEqual("VERDICT manifest-required", lines[-1])
 
     def test_a_skill_without_subagents_runs_as_one_entrypoint_reviewer(self) -> None:
@@ -1922,11 +2389,14 @@ class ReviewerSourceTests(PipelineFixture):
         head = self.commit({".claude/agents/python-reviewer.md": "Head rewrites the profile\n"})
         self.github.pulls[12] = rest_pull(12, head, self.base)
         ready = self.prepare()
-        self.assertEqual(("specialists", ["python-reviewer", "generic-review"]),
-                         (ready["kind"], [r["id"] for r in ready["roles"]]))
+        self.assertEqual(
+            ("specialists", ["python-reviewer", "generic-review"]), (ready["kind"], [r["id"] for r in ready["roles"]])
+        )
         root = Path(ready["reviewer_root"])
-        self.assertEqual("Python reviewer profile from the base\n",
-                         (root / ".claude" / "agents" / "python-reviewer.md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            "Python reviewer profile from the base\n",
+            (root / ".claude" / "agents" / "python-reviewer.md").read_text(encoding="utf-8"),
+        )
         self.assertEqual(WINDOW_SCRIPT, (root / "window.py").read_text(encoding="utf-8"))
         metadata = json.loads((root / "materialization.json").read_text(encoding="utf-8"))
         self.assertEqual(["window.py"], metadata["local_files"])
@@ -1936,12 +2406,28 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual("VERDICT manifest-configured", lines[-1])
 
     def test_validate_reviewer_proves_files_patterns_and_routing(self) -> None:
-        manifest = self.local_manifest(specialists=[
-            {"id": "python-reviewer", "category": "Python", "profile": ".claude/agents/python-reviewer.md",
-             "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
-            {"id": "docs-reviewer", "category": "Docs", "profile": ".claude/agents/python-reviewer.md",
-             "include": [r"^Documentation/"], "exclude": [], "resources": [], "when": None},
-        ])
+        manifest = self.local_manifest(
+            specialists=[
+                {
+                    "id": "python-reviewer",
+                    "category": "Python",
+                    "profile": ".claude/agents/python-reviewer.md",
+                    "include": [r"\.py$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": "window",
+                },
+                {
+                    "id": "docs-reviewer",
+                    "category": "Docs",
+                    "profile": ".claude/agents/python-reviewer.md",
+                    "include": [r"^Documentation/"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": None,
+                },
+            ]
+        )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
@@ -1982,7 +2468,10 @@ class ReviewerSourceTests(PipelineFixture):
         # specialist covers.
         for settings, last in (
             ({}, "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"),
-            ({"uncovered": "ignore"}, "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)"),
+            (
+                {"uncovered": "ignore"},
+                "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)",
+            ),
         ):
             manifest = self.local_manifest(**settings)
             self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
@@ -1990,22 +2479,39 @@ class ReviewerSourceTests(PipelineFixture):
             self.assertEqual(0, code, err)
             lines = out.splitlines()
             route = lines.index("ROUTE python-reviewer files=1")
-            self.assertEqual(["UNCOVERED CLAUDE.md", last, "VALID"], lines[route + 1:], settings)
+            self.assertEqual(["UNCOVERED CLAUDE.md", last, "VALID"], lines[route + 1 :], settings)
 
     def test_a_file_whose_only_specialist_is_closed_is_not_uncovered(self) -> None:
-        manifest = self.local_manifest(specialists=[
-            {"id": "python-reviewer", "category": "Python", "profile": ".claude/agents/python-reviewer.md",
-             "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
-            {"id": "instructions-reviewer", "category": "Instructions", "profile": ".claude/agents/python-reviewer.md",
-             "include": [r"^CLAUDE\.md$"], "exclude": [], "resources": [], "when": None},
-        ])
+        manifest = self.local_manifest(
+            specialists=[
+                {
+                    "id": "python-reviewer",
+                    "category": "Python",
+                    "profile": ".claude/agents/python-reviewer.md",
+                    "include": [r"\.py$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": "window",
+                },
+                {
+                    "id": "instructions-reviewer",
+                    "category": "Instructions",
+                    "profile": ".claude/agents/python-reviewer.md",
+                    "include": [r"^CLAUDE\.md$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": None,
+                },
+            ]
+        )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
         head = self.commit({"app/service.py": "def total(items):\n    return sum(items) or 0\n"})
         self.github.pulls[12] = rest_pull(12, head, self.base)
         lines = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")[1].splitlines()
         self.assertIn("CONDITION window closed", lines)
-        self.assertEqual(["ROUTE instructions-reviewer files=1", "VALID"],
-                         lines[lines.index("CONDITION window closed") + 1:])
+        self.assertEqual(
+            ["ROUTE instructions-reviewer files=1", "VALID"], lines[lines.index("CONDITION window closed") + 1 :]
+        )
         ready = self.prepare()
         self.assertEqual(["instructions-reviewer"], [role["id"] for role in ready["roles"]])
 
@@ -2014,8 +2520,11 @@ class ReviewerSourceTests(PipelineFixture):
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
         self.assertEqual(0, code, err)
-        self.assertIn(f"NOTE {SELECTOR} No reviewer reviews 1 changed file that no specialist covers, because the "
-                      "reviewer manifest sets uncovered to ignore: CLAUDE.md.", out.splitlines())
+        self.assertIn(
+            f"NOTE {SELECTOR} No reviewer reviews 1 changed file that no specialist covers, because the "
+            "reviewer manifest sets uncovered to ignore: CLAUDE.md.",
+            out.splitlines(),
+        )
         run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
         state = rp.load_run(run)
         self.assertEqual(["python-reviewer"], [role["id"] for role in state["roles"]])
@@ -2027,8 +2536,11 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
         report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
-        self.assertIn("> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
-                      "`uncovered` to `ignore`, so no reviewer saw them: `CLAUDE.md`.", report)
+        self.assertIn(
+            "> **Not reviewed:** no specialist covers these changed files, and the reviewer manifest sets "
+            "`uncovered` to `ignore`, so no reviewer saw them: `CLAUDE.md`.",
+            report,
+        )
 
     def test_local_manifest_problems_fail_closed(self) -> None:
         manifest = self.local_manifest()
@@ -2039,10 +2551,19 @@ class ReviewerSourceTests(PipelineFixture):
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.root / "absent.json")))
         with self.assertRaisesRegex(Exception, "not a regular file"):
             self.prepare()
-        clash = self.local_manifest(specialists=[
-            {"id": "python-reviewer", "category": "Python", "profile": "window.py",
-             "include": [r"\.py$"], "exclude": [], "resources": [], "when": "window"},
-        ])
+        clash = self.local_manifest(
+            specialists=[
+                {
+                    "id": "python-reviewer",
+                    "category": "Python",
+                    "profile": "window.py",
+                    "include": [r"\.py$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": "window",
+                },
+            ]
+        )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(clash)))
         with self.assertRaisesRegex(Exception, "cannot also be a repository profile or resource: window.py"):
             self.prepare()
@@ -2063,8 +2584,9 @@ class CanaryTests(PipelineFixture):
     def test_several_canaries_each_get_their_own_root_and_fail_alone(self) -> None:
         for number in (13, 14):
             self.github.pulls[number] = rest_pull(number, self.head, self.base)
-        code, out, err = self.run_main("prepare", "--canary", "--pull", SELECTOR, "--pull", "example/one#13",
-                                       "--pull", "example/one#14")
+        code, out, err = self.run_main(
+            "prepare", "--canary", "--pull", SELECTOR, "--pull", "example/one#13", "--pull", "example/one#14"
+        )
         self.assertEqual(0, code, err)
         runs = dict(line.removeprefix("RUN ").split(" ", 1) for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual(["example/one#12", "example/one#13", "example/one#14"], list(runs))
@@ -2076,8 +2598,9 @@ class CanaryTests(PipelineFixture):
         self.assertEqual((1, ""), (code, err))
         self.assertIn(f"\nFAILED {failing} Reviewer results are invalid", "\n" + out)
         self.assertTrue(Path(failing).exists(), "a failed run is kept for inspection")
-        canaries = [line.removeprefix("CANARY ").split(" ", 1) for line in out.splitlines()
-                    if line.startswith("CANARY ")]
+        canaries = [
+            line.removeprefix("CANARY ").split(" ", 1) for line in out.splitlines() if line.startswith("CANARY ")
+        ]
         self.assertEqual(["example/one#12", "example/one#14"], [selector for selector, _ in canaries])
         roots = [Path(root) for _, root in canaries]
         self.assertNotEqual(roots[0], roots[1])
@@ -2101,23 +2624,30 @@ class SnapshotSizeTests(PipelineFixture):
 
     def kept(self, commit: str) -> tuple[int, int]:
         """Files and bytes a snapshot keeps, from git's own listing: every file but agent instructions."""
-        sizes = [int(line.split()[3]) for line in git(self.checkout, "ls-tree", "-r", "-l", commit).splitlines()
-                 if not line.split("\t", 1)[1].startswith((".claude/", "CLAUDE.md"))]
+        sizes = [
+            int(line.split()[3])
+            for line in git(self.checkout, "ls-tree", "-r", "-l", commit).splitlines()
+            if not line.split("\t", 1)[1].startswith((".claude/", "CLAUDE.md"))
+        ]
         return len(sizes), sum(sizes)
 
     def test_validate_reviewer_reports_the_snapshot_of_the_default_branch_and_of_each_pull(self) -> None:
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
         self.assertEqual(0, code, err)
         files, size = self.kept(self.base)
-        self.assertIn(f"SNAPSHOT {self.base[:12]} files={files} bytes={size} limit=268435456 "
-                      "excluded=agent-instruction:3", out.splitlines())
+        self.assertIn(
+            f"SNAPSHOT {self.base[:12]} files={files} bytes={size} limit=268435456 excluded=agent-instruction:3",
+            out.splitlines(),
+        )
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         files, size = self.kept(self.head)
         lines = out.splitlines()
         snapshot = f"SNAPSHOT {self.head[:12]} files={files} bytes={size} limit=268435456 excluded=agent-instruction:3"
-        self.assertEqual(lines.index(snapshot), lines.index(f"PULL {SELECTOR} base={self.base[:12]} "
-                                                            f"head={self.head[:12]} files=2") + 1)
+        self.assertEqual(
+            lines.index(snapshot),
+            lines.index(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2") + 1,
+        )
         self.assertEqual("VALID", lines[-1])
 
     def test_a_snapshot_over_the_size_limit_fails_naming_the_largest_directories(self) -> None:
@@ -2126,9 +2656,12 @@ class SnapshotSizeTests(PipelineFixture):
         with mock.patch("review_runtime.MAX_SOURCE_SNAPSHOT_BYTES", 2 * 1024 * 1024):
             code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "feature")
         self.assertEqual((1, ""), (code, err))
-        self.assertRegex(out, r"^FAILED The source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
-                              r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB, "
-                              r"review 0\.0 MiB\n$")
+        self.assertRegex(
+            out,
+            r"^FAILED The source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
+            r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB, "
+            r"review 0\.0 MiB\n$",
+        )
 
     def test_a_snapshot_over_the_file_count_limit_fails(self) -> None:
         files, _ = self.kept(self.base)
@@ -2139,8 +2672,9 @@ class SnapshotSizeTests(PipelineFixture):
 
     def test_the_measurement_matches_the_snapshot_prepare_writes(self) -> None:
         # Binary, oversized, and changed-but-oversized files exercise every exclusion rule the two share.
-        head = self.commit({"assets/logo.txt": "PNG\0data", "big/unchanged.txt": "y" * 3000,
-                            "big/changed.txt": "z" * 3000})
+        head = self.commit(
+            {"assets/logo.txt": "PNG\0data", "big/unchanged.txt": "y" * 3000, "big/changed.txt": "z" * 3000}
+        )
         changed = ["big/changed.txt"]
         with mock.patch("review_runtime.MAX_SOURCE_FILE_BYTES", 2000):
             size = rp.measure_source_snapshot(self.checkout, head, changed_paths=changed)
@@ -2169,8 +2703,10 @@ class LocalCommitTests(unittest.TestCase):
         rp.ensure_local_commit(Path("C:/checkout"), "have", "refs/pull/1/head", runner)
         self.assertFalse(any("fetch" in call for call in calls))
         rp.ensure_local_commit(Path("C:/checkout"), "fetched", "refs/pull/1/head", runner)
-        self.assertIn(["git", "-C", str(Path("C:/checkout")), "fetch", "--no-tags", "--quiet", "origin",
-                       "refs/pull/1/head"], calls)
+        self.assertIn(
+            ["git", "-C", str(Path("C:/checkout")), "fetch", "--no-tags", "--quiet", "origin", "refs/pull/1/head"],
+            calls,
+        )
         with self.assertRaisesRegex(rp.PipelineError, "not available after fetching"):
             rp.ensure_local_commit(Path("C:/checkout"), "missing", "refs/pull/2/head", runner)
 
@@ -2194,8 +2730,10 @@ class LocalCommitTests(unittest.TestCase):
             return GitResult(0, "", "")
 
         checkout = Path(self.id().replace(".", "-")).resolve()  # unique per test, so no other lock is shared
-        threads = [threading.Thread(target=rp.ensure_local_commit, args=(checkout, "shared", f"refs/pull/{n}/head",
-                                                                         runner)) for n in (1, 2)]
+        threads = [
+            threading.Thread(target=rp.ensure_local_commit, args=(checkout, "shared", f"refs/pull/{n}/head", runner))
+            for n in (1, 2)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -2234,8 +2772,10 @@ class LocalCommitTests(unittest.TestCase):
 class BatchTests(PipelineFixture):
     def test_enumerate_then_advance_after_merged_reviews_complete(self) -> None:
         self.state_path.parent.mkdir(parents=True)
-        self.state_path.write_text(json.dumps({"schema_version": 1, "repositories": {
-            REPOSITORY: {"merged_since": "2026-03-01"}}}), encoding="utf-8")
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
         self.github.listing = [
             rest_pull(12, self.head, self.base),
             rest_pull(13, "1" * 40, self.base, draft=True),
@@ -2246,14 +2786,15 @@ class BatchTests(PipelineFixture):
         batch_path = self.root / "batch.json"
         code, out, err = self.run_main("enumerate", "--output", str(batch_path))
         self.assertEqual(0, code, err)
-        self.assertEqual(["PULL example/one#12", "PULL example/one#14"],
-                         [line for line in out.splitlines() if line.startswith("PULL ")])
+        self.assertEqual(
+            ["PULL example/one#12", "PULL example/one#14"],
+            [line for line in out.splitlines() if line.startswith("PULL ")],
+        )
 
         code, out, _ = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-04\n", out)  # #14 is still unreviewed
 
-        self.github.pulls[14] = rest_pull(14, self.head, self.base, state="closed",
-                                          merged_at="2026-03-05T10:00:00Z")
+        self.github.pulls[14] = rest_pull(14, self.head, self.base, state="closed", merged_at="2026-03-05T10:00:00Z")
         batch = json.loads(batch_path.read_text(encoding="utf-8"))
         batch["repositories"][REPOSITORY]["eligible"][1]["headRefOid"] = self.head
         batch_path.write_text(json.dumps(batch), encoding="utf-8")
@@ -2308,11 +2849,13 @@ class BatchTests(PipelineFixture):
 
     def test_one_call_covers_several_pulls_and_each_fails_alone(self) -> None:
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
-        code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--pull", "example/one#13",
-                                       "--pull", "example/other#3")
+        code, out, err = self.run_main(
+            "prepare", "--pull", SELECTOR, "--pull", "example/one#13", "--pull", "example/other#3"
+        )
         self.assertEqual((1, ""), (code, err))
-        self.assertTrue(out.splitlines()[-1].startswith(
-            "FAILED example/other#3 example/other is not a configured repository"), out)
+        self.assertTrue(
+            out.splitlines()[-1].startswith("FAILED example/other#3 example/other is not a configured repository"), out
+        )
         runs = dict(line.removeprefix("RUN ").split(" ", 1) for line in out.splitlines() if line.startswith("RUN "))
         self.assertEqual(["example/one#12", "example/one#13"], list(runs))
         self.assertEqual(2, sum(line.startswith("ROLE generic-review ") for line in out.splitlines()))
@@ -2349,12 +2892,17 @@ class BatchTests(PipelineFixture):
         code, out, err = self.run_main("prepare", "--canary", *four)
         self.assertEqual(0, code, err)
         self.assertEqual(4, sum(line.startswith("RUN ") for line in out.splitlines()))
-        for arguments in ([*four, "--pull", f"{REPOSITORY}#16"], [*four, "--re-review", f"{REPOSITORY}#16"],
-                          ["--canary", *four, "--pull", f"{REPOSITORY}#16"],
-                          ["--canary", *four[:2], "--re-review", f"{REPOSITORY}#13"],
-                          ["--canary", "--re-review", f"{REPOSITORY}#13", "--scope", "full"],
-                          ["--canary", *four[:4], "--force"], ["--canary", *four[:2], *four[:2]],
-                          ["--canary"], ["--force"]):
+        for arguments in (
+            [*four, "--pull", f"{REPOSITORY}#16"],
+            [*four, "--re-review", f"{REPOSITORY}#16"],
+            ["--canary", *four, "--pull", f"{REPOSITORY}#16"],
+            ["--canary", *four[:2], "--re-review", f"{REPOSITORY}#13"],
+            ["--canary", "--re-review", f"{REPOSITORY}#13", "--scope", "full"],
+            ["--canary", *four[:4], "--force"],
+            ["--canary", *four[:2], *four[:2]],
+            ["--canary"],
+            ["--force"],
+        ):
             with self.subTest(arguments=arguments), self.assertRaises(SystemExit) as raised:
                 self.run_main("prepare", *arguments)
             self.assertEqual(2, raised.exception.code)
@@ -2367,19 +2915,34 @@ class GitHubReadTests(unittest.TestCase):
         def runner(arguments: Sequence[str]) -> CommandResult:
             calls.append(list(arguments))
             if arguments[:3] == ["gh", "api", "graphql"]:
-                page = {"pageInfo": {"hasNextPage": False, "endCursor": None},
-                        "nodes": [thread("dev", "Rename this", line=None, original_line=4)]}
-                return CommandResult(0, json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}),
-                                     "")
+                page = {
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    "nodes": [thread("dev", "Rename this", line=None, original_line=4)],
+                }
+                return CommandResult(
+                    0, json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}), ""
+                )
             return CommandResult(0, "diff --git a/a.py b/a.py\n", "")
 
         client = GitHubClient(runner=runner)
         self.assertEqual(("diff --git a/a.py b/a.py\n", 0), client.get_pull_diff("Example/One", 3))
-        self.assertEqual(["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/example/one/pulls/3"],
-                         calls[0])
-        self.assertEqual([{"id": "C1", "author": "dev", "path": "app/service.py", "line": 4, "outdated": False,
-                           "body": "Rename this", "url": "https://example.invalid/c/Rename"}],
-                         client.list_open_review_threads("example/one", 3))
+        self.assertEqual(
+            ["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/example/one/pulls/3"], calls[0]
+        )
+        self.assertEqual(
+            [
+                {
+                    "id": "C1",
+                    "author": "dev",
+                    "path": "app/service.py",
+                    "line": 4,
+                    "outdated": False,
+                    "body": "Rename this",
+                    "url": "https://example.invalid/c/Rename",
+                }
+            ],
+            client.list_open_review_threads("example/one", 3),
+        )
         self.assertIn("-F", calls[1])
         self.assertEqual("number=3", calls[1][calls[1].index("-F") + 1], "the Int! variable is sent typed")
         self.assertIn("owner=example", calls[1])

@@ -26,7 +26,9 @@ def _deploy_lines() -> list[ReportLine]:
             hint = platform_support.install_hint(tool.label)
             lines.append(ReportLine(tool.label, "MISSING", f"{NEEDED_TO_DEPLOY}; {hint}"))
         elif tool.name == "git-bash":
-            lines.append(ReportLine(tool.label, "FOUND", f"{NEEDED_TO_DEPLOY}; {platform_support.normalize(probe.path)}"))
+            lines.append(
+                ReportLine(tool.label, "FOUND", f"{NEEDED_TO_DEPLOY}; {platform_support.normalize(probe.path)}")
+            )
         elif tool.name == "powershell" and probe.version is not None and probe.version < (7,):
             detail = "enough to deploy; the validation suite needs PowerShell 7"
             lines.append(ReportLine(f"{tool.label}{_version_text(probe)}", "FOUND", detail))
@@ -47,7 +49,8 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
         # An opt-in item that is not installed makes its tools optional, like a tool marked optional or one that
         # every skill using it declares optional.
         dormant = {
-            root for root in roots
+            root
+            for root in roots
             if source.is_opt_in(src, root)
             and not currently_chosen(src, owned, root, "bundle" if root in src.bundles else "skill")
         }

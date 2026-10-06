@@ -71,6 +71,7 @@ class Services:
 
 # Output ---------------------------------------------------------------------------------------------------------
 
+
 def one_line(value: Any) -> str:
     return CONTROL.sub(" ", str(value)).rstrip()
 
@@ -92,6 +93,7 @@ def reason(result: subprocess.CompletedProcess) -> str:
 
 
 # Git ------------------------------------------------------------------------------------------------------------
+
 
 def git(services: Services, directory: str | Path, *arguments: str) -> subprocess.CompletedProcess:
     try:
@@ -134,9 +136,9 @@ def list_worktrees(services: Services, root: str | Path) -> list[Worktree]:
     records: list[dict[str, Any]] = []
     for field in git_output(services, root, "worktree", "list", "--porcelain", "-z").split("\0"):
         if field.startswith("worktree "):
-            records.append({"path": field[len("worktree "):], "branch": None})
+            records.append({"path": field[len("worktree ") :], "branch": None})
         elif records and field.startswith("branch refs/heads/"):
-            records[-1]["branch"] = field[len("branch refs/heads/"):]
+            records[-1]["branch"] = field[len("branch refs/heads/") :]
     return [Worktree(record["path"], record["branch"], index == 0) for index, record in enumerate(records)]
 
 
@@ -173,6 +175,7 @@ def name_with_owner(services: Services, root: str | Path) -> str | None:
 
 # Branches and worktrees -----------------------------------------------------------------------------------------
 
+
 def default_branch(services: Services, root: str | Path) -> str:
     """The branch origin/HEAD names, else main or master when origin has it."""
     head = git(services, root, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
@@ -192,8 +195,9 @@ def is_protected(branch: str, path: str) -> bool:
     return "/release/" in f"/{path.replace(chr(92), '/').removeprefix('/')}/"
 
 
-def pull_state(services: Services, root: str | Path, nwo: str | None, default: str, branch: str,
-               sha: str) -> tuple[str, str]:
+def pull_state(
+    services: Services, root: str | Path, nwo: str | None, default: str, branch: str, sha: str
+) -> tuple[str, str]:
     """The pr_status classification of the branch, or UNKNOWN with the reason it could not be verified."""
     if nwo is None:
         return "UNKNOWN", "origin is not a github.com repository"
@@ -226,6 +230,7 @@ def require_repository(root: str | Path) -> None:
 
 # discover -------------------------------------------------------------------------------------------------------
 
+
 def discover(target: str | None, repos_root: str, services: Services) -> list[str]:
     if target:
         candidate = Path(target)
@@ -252,6 +257,7 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
 
 
 # sync -----------------------------------------------------------------------------------------------------------
+
 
 def sync(root: str, skip_checkout: bool, services: Services) -> bool:
     """Switch to the default branch, fetch and prune, and fast-forward it; False when it stopped for the user."""
@@ -309,7 +315,10 @@ def fetch_failed_summary(name: str, error: str) -> list[str]:
 
 # plan -----------------------------------------------------------------------------------------------------------
 
-def decide(category: str, state: str, error: str, tree: Worktree | None, linked: dict[str, Any] | None) -> tuple[str, str]:
+
+def decide(
+    category: str, state: str, error: str, tree: Worktree | None, linked: dict[str, Any] | None
+) -> tuple[str, str]:
     """The planned action for one non-release branch, mirroring the cleanup rules."""
     if state in KEPT_STATES:
         return "keep", f"{KEPT_STATES[state]}: {error}" if error else KEPT_STATES[state]
@@ -355,12 +364,15 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
     fastforward: list[dict[str, Any]] = []
     diverged: list[dict[str, Any]] = []
     listing = git_output(
-        services, root, "for-each-ref",
-        "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track)", "refs/heads/",
+        services,
+        root,
+        "for-each-ref",
+        "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track)",
+        "refs/heads/",
     )
     for line in listing.splitlines():
         ref, sha, upstream, track = line.split("\0")
-        name = ref[len("refs/heads/"):]
+        name = ref[len("refs/heads/") :]
         if name == default:
             continue
         category = "local" if not upstream else "gone" if track == "[gone]" else "tracking"
@@ -375,16 +387,26 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
         if entry is not None and entry["action"] == "candidate":
             entry["action"] = "remove" if action == "remove-worktree" else "keep"
             entry["detail"] = "" if action == "remove-worktree" else detail
-        branches.append({"name": name, "category": category, "pr": state, "sha": sha, "action": action,
-                         "detail": detail, "worktree": tree.path if tree else None})
+        branches.append(
+            {
+                "name": name,
+                "category": category,
+                "pr": state,
+                "sha": sha,
+                "action": action,
+                "detail": detail,
+                "worktree": tree.path if tree else None,
+            }
+        )
         if category == "tracking" and action == "keep":
             target = resolve(services, root, upstream)
             if target is None or target == sha:
                 continue
             ahead, behind = ahead_behind(services, root, sha, target)
             if behind and not ahead:
-                fastforward.append({"branch": name, "sha": sha, "target": target,
-                                    "worktree": tree.path if tree else None})
+                fastforward.append(
+                    {"branch": name, "sha": sha, "target": target, "worktree": tree.path if tree else None}
+                )
             elif behind:
                 diverged.append({"branch": name, "ahead": ahead, "behind": behind})
     for entry in worktrees:
@@ -421,6 +443,7 @@ def default_status(services: Services, root: str, default: str) -> str:
 
 
 # Plan file ------------------------------------------------------------------------------------------------------
+
 
 def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
     target = Path(path)
@@ -461,6 +484,7 @@ def deleted(plan: dict[str, Any]) -> set[str]:
 
 # apply and confirmations ----------------------------------------------------------------------------------------
 
+
 def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> None:
     """git branch -d after the tip check; a refusal on an unchanged branch means it is not fully merged."""
     result = git(services, plan["repo_root"], "branch", "-d", name)
@@ -488,8 +512,9 @@ def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: 
         record(plan, "PRESERVED", name, reason(result))
 
 
-def unchanged(services: Services, plan: dict[str, Any], name: str, sha: str, located: dict[str, Worktree],
-              worktree: str | None) -> bool:
+def unchanged(
+    services: Services, plan: dict[str, Any], name: str, sha: str, located: dict[str, Worktree], worktree: str | None
+) -> bool:
     """True when the branch is still at the recorded tip and checked out where the plan saw it."""
     where = located.get(name)
     if branch_tip(services, plan["repo_root"], name) != sha:
@@ -579,8 +604,9 @@ def apply_plan(plan: dict[str, Any], services: Services) -> None:
         if entry["action"] != "remove":
             continue
         sha, pr = branches[entry["branch"]]["sha"], branches[entry["branch"]]["pr"]
-        if unchanged(services, plan, entry["branch"], sha, located, entry["path"]) and \
-                remove_worktree(services, plan, entry, sha, pr):
+        if unchanged(services, plan, entry["branch"], sha, located, entry["path"]) and remove_worktree(
+            services, plan, entry, sha, pr
+        ):
             removed.append(entry["path"])
     boundaries = [plan["worktree_area"], root]
     for path in removed:
@@ -637,6 +663,7 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
 
 # summary --------------------------------------------------------------------------------------------------------
 
+
 def summary_row(label: str, items: list[str], suffix: str = "") -> str:
     value = f"{len(items)} — {', '.join(items)}{suffix}" if items else "0"
     return f"  {(label + ':').ljust(SUMMARY_WIDTH - 1)} {value}"
@@ -646,20 +673,32 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
     """Every list the summary reports, by label; all empty means nothing happened and nothing was kept."""
     removed_branches = deleted(plan)
     unmerged = [fields[0] for fields in events(plan, "UNMERGED") if fields[0] not in removed_branches]
-    local = [fields[0] for fields in events(plan, "CONFIRM_LOCAL")
-             if fields[0] not in removed_branches and fields[0] not in unmerged]
-    dirty = [f"{entry['path']} ({entry['branch']}, {entry['action'].split(':')[1]} changed)"
-             for entry in plan["worktrees"] if entry["action"].startswith("dirty:")]
-    unknown = [f"{branch['name']} ({branch['detail'].removeprefix('pr-unknown: ')})"
-               for branch in plan["branches"] if branch["pr"] == "UNKNOWN"]
+    local = [
+        fields[0]
+        for fields in events(plan, "CONFIRM_LOCAL")
+        if fields[0] not in removed_branches and fields[0] not in unmerged
+    ]
+    dirty = [
+        f"{entry['path']} ({entry['branch']}, {entry['action'].split(':')[1]} changed)"
+        for entry in plan["worktrees"]
+        if entry["action"].startswith("dirty:")
+    ]
+    unknown = [
+        f"{branch['name']} ({branch['detail'].removeprefix('pr-unknown: ')})"
+        for branch in plan["branches"]
+        if branch["pr"] == "UNKNOWN"
+    ]
     unmatched = [branch["name"] for branch in plan["branches"] if branch["pr"] == "UNMATCHED"]
-    open_gone = [branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN" and branch["category"] == "gone"]
+    open_gone = [
+        branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN" and branch["category"] == "gone"
+    ]
     return {
         "Branches deleted": [fields[0] for fields in events(plan, "DELETED")],
         "Worktrees removed": [f"{path} ({branch})" for path, branch in events(plan, "REMOVED")],
         "Branches fast-forwarded": [fields[0] for fields in events(plan, "FF")],
-        "Diverged (manual)":
-            [f"{name} (ahead {ahead}, behind {behind})" for name, ahead, behind in events(plan, "DIVERGED")],
+        "Diverged (manual)": [
+            f"{name} (ahead {ahead}, behind {behind})" for name, ahead, behind in events(plan, "DIVERGED")
+        ],
         "Dirty worktrees skipped": dirty,
         "PR status unverified": unknown,
         "PR history unmatched": unmatched,
@@ -686,7 +725,13 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         summary_row("PR history unmatched", items["PR history unmatched"], " (kept)"),
         f"  Protected release worktrees: {len(protected)} (preserved)",
     ]
-    for label in ("Unmerged (kept)", "Local-only (kept)", "Preserved", "Gone with open PR", "Empty directories removed"):
+    for label in (
+        "Unmerged (kept)",
+        "Local-only (kept)",
+        "Preserved",
+        "Gone with open PR",
+        "Empty directories removed",
+    ):
         if items[label]:
             lines.append(summary_row(label, items[label]))
     return lines
@@ -703,6 +748,7 @@ def print_summary(plan: dict[str, Any]) -> None:
 
 
 # sweep ----------------------------------------------------------------------------------------------------------
+
 
 def deployed_skill_roots() -> tuple[Path, ...]:
     """The directories the deployer owns, whatever skills directory this script runs from."""
@@ -721,13 +767,16 @@ def plans_directory(explicit: str | None) -> Path:
     target = Path(explicit).resolve()
     for root in (SKILLS_ROOT, *deployed_skill_roots()):
         if target.is_relative_to(root.resolve()):
-            raise ValueError(f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans "
-                             "in a new temporary directory")
+            raise ValueError(
+                f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans "
+                "in a new temporary directory"
+            )
     return Path(explicit)
 
 
-def sweep_repository(root: str, repos_root: str, plans: str, services: Services,
-                     skip_checkout: bool = False) -> dict[str, Any]:
+def sweep_repository(
+    root: str, repos_root: str, plans: str, services: Services, skip_checkout: bool = False
+) -> dict[str, Any]:
     """sync, plan, and apply one repository, capturing its lines. Runs on a sweep worker thread."""
     lines: list[str] = []
     _capture.lines = lines
@@ -760,8 +809,9 @@ def sweep(target: str | None, repos_root: str, plans: str, services: Services, s
     """
     repositories = discover(target, repos_root, services)
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
-        results = list(pool.map(lambda root: sweep_repository(root, repos_root, plans, services, skip_checkout),
-                                repositories))
+        results = list(
+            pool.map(lambda root: sweep_repository(root, repos_root, plans, services, skip_checkout), repositories)
+        )
     states: dict[str, int] = {}
     for result in results:
         states[result["state"]] = states.get(result["state"], 0) + 1
@@ -774,22 +824,31 @@ def sweep(target: str | None, repos_root: str, plans: str, services: Services, s
                 print(line)
             elif kind == "CHECKOUT" and line.split("\t")[1] == "failed":
                 print(line)
-    emit("SWEPT", len(results), *(f"{state}={states.get(state, 0)}" for state in
-                                  ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")))
+    emit(
+        "SWEPT",
+        len(results),
+        *(
+            f"{state}={states.get(state, 0)}"
+            for state in ("cleaned", "quiet", "dirty", "fetch-failed", "error", "git-failed")
+        ),
+    )
     return 0 if set(states) <= {"cleaned", "quiet"} else 1
 
 
 # CLI ------------------------------------------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     sweep_parser = commands.add_parser("sweep")
     sweep_parser.add_argument("--repos-root", required=True)
-    sweep_parser.add_argument("--plans", help="directory for each repository's plan file; defaults to a new "
-                                              "temporary directory")
-    sweep_parser.add_argument("--skip-checkout", action="store_true",
-                              help="clean a dirty main worktree without switching branches")
+    sweep_parser.add_argument(
+        "--plans", help="directory for each repository's plan file; defaults to a new temporary directory"
+    )
+    sweep_parser.add_argument(
+        "--skip-checkout", action="store_true", help="clean a dirty main worktree without switching branches"
+    )
     sweep_parser.add_argument("target", nargs="?")
     commands.add_parser("summary").add_argument("--plan", required=True)
     for name in ("delete-local", "force-delete"):

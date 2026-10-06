@@ -27,8 +27,14 @@ DECIDED_AT = datetime(2026, 2, 3, 9, 30, tzinfo=timezone.utc)
 
 def reviewer(identifier: str, model: str | None = None) -> dict:
     """A `review.reviewers` entry as `finalize` records it; a repository entrypoint reviewer names no model."""
-    entry = {"id": identifier, "category": "Fixture", "files": 1, "findings": 0, "retries": 0,
-             "dispositions_only": False}
+    entry = {
+        "id": identifier,
+        "category": "Fixture",
+        "files": 1,
+        "findings": 0,
+        "retries": 0,
+        "dispositions_only": False,
+    }
     return entry if model is None else {**entry, "model": model}
 
 
@@ -37,32 +43,70 @@ def covered(coverage: str, tool: str, rule: str) -> tuple[str, str, dict]:
     return "Correctness", "fixture", {"coverage": coverage, "tool": tool, "rule": rule}
 
 
-def record(repository: str, number: int, categories: list[str | tuple], *, version: int = 1,
-           reviewed_at: str = "2026-01-15T12:00:00+00:00", reviewers: list[dict] | None = None) -> dict:
+def record(
+    repository: str,
+    number: int,
+    categories: list[str | tuple],
+    *,
+    version: int = 1,
+    reviewed_at: str = "2026-01-15T12:00:00+00:00",
+    reviewers: list[dict] | None = None,
+) -> dict:
     """A record whose findings have these categories, each from source `fixture`, a (category, source) pair, or a
     (category, source, analyzer) triple; a finding with analyzer coverage also has a headline."""
     head = f"{version:x}" * 40
     request = {
-        "repository": repository, "pull_number": number, "pull_url": f"https://github.com/{repository}/pull/{number}",
-        "title": "Fixture", "base_ref": "main", "base_sha": "a" * 40, "head_sha": head, "mode": "initial",
+        "repository": repository,
+        "pull_number": number,
+        "pull_url": f"https://github.com/{repository}/pull/{number}",
+        "title": "Fixture",
+        "base_ref": "main",
+        "base_sha": "a" * 40,
+        "head_sha": head,
+        "mode": "initial",
         "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
     }
     if reviewers:
         request["reviewers"] = reviewers
     items = [item if isinstance(item, tuple) else (item, "fixture") for item in categories]
-    findings = [{"candidate_key": f"k{index}", "severity": "SHOULD_FIX", "category": item[0],
-                 "path": f"src/{index}.cs", "line": 3, "body": "Fix this.", "evidence": "Evidence.",
-                 "source": item[1], **({"analyzer": item[2], "title": f"Headline {index}"} if len(item) > 2 else {})}
-                for index, item in enumerate(items)]
+    findings = [
+        {
+            "candidate_key": f"k{index}",
+            "severity": "SHOULD_FIX",
+            "category": item[0],
+            "path": f"src/{index}.cs",
+            "line": 3,
+            "body": "Fix this.",
+            "evidence": "Evidence.",
+            "source": item[1],
+            **({"analyzer": item[2], "title": f"Headline {index}"} if len(item) > 2 else {}),
+        }
+        for index, item in enumerate(items)
+    ]
     result = validate_adapter_result(
-        {"protocol_version": 1, "repository": repository, "pull_number": number, "head_sha": head,
-         "summary": "Fixture", "reviewer": "fixture", "status": "complete", "findings": findings,
-         "prior_dispositions": [], "usage": None},
-        expected_repository=repository, expected_number=number, expected_head_sha=head,
+        {
+            "protocol_version": 1,
+            "repository": repository,
+            "pull_number": number,
+            "head_sha": head,
+            "summary": "Fixture",
+            "reviewer": "fixture",
+            "status": "complete",
+            "findings": findings,
+            "prior_dispositions": [],
+            "usage": None,
+        },
+        expected_repository=repository,
+        expected_number=number,
+        expected_head_sha=head,
     )
-    return build_record(request, result, version=version,
-                        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
-                        reviewed_at=reviewed_at)
+    return build_record(
+        request,
+        result,
+        version=version,
+        policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+        reviewed_at=reviewed_at,
+    )
 
 
 class InsightFixture(unittest.TestCase):
@@ -74,31 +118,61 @@ class InsightFixture(unittest.TestCase):
         self.summary = self.root / "summary"
         self.flags = self.root / "flags" / "flags.json"
         self.config_path = self.root / "config.json"
-        generic = {"reviewer": {"id": "generic", "protocol_version": 1, "trusted_ref": None, "scope": "generic",
-                                "manifest_path": None}, "checkout_path": None}
-        write_config({
-            "schema_version": 1,
-            "default_repository_set": "primary",
-            "repository_sets": {"primary": ["owner/repo"], "both": ["owner/repo", "owner/other"]},
-            "repositories": {"owner/repo": generic, "owner/other": generic},
-            "operation_repository_sets": {"review-insights": "both"},
-            "archive_root": str(self.archive),
-            "local_mirror_root": None,
-            "summary_root": str(self.summary),
-            "dashboard_file": str(self.root / "dashboard.md"),
-            "github_login": "reviewer",
-        }, self.config_path)
+        generic = {
+            "reviewer": {
+                "id": "generic",
+                "protocol_version": 1,
+                "trusted_ref": None,
+                "scope": "generic",
+                "manifest_path": None,
+            },
+            "checkout_path": None,
+        }
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": ["owner/repo"], "both": ["owner/repo", "owner/other"]},
+                "repositories": {"owner/repo": generic, "owner/other": generic},
+                "operation_repository_sets": {"review-insights": "both"},
+                "archive_root": str(self.archive),
+                "local_mirror_root": None,
+                "summary_root": str(self.summary),
+                "dashboard_file": str(self.root / "dashboard.md"),
+                "github_login": "reviewer",
+            },
+            self.config_path,
+        )
         self.services = ri.Services(now=lambda: DECIDED_AT, flags_path=lambda: self.flags)
 
     def commit(self, repository: str, number: int, categories: list[str | tuple], **options: object) -> None:
         version = options.get("version", 1)
-        commit_record(self.archive, repository, number, record(repository, number, categories, **options),
-                      expected_latest_version=None if version == 1 else version - 1)
+        commit_record(
+            self.archive,
+            repository,
+            number,
+            record(repository, number, categories, **options),
+            expected_latest_version=None if version == 1 else version - 1,
+        )
 
-    def flag(self, category: str, *, repository: str | None = "owner/repo", pull: int | None = 7,
-             version: int | None = 1, finding: str | None = "F001") -> str:
-        return add_flag(self.flags, category=category, body="Observation.", repository=repository,
-                        pull_number=pull, review_version=version, finding_id=finding)["id"]
+    def flag(
+        self,
+        category: str,
+        *,
+        repository: str | None = "owner/repo",
+        pull: int | None = 7,
+        version: int | None = 1,
+        finding: str | None = "F001",
+    ) -> str:
+        return add_flag(
+            self.flags,
+            category=category,
+            body="Observation.",
+            repository=repository,
+            pull_number=pull,
+            review_version=version,
+            finding_id=finding,
+        )["id"]
 
     def run_main(self, *arguments: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -117,9 +191,18 @@ class InsightFixture(unittest.TestCase):
 
     def execute(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_insights.py"), "--config", str(self.config_path),
-             *arguments],
-            capture_output=True, encoding="utf-8", errors="replace", check=False,
+            [
+                sys.executable,
+                "-B",
+                str(SCRIPT_DIRECTORY / "review_insights.py"),
+                "--config",
+                str(self.config_path),
+                *arguments,
+            ],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
             env={**os.environ, "CODE_REVIEW_FLAGS": str(self.flags)},
         )
 
@@ -148,10 +231,13 @@ class ReportTests(InsightFixture):
         resolve_flag(self.flags, self.flag("done", version=2, finding="F002"), "Handled")
         json_path, lines = self.report()
         self.assertEqual(self.summary / "both" / "2026-01-01--2026-01-31" / "insights.json", json_path)
-        self.assertEqual([
-            f"RECOMMENDATION REC-001 Correctness findings=3 decision=deferred flags={latest_correctness},{other}",
-            f"RECOMMENDATION REC-002 Style findings=2 decision=deferred flags={latest_style}",
-        ], lines)
+        self.assertEqual(
+            [
+                f"RECOMMENDATION REC-001 Correctness findings=3 decision=deferred flags={latest_correctness},{other}",
+                f"RECOMMENDATION REC-002 Style findings=2 decision=deferred flags={latest_style}",
+            ],
+            lines,
+        )
         report = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(6, report["schema_version"])
         self.assertEqual(3, report["record_count"], "the out-of-range review is excluded")
@@ -161,16 +247,31 @@ class ReportTests(InsightFixture):
         self.assertIn("payload", markdown)
 
     def test_findings_are_counted_by_the_reviewer_and_model_that_raised_them(self) -> None:
-        specialists = [reviewer("security", "claude-opus-5-5"), reviewer("style", "claude-haiku-4-5"),
-                       reviewer("database")]
-        self.commit("owner/repo", 7, [("Correctness", "security + style"), ("Correctness", "security"),
-                                      ("Style", "style"), ("Correctness", "database")], reviewers=specialists)
+        specialists = [
+            reviewer("security", "claude-opus-5-5"),
+            reviewer("style", "claude-haiku-4-5"),
+            reviewer("database"),
+        ]
+        self.commit(
+            "owner/repo",
+            7,
+            [
+                ("Correctness", "security + style"),
+                ("Correctness", "security"),
+                ("Style", "style"),
+                ("Correctness", "database"),
+            ],
+            reviewers=specialists,
+        )
         # A repository entrypoint reviewer is the record's only reviewer, names no model, and writes its own source.
-        self.commit("owner/repo", 8, [("Correctness", "Repository review pass")],
-                    reviewers=[reviewer("repo-reviewer")])
+        self.commit("owner/repo", 8, [("Correctness", "Repository review pass")], reviewers=[reviewer("repo-reviewer")])
         # The same specialist on another model is counted apart.
-        self.commit("owner/repo", 10, [("Correctness", "security")],
-                    reviewers=[reviewer("security", "claude-sonnet-5-5"), reviewer("style", "claude-haiku-4-5")])
+        self.commit(
+            "owner/repo",
+            10,
+            [("Correctness", "security")],
+            reviewers=[reviewer("security", "claude-sonnet-5-5"), reviewer("style", "claude-haiku-4-5")],
+        )
         # A record from before reviewers were recorded has only its source, which may be free text.
         self.commit("owner/other", 3, [("Correctness", "legacy-a + legacy|b")])
         merged = self.flag("guideline")  # F001 of pull 7, raised by both security and style
@@ -178,24 +279,41 @@ class ReportTests(InsightFixture):
         style_flag = self.flag("guideline", finding="F003")
         resolve_flag(self.flags, self.flag("done", finding="F002"), "Handled")  # a resolved flag counts nothing
         json_path, lines = self.report(reviewers=True)
-        self.assertEqual([
-            f"RECOMMENDATION REC-001 Correctness findings=6 decision=deferred flags={merged},{again}",
-            "REVIEWER REC-001 security model=claude-opus-5-5 findings=2 flagged=1 addressed=0 still_present=0",
-            "REVIEWER REC-001 database model=unknown findings=1 flagged=0 addressed=0 still_present=0",
-            "REVIEWER REC-001 legacy-a model=unknown findings=1 flagged=0 addressed=0 still_present=0",
-            "REVIEWER REC-001 legacy|b model=unknown findings=1 flagged=0 addressed=0 still_present=0",
-            "REVIEWER REC-001 repo-reviewer model=unknown findings=1 flagged=0 addressed=0 still_present=0",
-            "REVIEWER REC-001 security model=claude-sonnet-5-5 findings=1 flagged=0 addressed=0 still_present=0",
-            "REVIEWER REC-001 style model=claude-haiku-4-5 findings=1 flagged=1 addressed=0 still_present=0",
-            f"RECOMMENDATION REC-002 Style findings=1 decision=deferred flags={style_flag}",
-            "REVIEWER REC-002 style model=claude-haiku-4-5 findings=1 flagged=1 addressed=0 still_present=0",
-        ], lines)
+        self.assertEqual(
+            [
+                f"RECOMMENDATION REC-001 Correctness findings=6 decision=deferred flags={merged},{again}",
+                "REVIEWER REC-001 security model=claude-opus-5-5 findings=2 flagged=1 addressed=0 still_present=0",
+                "REVIEWER REC-001 database model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+                "REVIEWER REC-001 legacy-a model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+                "REVIEWER REC-001 legacy|b model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+                "REVIEWER REC-001 repo-reviewer model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+                "REVIEWER REC-001 security model=claude-sonnet-5-5 findings=1 flagged=0 addressed=0 still_present=0",
+                "REVIEWER REC-001 style model=claude-haiku-4-5 findings=1 flagged=1 addressed=0 still_present=0",
+                f"RECOMMENDATION REC-002 Style findings=1 decision=deferred flags={style_flag}",
+                "REVIEWER REC-002 style model=claude-haiku-4-5 findings=1 flagged=1 addressed=0 still_present=0",
+            ],
+            lines,
+        )
         style = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][1]
-        self.assertEqual([{"reviewer": "style", "model": "claude-haiku-4-5", "findings": 1, "flagged_findings": 1,
-                           "addressed": 0, "still_present": 0}], style["reviewers"])
+        self.assertEqual(
+            [
+                {
+                    "reviewer": "style",
+                    "model": "claude-haiku-4-5",
+                    "findings": 1,
+                    "flagged_findings": 1,
+                    "addressed": 0,
+                    "still_present": 0,
+                }
+            ],
+            style["reviewers"],
+        )
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
-        self.assertIn("| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
-                      "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 1 | 0 | 0 |\n", markdown)
+        self.assertIn(
+            "| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
+            "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 1 | 0 | 0 |\n",
+            markdown,
+        )
         self.assertIn("| legacy\\|b | unknown | 1 | 0 | 0 | 0 |\n", markdown)
 
     def test_later_dispositions_count_findings_addressed_and_still_present_by_reviewer_and_category(self) -> None:
@@ -204,80 +322,171 @@ class ReportTests(InsightFixture):
         ledger: list = []
         # Version 1 is in range; the re-reviews that judged its findings come after it and are read all the same.
         for version, reviewed_at, findings, dispositions in (
-            (1, "2026-01-15T12:00:00+00:00",
-             [("Correctness", "security"), ("Correctness", "security"), ("Style", "style")], []),
-            (2, "2026-02-10T12:00:00+00:00", [],
-             [("v1:F001", "addressed"), ("v1:F002", "still_present"), ("v1:F003", "still_present")]),
+            (
+                1,
+                "2026-01-15T12:00:00+00:00",
+                [("Correctness", "security"), ("Correctness", "security"), ("Style", "style")],
+                [],
+            ),
+            (
+                2,
+                "2026-02-10T12:00:00+00:00",
+                [],
+                [("v1:F001", "addressed"), ("v1:F002", "still_present"), ("v1:F003", "still_present")],
+            ),
             (3, "2026-02-11T12:00:00+00:00", [], [("v1:F002", "still_present"), ("v1:F003", "addressed")]),
         ):
             head = f"{version:x}" * 40
-            request = {"repository": "owner/repo", "pull_number": 7, "pull_url": "https://github.com/owner/repo/pull/7",
-                       "title": "Fixture", "base_ref": "main", "base_sha": "a" * 40, "head_sha": head,
-                       "mode": "initial" if version == 1 else "re-review", "reviewers": reviewers,
-                       "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}}
-            result = {"protocol_version": 1, "repository": "owner/repo", "pull_number": 7, "head_sha": head,
-                      "summary": "Fixture", "reviewer": "fixture", "status": "complete", "usage": None,
-                      "findings": [{"candidate_key": f"k{index}", "severity": "SHOULD_FIX", "category": category,
-                                    "path": f"src/{index}.cs", "line": 3, "body": "Fix this.", "evidence": "Evidence.",
-                                    "source": source} for index, (category, source) in enumerate(findings)],
-                      "prior_dispositions": [{"finding_id": identifier, "disposition": value, "rationale": "Checked."}
-                                             for identifier, value in dispositions]}
-            built = build_record(request, result, version=version, policy=policy, reviewed_at=reviewed_at,
-                                 prior_ledger=ledger)
-            commit_record(self.archive, "owner/repo", 7, built,
-                          expected_latest_version=None if version == 1 else version - 1)
+            request = {
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "pull_url": "https://github.com/owner/repo/pull/7",
+                "title": "Fixture",
+                "base_ref": "main",
+                "base_sha": "a" * 40,
+                "head_sha": head,
+                "mode": "initial" if version == 1 else "re-review",
+                "reviewers": reviewers,
+                "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            }
+            result = {
+                "protocol_version": 1,
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "head_sha": head,
+                "summary": "Fixture",
+                "reviewer": "fixture",
+                "status": "complete",
+                "usage": None,
+                "findings": [
+                    {
+                        "candidate_key": f"k{index}",
+                        "severity": "SHOULD_FIX",
+                        "category": category,
+                        "path": f"src/{index}.cs",
+                        "line": 3,
+                        "body": "Fix this.",
+                        "evidence": "Evidence.",
+                        "source": source,
+                    }
+                    for index, (category, source) in enumerate(findings)
+                ],
+                "prior_dispositions": [
+                    {"finding_id": identifier, "disposition": value, "rationale": "Checked."}
+                    for identifier, value in dispositions
+                ],
+            }
+            built = build_record(
+                request, result, version=version, policy=policy, reviewed_at=reviewed_at, prior_ledger=ledger
+            )
+            commit_record(
+                self.archive, "owner/repo", 7, built, expected_latest_version=None if version == 1 else version - 1
+            )
             ledger = built["ledger"]
         json_path, lines = self.report(reviewers=True)
-        self.assertEqual([
-            "RECOMMENDATION REC-001 Correctness findings=2 decision=deferred flags=none",
-            "REVIEWER REC-001 security model=claude-opus-5-5 findings=2 flagged=0 addressed=1 still_present=1",
-            "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
-            "REVIEWER REC-002 style model=claude-haiku-4-5 findings=1 flagged=0 addressed=1 still_present=0",
-        ], lines)
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-001 Correctness findings=2 decision=deferred flags=none",
+                "REVIEWER REC-001 security model=claude-opus-5-5 findings=2 flagged=0 addressed=1 still_present=1",
+                "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
+                "REVIEWER REC-002 style model=claude-haiku-4-5 findings=1 flagged=0 addressed=1 still_present=0",
+            ],
+            lines,
+        )
         report = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(1, report["record_count"], "the later re-reviews are outside the range")
-        self.assertEqual([{"reviewer": "security", "model": "claude-opus-5-5", "findings": 2, "flagged_findings": 0,
-                           "addressed": 1, "still_present": 1}], report["recommendations"][0]["reviewers"])
-        self.assertIn("| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
-                      "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 0 | 1 | 1 |\n",
-                      json_path.with_suffix(".md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [
+                {
+                    "reviewer": "security",
+                    "model": "claude-opus-5-5",
+                    "findings": 2,
+                    "flagged_findings": 0,
+                    "addressed": 1,
+                    "still_present": 1,
+                }
+            ],
+            report["recommendations"][0]["reviewers"],
+        )
+        self.assertIn(
+            "| Reviewer | Model | Findings | Flagged | Addressed | Still present |\n"
+            "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 0 | 1 | 1 |\n",
+            json_path.with_suffix(".md").read_text(encoding="utf-8"),
+        )
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; RECOMMENDATION quotes a reviewer's category as written.
         self.commit("owner/repo", 7, ["Naming → clarity ✓"])
         result = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_insights.py"), "--config", str(self.config_path),
-             "report", "--start", "2026-01-01", "--end", "2026-01-31"],
-            capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252", "CODE_REVIEW_FLAGS": str(self.flags)},
+            [
+                sys.executable,
+                "-B",
+                str(SCRIPT_DIRECTORY / "review_insights.py"),
+                "--config",
+                str(self.config_path),
+                "report",
+                "--start",
+                "2026-01-01",
+                "--end",
+                "2026-01-31",
+            ],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252", "CODE_REVIEW_FLAGS": str(self.flags)},
             check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
-        self.assertEqual(["RECOMMENDATION REC-001 Naming → clarity ✓ findings=1 decision=deferred flags=none",
-                          "REVIEWER REC-001 fixture model=unknown findings=1 flagged=0 addressed=0 still_present=0"],
-                         result.stdout.decode("utf-8").splitlines()[-2:])
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-001 Naming → clarity ✓ findings=1 decision=deferred flags=none",
+                "REVIEWER REC-001 fixture model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+            ],
+            result.stdout.decode("utf-8").splitlines()[-2:],
+        )
 
     def test_a_flag_follows_the_review_it_names_after_a_re_review_renumbers_findings(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         original = self.flag("guideline")  # F001 of the first review is Correctness
         self.commit("owner/repo", 7, ["Style"], version=2)  # F001 of the re-review is Style
         json_path, lines = self.report()
-        self.assertEqual([
-            f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={original}",
-            "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
-        ], lines)
-        code, out, err = self.run_main("decide", "--report", str(json_path), "REC-002", "--category", "Style",
-                                       "--flags", "none", "accepted")
+        self.assertEqual(
+            [
+                f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={original}",
+                "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
+            ],
+            lines,
+        )
+        code, out, err = self.run_main(
+            "decide", "--report", str(json_path), "REC-002", "--category", "Style", "--flags", "none", "accepted"
+        )
         self.assertEqual((0, "DECIDED REC-002 accepted\n"), (code, out), err)
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
 
     def test_legacy_flags_without_a_review_version_are_never_linked(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         self.flags.parent.mkdir(parents=True)
-        self.flags.write_text(json.dumps({"schema_version": 1, "next_id": 2, "flags": [{
-            "id": "RF-000001", "status": "open", "created_at": "2026-01-16T00:00:00+00:00", "resolved_at": None,
-            "repository": "owner/repo", "pull_number": 7, "finding_id": "F001", "category": "guideline",
-            "body": "Observation.", "resolution": None,
-        }]}), encoding="utf-8")
+        self.flags.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "next_id": 2,
+                    "flags": [
+                        {
+                            "id": "RF-000001",
+                            "status": "open",
+                            "created_at": "2026-01-16T00:00:00+00:00",
+                            "resolved_at": None,
+                            "repository": "owner/repo",
+                            "pull_number": 7,
+                            "finding_id": "F001",
+                            "category": "guideline",
+                            "body": "Observation.",
+                            "resolution": None,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
         _, lines = self.report()
         self.assertEqual(["RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags=none"], lines)
 
@@ -292,14 +501,22 @@ class ReportTests(InsightFixture):
     def test_invalid_scopes_and_dates_fail(self) -> None:
         for arguments, message in (
             (["--start", "2026-02-01", "--end", "2026-01-01"], "FAILED Start date must not be after end date"),
-            (["--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing"],
-             "FAILED Unknown repository set"),
+            (
+                ["--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing"],
+                "FAILED Unknown repository set",
+            ),
         ):
             with self.subTest(message=message):
                 self.assertFailed(self.run_main("report", *arguments), message)
         with self.assertRaisesRegex(ri.InsightError, "non-empty unique"):
-            ri.create_report(archive_root=self.root, summary_root=self.summary, repository_set="primary",
-                             repositories=[], start=date(2026, 1, 1), end=date(2026, 1, 31))
+            ri.create_report(
+                archive_root=self.root,
+                summary_root=self.summary,
+                repository_set="primary",
+                repositories=[],
+                start=date(2026, 1, 1),
+                end=date(2026, 1, 31),
+            )
 
     def test_a_runtime_failure_exits_1_with_failed_on_stdout(self) -> None:
         result = self.execute("report", "--start", "2026-01-01", "--end", "2026-01-31", "--repository-set", "missing")
@@ -326,8 +543,9 @@ class DecideTests(InsightFixture):
     def decide(
         self, json_path: Path, recommendation: str, category: str, flags: str, *arguments: str
     ) -> tuple[int, str, str]:
-        return self.run_main("decide", "--report", str(json_path), recommendation, "--category", category,
-                             "--flags", flags, *arguments)
+        return self.run_main(
+            "decide", "--report", str(json_path), recommendation, "--category", category, "--flags", flags, *arguments
+        )
 
     def test_accepting_resolves_linked_flags_and_appends_history(self) -> None:
         self.commit("owner/repo", 7, ["Correctness", "Style"])
@@ -337,8 +555,9 @@ class DecideTests(InsightFixture):
         code, out, err = self.decide(json_path, "REC-001", "Correctness", correctness, "rejected")
         self.assertEqual((0, "DECIDED REC-001 rejected\n"), (code, out), err)
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
-        code, out, err = self.decide(json_path, "REC-001", "Correctness", correctness, "accepted",
-                                       "--note", "Add a null-check rule")
+        code, out, err = self.decide(
+            json_path, "REC-001", "Correctness", correctness, "accepted", "--note", "Add a null-check rule"
+        )
         self.assertEqual(0, code, err)
         self.assertEqual([f"FLAG_RESOLVED {correctness}", "DECIDED REC-001 accepted"], out.splitlines())
         flags = {flag["id"]: flag for flag in load_store(self.flags)["flags"]}
@@ -348,11 +567,18 @@ class DecideTests(InsightFixture):
         self.assertEqual("open", flags[style]["status"], "only the accepted recommendation's flags are resolved")
         item = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][0]
         self.assertEqual("accepted", item["decision"])
-        self.assertEqual([
-            {"decision": "rejected", "decided_at": DECIDED_AT.isoformat(), "note": None, "resolved_flags": []},
-            {"decision": "accepted", "decided_at": DECIDED_AT.isoformat(), "note": "Add a null-check rule",
-             "resolved_flags": [correctness]},
-        ], item["decision_history"])
+        self.assertEqual(
+            [
+                {"decision": "rejected", "decided_at": DECIDED_AT.isoformat(), "note": None, "resolved_flags": []},
+                {
+                    "decision": "accepted",
+                    "decided_at": DECIDED_AT.isoformat(),
+                    "note": "Add a null-check rule",
+                    "resolved_flags": [correctness],
+                },
+            ],
+            item["decision_history"],
+        )
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         self.assertIn(f"accepted — Add a null-check rule (resolved {correctness})", markdown)
         code, out, _ = self.decide(json_path, "REC-001", "Correctness", correctness, "accepted")
@@ -365,8 +591,13 @@ class DecideTests(InsightFixture):
         self.commit("owner/repo", 8, ["Correctness", "Correctness"])
         _, lines = self.report()
         # Correctness now ranks first, but REC-001 still names Style: an ID the user saw never moves.
-        self.assertEqual(["RECOMMENDATION REC-002 Correctness findings=2 decision=deferred flags=none",
-                          "RECOMMENDATION REC-001 Style findings=1 decision=deferred flags=none"], lines)
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-002 Correctness findings=2 decision=deferred flags=none",
+                "RECOMMENDATION REC-001 Style findings=1 decision=deferred flags=none",
+            ],
+            lines,
+        )
         style = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][1]
         self.assertEqual(["Revisit"], [entry["note"] for entry in style["decision_history"]])
 
@@ -375,8 +606,10 @@ class DecideTests(InsightFixture):
         self.flag("guideline")
         json_path, _ = self.report()
         before = json_path.read_text(encoding="utf-8")
-        self.assertFailed(self.decide(json_path, "REC-001", "Style", "none", "accepted"),
-                          "REC-001 is now category 'Correctness', not category 'Style'")
+        self.assertFailed(
+            self.decide(json_path, "REC-001", "Style", "none", "accepted"),
+            "REC-001 is now category 'Correctness', not category 'Style'",
+        )
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
 
@@ -387,29 +620,51 @@ class DecideTests(InsightFixture):
         self.assertEqual([f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={shown}"], lines)
         later = self.flag("guideline")
         _, lines = self.report()  # regenerated before the user's answer is recorded: same ID, one more flag
-        self.assertEqual([f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={shown},{later}"],
-                         lines)
+        self.assertEqual(
+            [f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={shown},{later}"], lines
+        )
         before = json_path.read_text(encoding="utf-8")
-        self.assertFailed(self.decide(json_path, "REC-001", "Correctness", shown, "accepted"),
-                          f"REC-001 now links flags {shown},{later}, not {shown}")
+        self.assertFailed(
+            self.decide(json_path, "REC-001", "Correctness", shown, "accepted"),
+            f"REC-001 now links flags {shown},{later}, not {shown}",
+        )
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
         code, out, err = self.decide(json_path, "REC-001", "Correctness", f"{later},{shown}", "accepted")
         self.assertEqual(0, code, err)
-        self.assertEqual([f"FLAG_RESOLVED {shown}", f"FLAG_RESOLVED {later}", "DECIDED REC-001 accepted"],
-                         out.splitlines())
+        self.assertEqual(
+            [f"FLAG_RESOLVED {shown}", f"FLAG_RESOLVED {later}", "DECIDED REC-001 accepted"], out.splitlines()
+        )
 
     def test_version_one_reports_are_read_and_upgraded(self) -> None:
         json_path = self.summary / "primary" / "2026-01-01--2026-01-31" / "insights.json"
         json_path.parent.mkdir(parents=True)
-        json_path.write_text(json.dumps({
-            "schema_version": 1, "repository_set": "primary", "repositories": ["owner/repo"],
-            "start_date": "2026-01-01", "end_date": "2026-01-31", "record_count": 1, "finding_count": 1,
-            "severity_counts": {"SHOULD_FIX": 1}, "category_counts": {"Style": 1},
-            "recommendations": [{"id": "REC-001", "category": "Style", "finding_count": 1,
-                                 "recommendation": "Review recurring Style findings.", "decision": "rejected"}],
-            "records": [],
-        }), encoding="utf-8")
+        json_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "repository_set": "primary",
+                    "repositories": ["owner/repo"],
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-31",
+                    "record_count": 1,
+                    "finding_count": 1,
+                    "severity_counts": {"SHOULD_FIX": 1},
+                    "category_counts": {"Style": 1},
+                    "recommendations": [
+                        {
+                            "id": "REC-001",
+                            "category": "Style",
+                            "finding_count": 1,
+                            "recommendation": "Review recurring Style findings.",
+                            "decision": "rejected",
+                        }
+                    ],
+                    "records": [],
+                }
+            ),
+            encoding="utf-8",
+        )
         code, out, err = self.decide(json_path, "REC-001", "Style", "none", "accepted")
         self.assertEqual((0, "DECIDED REC-001 accepted\n"), (code, out), err)
         report = json.loads(json_path.read_text(encoding="utf-8"))
@@ -430,13 +685,23 @@ class DecideTests(InsightFixture):
         self.assertEqual(0, code, err)
         self.assertEqual([f"FLAG_RESOLVED {flag}", "DECIDED REC-001 accepted"], out.splitlines())
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual((6, [], "category"), (upgraded["schema_version"], upgraded["recommendations"][0]["reviewers"],
-                                               upgraded["recommendations"][0]["kind"]))
+        self.assertEqual(
+            (6, [], "category"),
+            (
+                upgraded["schema_version"],
+                upgraded["recommendations"][0]["reviewers"],
+                upgraded["recommendations"][0]["kind"],
+            ),
+        )
         self.assertNotIn("| Reviewer |", json_path.with_suffix(".md").read_text(encoding="utf-8"))
         _, lines = self.report(reviewers=True)  # regenerating fills the breakdown and keeps the decision
-        self.assertEqual(["RECOMMENDATION REC-001 Correctness findings=1 decision=accepted flags=none",
-                          "REVIEWER REC-001 fixture model=unknown findings=1 flagged=0 addressed=0 still_present=0"],
-                         lines)
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-001 Correctness findings=1 decision=accepted flags=none",
+                "REVIEWER REC-001 fixture model=unknown findings=1 flagged=0 addressed=0 still_present=0",
+            ],
+            lines,
+        )
 
     def test_version_five_reports_have_no_outcome_counts_until_regenerated(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
@@ -449,24 +714,38 @@ class DecideTests(InsightFixture):
         code, out, err = self.decide(json_path, "REC-001", "Correctness", "none", "deferred")
         self.assertEqual(0, code, err)
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual((6, None, None), (upgraded["schema_version"],
-                                           upgraded["recommendations"][0]["reviewers"][0]["addressed"],
-                                           upgraded["recommendations"][0]["reviewers"][0]["still_present"]))
-        self.assertIn("| fixture | unknown | 1 | 0 | - | - |\n", json_path.with_suffix(".md").read_text(encoding="utf-8"))
+        self.assertEqual(
+            (6, None, None),
+            (
+                upgraded["schema_version"],
+                upgraded["recommendations"][0]["reviewers"][0]["addressed"],
+                upgraded["recommendations"][0]["reviewers"][0]["still_present"],
+            ),
+        )
+        self.assertIn(
+            "| fixture | unknown | 1 | 0 | - | - |\n", json_path.with_suffix(".md").read_text(encoding="utf-8")
+        )
 
     def test_an_invalid_reviewers_breakdown_is_refused(self) -> None:
         self.commit("owner/repo", 7, ["Correctness"])
         json_path, _ = self.report()
         report = json.loads(json_path.read_text(encoding="utf-8"))
         valid = report["recommendations"][0]["reviewers"][0]
-        for broken in ({**valid, "findings": -1}, {**valid, "findings": True}, {**valid, "model": ""},
-                       {**valid, "addressed": -1}, {**valid, "still_present": "1"},
-                       {key: value for key, value in valid.items() if key != "flagged_findings"}):
+        for broken in (
+            {**valid, "findings": -1},
+            {**valid, "findings": True},
+            {**valid, "model": ""},
+            {**valid, "addressed": -1},
+            {**valid, "still_present": "1"},
+            {key: value for key, value in valid.items() if key != "flagged_findings"},
+        ):
             with self.subTest(row=broken):
                 report["recommendations"][0]["reviewers"] = [broken]
                 json_path.write_text(json.dumps(report), encoding="utf-8")
-                self.assertFailed(self.decide(json_path, "REC-001", "Correctness", "none", "rejected"),
-                                  "REC-001.reviewers must be a list of reviewer counts")
+                self.assertFailed(
+                    self.decide(json_path, "REC-001", "Correctness", "none", "rejected"),
+                    "REC-001.reviewers must be a list of reviewer counts",
+                )
 
     def test_links_in_version_two_reports_are_dropped_and_never_resolved(self) -> None:
         # A version 2 report linked a flag to whatever finding had its ID in the latest review: here a flag on the
@@ -482,8 +761,10 @@ class DecideTests(InsightFixture):
         json_path.write_text(json.dumps(report), encoding="utf-8")
         recommendation = next(item["id"] for item in report["recommendations"] if item["category"] == "Style")
         before = json_path.read_text(encoding="utf-8")
-        self.assertFailed(self.decide(json_path, recommendation, "Style", stale, "accepted"),
-                          f"{recommendation} now links flags none, not {stale}; run report again")
+        self.assertFailed(
+            self.decide(json_path, recommendation, "Style", stale, "accepted"),
+            f"{recommendation} now links flags none, not {stale}; run report again",
+        )
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         code, out, err = self.decide(json_path, recommendation, "Style", "none", "accepted")
         self.assertEqual((0, f"DECIDED {recommendation} accepted\n"), (code, out), err)
@@ -497,53 +778,68 @@ class DecideTests(InsightFixture):
         flag = self.flag("guideline")
         json_path, _ = self.report()
         before = json_path.read_text(encoding="utf-8")
-        self.assertFailed(self.decide(json_path, "REC-404", "Correctness", flag, "accepted"),
-                          "FAILED Unknown recommendation: REC-404")
+        self.assertFailed(
+            self.decide(json_path, "REC-404", "Correctness", flag, "accepted"), "FAILED Unknown recommendation: REC-404"
+        )
         self.flags.unlink()
-        self.assertFailed(self.decide(json_path, "REC-001", "Correctness", flag, "accepted"),
-                          "Linked flags are not in the flag store")
+        self.assertFailed(
+            self.decide(json_path, "REC-001", "Correctness", flag, "accepted"), "Linked flags are not in the flag store"
+        )
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         json_path.write_text(json.dumps({"schema_version": 9}), encoding="utf-8")
-        self.assertFailed(self.decide(json_path, "REC-001", "Style", "none", "rejected"),
-                          "not a supported insights report")
-        self.assertFailed(self.decide(json_path.with_name("absent.json"), "REC-001", "Style", "none", "rejected"),
-                          "absent.json")
+        self.assertFailed(
+            self.decide(json_path, "REC-001", "Style", "none", "rejected"), "not a supported insights report"
+        )
+        self.assertFailed(
+            self.decide(json_path.with_name("absent.json"), "REC-001", "Style", "none", "rejected"), "absent.json"
+        )
 
 
 class AnalyzerTests(InsightFixture):
     def commit_covered(self) -> None:
         stylecop = {"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515"}
-        self.commit("owner/repo", 7, [
-            covered("custom-candidate", "Roslyn", "unbounded-retry-loop"),  # F001
-            ("Style", "fixture", stylecop),  # F002
-            # Another reviewer's spelling of the same rule: analyzer names are matched without regard to case.
-            ("Style", "fixture", {"coverage": "available", "tool": "stylecop.analyzers", "rule": "sa1515"}),  # F003
-            "Correctness",  # F004, no analyzer could catch it
-        ])
-        self.commit("owner/other", 3, [
-            covered("known", "Roslynator.Analyzers", "RCS1001"),
-            covered("custom-candidate", "Roslyn", "unbounded-retry-loop"),
-        ])
+        self.commit(
+            "owner/repo",
+            7,
+            [
+                covered("custom-candidate", "Roslyn", "unbounded-retry-loop"),  # F001
+                ("Style", "fixture", stylecop),  # F002
+                # Another reviewer's spelling of the same rule: analyzer names are matched without regard to case.
+                ("Style", "fixture", {"coverage": "available", "tool": "stylecop.analyzers", "rule": "sa1515"}),  # F003
+                "Correctness",  # F004, no analyzer could catch it
+            ],
+        )
+        self.commit(
+            "owner/other",
+            3,
+            [
+                covered("known", "Roslynator.Analyzers", "RCS1001"),
+                covered("custom-candidate", "Roslyn", "unbounded-retry-loop"),
+            ],
+        )
 
     def test_analyzer_findings_become_recommendations_ranked_cheapest_first(self) -> None:
         self.commit_covered()
         style_flag = self.flag("guideline", finding="F002")
         json_path, lines = self.report()
-        self.assertEqual([
-            "RECOMMENDATION REC-001 Correctness findings=4 decision=deferred flags=none",
-            f"RECOMMENDATION REC-002 Style findings=2 decision=deferred flags={style_flag}",
-            "ANALYZER REC-003 coverage=available tool=StyleCop.Analyzers rule=SA1515 findings=2 "
-            f"repositories=owner/repo decision=deferred flags={style_flag}",
-            "EXAMPLE REC-003 owner/repo#7 v1 F002 Headline 1",
-            "EXAMPLE REC-003 owner/repo#7 v1 F003 Headline 2",
-            "ANALYZER REC-004 coverage=known tool=Roslynator.Analyzers rule=RCS1001 findings=1 "
-            "repositories=owner/other decision=deferred flags=none",
-            "EXAMPLE REC-004 owner/other#3 v1 F001 Headline 0",
-            "ANALYZER REC-005 coverage=custom-candidate tool=Roslyn rule=unbounded-retry-loop findings=2 "
-            "repositories=owner/other,owner/repo decision=deferred flags=none",
-            "EXAMPLE REC-005 owner/other#3 v1 F002 Headline 1",
-            "EXAMPLE REC-005 owner/repo#7 v1 F001 Headline 0",
-        ], lines)
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-001 Correctness findings=4 decision=deferred flags=none",
+                f"RECOMMENDATION REC-002 Style findings=2 decision=deferred flags={style_flag}",
+                "ANALYZER REC-003 coverage=available tool=StyleCop.Analyzers rule=SA1515 findings=2 "
+                f"repositories=owner/repo decision=deferred flags={style_flag}",
+                "EXAMPLE REC-003 owner/repo#7 v1 F002 Headline 1",
+                "EXAMPLE REC-003 owner/repo#7 v1 F003 Headline 2",
+                "ANALYZER REC-004 coverage=known tool=Roslynator.Analyzers rule=RCS1001 findings=1 "
+                "repositories=owner/other decision=deferred flags=none",
+                "EXAMPLE REC-004 owner/other#3 v1 F001 Headline 0",
+                "ANALYZER REC-005 coverage=custom-candidate tool=Roslyn rule=unbounded-retry-loop findings=2 "
+                "repositories=owner/other,owner/repo decision=deferred flags=none",
+                "EXAMPLE REC-005 owner/other#3 v1 F002 Headline 1",
+                "EXAMPLE REC-005 owner/repo#7 v1 F001 Headline 0",
+            ],
+            lines,
+        )
         report = json.loads(json_path.read_text(encoding="utf-8"))
         available = report["recommendations"][2]
         self.assertEqual("analyzer", available["kind"])
@@ -552,17 +848,40 @@ class AnalyzerTests(InsightFixture):
             "it or raise its severity in the analyzer's configuration so the build reports it instead of a reviewer.",
             available["recommendation"],
         )
-        self.assertEqual({"repository": "owner/repo", "pull_number": 7, "review_version": 1, "finding_id": "F002",
-                          "path": "src/1.cs", "line": 3, "title": "Headline 1"}, available["evidence"][0])
-        self.assertEqual([{"reviewer": "fixture", "model": "unknown", "findings": 2, "flagged_findings": 1,
-                           "addressed": 0, "still_present": 0}], available["reviewers"])
+        self.assertEqual(
+            {
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "review_version": 1,
+                "finding_id": "F002",
+                "path": "src/1.cs",
+                "line": 3,
+                "title": "Headline 1",
+            },
+            available["evidence"][0],
+        )
+        self.assertEqual(
+            [
+                {
+                    "reviewer": "fixture",
+                    "model": "unknown",
+                    "findings": 2,
+                    "flagged_findings": 1,
+                    "addressed": 0,
+                    "still_present": 0,
+                }
+            ],
+            available["reviewers"],
+        )
         self.assertIn("owner/other and owner/repo", report["recommendations"][4]["recommendation"])
         self.assertIn("Consider writing a custom Roslyn rule", report["recommendations"][4]["recommendation"])
         self.assertIn("after checking its license, cost, and telemetry", report["recommendations"][3]["recommendation"])
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
         self.assertLess(markdown.index("### REC-002 — Style"), markdown.index("## Analyzer opportunities"))
-        self.assertIn("### REC-003 — available: SA1515 (StyleCop.Analyzers)\n\nFinding count: 2\n"
-                      "Repositories: owner/repo\n", markdown)
+        self.assertIn(
+            "### REC-003 — available: SA1515 (StyleCop.Analyzers)\n\nFinding count: 2\nRepositories: owner/repo\n",
+            markdown,
+        )
         self.assertIn("Findings:\n\n- owner/repo#7 v1 F002 Headline 1\n- owner/repo#7 v1 F003 Headline 2\n", markdown)
         self.assertLess(markdown.index("REC-003 — available"), markdown.index("REC-004 — known"))
         self.assertLess(markdown.index("REC-004 — known"), markdown.index("REC-005 — custom-candidate"))
@@ -576,10 +895,14 @@ class AnalyzerTests(InsightFixture):
             return self.run_main("decide", "--report", str(json_path), "REC-003", *subject, "--flags", flags, decision)
 
         before = json_path.read_text(encoding="utf-8")
-        self.assertFailed(decide("--category", "Style"),
-                          "REC-003 is now analyzer 'available StyleCop.Analyzers SA1515', not category 'Style'")
-        self.assertFailed(decide("--analyzer", "known", "StyleCop.Analyzers", "SA1515"),
-                          "not analyzer 'known StyleCop.Analyzers SA1515'")
+        self.assertFailed(
+            decide("--category", "Style"),
+            "REC-003 is now analyzer 'available StyleCop.Analyzers SA1515', not category 'Style'",
+        )
+        self.assertFailed(
+            decide("--analyzer", "known", "StyleCop.Analyzers", "SA1515"),
+            "not analyzer 'known StyleCop.Analyzers SA1515'",
+        )
         self.assertEqual(before, json_path.read_text(encoding="utf-8"))
         code, out, err = decide("--analyzer", "available", "stylecop.analyzers", "sa1515")
         self.assertEqual(0, code, err)
@@ -587,23 +910,38 @@ class AnalyzerTests(InsightFixture):
         flag = next(item for item in load_store(self.flags)["flags"] if item["id"] == style_flag)
         self.assertIn("REC-003 (available StyleCop.Analyzers SA1515)", flag["resolution"])
         # The finding is also in its category's recommendation, whose acceptance finds the flag already resolved.
-        code, out, err = self.run_main("decide", "--report", str(json_path), "REC-002", "--category", "Style",
-                                       "--flags", style_flag, "accepted")
-        self.assertEqual((0, [f"FLAG_ALREADY_RESOLVED {style_flag}", "DECIDED REC-002 accepted"]),
-                         (code, out.splitlines()), err)
-        self.commit("owner/repo", 8, [covered("available", "Microsoft.CodeAnalysis.NetAnalyzers", "CA2000"),
-                                      covered("available", "STYLECOP.ANALYZERS", "SA1515")])
+        code, out, err = self.run_main(
+            "decide", "--report", str(json_path), "REC-002", "--category", "Style", "--flags", style_flag, "accepted"
+        )
+        self.assertEqual(
+            (0, [f"FLAG_ALREADY_RESOLVED {style_flag}", "DECIDED REC-002 accepted"]), (code, out.splitlines()), err
+        )
+        self.commit(
+            "owner/repo",
+            8,
+            [
+                covered("available", "Microsoft.CodeAnalysis.NetAnalyzers", "CA2000"),
+                covered("available", "STYLECOP.ANALYZERS", "SA1515"),
+            ],
+        )
         _, lines = self.report()
-        self.assertIn("ANALYZER REC-003 coverage=available tool=StyleCop.Analyzers rule=SA1515 findings=3 "
-                      "repositories=owner/repo decision=accepted flags=none", lines)
-        self.assertIn("ANALYZER REC-006 coverage=available tool=Microsoft.CodeAnalysis.NetAnalyzers rule=CA2000 "
-                      "findings=1 repositories=owner/repo decision=deferred flags=none", lines)
+        self.assertIn(
+            "ANALYZER REC-003 coverage=available tool=StyleCop.Analyzers rule=SA1515 findings=3 "
+            "repositories=owner/repo decision=accepted flags=none",
+            lines,
+        )
+        self.assertIn(
+            "ANALYZER REC-006 coverage=available tool=Microsoft.CodeAnalysis.NetAnalyzers rule=CA2000 "
+            "findings=1 repositories=owner/repo decision=deferred flags=none",
+            lines,
+        )
         recommendations = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]
         history = next(item for item in recommendations if item["id"] == "REC-003")["decision_history"]
         self.assertEqual(["accepted"], [entry["decision"] for entry in history])
         with self.assertRaisesRegex(ri.InsightError, "exactly one subject"):
-            ri.decide(json_path, "REC-003", "Style", [], "rejected", analyzer=("available", "x", "y"),
-                      services=self.services)
+            ri.decide(
+                json_path, "REC-003", "Style", [], "rejected", analyzer=("available", "x", "y"), services=self.services
+            )
 
     def test_a_report_with_a_malformed_analyzer_recommendation_is_refused(self) -> None:
         self.commit_covered()

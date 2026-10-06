@@ -165,7 +165,7 @@ class DocumentTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "With Spaces" / "SKILL.md"
             path.parent.mkdir()
-            path.write_bytes("﻿---\r\nname: \"crlf\"\r\ndescription: >-\r\n  one\r\n  two\r\n---\r\n".encode("utf-8"))
+            path.write_bytes('﻿---\r\nname: "crlf"\r\ndescription: >-\r\n  one\r\n  two\r\n---\r\n'.encode("utf-8"))
             document = frontmatter.read(path)
             self.assertEqual(("crlf", "one two"), (document.string("name"), document.string("description")))
             path.write_text("No frontmatter.\n", encoding="utf-8")

@@ -84,9 +84,7 @@ Clock = Callable[[], float]
 
 def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
     try:
-        process = subprocess.run(
-            list(arguments), capture_output=True, text=True, encoding="utf-8", check=False
-        )
+        process = subprocess.run(list(arguments), capture_output=True, text=True, encoding="utf-8", check=False)
     except FileNotFoundError as exc:
         raise GitHubActivityError(
             "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first",
@@ -135,8 +133,9 @@ def _split_response(stdout: str) -> Response:
 
 
 class GitHubSearchClient:
-    def __init__(self, runner: Runner = subprocess_runner, sleeper: Sleeper = time.sleep,
-                 clock: Clock = time.time) -> None:
+    def __init__(
+        self, runner: Runner = subprocess_runner, sleeper: Sleeper = time.sleep, clock: Clock = time.time
+    ) -> None:
         self.runner = runner
         self.sleeper = sleeper
         self.clock = clock
@@ -165,10 +164,13 @@ class GitHubSearchClient:
         retry_after = response.headers.get("retry-after", "")
         if retry_after.isdigit():
             wait = float(retry_after)
-        elif response.headers.get("x-ratelimit-remaining") == "0" and response.headers.get("x-ratelimit-reset", "").isdigit():
+        elif (
+            response.headers.get("x-ratelimit-remaining") == "0"
+            and response.headers.get("x-ratelimit-reset", "").isdigit()
+        ):
             wait = max(1.0, float(response.headers["x-ratelimit-reset"]) - self.clock() + 1.0)
         else:
-            wait = BACKOFF_BASE * 2 ** attempt
+            wait = BACKOFF_BASE * 2**attempt
         if wait > MAX_WAIT:
             raise GitHubActivityError(
                 f"GitHub asked to wait {wait:.0f}s before retrying; rerun the report later", kind="rate_limit"
@@ -218,9 +220,7 @@ class GitHubSearchClient:
         raise AssertionError("unreachable")
 
     def _search_page(self, endpoint: str, query: str, page: int, per_page: int) -> dict[str, Any]:
-        payload = self._request(
-            [f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], search=True
-        )
+        payload = self._request([f"{endpoint}?q={quote(query, safe='')}&per_page={per_page}&page={page}"], search=True)
         if (
             not isinstance(payload, dict)
             or not isinstance(payload.get("items"), list)
@@ -229,8 +229,9 @@ class GitHubSearchClient:
             raise GitHubActivityError(f"Search response for {query!r} has an unexpected shape", kind="malformed")
         return payload
 
-    def search_all(self, endpoint: str, query: str, key: tuple[str, ...],
-                   first: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], bool]:
+    def search_all(
+        self, endpoint: str, query: str, key: tuple[str, ...], first: dict[str, Any] | None = None
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch every distinct result up to the Search API's 1000-result cap; report whether the cap truncated them.
 
         A pass that ends with fewer results than GitHub reported means results shifted between pages, so the
@@ -239,8 +240,8 @@ class GitHubSearchClient:
         """
         repeats_allowed = endpoint == "search/commits"
         for attempt in range(PAGINATION_PASSES):
-            payload = first if first is not None and attempt == 0 else self._search_page(
-                endpoint, query, 1, SEARCH_PAGE_SIZE
+            payload = (
+                first if first is not None and attempt == 0 else self._search_page(endpoint, query, 1, SEARCH_PAGE_SIZE)
             )
             items: list[dict[str, Any]] = []
             page = 1
@@ -258,8 +259,9 @@ class GitHubSearchClient:
                 return unique[:SEARCH_RESULT_CAP], payload["total_count"] > SEARCH_RESULT_CAP
         raise GitHubActivityError(_shortfall(query, found, expected), kind="incomplete")
 
-    def search_range(self, endpoint: str, template: str, start: date, end: date,
-                     key: tuple[str, ...]) -> tuple[list[dict[str, Any]], list[str]]:
+    def search_range(
+        self, endpoint: str, template: str, start: date, end: date, key: tuple[str, ...]
+    ) -> tuple[list[dict[str, Any]], list[str]]:
         """Search `template` with `{span}` set to start..end, halving the range until each part fits under the cap.
 
         Returns the items and the spans that still exceeded the cap because they were a single day.
@@ -298,8 +300,7 @@ class GitHubSearchClient:
             raise GitHubActivityError(f"GraphQL search for {query!r} has an unexpected shape", kind="malformed")
         return search
 
-    def graphql_search_range(self, template: str, user: str, start: date,
-                             end: date) -> tuple[list[Any], list[str]]:
+    def graphql_search_range(self, template: str, user: str, start: date, end: date) -> tuple[list[Any], list[str]]:
         """GraphQL counterpart of `search_range`, returning pull request nodes with the user's reviews inline."""
         query = template.replace("{span}", f"{start}..{end}")
         page = self._graphql_search_page(query, user, None)
@@ -335,7 +336,9 @@ def _distinct_pull_requests(nodes: list[Any]) -> list[dict[str, Any]]:
     for node in nodes:
         node_id = node.get("id") if isinstance(node, dict) else None
         if not isinstance(node_id, str):
-            raise GitHubActivityError("Review search returned a result that is not a readable pull request", kind="forbidden")
+            raise GitHubActivityError(
+                "Review search returned a result that is not a readable pull request", kind="forbidden"
+            )
         if node_id not in seen:
             seen.add(node_id)
             unique.append(node)
@@ -416,9 +419,17 @@ def _unique(items: list[dict[str, Any]], key: tuple[str, ...], context: str) -> 
     return unique
 
 
-def _monthly(client: GitHubSearchClient, endpoint: str, template: str, window: list[date], today: date,
-             date_path: tuple[str, ...], key: tuple[str, ...], column: str,
-             capped: dict[str, list[str]]) -> dict[str, int]:
+def _monthly(
+    client: GitHubSearchClient,
+    endpoint: str,
+    template: str,
+    window: list[date],
+    today: date,
+    date_path: tuple[str, ...],
+    key: tuple[str, ...],
+    column: str,
+    capped: dict[str, list[str]],
+) -> dict[str, int]:
     """Count search results per UTC month of the timestamp at `date_path`, searching the whole window at once."""
     counts = {month_label(first): 0 for first in window}
     items, truncated = client.search_range(endpoint, template, window[0], today, key)
@@ -433,15 +444,18 @@ def _monthly(client: GitHubSearchClient, endpoint: str, template: str, window: l
 
 def _review_connection(node: Any, node_id: str) -> tuple[list[Any], dict[str, Any]]:
     reviews = node.get("reviews") if isinstance(node, dict) else None
-    if not isinstance(reviews, dict) or not isinstance(reviews.get("nodes"), list) or not isinstance(
-        reviews.get("pageInfo"), dict
+    if (
+        not isinstance(reviews, dict)
+        or not isinstance(reviews.get("nodes"), list)
+        or not isinstance(reviews.get("pageInfo"), dict)
     ):
         raise GitHubActivityError(f"Pull request {node_id} is not readable with this token", kind="forbidden")
     return reviews["nodes"], reviews["pageInfo"]
 
 
-def _review_dates(client: GitHubSearchClient, org: str, user: str, window: list[date], today: date,
-                  capped: dict[str, list[str]]) -> dict[str, list[date]]:
+def _review_dates(
+    client: GitHubSearchClient, org: str, user: str, window: list[date], today: date, capped: dict[str, list[str]]
+) -> dict[str, list[date]]:
     """Submission dates of the user's non-pending reviews, per pull request someone else authored."""
     template = f"org:{org} reviewed-by:{user} -author:{user} is:pr updated:{{span}}"
     nodes, truncated = client.graphql_search_range(template, user, window[0], today)
@@ -451,13 +465,17 @@ def _review_dates(client: GitHubSearchClient, org: str, user: str, window: list[
     for node in nodes:
         node_id = node.get("id") if isinstance(node, dict) else None
         if not isinstance(node_id, str):
-            raise GitHubActivityError("Review search returned a result that is not a readable pull request", kind="forbidden")
+            raise GitHubActivityError(
+                "Review search returned a result that is not a readable pull request", kind="forbidden"
+            )
         login = _field(node, ("author", "login"))
         if node_id in dates or (isinstance(login, str) and login.casefold() == user.casefold()):
             continue
         reviews, page_info = _review_connection(node, node_id)
         while page_info.get("hasNextPage"):
-            data = client.graphql(REVIEW_PAGE_QUERY, {"id": node_id, "user": user, "after": str(page_info.get("endCursor"))})
+            data = client.graphql(
+                REVIEW_PAGE_QUERY, {"id": node_id, "user": user, "after": str(page_info.get("endCursor"))}
+            )
             more, page_info = _review_connection(data.get("node"), node_id)
             reviews = reviews + more
         dates[node_id] = [
@@ -472,12 +490,39 @@ def collect_activity(client: GitHubSearchClient, org: str, user: str, months: in
     window = months_window(today, months)
     labels = [month_label(first) for first in window]
     capped: dict[str, list[str]] = {}
-    authored = _monthly(client, "search/issues", f"org:{org} author:{user} is:pr created:{{span}}", window, today,
-                        ("created_at",), ("node_id",), "PRs authored", capped)
-    merged = _monthly(client, "search/issues", f"org:{org} author:{user} is:pr is:merged merged:{{span}}", window,
-                      today, ("pull_request", "merged_at"), ("node_id",), "PRs merged", capped)
-    commits = _monthly(client, "search/commits", f"org:{org} author:{user} author-date:{{span}}", window, today,
-                       ("commit", "author", "date"), ("sha",), "Commits", capped)
+    authored = _monthly(
+        client,
+        "search/issues",
+        f"org:{org} author:{user} is:pr created:{{span}}",
+        window,
+        today,
+        ("created_at",),
+        ("node_id",),
+        "PRs authored",
+        capped,
+    )
+    merged = _monthly(
+        client,
+        "search/issues",
+        f"org:{org} author:{user} is:pr is:merged merged:{{span}}",
+        window,
+        today,
+        ("pull_request", "merged_at"),
+        ("node_id",),
+        "PRs merged",
+        capped,
+    )
+    commits = _monthly(
+        client,
+        "search/commits",
+        f"org:{org} author:{user} author-date:{{span}}",
+        window,
+        today,
+        ("commit", "author", "date"),
+        ("sha",),
+        "Commits",
+        capped,
+    )
     prs_reviewed = {label: 0 for label in labels}
     reviews_submitted = {label: 0 for label in labels}
     reviewed_in_window: set[str] = set()
@@ -550,15 +595,18 @@ def _months(value: str) -> int:
     return int(value)
 
 
-def main(arguments: list[str] | None = None, client: GitHubSearchClient | None = None,
-         today: date | None = None) -> int:
+def main(
+    arguments: list[str] | None = None, client: GitHubSearchClient | None = None, today: date | None = None
+) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--org", type=_login, required=True)
     parser.add_argument("--user", type=_login, required=True)
     parser.add_argument("--months", type=_months, default=12)
     options = parser.parse_args(arguments)
     current = today or datetime.now(timezone.utc).date()
-    print(f"Querying GitHub for {options.months} month(s); searches are spaced {SEARCH_INTERVAL}s apart.", file=sys.stderr)
+    print(
+        f"Querying GitHub for {options.months} month(s); searches are spaced {SEARCH_INTERVAL}s apart.", file=sys.stderr
+    )
     try:
         activity = collect_activity(client or GitHubSearchClient(), options.org, options.user, options.months, current)
     except GitHubActivityError as exc:

@@ -90,9 +90,7 @@ def _header_path(rest: str) -> str | None:
 
 def _safe_path(value: str) -> str:
     path = PurePosixPath(value)
-    if not value or "\\" in value or path.is_absolute() or any(
-        part in {"", ".", ".."} for part in path.parts
-    ):
+    if not value or "\\" in value or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
         raise SpecialistError(f"Unsafe path in diff: {value!r}")
     return path.as_posix()
 
@@ -204,8 +202,7 @@ def patch_fingerprints(diff: dict[str, dict[str, Any]]) -> dict[str, dict[str, A
                 kept.append(line)
         if binary and blob:
             kept.append(f"blob {blob}")
-        fingerprints[path] = {"sha256": hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest(),
-                              "lines": changed}
+        fingerprints[path] = {"sha256": hashlib.sha256("\n".join(kept).encode("utf-8")).hexdigest(), "lines": changed}
     return fingerprints
 
 
@@ -218,9 +215,7 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
     if not isinstance(metadata, dict) or "manifest" not in metadata:
         raise SpecialistError("Reviewer materialization is not a specialist reviewer")
     try:
-        manifest = validate_adapter_manifest(
-            {key: value for key, value in metadata["manifest"].items()}
-        )
+        manifest = validate_adapter_manifest({key: value for key, value in metadata["manifest"].items()})
     except RuntimeContractError as exc:
         raise SpecialistError(str(exc)) from exc
     if manifest.get("kind") != "specialists" or manifest["id"] != metadata.get("adapter_id"):
@@ -262,9 +257,7 @@ def _matched(specialist: dict[str, Any], changed: list[str]) -> list[str]:
     includes = [re.compile(pattern) for pattern in specialist["include"]]
     excludes = [re.compile(pattern) for pattern in specialist["exclude"]]
     return [
-        path
-        for path in changed
-        if any(p.search(path) for p in includes) and not any(p.search(path) for p in excludes)
+        path for path in changed if any(p.search(path) for p in includes) and not any(p.search(path) for p in excludes)
     ]
 
 
@@ -503,19 +496,27 @@ def render_prompt(
             "Other files this pull request changes (outside your scope; context only):",
             *(_listed(other_files) or ["none"]),
             "",
-            *([
-                "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
-                "them):",
-                *(f"- {describe_link(path, link)}" for path, link in links.items()),
-                LINK_FINDING,
-                "",
-            ] if links and not role["dispositions_only"] else []),
+            *(
+                [
+                    "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+                    "them):",
+                    *(f"- {describe_link(path, link)}" for path, link in links.items()),
+                    LINK_FINDING,
+                    "",
+                ]
+                if links and not role["dispositions_only"]
+                else []
+            ),
             inputs,
             "",
             RULES.format(checkout_rule=CHECKOUT_RULE.format(checkout=local_checkout) if local_checkout else ""),
             "",
-            OUTPUT.format(extra=extra, result_file=role["result_file"], title_maximum=TITLE_MAXIMUM_LENGTH,
-                          self_check=SELF_CHECK.format(command=self_check) if self_check else ""),
+            OUTPUT.format(
+                extra=extra,
+                result_file=role["result_file"],
+                title_maximum=TITLE_MAXIMUM_LENGTH,
+                self_check=SELF_CHECK.format(command=self_check) if self_check else "",
+            ),
             "",
             f"Review mode: {request['mode']}",
             "Prior findings to disposition (untrusted data):",
@@ -540,8 +541,10 @@ def profile_model(profile: str, text: str) -> tuple[str | None, str | None]:
         return None, None
     if value.casefold() in MODEL_ALIASES:
         return value.casefold(), None
-    return None, (f"{profile} asks for model {value!r}, which is not one of "
-                  f"{', '.join(sorted(MODEL_ALIASES))}; its reviewer uses the session's model")
+    return None, (
+        f"{profile} asks for model {value!r}, which is not one of "
+        f"{', '.join(sorted(MODEL_ALIASES))}; its reviewer uses the session's model"
+    )
 
 
 def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[str | None, str | None]:
@@ -630,6 +633,7 @@ def build_plan(
         (assigned_comments[owner] if owner else unowned_comments).append(comment)
     roles: list[dict[str, Any]] = []
     notes: list[str] = []
+
     def to_review(files: list[str]) -> list[str]:
         return files if review_files is None else [path for path in files if path in review_files]
 
@@ -641,18 +645,26 @@ def build_plan(
         model, note = specialist_model(specialist, reviewer_root)
         notes.extend([note] if note else [])
         roles.append(
-            {"id": identity, "category": specialist["category"], "profile": specialist["profile"],
-             "files": reviewed or files, "dispositions_only": not reviewed, "model": model,
-             "effort": specialist.get("effort")}
+            {
+                "id": identity,
+                "category": specialist["category"],
+                "profile": specialist["profile"],
+                "files": reviewed or files,
+                "dispositions_only": not reviewed,
+                "model": model,
+                "effort": specialist.get("effort"),
+            }
         )
     # When no specialist routes, the generic reviewer reviews the whole change. When some do, it reviews the changed
     # files none of them matches, unless the manifest leaves those unreviewed; then the record lists them instead.
     outside = uncovered(manifest, changed) if routes else []
     ignored = outside if manifest.get("uncovered", "review") == "ignore" else []
     if ignored:
-        notes.append(f"No reviewer reviews {len(ignored)} changed file{'s' if len(ignored) != 1 else ''} that no "
-                     f"specialist covers, because the reviewer manifest sets uncovered to ignore: "
-                     f"{', '.join(ignored)}.")
+        notes.append(
+            f"No reviewer reviews {len(ignored)} changed file{'s' if len(ignored) != 1 else ''} that no "
+            f"specialist covers, because the reviewer manifest sets uncovered to ignore: "
+            f"{', '.join(ignored)}."
+        )
     if not routes:
         reviewed = to_review(changed)
     else:
@@ -662,9 +674,16 @@ def build_plan(
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
         files = reviewed or (changed if not routes else [p for p in changed if p in paths] or changed)
         roles.append(
-            {"id": GENERIC_SPECIALIST, "category": "General", "profile": None,
-             "instructions": str(generic_instructions), "files": files, "dispositions_only": not reviewed,
-             "model": None, "effort": None}
+            {
+                "id": GENERIC_SPECIALIST,
+                "category": "General",
+                "profile": None,
+                "instructions": str(generic_instructions),
+                "files": files,
+                "dispositions_only": not reviewed,
+                "model": None,
+                "effort": None,
+            }
         )
         assigned[GENERIC_SPECIALIST] = unowned
         assigned_comments[GENERIC_SPECIALIST] = unowned_comments
@@ -686,18 +705,28 @@ def build_plan(
         atomic_write_text(work / f"{identity}.diff", "".join(diff[p]["numbered"] for p in role["files"]))
         # Only the files outside the role's scope: its own are already in its diff, and a reviewer that read a
         # whole-pull-request diff carried its own files twice for the rest of the review.
-        atomic_write_text(work / f"{identity}.other-changes.diff",
-                          "".join(entry["numbered"] for path, entry in diff.items() if path not in role["files"]))
+        atomic_write_text(
+            work / f"{identity}.other-changes.diff",
+            "".join(entry["numbered"] for path, entry in diff.items() if path not in role["files"]),
+        )
         # Names only, so a reviewer can check a long list cheaply before deciding whether to read any diff.
-        atomic_write_text(work / f"{identity}.other-files.txt",
-                          "".join(f"{path}\n" for path in diff if path not in role["files"]))
+        atomic_write_text(
+            work / f"{identity}.other-files.txt", "".join(f"{path}\n" for path in diff if path not in role["files"])
+        )
         atomic_write_text(
             Path(role["prompt_file"]),
-            render_prompt(role, request=request, work=work, trusted_root=reviewer_root, prior=assigned[identity],
-                          comments=assigned_comments[identity],
-                          self_check=self_check(identity) if self_check else None, local_checkout=local_checkout,
-                          other_files=[path for path in diff if path not in role["files"]],
-                          links={path: link for path, link in links.items() if path in role["files"]}),
+            render_prompt(
+                role,
+                request=request,
+                work=work,
+                trusted_root=reviewer_root,
+                prior=assigned[identity],
+                comments=assigned_comments[identity],
+                self_check=self_check(identity) if self_check else None,
+                local_checkout=local_checkout,
+                other_files=[path for path in diff if path not in role["files"]],
+                links={path: link for path, link in links.items() if path in role["files"]},
+            ),
         )
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION,
@@ -730,7 +759,7 @@ def code_identifiers(body: str) -> set[str]:
     identifiers: set[str] = set()
     for match in CODE_TOKEN.finditer(body):
         token = match.group(0)
-        called = body[match.end():match.end() + 1] == "("
+        called = body[match.end() : match.end() + 1] == "("
         if called or "_" in token or any(c.isdigit() for c in token) or any(c.isupper() for c in token[1:]):
             identifiers.add(token.lstrip("_").casefold())
     return identifiers
@@ -762,8 +791,10 @@ def _analyzer_error(analyzer: Any, tools: dict[str, str]) -> str | None:
     listed = tools.get(analyzer["tool"].casefold())
     if analyzer["coverage"] == "available" and listed is None:
         names = ", ".join(sorted(tools.values(), key=str.casefold)) or "none"
-        return (f"names {analyzer['tool']}, which ANALYZERS_FILE does not list; an available tool is one it lists "
-                f"({names}), otherwise use known")
+        return (
+            f"names {analyzer['tool']}, which ANALYZERS_FILE does not list; an available tool is one it lists "
+            f"({names}), otherwise use known"
+        )
     if analyzer["coverage"] == "known" and listed is not None:
         return f"names {analyzer['tool']}, which ANALYZERS_FILE lists as {listed}; use available"
     return None
@@ -795,8 +826,11 @@ def load_role_result(
         raise SpecialistError(f"{name}: result needs exactly one findings array")
     findings = value[keys[0]]
     for index, finding in enumerate(findings):
-        if (not isinstance(finding, dict) or not isinstance(finding.get("severity"), str)
-                or finding["severity"] not in SEVERITY):
+        if (
+            not isinstance(finding, dict)
+            or not isinstance(finding.get("severity"), str)
+            or finding["severity"] not in SEVERITY
+        ):
             raise SpecialistError(f"{name}: finding {index} has an invalid severity")
         line = finding.get("line")
         if not isinstance(finding.get("path"), str) or not isinstance(line, int) or isinstance(line, bool):
@@ -820,12 +854,18 @@ def load_role_result(
     if role["dispositions_only"] and findings:
         raise SpecialistError(f"{name}: disposition-only review returned findings")
     _check_repeats(name, findings, dispositions, role)
-    return {"model": value["model"], "summary": value["summary"].strip(), "findings": findings,
-            "prior_dispositions": dispositions, "comment_dispositions": comment_dispositions}
+    return {
+        "model": value["model"],
+        "summary": value["summary"].strip(),
+        "findings": findings,
+        "prior_dispositions": dispositions,
+        "comment_dispositions": comment_dispositions,
+    }
 
 
-def _check_repeats(name: str, findings: list[dict[str, Any]], dispositions: list[dict[str, Any]],
-                   role: dict[str, Any]) -> None:
+def _check_repeats(
+    name: str, findings: list[dict[str, Any]], dispositions: list[dict[str, Any]], role: dict[str, Any]
+) -> None:
     """A finding's `repeats` is the index of another finding in the result that is not itself a repeat, or a prior
     finding the role judged still present; either way at least as severe."""
     judged = {item["finding_id"]: item["disposition"] for item in dispositions}
@@ -834,31 +874,40 @@ def _check_repeats(name: str, findings: list[dict[str, Any]], dispositions: list
             continue
         target = finding["repeats"]
         if isinstance(target, bool) or not isinstance(target, (int, str)):
-            raise SpecialistError(f"{name}: finding {index} repeats must be the index of another finding in this "
-                                  "result or a prior finding ID")
+            raise SpecialistError(
+                f"{name}: finding {index} repeats must be the index of another finding in this "
+                "result or a prior finding ID"
+            )
         if isinstance(target, int):
             if not 0 <= target < len(findings):
-                raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a finding in this "
-                                      "result")
+                raise SpecialistError(
+                    f"{name}: finding {index} repeats {target}, which is not a finding in this result"
+                )
             if target == index:
                 raise SpecialistError(f"{name}: finding {index} cannot repeat itself")
             if "repeats" in findings[target]:
-                raise SpecialistError(f"{name}: finding {index} repeats finding {target}, which is itself a repeat; "
-                                      "give the finding that one repeats")
+                raise SpecialistError(
+                    f"{name}: finding {index} repeats finding {target}, which is itself a repeat; "
+                    "give the finding that one repeats"
+                )
             severity = SEVERITY[findings[target]["severity"]]
         else:
             if target not in role["prior_ids"]:
-                raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a prior finding listed "
-                                      "for you")
+                raise SpecialistError(
+                    f"{name}: finding {index} repeats {target}, which is not a prior finding listed for you"
+                )
             if judged.get(target) not in {"still_present", "partially_addressed"}:
-                raise SpecialistError(f"{name}: finding {index} repeats {target}, so mark that prior finding "
-                                      "still_present or partially_addressed")
+                raise SpecialistError(
+                    f"{name}: finding {index} repeats {target}, so mark that prior finding "
+                    "still_present or partially_addressed"
+                )
             severity = role.get("prior_severities", {}).get(target)
             if severity not in RANK:
                 raise SpecialistError(f"{name}: finding {index} repeats {target}, whose severity is unknown")
         if RANK[severity] > RANK[SEVERITY[finding["severity"]]]:
-            raise SpecialistError(f"{name}: finding {index} repeats a less severe finding; link a finding only to "
-                                  "one at least as severe")
+            raise SpecialistError(
+                f"{name}: finding {index} repeats a less severe finding; link a finding only to one at least as severe"
+            )
 
 
 def _resolve_repeats(merged: list[dict[str, Any]], prior_severities: dict[str, str]) -> dict[int, Any]:
@@ -934,8 +983,13 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     }
     errors = check(plan)
     if errors:
-        return {**base, "summary": "Specialist results incomplete: " + "; ".join(errors.values()),
-                "status": "failed", "findings": [], "prior_dispositions": []}
+        return {
+            **base,
+            "summary": "Specialist results incomplete: " + "; ".join(errors.values()),
+            "status": "failed",
+            "findings": [],
+            "prior_dispositions": [],
+        }
     added = plan["added_lines"]
     merged: list[dict[str, Any]] = []
     summaries: list[tuple[str, str]] = []
@@ -952,10 +1006,17 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         for finding in result["findings"]:
             path, line = finding["path"], finding["line"]
             text = added[path][str(line)]
-            candidate = {"severity": SEVERITY[finding["severity"]], "category": role["category"], "path": path,
-                         "line": line, "title": finding["title"], "body": finding["body"].strip(),
-                         "evidence": f"{path}:{line} adds: {text.strip() or '(blank line)'}", "sources": [role["id"]],
-                         **({"analyzer": finding["analyzer"]} if "analyzer" in finding else {})}
+            candidate = {
+                "severity": SEVERITY[finding["severity"]],
+                "category": role["category"],
+                "path": path,
+                "line": line,
+                "title": finding["title"],
+                "body": finding["body"].strip(),
+                "evidence": f"{path}:{line} adds: {text.strip() or '(blank line)'}",
+                "sources": [role["id"]],
+                **({"analyzer": finding["analyzer"]} if "analyzer" in finding else {}),
+            }
             duplicate = next((item for item in merged if same_issue(item, candidate)), None)
             landed.append(duplicate or candidate)
             if duplicate is None:
@@ -963,7 +1024,9 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 continue
             # Keep the most severe finding's wording and category; on equal severity, the more detailed one.
             replaces = (RANK[candidate["severity"]], -len(candidate["body"])) < (
-                RANK[duplicate["severity"]], -len(duplicate["body"]))
+                RANK[duplicate["severity"]],
+                -len(duplicate["body"]),
+            )
             if replaces:
                 for field in ("severity", "title", "body", "category"):
                     duplicate[field] = candidate[field]
@@ -982,20 +1045,29 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
     links = _resolve_repeats(merged, prior_severities)
     keys = [f"{item['sources'][0]}-{index}" for index, item in enumerate(merged, start=1)]
     # One paragraph per specialist, labelled only when there is more than one.
-    summary = summaries[0][1] if len(summaries) == 1 else "\n\n".join(
-        f"**{role}:** {text}" for role, text in summaries)
+    summary = summaries[0][1] if len(summaries) == 1 else "\n\n".join(f"**{role}:** {text}" for role, text in summaries)
     return {
         **base,
         "summary": summary,
         "status": "complete",
         "findings": [
-            {"candidate_key": keys[index], "severity": item["severity"],
-             "category": item["category"], "path": item["path"], "line": item["line"], "title": item["title"],
-             "body": item["body"],
-             "evidence": item["evidence"], "source": " + ".join(item["sources"]),
-             **({"analyzer": item["analyzer"]} if "analyzer" in item else {}),
-             **({"repeats": links[index] if isinstance(links[index], str) else keys[links[index]]}
-                if index in links else {})}
+            {
+                "candidate_key": keys[index],
+                "severity": item["severity"],
+                "category": item["category"],
+                "path": item["path"],
+                "line": item["line"],
+                "title": item["title"],
+                "body": item["body"],
+                "evidence": item["evidence"],
+                "source": " + ".join(item["sources"]),
+                **({"analyzer": item["analyzer"]} if "analyzer" in item else {}),
+                **(
+                    {"repeats": links[index] if isinstance(links[index], str) else keys[links[index]]}
+                    if index in links
+                    else {}
+                ),
+            }
             for index, item in enumerate(merged)
         ],
         "prior_dispositions": dispositions,

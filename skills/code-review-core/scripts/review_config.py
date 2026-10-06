@@ -15,9 +15,7 @@ from review_io import PersistenceError, atomic_write_json, read_json
 
 
 SCHEMA_VERSION = 1
-REPOSITORY_PATTERN = re.compile(
-    r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$"
-)
+REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$")
 RUNTIME_HOSTS = {"auto", "claude-code", "codex", "copilot-cli"}
 TOP_LEVEL_KEYS = {
     "schema_version",
@@ -153,9 +151,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     for identity, entry_value in repository_config.items():
         normalized_identity = validate_repository_identity(identity)
         if normalized_identity in normalized_repositories:
-            raise ConfigurationError(
-                f"Duplicate repository configuration after normalization: {normalized_identity}"
-            )
+            raise ConfigurationError(f"Duplicate repository configuration after normalization: {normalized_identity}")
         entry = _expect_object(entry_value, f"repositories.{identity}")
         _reject_unknown(entry, REPOSITORY_KEYS, f"repositories.{identity}")
         reviewer = _expect_object(entry.get("reviewer"), f"repositories.{identity}.reviewer")
@@ -203,9 +199,7 @@ def validate_config(value: Any) -> dict[str, Any]:
             entry.get("checkout_path"), f"repositories.{identity}.checkout_path", nullable=True
         )
         if scope == "repository" and checkout is None:
-            raise ConfigurationError(
-                f"repositories.{identity}.checkout_path is required for a repository reviewer"
-            )
+            raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
         normalized_repositories[normalized_identity] = {
             "reviewer": {
                 "id": reviewer_id,
@@ -222,9 +216,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     configured = {repo for repos in normalized_sets.values() for repo in repos}
     missing = sorted(configured - set(normalized_repositories))
     if missing:
-        raise ConfigurationError(
-            "Missing per-repository configuration for: " + ", ".join(missing)
-        )
+        raise ConfigurationError("Missing per-repository configuration for: " + ", ".join(missing))
 
     runtime = config.get("runtime", "auto")
     if runtime not in RUNTIME_HOSTS:
@@ -232,7 +224,8 @@ def validate_config(value: Any) -> dict[str, Any]:
     effort = config.get("reviewer_effort")
     if effort is not None and effort not in REVIEWER_EFFORTS:
         raise ConfigurationError(
-            f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}")
+            f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}"
+        )
 
     scope = _expect_object(config.get("re_review_scope", {}), "re_review_scope")
     _reject_unknown(scope, set(RE_REVIEW_SCOPE_DEFAULTS), "re_review_scope")
@@ -272,18 +265,12 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["reviewer_effort"] = effort
     normalized["re_review_scope"] = scope
     normalized["model_names"] = normalize_model_names(config.get("model_names", {}))
-    normalized["archive_root"] = validate_windows_absolute_path(
-        config.get("archive_root"), "archive_root"
-    )
+    normalized["archive_root"] = validate_windows_absolute_path(config.get("archive_root"), "archive_root")
     normalized["local_mirror_root"] = validate_windows_absolute_path(
         config.get("local_mirror_root"), "local_mirror_root", nullable=True
     )
-    normalized["summary_root"] = validate_windows_absolute_path(
-        config.get("summary_root"), "summary_root"
-    )
-    normalized["dashboard_file"] = validate_windows_absolute_path(
-        config.get("dashboard_file"), "dashboard_file"
-    )
+    normalized["summary_root"] = validate_windows_absolute_path(config.get("summary_root"), "summary_root")
+    normalized["dashboard_file"] = validate_windows_absolute_path(config.get("dashboard_file"), "dashboard_file")
     normalized["verdict_policy"] = {
         "request_changes_for": request_changes_for,
         "should_fix_threshold": threshold,
@@ -295,9 +282,7 @@ def validate_config(value: Any) -> dict[str, Any]:
     if not isinstance(dashboard, dict):
         raise ConfigurationError("dashboard must be an object")
     _reject_unknown(dashboard, DASHBOARD_KEYS, "dashboard")
-    start_marker = dashboard.get(
-        "start_marker", "<!-- code-review-pr-tracker:start -->"
-    )
+    start_marker = dashboard.get("start_marker", "<!-- code-review-pr-tracker:start -->")
     end_marker = dashboard.get("end_marker", "<!-- code-review-pr-tracker:end -->")
     if (
         not isinstance(start_marker, str)
@@ -312,23 +297,17 @@ def validate_config(value: Any) -> dict[str, Any]:
         or "\r" in end_marker
         or start_marker == end_marker
     ):
-        raise ConfigurationError(
-            "dashboard markers must be distinct, trimmed, non-empty single-line strings"
-        )
+        raise ConfigurationError("dashboard markers must be distinct, trimmed, non-empty single-line strings")
     overrides = dashboard.get("status_overrides", {})
     if not isinstance(overrides, dict):
         raise ConfigurationError("dashboard.status_overrides must be an object")
     for key, value in overrides.items():
-        if not isinstance(key, str) or not re.fullmatch(
-            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key
-        ):
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
         if not isinstance(value, str) or not value.strip():
             raise ConfigurationError(f"Dashboard status override {key} must be non-empty")
         if value.strip().casefold() in COMPUTED_DASHBOARD_STATES:
-            raise ConfigurationError(
-                f"Dashboard status override {key} duplicates a computed tracker state"
-            )
+            raise ConfigurationError(f"Dashboard status override {key} duplicates a computed tracker state")
     normalized["dashboard"] = {
         "start_marker": start_marker,
         "end_marker": end_marker,
@@ -339,8 +318,13 @@ def validate_config(value: Any) -> dict[str, Any]:
 
 
 def _single_line(value: Any, maximum: int) -> bool:
-    return isinstance(value, str) and bool(value.strip()) and "\n" not in value and "\r" not in value \
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and "\n" not in value
+        and "\r" not in value
         and len(value.strip()) <= maximum
+    )
 
 
 def normalize_model_names(value: Any) -> dict[str, str]:
@@ -350,11 +334,15 @@ def normalize_model_names(value: Any) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for identifier, name in value.items():
         if not _single_line(identifier, MODEL_IDENTIFIER_MAXIMUM_LENGTH) or identifier != identifier.strip():
-            raise ConfigurationError(f"Invalid model_names key {identifier!r}: it must be a trimmed single line of "
-                                     f"at most {MODEL_IDENTIFIER_MAXIMUM_LENGTH} characters")
+            raise ConfigurationError(
+                f"Invalid model_names key {identifier!r}: it must be a trimmed single line of "
+                f"at most {MODEL_IDENTIFIER_MAXIMUM_LENGTH} characters"
+            )
         if not _single_line(name, MODEL_NAME_MAXIMUM_LENGTH):
-            raise ConfigurationError(f"model_names.{identifier} must be a non-empty single-line name of at most "
-                                     f"{MODEL_NAME_MAXIMUM_LENGTH} characters")
+            raise ConfigurationError(
+                f"model_names.{identifier} must be a non-empty single-line name of at most "
+                f"{MODEL_NAME_MAXIMUM_LENGTH} characters"
+            )
         normalized[identifier] = name.strip()
     return normalized
 

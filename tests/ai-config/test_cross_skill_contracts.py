@@ -32,20 +32,37 @@ def literal_assignment(path: Path, name: str) -> object:
     raise AssertionError(f"{name} is not a literal assignment in {path}")
 
 
+def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
+    """Each option `<parser>.add_argument` declares, with its keywords as source, however the call is wrapped."""
+    options: dict[str, dict[str, str]] = {}
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == parser
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            options[node.args[0].value] = {keyword.arg: ast.unparse(keyword.value) for keyword in node.keywords}
+    return options
+
+
 def replayed_skills(text: str, own: str, names: set[str]) -> list[str]:
     """Other skills a skill's text reads the SKILL.md of, or names in a clause with a step number or section title."""
     replayed = set(re.findall(r"\.\./([a-z0-9-]+)/SKILL\.md", text)) - {own}
     for clause in re.split(r"(?<=[.!?;,])\s+|\n", text):
         if re.search(r"\bsteps? \d|\"[^\"]+\" section|\bsection \"", clause, re.IGNORECASE):
-            replayed |= {name for name in names - {own} if re.search(rf"`{re.escape(name)}`|\.\./{re.escape(name)}/", clause)}
+            replayed |= {
+                name for name in names - {own} if re.search(rf"`{re.escape(name)}`|\.\./{re.escape(name)}/", clause)
+            }
     return sorted(replayed)
 
 
 class CrossSkillContractTests(unittest.TestCase):
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:
-        contract = (
-            REPOSITORY_ROOT / "skills/runtime-compatibility.md"
-        ).read_text(encoding="utf-8-sig")
+        contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
         self.assertIn("For `Skill`, use native skill invocation.", contract)
 
     def test_runtime_compatibility_holds_only_rules_a_shipped_skill_uses(self) -> None:
@@ -78,8 +95,10 @@ class CrossSkillContractTests(unittest.TestCase):
         invoked = {
             span.split()[0]
             for path in skills
-            for line in path.read_text(encoding="utf-8-sig").splitlines() if "invoke" in line
-            for span in re.findall(r"`([^`]+)`", line) if span.split() and span.split()[0] in names
+            for line in path.read_text(encoding="utf-8-sig").splitlines()
+            if "invoke" in line
+            for span in re.findall(r"`([^`]+)`", line)
+            if span.split() and span.split()[0] in names
         }
         self.assertEqual({"review-prs", "flag-review-finding"}, invoked)
         for name in sorted(invoked):
@@ -109,9 +128,20 @@ class CrossSkillContractTests(unittest.TestCase):
             for name in names:
                 with self.subTest(skill=name):
                     completed = subprocess.run(
-                        [sys.executable, "-B", str(script), "locate", name, "--repo", str(REPOSITORY_ROOT),
-                         "--home", home],
-                        capture_output=True, text=True, check=False,
+                        [
+                            sys.executable,
+                            "-B",
+                            str(script),
+                            "locate",
+                            name,
+                            "--repo",
+                            str(REPOSITORY_ROOT),
+                            "--home",
+                            home,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
                     )
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
                     lines = completed.stdout.splitlines()
@@ -233,8 +263,15 @@ class CrossSkillContractTests(unittest.TestCase):
                 for shell, arguments in self.reviewer_hook_shells(command).items():
                     with self.subTest(case=case, shell=shell):
                         self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
-                        result = subprocess.run(arguments, input=event, capture_output=True, text=True, cwd=root,
-                                                env=environment, check=False)
+                        result = subprocess.run(
+                            arguments,
+                            input=event,
+                            capture_output=True,
+                            text=True,
+                            cwd=root,
+                            env=environment,
+                            check=False,
+                        )
                         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                         self.assertIn(traceback, result.stderr)
                         self.assertEqual(
@@ -242,8 +279,7 @@ class CrossSkillContractTests(unittest.TestCase):
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
                                     "permissionDecision": "deny",
-                                    "permissionDecisionReason":
-                                        f"Code-review reviewer boundary: the guard could not run ({error}).",
+                                    "permissionDecisionReason": f"Code-review reviewer boundary: the guard could not run ({error}).",
                                 }
                             },
                             json.loads(result.stdout),
@@ -265,15 +301,20 @@ class CrossSkillContractTests(unittest.TestCase):
             for module in ("json", "runpy", "pathlib", "re"):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")
             other = root / "other home"
-            environment = {**os.environ, "USERPROFILE": str(profile), "HOME": "/" + other.as_posix()[0].lower()
-                           + other.as_posix()[2:]}
-            event = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(cwd / "json.py")},
-                                "cwd": str(cwd)})
+            environment = {
+                **os.environ,
+                "USERPROFILE": str(profile),
+                "HOME": "/" + other.as_posix()[0].lower() + other.as_posix()[2:],
+            }
+            event = json.dumps(
+                {"tool_name": "Read", "tool_input": {"file_path": str(cwd / "json.py")}, "cwd": str(cwd)}
+            )
             for shell, arguments in self.reviewer_hook_shells(command).items():
                 with self.subTest(shell=shell):
                     self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
-                    result = subprocess.run(arguments, input=event, capture_output=True, text=True, cwd=cwd,
-                                            env=environment, check=False)
+                    result = subprocess.run(
+                        arguments, input=event, capture_output=True, text=True, cwd=cwd, env=environment, check=False
+                    )
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                     self.assertNotIn("HIJACKED", result.stdout)
                     decision = json.loads(result.stdout)["hookSpecificOutput"]
@@ -303,19 +344,24 @@ class CrossSkillContractTests(unittest.TestCase):
         tracker = read("update-pr-tracker")
         self.assertIn(
             "invoke `review-prs` once for every confirmed pull request, with `--pull <owner/repo#number>` for each "
-            "`missing` and `--re-review <owner/repo#number>` for each `stale`", tracker)
+            "`missing` and `--re-review <owner/repo#number>` for each `stale`",
+            tracker,
+        )
         self.assertNotIn("`re-review <owner/repo#number>`", tracker)
         review_prs = read("review-prs")
-        self.assertIn('--pull owner/repo#number ... --re-review owner/repo#number ...', review_prs.split("---", 2)[1])
+        self.assertIn("--pull owner/repo#number ... --re-review owner/repo#number ...", review_prs.split("---", 2)[1])
         self.assertIn("(or `--re-review` for one given with `--re-review`)", review_prs)
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('prepare_parser.add_argument("--re-review", action="append"', pipeline)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertEqual("'append'", declared_options(pipeline, "prepare_parser")["--re-review"]["action"])
 
     def test_review_prs_waits_for_the_copilot_host_in_bounded_calls(self) -> None:
         # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30 (#36).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        waits = re.findall(r"`wait --run <run directory> --timeout (\d+)` with a command timeout of at least (\d+) "
-                           r"minutes, again each time it prints `RUNNING <seconds>s`", skill)
+        waits = re.findall(
+            r"`wait --run <run directory> --timeout (\d+)` with a command timeout of at least (\d+) "
+            r"minutes, again each time it prints `RUNNING <seconds>s`",
+            skill,
+        )
         self.assertEqual(1, len(waits), "step 3 waits for the host in repeated bounded calls")
         timeout, command_minutes = (int(value) for value in waits[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
@@ -331,27 +377,46 @@ class CrossSkillContractTests(unittest.TestCase):
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
-        self.assertIn("Never end the turn, reply, or schedule a wakeup (ScheduleWakeup, CronCreate, `/loop`) while a "
-                      "prepared run is not finalized", body)
+        self.assertIn(
+            "Never end the turn, reply, or schedule a wakeup (ScheduleWakeup, CronCreate, `/loop`) while a "
+            "prepared run is not finalized",
+            body,
+        )
         workflow = body.split("## With the Workflow tool", 1)[1]
-        self.assertNotIn("Wait for it to finish", workflow, "the Workflow tool returns at once; there is nothing to wait on")
-        minutes = re.findall(r"Never end the turn to wait for it: run `wait-reviewers` with one `--run` per run and a "
-                             r"command timeout of at least (\d+) minutes, again each time it prints a "
-                             r"`RUNNING <selector> <id> <seconds>s` line", workflow)
-        timeouts = re.findall(r'review_pipeline\.py" wait-reviewers --run "<run directory>" --run "<run directory>" '
-                              r'--timeout (\d+)\n', workflow)
+        self.assertNotIn(
+            "Wait for it to finish", workflow, "the Workflow tool returns at once; there is nothing to wait on"
+        )
+        minutes = re.findall(
+            r"Never end the turn to wait for it: run `wait-reviewers` with one `--run` per run and a "
+            r"command timeout of at least (\d+) minutes, again each time it prints a "
+            r"`RUNNING <selector> <id> <seconds>s` line",
+            workflow,
+        )
+        timeouts = re.findall(
+            r'review_pipeline\.py" wait-reviewers --run "<run directory>" --run "<run directory>" '
+            r"--timeout (\d+)\n",
+            workflow,
+        )
         self.assertEqual((1, 1), (len(minutes), len(timeouts)), "the Workflow path waits in repeated bounded calls")
         timeout, command_minutes = int(timeouts[0]), int(minutes[0])
         self.assertLessEqual(timeout, 100, "each wait fits well inside a 2-minute command limit")
         self.assertGreater(command_minutes * 60, timeout)
         self.assertLessEqual(timeout, literal_assignment(pipeline, "MAX_WAIT_SECONDS"))
-        self.assertIn("`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 "
-                      "retries it.", workflow)
+        self.assertIn(
+            "`OVERDUE <selector> <id> <seconds>s` means that role ran past the reviewer limit; step 4 retries it.",
+            workflow,
+        )
         # Every mode ends by listing the runs that never reached finalize, and a denied command is a failure.
-        self.assertIn("run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. "
-                      "Report each `UNFINALIZED <selector> <run directory>` as that pull request's failure", body)
-        self.assertIn("If any pipeline command was denied or could not run, report every pull request without a "
-                      "`RECORDED` line as failed, and never report the run as a success.", body)
+        self.assertIn(
+            "run the pipeline's `unfinalized` command with one `--run` per `RUN` directory `prepare` printed. "
+            "Report each `UNFINALIZED <selector> <run directory>` as that pull request's failure",
+            body,
+        )
+        self.assertIn(
+            "If any pipeline command was denied or could not run, report every pull request without a "
+            "`RECORDED` line as failed, and never report the run as a success.",
+            body,
+        )
         source = pipeline.read_text(encoding="utf-8")
         self.assertIn('wait_reviewers_parser = commands.add_parser("wait-reviewers")', source)
         self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
@@ -360,14 +425,17 @@ class CrossSkillContractTests(unittest.TestCase):
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host (#45).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --pull', skill)
-        self.assertIn("`--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`.",
-                      skill)
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('prepare_parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES)', pipeline)
+        self.assertIn(
+            "`--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`.", skill
+        )
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        host = declared_options(pipeline, "prepare_parser")["--host"]
+        self.assertEqual("sorted(RUNTIME_CAPABILITIES)", host["choices"])
         runtime = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_runtime.py").read_text(encoding="utf-8")
         hosts = runtime.split("RUNTIME_CAPABILITIES = {", 1)[1].split("\n}", 1)[0]
-        self.assertEqual(["claude-code", "codex", "copilot-cli"],
-                         [line.split('"')[1] for line in hosts.strip().splitlines()])
+        self.assertEqual(
+            ["claude-code", "codex", "copilot-cli"], [line.split('"')[1] for line in hosts.strip().splitlines()]
+        )
 
     def test_review_prs_prepares_canaries_in_the_shape_the_pipeline_accepts(self) -> None:
         # The skill takes `--canary owner/repo#number`, but the pipeline's --canary is a bare flag before --pull
@@ -380,7 +448,9 @@ class CrossSkillContractTests(unittest.TestCase):
         for line in pipeline_lines:
             with self.subTest(line=line):
                 self.assertRegex(line, r"--canary --pull ")
-        self.assertIsNone(re.search(r"`[^`\n]*--canary \"?<?owner[^`\n]*`", body.replace("`--canary owner/repo#number`", "")))
+        self.assertIsNone(
+            re.search(r"`[^`\n]*--canary \"?<?owner[^`\n]*`", body.replace("`--canary owner/repo#number`", ""))
+        )
         pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
         self.assertIn('prepare_parser.add_argument("--canary", action="store_true")', pipeline)
 
@@ -393,8 +463,11 @@ class CrossSkillContractTests(unittest.TestCase):
         for name in ("review-prs", "update-pr-tracker"):
             with self.subTest(asks=name):
                 self.assertIn('"AskUserQuestion"', read(name)[0])
-        self.assertIn("If `--re-review` was given without `--scope`, ask the user once with AskUserQuestion, offering "
-                      "`auto`, `full`, and `incremental` in that order; never choose one yourself.", read("review-prs")[1])
+        self.assertIn(
+            "If `--re-review` was given without `--scope`, ask the user once with AskUserQuestion, offering "
+            "`auto`, `full`, and `incremental` in that order; never choose one yourself.",
+            read("review-prs")[1],
+        )
         tracker = read("update-pr-tracker")[1]
         self.assertIn("Ask once for the run, never per pull request.", tracker)
         self.assertIn("plus `--scope <scope>` with the chosen scope when any is `stale`", tracker)
@@ -405,15 +478,16 @@ class CrossSkillContractTests(unittest.TestCase):
         # re-review replayed "steps 2 to 5" of review-prs, so renumbering review-prs silently broke it (#116).
         # A skill invokes another skill by name instead; it never reads that skill's SKILL.md or cites its steps.
         retired = (
-            'Read `${CLAUDE_SKILL_DIR}/../review-prs/SKILL.md` and follow its steps 2 to 5 exactly for this one pull '
+            "Read `${CLAUDE_SKILL_DIR}/../review-prs/SKILL.md` and follow its steps 2 to 5 exactly for this one pull "
             'request (or its "With the Workflow tool" section when that tool is available).'
         )
         names = {path.parent.name for path in (REPOSITORY_ROOT / "skills").glob("*/SKILL.md")}
         self.assertEqual(["review-prs"], replayed_skills(retired, "re-review", names))
-        self.assertEqual(["review-prs"], replayed_skills('Then do step 3 of `review-prs` again.', "x", names))
+        self.assertEqual(["review-prs"], replayed_skills("Then do step 3 of `review-prs` again.", "x", names))
         self.assertEqual(["review-prs"], replayed_skills('Apply the "Posting" section of `review-prs`.', "x", names))
-        self.assertEqual([], replayed_skills("Run step 2 again, then invoke `review-prs` with `--re-review`.", "x",
-                                             names))
+        self.assertEqual(
+            [], replayed_skills("Run step 2 again, then invoke `review-prs` with `--re-review`.", "x", names)
+        )
         for path in sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md")):
             with self.subTest(skill=path.parent.name):
                 body = path.read_text(encoding="utf-8-sig").split("---", 2)[2]
@@ -445,9 +519,7 @@ class CrossSkillContractTests(unittest.TestCase):
             REPOSITORY_ROOT / "skills/code-review-core/SKILL.md",
             REPOSITORY_ROOT / "skills/review-prs/SKILL.md",
         ]
-        combined = "\n".join(
-            path.read_text(encoding="utf-8-sig") for path in skill_paths
-        )
+        combined = "\n".join(path.read_text(encoding="utf-8-sig") for path in skill_paths)
         # The pipeline plans the generic reviewer, so the code, not the skill text, must resolve its
         # instructions from the installed core skill rather than from any repository checkout.
         specialists = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_specialists.py").read_text(

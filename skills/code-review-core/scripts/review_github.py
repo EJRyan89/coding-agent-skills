@@ -31,7 +31,11 @@ def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
     """Run a command; output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte."""
     try:
         process = subprocess.run(
-            list(arguments), capture_output=True, text=True, encoding="utf-8", errors="surrogateescape",
+            list(arguments),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
             check=False,
         )
     except FileNotFoundError as exc:
@@ -41,9 +45,7 @@ def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
             kind="prerequisite",
         ) from exc
     except OSError as exc:
-        raise GitHubError(
-            f"GitHub CLI could not be started: {exc}", kind="execution"
-        ) from exc
+        raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
     return CommandResult(process.returncode, process.stdout, process.stderr)
 
 
@@ -98,9 +100,7 @@ def _normalize_pull(value: Any) -> dict[str, Any] | None:
             "mergedAt": merged_at,
         }
     except (KeyError, TypeError) as exc:
-        raise GitHubError(
-            "Pull response has an unexpected shape", kind="malformed"
-        ) from exc
+        raise GitHubError("Pull response has an unexpected shape", kind="malformed") from exc
     return normalized
 
 
@@ -192,10 +192,19 @@ class GitHubClient:
             errors = response.get("errors")
             if errors:
                 errors = errors if isinstance(errors, list) else [errors]
-                messages = [str(error.get("message", error)) if isinstance(error, dict) else str(error) for error in errors]
+                messages = [
+                    str(error.get("message", error)) if isinstance(error, dict) else str(error) for error in errors
+                ]
                 types = {error.get("type") for error in errors if isinstance(error, dict)}
-                kind =("rate_limit" if "RATE_LIMITED" in types else "not_found" if "NOT_FOUND" in types
-                        else "forbidden" if "FORBIDDEN" in types else "api")
+                kind = (
+                    "rate_limit"
+                    if "RATE_LIMITED" in types
+                    else "not_found"
+                    if "NOT_FOUND" in types
+                    else "forbidden"
+                    if "FORBIDDEN" in types
+                    else "api"
+                )
                 raise GitHubError("GraphQL: " + "; ".join(messages), kind=kind)
             page: Any = response.get("data")
             for key in connection:
@@ -250,7 +259,8 @@ class GitHubClient:
             raise GitHubError("Pull number must be positive", kind="input")
         owner, name = repository.split("/", 1)
         threads = self.graphql_nodes(
-            REVIEW_THREADS_QUERY, {"owner": owner, "name": name, "number": number},
+            REVIEW_THREADS_QUERY,
+            {"owner": owner, "name": name, "number": number},
             ("repository", "pullRequest", "reviewThreads"),
         )
         comments = []
@@ -264,15 +274,17 @@ class GitHubClient:
                 author = first["author"]
                 if author is not None and author["__typename"] != "User" and author["__typename"] != "Mannequin":
                     continue
-                comments.append({
-                    "id": f"C{len(comments) + 1}",
-                    "author": author["login"] if author is not None else "ghost",
-                    "path": thread["path"],
-                    "line": thread["line"] or thread["originalLine"],
-                    "outdated": bool(thread["isOutdated"]),
-                    "body": first["body"],
-                    "url": first["url"],
-                })
+                comments.append(
+                    {
+                        "id": f"C{len(comments) + 1}",
+                        "author": author["login"] if author is not None else "ghost",
+                        "path": thread["path"],
+                        "line": thread["line"] or thread["originalLine"],
+                        "outdated": bool(thread["isOutdated"]),
+                        "body": first["body"],
+                        "url": first["url"],
+                    }
+                )
             except (KeyError, TypeError, IndexError) as exc:
                 raise GitHubError("Review thread has an unexpected shape", kind="malformed") from exc
         return comments
@@ -281,9 +293,7 @@ class GitHubClient:
         repository = validate_repository_identity(repository)
         if state not in {"open", "closed", "all"}:
             raise GitHubError(f"Invalid pull state: {state}", kind="input")
-        pages = self.api_json(
-            f"repos/{repository}/pulls?state={state}&per_page=100", paginate=True
-        )
+        pages = self.api_json(f"repos/{repository}/pulls?state={state}&per_page=100", paginate=True)
         if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
             raise GitHubError("Paginated pull response has an unexpected shape", kind="malformed")
         pulls = [_normalize_pull(pull) for page in pages for pull in page]
@@ -295,7 +305,5 @@ class GitHubClient:
             raise GitHubError("Pull number must be positive", kind="input")
         pull = _normalize_pull(self.api_json(f"repos/{repository}/pulls/{number}"))
         if pull is None:
-            raise GitHubError(
-                "Pull request is closed without being merged", kind="ineligible"
-            )
+            raise GitHubError("Pull request is closed without being merged", kind="ineligible")
         return pull

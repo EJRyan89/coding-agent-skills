@@ -80,10 +80,16 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     leaves the caller's job object when the job allows that, since a runtime may end a command's whole job.
     """
     with open(log_path, "ab") as log:
+
         def start(flags: int) -> subprocess.Popen[bytes]:
             return subprocess.Popen(
-                list(arguments), cwd=cwd, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                close_fds=True, creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | flags,
+                list(arguments),
+                cwd=cwd,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+                creationflags=CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | flags,
             )
 
         try:

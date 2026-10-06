@@ -29,18 +29,31 @@ MAX_FILES_PER_TOOL = 10
 UNREAD = "(present, but could not be parsed; read the file for its settings)"
 
 SDK_ANALYZERS = "Microsoft.CodeAnalysis.NetAnalyzers"
-CODE_STYLE_ANALYZERS = {".csproj": "Microsoft.CodeAnalysis.CSharp.CodeStyle",
-                        ".vbproj": "Microsoft.CodeAnalysis.VisualBasic.CodeStyle"}
+CODE_STYLE_ANALYZERS = {
+    ".csproj": "Microsoft.CodeAnalysis.CSharp.CodeStyle",
+    ".vbproj": "Microsoft.CodeAnalysis.VisualBasic.CodeStyle",
+}
 MSBUILD_SUFFIXES = frozenset({".csproj", ".vbproj", ".fsproj", ".props", ".targets"})
 # Items that put an analyzer into every build they reach; a PackageVersion only pins a version centrally.
 ANALYZER_ITEMS = frozenset({"PackageReference", "GlobalPackageReference", "Analyzer"})
 ANALYZER_PACKAGE = re.compile(r"analy[sz]er", re.IGNORECASE)
 OTHER_ANALYZER_PACKAGES = frozenset({"asyncfixer"})
-MSBUILD_PROPERTIES = frozenset({
-    "EnableNETAnalyzers", "EnforceCodeStyleInBuild", "TreatWarningsAsErrors", "WarningsAsErrors",
-    "WarningsNotAsErrors", "NoWarn", "CodeAnalysisTreatWarningsAsErrors", "CodeAnalysisRuleSet", "RunAnalyzers",
-    "RunAnalyzersDuringBuild", "TargetFramework", "TargetFrameworks",
-})
+MSBUILD_PROPERTIES = frozenset(
+    {
+        "EnableNETAnalyzers",
+        "EnforceCodeStyleInBuild",
+        "TreatWarningsAsErrors",
+        "WarningsAsErrors",
+        "WarningsNotAsErrors",
+        "NoWarn",
+        "CodeAnalysisTreatWarningsAsErrors",
+        "CodeAnalysisRuleSet",
+        "RunAnalyzers",
+        "RunAnalyzersDuringBuild",
+        "TargetFramework",
+        "TargetFrameworks",
+    }
+)
 MSBUILD_PROPERTY_PREFIXES = ("AnalysisLevel", "AnalysisMode")
 DIAGNOSTIC_KEY = re.compile(r"dotnet_(?:analyzer_)?diagnostic(?:\.[^\s=]+)?\.severity", re.IGNORECASE)
 GLOBAL_KEYS = frozenset({"is_global", "global_level"})
@@ -51,25 +64,59 @@ RULE_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore")
 FLAKE8_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore", "extend_select", "extend_ignore")
 PYPROJECT_TOOLS = {"pylint": "pylint", "mypy": "mypy", "pyright": "pyright", "flake8": "flake8", "bandit": "bandit"}
 # Configuration files whose name alone says which tool reads them.
-NAMED_BY_FILE = {"ruff.toml": "ruff", ".ruff.toml": "ruff", ".flake8": "flake8", ".shellcheckrc": "ShellCheck",
-                 "shellcheckrc": "ShellCheck"}
+NAMED_BY_FILE = {
+    "ruff.toml": "ruff",
+    ".ruff.toml": "ruff",
+    ".flake8": "flake8",
+    ".shellcheckrc": "ShellCheck",
+    "shellcheckrc": "ShellCheck",
+}
 SETUP_CFG_TOOLS = {"flake8": "flake8", "mypy": "mypy", "pylint": "pylint", "pylint.messages control": "pylint"}
 ESLINT_PLUGIN = re.compile(r"(?:@[^/]+/)?eslint-plugin(?:-.+)?")
 # Configuration files that name their analyzer and whose settings this inventory does not read.
 CONFIG_FILES = {
-    ".pylintrc": "pylint", "pylintrc": "pylint", "mypy.ini": "mypy", ".mypy.ini": "mypy",
-    "pyrightconfig.json": "pyright", "PSScriptAnalyzerSettings.psd1": "PSScriptAnalyzer",
-    ".eslintrc": "eslint", ".eslintrc.json": "eslint", ".eslintrc.js": "eslint", ".eslintrc.cjs": "eslint",
-    ".eslintrc.yaml": "eslint", ".eslintrc.yml": "eslint", "eslint.config.js": "eslint",
-    "eslint.config.mjs": "eslint", "eslint.config.cjs": "eslint", "eslint.config.ts": "eslint",
-    "eslint.config.mts": "eslint", "eslint.config.cts": "eslint", "biome.json": "Biome", "biome.jsonc": "Biome",
-    ".stylelintrc": "stylelint", ".stylelintrc.json": "stylelint", "stylelint.config.js": "stylelint",
-    ".golangci.yml": "golangci-lint", ".golangci.yaml": "golangci-lint", ".golangci.toml": "golangci-lint",
-    ".golangci.json": "golangci-lint", ".rubocop.yml": "RuboCop", "clippy.toml": "Clippy", ".clippy.toml": "Clippy",
-    ".swiftlint.yml": "SwiftLint", ".semgrep.yml": "Semgrep", ".semgrep.yaml": "Semgrep",
-    ".hadolint.yaml": "hadolint", ".hadolint.yml": "hadolint", ".markdownlint.json": "markdownlint",
-    ".markdownlint.yaml": "markdownlint", ".markdownlint.yml": "markdownlint", ".yamllint": "yamllint",
-    ".yamllint.yaml": "yamllint", ".yamllint.yml": "yamllint", "checkstyle.xml": "Checkstyle",
+    ".pylintrc": "pylint",
+    "pylintrc": "pylint",
+    "mypy.ini": "mypy",
+    ".mypy.ini": "mypy",
+    "pyrightconfig.json": "pyright",
+    "PSScriptAnalyzerSettings.psd1": "PSScriptAnalyzer",
+    ".eslintrc": "eslint",
+    ".eslintrc.json": "eslint",
+    ".eslintrc.js": "eslint",
+    ".eslintrc.cjs": "eslint",
+    ".eslintrc.yaml": "eslint",
+    ".eslintrc.yml": "eslint",
+    "eslint.config.js": "eslint",
+    "eslint.config.mjs": "eslint",
+    "eslint.config.cjs": "eslint",
+    "eslint.config.ts": "eslint",
+    "eslint.config.mts": "eslint",
+    "eslint.config.cts": "eslint",
+    "biome.json": "Biome",
+    "biome.jsonc": "Biome",
+    ".stylelintrc": "stylelint",
+    ".stylelintrc.json": "stylelint",
+    "stylelint.config.js": "stylelint",
+    ".golangci.yml": "golangci-lint",
+    ".golangci.yaml": "golangci-lint",
+    ".golangci.toml": "golangci-lint",
+    ".golangci.json": "golangci-lint",
+    ".rubocop.yml": "RuboCop",
+    "clippy.toml": "Clippy",
+    ".clippy.toml": "Clippy",
+    ".swiftlint.yml": "SwiftLint",
+    ".semgrep.yml": "Semgrep",
+    ".semgrep.yaml": "Semgrep",
+    ".hadolint.yaml": "hadolint",
+    ".hadolint.yml": "hadolint",
+    ".markdownlint.json": "markdownlint",
+    ".markdownlint.yaml": "markdownlint",
+    ".markdownlint.yml": "markdownlint",
+    ".yamllint": "yamllint",
+    ".yamllint.yaml": "yamllint",
+    ".yamllint.yml": "yamllint",
+    "checkstyle.xml": "Checkstyle",
 }
 
 
@@ -96,8 +143,12 @@ class _Inventory:
             if len(ordered) > MAX_FILES_PER_TOOL:
                 entry["more_files"] = len(ordered) - MAX_FILES_PER_TOOL
             tools.append(entry)
-        return {"schema_version": INVENTORY_SCHEMA_VERSION, "tools": tools, "settings": self.settings,
-                "settings_truncated": self.truncated}
+        return {
+            "schema_version": INVENTORY_SCHEMA_VERSION,
+            "tools": tools,
+            "settings": self.settings,
+            "settings_truncated": self.truncated,
+        }
 
 
 def _text(root: Path, path: str) -> str | None:

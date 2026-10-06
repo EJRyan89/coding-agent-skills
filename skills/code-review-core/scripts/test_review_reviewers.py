@@ -122,13 +122,22 @@ class InspectionTests(unittest.TestCase):
 
     def test_every_delegation_branch_and_its_reason(self) -> None:
         for text, delegates, reason in (
-            ("---\ntools: Read, Task\n---\nSpawn reviewers.\n", "yes",
-             "it may start subagents and its text says it does"),
+            (
+                "---\ntools: Read, Task\n---\nSpawn reviewers.\n",
+                "yes",
+                "it may start subagents and its text says it does",
+            ),
             ("---\nname: x\n---\nSpawn reviewers.\n", "yes", "it may start subagents and its text says it does"),
-            ('---\ntools: "*"\n---\nReview it.\n', "unknown",
-             "its tool list grants Agent or Task, but its text never says it starts one"),
-            ("---\nallowed-tools: Agent\n---\nReview it.\n", "unknown",
-             "its tool list grants Agent or Task, but its text never says it starts one"),
+            (
+                '---\ntools: "*"\n---\nReview it.\n',
+                "unknown",
+                "its tool list grants Agent or Task, but its text never says it starts one",
+            ),
+            (
+                "---\nallowed-tools: Agent\n---\nReview it.\n",
+                "unknown",
+                "its tool list grants Agent or Task, but its text never says it starts one",
+            ),
             ("---\ntools: Read\n---\nSpawn reviewers.\n", "no", "its tool list grants neither Agent nor Task"),
             ("---\ntools: []\n---\nSpawn reviewers.\n", "no", "its tool list grants neither Agent nor Task"),
             ("---\nname: x\n---\nReview it.\n", "no", "its text never mentions starting subagents"),
@@ -140,8 +149,16 @@ class InspectionTests(unittest.TestCase):
                 self.assertEqual(".claude/agents/review.md", result.skill)
 
     def test_delegation_phrases(self) -> None:
-        for line in ("Use a sub-agent.", "Two subagents run.", "Set subagent_type.", "Call the Agent tool.",
-                     "Use the task tool.", "It spawns reviewers.", "Spawned workers report.", "Keep spawning."):
+        for line in (
+            "Use a sub-agent.",
+            "Two subagents run.",
+            "Set subagent_type.",
+            "Call the Agent tool.",
+            "Use the task tool.",
+            "It spawns reviewers.",
+            "Spawned workers report.",
+            "Keep spawning.",
+        ):
             with self.subTest(line=line):
                 self.assertEqual([(4, line)], inspect(f"---\nname: x\n---\n{line}\n").evidence)
         for line in ("Act as an agent.", "The spawner runs.", "Be subagentic.", "Track the task."):
@@ -154,12 +171,20 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual([(4, "Start a subagent."), (5, long[:160])], result.evidence)
         unterminated = inspect("---\ndescription: uses subagents\n")
         self.assertEqual((None, "yes"), (unterminated.tools, unterminated.delegates))
-        self.assertEqual([(2, "description: uses subagents")], unterminated.evidence,
-                         "an unterminated block is body text, counted from line 1")
+        self.assertEqual(
+            [(2, "description: uses subagents")],
+            unterminated.evidence,
+            "an unterminated block is body text, counted from line 1",
+        )
 
     def test_named_agents_live_in_agent_directories_and_match_whole_names(self) -> None:
-        files = {".claude/agents/db-review.md", ".claude/agents/team/sec.md", ".claude/agents/notes.txt",
-                 "docs/style.md", SKILL}
+        files = {
+            ".claude/agents/db-review.md",
+            ".claude/agents/team/sec.md",
+            ".claude/agents/notes.txt",
+            "docs/style.md",
+            SKILL,
+        }
 
         def named(line: str) -> list[str]:
             return inspect_skill(SKILL, f"---\nname: x\n---\n{line}\n", COMMIT, files).references
@@ -167,21 +192,34 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual([".claude/agents/db-review.md"], named("Ask db-review."))
         self.assertEqual([".claude/agents/team/sec.md"], named("Ask `sec` about secrets"))
         self.assertEqual([".claude/agents/team/sec.md"], named("Ask the sec agent about secrets"))
-        for line in ("Ask my-db-review.", "Ask db-reviewer.", "Ask DB-REVIEW.", "Follow style.", "Read notes.",
-                     "Ask sec about secrets"):
+        for line in (
+            "Ask my-db-review.",
+            "Ask db-reviewer.",
+            "Ask DB-REVIEW.",
+            "Follow style.",
+            "Read notes.",
+            "Ask sec about secrets",
+        ):
             with self.subTest(line=line):
                 self.assertEqual([], named(line))
         forbidden = inspect_skill(SKILL, "---\ntools: Read\n---\nAsk db-review.\n", COMMIT, files)
         self.assertEqual(("no", []), (forbidden.delegates, forbidden.evidence))
-        self.assertEqual([".claude/agents/db-review.md"], forbidden.references,
-                         "a named agent is still a file the skill needs")
+        self.assertEqual(
+            [".claude/agents/db-review.md"], forbidden.references, "a named agent is still a file the skill needs"
+        )
 
     def test_a_common_word_agent_name_in_prose_is_not_delegation(self) -> None:
         files = {".claude/agents/review.md", ".claude/skills/x/SKILL.md"}
-        result = inspect_skill(".claude/skills/x/SKILL.md",
-                               "---\nname: x\n---\nRead the diff, then review it and report findings.\n", COMMIT, files)
-        self.assertEqual(("no", "its text never mentions starting subagents", [], []),
-                         (result.delegates, result.reason, result.evidence, result.references))
+        result = inspect_skill(
+            ".claude/skills/x/SKILL.md",
+            "---\nname: x\n---\nRead the diff, then review it and report findings.\n",
+            COMMIT,
+            files,
+        )
+        self.assertEqual(
+            ("no", "its text never mentions starting subagents", [], []),
+            (result.delegates, result.reason, result.evidence, result.references),
+        )
         self.assertEqual([], entrypoint_manifest("solo", result)["resources"], "no agent file is materialized")
 
     def test_a_common_word_agent_name_in_an_agent_context_is_delegation(self) -> None:
@@ -191,20 +229,39 @@ class InspectionTests(unittest.TestCase):
             return inspect_skill(".claude/skills/x/SKILL.md", f"---\nname: x\n---\n{line}\n", COMMIT, files)
 
         result = inspected("Start the review agent.")
-        self.assertEqual(("yes", [(4, "Start the review agent.")], [".claude/agents/review.md"]),
-                         (result.delegates, result.evidence, result.references))
-        for line in ("Ask `review` about it.", "Hand it to the review subagent.", "Pass it to the review Agent.",
-                     "Delegate the diff to review.", "Run the agent named review.", "Spawn review for each area."):
+        self.assertEqual(
+            ("yes", [(4, "Start the review agent.")], [".claude/agents/review.md"]),
+            (result.delegates, result.evidence, result.references),
+        )
+        for line in (
+            "Ask `review` about it.",
+            "Hand it to the review subagent.",
+            "Pass it to the review Agent.",
+            "Delegate the diff to review.",
+            "Run the agent named review.",
+            "Spawn review for each area.",
+        ):
             with self.subTest(line=line):
-                self.assertEqual(("yes", [".claude/agents/review.md"]),
-                                 (inspected(line).delegates, inspected(line).references))
-        for line in ("Start with the diff, then review it.", "Review the change.", "Run the tests and review them.",
-                     "Read `docs/review-notes.md`, then review it.", "Agents aside, review it.", "Ask Review about it."):
+                self.assertEqual(
+                    ("yes", [".claude/agents/review.md"]), (inspected(line).delegates, inspected(line).references)
+                )
+        for line in (
+            "Start with the diff, then review it.",
+            "Review the change.",
+            "Run the tests and review them.",
+            "Read `docs/review-notes.md`, then review it.",
+            "Agents aside, review it.",
+            "Ask Review about it.",
+        ):
             with self.subTest(line=line):
-                self.assertEqual(("no", [], []),
-                                 (inspected(line).delegates, inspected(line).evidence, inspected(line).references))
-        self.assertEqual([".claude/agents/SecReview.md"], inspected("Ask SecReview about secrets.").references,
-                         "a name that is not a plain word keeps the whole-word match")
+                self.assertEqual(
+                    ("no", [], []), (inspected(line).delegates, inspected(line).evidence, inspected(line).references)
+                )
+        self.assertEqual(
+            [".claude/agents/SecReview.md"],
+            inspected("Ask SecReview about secrets.").references,
+            "a name that is not a plain word keeps the whole-word match",
+        )
 
     def test_an_agent_named_in_both_agent_directories_references_both_files_in_every_process(self) -> None:
         # Agents were keyed by name, so one of the two files was dropped, and which one followed the set's
@@ -218,16 +275,24 @@ class InspectionTests(unittest.TestCase):
         )
         seen = set()
         for seed in ("0", "1", "2", "3", "4", "5", "6", "7"):
-            result = subprocess.run([sys.executable, "-B", "-c", script], capture_output=True, text=True,
-                                    env={**os.environ, "PYTHONHASHSEED": seed}, check=True)
+            result = subprocess.run(
+                [sys.executable, "-B", "-c", script],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "PYTHONHASHSEED": seed},
+                check=True,
+            )
             seen.add(result.stdout.strip())
         self.assertEqual({"['.claude/agents/db-review.md', '.github/agents/db-review.md']"}, seen)
 
     def test_reference_paths_are_normalized_and_must_be_repository_files(self) -> None:
         result = inspect("[a](./docs/rules.md#x) `./src/A.cs` /src/A.cs rules.md `.claude/agents/review.md`\n")
         self.assertEqual(["docs/rules.md", "src/A.cs"], result.references)
-        self.assertEqual([], inspect("Read /src/A.cs and rules.md.\n").references,
-                         "an absolute path or a bare file name is not a repository path")
+        self.assertEqual(
+            [],
+            inspect("Read /src/A.cs and rules.md.\n").references,
+            "an absolute path or a bare file name is not a repository path",
+        )
 
     def test_frontmatter_value(self) -> None:
         text = "---\nname: x\nModel: 'sonnet'\nmodel: opus\neffort: \"high\"\nempty:\n---\nmodel: haiku\n"
@@ -238,21 +303,26 @@ class InspectionTests(unittest.TestCase):
         self.assertIsNone(frontmatter_value("---\nname: x\n---\nmodel: haiku\n", "model"), "the body is not read")
         self.assertIsNone(frontmatter_value("model: haiku\n", "model"))
         self.assertIsNone(frontmatter_value("", "model"))
-        self.assertIsNone(frontmatter_value("---\nmodel: haiku\n", "model"),
-                          "an unterminated block is no frontmatter, as inspect_skill reads it")
+        self.assertIsNone(
+            frontmatter_value("---\nmodel: haiku\n", "model"),
+            "an unterminated block is no frontmatter, as inspect_skill reads it",
+        )
 
     def test_entrypoint_manifest_shape_and_validation(self) -> None:
         inspection = inspect("---\ntools: Read\n---\nApply `docs/rules.md` and `src/A.cs`.\n")
-        self.assertEqual({
-            "schema_version": 1,
-            "id": "solo",
-            "protocol_version": 1,
-            "supports": ["initial", "re-review"],
-            "required_capabilities": ["read-diff", "write-result"],
-            "entrypoint": ".claude/agents/review.md",
-            "resources": ["docs/rules.md", "src/A.cs"],
-            "agent_profiles": [],
-        }, entrypoint_manifest("solo", inspection))
+        self.assertEqual(
+            {
+                "schema_version": 1,
+                "id": "solo",
+                "protocol_version": 1,
+                "supports": ["initial", "re-review"],
+                "required_capabilities": ["read-diff", "write-result"],
+                "entrypoint": ".claude/agents/review.md",
+                "resources": ["docs/rules.md", "src/A.cs"],
+                "agent_profiles": [],
+            },
+            entrypoint_manifest("solo", inspection),
+        )
         with self.assertRaises(RuntimeContractError) as raised:
             entrypoint_manifest("Not A Slug", inspection)
         self.assertEqual("Adapter manifest id is invalid", str(raised.exception))
@@ -277,10 +347,16 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual({"a b/c.md", "src/A.cs"}, repository_files(CHECKOUT, COMMIT, git))
         self.assertEqual([["git", "-C", str(CHECKOUT), "ls-tree", "-r", "--name-only", "-z", COMMIT]], git.calls)
         self.assertEqual(set(), repository_files(CHECKOUT, COMMIT, FakeGit({})))
-        self.raises("fatal: not a tree object", repository_files, CHECKOUT, COMMIT,
-                    lambda arguments: CommandResult(128, "", "fatal: not a tree object\n"))
-        self.raises("git command failed", repository_files, CHECKOUT, COMMIT,
-                    lambda arguments: CommandResult(1, "", ""))
+        self.raises(
+            "fatal: not a tree object",
+            repository_files,
+            CHECKOUT,
+            COMMIT,
+            lambda arguments: CommandResult(128, "", "fatal: not a tree object\n"),
+        )
+        self.raises(
+            "git command failed", repository_files, CHECKOUT, COMMIT, lambda arguments: CommandResult(1, "", "")
+        )
 
     def test_a_path_that_is_not_utf8_is_left_out_of_the_listing(self) -> None:
         # No configuration, manifest, or skill text can name such a path, so it can never be a reviewer file.
@@ -289,36 +365,70 @@ class RepositoryTests(unittest.TestCase):
         checkout.mkdir()
 
         def git(*arguments: str, data: bytes | None = None) -> bytes:
-            result = subprocess.run(["git", "-C", str(checkout), *arguments], input=data, capture_output=True,
-                                    check=False)
+            result = subprocess.run(
+                ["git", "-C", str(checkout), *arguments], input=data, capture_output=True, check=False
+            )
             self.assertEqual(0, result.returncode, result.stderr)
             return result.stdout.strip()
 
         git("init", "-q")
         blob = git("hash-object", "-w", "--stdin", data=b"Rules\n")
-        tree = git("mktree", "-z", data=b"100644 blob " + blob + b"\tcaf\xe9.md\x00100644 blob " + blob + b"\tok.md\x00")
-        commit = git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree",
-                     tree.decode("ascii"), "-m", "names").decode("ascii")
+        tree = git(
+            "mktree", "-z", data=b"100644 blob " + blob + b"\tcaf\xe9.md\x00100644 blob " + blob + b"\tok.md\x00"
+        )
+        commit = git(
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit-tree",
+            tree.decode("ascii"),
+            "-m",
+            "names",
+        ).decode("ascii")
         self.assertEqual({"ok.md"}, repository_files(checkout, commit))
 
     def test_inspect_configured_skill(self) -> None:
         files = {SKILL: "﻿---\ntools: Read\n---\nApply `docs/rules.md`.\n", "docs/rules.md": "Rules\n"}
         inspection = inspect_configured_skill(CHECKOUT, COMMIT, SKILL, FakeGit(files))
-        self.assertEqual((SKILL, COMMIT, ["Read"], "no", ["docs/rules.md"]),
-                         (inspection.skill, inspection.commit, inspection.tools, inspection.delegates,
-                          inspection.references), "a byte-order mark does not hide the frontmatter")
-        self.raises(f"The configured review skill .claude/skills/other/SKILL.md does not exist at {'a' * 12}",
-                    inspect_configured_skill, CHECKOUT, COMMIT, ".claude/skills/other/SKILL.md", FakeGit(files))
-        self.raises(f"The review skill {SKILL} is not UTF-8 text",
-                    inspect_configured_skill, CHECKOUT, COMMIT, SKILL, FakeGit({SKILL: b"caf\xe9\n"}))
-        self.raises(f"Declared reviewer file is not a regular file: {SKILL}",
-                    inspect_configured_skill, CHECKOUT, COMMIT, SKILL, FakeGit(files, {SKILL: "120000"}))
+        self.assertEqual(
+            (SKILL, COMMIT, ["Read"], "no", ["docs/rules.md"]),
+            (inspection.skill, inspection.commit, inspection.tools, inspection.delegates, inspection.references),
+            "a byte-order mark does not hide the frontmatter",
+        )
+        self.raises(
+            f"The configured review skill .claude/skills/other/SKILL.md does not exist at {'a' * 12}",
+            inspect_configured_skill,
+            CHECKOUT,
+            COMMIT,
+            ".claude/skills/other/SKILL.md",
+            FakeGit(files),
+        )
+        self.raises(
+            f"The review skill {SKILL} is not UTF-8 text",
+            inspect_configured_skill,
+            CHECKOUT,
+            COMMIT,
+            SKILL,
+            FakeGit({SKILL: b"caf\xe9\n"}),
+        )
+        self.raises(
+            f"Declared reviewer file is not a regular file: {SKILL}",
+            inspect_configured_skill,
+            CHECKOUT,
+            COMMIT,
+            SKILL,
+            FakeGit(files, {SKILL: "120000"}),
+        )
 
     def test_manifest_location(self) -> None:
         location = manifest_location({"manifest": True}, self.config, "Octo/Repo")
         self.assertEqual(self.config.parent, location.parents[3])
-        self.assertEqual(("reviewers", "octo", "repo", "manifest.json"), location.parts[-4:],
-                         "the default sits beside the config under the lowercased repository")
+        self.assertEqual(
+            ("reviewers", "octo", "repo", "manifest.json"),
+            location.parts[-4:],
+            "the default sits beside the config under the lowercased repository",
+        )
         explicit = self.root / "elsewhere" / "manifest.json"
         self.assertEqual(str(explicit), str(manifest_location({"manifest": str(explicit)}, self.config, "Octo/Repo")))
         for reviewer in ({}, {"manifest": None}, {"manifest": False}):
@@ -326,20 +436,29 @@ class RepositoryTests(unittest.TestCase):
                 self.assertIsNone(manifest_location(reviewer, self.config, "Octo/Repo"))
 
     def manifest(self, entrypoint: str = SKILL) -> dict:
-        return {"schema_version": 1, "id": "repo-review", "protocol_version": 1, "supports": ["initial"],
-                "required_capabilities": ["read-diff", "write-result"], "entrypoint": entrypoint,
-                "resources": [], "agent_profiles": []}
+        return {
+            "schema_version": 1,
+            "id": "repo-review",
+            "protocol_version": 1,
+            "supports": ["initial"],
+            "required_capabilities": ["read-diff", "write-result"],
+            "entrypoint": entrypoint,
+            "resources": [],
+            "agent_profiles": [],
+        }
 
     def resolve(self, reviewer: dict, git: FakeGit):
-        return resolve_reviewer(reviewer, checkout=CHECKOUT, commit=COMMIT, config_path=self.config,
-                                repository="Octo/Repo", runner=git)
+        return resolve_reviewer(
+            reviewer, checkout=CHECKOUT, commit=COMMIT, config_path=self.config, repository="Octo/Repo", runner=git
+        )
 
     def test_a_repository_manifest_is_read_from_the_commit_without_inspecting_a_skill(self) -> None:
         git = FakeGit({".review/manifest.json": json.dumps(self.manifest())})
         resolved = self.resolve({"id": "r", "manifest_path": ".review/manifest.json", "skill": "missing/SKILL.md"}, git)
-        self.assertEqual((self.manifest(), "repository-manifest", ".review/manifest.json", None, None),
-                         (resolved.manifest, resolved.source, resolved.location, resolved.local_root,
-                          resolved.inspection))
+        self.assertEqual(
+            (self.manifest(), "repository-manifest", ".review/manifest.json", None, None),
+            (resolved.manifest, resolved.source, resolved.location, resolved.local_root, resolved.inspection),
+        )
         self.assertNotIn(["git", "-C", str(CHECKOUT), "ls-tree", "-r", "--name-only", "-z", COMMIT], git.calls)
 
     def test_a_local_manifest_runs_even_a_delegating_skill(self) -> None:
@@ -352,13 +471,19 @@ class RepositoryTests(unittest.TestCase):
         for setting, path in ((True, default), (str(explicit), explicit)):
             with self.subTest(setting=setting):
                 resolved = self.resolve({"id": "r", "skill": SKILL, "manifest": setting}, git)
-                self.assertEqual((self.manifest(), "local-manifest", str(path), path.parent),
-                                 (resolved.manifest, resolved.source, resolved.location, resolved.local_root))
+                self.assertEqual(
+                    (self.manifest(), "local-manifest", str(path), path.parent),
+                    (resolved.manifest, resolved.source, resolved.location, resolved.local_root),
+                )
                 self.assertEqual("yes", resolved.inspection.delegates)
 
     def test_the_skill_must_exist_even_with_a_local_manifest(self) -> None:
-        self.raises(f"The configured review skill {SKILL} does not exist at {'a' * 12}",
-                    self.resolve, {"id": "r", "skill": SKILL, "manifest": True}, FakeGit({}))
+        self.raises(
+            f"The configured review skill {SKILL} does not exist at {'a' * 12}",
+            self.resolve,
+            {"id": "r", "skill": SKILL, "manifest": True},
+            FakeGit({}),
+        )
 
     def test_a_skill_that_starts_subagents_needs_a_manifest(self) -> None:
         git = FakeGit({SKILL: "---\nname: x\n---\nReview.\nStart   a subagent per area.\n"})
@@ -366,21 +491,27 @@ class RepositoryTests(unittest.TestCase):
             f"The review skill {SKILL} starts its own subagents (line 5: Start a subagent per area.), which fails "
             "when it runs as a reviewer subagent. Give it a specialists manifest (reviewer.manifest); see "
             "inspect-reviewer.",
-            self.resolve, {"id": "r", "skill": SKILL}, git,
+            self.resolve,
+            {"id": "r", "skill": SKILL},
+            git,
         )
 
     def test_a_skill_that_may_not_delegate_runs_as_an_entrypoint(self) -> None:
-        for text, delegates in (("---\ntools: Read\n---\nApply `docs/rules.md`.\n", "no"),
-                                ("---\ntools: Read, Agent\n---\nApply `docs/rules.md`.\n", "unknown")):
+        for text, delegates in (
+            ("---\ntools: Read\n---\nApply `docs/rules.md`.\n", "no"),
+            ("---\ntools: Read, Agent\n---\nApply `docs/rules.md`.\n", "unknown"),
+        ):
             with self.subTest(delegates=delegates):
                 git = FakeGit({SKILL: text, "docs/rules.md": "Rules\n"})
                 resolved = self.resolve({"id": "solo", "skill": SKILL, "manifest": False}, git)
-                self.assertEqual(("skill", SKILL, None, delegates),
-                                 (resolved.source, resolved.location, resolved.local_root,
-                                  resolved.inspection.delegates))
-                self.assertEqual(("solo", SKILL, ["docs/rules.md"]),
-                                 (resolved.manifest["id"], resolved.manifest["entrypoint"],
-                                  resolved.manifest["resources"]))
+                self.assertEqual(
+                    ("skill", SKILL, None, delegates),
+                    (resolved.source, resolved.location, resolved.local_root, resolved.inspection.delegates),
+                )
+                self.assertEqual(
+                    ("solo", SKILL, ["docs/rules.md"]),
+                    (resolved.manifest["id"], resolved.manifest["entrypoint"], resolved.manifest["resources"]),
+                )
 
 
 if __name__ == "__main__":

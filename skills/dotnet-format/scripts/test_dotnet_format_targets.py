@@ -20,10 +20,10 @@ import dotnet_format_targets as targets  # noqa: E402
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
 LEGACY_WEB_PROJECT = (
-    '<Project><PropertyGroup><ProjectTypeGuids>{349C5851-65DF-11DA-9384-00065B846F21};'
-    '{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids></PropertyGroup></Project>\n'
+    "<Project><PropertyGroup><ProjectTypeGuids>{349C5851-65DF-11DA-9384-00065B846F21};"
+    "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids></PropertyGroup></Project>\n"
 )
-WEB_APPLICATION_PROJECT = '<Project><PropertyGroup><WebApplication>true</WebApplication></PropertyGroup></Project>\n'
+WEB_APPLICATION_PROJECT = "<Project><PropertyGroup><WebApplication>true</WebApplication></PropertyGroup></Project>\n"
 WINFORMS_PROJECT = (
     '<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><Reference Include="System.Web" /></ItemGroup></Project>\n'
 )
@@ -49,9 +49,22 @@ class Repository:
 
     def git(self, *arguments: str) -> str:
         result = subprocess.run(
-            ["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
-             "-c", "commit.gpgsign=false", "-c", "core.autocrlf=false", *arguments],
-            cwd=self.root, capture_output=True, text=True, check=True,
+            [
+                "git",
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "core.autocrlf=false",
+                *arguments,
+            ],
+            cwd=self.root,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return result.stdout
 
@@ -96,8 +109,9 @@ class ResolveTests(unittest.TestCase):
         self.repository.git("update-ref", "refs/remotes/origin/main", "HEAD")
         self.repository.git("checkout", "--quiet", "-b", "feature")
 
-    def run_resolve(self, cwd: Path | None = None,
-                    services: targets.Services | None = None) -> tuple[int, list[list[str]], str]:
+    def run_resolve(
+        self, cwd: Path | None = None, services: targets.Services | None = None
+    ) -> tuple[int, list[list[str]], str]:
         output, errors = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             status = targets.main(["resolve", "--cwd", str(cwd or self.repository.root)], services or Services())
@@ -121,7 +135,7 @@ class ResolveTests(unittest.TestCase):
         last = "\t".join(lines[-1])
         self.assertTrue(last.startswith("FAILED "), last)
         self.assertEqual(1, sum(1 for fields in lines if fields[0].startswith("FAILED")))
-        return last[len("FAILED "):]
+        return last[len("FAILED ") :]
 
     def values(self, lines: list[list[str]], kind: str) -> list[list[str]]:
         return [fields[1:] for fields in lines if fields[0] == kind]
@@ -157,12 +171,20 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(["REPO_ROOT", str(repo.root)], lines[0])
         self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
         self.assertEqual(
-            [["Legacy/Page.cs", "Legacy/Legacy.csproj"], ["Site/Global.cs", "Site/Site.csproj"],
-             ["Web/Controllers/HomeController.cs", "Web/Web.csproj"]],
+            [
+                ["Legacy/Page.cs", "Legacy/Legacy.csproj"],
+                ["Site/Global.cs", "Site/Site.csproj"],
+                ["Web/Controllers/HomeController.cs", "Web/Web.csproj"],
+            ],
             self.values(lines, "SKIPPED_ASPNET"),
         )
-        expected = ["App/Committed.cs", "App/Modified.cs", "App/RenamedAgain.cs", "Forms/My Form.cs",
-                    "Loose/Untracked.cs"]
+        expected = [
+            "App/Committed.cs",
+            "App/Modified.cs",
+            "App/RenamedAgain.cs",
+            "Forms/My Form.cs",
+            "Loose/Untracked.cs",
+        ]
         self.assertEqual([[name] for name in expected], self.values(lines, "FILE"))
         (file_list,) = self.values(lines, "FILE_LIST")
         self.assertEqual("".join(f"{name}\n" for name in expected), Path(file_list[0]).read_text(encoding="utf-8"))
@@ -203,7 +225,10 @@ class ResolveTests(unittest.TestCase):
         repo.write("Everything.sln", solution("Sources\\Lib\\Lib.csproj"))
         repo.commit("solutions")
         output = io.StringIO()
-        with mock.patch.object(Path, "cwd", return_value=repo.root / "Sources" / "Lib"), contextlib.redirect_stdout(output):
+        with (
+            mock.patch.object(Path, "cwd", return_value=repo.root / "Sources" / "Lib"),
+            contextlib.redirect_stdout(output),
+        ):
             self.assertEqual(0, targets.main(["resolve"], Services()))
         lines = [line.split("\t") for line in output.getvalue().splitlines()]
         self.addCleanup(os.remove, self.values(lines, "FILE_LIST")[0][0])
@@ -336,10 +361,10 @@ class ResolveTests(unittest.TestCase):
             seed.git("push", "--quiet", str(top / "remote.git"), "main", "develop")
             Repository(top).git("clone", "--quiet", str(top / "remote.git"), "clone")
             clone = Repository(top / "clone")
-            self.assertEqual("refs/remotes/origin/develop\n",
-                             clone.git("symbolic-ref", "refs/remotes/origin/HEAD"))
-            self.assertEqual("main\n", clone.git("branch", "--remotes", "--list", "origin/main",
-                                                 "--format=%(refname:lstrip=3)"))
+            self.assertEqual("refs/remotes/origin/develop\n", clone.git("symbolic-ref", "refs/remotes/origin/HEAD"))
+            self.assertEqual(
+                "main\n", clone.git("branch", "--remotes", "--list", "origin/main", "--format=%(refname:lstrip=3)")
+            )
             clone.git("checkout", "--quiet", "-b", "feature")
             clone.write("App/App.csproj", SDK_PROJECT)
             clone.write("App/Feature.cs")
@@ -355,10 +380,20 @@ class ResolveTests(unittest.TestCase):
 
     def test_a_malformed_pull_request_base_falls_back_to_origin_main(self) -> None:
         self.repository.git("update-ref", "refs/remotes/origin/develop", "HEAD")
-        for output in (b"", b"develop\n", b"not json", b"[]", b'{"number": 7}', b'{"baseRefName": 7}',
-                       b'{"baseRefName": ""}', b'{"baseRefName": null}'):
+        for output in (
+            b"",
+            b"develop\n",
+            b"not json",
+            b"[]",
+            b'{"number": 7}',
+            b'{"baseRefName": 7}',
+            b'{"baseRefName": ""}',
+            b'{"baseRefName": null}',
+        ):
             with self.subTest(output=output):
-                self.assertEqual([["origin/main"]], self.values(self.resolve(services=Services(gh_output=output)), "BASE"))
+                self.assertEqual(
+                    [["origin/main"]], self.values(self.resolve(services=Services(gh_output=output)), "BASE")
+                )
 
     def test_outside_a_repository_fails(self) -> None:
         with tempfile.TemporaryDirectory() as outside:
@@ -415,8 +450,11 @@ class ResolveTests(unittest.TestCase):
         for arguments in ([], ["resolve", "--unknown"], ["other"]):
             with self.subTest(arguments=arguments):
                 output, errors = io.StringIO(), io.StringIO()
-                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), \
-                        self.assertRaises(SystemExit) as raised:
+                with (
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(errors),
+                    self.assertRaises(SystemExit) as raised,
+                ):
                     targets.main(arguments, Services())
                 self.assertEqual(2, raised.exception.code)
                 self.assertEqual("", output.getvalue())

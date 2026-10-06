@@ -46,12 +46,16 @@ class SubstitutionContextTests(unittest.TestCase):
     def test_markdown_frontmatter_takes_the_yaml_context(self) -> None:
         skill = b'---\nname: s\ndescription: "Sweep {{X}}"\n---\n\nUnder {{X}}\n'
         rendered = render.render_file("s/SKILL.md", skill, {"X": "C:/My Repos (work)"})
-        self.assertEqual(b'---\nname: s\ndescription: "Sweep C:/My Repos (work)"\n---\n\nUnder C:/My Repos (work)\n',
-                         rendered)
+        self.assertEqual(
+            b'---\nname: s\ndescription: "Sweep C:/My Repos (work)"\n---\n\nUnder C:/My Repos (work)\n', rendered
+        )
         with self.assertRaisesRegex(DeployError, r"s/SKILL\.md \(yaml context\)"):
             render.render_file("s/SKILL.md", skill, {"X": 'C:/a"b'})
-        self.assertEqual(b'---\nUnder "q"\n', render.render_file("s/notes.md", b"---\nUnder {{X}}\n", {"X": '"q"'}),
-                         "an opening rule that is never closed is not frontmatter")
+        self.assertEqual(
+            b'---\nUnder "q"\n',
+            render.render_file("s/notes.md", b"---\nUnder {{X}}\n", {"X": '"q"'}),
+            "an opening rule that is never closed is not frontmatter",
+        )
 
     def test_undeclared_tokens_and_unknown_suffixes_are_left_untouched(self) -> None:
         self.assertEqual(b"{{Y}}", render.render_file("s/a.md", b"{{Y}}", {"X": "v"}))

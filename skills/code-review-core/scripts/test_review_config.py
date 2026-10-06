@@ -26,8 +26,13 @@ def valid_config() -> dict:
         "repository_sets": {"primary": ["Example/One"]},
         "repositories": {
             "example/one": {
-                "reviewer": {"id": "generic", "protocol_version": 1, "trusted_ref": None, "scope": "generic",
-                             "manifest_path": None},
+                "reviewer": {
+                    "id": "generic",
+                    "protocol_version": 1,
+                    "trusted_ref": None,
+                    "scope": "generic",
+                    "manifest_path": None,
+                },
                 "checkout_path": "C:\\Repos\\One",
             }
         },
@@ -71,8 +76,9 @@ class ConfigCommandTests(unittest.TestCase):
 
     def test_an_invalid_config_is_a_failed_line_on_stdout(self) -> None:
         path = self.write_json("config.json", {**valid_config(), "schema_version": 2})
-        self.assertEqual((1, "FAILED Unsupported future config schema version: 2\n", ""),
-                         self.run_main("validate", str(path)))
+        self.assertEqual(
+            (1, "FAILED Unsupported future config schema version: 2\n", ""), self.run_main("validate", str(path))
+        )
 
     def test_a_missing_config_is_a_failed_line_on_stdout(self) -> None:
         path = self.root / "absent.json"
@@ -102,8 +108,10 @@ class ConfigCommandTests(unittest.TestCase):
         undecodable = self.root / "undecodable.json"
         undecodable.write_bytes(b'{"github_login": "caf\xe9"}')
         cases = (
-            (self.write_json("invalid.json", {**valid_config(), "runtime": "nowhere"}),
-             "Unknown runtime host: 'nowhere'"),
+            (
+                self.write_json("invalid.json", {**valid_config(), "runtime": "nowhere"}),
+                "Unknown runtime host: 'nowhere'",
+            ),
             (broken, "Expecting property name enclosed in double quotes"),
             (undecodable, "can't decode byte 0xe9"),
             (self.root / "absent.json", "absent.json"),
@@ -129,8 +137,13 @@ class ConfigCommandTests(unittest.TestCase):
         absent = self.root / "absent.json"
 
         def run(*arguments: str) -> subprocess.CompletedProcess[str]:
-            return subprocess.run([sys.executable, "-B", script, *arguments], capture_output=True, text=True,
-                                  encoding="utf-8", check=False)
+            return subprocess.run(
+                [sys.executable, "-B", script, *arguments],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
 
         failed = run("validate", str(absent))
         self.assertEqual((1, ""), (failed.returncode, failed.stderr))

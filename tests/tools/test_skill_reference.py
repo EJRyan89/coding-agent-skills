@@ -92,7 +92,7 @@ class SkillReferenceTestCase(unittest.TestCase):
             text,
         )
         # A skill lists only the tools it declares: beta does not run gamma's copilot through its dependency.
-        self.assertNotIn("copilot", text[text.index("## `beta`"):])
+        self.assertNotIn("copilot", text[text.index("## `beta`") :])
 
     def test_a_section_without_hand_written_prose_is_reported(self) -> None:
         skill_reference.write(self.root)
@@ -128,7 +128,9 @@ class SkillReferenceTestCase(unittest.TestCase):
     def test_a_new_skill_is_reported_and_write_adds_its_section_in_order(self) -> None:
         self.written_and_explained()
         self.add_skill("aardvark", "description: First. Use it when testing.", {})
-        (self.root / "README.md").write_text(README.replace("| [`alpha`]", "| `aardvark` | First. |\n| [`alpha`]"), encoding="utf-8")
+        (self.root / "README.md").write_text(
+            README.replace("| [`alpha`]", "| `aardvark` | First. |\n| [`alpha`]"), encoding="utf-8"
+        )
 
         found = skill_reference.problems(self.root)
         self.assertIn("docs/skills.md: no section for `aardvark`", found)
@@ -152,7 +154,12 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertIn("## `retired`\n\nGone.", self.text())
 
     def test_reading_arguments_requires_an_argument_hint(self) -> None:
-        self.add_skill("beta", "description: Beta. Use it when testing.", {"skill_deps": ["gamma"], "tools": ["gh"]}, body="Use $ARGUMENTS.\n")
+        self.add_skill(
+            "beta",
+            "description: Beta. Use it when testing.",
+            {"skill_deps": ["gamma"], "tools": ["gh"]},
+            body="Use $ARGUMENTS.\n",
+        )
         self.written_and_explained()
 
         self.assertEqual(
@@ -167,12 +174,18 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.written_and_explained()
 
         self.assertEqual(
-            ["skills/alpha/SKILL.md: the model may start it, so its description must say what it does, then when to "
-             "use it (\"Use it when ...\"); see \"Description\" in docs/adding-a-skill.md"],
+            [
+                "skills/alpha/SKILL.md: the model may start it, so its description must say what it does, then when to "
+                'use it ("Use it when ..."); see "Description" in docs/adding-a-skill.md'
+            ],
             skill_reference.problems(self.root),
         )
-        for description in ("Sweeps. Use it when asked.", "Sweeps; use this skill before a release.",
-                            "Sweeps. Use whenever a branch is merged.", "Sweeps. Use after deploying."):
+        for description in (
+            "Sweeps. Use it when asked.",
+            "Sweeps; use this skill before a release.",
+            "Sweeps. Use whenever a branch is merged.",
+            "Sweeps. Use after deploying.",
+        ):
             with self.subTest(description=description):
                 self.assertTrue(skill_reference.says_when(description))
         for description in ("Sweeps every repository.", "Sweeps when asked.", "Uses whatever is configured."):
@@ -198,7 +211,10 @@ class SkillReferenceTestCase(unittest.TestCase):
     def test_a_readme_row_for_a_removed_skill_is_reported(self) -> None:
         self.written_and_explained()
         readme = self.root / "README.md"
-        readme.write_text(readme.read_text(encoding="utf-8").replace("| `suite`", "| `retired` | Gone. |\n| `suite`"), encoding="utf-8")
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace("| `suite`", "| `retired` | Gone. |\n| `suite`"),
+            encoding="utf-8",
+        )
 
         self.assertEqual(
             ["README.md: 'Included skills' row `retired` names no selectable skill or bundle; remove it"],
@@ -208,7 +224,9 @@ class SkillReferenceTestCase(unittest.TestCase):
     def test_a_readme_link_to_a_missing_reference_section_is_reported(self) -> None:
         self.written_and_explained()
         readme = self.root / "README.md"
-        readme.write_text(readme.read_text(encoding="utf-8").replace("skills.md#beta", "skills.md#bta"), encoding="utf-8")
+        readme.write_text(
+            readme.read_text(encoding="utf-8").replace("skills.md#beta", "skills.md#bta"), encoding="utf-8"
+        )
 
         self.assertEqual(
             ["README.md: 'Included skills' links docs/skills.md#bta, which has no section"],

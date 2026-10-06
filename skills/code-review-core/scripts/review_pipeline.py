@@ -99,8 +99,8 @@ from review_runtime import (
     materialize_source_snapshot_from_github,
     measure_source_snapshot,
     negotiate_capabilities,
+    resolve_reviewer_commit,
     resolve_runtime,
-    resolve_trusted_commit,
     subprocess_runner,
     verify_checkout_remote,
     write_adapter_request,
@@ -149,8 +149,10 @@ def entrypoint_links(links: dict[str, tuple[int, str] | None]) -> str:
     if not links:
         return ""
     named = "; ".join(describe_link(path, link) for path, link in links.items())
-    return (" The source snapshot leaves out these symbolic links, which you read only as diff text and never follow: "
-            f"{named}. {LINK_FINDING}")
+    return (
+        " The source snapshot leaves out these symbolic links, which you read only as diff text and never follow: "
+        f"{named}. {LINK_FINDING}"
+    )
 
 
 def self_check_command(run: Path, role: str) -> str:
@@ -240,13 +242,21 @@ def choose_scope(
     that review. A previous review recorded without fingerprints cannot be compared, so it gets a full pass.
     """
     earlier = previous["review"].get("patches")
-    changed = None if earlier is None else {
-        path for path, patch in patches.items() if (earlier.get(path) or {}).get("sha256") != patch["sha256"]}
+    changed = (
+        None
+        if earlier is None
+        else {path for path, patch in patches.items() if (earlier.get(path) or {}).get("sha256") != patch["sha256"]}
+    )
     lines_total = sum(patch["lines"] for patch in patches.values())
     lines_changed = None if changed is None else sum(patches[path]["lines"] for path in changed)
-    scope = {"requested": requested, "since_version": previous["review"]["version"],
-             "files_changed": None if changed is None else len(changed), "files_total": len(patches),
-             "lines_changed": lines_changed, "lines_total": lines_total}
+    scope = {
+        "requested": requested,
+        "since_version": previous["review"]["version"],
+        "files_changed": None if changed is None else len(changed),
+        "files_total": len(patches),
+        "lines_changed": lines_changed,
+        "lines_total": lines_total,
+    }
     if requested == "full":
         used, reason = "full", "a full re-review was requested"
     elif changed is None:
@@ -332,8 +342,10 @@ def prepare(
     reviewer = entry["reviewer"]
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
     if checkout is not None and _inside(Path.cwd(), checkout):
-        notes.append(f"This session runs inside {checkout}, so its CLAUDE.md files and project memory load into every "
-                     "reviewer on every turn; start review sessions from a directory outside the checkout.")
+        notes.append(
+            f"This session runs inside {checkout}, so its CLAUDE.md files and project memory load into every "
+            "reviewer on every turn; start review sessions from a directory outside the checkout."
+        )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
     run = Path(tempfile.mkdtemp(prefix="code-review-run-")) if created else run_directory
@@ -346,8 +358,9 @@ def prepare(
         diff, undecodable = services.github.get_pull_diff(repository, number)
         # GitHub serves the diff by pull number, which follows pushes. Confirm the pull did not move after its
         # head was read, so a new diff is never archived under the old head SHA.
-        current = validate_canary_pull(services.github.get_pull(repository, number), repository=repository,
-                                       number=number)
+        current = validate_canary_pull(
+            services.github.get_pull(repository, number), repository=repository, number=number
+        )
         if (current["headRefOid"], current["baseRefOid"]) != (head, pull["baseRefOid"]):
             raise PipelineError(
                 f"{selector} changed while it was being prepared (head {head[:12]} is now "
@@ -367,8 +380,9 @@ def prepare(
         if checkout is not None:
             verify_checkout_remote(checkout, repository, services.git)
             ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
-            snapshot = materialize_source_snapshot(checkout, repository, head, source, runner=services.git,
-                                                   changed_paths=changed)
+            snapshot = materialize_source_snapshot(
+                checkout, repository, head, source, runner=services.git, changed_paths=changed
+            )
         else:
             snapshot = materialize_source_snapshot_from_github(
                 repository, head, source, fetcher=services.fetch_tarball, changed_paths=changed
@@ -384,32 +398,54 @@ def prepare(
             adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
         else:
             ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
-            trusted = resolve_trusted_commit(
+            reviewer_commit = resolve_reviewer_commit(
                 checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
             )
-            resolved = resolve_reviewer(reviewer, checkout=checkout, commit=trusted, config_path=config_path,
-                                        repository=repository, runner=services.git)
+            resolved = resolve_reviewer(
+                reviewer,
+                checkout=checkout,
+                commit=reviewer_commit,
+                config_path=config_path,
+                repository=repository,
+                runner=services.git,
+            )
             manifest = resolved.manifest
-            if resolved.inspection is not None and resolved.source == "skill" \
-                    and resolved.inspection.delegates == "unknown":
-                notes.append(f"{resolved.inspection.skill} may start subagents ({resolved.inspection.reason}); "
-                             "if its review fails, give it a specialists manifest.")
+            if (
+                resolved.inspection is not None
+                and resolved.source == "skill"
+                and resolved.inspection.delegates == "unknown"
+            ):
+                notes.append(
+                    f"{resolved.inspection.skill} may start subagents ({resolved.inspection.reason}); "
+                    "if its review fails, give it a specialists manifest."
+                )
             if mode not in manifest["supports"]:
                 raise PipelineError(f"Reviewer {manifest['id']} does not support {mode} reviews")
             negotiate_capabilities(runtime, manifest["required_capabilities"])
             reviewer_root = run / "reviewer"
             hashes = materialize_reviewer(
-                checkout, trusted, manifest, reviewer_root, runner=services.git, guideline_commit=pull["baseRefOid"],
+                checkout,
+                reviewer_commit,
+                manifest,
+                reviewer_root,
+                runner=services.git,
+                guideline_commit=pull["baseRefOid"],
                 local_root=resolved.local_root,
             )
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
-            adapter = {"name": manifest["id"], "scope": "repository", "source_commit": trusted, "source_hashes": hashes}
+            adapter = {
+                "name": manifest["id"],
+                "scope": "repository",
+                "source_commit": reviewer_commit,
+                "source_hashes": hashes,
+            }
 
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
         if previous is not None:
-            scope_record, review_files = choose_scope(scope, previous, patches, thresholds=config["re_review_scope"],
-                                                      entrypoint=kind == "entrypoint")
+            scope_record, review_files = choose_scope(
+                scope, previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
+            )
             notes.append(f"Scope {describe_scope(scope_record)}.")
 
         request_path = run / "request.json"
@@ -434,19 +470,37 @@ def prepare(
         result_path = run / "result.json"
         if kind == "entrypoint":
             prompt_path = run / "reviewer.prompt.md"
-            atomic_write_text(prompt_path, ENTRYPOINT_PROMPT.format(
-                request=request_path, root=reviewer_root, entrypoint=manifest["entrypoint"], result=result_path,
-                check=self_check_command(run, adapter["name"]), links=entrypoint_links(links),
-            ))
+            atomic_write_text(
+                prompt_path,
+                ENTRYPOINT_PROMPT.format(
+                    request=request_path,
+                    root=reviewer_root,
+                    entrypoint=manifest["entrypoint"],
+                    result=result_path,
+                    check=self_check_command(run, adapter["name"]),
+                    links=entrypoint_links(links),
+                ),
+            )
             roles = [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}]
             uncovered_files: list[str] = []
         else:
-            plan = build_plan(request_path, reviewer_root, run / "work",
-                              self_check=lambda identity: self_check_command(run, identity), verify_contents=False,
-                              local_checkout=checkout, review_files=review_files)
+            plan = build_plan(
+                request_path,
+                reviewer_root,
+                run / "work",
+                self_check=lambda identity: self_check_command(run, identity),
+                verify_contents=False,
+                local_checkout=checkout,
+                review_files=review_files,
+            )
             roles = [
-                {"id": role["id"], "prompt_file": role["prompt_file"], "result_file": role["result_file"],
-                 "model": role["model"], "effort": role["effort"]}
+                {
+                    "id": role["id"],
+                    "prompt_file": role["prompt_file"],
+                    "result_file": role["result_file"],
+                    "model": role["model"],
+                    "effort": role["effort"],
+                }
                 for role in plan["roles"]
             ]
             notes.extend(plan["notes"])
@@ -496,11 +550,11 @@ def _repository_reviewer(
     return config_path, repository, entry["reviewer"], checkout
 
 
-def _trusted_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
+def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
     """The commit a reviewer is read from without a pull request: --ref, the trusted ref, or origin's default."""
     candidate = ref or reviewer["trusted_ref"] or "refs/remotes/origin/HEAD"
     try:
-        return resolve_trusted_commit(checkout, candidate, head_sha="", runner=services.git)
+        return resolve_reviewer_commit(checkout, candidate, head_sha="", runner=services.git)
     except RuntimeContractError as exc:
         raise PipelineError(f"Cannot resolve {candidate} in {checkout}; pass --ref: {exc}") from exc
 
@@ -511,7 +565,7 @@ def inspect_reviewer(
     """Whether a repository's review skill can run as one entrypoint reviewer or needs a specialists manifest."""
     services = services or Services()
     config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
-    commit = _trusted_commit(checkout, reviewer, ref, services)
+    commit = _reviewer_commit(checkout, reviewer, ref, services)
     lines = [f"REVIEWER {reviewer['id']} {repository} commit={commit}"]
     if reviewer["manifest_path"]:
         return [*lines, f"MANIFEST repository {reviewer['manifest_path']}", "VERDICT manifest-configured"]
@@ -550,8 +604,10 @@ def _snapshot_line(checkout: Path, commit: str, changed: list[str], services: Se
     if error:
         raise PipelineError(f"The source snapshot of {commit[:12]} cannot be prepared: {error}")
     excluded = ",".join(f"{reason}:{count}" for reason, count in sorted(size.excluded.items())) or "none"
-    return (f"SNAPSHOT {commit[:12]} files={size.files} bytes={size.bytes} limit={MAX_SOURCE_SNAPSHOT_BYTES} "
-            f"excluded={excluded}")
+    return (
+        f"SNAPSHOT {commit[:12]} files={size.files} bytes={size.bytes} limit={MAX_SOURCE_SNAPSHOT_BYTES} "
+        f"excluded={excluded}"
+    )
 
 
 def validate_reviewer(
@@ -572,39 +628,62 @@ def validate_reviewer(
     config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
     targets: list[tuple[str, dict[str, Any] | None]] = []
     for number in pulls or []:
-        pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository,
-                                    number=number)
+        pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
         ensure_local_commit(checkout, pull["headRefOid"], f"refs/pull/{number}/head", services.git)
         ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
-        targets.append((resolve_trusted_commit(checkout, reviewer["trusted_ref"] or pull["baseRefOid"],
-                                               head_sha=pull["headRefOid"], runner=services.git), pull))
+        targets.append(
+            (
+                resolve_reviewer_commit(
+                    checkout,
+                    reviewer["trusted_ref"] or pull["baseRefOid"],
+                    head_sha=pull["headRefOid"],
+                    runner=services.git,
+                ),
+                pull,
+            )
+        )
     if not targets:
-        targets.append((_trusted_commit(checkout, reviewer, ref, services), None))
+        targets.append((_reviewer_commit(checkout, reviewer, ref, services), None))
     lines: list[str] = []
     checked: set[str] = set()
     with tempfile.TemporaryDirectory(prefix="code-review-validate-") as temporary:
         scratch = Path(temporary)
         for index, (commit, pull) in enumerate(targets):
-            resolved = resolve_reviewer(reviewer, checkout=checkout, commit=commit, config_path=config_path,
-                                        repository=repository, runner=services.git)
+            resolved = resolve_reviewer(
+                reviewer,
+                checkout=checkout,
+                commit=commit,
+                config_path=config_path,
+                repository=repository,
+                runner=services.git,
+            )
             manifest = resolved.manifest
             root = scratch / f"reviewer-{index}"
-            hashes = materialize_reviewer(checkout, commit, manifest, root, runner=services.git,
-                                          guideline_commit=pull["baseRefOid"] if pull else None,
-                                          local_root=resolved.local_root)
+            hashes = materialize_reviewer(
+                checkout,
+                commit,
+                manifest,
+                root,
+                runner=services.git,
+                guideline_commit=pull["baseRefOid"] if pull else None,
+                local_root=resolved.local_root,
+            )
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
             if commit not in checked:
                 checked.add(commit)
-                lines.append(f"REVIEWER {manifest['id']} {kind} source={resolved.source} {resolved.location} "
-                             f"commit={commit}")
+                lines.append(
+                    f"REVIEWER {manifest['id']} {kind} source={resolved.source} {resolved.location} commit={commit}"
+                )
                 lines.append(f"FILES {len(hashes)} found")
                 lines.extend(_unmatched_patterns(manifest, repository_files(checkout, commit, services.git)))
             if pull is None:
                 lines.append(_snapshot_line(checkout, commit, [], services))
                 continue
             changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
-            lines.append(f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
-                         f"head={pull['headRefOid'][:12]} files={len(changed)}")
+            lines.append(
+                f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
+                f"head={pull['headRefOid'][:12]} files={len(changed)}"
+            )
             lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services))
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
@@ -614,8 +693,9 @@ def validate_reviewer(
 
             def condition(name: str) -> bool:
                 if not source.exists():
-                    materialize_source_snapshot(checkout, repository, pull["headRefOid"], source,
-                                                runner=services.git, changed_paths=changed)
+                    materialize_source_snapshot(
+                        checkout, repository, pull["headRefOid"], source, runner=services.git, changed_paths=changed
+                    )
                 work = scratch / f"conditions-{index}"
                 work.mkdir(exist_ok=True)
                 results[name] = evaluate_condition(root, manifest["conditions"][name]["script"], source, work)
@@ -627,8 +707,11 @@ def validate_reviewer(
             for identity, files in routes.items():
                 model, note = specialist_model(specialists[identity], root)
                 effort = specialists[identity].get("effort")
-                lines.append(f"ROUTE {identity} files={len(files)}" + (f" model={model}" if model else "")
-                             + (f" effort={effort}" if effort else ""))
+                lines.append(
+                    f"ROUTE {identity} files={len(files)}"
+                    + (f" model={model}" if model else "")
+                    + (f" effort={effort}" if effort else "")
+                )
                 lines.extend([f"NOTE {note}"] if note else [])
             if not routes:
                 lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
@@ -636,11 +719,13 @@ def validate_reviewer(
             outside = uncovered(manifest, changed)
             lines.extend(f"UNCOVERED {path}" for path in outside)
             if outside and manifest.get("uncovered", "review") == "ignore":
-                lines.append(f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record "
-                             "lists them)")
+                lines.append(
+                    f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record lists them)"
+                )
             elif outside:
-                lines.append(f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer "
-                             "reviews them)")
+                lines.append(
+                    f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer reviews them)"
+                )
     lines.append("VALID")
     return lines
 
@@ -720,8 +805,13 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
         state = load_run(run)  # dispatch and the host change it under this lock
         host = host_state(run, probe=services.probe, now=services.clock())
         if host.status in {"starting", "running"}:
-            return {"selector": state["selector"], "errors": {}, "retry": [], "failed": {},
-                    "running": {state["roles"][0]["id"]: host.elapsed}}
+            return {
+                "selector": state["selector"],
+                "errors": {},
+                "retry": [],
+                "failed": {},
+                "running": {state["roles"][0]["id"]: host.elapsed},
+            }
         return _check_roles(run, state)
 
 
@@ -804,16 +894,23 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
         mark_dispatched(run)
         # A specialist's own effort from the manifest wins over the configured default for every reviewer.
         default_effort = load_config(Path(state["config_path"])).get("reviewer_effort")
-        roles = [[role["id"], str(Path(role["prompt_file"]).relative_to(run)), role.get("model"),
-                  role.get("effort") or default_effort]
-                 for role in state["roles"]]
+        roles = [
+            [
+                role["id"],
+                str(Path(role["prompt_file"]).relative_to(run)),
+                role.get("model"),
+                role.get("effort") or default_effort,
+            ]
+            for role in state["roles"]
+        ]
         count += len(roles)
         entries.append(json.dumps([state["selector"], str(run), roles], ensure_ascii=False))
     if not count:
         raise PipelineError("No reviewer roles to run")
     before, after = REVIEWER_TASK.split("{prompt}")
-    text = WORKFLOW_SCRIPT.format(runs=",\n".join(entries), reviewer_agent=REVIEWER_AGENT,
-                                  task_parts=json.dumps([before, after, os.sep]))
+    text = WORKFLOW_SCRIPT.format(
+        runs=",\n".join(entries), reviewer_agent=REVIEWER_AGENT, task_parts=json.dumps([before, after, os.sep])
+    )
     # Kept with the first run for inspection; finalize removes it with the run.
     script = runs[0].resolve() / "reviewers.workflow.js"
     atomic_write_text(script, text)
@@ -847,7 +944,8 @@ def dispatch_copilot(run: Path, services: Services) -> Path:
             mark_dispatched(run)
     pid = services.launch(
         [sys.executable, "-B", str(Path(__file__).resolve()), "host", "--run", str(run), "--token", claim["token"]],
-        run, host_log_path(run, claim["attempt"]),
+        run,
+        host_log_path(run, claim["attempt"]),
     )
     with host_lock(run):
         record_host_process(run, claim["token"], pid, services.probe(pid).start_time)
@@ -1003,7 +1101,11 @@ def _sha256(path: Path) -> str:
 
 
 def reviewer_summaries(
-    roles: list[dict[str, Any]], findings: list[dict[str, Any]], attempts: dict[str, int], *, single: bool,
+    roles: list[dict[str, Any]],
+    findings: list[dict[str, Any]],
+    attempts: dict[str, int],
+    *,
+    single: bool,
     seconds: dict[str, int] | None = None,
     models: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1013,17 +1115,19 @@ def reviewer_summaries(
     """
     summaries = []
     for role in roles:
-        raised = len(findings) if single else sum(
-            1 for finding in findings if role["id"] in finding["source"].split(" + ")
+        raised = (
+            len(findings) if single else sum(1 for finding in findings if role["id"] in finding["source"].split(" + "))
         )
-        summaries.append({
-            "id": role["id"],
-            "category": role["category"],
-            "files": len(role["files"]),
-            "findings": raised,
-            "retries": attempts.get(role["id"], 0),
-            "dispositions_only": role["dispositions_only"],
-        })
+        summaries.append(
+            {
+                "id": role["id"],
+                "category": role["category"],
+                "files": len(role["files"]),
+                "findings": raised,
+                "retries": attempts.get(role["id"], 0),
+                "dispositions_only": role["dispositions_only"],
+            }
+        )
         if seconds and role["id"] in seconds:
             summaries[-1]["seconds"] = seconds[role["id"]]
         if models and role["id"] in models:
@@ -1052,20 +1156,32 @@ def finalize(run: Path) -> dict[str, Any]:
     else:
         result = read_json(result_path)
         request = read_json(request_path)
-        roles = [{"id": state["adapter"]["name"], "category": "Repository reviewer", "dispositions_only": False,
-                  "files": list(parse_unified_diff(read_diff(Path(request["diff_path"]))))}]
+        roles = [
+            {
+                "id": state["adapter"]["name"],
+                "category": "Repository reviewer",
+                "dispositions_only": False,
+                "files": list(parse_unified_diff(read_diff(Path(request["diff_path"])))),
+            }
+        ]
         models = None  # the repository entrypoint protocol has no model field
-    reviewers = reviewer_summaries(roles, result["findings"], state["attempts"], single=state["kind"] == "entrypoint",
-                                   seconds=seconds, models=models)
+    reviewers = reviewer_summaries(
+        roles,
+        result["findings"],
+        state["attempts"],
+        single=state["kind"] == "entrypoint",
+        seconds=seconds,
+        models=models,
+    )
     config = load_config(Path(state["config_path"]))
     canary_root = Path(tempfile.mkdtemp(prefix="code-review-canary-")).resolve() if state["canary"] else None
     json_path, markdown_path, record = commit_adapter_result(
         request_path=request_path,
         result_path=result_path,
         archive_root=canary_root or Path(config["archive_root"]),
-        local_mirror_root=None if canary_root else (
-            Path(config["local_mirror_root"]) if config["local_mirror_root"] else None
-        ),
+        local_mirror_root=None
+        if canary_root
+        else (Path(config["local_mirror_root"]) if config["local_mirror_root"] else None),
         policy=config["verdict_policy"],
         adapter=state["adapter"],
         reviewers=reviewers,
@@ -1101,7 +1217,9 @@ def enumerate_batch(
     """The open non-draft and newly merged pull requests each repository still needs reviewed."""
     services = services or Services()
     config = load_config(config_path)
-    selected = resolve_repositories(config, explicit=repositories, repository_set=repository_set, operation="review-prs")
+    selected = resolve_repositories(
+        config, explicit=repositories, repository_set=repository_set, operation="review-prs"
+    )
     archive_root = Path(config["archive_root"])
     state = load_state()
     today = services.today()
@@ -1109,8 +1227,12 @@ def enumerate_batch(
 
     def listing(repository: str) -> dict[str, Any]:
         watermark = repository_watermark(state, repository, today)
-        entry: dict[str, Any] = {"previous_watermark": watermark.isoformat(), "complete": False, "error": None,
-                                 "eligible": []}
+        entry: dict[str, Any] = {
+            "previous_watermark": watermark.isoformat(),
+            "complete": False,
+            "error": None,
+            "eligible": [],
+        }
         try:
             pulls = services.github.list_pulls(repository, state="all")
             heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in pulls])
@@ -1147,8 +1269,13 @@ def advance_watermarks(batch_path: Path, *, config_path: Path | None = None) -> 
         merged = [pull for pull in eligible if pull["state"] == "MERGED"]
         heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in merged])
         completed = {pull["number"] for pull in merged if heads.get(pull["number"]) == pull["headRefOid"]}
-        candidate = safe_watermark(previous=previous, today=today, eligible_merged=merged,
-                                   completed_numbers=completed, enumeration_complete=True)
+        candidate = safe_watermark(
+            previous=previous,
+            today=today,
+            eligible_merged=merged,
+            completed_numbers=completed,
+            enumeration_complete=True,
+        )
         changes[repository] = (previous.isoformat(), candidate.isoformat())
 
     def update(current: dict[str, Any]) -> dict[str, Any]:
@@ -1211,47 +1338,65 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     enumerate_parser.add_argument("--force", action="store_true")
     enumerate_parser.add_argument("--output", type=Path, help="batch file; defaults to a new temporary directory")
     prepare_parser = commands.add_parser("prepare")
-    prepare_parser.add_argument("--pull", action="append", default=[], dest="pulls",
-                                help="owner/repo#number to review; repeatable")
-    prepare_parser.add_argument("--re-review", action="append", default=[], dest="re_reviews",
-                                help="owner/repo#number to re-review; repeatable")
-    prepare_parser.add_argument("--scope", choices=RE_REVIEW_SCOPES,
-                                help="how much each --re-review covers; required with --re-review")
+    prepare_parser.add_argument(
+        "--pull", action="append", default=[], dest="pulls", help="owner/repo#number to review; repeatable"
+    )
+    prepare_parser.add_argument(
+        "--re-review", action="append", default=[], dest="re_reviews", help="owner/repo#number to re-review; repeatable"
+    )
+    prepare_parser.add_argument(
+        "--scope", choices=RE_REVIEW_SCOPES, help="how much each --re-review covers; required with --re-review"
+    )
     prepare_parser.add_argument("--force", action="store_true")
     prepare_parser.add_argument("--canary", action="store_true")
-    prepare_parser.add_argument("--host", choices=sorted(RUNTIME_CAPABILITIES),
-                                help="the runtime this session runs in; decides an auto runtime before PATH does")
+    prepare_parser.add_argument(
+        "--host",
+        choices=sorted(RUNTIME_CAPABILITIES),
+        help="the runtime this session runs in; decides an auto runtime before PATH does",
+    )
     commands.add_parser("dispatch").add_argument("--run", required=True, type=Path)
     wait_parser = commands.add_parser("wait")
     wait_parser.add_argument("--run", required=True, type=Path)
-    wait_parser.add_argument("--timeout", required=True, type=wait_seconds,
-                             help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}")
+    wait_parser.add_argument(
+        "--timeout", required=True, type=wait_seconds, help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}"
+    )
     # Run only by dispatch, as the detached host process; never by an orchestrator.
     host_parser = commands.add_parser("host", help=argparse.SUPPRESS)
     host_parser.add_argument("--run", required=True, type=Path)
     host_parser.add_argument("--token", required=True)
-    commands.add_parser("workflow").add_argument("--run", action="append", required=True, type=Path, dest="runs",
-                                                 help="prepared run directory; repeatable")
+    commands.add_parser("workflow").add_argument(
+        "--run", action="append", required=True, type=Path, dest="runs", help="prepared run directory; repeatable"
+    )
     wait_reviewers_parser = commands.add_parser("wait-reviewers")
-    wait_reviewers_parser.add_argument("--run", action="append", required=True, type=Path, dest="runs",
-                                       help="prepared run directory whose roles a Workflow runs; repeatable")
-    wait_reviewers_parser.add_argument("--timeout", required=True, type=wait_seconds,
-                                       help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}")
+    wait_reviewers_parser.add_argument(
+        "--run",
+        action="append",
+        required=True,
+        type=Path,
+        dest="runs",
+        help="prepared run directory whose roles a Workflow runs; repeatable",
+    )
+    wait_reviewers_parser.add_argument(
+        "--timeout", required=True, type=wait_seconds, help=f"seconds to wait at most, from 1 to {MAX_WAIT_SECONDS}"
+    )
     validate_result_parser = commands.add_parser("validate-result")
     validate_result_parser.add_argument("--run", required=True, type=Path)
     validate_result_parser.add_argument("--role", required=True)
     for name in ("check", "finalize", "unfinalized"):
-        commands.add_parser(name).add_argument("--run", action="append", required=True, type=Path, dest="runs",
-                                               help="prepared run directory; repeatable")
+        commands.add_parser(name).add_argument(
+            "--run", action="append", required=True, type=Path, dest="runs", help="prepared run directory; repeatable"
+        )
     commands.add_parser("advance").add_argument("--batch", required=True, type=Path)
     inspect_parser = commands.add_parser("inspect-reviewer")
     inspect_parser.add_argument("--repository", required=True)
-    inspect_parser.add_argument("--ref", help="commit to read the reviewer from; defaults to the trusted ref or "
-                                              "origin's default branch")
+    inspect_parser.add_argument(
+        "--ref", help="commit to read the reviewer from; defaults to the trusted ref or origin's default branch"
+    )
     validate_parser = commands.add_parser("validate-reviewer")
     validate_parser.add_argument("--repository", required=True)
-    validate_parser.add_argument("--pull", action="append", type=int, default=[], dest="pulls",
-                                 help="pull request number to route; repeatable")
+    validate_parser.add_argument(
+        "--pull", action="append", type=int, default=[], dest="pulls", help="pull request number to route; repeatable"
+    )
     validate_parser.add_argument("--ref", help="commit to read the reviewer from when no --pull is given")
     args = parser.parse_args(arguments)
     if args.command == "prepare":
@@ -1275,15 +1420,22 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             lines = (
                 inspect_reviewer(args.repository, ref=args.ref, config_path=args.config, services=services)
                 if args.command == "inspect-reviewer"
-                else validate_reviewer(args.repository, pulls=args.pulls, ref=args.ref, config_path=args.config,
-                                       services=services)
+                else validate_reviewer(
+                    args.repository, pulls=args.pulls, ref=args.ref, config_path=args.config, services=services
+                )
             )
             print("\n".join(lines))
             return 0
         if args.command == "enumerate":
             output = working_path(args.output, "review-prs-batch-", "batch.json")
-            batch = enumerate_batch(output, repositories=args.repositories, repository_set=args.repository_set,
-                                    force=args.force, config_path=args.config, services=services)
+            batch = enumerate_batch(
+                output,
+                repositories=args.repositories,
+                repository_set=args.repository_set,
+                force=args.force,
+                config_path=args.config,
+                services=services,
+            )
             for repository, entry in batch["repositories"].items():
                 if not entry["complete"]:
                     print(f"REPOSITORY_FAILED {repository} {entry['error']}")
@@ -1295,9 +1447,16 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             failed = False
             items = [(selector, False) for selector in args.pulls] + [(selector, True) for selector in args.re_reviews]
             outcomes = map_in_order(
-                lambda item: prepare(item[0], re_review=item[1], scope=args.scope if item[1] else None,
-                                     force=args.force, canary=args.canary, host=args.host, config_path=args.config,
-                                     services=services),
+                lambda item: prepare(
+                    item[0],
+                    re_review=item[1],
+                    scope=args.scope if item[1] else None,
+                    force=args.force,
+                    canary=args.canary,
+                    host=args.host,
+                    config_path=args.config,
+                    services=services,
+                ),
                 items,
                 catch=EXPECTED_ERRORS,
             )
@@ -1402,11 +1561,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                     print(f"CANARY {result['selector']} {result['canary_root']}")
                     for path, digest in result["hashes"].items():
                         print(f"SHA256 {digest} {path}")
-                print(f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
-                      f"{result['markdown']}")
+                print(
+                    f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
+                    f"{result['markdown']}"
+                )
             return 1 if failed else 0
         for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config).items():
-            print(f"WATERMARK {repository} {old} -> {new}" if new else f"WATERMARK {repository} unchanged: enumeration failed")
+            print(
+                f"WATERMARK {repository} {old} -> {new}"
+                if new
+                else f"WATERMARK {repository} unchanged: enumeration failed"
+            )
         return 0
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {exc}")

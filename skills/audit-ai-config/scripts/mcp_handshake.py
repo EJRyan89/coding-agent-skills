@@ -72,7 +72,9 @@ def declared_servers(root: Path) -> tuple[list[tuple[str, str, dict[str, Any]]],
             problems.append(("ERROR", ".codex/config.toml", f"Could not read or parse: {error}"))
             table = {}
         if isinstance(table, dict):
-            found.extend((name, ".codex/config.toml", entry) for name, entry in table.items() if isinstance(entry, dict))
+            found.extend(
+                (name, ".codex/config.toml", entry) for name, entry in table.items() if isinstance(entry, dict)
+            )
         else:
             problems.append(("ERROR", ".codex/config.toml", "mcp_servers must be a table"))
     return found, problems
@@ -110,8 +112,14 @@ class Session:
 
     def __init__(self, arguments: list[str], cwd: Path, env: dict[str, str]) -> None:
         self.process = subprocess.Popen(
-            arguments, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, encoding="utf-8", errors="replace",
+            arguments,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
         )
         self.lines: queue.Queue[str | None] = queue.Queue()
         self.stderr_tail: list[str] = []
@@ -264,10 +272,18 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
         raise RuntimeError(f"could not start: {error}") from error
     deadline = time.monotonic() + timeout
     try:
-        session.send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
-            "protocolVersion": PROTOCOL_VERSION, "capabilities": {},
-            "clientInfo": {"name": "audit-ai-config", "version": "1"},
-        }})
+        session.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "audit-ai-config", "version": "1"},
+                },
+            }
+        )
         version, capabilities = initialize_result(session.response(1, deadline))
         session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         tools = str(tool_count(session, deadline)) if "tools" in capabilities else "none"

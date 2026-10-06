@@ -73,9 +73,7 @@ def _existing_holder(paths: Paths, probe: ProcessProbe) -> None:
         print(f"WARNING: Stale lock detected (PID {pid} not running).", file=sys.stderr)
         return
     if not isinstance(recorded, int) or isinstance(recorded, bool):
-        raise DeployError(
-            f"ERROR: Lock PID {pid} is alive but its process identity cannot be verified.", *hint
-        )
+        raise DeployError(f"ERROR: Lock PID {pid} is alive but its process identity cannot be verified.", *hint)
     if status.start_time is None:
         raise DeployError(f"ERROR: Lock PID {pid} is alive but its start time cannot be read.", *hint)
     if status.start_time == recorded:
@@ -108,7 +106,9 @@ def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status)
             except OSError:
                 fsops.remove(stale)
             raise DeployError(
-                "ERROR: Failed to acquire lock after stale reclaim (contention).", "Retry the deployment.", see_recovery(LOCK)
+                "ERROR: Failed to acquire lock after stale reclaim (contention).",
+                "Retry the deployment.",
+                see_recovery(LOCK),
             ) from exc
         _write_metadata(paths, token, probe)
         fsops.remove(stale)

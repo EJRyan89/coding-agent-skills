@@ -100,9 +100,14 @@ def _complete_logins(connection: dict[str, Any], key: str | None, what: str) -> 
     return logins
 
 
-def tracker_item(repository: str, node: dict[str, Any], archive_root: Path, *,
-                 ancestry: Ancestry = lambda repository, earlier, later: None,
-                 flags: Iterable[dict[str, Any]] = ()) -> dict[str, Any]:
+def tracker_item(
+    repository: str,
+    node: dict[str, Any],
+    archive_root: Path,
+    *,
+    ancestry: Ancestry = lambda repository, earlier, later: None,
+    flags: Iterable[dict[str, Any]] = (),
+) -> dict[str, Any]:
     """One tracker input item from a GraphQL pull-request node and the archive's reviewed head. For a review with a
     finding ledger, it also counts the open findings `flags` name and what moved since the user's last review, using
     `ancestry` to place that review's commit among the review versions' heads."""
@@ -136,12 +141,13 @@ def tracker_item(repository: str, node: dict[str, Any], archive_root: Path, *,
     reviewed = reviewed_head(archive_root, repository, number)
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
-    item["ai_review"] = (
-        {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
-    )
+    item["ai_review"] = {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
     if reviewed and reviewed["ledger"]:
-        records = [record for record in pull_records(archive_root, repository, number)
-                   if record["review"]["version"] <= reviewed["version"]]
+        records = [
+            record
+            for record in pull_records(archive_root, repository, number)
+            if record["review"]["version"] <= reviewed["version"]
+        ]
         ledger = records[-1]["ledger"]
         opened = {ledger_id(entry["version"], entry["id"]) for entry in ledger if entry["state"] == "open"}
         item["ai_review"]["flagged"] = len(opened & set(flagged_entries(ledger, flags, repository, number)))
@@ -150,8 +156,9 @@ def tracker_item(repository: str, node: dict[str, Any], archive_root: Path, *,
     return item
 
 
-def _baseline(records: list[dict[str, Any]], user_review_sha: str | None, repository: str,
-              ancestry: Ancestry) -> int | None:
+def _baseline(
+    records: list[dict[str, Any]], user_review_sha: str | None, repository: str, ancestry: Ancestry
+) -> int | None:
     """The latest review version whose head is at or before the user's last review commit, 0 when every one is after
     it, or None when the user has not reviewed or GitHub cannot compare the commits. An exact head match needs no
     comparison."""
@@ -174,9 +181,13 @@ def _since_review(ledger: list[dict[str, Any]], baseline: int) -> dict[str, int]
     """What moved after the baseline version: entries raised since and still open, and entries raised by then that a
     later review addressed. The two never share an entry."""
     new = sum(entry["state"] == "open" and entry["version"] > baseline for entry in ledger)
-    addressed = sum(entry["version"] <= baseline and entry["state"] == "closed"
-                    and entry["dispositions"][-1]["disposition"] == "addressed"
-                    and entry["dispositions"][-1]["version"] > baseline for entry in ledger)
+    addressed = sum(
+        entry["version"] <= baseline
+        and entry["state"] == "closed"
+        and entry["dispositions"][-1]["disposition"] == "addressed"
+        and entry["dispositions"][-1]["version"] > baseline
+        for entry in ledger
+    )
     return {"version": baseline, "new": new, "addressed": addressed}
 
 
@@ -213,14 +224,22 @@ def collect(
         nodes = services.github.graphql_nodes(
             PULLS_QUERY, {"owner": owner, "name": name, "login": login}, ("repository", "pullRequests")
         )
-        return validate_items([tracker_item(repository, node, archive_root, ancestry=ancestry, flags=flags)
-                               for node in nodes])
+        return validate_items(
+            [tracker_item(repository, node, archive_root, ancestry=ancestry, flags=flags) for node in nodes]
+        )
 
     outcomes = map_in_order(
         pulls,
         selected,
-        catch=(GitHubError, CollectionError, TrackerError, ConfigurationError, ArchiveError, PersistenceError,
-               RecordError),
+        catch=(
+            GitHubError,
+            CollectionError,
+            TrackerError,
+            ConfigurationError,
+            ArchiveError,
+            PersistenceError,
+            RecordError,
+        ),
         fatal=lambda error: isinstance(error, GitHubError) and error.kind in FATAL_ERROR_KINDS,
     )
     for repository, (collected, error) in zip(selected, outcomes):
@@ -279,15 +298,25 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     try:
         if args.command == "collect":
             output = working_path(args.output, "update-pr-tracker-input-", "input.json")
-            results = collect(output, repositories=args.repositories, repository_set=args.repository_set,
-                              config_path=args.config, services=services)
+            results = collect(
+                output,
+                repositories=args.repositories,
+                repository_set=args.repository_set,
+                config_path=args.config,
+                services=services,
+            )
             for repository, result in results.items():
-                print(f"REPOSITORY {repository} pulls={result}" if isinstance(result, int)
-                      else f"REPOSITORY_FAILED {repository} {result}")
+                print(
+                    f"REPOSITORY {repository} pulls={result}"
+                    if isinstance(result, int)
+                    else f"REPOSITORY_FAILED {repository} {result}"
+                )
             failed = sum(1 for result in results.values() if not isinstance(result, int))
             if failed:
-                print(f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
-                      "and the dashboard keeps its previous rows")
+                print(
+                    f"FAILED {failed} of {len(results)} repositories could not be collected; no input was written "
+                    "and the dashboard keeps its previous rows"
+                )
                 return 1
             print(f"INPUT {output}")
             return 0
