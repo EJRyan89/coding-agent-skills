@@ -1164,10 +1164,22 @@ def script_contract_problems(root: Path) -> list[str]:
 
 # Calls that change the filesystem. CLAUDE.md routes every one the deployer makes through deployer/fsops.py, whose
 # functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
-# tell a Path from another receiver; the names are chosen so that none is a common method of anything else.
+# tell a Path from another receiver; the names are chosen so that none is a common method of anything else. Path.replace
+# shares its name with str.replace, so _filesystem_writes tells them apart by their arguments instead.
 FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
     "method": frozenset(
-        {"write_bytes", "write_text", "touch", "mkdir", "unlink", "rmdir", "rename", "symlink_to", "hardlink_to"}
+        {
+            "write_bytes",
+            "write_text",
+            "touch",
+            "mkdir",
+            "unlink",
+            "rmdir",
+            "rename",
+            "chmod",
+            "symlink_to",
+            "hardlink_to",
+        }
     ),
     "qualified": frozenset(
         {
@@ -1175,6 +1187,7 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "os.unlink",
             "os.rename",
             "os.replace",
+            "os.chmod",
             "os.mkdir",
             "os.makedirs",
             "os.rmdir",
@@ -1220,6 +1233,17 @@ def _opens_for_writing(call: ast.Call, mode_position: int) -> bool:
     )
 
 
+def _replaces_a_path(call: ast.Call) -> bool:
+    """Whether a .replace() call is Path.replace(target): one argument, where str.replace takes two."""
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "replace"
+        and len(call.args) == 1
+        and not isinstance(call.args[0], ast.Starred)
+        and not call.keywords
+    )
+
+
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
     """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
     found: list[tuple[int, str]] = []
@@ -1244,7 +1268,7 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
                 qualified = f"{function.value.id}.{function.attr}" if isinstance(function.value, ast.Name) else ""
                 if qualified in FILESYSTEM_WRITES["qualified"]:
                     found.append((node.lineno, qualified))
-                elif function.attr in FILESYSTEM_WRITES["method"]:
+                elif function.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(node):
                     found.append((node.lineno, function.attr))
                 elif function.attr == "open" and _opens_for_writing(node, 0):
                     found.append((node.lineno, "open"))
@@ -2723,6 +2747,11 @@ class RepositoryValidation(unittest.TestCase):
                 '    path.open(encoding="utf-8").read()\n'
                 '    text.replace("a", "b")\n'
                 "    os.path.exists(path)\n"
+                "    path.replace(path)\n"
+                "    path.chmod(0o600)\n"
+                "    os.chmod(path, 0o600)\n"
+                '    text.replace("a", "b", 1)\n'
+                "    moment.replace(year=1)\n"
                 "    return path.mkdir(parents=True)\n",
             )
             write(
@@ -2752,7 +2781,10 @@ class RepositoryValidation(unittest.TestCase):
                     f"deployer/writes.py:15 writes with open{route}",
                     f"deployer/writes.py:16 writes with open{route}",
                     f"deployer/writes.py:17 writes with open{route}",
-                    f"deployer/writes.py:23 writes with mkdir{route}",
+                    f"deployer/writes.py:23 writes with replace{route}",
+                    f"deployer/writes.py:24 writes with chmod{route}",
+                    f"deployer/writes.py:25 writes with os.chmod{route}",
+                    f"deployer/writes.py:28 writes with mkdir{route}",
                     "deployer/gone.py: FSOPS_ALLOWED allows shutil.rmtree, which it no longer names",
                     "deployer/unexplained.py: FSOPS_ALLOWED must map each token to the reason it is allowed",
                 ],
