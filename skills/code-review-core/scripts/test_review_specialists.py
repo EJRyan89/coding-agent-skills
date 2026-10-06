@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -652,44 +651,20 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                                 expected_head_sha=self.head, comment_ids=["C1", "C2"])
         self.assertEqual(["C1", "C2"], sorted(d["comment_id"] for d in assembled["comment_dispositions"]))
 
-    def test_cli_plan_check_assemble(self) -> None:
-        write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
-        work = self.root / "cli"
-        script = SCRIPT_DIRECTORY / "review_specialists.py"
-        run = lambda *args: subprocess.run([sys.executable, "-B", str(script), *args], capture_output=True, text=True)
-        planned = run("plan", "--request", str(self.request_path), "--reviewer", str(self.reviewer), "--work", str(work))
-        self.assertEqual(0, planned.returncode, planned.stderr)
-        self.assertEqual(2, planned.stdout.count("ROLE "))
-        self.assertEqual(1, run("check", "--work", str(work)).returncode)
-        plan = json.loads((work / "plan.json").read_text(encoding="utf-8"))
-        for role in plan["roles"]:
-            self.write(plan, role["id"], [])
-        self.assertIn("ALL_VALID", run("check", "--work", str(work)).stdout)
-        output = self.root / "result.json"
-        assembled = run("assemble", "--work", str(work), "--output", str(output))
-        self.assertEqual(0, assembled.returncode, assembled.stderr)
-        self.assertEqual("complete", json.loads(output.read_text(encoding="utf-8"))["status"])
-
-
-    def test_cli_output_survives_a_console_that_cannot_encode_it(self) -> None:
-        # Windows pipes default to a legacy code page; ROLE and RESULT name the caller's paths, whatever they hold.
+    def test_plan_check_assemble_from_a_written_request(self) -> None:
+        # The pipeline imports these stages; each reads only the files the one before it wrote.
         write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
         work = self.root / "work ← ✓"
-        script = SCRIPT_DIRECTORY / "review_specialists.py"
-        run = lambda *args: subprocess.run([sys.executable, "-B", str(script), *args], capture_output=True,
-                                           env={**os.environ, "PYTHONIOENCODING": "cp1252"}, check=False)
-        planned = run("plan", "--request", str(self.request_path), "--reviewer", str(self.reviewer), "--work", str(work))
-        self.assertEqual(0, planned.returncode, planned.stderr.decode("utf-8", "replace"))
-        plan = json.loads((work / "plan.json").read_text(encoding="utf-8"))
-        self.assertEqual([f"ROLE {role['id']} {role['prompt_file']}" for role in plan["roles"]],
-                         planned.stdout.decode("utf-8").splitlines())
+        plan = rs.build_plan(self.request_path.resolve(), self.reviewer, work.resolve())
+        self.assertEqual(2, len(plan["roles"]))
         self.assertTrue(all(str(work) in role["prompt_file"] for role in plan["roles"]))
+        self.assertEqual(sorted(role["id"] for role in plan["roles"]), sorted(rs.check(plan)))
         for role in plan["roles"]:
             self.write(plan, role["id"], [])
-        output = self.root / "result ✓.json"
-        assembled = run("assemble", "--work", str(work), "--output", str(output))
-        self.assertEqual(0, assembled.returncode, assembled.stderr.decode("utf-8", "replace"))
-        self.assertEqual(f"RESULT complete findings=0 {output}", assembled.stdout.decode("utf-8").strip())
+        self.assertEqual({}, rs.check(plan))
+        assembled = rs.assemble(plan, json.loads(self.request_path.read_text(encoding="utf-8")))
+        self.assertEqual("complete", assembled["status"])
+        self.assertEqual([], assembled["findings"])
 
 
 class UncoveredFilesTests(SpecialistFixture, unittest.TestCase):

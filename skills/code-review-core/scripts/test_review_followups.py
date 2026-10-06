@@ -168,14 +168,12 @@ class ReviewedHeadTests(unittest.TestCase):
                               "report": str(self.directory / "review-v2.md")},
                              review_operation.reviewed_head(self.root, "owner/repo", 5))
 
-    def test_cli_reports_reviewed_heads(self) -> None:
+    def test_a_legacy_review_without_its_report_is_still_a_reviewed_head(self) -> None:
         self.write_legacy()
-        result = subprocess.run(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_operation.py"), "reviewed-heads",
-             "--repository", "owner/repo", "--archive-root", str(self.root), "5", "6"],
-            capture_output=True, text=True, check=True)
-        self.assertEqual({"5": {"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False, "verdict": "APPROVED", "counts": None, "ledger": None, "report": None}, "6": None},
-                         json.loads(result.stdout))
+        self.assertEqual({"head_sha": "a" * 40, "source": "legacy", "version": None, "incomplete": False,
+                          "verdict": "APPROVED", "counts": None, "ledger": None, "report": None},
+                         review_operation.reviewed_head(self.root, "owner/repo", 5))
+        self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 6))
 
     def test_missing_watermark_starts_today(self) -> None:
         today = date(2026, 10, 1)

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import subprocess
-import sys
 from typing import Any, Callable
 
 LIMIT = 1000
@@ -204,25 +202,3 @@ def classify(repository: str, branch: str, head_sha: str, upstream_sha: str | No
     if "CLOSED" in matched:
         return "CLOSED"
     return "UNMATCHED" if same_repository else "NONE"
-
-
-def main(arguments: list[str] | None = None, runner: Runner = run_gh, git_runner: Runner = run_git) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo-root", required=True)
-    parser.add_argument("--repo", required=True)
-    parser.add_argument("--branch", required=True)
-    parser.add_argument("--base-ref", help="the default branch's ref, whose commits a merged pull request may "
-                                           "have merged in after the branch's tip")
-    options = parser.parse_args(arguments)
-    try:
-        head, upstream = branch_tips(options.repo_root, options.branch, git_runner)
-        in_base = base_contains(options.repo_root, options.base_ref, git_runner) if options.base_ref else None
-        sys.stdout.write(classify(options.repo, options.branch, head, upstream, runner, in_base))
-    except QueryError as exc:
-        print(f"ERROR: {options.repo} {options.branch}: {exc}", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

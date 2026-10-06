@@ -8,7 +8,6 @@ orchestrating skill only dispatches the prompts; findings are never synthesized 
 
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import re
@@ -40,7 +39,6 @@ from review_runtime import (
 
 PLAN_SCHEMA_VERSION = 1
 CONDITION_TIMEOUT_SECONDS = 120
-PLAN_MAXIMUM_BYTES = 64 * 1024 * 1024
 SEVERITY = {
     "MUST_FIX": "MUST_FIX",
     "MUST FIX": "MUST_FIX",
@@ -954,48 +952,3 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         "prior_dispositions": dispositions,
         **({"comment_dispositions": comment_dispositions} if request.get("github_comments") else {}),
     }
-
-
-def main(arguments: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    plan_parser = commands.add_parser("plan")
-    plan_parser.add_argument("--request", required=True, type=Path)
-    plan_parser.add_argument("--reviewer", type=Path, help="materialized specialist reviewer; omit for the generic reviewer")
-    plan_parser.add_argument("--work", required=True, type=Path)
-    check_parser = commands.add_parser("check")
-    check_parser.add_argument("--work", required=True, type=Path)
-    assemble_parser = commands.add_parser("assemble")
-    assemble_parser.add_argument("--work", required=True, type=Path)
-    assemble_parser.add_argument("--output", required=True, type=Path)
-    args = parser.parse_args(arguments)
-    try:
-        if args.command == "plan":
-            reviewer = args.reviewer.resolve() if args.reviewer else None
-            plan = build_plan(args.request.resolve(), reviewer, args.work.resolve())
-            for role in plan["roles"]:
-                print(f"ROLE {role['id']} {role['prompt_file']}")
-            return 0
-        plan = read_json(args.work.resolve() / "plan.json", maximum_bytes=PLAN_MAXIMUM_BYTES)
-        if args.command == "check":
-            errors = check(plan)
-            for role, error in errors.items():
-                print(f"INVALID {role} {error}")
-            if not errors:
-                print("ALL_VALID")
-            return 1 if errors else 0
-        result = assemble(plan, read_json(Path(plan["request_path"])))
-        atomic_write_json(args.output, result)
-        print(f"RESULT {result['status']} findings={len(result['findings'])} {args.output}")
-        return 0 if result["status"] == "complete" else 1
-    except (SpecialistError, PersistenceError, OSError, KeyError, ValueError) as exc:
-        print(f"SPECIALISTS_FAILED {exc}", file=sys.stderr)
-        return 2
-
-
-if __name__ == "__main__":
-    # Output names work and output paths; a Windows pipe's legacy code page cannot encode every character they hold.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
-    raise SystemExit(main())

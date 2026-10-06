@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import re
 import subprocess
@@ -12,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify, main
+from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
 
 TIP = "a" * 40
 OLD = "b" * 40
@@ -325,16 +323,17 @@ class BaseContainsTests(GitFixture):
             base_contains(str(self.clone), "refs/remotes/origin/missing")(base)
 
 
-class MainTests(GitFixture):
-    def invoke(self, run, *extra: str) -> tuple[int, str, str]:
-        stdout, stderr = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = main(["--repo-root", str(self.clone), "--repo", "owner/repo", "--branch", "topic", *extra], run)
-        return code, stdout.getvalue(), stderr.getvalue()
+class BranchClassificationTests(GitFixture):
+    """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's pull_state reads them."""
 
-    def test_prints_only_the_state_without_a_line_ending(self) -> None:
+    def state(self, run, base_ref: str | None = None) -> str:
+        head, upstream = branch_tips(str(self.clone), "topic")
+        in_base = base_contains(str(self.clone), base_ref) if base_ref else None
+        return classify("owner/repo", "topic", head, upstream, run, in_base)
+
+    def test_a_merged_pull_request_at_the_tip_is_merged(self) -> None:
         tip = self.tracking_branch()
-        self.assertEqual((0, "MERGED", ""), self.invoke(responder(listing(pull("MERGED", tip)))))
+        self.assertEqual("MERGED", self.state(responder(listing(pull("MERGED", tip)))))
 
     def test_base_ref_lets_an_updated_pull_request_prove_the_branch_merged(self) -> None:
         base = self.git("-C", str(self.clone), "rev-parse", "main")
@@ -347,20 +346,18 @@ class MainTests(GitFixture):
         update = self.git("-C", str(self.clone), "rev-parse", "HEAD")
         self.git("-C", str(self.clone), "switch", "main")
         run = router(listing(pull("MERGED", update)), history((tip, base), (update, tip, main_now)))
-        self.assertEqual((0, "MERGED", ""), self.invoke(run, "--base-ref", "refs/remotes/origin/main"))
-        self.assertEqual((0, "UNMATCHED", ""), self.invoke(run))
+        self.assertEqual("MERGED", self.state(run, "refs/remotes/origin/main"))
+        self.assertEqual("UNMATCHED", self.state(run))
 
     def test_reused_branch_with_newer_remote_work_is_not_stale(self) -> None:
         tip = self.tracking_branch()
         self.push_newer_remote_work()
-        self.assertEqual((0, "UNMATCHED", ""), self.invoke(responder(listing(pull("MERGED", tip)))))
+        self.assertEqual("UNMATCHED", self.state(responder(listing(pull("MERGED", tip)))))
 
-    def test_query_failure_exits_non_zero_with_no_state(self) -> None:
+    def test_query_failure_fails_closed(self) -> None:
         self.tracking_branch()
-        code, stdout, stderr = self.invoke(responder("", returncode=1, stderr="HTTP 502"))
-        self.assertEqual(1, code)
-        self.assertEqual("", stdout)
-        self.assertIn("ERROR: owner/repo topic: gh pr list failed (1): HTTP 502", stderr)
+        with self.assertRaisesRegex(QueryError, re.escape("gh pr list failed (1): HTTP 502")):
+            self.state(responder("", returncode=1, stderr="HTTP 502"))
 
 
 if __name__ == "__main__":
