@@ -17,7 +17,7 @@ import sys
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable
 
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_json
+from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_analyzers import inventory, tool_names
 from review_records import (
     ANALYZER_RULE,
@@ -555,7 +555,7 @@ def build_plan(
     if work.exists() and any(work.iterdir()):
         raise SpecialistError("Work directory must be empty")
     work.mkdir(parents=True, exist_ok=True)
-    diff = parse_unified_diff(Path(request["diff_path"]).read_bytes().decode("utf-8", errors="replace"))
+    diff = parse_unified_diff(read_diff(Path(request["diff_path"])))
     changed = list(diff)
     if not changed:
         raise SpecialistError("The diff contains no changed files")

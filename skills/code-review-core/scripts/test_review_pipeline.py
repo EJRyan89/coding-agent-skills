@@ -23,7 +23,7 @@ import review_pipeline as rp  # noqa: E402
 from review_archive import latest_record, pull_directory  # noqa: E402
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config  # noqa: E402
 from review_flags import FlagError, add_flag  # noqa: E402
-from review_github import CommandResult, GitHubClient  # noqa: E402
+from review_github import CommandResult, GitHubClient, subprocess_runner  # noqa: E402
 from review_hosts import ProcessResult  # noqa: E402
 from review_process import ProcessStatus, process_status  # noqa: E402
 from review_runtime import CommandResult as GitResult, RuntimeContractError, validate_adapter_manifest  # noqa: E402
@@ -134,6 +134,7 @@ class FakeGitHub:
         self.calls: list[list[str]] = []
         self.listing: list[dict[str, Any]] | None = None
         self.after_diff: dict[str, Any] | None = None  # a push that lands right after the diff is served
+        self.diff_error: Exception | None = None  # raised by the runner instead of serving the diff
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
         arguments = list(arguments)
@@ -149,11 +150,16 @@ class FakeGitHub:
         number = int(endpoint.rsplit("/", 1)[1])
         pull = self.pulls[number]
         if "-H" in arguments:
-            diff = git(self.checkout, "diff", "--src-prefix=a/", "--dst-prefix=b/",
-                       f"{pull['base']['sha']}...{pull['head']['sha']}")
+            if self.diff_error is not None:
+                raise self.diff_error
+            # Through the real runner, so a committed byte that is not UTF-8 arrives as it would from gh.
+            diff = subprocess_runner(["git", "-C", str(self.checkout), "diff", "--src-prefix=a/", "--dst-prefix=b/",
+                                      f"{pull['base']['sha']}...{pull['head']['sha']}"])
+            if diff.returncode != 0:
+                raise AssertionError(diff.stderr)
             if self.after_diff is not None:
                 self.pulls[number] = self.after_diff
-            return CommandResult(0, diff + "\n", "")
+            return CommandResult(0, diff.stdout.strip() + "\n", "")
         return CommandResult(0, json.dumps(pull), "")
 
 
@@ -605,6 +611,62 @@ class GenericReviewTests(PipelineFixture):
         code, _, err = self.run_main("prepare", "--pull", "example/other#3")
         self.assertEqual(2, code)
         self.assertTrue(err.startswith("FAILED "))
+
+
+class UndecodableDiffTests(PipelineFixture):
+    """A pull request's diff is untrusted bytes: one that is not UTF-8 is replaced and noted, never a crash."""
+
+    def add_latin1_file(self) -> str:
+        """Push a Windows-1252 file to the pull request's head; returns the new head."""
+        (self.checkout / "app" / "legacy.txt").write_bytes(b"caf\xe9\n")
+        git(self.checkout, "add", ".")
+        git(self.checkout, "commit", "-m", "legacy encoding")
+        head = git(self.checkout, "rev-parse", "HEAD")
+        self.github.pulls[12] = rest_pull(12, head, self.base)
+        return head
+
+    def entrypoint_result(self, ready: dict[str, Any], head: str) -> None:
+        Path(ready["result_path"]).write_text(json.dumps({
+            "protocol_version": 1, "repository": REPOSITORY, "pull_number": 12, "head_sha": head,
+            "summary": "Fine.", "reviewer": "fixture-review", "status": "complete", "findings": [],
+            "prior_dispositions": [], "usage": None,
+        }), encoding="utf-8")
+        self.finish_after(ready["run"], ready["roles"][0], 5)
+
+    def test_prepare_replaces_undecodable_bytes_and_says_how_many(self) -> None:
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual((0, ""), (code, err))
+        self.assertNotIn("undecodable", out)
+        self.add_latin1_file()
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--force")
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn(f"NOTE {SELECTOR} 1 undecodable bytes replaced in the diff\n", out)
+        run = Path(out.split("\n", 1)[0].split(" ", 2)[2])
+        # diff.patch is valid UTF-8, with U+FFFD where the byte was.
+        self.assertIn("+caf\ufffd\n", (run / "diff.patch").read_bytes().decode("utf-8"))
+
+    def test_finalize_reads_an_entrypoint_diff_with_undecodable_bytes(self) -> None:
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        head = self.add_latin1_file()
+        ready = self.prepare()
+        self.assertIn("1 undecodable bytes replaced in the diff", ready["notes"])
+        # A diff.patch holding the raw byte, as a run prepared before the fix did, is read the same way.
+        diff = Path(ready["run"]) / "diff.patch"
+        diff.write_bytes(diff.read_bytes().replace("caf\ufffd".encode("utf-8"), b"caf\xe9"))
+        self.entrypoint_result(ready, head)
+        result = rp.finalize(ready["run"])
+        self.assertEqual("APPROVED", result["verdict"])
+        self.assertIn("1 undecodable bytes replaced in the diff", result["notes"])
+        record = latest_record(self.archive, REPOSITORY, 12)
+        self.assertEqual(3, record["review"]["reviewers"][0]["files"])
+
+    def test_a_decoding_fault_from_the_runner_ends_as_failed(self) -> None:
+        self.github.diff_error = UnicodeDecodeError("utf-8", b"caf\xe9", 3, 4, "invalid continuation byte")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual((2, ""), (code, out))
+        self.assertEqual(f"FAILED {SELECTOR} 'utf-8' codec can't decode byte 0xe9 in position 3: "
+                         "invalid continuation byte\n", err)
+        self.assertEqual([], list(self.temporary.iterdir()))
 
 
 class SelfCheckTests(PipelineFixture):
@@ -2151,7 +2213,7 @@ class GitHubReadTests(unittest.TestCase):
             return CommandResult(0, "diff --git a/a.py b/a.py\n", "")
 
         client = GitHubClient(runner=runner)
-        self.assertTrue(client.get_pull_diff("Example/One", 3).startswith("diff --git"))
+        self.assertEqual(("diff --git a/a.py b/a.py\n", 0), client.get_pull_diff("Example/One", 3))
         self.assertEqual(["gh", "api", "-H", "Accept: application/vnd.github.diff", "repos/example/one/pulls/3"],
                          calls[0])
         self.assertEqual([{"id": "C1", "author": "dev", "path": "app/service.py", "line": 4, "outdated": False,

@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Sequence
 
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
-from review_io import PersistenceError, atomic_write_json
+from review_io import PersistenceError, atomic_write_json, read_diff
 
 
 ADAPTER_PROTOCOL_VERSION = 1
@@ -964,7 +964,7 @@ def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
     from review_specialists import SpecialistError, parse_unified_diff
 
     try:
-        changed = parse_unified_diff(diff_path.read_bytes().decode("utf-8", errors="replace"))
+        changed = parse_unified_diff(read_diff(diff_path))
     except SpecialistError as exc:
         raise RuntimeContractError(f"Cannot read changed paths from the diff: {exc}") from exc
     excluded = snapshot["excluded_paths"]

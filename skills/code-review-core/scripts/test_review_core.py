@@ -1222,6 +1222,46 @@ class GitHubTests(unittest.TestCase):
                     client.api_json("repos/example/one")
                 self.assertEqual(expected, context.exception.kind)
 
+    def test_runner_decodes_bytes_that_are_not_utf8_without_losing_them(self) -> None:
+        result = review_github.subprocess_runner([
+            sys.executable, "-c",
+            "import sys; sys.stdout.buffer.write(b'caf\\xe9'); sys.stderr.buffer.write(b'bad \\xff')",
+        ])
+        self.assertEqual((0, "caf\udce9", "bad \udcff"), (result.returncode, result.stdout, result.stderr))
+
+    def test_the_diff_replaces_and_counts_each_undecodable_byte(self) -> None:
+        def undecodable(data: bytes) -> str:
+            return data.decode("utf-8", "surrogateescape")  # what subprocess_runner returns for these bytes
+
+        cases = (
+            (b"+caf\xe9\n", "+caf\ufffd\n", 1),
+            (b"+\xe2\x82 cut short\n", "+\ufffd\ufffd cut short\n", 2),  # a truncated sequence is two bytes
+            ("+caf\ufffd already\n".encode("utf-8"), "+caf\ufffd already\n", 0),  # a real U+FFFD is not counted
+            (b"+plain\n", "+plain\n", 0),
+        )
+        for data, text, count in cases:
+            with self.subTest(data=data):
+                client = GitHubClient(lambda arguments, value=undecodable(data): CommandResult(0, value, ""))
+                self.assertEqual((text, count), client.get_pull_diff("example/one", 7))
+
+    def test_json_and_errors_replace_undecodable_bytes(self) -> None:
+        body = b'{"login": "caf\xe9"}'.decode("utf-8", "surrogateescape")
+        self.assertEqual("caf\ufffd", GitHubClient(lambda arguments: CommandResult(0, body, "")).authenticated_login())
+        page = json.dumps({"data": {"repository": {"pullRequests": {
+            "pageInfo": {"hasNextPage": False, "endCursor": None}, "nodes": [{"body": "BODY"}]}}}})
+        page = page.replace("BODY", b"caf\xe9".decode("utf-8", "surrogateescape"))
+        nodes = GitHubClient(lambda arguments: CommandResult(0, page, "")).graphql_nodes(
+            "query", {}, ("repository", "pullRequests"))
+        self.assertEqual([{"body": "caf\ufffd"}], nodes)
+        failing = GitHubClient(lambda arguments: CommandResult(
+            1, "", b"HTTP 404: caf\xe9 not found".decode("utf-8", "surrogateescape")))
+        with self.assertRaises(GitHubError) as context:
+            failing.get_pull_diff("example/one", 7)
+        # The message reaches a strict UTF-8 stderr as a FAILED line, so it must encode.
+        self.assertEqual("HTTP 404: caf\ufffd not found", str(context.exception))
+        self.assertEqual("not_found", context.exception.kind)
+        str(context.exception).encode("utf-8")
+
 
 class RuntimeContractTests(unittest.TestCase):
     @staticmethod
