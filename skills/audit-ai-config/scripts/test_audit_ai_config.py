@@ -2396,6 +2396,363 @@ class FindingSequenceTests(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------------------
+# Results of the authority classification and parity checks
+# ---------------------------------------------------------------------------
+
+MANIFEST_PATH = ".github/ai-config-manifest.json"
+UNDECODABLE = b"\x80\x81 invalid utf-8"
+PLAIN_CLAUDE = "# CLAUDE.md\n\nUse tabs.\n"
+MAINTAINED_CLAUDE = "# CLAUDE.md\n\n## Maintaining AI Agent Config\n\nRegenerate.\n"
+GENERATOR_NAMING_CLAUDE = "SOURCE = 'CLAUDE.md'\n"
+PARITY_WORKFLOW = "steps:\n  - run: python .github/scripts/ai_config.py --check\n"
+
+
+def _manifest(**overrides) -> str:
+    manifest = {
+        "generatedBy": "ai_config.py", "schemaVersion": 1, "canonicalSource": "CLAUDE.md",
+        "runtimes": [], "surfaces": [], "features": [], "mcp_servers": [], "artifacts": [{"path": "AGENTS.md"}],
+    }
+    manifest.update(overrides)
+    return json.dumps({key: value for key, value in manifest.items() if value is not None})
+
+
+AUTHORITY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
+    "nothing": {},
+    "manifest_with_every_signal": {
+        MANIFEST_PATH: _manifest(),
+        "CLAUDE.md": MAINTAINED_CLAUDE,
+        ".github/scripts/ai_config.py": GENERATOR_NAMING_CLAUDE,
+        ".github/workflows/parity.yml": PARITY_WORKFLOW,
+        ".github/workflows/second.yml": PARITY_WORKFLOW,
+    },
+    "manifest_and_plain_claude": {MANIFEST_PATH: _manifest(), "CLAUDE.md": PLAIN_CLAUDE},
+    "manifest_not_an_object": {MANIFEST_PATH: "[]"},
+    "manifest_malformed": {MANIFEST_PATH: "{bad", "CLAUDE.md": PLAIN_CLAUDE},
+    "manifest_undecodable": {MANIFEST_PATH: UNDECODABLE},
+    "manifest_schema_errors": {
+        MANIFEST_PATH: _manifest(schemaVersion="1", runtimes=None, surfaces="x", features=[1], mcp_servers=None),
+        "CLAUDE.md": MAINTAINED_CLAUDE,
+    },
+    "manifest_canonical_missing": {
+        MANIFEST_PATH: _manifest(),
+        "scripts/ai_config.py": GENERATOR_NAMING_CLAUDE,
+        ".github/workflows/parity.yaml": PARITY_WORKFLOW,
+    },
+    "manifest_without_derived_artifacts": {
+        MANIFEST_PATH: _manifest(artifacts=[{"path": MANIFEST_PATH}]),
+        "CLAUDE.md": PLAIN_CLAUDE,
+    },
+    "generator_declares_alternative_source": {
+        MANIFEST_PATH: _manifest(canonicalSource="AGENTS.md"),
+        "CLAUDE.md": MAINTAINED_CLAUDE,
+    },
+    "other_generator_declares_alternative_source": {
+        MANIFEST_PATH: _manifest(generatedBy="other.py", canonicalSource="AGENTS.md"),
+        "CLAUDE.md": MAINTAINED_CLAUDE,
+    },
+    "other_generator_declares_claude": {
+        MANIFEST_PATH: _manifest(generatedBy="other.py"),
+        "CLAUDE.md": MAINTAINED_CLAUDE,
+    },
+    "generator_without_canonical_source": {MANIFEST_PATH: _manifest(canonicalSource=None)},
+    "claude_undecodable": {"CLAUDE.md": UNDECODABLE},
+    "signals_that_do_not_count": {
+        ".github/scripts/ai_config.py": "SOURCE = 'AGENTS.md'\n",
+        "scripts/ai_config.py": UNDECODABLE,
+        ".github/workflows/parity.yml": "steps:\n  - run: python ai_config.py --write\n",
+        ".github/workflows/other.yaml": UNDECODABLE,
+    },
+    "generator_and_ci_without_claude": {
+        ".github/scripts/ai_config.py": UNDECODABLE,
+        "scripts/ai_config.py": GENERATOR_NAMING_CLAUDE,
+        ".github/workflows/build.yml": "steps:\n  - run: make\n",
+        ".github/workflows/parity.yaml": PARITY_WORKFLOW,
+    },
+    "ci_only": {".github/workflows/parity.yml": PARITY_WORKFLOW},
+}
+
+PARITY_CLAUDE = (
+    "# CLAUDE.md\n\n## Overview\n\nA test repo.\n\n## Formatting Rules\n\nUse tabs.\n\n"
+    "## CI / Quality Gates\n\nNever disable linting rules.\n"
+)
+COPILOT_HEADER = f"# <repo>\n\n> {OWNERSHIP}. Do not edit directly — update CLAUDE.md instead.\n\n"
+MATCHING_COPILOT = (
+    COPILOT_HEADER + "## Overview\n\nA test repo.\n\n## Formatting Rules\n\nUse tabs.\n\n"
+    "## CI / Quality Gates\n\nNever disable linting rules.\n"
+)
+MATCHING_AGENTS = (
+    f"<!-- {OWNERSHIP}. Do not edit directly — update CLAUDE.md instead. -->\n\n# <repo>\n\n"
+    "Read and follow `CLAUDE.md` as the authoritative source for all "
+    "repository instructions, conventions, and workflows.\n\n"
+    "All build commands, formatting rules, test conventions, architecture "
+    "guidance, and behavioral constraints are maintained in `CLAUDE.md`. "
+    "Do not duplicate or contradict its content here.\n"
+)
+DEMO_CANONICAL = "---\nname: demo\ndescription: Test skill.\n---\n\nCanonical workflow.\n"
+MATCHING_SHIM = (
+    "---\nname: demo\ndescription: Test skill.\n---\n\n"
+    f"<!-- {OWNERSHIP}. Do not edit directly — update the canonical skill at .claude/skills/demo/SKILL.md"
+    " and regenerate. -->\n\n"
+    "Read and follow `../../../.claude/skills/demo/SKILL.md` as the authoritative workflow.\n"
+    "Resolve all relative paths and supporting resources from `../../../.claude/skills/demo/`.\n"
+)
+MARKED = f"# {OWNERSHIP}\n"
+
+PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
+    "every_artifact_matches": (
+        {
+            "CLAUDE.md": PARITY_CLAUDE,
+            ".github/copilot-instructions.md": MATCHING_COPILOT,
+            "AGENTS.md": MATCHING_AGENTS,
+            ".claude/skills/demo/SKILL.md": DEMO_CANONICAL,
+            ".agents/skills/demo/SKILL.md": MATCHING_SHIM,
+            ".agents/skills/orphan/SKILL.md": MARKED,
+            ".codex/config.toml": MARKED,
+            ".mcp.json": "{}\n",
+            ".github/mcp.json": "[]\n",
+        },
+        {"artifacts": [
+            {"path": ".github/copilot-instructions.md"},
+            {"path": "AGENTS.md"},
+            {"path": ".agents/skills/demo/SKILL.md"},
+            {"path": ".agents/skills/orphan/SKILL.md"},
+            {"path": ".codex/config.toml"},
+            {"path": ".mcp.json", "hash": _content_hash("{}\n")},
+            {"path": ".github/mcp.json"},
+        ]},
+    ),
+    "every_artifact_drifts": (
+        {
+            "CLAUDE.md": PARITY_CLAUDE,
+            ".github/copilot-instructions.md": f"# {OWNERSHIP}\n\n## Overview\n\nA test repo.\n",
+            "AGENTS.md": MATCHING_AGENTS + "Extra.\n",
+            ".claude/skills/demo/SKILL.md": DEMO_CANONICAL,
+            ".agents/skills/demo/SKILL.md": MATCHING_SHIM.replace("authoritative", "primary"),
+            ".github/agents/reviewer.md": "# Reviewer\n",
+            ".codex/config.toml": UNDECODABLE,
+            ".mcp.json": "{}\n",
+            ".vscode/mcp.json": "# no marker\n",
+        },
+        {"artifacts": [
+            {"path": ""},
+            {},
+            {"path": "../outside.md"},
+            {"path": "README.md"},
+            {"path": ".github/skills/a/b/SKILL.md"},
+            {"path": ".github/mcp.json"},
+            {"path": ".codex/config.toml"},
+            {"path": ".mcp.json", "hash": "0" * 64},
+            {"path": ".github/agents/reviewer.md", "hash": _content_hash("# Reviewer\n")},
+            {"path": ".github/copilot-instructions.md"},
+            {"path": "AGENTS.md"},
+            {"path": ".agents/skills/demo/SKILL.md"},
+            {"path": ".vscode/mcp.json"},
+        ]},
+    ),
+    "hash_mismatch_hides_missing_marker": (
+        {".github/agents/reviewer.md": "# Reviewer\n"},
+        {"artifacts": [{"path": ".github/agents/reviewer.md", "hash": "0" * 64}]},
+    ),
+    "copilot_sections_differ": (
+        {
+            "CLAUDE.md": PARITY_CLAUDE,
+            ".github/copilot-instructions.md": COPILOT_HEADER + "## Overview\n\nA different repo.\n",
+        },
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_custom_sections_match": (
+        {
+            "CLAUDE.md": PARITY_CLAUDE,
+            ".github/copilot-instructions.md": COPILOT_HEADER + "## Formatting Rules\n\nUse tabs.\n",
+        },
+        {"copilot_sections": ["Formatting Rules"], "artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_without_claude": (
+        {".github/copilot-instructions.md": MARKED},
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_with_undecodable_claude": (
+        {"CLAUDE.md": UNDECODABLE, ".github/copilot-instructions.md": MARKED},
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_sections_invalid": (
+        {"CLAUDE.md": PARITY_CLAUDE, ".github/copilot-instructions.md": MARKED},
+        {"copilot_sections": "Overview", "artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "copilot_sections_absent_from_claude": (
+        {"CLAUDE.md": "# CLAUDE.md\n\n## Other\n\nText.\n", ".github/copilot-instructions.md": MARKED},
+        {"artifacts": [{"path": ".github/copilot-instructions.md"}]},
+    ),
+    "shims_without_a_reconstructable_canonical": (
+        {
+            ".claude/skills/nofront/SKILL.md": "No frontmatter.\n",
+            ".agents/skills/nofront/SKILL.md": MARKED,
+            ".claude/skills/open/SKILL.md": "---\nname: open\n",
+            ".agents/skills/open/SKILL.md": MARKED,
+            ".claude/skills/twice/SKILL.md": "---\nname: a\nname: b\ndescription: d\n---\n",
+            ".agents/skills/twice/SKILL.md": MARKED,
+            ".claude/skills/binary/SKILL.md": UNDECODABLE,
+            ".agents/skills/binary/SKILL.md": MARKED,
+        },
+        {"artifacts": [
+            {"path": ".agents/skills/nofront/SKILL.md"},
+            {"path": ".agents/skills/open/SKILL.md"},
+            {"path": ".agents/skills/twice/SKILL.md"},
+            {"path": ".agents/skills/binary/SKILL.md"},
+        ]},
+    ),
+    "no_artifacts": ({}, {}),
+}
+
+AUTHORITY_EXPECTED: dict[str, tuple[str, str, list[tuple[str, str, str | None, str]]]] = {
+    'nothing': ('unconfigured', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
+    ]),
+    'manifest_with_every_signal': ('conforming', 'manifest', [
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: manifest, claude_md_exists, maintaining_section, generator_script, ci_parity)'),
+    ]),
+    'manifest_and_plain_claude': ('conforming', 'manifest', [
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: manifest, claude_md_exists)'),
+    ]),
+    'manifest_not_an_object': ('unconfigured', 'empty', [
+        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest is not a JSON object'),
+        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
+    ]),
+    'manifest_malformed': ('ambiguous', 'empty', [
+        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest exists but is malformed'),
+        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
+    ]),
+    'manifest_undecodable': ('unconfigured', 'empty', [
+        ('WARNING', 'authority', '.github/ai-config-manifest.json', 'Manifest exists but is malformed'),
+        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
+    ]),
+    'manifest_schema_errors': ('conforming', 'empty', [
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: schemaVersion must be an integer'),
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: runtimes is required'),
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: surfaces must be a list'),
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: features[0] must be a string'),
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest schema: mcp_servers is required'),
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: claude_md_exists, maintaining_section)'),
+    ]),
+    'manifest_canonical_missing': ('conforming', 'empty', [
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', "Manifest declares canonical source 'CLAUDE.md' but it does not exist"),
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: generator_script, ci_parity)'),
+    ]),
+    'manifest_without_derived_artifacts': ('ambiguous', 'empty', [
+        ('ERROR', 'authority', '.github/ai-config-manifest.json', 'Manifest declares no derived artifacts'),
+        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
+    ]),
+    'generator_declares_alternative_source': ('alternative', 'manifest', [
+        ('INFO', 'authority', '.github/ai-config-manifest.json', 'Manifest declares alternative canonical source: AGENTS.md'),
+    ]),
+    'other_generator_declares_alternative_source': ('alternative', 'manifest', [
+        ('INFO', 'authority', '.github/ai-config-manifest.json', 'Manifest declares alternative canonical source: AGENTS.md'),
+    ]),
+    'other_generator_declares_claude': ('conforming', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: claude_md_exists, maintaining_section)'),
+    ]),
+    'generator_without_canonical_source': ('unconfigured', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
+    ]),
+    'claude_undecodable': ('ambiguous', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: claude_md_exists)'),
+    ]),
+    'signals_that_do_not_count': ('unconfigured', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: unconfigured (signals: none)'),
+    ]),
+    'generator_and_ci_without_claude': ('conforming', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: conforming (signals: generator_script, ci_parity)'),
+    ]),
+    'ci_only': ('ambiguous', 'empty', [
+        ('INFO', 'authority', None, 'Authority classification: ambiguous (signals: ci_parity)'),
+    ]),
+}
+PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
+    'every_artifact_matches': [],
+    'every_artifact_drifts': [
+        ('ERROR', 'parity', '', 'Manifest path rejected: empty path'),
+        ('ERROR', 'parity', '', 'Manifest path rejected: empty path'),
+        ('ERROR', 'parity', '../outside.md', 'Manifest path rejected: path traversal not allowed: ../outside.md'),
+        ('ERROR', 'parity', 'README.md', 'Manifest path rejected: path not in manifest allowlist: README.md'),
+        ('ERROR', 'parity', '.github/skills/a/b/SKILL.md', 'Manifest path rejected: skill projection path must have exactly one skill-name segment: .github/skills/a/b/SKILL.md'),
+        ('ERROR', 'parity', '.github/mcp.json', 'Generated artifact missing: .github/mcp.json'),
+        ('ERROR', 'parity', '.codex/config.toml', 'Generated artifact exists but could not be read'),
+        ('ERROR', 'parity', '.mcp.json', 'JSON artifact modified (hash mismatch with manifest)'),
+        ('ERROR', 'parity', '.github/agents/reviewer.md', 'Generated file missing ownership marker'),
+        ('ERROR', 'parity', '.github/copilot-instructions.md', 'Copilot instructions missing banner'),
+        ('ERROR', 'parity', 'AGENTS.md', 'Content does not match deterministic template'),
+        ('ERROR', 'parity', '.agents/skills/demo/SKILL.md', 'Content does not match deterministic template'),
+    ],
+    'hash_mismatch_hides_missing_marker': [
+        ('ERROR', 'parity', '.github/agents/reviewer.md', 'JSON artifact modified (hash mismatch with manifest)'),
+    ],
+    'copilot_sections_differ': [
+        ('ERROR', 'parity', '.github/copilot-instructions.md', 'Copilot instructions sections do not match CLAUDE.md content'),
+    ],
+    'copilot_custom_sections_match': [],
+    'copilot_without_claude': [],
+    'copilot_with_undecodable_claude': [],
+    'copilot_sections_invalid': [],
+    'copilot_sections_absent_from_claude': [],
+    'shims_without_a_reconstructable_canonical': [],
+    'no_artifacts': [],
+}
+
+
+def _write_fixture(root: Path, files: dict[str, str | bytes]) -> None:
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content.replace("<repo>", root.name), encoding="utf-8")
+
+
+def _finding_rows(findings) -> list[tuple[str, str, str | None, str]]:
+    return [(f.severity, f.check, f.path, f.message) for f in findings]
+
+
+def authority_result(files: dict[str, str | bytes]) -> tuple[str, str, list[tuple[str, str, str | None, str]]]:
+    """Classify a fixture; the manifest data is 'manifest' when it is the file's object, else 'empty'."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, files)
+        classification, data, findings = audit.classify_authority(root)
+        written = files.get(MANIFEST_PATH)
+        if data == {}:
+            returned = "empty"
+        elif isinstance(written, str) and data == json.loads(written):
+            returned = "manifest"
+        else:
+            returned = repr(data)
+        return classification, returned, _finding_rows(findings)
+
+
+def parity_rows(files: dict[str, str | bytes], manifest: dict) -> list[tuple[str, str, str | None, str]]:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        _write_fixture(root, files)
+        return _finding_rows(audit.check_parity(root, manifest))
+
+
+class AuthorityAndParitySequenceTests(unittest.TestCase):
+    """The exact result of the authority classification and the parity check for each branch they take."""
+
+    def test_authority_classification_and_findings(self) -> None:
+        self.assertEqual(set(AUTHORITY_SCENARIOS), set(AUTHORITY_EXPECTED))
+        for name, files in AUTHORITY_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(AUTHORITY_EXPECTED[name], authority_result(files))
+
+    def test_parity_findings_and_their_order(self) -> None:
+        self.assertEqual(set(PARITY_SCENARIOS), set(PARITY_EXPECTED))
+        for name, (files, manifest) in PARITY_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(PARITY_EXPECTED[name], parity_rows(files, manifest))
+
+
 class GeneratedLayoutReferenceTests(unittest.TestCase):
     """references/generated-layout.md documents the layout the audit checks; it must agree with the engine."""
 
