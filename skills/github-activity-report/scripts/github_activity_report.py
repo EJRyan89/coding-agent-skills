@@ -546,7 +546,8 @@ def render_report(activity: Activity, org: str, user: str, today: date) -> str:
     lines = [
         f"## GitHub activity for {user} in {org}",
         "",
-        f"{activity.months[0]} through {today.isoformat()}. All dates and months are UTC; the current month is partial.",
+        f"{activity.months[0]} through {today.isoformat()}. "
+        "All dates and months are UTC; the current month is partial.",
         "",
         "| Month | PRs authored | PRs merged | Commits | PRs reviewed | Reviews submitted |",
         "|---|---:|---:|---:|---:|---:|",

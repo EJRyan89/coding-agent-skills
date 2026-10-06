@@ -1685,7 +1685,8 @@ def _layering_code_review(root: Path, sources: InstructionSources) -> list[Findi
                 severity="INFO",
                 check="layering",
                 path=".github/skills",
-                message="Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location",
+                message="Code review can use relevant .github/skills entries; .claude/skills "
+                "and .agents/skills are not its documented automatic skill location",
             )
         )
     return findings
@@ -1714,7 +1715,8 @@ def check_instruction_layering(
             Finding(
                 severity="WARNING",
                 check="runtime",
-                message="Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically",
+                message="Copilot repository settings, organization policy, authentication, model availability, "
+                "runtime enablement, and actual operational use cannot be verified statically",
             )
         )
     if "vscode" in surfaces:

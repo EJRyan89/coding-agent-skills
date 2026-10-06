@@ -10,7 +10,8 @@ MINIMUM_PYTHON = (3, 11)
 def require_supported_python(version_info=sys.version_info):
     if tuple(version_info[:2]) < MINIMUM_PYTHON:
         sys.stderr.write(
-            f"\nERROR: Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer is required; this is Python {version_info[0]}.{version_info[1]}.\n"
+            f"\nERROR: Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer "
+            f"is required; this is Python {version_info[0]}.{version_info[1]}.\n"
             'See "Installing the tools" in docs/installation.md.\n\n'
         )
         raise SystemExit(1)

@@ -1019,7 +1019,8 @@ class WorkflowTests(PipelineFixture):
                 },
                 {
                     "label": "example/one#13 generic-review",
-                    "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. It is your complete task.",
+                    "task": f"Read {second['roles'][0]['prompt_file']} and follow it exactly. "
+                    "It is your complete task.",
                     "model": None,
                     "effort": None,
                 },
@@ -1059,8 +1060,9 @@ class WorkflowTests(PipelineFixture):
 
 
 class WaitReviewersTests(PipelineFixture):
-    """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's reviewers
-    run. The skill's tool grants end with the turn that invoked it, so check and finalize must run in that turn (#40)."""
+    """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's
+    reviewers run. The skill's tool grants end with the turn that invoked it, so check and finalize must run
+    in that turn (#40)."""
 
     def setUp(self) -> None:
         super().setUp()

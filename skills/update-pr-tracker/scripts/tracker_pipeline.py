@@ -260,7 +260,8 @@ def update(
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> tuple[Path, list[Row]]:
-    """Render the owned section with the configured dashboard, login, markers, overrides, author names, and home repositories."""
+    """Render the owned section with the configured dashboard, login, markers, overrides, author names, and
+    home repositories."""
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)

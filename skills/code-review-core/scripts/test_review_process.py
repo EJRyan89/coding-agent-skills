@@ -13,7 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from review_process import ProcessStatus, process_status, same_process, start_detached
 
 # Prints a line, then sleeps until it is terminated, so its liveness can be probed from outside.
-SLEEPER = "import sys, time; print('host started', flush=True); print('to stderr', file=sys.stderr, flush=True); time.sleep(120)"
+SLEEPER = (
+    "import sys, time; print('host started', flush=True); "
+    "print('to stderr', file=sys.stderr, flush=True); time.sleep(120)"
+)
 
 
 def terminate(pid: int) -> None:

@@ -599,7 +599,8 @@ def _path_set(paths: Any) -> bool:
 
 
 def _validate_reviewers(reviewers: Any) -> None:
-    """The reviewers that ran: which files each covered, what it found, how often it was retried, and how long it took."""
+    """The reviewers that ran: which files each covered, what it found, how often it was retried, and how
+    long it took."""
     if not isinstance(reviewers, list) or not reviewers:
         raise RecordError("Review reviewers must be a non-empty array")
     seen: set[str] = set()

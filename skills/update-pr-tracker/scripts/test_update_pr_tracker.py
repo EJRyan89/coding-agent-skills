@@ -126,7 +126,8 @@ class LayoutTests(unittest.TestCase):
             "| Requestor | PR | AI Result | Findings | AI Review |\n| :--- | :--- | :--- | :--- | :--- |", content
         )
         self.assertIn(
-            "| Ada Lovelace | [#3 Improve \\| behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H | "
+            "| Ada Lovelace | [#3 Improve \\| "
+            "behavior](https://github.com/owner/repo/pull/3) | Changes Requested | 1M 2H | "
             "[AI Review](vscode://file/C:/Reviews/a%20b/review.md) (stale) |",
             content,
         )

@@ -360,11 +360,13 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
       "repeats": <index of another finding above> | "<prior finding id>"}}
   ],
   "prior_dispositions": [
-    {{"finding_id": "<id>", "disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
+    {{"finding_id": "<id>", \
+"disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
       "rationale": "<evidence>"}}
   ],
   "comment_dispositions": [
-    {{"comment_id": "<id>", "disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
+    {{"comment_id": "<id>", \
+"disposition": "addressed | partially_addressed | still_present | superseded | unable_to_verify",
       "rationale": "<evidence>"}}
   ]
 }}
@@ -499,7 +501,8 @@ def render_prompt(
             "",
             *(
                 [
-                    "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+                    "Symbolic links in your scope (left out of SOURCE_ROOT; "
+                    "read them only as diff text and never follow "
                     "them):",
                     *(f"- {describe_link(path, link)}" for path, link in links.items()),
                     LINK_FINDING,

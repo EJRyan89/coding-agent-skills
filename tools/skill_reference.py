@@ -305,7 +305,8 @@ def problems(root: Path) -> list[str]:
     for section in sections:
         if section.name in names and not _prose(section).strip():
             found.append(
-                f"{REFERENCE.as_posix()}: section `{section.name}` has no hand-written explanation after its generated block"
+                f"{REFERENCE.as_posix()}: section `{section.name}` has "
+                "no hand-written explanation after its generated block"
             )
     if current != document:
         found.append(f"{REFERENCE.as_posix()}: generated content is stale; run python tools/skill_reference.py --write")

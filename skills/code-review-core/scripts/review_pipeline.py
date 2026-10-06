@@ -1,6 +1,7 @@
 """Deterministic review steps, so an orchestrating agent only dispatches reviewers.
 
-    enumerate  list the pull requests a batch run should review, to a batch file (by default in a new temporary directory)
+    enumerate  list the pull requests a batch run should review, to a batch file (by default in a new
+               temporary directory)
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     wait       wait a bounded time for that host: its result, its failure, or how long it has run

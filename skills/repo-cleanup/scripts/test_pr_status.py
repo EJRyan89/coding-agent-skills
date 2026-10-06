@@ -331,7 +331,8 @@ class BaseContainsTests(GitFixture):
 
 
 class BranchClassificationTests(GitFixture):
-    """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's pull_state reads them."""
+    """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's
+    pull_state reads them."""
 
     def state(self, run, base_ref: str | None = None) -> str:
         head, upstream = branch_tips(str(self.clone), "topic")

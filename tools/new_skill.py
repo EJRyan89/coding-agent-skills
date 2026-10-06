@@ -169,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allowed-tools",
         default=",".join(DEFAULT_ALLOWED_TOOLS),
-        help="comma-separated allowed-tools entries (default: Bash and PowerShell for the skill's own scripts, and Read)",
+        help="comma-separated allowed-tools entries (default: Bash "
+        "and PowerShell for the skill's own scripts, and Read)",
     )
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)

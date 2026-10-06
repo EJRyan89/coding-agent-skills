@@ -188,7 +188,8 @@ CUES = (
     (
         "generated-code",
         re.compile(
-            rf"(?i)python3? -c{WORD_END}|<<-?\s*['\"]?[A-Z_]+['\"]?|{WORD_START}(?:write|writes|generate|generates|compose)"
+            rf"(?i)python3? -c{WORD_END}|<<-?\s*['\"]?[A-Z_]+['\"]?|"
+            rf"{WORD_START}(?:write|writes|generate|generates|compose)"
             rf"{WORD_END}.{{0,40}}{WORD_START}(?:script|code|glue|program|one-liner){WORD_END}"
         ),
     ),

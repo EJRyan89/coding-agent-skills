@@ -212,7 +212,8 @@ class HandshakeTests(unittest.TestCase):
             (
                 1,
                 [
-                    "HANDSHAKE_FAILED crash source=.mcp.json server exited before responding: boom: stderr after stdout closed"
+                    "HANDSHAKE_FAILED crash source=.mcp.json server exited "
+                    "before responding: boom: stderr after stdout closed"
                 ],
             ),
             self._run(),

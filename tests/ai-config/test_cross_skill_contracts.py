@@ -201,12 +201,14 @@ class CrossSkillContractTests(unittest.TestCase):
                 "          command: >-",
                 '            python -I -B -c "import json, os, runpy, sys;',
                 "            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),",
-                "            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision':"
+                "            print(json.dumps({'hookSpecificOutput': "
+                "{'hookEventName': 'PreToolUse', 'permissionDecision':"
                 " 'deny',",
                 "            'permissionDecisionReason': 'Code-review reviewer boundary: the guard could not run (' +"
                 " kind.__name__ + ').'}}),",
                 "            flush=True), os._exit(0));",
-                "            runpy.run_path(os.path.expanduser('~/.claude/skills/code-review-core/scripts/review_guard.py'),",
+                "            runpy.run_path(os.path.expanduser("
+                "'~/.claude/skills/code-review-core/scripts/review_guard.py'),",
                 "            run_name='__main__')\"",
                 "          timeout: 30",
             ],
@@ -284,7 +286,8 @@ class CrossSkillContractTests(unittest.TestCase):
                                 "hookSpecificOutput": {
                                     "hookEventName": "PreToolUse",
                                     "permissionDecision": "deny",
-                                    "permissionDecisionReason": f"Code-review reviewer boundary: the guard could not run ({error}).",
+                                    "permissionDecisionReason": "Code-review reviewer boundary: "
+                                    f"the guard could not run ({error}).",
                                 }
                             },
                             json.loads(result.stdout),
@@ -377,8 +380,9 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("`RUNNING <selector> <id> <seconds>s` means that run's Copilot CLI host is still going", skill)
 
     def test_review_prs_finishes_the_workflow_path_in_the_turn_that_invoked_it(self) -> None:
-        # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the turn that
-        # invoked it, so check and finalize were denied later, nothing was recorded, and it still reported success (#40).
+        # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the
+        # turn that invoked it, so check and finalize were denied later, nothing was recorded, and it still
+        # reported success (#40).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"

@@ -1775,7 +1775,8 @@ class RepositoryValidation(unittest.TestCase):
             suite.write_text(
                 "import unittest\nfrom pathlib import Path\nimport helper\n"
                 f"LOG = Path({str(log)!r})\n"
-                "def record(entry):\n    with LOG.open('a', encoding='utf-8') as handle:\n        handle.write(entry + '\\n')\n"
+                "def record(entry):\n    with LOG.open('a', encoding='utf-8') "
+                "as handle:\n        handle.write(entry + '\\n')\n"
                 "def setUpModule():\n    record('module ' + helper.VALUE)\n"
                 "class Fixture(unittest.TestCase):\n"
                 "    @classmethod\n    def setUpClass(cls):\n        record('class')\n"
@@ -2450,7 +2451,8 @@ class RepositoryValidation(unittest.TestCase):
             self.assertEqual(
                 [
                     f"skills/bare/SKILL.md grants Bash for every command; see {GRANTS_DOC}",
-                    f'skills/expands/SKILL.md:7 expands a shell variable, so it always prompts: {own}x.py" --cwd "$PWD"; '
+                    "skills/expands/SKILL.md:7 expands a shell variable, "
+                    f'so it always prompts: {own}x.py" --cwd "$PWD"; '
                     f"see {GRANTS_DOC}",
                     f"skills/none/SKILL.md grants Read, which no step uses; see {GRANTS_DOC}",
                     f"skills/none/SKILL.md:6 runs a command without a shell grant; see {GRANTS_DOC}",
@@ -2493,7 +2495,8 @@ class RepositoryValidation(unittest.TestCase):
                 "```\n"
                 'Prose names `scripts/run.py`, grants `Bash(python -B "${CLAUDE_SKILL_DIR}/scripts/*)`, and points at '
                 "${CLAUDE_SKILL_DIR}/references/checks.md.\n"
-                "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n"
+                "Give the user ${CLAUDE_SKILL_DIR}/references/gone.md "
+                "and `${CLAUDE_SKILL_DIR}/../core/scripts/old.py`.\n"
                 "Read `references/checks.md`, `./scripts/run.py`, `../core/scripts/lib.py`, and `references/`.\n"
                 "Read `${CLAUDE_SKILL_DIR}/references/checks.md`; the target's `.github/scripts/x.py` and "
                 "`data/references/y` are not ours.\n"

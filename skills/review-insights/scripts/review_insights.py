@@ -334,7 +334,8 @@ def analyze(
                     "id": identifier,
                     "kind": "category",
                     "category": category,
-                    "recommendation": f"Review recurring {category} findings and decide whether guidance or reviewer rules should change.",
+                    "recommendation": f"Review recurring {category} findings and decide "
+                    "whether guidance or reviewer rules should change.",
                     **common,
                 }
             )

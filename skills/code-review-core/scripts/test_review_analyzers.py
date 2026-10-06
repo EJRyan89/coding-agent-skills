@@ -298,8 +298,10 @@ class InventoryTests(unittest.TestCase):
     def test_a_tool_merges_case_insensitively_under_its_first_name_in_path_order(self) -> None:
         paths = self.write(
             {
-                "B/B.csproj": '<Project><ItemGroup><PackageReference Include="stylecop.analyzers" /></ItemGroup></Project>',
-                "a/A.csproj": '<Project><ItemGroup><PackageReference Include="StyleCop.Analyzers" /></ItemGroup></Project>',
+                "B/B.csproj": "<Project><ItemGroup><PackageReference "
+                'Include="stylecop.analyzers" /></ItemGroup></Project>',
+                "a/A.csproj": "<Project><ItemGroup><PackageReference "
+                'Include="StyleCop.Analyzers" /></ItemGroup></Project>',
             }
         )
         self.assertEqual(
@@ -475,7 +477,8 @@ class InventoryTests(unittest.TestCase):
     def test_package_json_names_eslint_and_its_plugins(self) -> None:
         paths = self.write(
             {
-                "a/package.json": '{"eslintConfig": {}, "dependencies": {"eslint-plugin": "1", "@acme/eslint-plugin": "1",'
+                "a/package.json": '{"eslintConfig": {}, "dependencies": '
+                '{"eslint-plugin": "1", "@acme/eslint-plugin": "1",'
                 ' "@acme/eslint-plugin-rules": "1", "eslint-config-airbnb": "1", "@eslint/js": "1",'
                 ' "typescript-eslint": "1"}, "peerDependencies": {"eslint-plugin-peer": "1"}}',
                 "b/package.json": '["eslint"]',
