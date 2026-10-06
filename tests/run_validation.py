@@ -266,22 +266,22 @@ def shell_commands(script: str) -> set[str]:
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
     found: set[str] = set()
     state = "command"
-    for token in tokens:
+    for word in tokens:
         if state == "case-word":
-            state = "patterns" if token == "in" else state
+            state = "patterns" if word == "in" else state
         elif state == "patterns":
-            state = "command" if token == ")" else "arguments" if token == "esac" else state
-        elif token == ";;":
+            state = "command" if word == ")" else "arguments" if word == "esac" else state
+        elif word == ";;":
             state = "patterns"
-        elif token == "esac":
+        elif word == "esac":
             state = "arguments"
         elif state == "command":
-            if token in COMMAND_SEPARATORS or token in LEADING_KEYWORDS or ASSIGNMENT.match(token):
+            if word in COMMAND_SEPARATORS or word in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
-            state = "case-word" if token == "case" else "arguments"
-            if token not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(token) and token not in functions:
-                found.add(token)
-        elif token in COMMAND_SEPARATORS:
+            state = "case-word" if word == "case" else "arguments"
+            if word not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(word) and word not in functions:
+                found.add(word)
+        elif word in COMMAND_SEPARATORS:
             state = "command"
     return found
 
@@ -3486,7 +3486,16 @@ class RepositoryValidation(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
         self.assertEqual(120, configuration["line-length"])
         lint = configuration["lint"]
-        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"], lint["select"])
+        self.assertEqual(
+            [
+                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PTH", "RUF"),
+                *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
+            ],
+            lint["select"],
+        )
+        # Every bandit rule but these two is selected; #90 records why they describe the design rather than a fault.
+        for unselected in ("S603", "S607"):
+            self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
         self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))

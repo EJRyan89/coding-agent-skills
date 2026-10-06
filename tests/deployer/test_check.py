@@ -368,7 +368,8 @@ class VersionTests(unittest.TestCase):
 
     def test_minimum_python_is_3_11_in_both_places(self) -> None:
         specification = importlib.util.spec_from_file_location("deploy_entry", REPOSITORY_ROOT / "deploy.py")
-        assert specification is not None and specification.loader is not None, "deploy.py loads as a module"
+        if specification is None or specification.loader is None:
+            self.fail("deploy.py loads as a module")
         entry = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(entry)
         self.assertEqual((3, 11), entry.MINIMUM_PYTHON)

@@ -15,8 +15,38 @@ line-ending = "auto"
 # A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
 # C901 and PLR0915 cap function complexity and length at the ceilings below (#91), with no noqa for either;
 # tests/run_validation.py refuses a raised ceiling.
+# The S prefixes select every stable bandit rule except S603 (a subprocess call without a shell) and S607 (a program
+# started by its PATH name); the S4 import rules are preview-only, which this configuration does not enable. Every
+# subprocess call here runs a declared tool as an argument list found on PATH, which skill_command_problems, the tools
+# catalogue in deployer/tools.py, and the shell-token policy already hold, so those two would flag the design itself on
+# every call (#90). Leaving them unselected exempts no finding of a selected rule.
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "UP",
+    "B",
+    "SIM",
+    "C901",
+    "PLR0915",
+    "PTH",
+    "RUF",
+    "S1",
+    "S2",
+    "S3",
+    "S5",
+    "S601",
+    "S602",
+    "S604",
+    "S605",
+    "S606",
+    "S608",
+    "S609",
+    "S61",
+    "S7",
+]
 
 # #91's ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]

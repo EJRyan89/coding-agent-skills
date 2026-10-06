@@ -314,12 +314,14 @@ class RecordingTarball:
             for path, content, kind in self.members:
                 info = tarfile.TarInfo(f"example-one-0123456/{path}")
                 if kind == "file":
-                    assert isinstance(content, bytes)
+                    if not isinstance(content, bytes):
+                        raise AssertionError(f"a file member's content is bytes: {path}")
                     info.size = len(content)
                     archive.addfile(info, io.BytesIO(content))
                 else:
                     info.type = tarfile.SYMTYPE if kind == "symlink" else tarfile.LNKTYPE
-                    assert isinstance(content, str)
+                    if not isinstance(content, str):
+                        raise AssertionError(f"a link member's target is a string: {path}")
                     info.linkname = content
                     archive.addfile(info)
         target.write_bytes(gzip.compress(buffer.getvalue(), compresslevel=1))

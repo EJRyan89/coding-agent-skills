@@ -399,7 +399,8 @@ class DatedSearch:
         query = parameters["q"][0]
         self.queries.append(query)
         match = SPAN.search(query)
-        assert match is not None, query
+        if match is None:
+            raise AssertionError(query)
         key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         items = [item for day, item in self.dated.get(key, []) if first <= day <= last]
@@ -436,7 +437,8 @@ class FakeGitHub(DatedSearch):
         """GraphQL search: pull request nodes carry the user's first page of reviews; `after` is an offset."""
         self.queries.append(query)
         match = SPAN.search(query)
-        assert match is not None, query
+        if match is None:
+            raise AssertionError(query)
         key = (query[: match.start()] + query[match.end() :]).strip()
         first, last = date.fromisoformat(match[1]), date.fromisoformat(match[2])
         matches = [node for day, node in self.dated.get(key, []) if first <= day <= last]
@@ -608,7 +610,7 @@ class CollectTests(unittest.TestCase):
         self.assertEqual(1500, activity.prs_reviewed_total)
         self.assertEqual({}, activity.capped)
         self.assertEqual(
-            f"{REVIEWED}2026-03-01..2026-05-20", [query for query in github.queries if "reviewed-by" in query][0]
+            f"{REVIEWED}2026-03-01..2026-05-20", next(query for query in github.queries if "reviewed-by" in query)
         )
 
     def test_search_results_without_identity_fail_closed(self) -> None:
@@ -657,7 +659,8 @@ class MainTests(unittest.TestCase):
             try:
                 code = main(arguments, client, TODAY)
             except SystemExit as exit_:
-                assert isinstance(exit_.code, int), exit_.code
+                if not isinstance(exit_.code, int):
+                    self.fail(f"exit code {exit_.code!r}")
                 code = exit_.code
         return code, stdout.getvalue(), stderr.getvalue()
 

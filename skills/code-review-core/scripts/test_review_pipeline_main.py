@@ -11,7 +11,7 @@ import threading
 import unittest
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -181,7 +181,7 @@ class ReviewerCommandTests(MainCase):
 
 
 class EnumerateTests(MainCase):
-    BATCH = {
+    BATCH: ClassVar[dict[str, Any]] = {
         "repositories": {
             "example/app": {"complete": True, "eligible": [{"number": 3}, {"number": 5}]},
             "example/lib": {"complete": False, "error": "gh failed", "eligible": [{"number": 7}]},
@@ -570,7 +570,7 @@ class ResultCommandTests(MainCase):
 
 
 class WaitTests(MainCase):
-    PROGRESS = [
+    PROGRESS: ClassVar[list[tuple[str, dict[str, tuple[str, int]]]]] = [
         ("example/app#3", {"generic-review": ("ready", 10), "security": ("running", 42)}),
         ("example/app#5", {"generic-review": ("ready", 5)}),
         ("example/app#7", {}),

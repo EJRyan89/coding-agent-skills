@@ -10,7 +10,7 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -263,7 +263,8 @@ class ReviewedHeadTests(unittest.TestCase):
             encoding="utf-8",
         )
         reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
-        assert reviewed is not None, "the migrated legacy review is the reviewed head"
+        if reviewed is None:
+            self.fail("the migrated legacy review is the reviewed head")
         self.assertEqual({"MUST_FIX": 1, "SHOULD_FIX": 0, "SUGGESTION": 3}, reviewed["counts"])
         # Its findings were never converted, so it cannot say how many were addressed.
         self.assertEqual(
@@ -351,7 +352,7 @@ class ReviewedHeadTests(unittest.TestCase):
 
 
 class CoverageTests(unittest.TestCase):
-    POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+    POLICY: ClassVar[dict[str, Any]] = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 
     def request(self) -> tuple[dict, Path]:
         temporary = tempfile.TemporaryDirectory()

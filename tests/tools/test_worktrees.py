@@ -453,7 +453,8 @@ class PowerShellGuardTests(WorktreesTestCase):
 
     def test_a_powershell_command_is_allowed_with_a_note_when_pwsh_cannot_be_started(self) -> None:
         git = shutil.which("git")
-        assert git is not None, "git is not on PATH"
+        if git is None:
+            self.fail("git is not on PATH")
         path = os.pathsep.join([str(Path(git).parent), str(self.root / "no-such-directory")])
         self.assertIsNone(self.powershell("git switch feat/demo", self.hub, {**self.environment, "PATH": path}))
         self.assertIn("could not find pwsh", self.stderr)

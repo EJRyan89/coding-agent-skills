@@ -1093,7 +1093,8 @@ class ArchiveTests(unittest.TestCase):
                 expected_latest_version=1,
             )
             latest = latest_record(root, "example/one", 12)
-            assert latest is not None, "the second version is archived"
+            if latest is None:
+                self.fail("the second version is archived")
             self.assertEqual(2, latest["review"]["version"])
 
     def test_versions_list_every_number_in_order(self) -> None:
@@ -1119,7 +1120,8 @@ class ArchiveTests(unittest.TestCase):
                 )
             self.assertEqual("review-v11.json", json_path.name)
             latest = latest_record(root, "example/one", 12)
-            assert latest is not None, "eleven versions are archived"
+            if latest is None:
+                self.fail("eleven versions are archived")
             self.assertEqual(11, latest["review"]["version"])
 
 
@@ -2009,7 +2011,7 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_pull_ref_head_and_remote_mismatch_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            checkout, trusted, head = self._repository(Path(temporary))
+            checkout, _, head = self._repository(Path(temporary))
             with self.assertRaisesRegex(RuntimeContractError, "Pull-request refs"):
                 resolve_reviewer_commit(checkout, "refs/pull/1/head", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "pull-request head"):
@@ -2173,7 +2175,8 @@ class ReviewOperationTests(unittest.TestCase):
             json_path, _, persisted = commit_adapter_result(**arguments)
             self.assertTrue(json_path.is_file())
             latest = latest_record(local, "example/one", 12)
-            assert latest is not None, "the retried commit is in the local mirror"
+            if latest is None:
+                self.fail("the retried commit is in the local mirror")
             self.assertEqual(latest["artifacts"], persisted["artifacts"])
 
     def test_latest_reviewed_heads_ignores_missing_pull_records(self) -> None:

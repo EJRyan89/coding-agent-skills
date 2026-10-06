@@ -96,7 +96,8 @@ def workflow_output(out: str) -> tuple[Path, str, list[dict[str, Any]]]:
     """The `workflow` command's script path, the inline script it prints, and each role as the script builds it."""
     lines = out.splitlines()
     header = lines[0]
-    assert header.startswith("WORKFLOW "), out
+    if not header.startswith("WORKFLOW "):
+        raise AssertionError(out)
     script = Path(header.removeprefix("WORKFLOW ").rsplit(" roles=", 1)[0])
     begin, end = lines.index(rp.SCRIPT_BEGIN), lines.index(rp.SCRIPT_END)
     text = "\n".join(lines[begin + 1 : end]) + "\n"
@@ -943,7 +944,8 @@ class SelfCheckTests(PipelineFixture):
         self.assertIn("stop\nafter two fixes.\nAfter writing RESULT_FILE, reply with exactly: WROTE", prompt)
 
         self.write_role_result(role, findings=[self.finding()])
-        shell = subprocess.run(command, shell=True, capture_output=True, text=True, encoding="utf-8")
+        # The prompt hands the reviewer one shell command line, so it runs through a shell exactly as written.
+        shell = subprocess.run(command, shell=True, capture_output=True, text=True, encoding="utf-8")  # noqa: S602 - as above
         self.assertEqual((0, "VALID\n"), (shell.returncode, shell.stdout), shell.stderr)
 
     def test_validate_result_reports_what_check_would_and_changes_nothing(self) -> None:
@@ -2180,7 +2182,7 @@ class CopilotHostTests(PipelineFixture):
 
         def killed_then_checked() -> None:
             del self.alive[4001]  # check sees the host gone, though it is still writing
-            code, out, _ = self.run_main("check", "--run", self.run_path)
+            _, out, _ = self.run_main("check", "--run", self.run_path)
             self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
 
         self.during_review = killed_then_checked

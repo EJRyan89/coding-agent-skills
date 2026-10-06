@@ -932,7 +932,8 @@ class FormatContractTest(unittest.TestCase):
     def test_a_doctored_table_disagrees(self) -> None:
         text = CONTRACT.read_text(encoding="utf-8")
         row = re.search(r"^\| `number` \| integer \| yes \|.*$", text, flags=re.MULTILINE)
-        assert row is not None, "the record's pull request table lists number as a required integer"
+        if row is None:
+            self.fail("the record's pull request table lists number as a required integer")
         for name, doctored, expected in (
             (
                 "optional",

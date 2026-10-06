@@ -101,7 +101,8 @@ def copy_fixture(root: Path) -> None:
     Building the repositories starts eight git processes and copying them starts two, so each test gets a copy.
     The two clones name the bare remote by absolute path, so both are pointed at the copy's remote.
     """
-    assert TEMPLATE is not None, "setUpModule builds the template"
+    if TEMPLATE is None:
+        raise AssertionError("setUpModule builds the template")
     shutil.copytree(TEMPLATE, root, symlinks=True, dirs_exist_ok=True)
     template_remote = fixture_paths(TEMPLATE)[0]
     remote, other, clone = fixture_paths(root)
@@ -139,13 +140,15 @@ class FakeGitHub:
         self.calls: list[list[str]] = []
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
-        assert command[0] == "gh", command
+        if command[0] != "gh":
+            raise AssertionError(command)
         arguments = list(command[1:])
         self.calls.append(arguments)
         if arguments[:2] == ["auth", "status"]:
             return CommandResult(0 if self.authenticated else 1, "", "")
         if arguments[0] == "api":
-            assert arguments[:3] == ["api", "--paginate", "--slurp"], arguments
+            if arguments[:3] != ["api", "--paginate", "--slurp"]:
+                raise AssertionError(arguments)
             number = int(arguments[3].split("/")[4])
             commits = [
                 {"sha": sha, "parents": [{"sha": parent} for parent in parents]}
@@ -331,7 +334,8 @@ class FixtureTemplateTests(unittest.TestCase):
         copy_fixture(copied)
         self.assertEqual(shape(fresh), shape(copied))
 
-        assert TEMPLATE is not None, "setUpModule builds the template"
+        if TEMPLATE is None:
+            self.fail("setUpModule builds the template")
         remote, other, clone = fixture_paths(copied)
         git(other, "commit", "--quiet", "--allow-empty", "-m", "only in this copy")
         git(other, "push", "--quiet", "origin", "main")
@@ -964,7 +968,8 @@ class RemoveWorktreeTests(unittest.TestCase):
         path = self.root / f"{name} wt"
         entry = {"path": str(path), "branch": name}
         tip = self.tip(name)
-        assert tip is not None, f"{name} was added with a branch"
+        if tip is None:
+            self.fail(f"{name} was added with a branch")
         with contextlib.redirect_stdout(io.StringIO()):
             removed = rc.remove_worktree(rc.Services(), self.plan, entry, tip, pr)
         return removed, self.plan["events"], path

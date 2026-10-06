@@ -149,7 +149,7 @@ class Session:
 
     def _pump_stderr(self) -> None:
         for line in self.stderr:
-            self.stderr_tail = (self.stderr_tail + [line.strip()])[-3:]
+            self.stderr_tail = [*self.stderr_tail, line.strip()][-3:]
 
     def send(self, message: dict[str, Any]) -> None:
         self.stdin.write(json.dumps(message) + "\n")

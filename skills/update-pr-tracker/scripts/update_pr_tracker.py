@@ -423,7 +423,7 @@ def _section_lines(section: str, members: list[Row], summary: str, home: set[str
             requestor = _escape(name(row)) if name(row).casefold() != previous else ""
             previous = name(row).casefold()
             lines.append(f"| {requestor} | " + " | ".join([_pull_link(row, home), *_ai_cells(row)]) + " |")
-    return lines + ["", "</details>", ""]
+    return [*lines, "", "</details>", ""]
 
 
 def render(

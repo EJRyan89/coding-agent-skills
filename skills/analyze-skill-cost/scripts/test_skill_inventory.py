@@ -178,7 +178,8 @@ class LocateTests(TemporaryTestCase):
         git("init", "-q", str(self.repo))
         (self.repo / "sub").mkdir()
         toplevel = skill_inventory.git_toplevel(self.repo / "sub")
-        assert toplevel is not None, "a subdirectory of a repository has a top level"
+        if toplevel is None:
+            self.fail("a subdirectory of a repository has a top level")
         self.assertEqual(self.repo, toplevel.resolve())
         plain = self.root / "plain"
         plain.mkdir()
