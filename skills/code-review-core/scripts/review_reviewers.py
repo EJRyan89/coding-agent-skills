@@ -89,16 +89,20 @@ def _frontmatter(text: str) -> tuple[dict[str, list[str] | None], int]:
 
 
 def frontmatter_value(text: str, key: str) -> str | None:
-    """A single `key: value` from a leading `---` block, unquoted, or None when the block or key is absent."""
+    """A single `key: value` from a leading `---` block, unquoted, or None when the block or key is absent.
+
+    A block with no closing `---` is no frontmatter, as `_frontmatter` reads it.
+    """
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return None
+    found: str | None = None
     for line in lines[1:]:
         if line.strip() == "---":
-            return None
+            return found or None
         match = re.match(r"^([A-Za-z][\w-]*)\s*:\s*(.*)$", line)
-        if match and match.group(1).casefold() == key.casefold():
-            return match.group(2).strip().strip("'\"") or None
+        if match and found is None and match.group(1).casefold() == key.casefold():
+            found = match.group(2).strip().strip("'\"") or ""
     return None
 
 
@@ -113,10 +117,11 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
     names = {_tool_name(item) for item in tools} if tools is not None else None
     can_delegate = names is None or "*" in names or bool(names & DELEGATION_TOOLS)
     own = PurePosixPath(skill)
-    agents = {
-        PurePosixPath(path).stem: path for path in repository_files
-        if path.startswith(AGENT_DIRECTORIES) and path.endswith(".md") and PurePosixPath(path) != own
-    }
+    # Every file of a name: .claude/agents/ and .github/agents/ may both define it, and the skill needs each.
+    agents: dict[str, list[str]] = {}
+    for path in sorted(repository_files):
+        if path.startswith(AGENT_DIRECTORIES) and path.endswith(".md") and PurePosixPath(path) != own:
+            agents.setdefault(PurePosixPath(path).stem, []).append(path)
     evidence: list[tuple[int, str]] = []
     references: set[str] = set()
     for number, line in enumerate(text.splitlines()[body_start - 1:], start=body_start):
@@ -128,7 +133,7 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
             token = token.removeprefix("./")
             if token in repository_files and token != skill:
                 references.add(token)
-        references.update(agents[stem] for stem in named)
+        references.update(path for stem in named for path in agents[stem])
     if not can_delegate:
         delegates, reason = "no", "its tool list grants neither Agent nor Task"
     elif evidence:

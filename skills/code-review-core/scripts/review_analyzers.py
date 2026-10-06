@@ -47,6 +47,9 @@ TOP_SECTION = "\x00top"
 RULE_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore")
 FLAKE8_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore", "extend_select", "extend_ignore")
 PYPROJECT_TOOLS = {"pylint": "pylint", "mypy": "mypy", "pyright": "pyright", "flake8": "flake8", "bandit": "bandit"}
+# Configuration files whose name alone says which tool reads them.
+NAMED_BY_FILE = {"ruff.toml": "ruff", ".ruff.toml": "ruff", ".flake8": "flake8", ".shellcheckrc": "ShellCheck",
+                 "shellcheckrc": "ShellCheck"}
 SETUP_CFG_TOOLS = {"flake8": "flake8", "mypy": "mypy", "pylint": "pylint", "pylint.messages control": "pylint"}
 ESLINT_PLUGIN = re.compile(r"(?:@[^/]+/)?eslint-plugin(?:-.+)?")
 # Configuration files that name their analyzer and whose settings this inventory does not read.
@@ -266,8 +269,11 @@ def inventory(root: Path, paths: Iterable[str]) -> dict[str, Any]:
             continue
         text = _text(root, path)
         if text is None:
-            # A setup.cfg, tox.ini, pyproject.toml, or package.json may configure no analyzer at all.
-            if handler in (_msbuild, _editorconfig, _shellcheckrc) or name in {"ruff.toml", ".ruff.toml", ".flake8"}:
+            # A file whose name names its tool still names it, as when it cannot be parsed. A setup.cfg, tox.ini,
+            # pyproject.toml, or package.json may configure no analyzer at all, so it is not listed.
+            if name in NAMED_BY_FILE:
+                found.tool(NAMED_BY_FILE[name], path)
+            if handler in (_msbuild, _editorconfig) or name in NAMED_BY_FILE:
                 found.setting(path, UNREAD)
             continue
         handler(found, path, text)

@@ -10,10 +10,14 @@ temporary file; standard output gets one fact per line, tab separated:
     DIAGNOSTIC  <file> <line> <column> <severity> <rule>
     SUMMARY     <diagnostic count> <file count> <comma-separated rules, or ->
     LOG         <log file>
-    STOP        <reason>          dotnet-format is not installed; report the reason and stop
 
-FILE paths are relative to the repository root when they are inside it. An unexpected dotnet-format failure
-prints the LOG line, then `FAILED <reason>` on standard error, and exits 2.
+FILE paths are relative to the repository root when they are inside it.
+
+`check` exits 1 when it prints a DIAGNOSTIC (findings) and 0 when it prints none. `fix` exits 0 once dotnet-format
+succeeds: its DIAGNOSTIC lines are what it found to fix, because its log does not say which of them it could not
+fix, so rerun `check` to see what remains. A failure, such as dotnet-format not being installed, exiting with an
+unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after the LOG line when
+dotnet-format ran, and exits 1. A usage error exits 2.
 """
 
 from __future__ import annotations
@@ -115,17 +119,21 @@ def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
 
 
 def read_file_list(path: Path) -> list[str]:
-    files = [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        raise Failed(f"{path} is not UTF-8 text") from None
+    files = [line.strip() for line in text.splitlines() if line.strip()]
     if not files:
         raise Failed(f"{path} lists no files")
     return files
 
 
 def run(mode: str, root: Path, solution: str, file_list: Path, severity: str, timeout: float,
-        services: Services, emit: Callable[[str], None]) -> None:
+        services: Services, emit: Callable[[str], None]) -> bool:
+    """Run dotnet-format and print its diagnostics; return whether a check found any."""
     if not services.which("dotnet-format"):
-        emit(f"STOP\t{INSTALL_HINT}")
-        return
+        raise Failed(INSTALL_HINT)
     files = read_file_list(file_list)
     result = services.run(command(mode, solution, files, severity), root, timeout)
     descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
@@ -144,9 +152,11 @@ def run(mode: str, root: Path, solution: str, file_list: Path, severity: str, ti
     if result.returncode == CHECK_FAILED_EXIT_CODE and mode == "check":
         if not diagnostics:
             raise Failed("dotnet-format reported changes it did not itemize; see the log")
-        return
+        return True
     if result.returncode != 0:
         raise Failed(f"dotnet-format exited with code {result.returncode}; see the log")
+    # A fix run's log lists what it found before fixing, not what is left; the check rerun reports that.
+    return mode == "check" and bool(diagnostics)
 
 
 def main(argv: Sequence[str] | None = None, services: Services | None = None) -> int:
@@ -163,12 +173,12 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
-        run(arguments.mode, arguments.repo_root, arguments.solution, arguments.include_file, arguments.severity,
-            arguments.timeout, services or Services(), print)
+        findings = run(arguments.mode, arguments.repo_root, arguments.solution, arguments.include_file,
+                       arguments.severity, arguments.timeout, services or Services(), print)
     except (Failed, OSError) as error:
-        print(f"FAILED {error}", file=sys.stderr)
-        return 2
-    return 0
+        print(f"FAILED {error}")
+        return 1
+    return 1 if findings else 0
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """Resolve the changed C# files and the solution the dotnet-format skill formats.
 
-    resolve [--cwd PATH]   print what to format, or one STOP line saying why there is nothing to format; PATH
-                           is the directory the skill was invoked from, by default the current directory
+    resolve [--cwd PATH]   print what to format; PATH is the directory the skill was invoked from, by default the
+                           current directory
 
 Output, one fact per line, tab separated:
 
@@ -12,14 +12,20 @@ Output, one fact per line, tab separated:
     OUTSIDE_SOLUTION <file>                       a FILE no project of SOLUTION owns; the formatter skips it
     FILE_LIST       <temporary file>              the FILE paths, one per line, for --include-file / --file-list
     SOLUTION        <solution> <score>            the solution to format and how many FILEs its projects own
-
-SOLUTION is the nearest solution from the invocation directory that owns a FILE, else the repository solution
-owning the most. A solution owning none of them is never chosen, because the formatter would skip every file
-and report a clean result.
     STOP            <reason>                      nothing to format; report the reason and stop
+
+BASE is the pull request's base branch when gh reports one, else the remote's default branch (origin/HEAD), else
+origin/main, else origin/master. SOLUTION is the nearest solution from the invocation directory that owns a FILE,
+else the repository solution owning the most. A solution owning none of them is never chosen, because the
+formatter would skip every file and report a clean result; that ends in STOP, as does finding no changed C# file
+or no solution.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
+
+Exits 0 with its lines, ending in SOLUTION or STOP. When the directory is not in a Git repository, a git command
+fails, no base ref exists, or a file cannot be read or written, it prints `FAILED <reason>` as the last line and
+exits 1. A usage error exits 2.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ WEB_PROJECT = re.compile(
 )
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
+REMOTE_REFS = "refs/remotes/origin/"
 COMMAND_TIMEOUT_SECONDS = 300
 
 
@@ -78,6 +85,10 @@ class Stop(Exception):
     """There is nothing to format; the message says why."""
 
 
+class Failed(Exception):
+    """The targets could not be resolved; the message says why."""
+
+
 def read_text(path: Path) -> str:
     """Read an MSBuild or solution file whatever its encoding; only ASCII syntax matters here."""
     data = path.read_bytes()
@@ -97,14 +108,14 @@ def relative(path: Path, root: Path) -> str:
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
     result = services.run(["git", arguments[0], "-z", *arguments[1:]], root)
     if result.returncode != 0:
-        raise Stop(f"git {' '.join(arguments)} failed")
+        raise Failed(f"git {' '.join(arguments)} failed")
     return [name for name in result.stdout.decode("utf-8", errors="surrogateescape").split("\0") if name]
 
 
 def repository_root(services: Services, cwd: Path) -> Path:
     result = services.run(["git", "rev-parse", "--show-toplevel"], cwd)
     if result.returncode != 0:
-        raise Stop(f"{cwd} is not inside a Git repository")
+        raise Failed(f"{cwd} is not inside a Git repository")
     return Path(result.stdout.decode("utf-8", errors="surrogateescape").strip()).resolve()
 
 
@@ -126,19 +137,32 @@ def pull_request_base(result: Completed) -> str | None:
     return name.strip()
 
 
+def remote_default_branch(result: Completed) -> str | None:
+    """origin/<name> from `git symbolic-ref refs/remotes/origin/HEAD` output, or None when origin has no HEAD."""
+    if result.returncode != 0:
+        return None
+    target = result.stdout.decode("utf-8", errors="surrogateescape").strip()
+    name = target.removeprefix(REMOTE_REFS)
+    return f"origin/{name}" if name and name != target else None
+
+
 def base_ref(services: Services, root: Path) -> str:
-    """The pull request's base branch when gh knows it, else origin/main, else origin/master."""
+    """The first that exists of the pull request's base branch when gh knows it, the remote's default branch
+    (origin/HEAD, which clone sets), origin/main, and origin/master."""
     services.run(["git", "fetch", "origin", "--quiet"], root)
     candidates: list[str] = []
     if services.which("gh"):
         name = pull_request_base(services.run(["gh", "pr", "view", "--json", "baseRefName"], root))
         if name:
             candidates.append(f"origin/{name}")
+    default = remote_default_branch(services.run(["git", "symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"], root))
+    if default:
+        candidates.append(default)
     candidates += ["origin/main", "origin/master"]
     for candidate in candidates:
         if ref_exists(services, root, candidate):
             return candidate
-    raise Stop("no base ref: neither the pull request base, origin/main, nor origin/master exists")
+    raise Failed("no base ref: none of the pull request base, origin/HEAD, origin/main, or origin/master exists")
 
 
 def changed_files(services: Services, root: Path, base: str) -> list[str]:
@@ -188,10 +212,17 @@ def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
         directory = directory.parent
 
 
+def raise_error(error: OSError) -> None:
+    raise error
+
+
 def find_solutions(root: Path) -> list[Path]:
-    """Every solution in the repository, skipping build and dependency directories."""
+    """Every solution in the repository, skipping build and dependency directories.
+
+    A directory it cannot read is an error, not an empty one: skipping it could hide the solution to choose.
+    """
     found = []
-    for current, directories, files in os.walk(root):
+    for current, directories, files in os.walk(root, onerror=raise_error):
         directories[:] = sorted(name for name in directories if name.casefold() not in IGNORED_DIRECTORIES)
         found += [Path(current) / name for name in sorted(files) if name.casefold().endswith(".sln")]
     return found
@@ -277,6 +308,9 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
         resolve(arguments.cwd or Path.cwd(), services or Services(), print)
     except Stop as stop:
         print(f"STOP\t{stop}")
+    except (Failed, OSError) as error:
+        print(f"FAILED {error}")
+        return 1
     return 0
 
 
