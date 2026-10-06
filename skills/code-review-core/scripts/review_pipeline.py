@@ -1362,7 +1362,7 @@ def _print_model(selector: str, role: dict[str, Any]) -> None:
         print(f"MODEL {selector} {role['id']} {role['model']}")
 
 
-def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1433,184 +1433,248 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
         "--pull", action="append", type=int, default=[], dest="pulls", help="pull request number to route; repeatable"
     )
     validate_parser.add_argument("--ref", help="commit to read the reviewer from when no --pull is given")
-    args = parser.parse_args(arguments)
-    if args.command == "prepare":
-        selectors = [*args.pulls, *args.re_reviews]
-        if not selectors:
-            parser.error("prepare takes at least one --pull or --re-review")
-        if len(selectors) > MAX_PREPARE_PULLS:
-            parser.error(f"prepare takes at most {MAX_PREPARE_PULLS} pull requests")
-        # A canary is an initial review of each pull request, written under its own temporary root.
-        if args.canary and (args.re_reviews or args.force):
-            parser.error("--canary takes only --pull selectors and no --force")
-        # The person running the review chooses the scope; nothing picks one for them.
-        if bool(args.re_reviews) != (args.scope is not None):
-            parser.error("--scope is required with --re-review and taken only with it")
-        # Two runs of one pull request would race to record the same review version.
-        duplicate = _first_duplicate(selectors)
-        if duplicate is not None:
-            parser.error(f"{duplicate} is named more than once")
-    try:
-        if args.command in {"inspect-reviewer", "validate-reviewer"}:
-            lines = (
-                inspect_reviewer(args.repository, ref=args.ref, config_path=args.config, services=services)
-                if args.command == "inspect-reviewer"
-                else validate_reviewer(
-                    args.repository, pulls=args.pulls, ref=args.ref, config_path=args.config, services=services
-                )
-            )
-            print("\n".join(lines))
-            return 0
-        if args.command == "enumerate":
-            output = working_path(args.output, "review-prs-batch-", "batch.json")
-            batch = enumerate_batch(
-                output,
-                repositories=args.repositories,
-                repository_set=args.repository_set,
-                force=args.force,
-                config_path=args.config,
-                services=services,
-            )
-            for repository, entry in batch["repositories"].items():
-                if not entry["complete"]:
-                    print(f"REPOSITORY_FAILED {repository} {entry['error']}")
-                for pull in entry["eligible"]:
-                    print(f"PULL {repository}#{pull['number']}")
-            print(f"BATCH {output}")
-            return 0
-        if args.command == "prepare":
-            failed = False
-            items = [(selector, False) for selector in args.pulls] + [(selector, True) for selector in args.re_reviews]
-            outcomes = map_in_order(
-                lambda item: prepare(
-                    item[0],
-                    re_review=item[1],
-                    scope=args.scope if item[1] else None,
-                    force=args.force,
-                    canary=args.canary,
-                    host=args.host,
-                    config_path=args.config,
-                    services=services,
-                ),
-                items,
-                catch=EXPECTED_ERRORS,
-            )
-            for (selector, _), (result, error) in zip(items, outcomes, strict=True):
-                if error is not None or result is None:  # prepare returns a result whenever it raises nothing
-                    print(f"FAILED {selector} {error}")
-                    failed = True
-                    continue
-                if result["status"] == "skip":
-                    print(f"SKIP {result['selector']} {result['reason']}")
-                else:
-                    # This call's other pull requests may have taken longer; its reviewers all start from here.
-                    mark_dispatched(result["run"])
-                    _print_ready(result)
-            return 1 if failed else 0
-        if args.command == "validate-result":
-            invalid = validate_result(args.run, args.role)
-            print(f"INVALID {invalid}" if invalid else "VALID")
-            return 1 if invalid else 0
-        if args.command == "workflow":
-            script, text, count = workflow_script(args.runs)
-            print(f"WORKFLOW {script} roles={count}")
-            print(SCRIPT_BEGIN)
-            print(text, end="")
-            print(SCRIPT_END)
-            return 0
-        if args.command == "wait-reviewers":
-            progress, failures = wait_for_reviewers(args.runs, args.timeout, services or Services())
-            for run, reason in failures.items():
-                print(f"FAILED {run} {reason}")
-            for selector, roles in progress:
-                if all(status == "ready" for status, _ in roles.values()):
-                    print(f"READY {selector}")
-                for identity, (status, elapsed) in roles.items():
-                    if status != "ready":
-                        print(f"{status.upper()} {selector} {identity} {elapsed}s")
-            # RUNNING and OVERDUE are states the skill acts on by polling again or checking, not failures.
-            return 1 if failures else 0
-        if args.command == "unfinalized":
-            pending = failed = False
-            for run in args.runs:
-                try:
-                    selector = unfinalized_selector(run)
-                except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}")
-                    failed = True
-                    continue
-                if selector is not None:
-                    print(f"UNFINALIZED {selector} {run.resolve()}")
-                    pending = True
-            if not pending and not failed:
-                print("ALL_FINALIZED")
-            return 1 if pending or failed else 0
-        if args.command == "dispatch":
-            print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
-            return 0
-        if args.command == "host":
-            print(f"OUTCOME {run_host(args.run, args.token, services or Services())}")
-            return 0
-        if args.command == "wait":
-            dispatched, elapsed = wait_for_host(args.run, args.timeout, services or Services())
-            if dispatched is None:
-                print(f"RUNNING {elapsed}s")  # a state the skill polls again
-                return 0
-            print(f"DISPATCHED {dispatched}")
-            return 0
-        if args.command == "check":
-            retry = failed = False
-            for run in args.runs:
-                try:
-                    outcome = check_run(run, services)
-                except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}")
-                    failed = True
-                    continue
-                selector = outcome["selector"]
-                for role in outcome["retry"]:
-                    print(f"RETRY {selector} {role['id']} {role['prompt_file']} {outcome['errors'][role['id']]}")
-                    _print_model(selector, role)
-                for identity, error in outcome["failed"].items():
-                    print(f"FAILED {selector} {identity} {error}")
-                for identity, elapsed in outcome["running"].items():
-                    print(f"RUNNING {selector} {identity} {elapsed}s")
-                if not outcome["errors"] and not outcome["running"]:
-                    print(f"ALL_VALID {selector}")
-                retry = retry or bool(outcome["retry"])
-                failed = failed or bool(outcome["failed"])
-            # A RETRY or FAILED line is for the skill to act on; RUNNING alone is a state it polls again.
-            return 1 if failed or retry else 0
-        if args.command == "finalize":
-            failed = False
-            for run in args.runs:
-                try:
-                    result = finalize(run)
-                except EXPECTED_ERRORS as exc:
-                    print(f"FAILED {run} {exc}")
-                    failed = True
-                    continue
-                for note in result["notes"]:
-                    print(f"NOTE {result['selector']} {note}")
-                if result["canary_root"]:
-                    print(f"CANARY {result['selector']} {result['canary_root']}")
-                    for path, digest in result["hashes"].items():
-                        print(f"SHA256 {digest} {path}")
-                print(
-                    f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
-                    f"{result['markdown']}"
-                )
-            return 1 if failed else 0
-        for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config).items():
-            print(
-                f"WATERMARK {repository} {old} -> {new}"
-                if new
-                else f"WATERMARK {repository} unchanged: enumeration failed"
-            )
+    return parser
+
+
+def _check_prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Refuse a prepare call argparse cannot judge alone, as a usage error that exits 2 before any work."""
+    selectors = [*args.pulls, *args.re_reviews]
+    if not selectors:
+        parser.error("prepare takes at least one --pull or --re-review")
+    if len(selectors) > MAX_PREPARE_PULLS:
+        parser.error(f"prepare takes at most {MAX_PREPARE_PULLS} pull requests")
+    # A canary is an initial review of each pull request, written under its own temporary root.
+    if args.canary and (args.re_reviews or args.force):
+        parser.error("--canary takes only --pull selectors and no --force")
+    # The person running the review chooses the scope; nothing picks one for them.
+    if bool(args.re_reviews) != (args.scope is not None):
+        parser.error("--scope is required with --re-review and taken only with it")
+    # Two runs of one pull request would race to record the same review version.
+    duplicate = _first_duplicate(selectors)
+    if duplicate is not None:
+        parser.error(f"{duplicate} is named more than once")
+
+
+def _run_inspect_reviewer(args: argparse.Namespace, services: Services | None) -> int:
+    print("\n".join(inspect_reviewer(args.repository, ref=args.ref, config_path=args.config, services=services)))
+    return 0
+
+
+def _run_validate_reviewer(args: argparse.Namespace, services: Services | None) -> int:
+    lines = validate_reviewer(
+        args.repository, pulls=args.pulls, ref=args.ref, config_path=args.config, services=services
+    )
+    print("\n".join(lines))
+    return 0
+
+
+def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
+    output = working_path(args.output, "review-prs-batch-", "batch.json")
+    batch = enumerate_batch(
+        output,
+        repositories=args.repositories,
+        repository_set=args.repository_set,
+        force=args.force,
+        config_path=args.config,
+        services=services,
+    )
+    for repository, entry in batch["repositories"].items():
+        if not entry["complete"]:
+            print(f"REPOSITORY_FAILED {repository} {entry['error']}")
+        for pull in entry["eligible"]:
+            print(f"PULL {repository}#{pull['number']}")
+    print(f"BATCH {output}")
+    return 0
+
+
+def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
+    failed = False
+    items = [(selector, False) for selector in args.pulls] + [(selector, True) for selector in args.re_reviews]
+    outcomes = map_in_order(
+        lambda item: prepare(
+            item[0],
+            re_review=item[1],
+            scope=args.scope if item[1] else None,
+            force=args.force,
+            canary=args.canary,
+            host=args.host,
+            config_path=args.config,
+            services=services,
+        ),
+        items,
+        catch=EXPECTED_ERRORS,
+    )
+    for (selector, _), (result, error) in zip(items, outcomes, strict=True):
+        if error is not None or result is None:  # prepare returns a result whenever it raises nothing
+            print(f"FAILED {selector} {error}")
+            failed = True
+            continue
+        if result["status"] == "skip":
+            print(f"SKIP {result['selector']} {result['reason']}")
+        else:
+            # This call's other pull requests may have taken longer; its reviewers all start from here.
+            mark_dispatched(result["run"])
+            _print_ready(result)
+    return 1 if failed else 0
+
+
+def _run_validate_result(args: argparse.Namespace, services: Services | None) -> int:
+    invalid = validate_result(args.run, args.role)
+    print(f"INVALID {invalid}" if invalid else "VALID")
+    return 1 if invalid else 0
+
+
+def _run_workflow(args: argparse.Namespace, services: Services | None) -> int:
+    script, text, count = workflow_script(args.runs)
+    print(f"WORKFLOW {script} roles={count}")
+    print(SCRIPT_BEGIN)
+    print(text, end="")
+    print(SCRIPT_END)
+    return 0
+
+
+def _run_wait_reviewers(args: argparse.Namespace, services: Services | None) -> int:
+    progress, failures = wait_for_reviewers(args.runs, args.timeout, services or Services())
+    for run, reason in failures.items():
+        print(f"FAILED {run} {reason}")
+    for selector, roles in progress:
+        if all(status == "ready" for status, _ in roles.values()):
+            print(f"READY {selector}")
+        for identity, (status, elapsed) in roles.items():
+            if status != "ready":
+                print(f"{status.upper()} {selector} {identity} {elapsed}s")
+    # RUNNING and OVERDUE are states the skill acts on by polling again or checking, not failures.
+    return 1 if failures else 0
+
+
+def _run_unfinalized(args: argparse.Namespace, services: Services | None) -> int:
+    pending = failed = False
+    for run in args.runs:
+        try:
+            selector = unfinalized_selector(run)
+        except EXPECTED_ERRORS as exc:
+            print(f"FAILED {run} {exc}")
+            failed = True
+            continue
+        if selector is not None:
+            print(f"UNFINALIZED {selector} {run.resolve()}")
+            pending = True
+    if not pending and not failed:
+        print("ALL_FINALIZED")
+    return 1 if pending or failed else 0
+
+
+def _run_dispatch(args: argparse.Namespace, services: Services | None) -> int:
+    print(f"STARTED {dispatch_copilot(args.run, services or Services())}")
+    return 0
+
+
+def _run_host(args: argparse.Namespace, services: Services | None) -> int:
+    print(f"OUTCOME {run_host(args.run, args.token, services or Services())}")
+    return 0
+
+
+def _run_wait(args: argparse.Namespace, services: Services | None) -> int:
+    dispatched, elapsed = wait_for_host(args.run, args.timeout, services or Services())
+    if dispatched is None:
+        print(f"RUNNING {elapsed}s")  # a state the skill polls again
         return 0
+    print(f"DISPATCHED {dispatched}")
+    return 0
+
+
+def _run_check(args: argparse.Namespace, services: Services | None) -> int:
+    retry = failed = False
+    for run in args.runs:
+        try:
+            outcome = check_run(run, services)
+        except EXPECTED_ERRORS as exc:
+            print(f"FAILED {run} {exc}")
+            failed = True
+            continue
+        selector = outcome["selector"]
+        for role in outcome["retry"]:
+            print(f"RETRY {selector} {role['id']} {role['prompt_file']} {outcome['errors'][role['id']]}")
+            _print_model(selector, role)
+        for identity, error in outcome["failed"].items():
+            print(f"FAILED {selector} {identity} {error}")
+        for identity, elapsed in outcome["running"].items():
+            print(f"RUNNING {selector} {identity} {elapsed}s")
+        if not outcome["errors"] and not outcome["running"]:
+            print(f"ALL_VALID {selector}")
+        retry = retry or bool(outcome["retry"])
+        failed = failed or bool(outcome["failed"])
+    # A RETRY or FAILED line is for the skill to act on; RUNNING alone is a state it polls again.
+    return 1 if failed or retry else 0
+
+
+def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
+    failed = False
+    for run in args.runs:
+        try:
+            result = finalize(run)
+        except EXPECTED_ERRORS as exc:
+            print(f"FAILED {run} {exc}")
+            failed = True
+            continue
+        for note in result["notes"]:
+            print(f"NOTE {result['selector']} {note}")
+        if result["canary_root"]:
+            print(f"CANARY {result['selector']} {result['canary_root']}")
+            for path, digest in result["hashes"].items():
+                print(f"SHA256 {digest} {path}")
+        print(
+            f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
+            f"{result['markdown']}"
+        )
+    return 1 if failed else 0
+
+
+def _run_advance(args: argparse.Namespace, services: Services | None) -> int:
+    for repository, (old, new) in advance_watermarks(args.batch, config_path=args.config).items():
+        print(
+            f"WATERMARK {repository} {old} -> {new}" if new else f"WATERMARK {repository} unchanged: enumeration failed"
+        )
+    return 0
+
+
+# One handler per subcommand. Each prints its lines and returns the exit code; an expected error it does not report
+# itself reaches _translate_errors.
+COMMANDS: dict[str, Callable[[argparse.Namespace, Services | None], int]] = {
+    "enumerate": _run_enumerate,
+    "prepare": _run_prepare,
+    "dispatch": _run_dispatch,
+    "wait": _run_wait,
+    "host": _run_host,
+    "workflow": _run_workflow,
+    "wait-reviewers": _run_wait_reviewers,
+    "validate-result": _run_validate_result,
+    "check": _run_check,
+    "finalize": _run_finalize,
+    "unfinalized": _run_unfinalized,
+    "advance": _run_advance,
+    "inspect-reviewer": _run_inspect_reviewer,
+    "validate-reviewer": _run_validate_reviewer,
+}
+
+
+def _translate_errors(
+    handler: Callable[[argparse.Namespace, Services | None], int], args: argparse.Namespace, services: Services | None
+) -> int:
+    """Run a handler, ending an expected error as one FAILED line and exit 1; any other error is a bug and escapes."""
+    try:
+        return handler(args, services)
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {exc}")
         return 1
+
+
+def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(arguments)
+    if args.command == "prepare":
+        _check_prepare(parser, args)
+    return _translate_errors(COMMANDS[args.command], args, services)
 
 
 if __name__ == "__main__":
