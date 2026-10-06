@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
 
-from harness import DeployerTestCase
+from harness import DeployerTestCase, forward
 
 from deployer import fsops, hashing
+from deployer.errors import DeployError
+from deployer.paths import validate_managed_roots
 
 
 def make_junction(link, target) -> None:
@@ -254,6 +257,32 @@ class ManagedRootTests(DeployerTestCase):
 
     def test_linked_claude_directory_is_not_deployed_to(self) -> None:
         self.assert_linked_root_blocks_deployment(self.home / ".claude")
+
+    def test_a_linked_home_is_neither_deployed_to_nor_configured(self) -> None:
+        # A junctioned home would redirect every managed root beneath it, so the home itself is checked too.
+        self.fixture()
+        real_home = self.root / "real home"
+        shutil.move(self.home, real_home)
+        make_junction(self.home, real_home)
+        try:
+            before = sorted(path.relative_to(real_home) for path in real_home.rglob("*"))
+            for arguments in (("--all",), ("--all", "--dry-run")):
+                result = self.deploy_fails(*arguments, pattern="Deployment path contains a symlink or junction")
+                self.assertIn(f"Deployment path contains a symlink or junction: {forward(self.home)}\n", result.output)
+            result = self.configure(stdin="\n")
+            self.assertEqual(1, result.code, result.output)
+            self.assertIn(f"Deployment path contains a symlink or junction: {forward(self.home)}\n", result.output)
+            self.assertEqual(before, sorted(path.relative_to(real_home) for path in real_home.rglob("*")))
+        finally:
+            os.rmdir(self.home)  # removes the junction only, never the directory it points to
+
+    def test_a_home_that_is_a_file_is_rejected(self) -> None:
+        shutil.rmtree(self.home)
+        self.home.write_text("not a directory\n", encoding="utf-8")
+        with self.assertRaises(DeployError) as raised:
+            validate_managed_roots(self.paths)
+        self.assertEqual((f"ERROR: Deployment path component is not a directory: {forward(self.home)}",),
+                         raised.exception.lines)
 
     def test_configure_rejects_a_linked_config_directory(self) -> None:
         outside = self.fixture()

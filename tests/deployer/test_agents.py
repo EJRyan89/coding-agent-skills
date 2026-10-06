@@ -148,7 +148,7 @@ class AgentDeploymentTests(DeployerTestCase):
             {"op": "backup", "root": "claude-agents", "item": "reviewer.md", "from": "claude-agents/reviewer.md",
              "to": "claude-agents/reviewer.md.deploying-bak", "retain": False, "backup_hash": sha256(self.content)},
             {"op": "install", "root": "claude-agents", "item": "reviewer.md",
-             "from": "staging-claude-agents/reviewer.md", "to": "claude-agents/reviewer.md",
+             "from": "staging/.claude-agents/reviewer.md", "to": "claude-agents/reviewer.md",
              "staged_hash": sha256(b"half-installed\n")},
         ]
         self.write(run / "journal.jsonl", "".join(json.dumps(line, separators=(",", ":")) + "\n" for line in lines))

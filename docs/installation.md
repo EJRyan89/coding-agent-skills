@@ -19,7 +19,7 @@ Some skills need more when you use them, not when you deploy them:
 |---|---|
 | GitHub CLI (`gh`) 2.48.0 or newer, signed in with `gh auth login` | The code-review operations bundle, `github-activity-report`, and `repo-cleanup`; `dotnet-format` uses it, when present, to find a pull request's base branch |
 | Claude Code (optional) | Running the skills from Claude Code; the deployer itself does not need it |
-| Codex CLI (optional) | Verifying Codex skill discovery |
+| Codex CLI 0.88.0 or newer (optional) | Verifying Codex skill discovery |
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
 | .NET SDK and the `dotnet-format` global tool | `dotnet-format`, which checks for them and reports the install command |
 

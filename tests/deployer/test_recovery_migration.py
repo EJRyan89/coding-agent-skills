@@ -10,7 +10,7 @@ from unittest import mock
 
 from harness import DeployerTestCase
 
-from deployer import fsops, hashing, journal
+from deployer import fsops, hashing, journal, render
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -75,21 +75,50 @@ class RecoveryTests(DeployerTestCase):
         self.assertFalse((self.agents_dir / "alpha.deploying-bak").exists())
 
     def test_uncommitted_runtime_adapter_journal_rolls_back_across_roots(self) -> None:
+        self.assert_adapter_journal_rolls_back("staging/.agent-adapters")
+
+    def test_runtime_adapter_journal_from_before_the_staging_labels_matched_the_tree_still_rolls_back(self) -> None:
         self.assert_adapter_journal_rolls_back("staging-adapters")
 
     def test_runtime_adapter_journal_from_before_the_adapter_rename_still_rolls_back(self) -> None:
         self.assert_adapter_journal_rolls_back("staging-wrappers")
 
-    def test_runtime_adapter_journal_writes_the_adapter_staging_label(self) -> None:
-        record = journal.Journal(self.home / "journal.jsonl", "20260101-000000-label")
+    def test_journal_staging_labels_name_the_staging_tree(self) -> None:
+        # A reader of journal.jsonl during manual recovery finds a staged item where its "from" says: the run's
+        # staging directory, with adapters and Claude Code agents in their own folders of it.
+        run_id = "20260101-000000-label"
+        record = journal.Journal(self.home / "journal.jsonl", run_id)
         record.create()
+        record.install("claude", "alpha", ZERO_HASH)
         record.install("agents", "alpha", ZERO_HASH)
-        entry = json.loads((self.home / "journal.jsonl").read_text(encoding="utf-8"))
-        self.assertEqual("staging-adapters/alpha", entry["from"])
-        self.assertTrue(journal.valid_entry(entry, "20260101-000000-label"))
-        self.assertFalse(journal.valid_entry({**entry, "from": "staging-other/alpha"}, "20260101-000000-label"))
-        self.assertFalse(journal.valid_entry({**entry, "root": "claude", "from": "staging-wrappers/alpha",
-                                              "to": "skills/alpha"}, "20260101-000000-label"))
+        record.install("claude-agents", "reviewer.md", ZERO_HASH)
+        text = (self.home / "journal.jsonl").read_text(encoding="utf-8")
+        entries = [json.loads(line) for line in text.splitlines()]
+        self.assertEqual(
+            ["staging/alpha", "staging/.agent-adapters/alpha", "staging/.claude-agents/reviewer.md"],
+            [entry["from"] for entry in entries],
+        )
+        self.assertTrue(all(journal.valid_entry(entry, run_id) for entry in entries))
+        staging = self.home / "staging-run"
+        render.Staged(skills={"alpha": {"SKILL.md": b"a"}}, adapters={"alpha": {"SKILL.md": b"b"}},
+                      agents={"reviewer.md": b"c"}).write(staging)
+        self.assertEqual({"alpha", ".agent-adapters", ".claude-agents"}, {path.name for path in staging.iterdir()})
+        self.assertTrue((staging / ".agent-adapters" / "alpha" / "SKILL.md").is_file())
+        self.assertTrue((staging / ".claude-agents" / "reviewer.md").is_file())
+
+    def test_journals_written_with_earlier_staging_labels_stay_valid(self) -> None:
+        run_id = "20260101-000000-label"
+        adapter = {"op": "install", "root": "agents", "item": "alpha", "to": "agents/alpha", "staged_hash": ZERO_HASH}
+        agent = {"op": "install", "root": "claude-agents", "item": "reviewer.md", "to": "claude-agents/reviewer.md",
+                 "staged_hash": ZERO_HASH}
+        for label in ("staging-adapters", "staging-wrappers"):
+            self.assertTrue(journal.valid_entry({**adapter, "from": f"{label}/alpha"}, run_id), label)
+        self.assertTrue(journal.valid_entry({**agent, "from": "staging-claude-agents/reviewer.md"}, run_id))
+        self.assertFalse(journal.valid_entry({**adapter, "from": "staging-other/alpha"}, run_id))
+        self.assertFalse(journal.valid_entry({**adapter, "from": "staging/.claude-agents/alpha"}, run_id))
+        self.assertFalse(journal.valid_entry({**agent, "from": "staging-wrappers/reviewer.md"}, run_id))
+        self.assertFalse(journal.valid_entry({**adapter, "root": "claude", "from": "staging-wrappers/alpha",
+                                              "to": "skills/alpha"}, run_id))
 
     def test_apply_time_failure_rolls_back_the_current_journal_immediately(self) -> None:
         self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))

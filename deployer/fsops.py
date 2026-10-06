@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from . import platform_support
@@ -41,6 +42,25 @@ def remove(path: Path) -> None:
         shutil.rmtree(path)
     elif os.path.lexists(path):
         path.unlink()
+
+
+def write_file(path: Path, content: bytes) -> None:
+    """Write a file the deployer creates, such as a staged one; it is never read until the write has finished."""
+    path.write_bytes(content)
+
+
+def write_private(path: Path, content: bytes) -> None:
+    """Atomically replace a file only its owner may read, removing the temporary copy if anything fails."""
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        # mkstemp already creates the file readable and writable by its owner only, and the replace keeps that.
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def write_atomic(path: Path, content: bytes) -> None:

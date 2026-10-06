@@ -62,6 +62,17 @@ class ConfigureTests(DeployerTestCase):
         self.assertIn("disallowed character '&'", result.output)
         self.assertEqual(before, self.digest())
 
+    def test_a_failed_config_write_preserves_the_existing_config(self) -> None:
+        self.make_source_json()
+        self.make_config()
+        before = self.digest()
+        with mock.patch("deployer.fsops.write_private", side_effect=OSError("synthetic config write failure")):
+            result = self.configure(stdin=f"{forward(self.repos)}\n")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn("synthetic config write failure", result.output)
+        self.assertEqual(before, self.digest())
+        self.assertEqual([self.config_file().name], [path.name for path in self.config_file().parent.iterdir()])
+
     def test_windows_style_path_input_is_normalized(self) -> None:
         self.make_source_json()
         repos = self.root / "My Repos"
@@ -110,7 +121,8 @@ class ConfigureTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         before = self.digest()
-        with mock.patch("deployer.fsops.replace", side_effect=OSError("synthetic replace failure")):
+        # The replace inside fsops.write_private, after the temporary copy is written.
+        with mock.patch("deployer.fsops.os.replace", side_effect=OSError("synthetic replace failure")):
             result = self.configure(stdin="\n")
         self.assertEqual(1, result.code)
         self.assertIn("synthetic replace failure", result.output)

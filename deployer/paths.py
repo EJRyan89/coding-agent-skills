@@ -124,15 +124,15 @@ def claim_canary_home(home: Path) -> None:
 
 
 def validate_managed_roots(paths: Paths) -> None:
-    """Reject a symlink, junction, or non-directory at any managed root or its ancestors below HOME.
+    """Reject a symlink, junction, or non-directory at HOME, any managed root, or any directory between them.
 
-    A link anywhere on these paths would redirect recovery deletions or installs outside HOME.
+    A link anywhere on these paths, HOME included, would redirect recovery deletions or installs outside HOME.
     """
     home = Path(paths.home)
     for root in paths.managed_roots:
-        component = home
-        for part in Path(root).relative_to(home).parts:
-            component = component / part
+        parts = Path(root).relative_to(home).parts
+        components = [home, *(home.joinpath(*parts[:depth]) for depth in range(1, len(parts) + 1))]
+        for component in components:
             if platform_support.is_link(component) or platform_support.is_reparse_point(component):
                 raise DeployError(
                     f"ERROR: Deployment path contains a symlink or junction: {platform_support.normalize(component)}",

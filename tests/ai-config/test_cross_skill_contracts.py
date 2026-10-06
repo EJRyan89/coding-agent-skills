@@ -218,8 +218,15 @@ class CrossSkillContractTests(unittest.TestCase):
                 "      hooks:",
                 "        - type: command",
                 # Python finds the profile folder in either shell; -I keeps the working directory off sys.path.
+                # A guard that cannot run would exit 1, which lets the call through, so the hook denies it instead.
                 "          command: >-",
-                '            python -I -B -c "import os, runpy;',
+                '            python -I -B -c "import json, os, runpy, sys;',
+                "            sys.excepthook = lambda kind, error, trace: (sys.__excepthook__(kind, error, trace),",
+                "            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision':"
+                " 'deny',",
+                "            'permissionDecisionReason': 'Code-review reviewer boundary: the guard could not run (' +"
+                " kind.__name__ + ').'}}),",
+                "            flush=True), os._exit(0));",
                 "            runpy.run_path(os.path.expanduser('~/.claude/skills/code-review-core/scripts/review_guard.py'),",
                 "            run_name='__main__')\"",
                 "          timeout: 30",
@@ -239,17 +246,69 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
         self.assertIn("use a general-purpose subagent instead", skill)
 
-    def test_the_reviewer_hook_runs_the_deployed_guard_whatever_home_says(self) -> None:
-        # Claude Code runs hooks in Git Bash, whose $HOME follows HOME, or in PowerShell when it finds no Git Bash.
-        # The deployer and Claude Code both use the profile folder, so the hook must find the guard there in both.
+    @staticmethod
+    def reviewer_hook_shells(command: str) -> dict[str, list[str | None]]:
+        """The reviewer hook's command line in each shell Claude Code may run hooks in."""
         from deployer import platform_support
 
+        return {
+            "Git Bash": [platform_support.find_bash(), "-c", command],
+            "PowerShell": [platform_support.find_pwsh(os.environ.get("PATH", "")), "-NoProfile", "-Command", command],
+        }
+
+    def reviewer_hook_command(self) -> str:
         frontmatter = (REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8").split("---")[1]
         lines = frontmatter.splitlines()
         start = lines.index("          command: >-") + 1
         folded = [line.strip() for line in lines[start:] if line.startswith("            ")]
         command = " ".join(folded)  # a folded block scalar joins its lines with single spaces
         self.assertNotIn("$", command, "neither shell may expand anything in the command")
+        return command
+
+    def test_the_reviewer_hook_blocks_the_call_when_the_guard_is_missing_or_broken(self) -> None:
+        # A PreToolUse hook that fails with any exit code but 2 lets the call through unguarded, and PowerShell's
+        # -Command reports every failing program as exit 1, so exit 2 cannot block there. A profile without the
+        # deployed guard, or a guard that cannot even load, must instead deny the call with exit 0, as the guard
+        # does when it cannot evaluate one.
+        command = self.reviewer_hook_command()
+        event = json.dumps({"tool_name": "Read", "tool_input": {"file_path": "C:/anything.txt"}, "cwd": "C:/"})
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            missing = root / "profile without guard"
+            missing.mkdir()
+            broken = root / "profile with broken guard"
+            guard = broken / ".claude/skills/code-review-core/scripts/review_guard.py"
+            guard.parent.mkdir(parents=True)
+            guard.write_text("raise RuntimeError('the guard failed to load')\n", encoding="utf-8")
+            cases = {
+                "missing": (missing, "review_guard.py", "FileNotFoundError"),
+                "broken": (broken, "the guard failed to load", "RuntimeError"),
+            }
+            for case, (profile, traceback, error) in cases.items():
+                environment = {**os.environ, "USERPROFILE": str(profile)}
+                for shell, arguments in self.reviewer_hook_shells(command).items():
+                    with self.subTest(case=case, shell=shell):
+                        self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
+                        result = subprocess.run(arguments, input=event, capture_output=True, text=True, cwd=root,
+                                                env=environment, check=False)
+                        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                        self.assertIn(traceback, result.stderr)
+                        self.assertEqual(
+                            {
+                                "hookSpecificOutput": {
+                                    "hookEventName": "PreToolUse",
+                                    "permissionDecision": "deny",
+                                    "permissionDecisionReason":
+                                        f"Code-review reviewer boundary: the guard could not run ({error}).",
+                                }
+                            },
+                            json.loads(result.stdout),
+                        )
+
+    def test_the_reviewer_hook_runs_the_deployed_guard_whatever_home_says(self) -> None:
+        # Claude Code runs hooks in Git Bash, whose $HOME follows HOME, or in PowerShell when it finds no Git Bash.
+        # The deployer and Claude Code both use the profile folder, so the hook must find the guard there in both.
+        command = self.reviewer_hook_command()
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             profile = root / "Some O'Neil (profile)"
@@ -266,12 +325,7 @@ class CrossSkillContractTests(unittest.TestCase):
                            + other.as_posix()[2:]}
             event = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(cwd / "json.py")},
                                 "cwd": str(cwd)})
-            shells = {
-                "Git Bash": [platform_support.find_bash(), "-c", command],
-                "PowerShell": [platform_support.find_pwsh(os.environ.get("PATH", "")), "-NoProfile", "-Command",
-                               command],
-            }
-            for shell, arguments in shells.items():
+            for shell, arguments in self.reviewer_hook_shells(command).items():
                 with self.subTest(shell=shell):
                     self.assertIsNotNone(arguments[0], f"{shell} is a validation prerequisite")
                     result = subprocess.run(arguments, input=event, capture_output=True, text=True, cwd=cwd,

@@ -8,13 +8,19 @@ import tempfile
 from pathlib import Path
 from typing import Mapping
 
-from . import discovery, manifest, platform_support
+from . import discovery, manifest, platform_support, tools
 from .arguments import ParserExit, verify_parser
 from .discovery import Listed, Listing, ListingError
 from .errors import DeployError, print_error
 from .paths import Paths
 from .pipeline import ReportLine, print_report
 
+# Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
+FSOPS_ALLOWED = {
+    "tempfile.mkdtemp": "verify starts each runtime in an empty directory under the system temporary directory, "
+    "outside every managed root; the read-only command changes no deployed state",
+    "shutil.rmtree": "verify removes only the empty working directory it created with tempfile.mkdtemp",
+}
 VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "FOUND")
 SUPPORT = {"codex": "docs/codex-support.md", "copilot": "docs/copilot-support.md"}
 
@@ -88,12 +94,18 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
     try:
         for runtime in discovery.RUNTIMES:
             label = discovery.LABELS[runtime]
-            executable = platform_support.find_executable(runtime)
-            if executable is None:
+            probe = tools.probe(tools.VERIFY_TOOLS[runtime])
+            if probe.path is None:
                 _section(label, "Not installed; skipped.")
                 continue
+            if probe.outdated:
+                version, minimum = tools.format_version(probe.version), tools.format_version(probe.tool.minimum)
+                _section(label, f"OUTDATED: {label} {version} is older than {minimum}, the oldest version verify "
+                                "can read. Update it, then rerun.")
+                problems.append(runtime)
+                continue
             try:
-                listing = discovery.list_skills(runtime, executable, workdir, environment)
+                listing = discovery.list_skills(runtime, probe.path, workdir, environment)
             except ListingError as exc:
                 _section(label, f"Cannot list its skills: {exc}")
                 problems.append(runtime)

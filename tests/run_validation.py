@@ -137,12 +137,14 @@ def deploy_variable_problems(
         problems.append(f"configure prompts for unknown variable {key}")
 
     required_anywhere: set[str] = set()
+    used_anywhere: set[str] = set()
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
         required = set(json.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
         required_anywhere |= required
         directories = [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]
         used = set().union(*(_template_tokens(path) for path in directories if (path / "SKILL.md").is_file()))
+        used_anywhere |= used
         for key in sorted(used - required):
             problems.append(f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars")
         for key in sorted(required - used):
@@ -156,8 +158,13 @@ def deploy_variable_problems(
     for asset in sorted(shared):
         path = root / "skills" / asset
         text = path.read_text(encoding="utf-8") if path.is_file() else ""
-        for key in sorted(set(TEMPLATE_TOKEN.findall(text)) - derived):
+        tokens = set(TEMPLATE_TOKEN.findall(text))
+        used_anywhere |= tokens
+        for key in sorted(tokens - derived):
             problems.append(f"shared asset {asset} uses non-derived variable {key}")
+    # A derived value no template uses still has to pass the allowlist, so it could refuse a deployment for nothing.
+    for key in sorted(derived - used_anywhere):
+        problems.append(f"derived variable {key} is not used by any skill or shared asset")
     return problems
 
 
@@ -635,11 +642,11 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
     return found
 
 
-def _platform_allowance(tree: ast.Module) -> dict[str, str] | None:
-    """A module's PLATFORM_ALLOWED, or None when it does not map each token to its reason."""
+def _platform_allowance(tree: ast.Module, name: str = PLATFORM_ALLOWANCE) -> dict[str, str] | None:
+    """A module's allowance, such as PLATFORM_ALLOWED, or None when it does not map each token to its reason."""
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == PLATFORM_ALLOWANCE for target in node.targets
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
         ):
             try:
                 allowance = ast.literal_eval(node.value)
@@ -677,6 +684,96 @@ def platform_code_problems(root: Path) -> list[str]:
     return [
         f"{name}:{line} names {token}; move it behind deployer/platform_support.py"
         for name, line, token in sorted(found)
+    ] + problems
+
+
+# Calls that change the filesystem. CLAUDE.md routes every one the deployer makes through deployer/fsops.py, whose
+# functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
+# tell a Path from another receiver; the names are chosen so that none is a common method of anything else.
+FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
+    "method": frozenset({"write_bytes", "write_text", "touch", "mkdir", "unlink", "rmdir", "rename", "symlink_to",
+                         "hardlink_to"}),
+    "qualified": frozenset({
+        "os.remove", "os.unlink", "os.rename", "os.replace", "os.mkdir", "os.makedirs", "os.rmdir", "os.removedirs",
+        "os.fdopen", "os.link", "os.symlink", "shutil.rmtree", "shutil.move", "shutil.copy", "shutil.copy2",
+        "shutil.copyfile", "shutil.copytree", "tempfile.mkstemp", "tempfile.mkdtemp", "tempfile.TemporaryDirectory",
+        "tempfile.NamedTemporaryFile",
+    }),
+}
+# A module sanctions a write beside the code it excuses, as a module-level FSOPS_ALLOWED = {token: reason}.
+FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
+WRITE_MODE_CHARACTERS = "wax+"
+
+
+def _writes_scanned_files(root: Path) -> list[Path]:
+    """The deployer's code, other than fsops itself."""
+    files = [root / "deploy.py", *(root / "deployer").rglob("*.py")]
+    return [path for path in files if path.is_file() and path.relative_to(root).as_posix() != "deployer/fsops.py"]
+
+
+def _opens_for_writing(call: ast.Call, mode_position: int) -> bool:
+    """Whether open(), or a Path's open(), is given a mode that writes."""
+    mode = call.args[mode_position] if len(call.args) > mode_position else next(
+        (keyword.value for keyword in call.keywords if keyword.arg == "mode"), None
+    )
+    return isinstance(mode, ast.Constant) and isinstance(mode.value, str) and any(
+        character in mode.value for character in WRITE_MODE_CHARACTERS
+    )
+
+
+def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
+    """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
+    found: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.ClassDef) and any(
+            (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
+            for base in node.bases
+        ):
+            return
+        if isinstance(node, ast.ImportFrom):
+            found.extend(
+                (node.lineno, f"{node.module}.{alias.name}") for alias in node.names
+                if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
+            )
+        elif isinstance(node, ast.Call):
+            function = node.func
+            if isinstance(function, ast.Name) and function.id == "open" and _opens_for_writing(node, 1):
+                found.append((node.lineno, "open"))
+            elif isinstance(function, ast.Attribute):
+                qualified = f"{function.value.id}.{function.attr}" if isinstance(function.value, ast.Name) else ""
+                if qualified in FILESYSTEM_WRITES["qualified"]:
+                    found.append((node.lineno, qualified))
+                elif function.attr in FILESYSTEM_WRITES["method"]:
+                    found.append((node.lineno, function.attr))
+                elif function.attr == "open" and _opens_for_writing(node, 0):
+                    found.append((node.lineno, "open"))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
+def filesystem_write_problems(root: Path) -> list[str]:
+    """Report filesystem writes in the deployer outside deployer/fsops.py, and allowances no longer needed."""
+    found: set[tuple[str, int, str]] = set()
+    problems: list[str] = []
+    for path in sorted(_writes_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        allowed = _platform_allowance(tree, FSOPS_ALLOWANCE)
+        if allowed is None:
+            problems.append(f"{name}: {FSOPS_ALLOWANCE} must map each token to the reason it is allowed")
+            allowed = {}
+        writes = _filesystem_writes(tree)
+        found |= {(name, line, token) for line, token in writes if token not in allowed}
+        problems += [
+            f"{name}: {FSOPS_ALLOWANCE} allows {token}, which it no longer names"
+            for token in sorted(set(allowed) - {token for _, token in writes})
+        ]
+    return [
+        f"{name}:{line} writes with {token}; route it through deployer/fsops.py" for name, line, token in sorted(found)
     ] + problems
 
 
@@ -1561,6 +1658,80 @@ class RepositoryValidation(unittest.TestCase):
         # The macOS and Linux port then changes one module: deployer/platform_support.py.
         self.assertEqual([], platform_code_problems(REPOSITORY_ROOT))
 
+    def test_deployer_filesystem_writes_go_through_fsops(self) -> None:
+        # Tests inject failures by replacing deployer/fsops.py's functions, which reach only writes made through it.
+        self.assertEqual([], filesystem_write_problems(REPOSITORY_ROOT))
+
+    def test_filesystem_write_policy_detects_each_write_and_a_stale_allowance(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(relative_path: str, text: str) -> None:
+                (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative_path).write_text(text, encoding="utf-8")
+
+            write("deploy.py", "from pathlib import Path\nPath('x').write_text('y')\n")
+            write("deployer/fsops.py", "import os\nos.mkdir('x')\n")
+            write(
+                "deployer/writes.py",
+                '"""Docstrings may say os.remove or shutil.rmtree."""\n'
+                "import os\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "from os import replace\n"
+                "\n"
+                "\n"
+                "def write(path, text):\n"
+                "    # Comments may say path.unlink().\n"
+                "    path.touch()\n"
+                "    os.makedirs(path)\n"
+                "    shutil.rmtree(path)\n"
+                "    tempfile.mkstemp()\n"
+                "    replace(path, path)\n"
+                '    open(path, "w").close()\n'
+                '    open(path, mode="ab").close()\n'
+                '    path.open("x").close()\n'
+                "    open(path).read()\n"
+                '    open(path, "rb").read()\n'
+                '    path.open(encoding="utf-8").read()\n'
+                '    text.replace("a", "b")\n'
+                "    os.path.exists(path)\n"
+                "    return path.mkdir(parents=True)\n",
+            )
+            write(
+                "deployer/allowed.py",
+                'FSOPS_ALLOWED = {"tempfile.mkdtemp": "a throwaway working directory outside every managed root"}\n'
+                "import tempfile\n"
+                "WORK = tempfile.mkdtemp()\n",
+            )
+            write("deployer/gone.py", 'FSOPS_ALLOWED = {"shutil.rmtree": "the module no longer calls it"}\n')
+            write("deployer/unexplained.py", 'FSOPS_ALLOWED = {"touch": ""}\nPATH.touch()\n')
+            write(
+                "deployer/tested.py",
+                "import unittest\n\n\nclass Fixtures(unittest.TestCase):\n    def test_x(self):\n"
+                '        PATH.write_bytes(b"")\n',
+            )
+            write("tools/elsewhere.py", "from pathlib import Path\nPath('x').write_text('y')\n")
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deploy.py:2 writes with write_text{route}",
+                    f"deployer/unexplained.py:2 writes with touch{route}",
+                    f"deployer/writes.py:5 writes with os.replace{route}",
+                    f"deployer/writes.py:10 writes with touch{route}",
+                    f"deployer/writes.py:11 writes with os.makedirs{route}",
+                    f"deployer/writes.py:12 writes with shutil.rmtree{route}",
+                    f"deployer/writes.py:13 writes with tempfile.mkstemp{route}",
+                    f"deployer/writes.py:15 writes with open{route}",
+                    f"deployer/writes.py:16 writes with open{route}",
+                    f"deployer/writes.py:17 writes with open{route}",
+                    f"deployer/writes.py:23 writes with mkdir{route}",
+                    "deployer/gone.py: FSOPS_ALLOWED allows shutil.rmtree, which it no longer names",
+                    "deployer/unexplained.py: FSOPS_ALLOWED must map each token to the reason it is allowed",
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2021,9 +2192,9 @@ class RepositoryValidation(unittest.TestCase):
             )
             (root / "skills" / "alpha").mkdir(parents=True)
             (root / "skills" / "alpha" / "SKILL.md").write_text(
-                "{{REPOS_ROOT}} {{HOME_URI}}\n", encoding="utf-8"
+                "{{REPOS_ROOT}} {{SOURCE_ROOT}}\n", encoding="utf-8"
             )
-            (root / "skills" / "shared.md").write_text("{{REPOS_ROOT}}\n", encoding="utf-8")
+            (root / "skills" / "shared.md").write_text("{{REPOS_ROOT}} {{HOME}}\n", encoding="utf-8")
             (root / "source.json").write_text(
                 json.dumps({"shared_assets": {"shared.md": "owner"}}), encoding="utf-8"
             )
@@ -2031,13 +2202,14 @@ class RepositoryValidation(unittest.TestCase):
                 [
                     "configure never prompts for configured variable SPARE",
                     "configure prompts for unknown variable EXTRA",
-                    "skill alpha uses {{HOME_URI}} without declaring it in required_vars",
+                    "skill alpha uses {{SOURCE_ROOT}} without declaring it in required_vars",
                     "skill alpha declares required variable HOME but never uses it",
                     "configured variable SPARE is not required by any skill",
                     "shared asset shared.md uses non-derived variable REPOS_ROOT",
+                    "derived variable UNUSED_DERIVED is not used by any skill or shared asset",
                 ],
                 deploy_variable_problems(
-                    root, {"REPOS_ROOT", "SPARE"}, {"REPOS_ROOT", "EXTRA"}, {"HOME", "HOME_URI"}
+                    root, {"REPOS_ROOT", "SPARE"}, {"REPOS_ROOT", "EXTRA"}, {"HOME", "SOURCE_ROOT", "UNUSED_DERIVED"}
                 ),
             )
 

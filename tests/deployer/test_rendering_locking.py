@@ -6,6 +6,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from typing import Callable
 from unittest import mock
 
 from harness import REPOSITORY_ROOT, DeployerTestCase, forward
@@ -276,14 +277,16 @@ class RenderedExecutableTests(DeployerTestCase):
             (self.skills_dir / "alpha" / "scripts" / "tool.py").read_text(encoding="utf-8"),
         )
 
-    def test_value_unsafe_for_shell_context_is_rejected(self) -> None:
+    def test_value_unsafe_for_shell_context_is_refused_before_rendering(self) -> None:
+        # The derived-value allowlist refuses the quote before any context sees it; render's own escaping, which
+        # would refuse it in this shell fence too, is covered in test_render_contexts.py.
         self.home = self.root / "o'home"
         for directory in ("skills", "deployer/config"):
             (self.home / ".claude" / directory).mkdir(parents=True)
         self.make_source_json()
         self.make_skill("alpha", "Shell fixture\n\n```bash\ncd \"{{HOME}}\" || exit\n```", ["HOME"])
         self.make_config()
-        self.deploy_fails("--all", pattern="Variable HOME cannot be safely substituted into alpha/SKILL.md \\(shell context\\)")
+        self.deploy_fails("--all", pattern="HOME \\(the home folder\\) contains disallowed character '''")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
     def test_only_declared_variables_are_substituted(self) -> None:
@@ -357,6 +360,37 @@ class LockTests(DeployerTestCase):
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.deploy_ok("--all")
+
+    def assert_failed_write_changes_nothing(self, fails: Callable[[Path], bool], message: str) -> None:
+        self.fixture()
+        self.deploy_ok("--all")
+        manifest = self.manifest_file.read_bytes()
+        self.make_skill("alpha", "Updated alpha")
+        real_write = fsops.write_file
+
+        def failing_write(path: Path, content: bytes) -> None:
+            if fails(path):
+                raise OSError(message)
+            real_write(path, content)
+
+        with mock.patch("deployer.fsops.write_file", side_effect=failing_write):
+            self.deploy_fails("--all", pattern=message)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
+        self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
+        self.deploy_ok("--all")
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def test_a_failed_staging_write_changes_nothing(self) -> None:
+        self.assert_failed_write_changes_nothing(
+            lambda path: "staging" in path.parts and path.name == "SKILL.md", "synthetic staging write failure"
+        )
+
+    def test_a_failed_journal_creation_changes_nothing(self) -> None:
+        self.assert_failed_write_changes_nothing(
+            lambda path: path.name == "journal.jsonl", "synthetic journal creation failure"
+        )
 
     def test_double_contention_cleans_renamed_stale_lock(self) -> None:
         self.fixture()

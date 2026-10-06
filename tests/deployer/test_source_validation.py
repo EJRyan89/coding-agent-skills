@@ -14,6 +14,7 @@ from unittest import mock
 from harness import DeployerTestCase, Result, forward
 
 from deployer import config, pipeline, source
+from deployer.errors import DeployError
 from deployer.paths import Paths
 
 
@@ -35,6 +36,66 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Path {{REPOS_ROOT}}", ["REPOS_ROOT"])
         self.write(self.config_file(), f"_source_id=test/skills\nREPOS_ROOT={forward(self.root)}/A&B\n")
         self.deploy_fails("--all", pattern="contains disallowed character '&' at position")
+
+    def other_home(self, name: str) -> Path:
+        home = self.root / name
+        for directory in (".claude/skills", ".claude/deployer/config", ".claude/deployer/staging"):
+            (home / directory).mkdir(parents=True)
+        self.make_config()
+        shutil.copy2(self.config_file(), home / self.config_file().relative_to(self.home))
+        return home
+
+    def deploy_into(self, home: Path, source: Path | None = None) -> Result:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            code = pipeline.run(["--all"], Paths(source or self.source, home), stdin=io.StringIO(""))
+        return Result(code, captured.getvalue())
+
+    def test_a_home_path_outside_the_derived_allowlist_is_refused_before_any_change(self) -> None:
+        # Rendering escapes only the contexts it knows, so the allowlist guards derived values as it guards
+        # configured ones.
+        self.make_source_json()
+        self.make_skill("alpha", "Home {{HOME}}", ["HOME"])
+        for name, character in (("O'Neil", "'"), ("Tom & Jerry", "&")):
+            with self.subTest(home=name):
+                home = self.other_home(name)
+                result = self.deploy_into(home)
+                self.assertEqual(1, result.code, result.output)
+                position = forward(home).index(character)
+                self.assertIn(
+                    f"ERROR: HOME (the home folder) contains disallowed character '{character}' at position "
+                    f"{position}\n"
+                    "Derived paths may contain only letters, digits, spaces, and / : . @ _ ( ) -.\n"
+                    "Skills cannot be deployed into a home folder whose path has other characters.\n",
+                    result.output,
+                )
+                self.assertNotIn("configure", result.output)
+                self.assertEqual([], sorted(path.name for path in (home / ".claude" / "skills").iterdir()))
+
+    def test_a_source_checkout_path_outside_the_derived_allowlist_is_refused(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Source {{SOURCE_ROOT}}", ["SOURCE_ROOT"])
+        self.make_config()
+        checkout = self.snapshot_source("checkout #2")
+        result = self.deploy_into(self.home, checkout)
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "ERROR: SOURCE_ROOT (the source checkout) contains disallowed character '#' at position "
+            f"{forward(checkout).index('#')}\n"
+            "Derived paths may contain only letters, digits, spaces, and / : . @ _ ( ) -.\n"
+            "Move the checkout to a path without other characters, then deploy from there.\n",
+            result.output,
+        )
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_home_path_with_letters_of_any_script_and_spaces_deploys(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Home {{HOME}}", ["HOME"])
+        home = self.other_home("José Łukasz (home)")
+        result = self.deploy_into(home)
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn(f"Home {forward(home)}", (home / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(
+            encoding="utf-8"))
 
     def test_missing_config_is_reported_and_nothing_is_touched(self) -> None:
         self.make_source_json()
@@ -473,6 +534,22 @@ class CanaryHomeTests(DeployerTestCase):
         linked = self.make_linked_worktree()
         result = self.run_from(linked, "--all")
         self.assert_untouched(result, "is a linked git worktree")
+
+
+class DerivedAllowlistTests(unittest.TestCase):
+    def test_derived_paths_admit_letters_of_any_script_and_path_punctuation_only(self) -> None:
+        source = Path("C:/src")
+        for name in ("Jos\u00e9", "\u0141ukasz M\u00fcller", "\u7530\u4e2d", "first.last@corp", "a_b-c (2)"):
+            with self.subTest(allowed=name):
+                home = f"D:/profiles/{name}"
+                self.assertEqual(home, config.derived_values(Path(home), source)["HOME"])
+        for character in "'\"$`&;#%!^=+,~[]{}":
+            with self.subTest(refused=character):
+                with self.assertRaisesRegex(DeployError, re.escape(f"disallowed character '{character}'")):
+                    config.derived_values(Path(f"D:/profiles/a{character}b"), source)
+                with self.assertRaisesRegex(DeployError, re.escape(f"disallowed character '{character}'")):
+                    config.derived_values(Path("D:/profiles/a"), Path(f"C:/src/a{character}b"))
+        self.assertEqual({"HOME", "SOURCE_ROOT"}, set(config.derived_values(Path("D:/profiles/a"), source)))
 
 
 if __name__ == "__main__":
