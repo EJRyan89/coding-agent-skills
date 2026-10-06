@@ -165,8 +165,9 @@ block every tool. Runtimes other than Claude Code do not run the hook, so for th
 the guard.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore declare hooks and
-nothing else. A rule about what a developer must allow belongs in that developer's own user settings or
-`settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, or if a
+`attribution`, which turns off Claude Code's commit trailers, pull request footer, and session links for this
+repository, and nothing else. A rule about what a developer must allow belongs in that developer's own user
+settings or `settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, or if a
 `settings.local.json` is ever committed. It also fails when the guard's hook stops matching any tool that can
 edit a file or run git (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, and `PowerShell`). A tool
 missing from the matcher is never shown to the guard, so the hub would be open through it.
