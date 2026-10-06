@@ -60,7 +60,7 @@ def setUpModule() -> None:
 
 def remove_tree(path: Path) -> None:
     def writable(function, target, *_):
-        os.chmod(target, stat.S_IWRITE)
+        Path(target).chmod(stat.S_IWRITE)
         function(target)
 
     if sys.version_info >= (3, 12):

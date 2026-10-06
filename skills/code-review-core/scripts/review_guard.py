@@ -120,7 +120,7 @@ def decide(event: dict[str, Any]) -> str | None:
     try:
         if not isinstance(tool_input, dict):
             raise Denied("the tool input could not be read")
-        cwd = Path(event.get("cwd") or os.getcwd())
+        cwd = Path(event.get("cwd") or Path.cwd())
         if tool in READ_TOOLS:
             _check_read(tool, tool_input, cwd)
         elif tool in WRITE_TOOLS:

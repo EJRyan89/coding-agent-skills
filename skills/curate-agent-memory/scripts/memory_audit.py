@@ -436,7 +436,7 @@ def write_index(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     try:
         temporary.write_bytes(content.encode("utf-8"))
-        os.replace(temporary, path)
+        temporary.replace(path)
     except OSError:
         with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
@@ -477,7 +477,7 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
         return 1, output
     for name in names:
         try:
-            os.remove(memory_dir / name)
+            (memory_dir / name).unlink()
         except OSError as exc:
             output.append(f"FAILED {name}: {exc.strerror or exc}")
             return 1, output

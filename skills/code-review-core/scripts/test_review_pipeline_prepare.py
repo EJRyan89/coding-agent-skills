@@ -974,11 +974,11 @@ class InitialReviewTests(PrepareFixture):
         self.assertEqual(LOCAL_SNAPSHOT, self.git.calls)
         self.assertEqual([], self.tarball.calls)
         self.assertEqual([("auto", None)], self.runtime_calls)
-        self.assertEqual([], os.listdir(self.temporary), "the snapshot's temporary archive is gone")
+        self.assertEqual([], list(self.temporary.iterdir()), "the snapshot's temporary archive is gone")
 
     def test_a_run_directory_prepare_creates(self) -> None:
         result, _ = self.prepare(run_directory=None)
-        [created] = os.listdir(self.temporary)
+        [created] = [entry.name for entry in self.temporary.iterdir()]
         self.assertRegex(created, r"^code-review-run-")
         run = "<root>/tmp/code-review-run-*"
         self.assertEqual({"status": "ready", "run": run, **state(run)}, result)
@@ -1211,7 +1211,7 @@ class RefusalTests(PrepareFixture):
             host="unknown",
         )
         self.assertEqual([("auto", "unknown")], self.runtime_calls)
-        self.assertEqual([], os.listdir(self.temporary))
+        self.assertEqual([], list(self.temporary.iterdir()))
         self.github.calls.clear()
         self.assert_refused(
             RuntimeContractError,
@@ -1245,7 +1245,7 @@ class FailureCleanupTests(PrepareFixture):
         self.github.pulls = self.pulls
         self.git.calls.clear()
         self.assertEqual((error, message, ""), self.refused(run_directory=None))
-        self.assertEqual([], os.listdir(self.temporary), "the directory prepare created is removed")
+        self.assertEqual([], list(self.temporary.iterdir()), "the directory prepare created is removed")
 
     def test_a_push_while_preparing_fails_before_the_diff_is_written(self) -> None:
         moved = "b" * 40
@@ -1422,7 +1422,7 @@ class HistoryTests(PrepareFixture):
                 self.assertEqual([("get_pull", REPOSITORY, NUMBER)], self.github.calls)
                 self.assertEqual([], self.git.calls)
                 self.assertFalse(self.run_dir.exists())
-                self.assertEqual([], os.listdir(self.temporary))
+                self.assertEqual([], list(self.temporary.iterdir()))
         result, _ = self.prepare(force=True)
         self.assertEqual({"status": "ready", "run": "<root>/run", **state()}, result)
         self.assertEqual(request(), self.json_file("request.json"), "a forced initial review carries nothing")
@@ -1829,7 +1829,7 @@ class RepositoryReviewerTests(PrepareFixture):
             (rp.PipelineError, "Reviewer fixture-review does not support re-review reviews", ""),
             self.refused(re_review=True, scope="full", run_directory=None),
         )
-        self.assertEqual([], os.listdir(self.temporary))
+        self.assertEqual([], list(self.temporary.iterdir()))
 
     def test_a_runtime_without_the_manifest_s_capabilities(self) -> None:
         self.configure(self.repository("review/specialists.json"))

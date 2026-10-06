@@ -357,7 +357,7 @@ class VerifyCommandTests(DeployerTestCase):
             result = self.verify()
         finally:
             # Removes the junction only, never the directory it points to.
-            os.rmdir(alias)
+            alias.rmdir()
         self.assertEqual(0, result.code, result.output)
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
 

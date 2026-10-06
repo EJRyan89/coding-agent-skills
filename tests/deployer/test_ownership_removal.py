@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -296,7 +295,7 @@ class ManagedRootTests(DeployerTestCase):
             self.assertIn(f"Deployment path contains a symlink or junction: {forward(self.home)}\n", result.output)
             self.assertEqual(before, sorted(path.relative_to(real_home) for path in real_home.rglob("*")))
         finally:
-            os.rmdir(self.home)  # removes the junction only, never the directory it points to
+            self.home.rmdir()  # removes the junction only, never the directory it points to
 
     def test_a_home_that_is_a_file_is_rejected(self) -> None:
         shutil.rmtree(self.home)

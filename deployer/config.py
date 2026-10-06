@@ -98,7 +98,7 @@ def _validate_absolute_directory(key: str, value: str) -> None:
         raise DeployError(f"ERROR: {key} must be an absolute Windows path (got: {value})")
     if platform_support.is_filesystem_root(value):
         raise DeployError(f"ERROR: {key} must not be a filesystem root (got: {value})")
-    if not os.path.isdir(value):
+    if not Path(value).is_dir():
         raise DeployError(f"ERROR: {key} directory does not exist: {value}")
     try:
         canonical = platform_support.canonical_directory(value)
@@ -141,8 +141,9 @@ def canary(source_id: str, home: Path, source_dir: Path) -> dict[str, str]:
 def derived_values(home: Path, source_dir: Path) -> dict[str, str]:
     """HOME and SOURCE_ROOT for this run, refused when either has a character outside its allowlist."""
     values = {
-        "HOME": platform_support.normalize(os.path.abspath(home)),
-        "SOURCE_ROOT": platform_support.normalize(os.path.abspath(source_dir)),
+        # Lexical, as recorded in the manifest: Path.absolute keeps ".." and Path.resolve follows junctions.
+        "HOME": platform_support.normalize(os.path.abspath(home)),  # noqa: PTH100 - lexical, as the comment says
+        "SOURCE_ROOT": platform_support.normalize(os.path.abspath(source_dir)),  # noqa: PTH100 - lexical, as above
     }
     for key, value in values.items():
         found = _disallowed(DERIVED_VARIABLES[key], value)

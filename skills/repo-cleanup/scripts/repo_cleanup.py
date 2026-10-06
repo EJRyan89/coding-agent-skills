@@ -153,7 +153,8 @@ def checkouts(services: Services, root: str | Path) -> dict[str, Worktree]:
 
 
 def same_path(first: str, second: str) -> bool:
-    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
+    # Lexical: Path.absolute keeps ".." and Path.resolve follows junctions, which would change what matches.
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))  # noqa: PTH100 - lexical
 
 
 def dirty_count(services: Services, directory: str | Path) -> int:
@@ -460,7 +461,7 @@ def save_plan(path: str | Path, plan: dict[str, Any]) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(plan, handle, indent=2)
             handle.write("\n")
-        os.replace(temporary, target)
+        Path(temporary).replace(target)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
@@ -555,17 +556,18 @@ def strictly_inside(path: str, boundary: str) -> bool:
 def prune_empty_parents(removed: str, boundaries: list[str]) -> list[str]:
     """Remove the removed worktree's now-empty directories, walking up but never reaching a boundary.
 
-    Only os.rmdir is used, so a directory with any content stops the walk.
+    Only Path.rmdir is used, so a directory with any content stops the walk.
     """
     boundary = next((candidate for candidate in boundaries if strictly_inside(removed, candidate)), None)
     pruned: list[str] = []
-    current = Path(os.path.abspath(removed))
+    # Lexical, like strictly_inside: Path.absolute keeps ".." and Path.resolve follows junctions past the boundary.
+    current = Path(os.path.abspath(removed))  # noqa: PTH100 - lexical, as the comment says
     while boundary is not None and strictly_inside(str(current), boundary):
         if os.path.lexists(current):
             if not is_plain_directory(current):
                 break
             try:
-                os.rmdir(current)
+                current.rmdir()
             except OSError:
                 break
             pruned.append(current.as_posix())

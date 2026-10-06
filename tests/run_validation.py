@@ -1846,7 +1846,7 @@ def step_summary(
 def append_step_summary(environment: Mapping[str, str], text: str) -> None:
     path = environment.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding="utf-8") as summary:
+        with Path(path).open("a", encoding="utf-8") as summary:
             summary.write(text)
 
 

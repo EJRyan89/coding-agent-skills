@@ -1127,7 +1127,7 @@ def run_host(run: Path, token: str, services: Services) -> str:
         with host_lock(run):
             if claim_holds(run, token, generation()) is None:
                 return False
-            os.replace(staging, result)
+            staging.replace(result)
             return True
 
     attempt = claim["attempt"]

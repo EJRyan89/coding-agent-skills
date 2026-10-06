@@ -296,7 +296,7 @@ class ConfigurationTests(unittest.TestCase):
             write_config(valid_config(), path)
             previous = path.read_bytes()
             with (
-                mock.patch("review_io.os.replace", side_effect=OSError("synthetic")),
+                mock.patch.object(Path, "replace", side_effect=OSError("synthetic")),
                 self.assertRaises(PersistenceError),
             ):
                 write_config(valid_config(), path)

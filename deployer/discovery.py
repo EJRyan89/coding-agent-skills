@@ -201,7 +201,7 @@ def parse_codex(lines: list[str]) -> Listing:
     for group in data:
         for entry in (group.get("skills") or []) if isinstance(group, dict) else []:
             if isinstance(entry, dict) and isinstance(entry.get("name"), str) and isinstance(entry.get("path"), str):
-                directory = _directory(os.path.dirname(entry["path"]))
+                directory = _directory(str(Path(entry["path"]).parent))
                 found.setdefault(entry["name"], []).append(Listed(directory, entry.get("enabled") is True))
     return found
 

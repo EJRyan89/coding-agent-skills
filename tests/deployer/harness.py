@@ -253,7 +253,7 @@ class DeployerTestCase(unittest.TestCase):
         path.write_bytes(text.encode("utf-8"))
 
     def append(self, path: Path, text: str) -> None:
-        with open(path, "a", encoding="utf-8", newline="\n") as handle:
+        with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
 
     def selection_number(self, name: str, bundle: bool = False) -> str:
