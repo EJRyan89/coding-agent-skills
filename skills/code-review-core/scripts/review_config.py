@@ -125,140 +125,18 @@ def default_manifest_path(config_path: Path, repository: str) -> Path:
 def validate_config(value: Any) -> dict[str, Any]:
     config = _expect_object(value, "config")
     _reject_unknown(config, TOP_LEVEL_KEYS, "config")
-    version = config.get("schema_version")
-    if version != SCHEMA_VERSION:
-        if isinstance(version, int) and version > SCHEMA_VERSION:
-            raise ConfigurationError(f"Unsupported future config schema version: {version}")
-        raise ConfigurationError(f"Unsupported config schema version: {version!r}")
-
-    sets = _expect_object(config.get("repository_sets"), "repository_sets")
-    if not sets:
-        raise ConfigurationError("repository_sets must not be empty")
-    normalized_sets: dict[str, list[str]] = {}
-    for name, repositories in sets.items():
-        if not isinstance(name, str) or not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
-            raise ConfigurationError(f"Invalid repository-set name: {name!r}")
-        if not isinstance(repositories, list) or not repositories:
-            raise ConfigurationError(f"Repository set '{name}' must not be empty")
-        members = [validate_repository_identity(item) for item in repositories]
-        if len(set(members)) != len(members):
-            raise ConfigurationError(f"Repository set '{name}' contains duplicates")
-        normalized_sets[name] = members
-
-    default_set = config.get("default_repository_set")
-    if not isinstance(default_set, str) or default_set not in normalized_sets:
-        raise ConfigurationError("default_repository_set must name an existing set")
-
-    repository_config = _expect_object(config.get("repositories", {}), "repositories")
-    normalized_repositories: dict[str, Any] = {}
-    for identity, entry_value in repository_config.items():
-        normalized_identity = validate_repository_identity(identity)
-        if normalized_identity in normalized_repositories:
-            raise ConfigurationError(f"Duplicate repository configuration after normalization: {normalized_identity}")
-        entry = _expect_object(entry_value, f"repositories.{identity}")
-        _reject_unknown(entry, REPOSITORY_KEYS, f"repositories.{identity}")
-        reviewer = _expect_object(entry.get("reviewer"), f"repositories.{identity}.reviewer")
-        _reject_unknown(reviewer, REVIEWER_KEYS, f"repositories.{identity}.reviewer")
-        reviewer_id = reviewer.get("id")
-        if not isinstance(reviewer_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
-            raise ConfigurationError(f"repositories.{identity}.reviewer.id is invalid")
-        if reviewer.get("protocol_version") != 1:
-            raise ConfigurationError(f"repositories.{identity}.reviewer protocol is unsupported")
-        trusted_ref = reviewer.get("trusted_ref")
-        if trusted_ref is not None and (not isinstance(trusted_ref, str) or not trusted_ref.strip()):
-            raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref is invalid")
-        if isinstance(trusted_ref, str) and trusted_ref.startswith("refs/pull/"):
-            raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref cannot be a pull ref")
-        scope = reviewer.get("scope", "repository")
-        if scope not in {"generic", "repository"}:
-            raise ConfigurationError(f"repositories.{identity}.reviewer.scope is invalid")
-        manifest_path = reviewer.get("manifest_path")
-        skill = reviewer.get("skill")
-        manifest = reviewer.get("manifest")
-        field = f"repositories.{identity}.reviewer"
-        if scope == "generic":
-            if reviewer_id != "generic" or any(
-                value is not None for value in (manifest_path, trusted_ref, skill, manifest)
-            ):
-                raise ConfigurationError(
-                    f"{field} generic scope must use id 'generic' without manifest_path, skill, manifest, "
-                    "or trusted_ref"
-                )
-        elif manifest_path is not None:
-            # A manifest committed to the repository describes its reviewer on its own.
-            if skill is not None or manifest is not None:
-                raise ConfigurationError(f"{field} sets manifest_path, so it cannot also set skill or manifest")
-            if not _safe_repository_path(manifest_path):
-                raise ConfigurationError(f"{field}.manifest_path is unsafe")
-        else:
-            # The repository's own review skill, optionally run through a manifest kept outside the repository.
-            if skill is None:
-                raise ConfigurationError(f"{field} needs skill (the repository's review skill) or manifest_path")
-            if not _safe_repository_path(skill):
-                raise ConfigurationError(f"{field}.skill is unsafe")
-            if manifest is not None and manifest is not True:
-                manifest = validate_windows_absolute_path(manifest, f"{field}.manifest")
-        checkout = validate_windows_absolute_path(
-            entry.get("checkout_path"), f"repositories.{identity}.checkout_path", nullable=True
-        )
-        if scope == "repository" and checkout is None:
-            raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
-        normalized_repositories[normalized_identity] = {
-            "reviewer": {
-                "id": reviewer_id,
-                "protocol_version": 1,
-                "trusted_ref": trusted_ref,
-                "scope": scope,
-                "manifest_path": manifest_path,
-                "skill": skill,
-                "manifest": manifest,
-            },
-            "checkout_path": checkout,
-        }
-
-    configured = {repo for repos in normalized_sets.values() for repo in repos}
-    missing = sorted(configured - set(normalized_repositories))
-    if missing:
-        raise ConfigurationError("Missing per-repository configuration for: " + ", ".join(missing))
-
+    _validate_schema_version(config.get("schema_version"))
+    normalized_sets = _validate_repository_sets(config.get("repository_sets"))
+    _validate_default_set(config.get("default_repository_set"), normalized_sets)
+    normalized_repositories = _validate_repositories(config.get("repositories", {}))
+    _check_configured_repositories(normalized_sets, normalized_repositories)
     runtime = config.get("runtime", "auto")
-    if runtime not in RUNTIME_HOSTS:
-        raise ConfigurationError(f"Unknown runtime host: {runtime!r}")
+    _validate_runtime(runtime)
     effort = config.get("reviewer_effort")
-    if effort is not None and effort not in REVIEWER_EFFORTS:
-        raise ConfigurationError(
-            f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}"
-        )
-
-    scope = _expect_object(config.get("re_review_scope", {}), "re_review_scope")
-    _reject_unknown(scope, set(RE_REVIEW_SCOPE_DEFAULTS), "re_review_scope")
-    scope = {**RE_REVIEW_SCOPE_DEFAULTS, **scope}
-    share = scope["full_share"]
-    if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 < share <= 1:
-        raise ConfigurationError("re_review_scope.full_share must be a number above 0 and at most 1")
-    if not isinstance(scope["full_lines"], int) or isinstance(scope["full_lines"], bool) or scope["full_lines"] < 1:
-        raise ConfigurationError("re_review_scope.full_lines must be a positive integer")
-
-    policy = _expect_object(config.get("verdict_policy", {}), "verdict_policy")
-    _reject_unknown(policy, {"request_changes_for", "should_fix_threshold"}, "verdict_policy")
-    request_changes_for = policy.get("request_changes_for", ["MUST_FIX"])
-    if not isinstance(request_changes_for, list) or not request_changes_for:
-        raise ConfigurationError("verdict_policy.request_changes_for must be non-empty")
-    allowed_severities = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-    if any(item not in allowed_severities for item in request_changes_for):
-        raise ConfigurationError("verdict_policy.request_changes_for contains an invalid severity")
-    threshold = policy.get("should_fix_threshold", 3)
-    if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
-        raise ConfigurationError("verdict_policy.should_fix_threshold must be a positive integer")
-
-    operation_sets = config.get("operation_repository_sets", {})
-    if not isinstance(operation_sets, dict):
-        raise ConfigurationError("operation_repository_sets must be an object")
-    for operation, set_name in operation_sets.items():
-        if operation not in OPERATIONS:
-            raise ConfigurationError(f"operation_repository_sets has an unknown operation: {operation!r}")
-        if set_name not in normalized_sets:
-            raise ConfigurationError(f"operation_repository_sets.{operation} must name an existing set")
+    _validate_reviewer_effort(effort)
+    scope = _validate_re_review_scope(config.get("re_review_scope", {}))
+    verdict_policy = _validate_verdict_policy(config.get("verdict_policy", {}))
+    operation_sets = _validate_operation_sets(config.get("operation_repository_sets", {}), normalized_sets)
 
     normalized = dict(config)
     normalized["operation_repository_sets"] = dict(operation_sets)
@@ -274,14 +152,190 @@ def validate_config(value: Any) -> dict[str, Any]:
     )
     normalized["summary_root"] = validate_windows_absolute_path(config.get("summary_root"), "summary_root")
     normalized["dashboard_file"] = validate_windows_absolute_path(config.get("dashboard_file"), "dashboard_file")
-    normalized["verdict_policy"] = {
+    normalized["verdict_policy"] = verdict_policy
+    _validate_github_login(config.get("github_login"))
+    normalized["dashboard"] = _validate_dashboard(config.get("dashboard", {}))
+    return normalized
+
+
+def _validate_schema_version(version: Any) -> None:
+    if version != SCHEMA_VERSION:
+        if isinstance(version, int) and version > SCHEMA_VERSION:
+            raise ConfigurationError(f"Unsupported future config schema version: {version}")
+        raise ConfigurationError(f"Unsupported config schema version: {version!r}")
+
+
+def _validate_repository_sets(value: Any) -> dict[str, list[str]]:
+    """Each named set's members as lowercase identities, in the order given."""
+    sets = _expect_object(value, "repository_sets")
+    if not sets:
+        raise ConfigurationError("repository_sets must not be empty")
+    normalized_sets: dict[str, list[str]] = {}
+    for name, repositories in sets.items():
+        if not isinstance(name, str) or not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            raise ConfigurationError(f"Invalid repository-set name: {name!r}")
+        if not isinstance(repositories, list) or not repositories:
+            raise ConfigurationError(f"Repository set '{name}' must not be empty")
+        members = [validate_repository_identity(item) for item in repositories]
+        if len(set(members)) != len(members):
+            raise ConfigurationError(f"Repository set '{name}' contains duplicates")
+        normalized_sets[name] = members
+    return normalized_sets
+
+
+def _validate_default_set(default_set: Any, normalized_sets: dict[str, list[str]]) -> None:
+    if not isinstance(default_set, str) or default_set not in normalized_sets:
+        raise ConfigurationError("default_repository_set must name an existing set")
+
+
+def _validate_repositories(value: Any) -> dict[str, Any]:
+    """Each repository's normalized entry keyed by its lowercase identity, checked one entry at a time."""
+    repository_config = _expect_object(value, "repositories")
+    normalized_repositories: dict[str, Any] = {}
+    for identity, entry_value in repository_config.items():
+        normalized_identity = validate_repository_identity(identity)
+        if normalized_identity in normalized_repositories:
+            raise ConfigurationError(f"Duplicate repository configuration after normalization: {normalized_identity}")
+        normalized_repositories[normalized_identity] = _validate_repository(identity, entry_value)
+    return normalized_repositories
+
+
+def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
+    entry = _expect_object(entry_value, f"repositories.{identity}")
+    _reject_unknown(entry, REPOSITORY_KEYS, f"repositories.{identity}")
+    reviewer = _validate_reviewer(identity, entry.get("reviewer"))
+    checkout = validate_windows_absolute_path(
+        entry.get("checkout_path"), f"repositories.{identity}.checkout_path", nullable=True
+    )
+    if reviewer["scope"] == "repository" and checkout is None:
+        raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
+    return {"reviewer": reviewer, "checkout_path": checkout}
+
+
+def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
+    reviewer = _expect_object(reviewer_value, f"repositories.{identity}.reviewer")
+    _reject_unknown(reviewer, REVIEWER_KEYS, f"repositories.{identity}.reviewer")
+    reviewer_id = reviewer.get("id")
+    if not isinstance(reviewer_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
+        raise ConfigurationError(f"repositories.{identity}.reviewer.id is invalid")
+    if reviewer.get("protocol_version") != 1:
+        raise ConfigurationError(f"repositories.{identity}.reviewer protocol is unsupported")
+    trusted_ref = reviewer.get("trusted_ref")
+    if trusted_ref is not None and (not isinstance(trusted_ref, str) or not trusted_ref.strip()):
+        raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref is invalid")
+    if isinstance(trusted_ref, str) and trusted_ref.startswith("refs/pull/"):
+        raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref cannot be a pull ref")
+    scope = reviewer.get("scope", "repository")
+    if scope not in {"generic", "repository"}:
+        raise ConfigurationError(f"repositories.{identity}.reviewer.scope is invalid")
+    manifest_path = reviewer.get("manifest_path")
+    skill = reviewer.get("skill")
+    manifest = reviewer.get("manifest")
+    field = f"repositories.{identity}.reviewer"
+    if scope == "generic":
+        if reviewer_id != "generic" or any(
+            value is not None for value in (manifest_path, trusted_ref, skill, manifest)
+        ):
+            raise ConfigurationError(
+                f"{field} generic scope must use id 'generic' without manifest_path, skill, manifest, or trusted_ref"
+            )
+    elif manifest_path is not None:
+        # A manifest committed to the repository describes its reviewer on its own.
+        if skill is not None or manifest is not None:
+            raise ConfigurationError(f"{field} sets manifest_path, so it cannot also set skill or manifest")
+        if not _safe_repository_path(manifest_path):
+            raise ConfigurationError(f"{field}.manifest_path is unsafe")
+    else:
+        # The repository's own review skill, optionally run through a manifest kept outside the repository.
+        if skill is None:
+            raise ConfigurationError(f"{field} needs skill (the repository's review skill) or manifest_path")
+        if not _safe_repository_path(skill):
+            raise ConfigurationError(f"{field}.skill is unsafe")
+        if manifest is not None and manifest is not True:
+            manifest = validate_windows_absolute_path(manifest, f"{field}.manifest")
+    return {
+        "id": reviewer_id,
+        "protocol_version": 1,
+        "trusted_ref": trusted_ref,
+        "scope": scope,
+        "manifest_path": manifest_path,
+        "skill": skill,
+        "manifest": manifest,
+    }
+
+
+def _check_configured_repositories(
+    normalized_sets: dict[str, list[str]], normalized_repositories: dict[str, Any]
+) -> None:
+    """Every repository a set names has its own entry."""
+    configured = {repo for repos in normalized_sets.values() for repo in repos}
+    missing = sorted(configured - set(normalized_repositories))
+    if missing:
+        raise ConfigurationError("Missing per-repository configuration for: " + ", ".join(missing))
+
+
+def _validate_runtime(runtime: Any) -> None:
+    if runtime not in RUNTIME_HOSTS:
+        raise ConfigurationError(f"Unknown runtime host: {runtime!r}")
+
+
+def _validate_reviewer_effort(effort: Any) -> None:
+    if effort is not None and effort not in REVIEWER_EFFORTS:
+        raise ConfigurationError(
+            f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}"
+        )
+
+
+def _validate_re_review_scope(value: Any) -> dict[str, Any]:
+    """The given thresholds over their defaults."""
+    scope = _expect_object(value, "re_review_scope")
+    _reject_unknown(scope, set(RE_REVIEW_SCOPE_DEFAULTS), "re_review_scope")
+    scope = {**RE_REVIEW_SCOPE_DEFAULTS, **scope}
+    share = scope["full_share"]
+    if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 < share <= 1:
+        raise ConfigurationError("re_review_scope.full_share must be a number above 0 and at most 1")
+    if not isinstance(scope["full_lines"], int) or isinstance(scope["full_lines"], bool) or scope["full_lines"] < 1:
+        raise ConfigurationError("re_review_scope.full_lines must be a positive integer")
+    return scope
+
+
+def _validate_verdict_policy(value: Any) -> dict[str, Any]:
+    """Both policy fields, defaults filled; request_changes_for is the given list itself."""
+    policy = _expect_object(value, "verdict_policy")
+    _reject_unknown(policy, {"request_changes_for", "should_fix_threshold"}, "verdict_policy")
+    request_changes_for = policy.get("request_changes_for", ["MUST_FIX"])
+    if not isinstance(request_changes_for, list) or not request_changes_for:
+        raise ConfigurationError("verdict_policy.request_changes_for must be non-empty")
+    allowed_severities = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
+    if any(item not in allowed_severities for item in request_changes_for):
+        raise ConfigurationError("verdict_policy.request_changes_for contains an invalid severity")
+    threshold = policy.get("should_fix_threshold", 3)
+    if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
+        raise ConfigurationError("verdict_policy.should_fix_threshold must be a positive integer")
+    return {
         "request_changes_for": request_changes_for,
         "should_fix_threshold": threshold,
     }
-    login = config.get("github_login")
+
+
+def _validate_operation_sets(operation_sets: Any, normalized_sets: dict[str, list[str]]) -> dict[str, Any]:
+    if not isinstance(operation_sets, dict):
+        raise ConfigurationError("operation_repository_sets must be an object")
+    for operation, set_name in operation_sets.items():
+        if operation not in OPERATIONS:
+            raise ConfigurationError(f"operation_repository_sets has an unknown operation: {operation!r}")
+        if set_name not in normalized_sets:
+            raise ConfigurationError(f"operation_repository_sets.{operation} must name an existing set")
+    return operation_sets
+
+
+def _validate_github_login(login: Any) -> None:
     if login is not None and (not isinstance(login, str) or not login.strip()):
         raise ConfigurationError("github_login must be null or a non-empty string")
-    dashboard = config.get("dashboard", {})
+
+
+def _validate_dashboard(dashboard: Any) -> dict[str, Any]:
+    """The markers with their defaults, the status overrides as given, and the normalized author names."""
     if not isinstance(dashboard, dict):
         raise ConfigurationError("dashboard must be an object")
     _reject_unknown(dashboard, DASHBOARD_KEYS, "dashboard")
@@ -302,6 +356,16 @@ def validate_config(value: Any) -> dict[str, Any]:
     ):
         raise ConfigurationError("dashboard markers must be distinct, trimmed, non-empty single-line strings")
     overrides = dashboard.get("status_overrides", {})
+    _validate_status_overrides(overrides)
+    return {
+        "start_marker": start_marker,
+        "end_marker": end_marker,
+        "status_overrides": overrides,
+        "author_names": normalize_author_names(dashboard.get("author_names", {})),
+    }
+
+
+def _validate_status_overrides(overrides: Any) -> None:
     if not isinstance(overrides, dict):
         raise ConfigurationError("dashboard.status_overrides must be an object")
     for key, value in overrides.items():
@@ -311,13 +375,6 @@ def validate_config(value: Any) -> dict[str, Any]:
             raise ConfigurationError(f"Dashboard status override {key} must be non-empty")
         if value.strip().casefold() in COMPUTED_DASHBOARD_STATES:
             raise ConfigurationError(f"Dashboard status override {key} duplicates a computed tracker state")
-    normalized["dashboard"] = {
-        "start_marker": start_marker,
-        "end_marker": end_marker,
-        "status_overrides": overrides,
-        "author_names": normalize_author_names(dashboard.get("author_names", {})),
-    }
-    return normalized
 
 
 def _single_line(value: Any, maximum: int) -> bool:
