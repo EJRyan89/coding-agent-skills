@@ -33,7 +33,6 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`dotnet-format`](#dotnet-format) | You or the agent | Opt-in | `dotnet-format`, `gh` (optional) |
 | [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
-| [`init-ai-config`](#init-ai-config) | You or the agent | By default | Nothing extra |
 | [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
 | [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
@@ -76,6 +75,8 @@ Started by you or the agent. Installed by default. Takes no arguments.
 <!-- /generated:audit-ai-config -->
 
 It audits the Git repository you start it in, and asks which repository to audit when you are not in one. It reports the repository's authority and scope, every error and warning, and every documented limitation that applies, and summarizes the informational inventory as a count per check; ask for the full inventory when you want each file it found. Ask for JSON when you want to process the findings rather than read them. It parses files statically: it runs nothing from the repository, makes no network requests, and writes nothing.
+
+It never fixes what it finds; findings are fixed by hand. This source used to ship `init-ai-config`, which generated a cross-runtime layout from `CLAUDE.md`. That skill was retired in `v0.2.0`, because every supported runtime reads `CLAUDE.md` directly or through a thin `AGENTS.md` redirect. The audit still checks the generated layout in repositories the generator configured before, and its `references/generated-layout.md` describes that layout.
 
 ## `curate-agent-memory`
 
@@ -173,20 +174,6 @@ A 12-month report takes a few minutes, because searches are spaced to stay under
 ```text
 /github-activity-report octo-org octocat --months 6
 ```
-
-## `init-ai-config`
-
-<!-- generated:init-ai-config -->
-Creates or upgrades AI agent configuration (Claude Code, Codex, Copilot) across runtimes from a single authoritative CLAUDE.md. May write files. Use it when asked to set up, add, or migrate a repository's agent instructions, not only to check them.
-
-```text
-/init-ai-config
-```
-
-Started by you or the agent. Installed by default. Takes no arguments.
-<!-- /generated:init-ai-config -->
-
-It configures the Git repository you start it in, and asks which repository to use when you are not in one; it never initializes Git without your approval. Instead of flags, it asks scoping questions as it goes, such as which runtimes and surfaces to support. It shows the existing configuration and any conflicts before writing, and never replaces content you wrote without your approval. The spec it works from is kept in a new temporary directory, never in a skill directory. Some checks need a running Codex or Copilot session, so it ends by naming the sections of its `references/runtime-checks.md` that apply to the runtimes you chose, for you to confirm.
 
 ## `repo-cleanup`
 

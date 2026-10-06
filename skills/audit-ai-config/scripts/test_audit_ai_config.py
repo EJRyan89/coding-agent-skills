@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -2163,6 +2164,277 @@ class LimitationTests(unittest.TestCase):
 
     def test_limitations_never_change_the_exit_code(self) -> None:
         self.assertEqual(0, audit.audit(self.root).exit_code)
+
+
+# ---------------------------------------------------------------------------
+# Finding sequences of the MCP and instruction-layering checks
+# ---------------------------------------------------------------------------
+
+REDIRECTING_AGENTS = "Read and follow `CLAUDE.md` as the authoritative source.\n"
+PLAIN_AGENTS = "# Agents\n\nUse tabs.\n"
+EVERY_SURFACE = ["copilot_cli", "jetbrains", "cloud_agent", "code_review", "vscode"]
+# Exception text varies by Python version, so a parse failure is compared by its prefix.
+PARSE_PREFIXES = ("Could not read or parse:", "Invalid TOML:")
+
+MCP_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
+    "every_source": (
+        {
+            ".mcp.json": '{"mcpServers": {"alpha": {"command": "a", "tools": ["read"]}, "beta": "text", "gamma": {}}}',
+            ".github/mcp.json": '{"mcpServers": {"alpha": {"command": "b"}}}',
+            ".vscode/mcp.json": '{"servers": {"alpha": {"command": "a"}}}',
+            ".codex/config.toml": (
+                '[mcp_servers]\nflag = true\n\n[mcp_servers.alpha]\ncommand = "a"\n\n'
+                '[mcp_servers.web]\nurl = "https://example.test/mcp"\nenv = { A = "1" }\nenv_vars = ["B"]\n'
+            ),
+        },
+        {
+            "surfaces": ["code_review"],
+            "mcp_servers": [
+                {"name": "odd", "transport": "carrier", "targets": ["claude"]},
+                {"name": "local-only", "transport": "local", "targets": ["claude", "copilot_local"]},
+                {"transport": "stdio", "targets": ["copilot_repository"]},
+            ],
+        },
+    ),
+    "top_level_lists": (
+        {".mcp.json": "[]", ".github/mcp.json": '{"other": {}}', ".vscode/mcp.json": "[]"},
+        {},
+    ),
+    "wrong_wrappers": (
+        {".mcp.json": "{bad", ".github/mcp.json": '{"mcpServers": []}', ".vscode/mcp.json": '{"mcpServers": {}}'},
+        {},
+    ),
+    "vscode_servers_not_an_object": (
+        {".vscode/mcp.json": '{"servers": []}', ".codex/config.toml": "invalid [[ toml"},
+        {},
+    ),
+    "vscode_unparseable": ({".vscode/mcp.json": "{bad"}, {}),
+    "nothing": ({}, {}),
+}
+
+LAYERING_SCENARIOS: dict[str, tuple[dict[str, str], dict]] = {
+    "everything": (
+        {
+            "CLAUDE.md": "# CLAUDE.md\n",
+            "AGENTS.md": REDIRECTING_AGENTS,
+            "AGENTS.override.md": "Override.\n",
+            "sub/AGENTS.override.md": "Nested override.\n",
+            "sub/AGENTS.md": PLAIN_AGENTS,
+            ".github/copilot-instructions.md": "# Copilot\n",
+            "GEMINI.md": "# Gemini\n",
+            ".github/skills/demo/SKILL.md": "---\nname: demo\n---\n",
+        },
+        {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
+    ),
+    "redirect_with_nested_redirect": (
+        {"CLAUDE.md": "# CLAUDE.md\n", "AGENTS.md": REDIRECTING_AGENTS, "sub/AGENTS.md": REDIRECTING_AGENTS},
+        {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
+    ),
+    "plain_agents_and_path_instructions": (
+        {"AGENTS.md": PLAIN_AGENTS, ".github/instructions/api.instructions.md": "Prefer async.\n"},
+        {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
+    ),
+    "claude_only": (
+        {"CLAUDE.md": "# CLAUDE.md\n"},
+        {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
+    ),
+    "gemini_only": (
+        {"GEMINI.md": "# Gemini\n"},
+        {"runtimes": ["codex"], "surfaces": EVERY_SURFACE},
+    ),
+    "nothing": ({}, {"runtimes": ["codex"], "surfaces": EVERY_SURFACE}),
+    "copilot_app_only": ({"CLAUDE.md": "# CLAUDE.md\n"}, {"runtimes": ["claude"], "surfaces": ["copilot_app"]}),
+    "no_targets": ({"CLAUDE.md": "# CLAUDE.md\n"}, {"runtimes": [], "surfaces": []}),
+}
+
+MCP_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
+    'every_source': [
+        ('WARNING', 'mcp', '.mcp.json', "Server 'beta': entry must be an object, got str"),
+        ('ERROR', 'mcp', '.mcp.json', "Server 'gamma': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)"),
+        ('ERROR', 'mcp', '.github/mcp.json', "Duplicate server name 'alpha' — .mcp.json takes precedence, making .github/mcp.json entry unreachable"),
+        ('ERROR', 'mcp', '.codex/config.toml', "Server 'web': env is STDIO-only, must not be present on HTTP transport"),
+        ('ERROR', 'mcp', '.codex/config.toml', "Server 'web': env_vars is STDIO-only, must not be present on HTTP transport"),
+        ('ERROR', 'mcp', None, "Server 'odd': unknown transport 'carrier'"),
+        ('ERROR', 'mcp', None, "Server 'local-only': transport 'local' not supported for target 'claude'"),
+        ('ERROR', 'mcp', '.mcp.json', "Server 'alpha': copilot_local.tools allowlist cannot be enforced in shared .mcp.json"),
+        ('WARNING', 'mcp', None, 'Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically'),
+        ('WARNING', 'mcp', None, 'Code-review tool set derived from repository allowlist intersected with readOnlyHint: true — cannot verify tool annotations statically'),
+        ('WARNING', 'mcp', None, "Server 'alpha': connection fields differ between .mcp.json and .github/mcp.json"),
+    ],
+    'top_level_lists': [
+        ('ERROR', 'mcp', '.mcp.json', 'Top-level value must be an object'),
+        ('WARNING', 'mcp', '.github/mcp.json', "'mcpServers' key not found"),
+        ('ERROR', 'mcp', '.vscode/mcp.json', 'Top-level value must be an object'),
+    ],
+    'wrong_wrappers': [
+        ('ERROR', 'mcp', '.mcp.json', 'Could not read or parse:'),
+        ('ERROR', 'mcp', '.github/mcp.json', "'mcpServers' must be an object"),
+        ('ERROR', 'mcp', '.vscode/mcp.json', "VS Code MCP must use 'servers' wrapper (not 'mcpServers')"),
+    ],
+    'vscode_servers_not_an_object': [
+        ('ERROR', 'mcp', '.vscode/mcp.json', "'servers' must be an object"),
+        ('ERROR', 'mcp', '.codex/config.toml', 'Invalid TOML:'),
+    ],
+    'vscode_unparseable': [
+        ('ERROR', 'mcp', '.vscode/mcp.json', 'Could not read or parse:'),
+    ],
+    'nothing': [],
+}
+LAYERING_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
+    'everything': [
+        ('ERROR', 'layering', 'AGENTS.override.md', 'AGENTS.override.md masks the generated AGENTS.md adapter — Codex will not load CLAUDE.md through the adapter'),
+        ('WARNING', 'layering', 'sub/AGENTS.override.md', 'Nested AGENTS.override.md takes precedence over AGENTS.md in this subtree — review for conflicting guidance with the root adapter'),
+        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md adds instructions alongside the root adapter in this subtree — review for conflicting or redundant guidance'),
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md, .github/copilot-instructions.md, GEMINI.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('INFO', 'layering', None, 'JetBrains: .github/copilot-instructions.md available'),
+        ('INFO', 'layering', None, 'Cloud agent: AGENTS.md adapter redirects to CLAUDE.md'),
+        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree'),
+        ('INFO', 'layering', None, 'Code review: effective sources: .github/copilot-instructions.md'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('INFO', 'layering', '.github/skills', 'Code review can use relevant .github/skills entries; .claude/skills and .agents/skills are not its documented automatic skill location'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'redirect_with_nested_redirect': [
+        ('INFO', 'layering', None, 'Codex: AGENTS.md adapter redirects to CLAUDE.md'),
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md, AGENTS.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
+        ('INFO', 'layering', None, 'Cloud agent: AGENTS.md adapter redirects to CLAUDE.md'),
+        ('WARNING', 'layering', 'sub/AGENTS.md', 'Nested AGENTS.md supersedes root adapter for cloud agent sessions in this subtree'),
+        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md only redirects to CLAUDE.md'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'plain_agents_and_path_instructions': [
+        ('WARNING', 'layering', None, 'Codex: non-redirecting AGENTS.md — CLAUDE.md not loaded through adapter'),
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: AGENTS.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('INFO', 'layering', None, 'JetBrains: path-specific instructions only (no copilot-instructions.md)'),
+        ('INFO', 'layering', None, 'Cloud agent: non-redirecting AGENTS.md — CLAUDE.md not loaded directly'),
+        ('INFO', 'layering', None, 'Code review: effective sources: AGENTS.md, .github/instructions'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'claude_only': [
+        ('INFO', 'layering', None, 'Codex: no AGENTS.md, CLAUDE.md used via fallback'),
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
+        ('INFO', 'layering', None, 'Cloud agent: no AGENTS.md, CLAUDE.md selected directly'),
+        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'gemini_only': [
+        ('ERROR', 'layering', None, 'Codex: no AGENTS.md or CLAUDE.md — no instructions available'),
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: GEMINI.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
+        ('INFO', 'layering', None, 'Cloud agent: no AGENTS.md or CLAUDE.md, GEMINI.md selected as alternative'),
+        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'nothing': [
+        ('ERROR', 'layering', None, 'Codex: no AGENTS.md or CLAUDE.md — no instructions available'),
+        ('ERROR', 'layering', None, 'Copilot CLI/app: no instruction sources available'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('ERROR', 'layering', None, 'JetBrains: no .github/copilot-instructions.md or path-specific instructions — JetBrains cannot load CLAUDE.md directly'),
+        ('ERROR', 'layering', None, 'Cloud agent: no AGENTS.md, CLAUDE.md, or GEMINI.md — no instructions available'),
+        ('ERROR', 'layering', None, 'Code review: no project instructions it can read — it ignores CLAUDE.md, and AGENTS.md is absent'),
+        ('WARNING', 'layering', None, 'Code-review custom-instructions enablement cannot be verified statically'),
+        ('WARNING', 'trust-boundary', None, 'Copilot code review loads instructions, agents, and skills from the PR head; this is advisory context, not a trusted-base or trusted-ref review contract'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+        ('WARNING', 'layering', None, 'VS Code instruction settings (chat.useClaudeMdFile, chat.useAgentsMdFile, useInstructionFiles, includeApplyingInstructions) cannot be verified statically'),
+    ],
+    'copilot_app_only': [
+        ('INFO', 'layering', None, 'Copilot CLI/app: effective sources: CLAUDE.md'),
+        ('WARNING', 'layering', None, 'Copilot CLI/app folder trust status cannot be determined statically — .mcp.json silently skipped in untrusted directories'),
+        ('WARNING', 'runtime', None, 'Copilot repository settings, organization policy, authentication, model availability, runtime enablement, and actual operational use cannot be verified statically'),
+    ],
+    'no_targets': [],
+}
+
+
+class FindingSequenceTests(unittest.TestCase):
+    """The exact findings, in order, of the MCP and instruction-layering checks for each branch they take."""
+
+    def _rows(self, check, files: dict[str, str], manifest: dict) -> list[tuple[str, str, str | None, str]]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for relative, text in files.items():
+                (root / relative).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative).write_text(text, encoding="utf-8")
+            return [
+                (f.severity, f.check, f.path, next((p for p in PARSE_PREFIXES if f.message.startswith(p)), f.message))
+                for f in check(root, manifest)
+            ]
+
+    def test_mcp_findings_and_their_order(self) -> None:
+        self.assertEqual(set(MCP_SCENARIOS), set(MCP_EXPECTED))
+        for name, (files, manifest) in MCP_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(MCP_EXPECTED[name], self._rows(audit.check_mcp, files, manifest))
+
+    def test_instruction_layering_findings_and_their_order(self) -> None:
+        self.assertEqual(set(LAYERING_SCENARIOS), set(LAYERING_EXPECTED))
+        for name, (files, manifest) in LAYERING_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(
+                    LAYERING_EXPECTED[name], self._rows(audit.check_instruction_layering, files, manifest)
+                )
+
+
+class GeneratedLayoutReferenceTests(unittest.TestCase):
+    """references/generated-layout.md documents the layout the audit checks; it must agree with the engine."""
+
+    REFERENCE = Path(__file__).resolve().parent.parent / "references/generated-layout.md"
+
+    def _table(self, heading: str) -> list[list[str]]:
+        lines = self.REFERENCE.read_text(encoding="utf-8").splitlines()
+        start = lines.index(heading) + 1
+        rows = []
+        for line in lines[start:]:
+            if line.startswith("#"):
+                break
+            if line.startswith("|") and not line.startswith("|---"):
+                rows.append([cell.strip() for cell in line.strip("|").split("|")])
+        return rows[1:]
+
+    def test_transport_table_matches_the_engine(self) -> None:
+        targets = ["claude", "codex", "copilot_local", "vscode", "copilot_repository"]
+        documented = {
+            row[0].strip("`"): {target for target, cell in zip(targets, row[1:]) if cell == "Yes"}
+            for row in self._table("### Transport compatibility")
+        }
+        expected = {
+            "stdio": {"claude", "codex", "copilot_local", "vscode", "copilot_repository"},
+            "local": {"copilot_local", "copilot_repository"},
+            "http": {"claude", "codex", "copilot_local", "vscode", "copilot_repository"},
+            "sse": {"claude", "copilot_local", "vscode", "copilot_repository"},
+        }
+        self.assertEqual(expected, documented)
+        self.assertEqual(expected, audit.TRANSPORT_COMPATIBILITY)
+
+    def test_every_generated_file_is_a_path_the_manifest_may_own(self) -> None:
+        documented = {
+            path.replace("<name>", "*")
+            for row in self._table("## What each choice generates")
+            for path in re.findall(r"`([^`]+\.(?:md|json|toml|yml))`", row[1])
+        }
+        self.assertIn(".github/workflows/ai-config-parity-pr.yml", documented)
+        self.assertEqual(set(), documented - set(audit.MANIFEST_ALLOWED_PATHS))
 
 
 if __name__ == "__main__":

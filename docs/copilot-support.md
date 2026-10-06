@@ -8,7 +8,7 @@ This repository currently supports:
 - zero-AI verification of the effective discovered skill path with `python deploy.py verify`; and
 - a bounded, noninteractive Copilot CLI host for the code-review protocol.
 
-Repository instructions, IDE surfaces, the cloud coding agent, and GitHub code review require repository-specific configuration. They are not enabled merely by deploying these personal skills. Run `init-ai-config` after Git initialization to select and generate the appropriate repository surfaces.
+Repository instructions, IDE surfaces, the cloud coding agent, and GitHub code review require repository-specific configuration. They are not enabled merely by deploying these personal skills. Configure the surfaces a repository needs by hand, then check them with `audit-ai-config`.
 
 ## Discovery precedence
 

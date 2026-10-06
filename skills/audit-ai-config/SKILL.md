@@ -6,7 +6,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 # Audit AI Agent Configuration
 
-Assess a repository's AI agent configuration across Claude Code, Codex, and Copilot and report findings by severity. The audit engine performs every deterministic check; you run it, relay its report, and add only the judgment it cannot make. Never write, modify, or delete files, and do not read the engine to redo its checks by hand. Remediation belongs to `init-ai-config` or manual fixes.
+Assess a repository's AI agent configuration across Claude Code, Codex, and Copilot and report findings by severity. The audit engine performs every deterministic check; you run it, relay its report, and add only the judgment it cannot make. Never write, modify, or delete files, and do not read the engine to redo its checks by hand. Remediation is a manual fix.
 
 ## 1. Run the engine
 
@@ -29,7 +29,7 @@ The report states its result on one line, before the `SUMMARY` lines; report by 
 
 With `--json` there is no `RESULT` line: a non-conforming `authority` is inconclusive, otherwise `exitCode` `1` means errors found.
 
-Relay the report's authority and scope status, every `ERROR` and `WARNING` finding, and every finding whose check is `limitation`, which names a documented limitation that applies to this repository. For the remaining `INFO` findings, relay only the engine's `SUMMARY` lines, which count findings per severity and `INFO` findings per check; give the full `INFO` list only when the user asks. `${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
+Relay the report's authority and scope status, every `ERROR` and `WARNING` finding, and every finding whose check is `limitation`, which names a documented limitation that applies to this repository. For the remaining `INFO` findings, relay only the engine's `SUMMARY` lines, which count findings per severity and `INFO` findings per check; give the full `INFO` list only when the user asks. `${CLAUDE_SKILL_DIR}/references/audit-policy.md` explains what every check covers, `${CLAUDE_SKILL_DIR}/references/report-schema.md` the finding format, `${CLAUDE_SKILL_DIR}/references/generated-layout.md` the generated files a conforming repository holds, and `${CLAUDE_SKILL_DIR}/references/known-limitations.md` the limitations in full; read them only to answer a question the report raises.
 
 ## 2. Review instruction content (judgment)
 

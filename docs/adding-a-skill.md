@@ -108,7 +108,7 @@ Every skill script reports the same way, so a `SKILL.md` reads each one alike:
 - A script prints no JSON. Data the next step reads goes to a file whose path the script prints on one line (see "Working files"). A report the skill shows the user as it is, such as `github-activity-report`'s table, stays a report.
 - No other exit codes. A `SKILL.md` keys on the printed lines, not on which nonzero code came back.
 
-A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py` answers Claude Code's hook protocol, and `init-ai-config`'s `ai_config_template.py` runs in other repositories' CI. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2.
+A script that must speak another protocol states why beside its code as a module-level `EXIT_CONTRACT_EXEMPT = "<reason>"`: `review_guard.py`, for example, answers Claude Code's hook protocol. Repository validation fails when any other script calls `parser.error` while handling an exception, prints `FAILED` on stderr, prints `json.dumps` output, or exits with a literal code other than 0, 1, or 2.
 
 ### Working files
 

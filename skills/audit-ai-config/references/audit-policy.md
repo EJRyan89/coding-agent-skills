@@ -1,6 +1,6 @@
 # Audit Policy
 
-What the audit engine checks and why. Each check maps to a function in `scripts/audit_ai_config.py`; the `check` column of a finding names it. Agents run the engine rather than repeating these checks by hand.
+What the audit engine checks and why. Each check maps to a function in `scripts/audit_ai_config.py`; the `check` column of a finding names it. Agents run the engine rather than repeating these checks by hand. `generated-layout.md` describes the generated files and manifest that the checks after authority classification expect.
 
 ## Contents
 

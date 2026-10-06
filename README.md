@@ -11,7 +11,6 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`curate-agent-memory`](docs/skills.md#curate-agent-memory) | Audits a project's Claude Code auto-memory and, with approval, moves durable rules to where they belong. |
 | [`dotnet-format`](docs/skills.md#dotnet-format) | Runs formatting and analyzer checks against changed C# files. Opt-in. |
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
-| [`init-ai-config`](docs/skills.md#init-ai-config) | Creates or upgrades cross-runtime AI-agent configuration from an authoritative `CLAUDE.md`. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |
 | [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
 | [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-tracker`](docs/skills.md#update-pr-tracker), [`review-insights`](docs/skills.md#review-insights), and [`flag-review-finding`](docs/skills.md#flag-review-finding). |
