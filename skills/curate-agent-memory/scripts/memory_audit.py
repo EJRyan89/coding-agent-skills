@@ -592,6 +592,13 @@ def describe(exc: OSError) -> str:
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
 
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "deployed_skill_roots": "also in code-review-core's review_io.py and repo-cleanup's repo_cleanup.py; #27's "
+    "shared core replaces the copies",
+}
+
+
 def deployed_skill_roots() -> tuple[Path, ...]:
     """The directories the deployer owns, whatever skills directory this script runs from."""
     home = Path.home()
