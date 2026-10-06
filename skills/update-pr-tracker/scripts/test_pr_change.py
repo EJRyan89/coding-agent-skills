@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -16,7 +18,7 @@ from pr_change import (
     contribution_fingerprint,
     tree_modes,
 )
-from review_github import GitHubError
+from review_github import GitHubClient, GitHubError
 
 REVIEWED = "a" * 40
 HEAD = "d" * 40
@@ -26,7 +28,8 @@ def changed(filename: str, content: str, status: str = "modified", **extra: str)
     return {"filename": filename, "status": status, "sha": content, "patch": "@@ -1 +1 @@", **extra}
 
 
-def comparison(*files: dict) -> dict:
+def comparison(*files: object) -> dict:
+    """A comparison listing the files; a malformed one may list anything."""
     return {"status": "ahead", "files": list(files)}
 
 
@@ -38,13 +41,15 @@ def tree(comparison_value: object, modes: dict[str, str] | None = None, truncate
     return {"truncated": truncated, "tree": [{"path": "unrelated.txt", "mode": "100644", "type": "blob"}, *entries]}
 
 
-class FakeClient:
-    def __init__(self, comparisons: dict[str, object], trees: dict[str, object] | None = None) -> None:
+class FakeClient(GitHubClient):
+    """Answers the detector's REST calls from canned comparisons and trees, without running gh."""
+
+    def __init__(self, comparisons: Mapping[str, object], trees: Mapping[str, object] | None = None) -> None:
         self.comparisons = comparisons
         self.trees = trees or {sha: tree(value) for sha, value in comparisons.items()}
         self.calls: list[str] = []
 
-    def api_json(self, endpoint: str) -> object:
+    def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
         self.calls.append(endpoint)
         if "/git/trees/" in endpoint:
             value = self.trees[endpoint.split("/git/trees/")[1].split("?")[0]]
@@ -55,7 +60,7 @@ class FakeClient:
         return value
 
 
-def detect(before: object, after: object, trees: dict[str, object] | None = None) -> str:
+def detect(before: object, after: object, trees: Mapping[str, object] | None = None) -> str:
     client = FakeClient({REVIEWED: before, HEAD: after}, trees)
     return ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD)
 
@@ -111,7 +116,7 @@ class ChangeDetectorTests(unittest.TestCase):
 
     def test_truncated_or_incomplete_trees_are_unknown(self) -> None:
         files = comparison(changed("a.py", "b"))
-        cases = {
+        cases: dict[str, dict[str, object]] = {
             "truncated": {REVIEWED: tree(files), HEAD: tree(files, truncated=True)},
             "missing entry": {REVIEWED: tree(files), HEAD: {"truncated": False, "tree": []}},
             "malformed": {REVIEWED: tree(files), HEAD: {"tree": "x"}},
@@ -161,12 +166,12 @@ class ChangeDetectorTests(unittest.TestCase):
 
 
 class AncestryTests(unittest.TestCase):
-    class Client:
+    class Client(GitHubClient):
         def __init__(self, answer: object) -> None:
             self.answer = answer
             self.calls: list[str] = []
 
-        def api_json(self, endpoint: str) -> object:
+        def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
             self.calls.append(endpoint)
             if isinstance(self.answer, GitHubError):
                 raise self.answer
