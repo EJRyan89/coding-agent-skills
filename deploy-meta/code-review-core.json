@@ -1,7 +1,7 @@
 {
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
-    "skill_deps": [],
+    "skill_deps": ["skill-core"],
     "agent_deps": ["code-review-reviewer"],
     "selectable": false,
     "tools": ["copilot", "gh"]

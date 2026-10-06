@@ -56,6 +56,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
+
 INDEX_NAME = "MEMORY.md"
 # Claude Code loads the first 200 lines or 25KB of MEMORY.md, whichever comes first.
 INDEX_LINE_LIMIT = 200
@@ -715,9 +719,6 @@ def main(arguments: list[str] | None = None) -> int:
     remove.add_argument("--memory-dir", type=Path, required=True)
     remove.add_argument("names", nargs="+", metavar="FILE", help="a memory file name, such as old-rule.md")
     args = parser.parse_args(arguments)
-    # Lines echo memory file names, titles, and notes; a Windows pipe's legacy code page cannot encode them all.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
     try:
         code, lines = run(args)
     except OSError as exc:
@@ -727,4 +728,5 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     raise SystemExit(main())

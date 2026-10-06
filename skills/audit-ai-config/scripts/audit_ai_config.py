@@ -30,11 +30,16 @@ import contextlib
 import hashlib
 import json
 import re
+import sys
 import tomllib
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -2137,4 +2142,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     raise SystemExit(main())

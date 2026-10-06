@@ -109,10 +109,18 @@ class CrossSkillContractTests(unittest.TestCase):
         for name in sorted(invoked):
             with self.subTest(invoked=name):
                 self.assertIsNone(flag(name, "disable-model-invocation"))
-        self.assertEqual(
-            ("true", "false"),
-            (flag("code-review-core", "disable-model-invocation"), flag("code-review-core", "user-invocable")),
+        # A hidden dependency loads no description into any session and is never started directly.
+        hidden = sorted(
+            path.stem
+            for path in (REPOSITORY_ROOT / "deploy-meta").glob("*.json")
+            if json.loads(path.read_text(encoding="utf-8")).get("selectable") is False
         )
+        self.assertEqual(["code-review-core", "skill-core"], hidden)
+        for name in hidden:
+            with self.subTest(hidden=name):
+                self.assertEqual(
+                    ("true", "false"), (flag(name, "disable-model-invocation"), flag(name, "user-invocable"))
+                )
         for name in ("repo-cleanup", "update-coding-agent-skills"):  # they delete or deploy; the user starts them
             with self.subTest(user_only=name):
                 self.assertEqual("true", flag(name, "disable-model-invocation"))
@@ -261,9 +269,15 @@ class CrossSkillContractTests(unittest.TestCase):
             guard = broken / ".claude/skills/code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_text("raise RuntimeError('the guard failed to load')\n", encoding="utf-8")
+            # A guard deployed without the skill-core it imports cannot load either.
+            coreless = root / "profile without skill-core"
+            real_guard = coreless / ".claude/skills/code-review-core/scripts/review_guard.py"
+            real_guard.parent.mkdir(parents=True)
+            real_guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
             cases = {
                 "missing": (missing, "review_guard.py", "FileNotFoundError"),
                 "broken": (broken, "the guard failed to load", "RuntimeError"),
+                "coreless": (coreless, "No module named 'console'", "ModuleNotFoundError"),
             }
             for case, (profile, traceback, error) in cases.items():
                 environment = {**os.environ, "USERPROFILE": str(profile)}
@@ -303,10 +317,15 @@ class CrossSkillContractTests(unittest.TestCase):
             guard = profile / ".claude/skills/code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
-            # A session's working directory is untrusted: its modules must never shadow the standard library.
+            # The guard imports skill-core's console setup from the sibling skill the deployer installs beside it.
+            core = profile / ".claude/skills/skill-core/scripts/console.py"
+            core.parent.mkdir(parents=True)
+            core.write_bytes((REPOSITORY_ROOT / "skills/skill-core/scripts/console.py").read_bytes())
+            # A session's working directory is untrusted: its modules must never shadow the standard library or the
+            # core.
             cwd = root / "session"
             cwd.mkdir()
-            for module in ("json", "runpy", "pathlib", "re"):
+            for module in ("json", "runpy", "pathlib", "re", "console"):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")
             other = root / "other home"
             environment = {

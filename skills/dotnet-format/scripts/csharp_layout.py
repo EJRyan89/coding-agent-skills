@@ -37,8 +37,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from console import use_utf8_output
 from dotnet_format_targets import read_text, same_path, solution_projects
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
@@ -734,8 +736,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_parser.add_argument("--file-list", required=True, type=Path, help="FILE_LIST from dotnet_format_targets.py")
     config_parser.add_argument("--apply", action="store_true", help="add the settings the changed files lack")
     arguments = parser.parse_args(argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     root = arguments.repo_root.resolve()
     try:
         try:
@@ -754,4 +754,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output(errors="replace")
     sys.exit(main())

@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from console import use_utf8_output
 from review_config import ConfigurationError
 from review_flags import FlagError, add_flag, default_flags_path, load_store, resolve_flag
 from review_io import PersistenceError
@@ -106,8 +108,5 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # Output echoes flag bodies as written; a Windows pipe's legacy code page cannot encode them.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+    use_utf8_output()
     raise SystemExit(main())

@@ -42,6 +42,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
+
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
     re.IGNORECASE,
@@ -313,8 +317,6 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
         "--cwd", type=Path, help="directory the skill was invoked from (default: the current directory)"
     )
     arguments = parser.parse_args(argv)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     try:
         resolve(arguments.cwd or Path.cwd(), services or Services(), print)
     except Stop as stop:
@@ -326,4 +328,5 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
 
 
 if __name__ == "__main__":
+    use_utf8_output(errors="replace")
     sys.exit(main())

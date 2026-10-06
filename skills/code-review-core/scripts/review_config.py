@@ -12,6 +12,9 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 from review_io import PersistenceError, atomic_write_json, read_json
 
 SCHEMA_VERSION = 1
@@ -443,8 +446,5 @@ def _main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # Paths may hold characters a Windows pipe's legacy code page cannot encode.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+    use_utf8_output()
     raise SystemExit(_main())

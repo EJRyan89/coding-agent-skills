@@ -23,6 +23,10 @@ import sys
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
+
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REFERENCES = SCRIPT_DIRECTORY.parent / "references"
@@ -150,4 +154,5 @@ def main(stream: str) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     sys.exit(main(sys.stdin.read()))

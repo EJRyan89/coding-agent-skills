@@ -28,7 +28,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 import pr_status
+from console import use_utf8_output
 
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
@@ -889,6 +892,5 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    use_utf8_output(newline="\n")
     raise SystemExit(main())

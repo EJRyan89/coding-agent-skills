@@ -7,7 +7,9 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -299,6 +301,21 @@ class CommandLineTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised:
             self._main("--no-such-option")
         self.assertEqual(2, raised.exception.code)
+
+    def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
+        # A Windows pipe defaults to a legacy code page, and the audited path is printed as it is named.
+        root = Path(self.temp.name) / "repo → ✓"
+        root.mkdir()
+        result = subprocess.run(
+            [sys.executable, "-B", str(Path(audit.__file__).resolve()), "--root", str(root)],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(
+            [f"FAILED {root} is not a Git repository (no .git found)"], result.stdout.decode("utf-8").splitlines()
+        )
 
 
 # ---------------------------------------------------------------------------

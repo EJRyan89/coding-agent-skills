@@ -62,7 +62,10 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 import frontmatter
+from console import use_utf8_output
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -866,8 +869,6 @@ def main(arguments: list[str] | None = None) -> int:
     commands.add_parser("tools", help="compare referenced tools with allowed-tools").add_argument("file", type=Path)
     commands.add_parser("scan", help="list cost cues").add_argument("files", type=Path, nargs="+")
     args = parser.parse_args(arguments)
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8")
     try:
         if args.command == "locate":
             repo = args.repo if args.repo is not None else git_toplevel(Path.cwd())
@@ -890,4 +891,5 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output()
     raise SystemExit(main())

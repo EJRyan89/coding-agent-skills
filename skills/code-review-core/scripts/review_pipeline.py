@@ -42,6 +42,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 from review_archive import ArchiveError, pull_records
 from review_config import (
     ConfigurationError,
@@ -1611,8 +1614,5 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    # Output quotes repository text (skill lines, titles, paths); a Windows pipe's legacy code page cannot encode it.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(encoding="utf-8")
+    use_utf8_output()
     raise SystemExit(main())

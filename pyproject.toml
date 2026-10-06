@@ -35,12 +35,13 @@ python_version = "3.11"
 platform = "win32"
 # tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths.
 explicit_package_bases = true
-# Each skills/<name>/scripts directory a module puts on sys.path: the code-review-core scripts its skill_deps
-# dependents import, and the analyze-skill-cost inventory tools/new_skill.py and the validation runner import. Their
-# imports then resolve as they do at run time. Validation keeps this list equal to those sys.path entries.
+# Each skills/<name>/scripts directory a module puts on sys.path: the code-review-core and skill-core scripts their
+# skill_deps dependents import, and the analyze-skill-cost inventory tools/new_skill.py and the validation runner
+# import. Their imports then resolve as they do at run time. Validation keeps this list equal to those sys.path entries.
 mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/skills/analyze-skill-cost/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/code-review-core/scripts",
+    "$MYPY_CONFIG_FILE_DIR/skills/skill-core/scripts",
 ]
 # Regression suites (test_*.py) and the runtime-canary fixture tree are excluded in #92's first pass; its second pass
 # removes this exclusion and fixes the suites.

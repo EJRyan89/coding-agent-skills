@@ -3,7 +3,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
+import subprocess
 import sys
 import unittest
 from collections.abc import Callable, Sequence
@@ -683,6 +685,27 @@ class MainTests(unittest.TestCase):
         self.assertEqual(
             (1, "FAILED gh: HTTP 404: Not Found (https://api.github.com/search/issues) [api]\n"), (code, stdout)
         )
+
+    def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
+        # A Windows pipe defaults to a legacy code page, and a failure quotes gh's stderr as it came. The child runs
+        # the script as a program with gh replaced, so nothing reaches the network.
+        script = str(Path(report.__file__).resolve())
+        program = (
+            "import runpy, subprocess, sys\n"
+            "def fake(arguments, **options):\n"
+            "    return subprocess.CompletedProcess(arguments, 1, '', 'gh: HTTP 502: proxy \\u2192 upstream \\u2713')\n"
+            "subprocess.run = fake\n"
+            f"sys.argv = [{script!r}, '--org', 'acme', '--user', 'octo', '--months', '1']\n"
+            f"runpy.run_path({script!r}, run_name='__main__')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(["FAILED gh: HTTP 502: proxy → upstream ✓ [api]"], result.stdout.decode("utf-8").splitlines())
 
 
 if __name__ == "__main__":
