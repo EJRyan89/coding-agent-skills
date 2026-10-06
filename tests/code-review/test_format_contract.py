@@ -612,7 +612,8 @@ class FormatContractTest(unittest.TestCase):
             "specialists-manifest": [Fixture(f"specialists manifest {index}", value, manifest)
                                      for index, value in enumerate(specialists)],
             "request": [Fixture(f"request {index}", value, None)
-                        for index, value in enumerate(request_fixtures(scratch, carried_findings(records[:2])))],
+                        for index, value in enumerate(request_fixtures(
+                            scratch, carried_findings(records[:2], flag_fixtures()[0]["flags"])))],
             "record": [Fixture(name, value, record)
                        for name, value in zip(("initial record", "re-review record", "uncompared re-review record", "older record"), records)],
             "flag-store": [Fixture(f"flag store {index}", value, flags)

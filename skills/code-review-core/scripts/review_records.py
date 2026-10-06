@@ -371,14 +371,18 @@ def ledger_history(records: Iterable[dict[str, Any]]) -> dict[int, list[dict[str
     return history
 
 
-def carried_findings(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def carried_findings(records: Iterable[dict[str, Any]],
+                     flags: Iterable[dict[str, Any]] = ()) -> list[dict[str, Any]]:
     """The prior findings a re-review disposes: every open or unverified entry of the latest ledger, where it was
-    last reported. A finding a review only judged stays here until a review closes it."""
+    last reported. A finding a review only judged stays here until a review closes it. An entry with flags in the
+    flag store (`flags`) carries each one's ID, category, and rationale, so the reviewer can weigh it."""
     records = list(records)
     if not records:
         return []
     history = ledger_history(records)
     by_version = {record["review"]["version"]: record for record in records}
+    latest = by_version[max(history)]
+    flagged = flagged_entries(history[max(history)], flags, latest["repository"], latest["pull_request"]["number"])
     carried = []
     for entry in history[max(history)]:
         if entry["state"] == "closed":
@@ -388,9 +392,13 @@ def carried_findings(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
                         if item["id"] == where["id"]), None)
         if finding is None:
             raise RecordError(f"Review v{where['version']} with finding {where['id']} is missing from the archive")
-        carried.append({"id": ledger_id(entry["version"], entry["id"]), "severity": entry["severity"],
+        identifier = ledger_id(entry["version"], entry["id"])
+        flags_on = [{"id": flag["id"], "category": flag["category"], "rationale": flag["body"]}
+                    for flag in flagged.get(identifier, [])]
+        carried.append({"id": identifier, "severity": entry["severity"],
                         "category": entry["category"], "path": finding["path"], "line": finding["line"],
-                        **({"title": finding["title"]} if "title" in finding else {}), "body": finding["body"]})
+                        **({"title": finding["title"]} if "title" in finding else {}), "body": finding["body"],
+                        **({"flags": flags_on} if flags_on else {})})
     return carried
 
 

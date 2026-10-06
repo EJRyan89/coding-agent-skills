@@ -1106,6 +1106,42 @@ class ReReviewTests(PipelineFixture):
         self.assertIn("| General | Fixture Model |", markdown)
         self.assertIn("| **Reviewer models** | Fixture Model: `fixture-model` |", markdown)
 
+    def test_a_flag_on_a_must_fix_reaches_the_next_re_review_which_can_close_it(self) -> None:
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0], findings=[{**self.finding(), "severity": "MUST_FIX"}])
+        rp.finalize(ready["run"])
+        self.assertEqual("CHANGES_REQUESTED", latest_record(self.archive, REPOSITORY, 12)["review"]["verdict"])
+        add_flag(self.flags_path, category="false-positive", body="Every caller converts the total to float.",
+                 repository=REPOSITORY, pull_number=12, review_version=1, finding_id="F001")
+        self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
+        ready = self.prepare(re_review=True, scope="full")
+        request = json.loads(Path(ready["request_path"]).read_text(encoding="utf-8"))
+        flags = [{"id": "RF-000001", "category": "false-positive",
+                  "rationale": "Every caller converts the total to float."}]
+        self.assertEqual(flags, request["prior_findings"][0]["flags"])
+        role = ready["roles"][0]
+        prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
+        self.assertIn(json.dumps(request["prior_findings"], indent=2, ensure_ascii=False), prompt)
+        self.assertIn("A prior finding's `flags` are the user's judgment", prompt)
+
+        self.write_role_result(role, dispositions=[
+            {"finding_id": "v1:F001", "disposition": "superseded",
+             "rationale": "RF-000001 holds: every caller converts the total to float."}])
+        rp.finalize(ready["run"])
+        record = latest_record(self.archive, REPOSITORY, 12)
+        self.assertEqual("APPROVED", record["review"]["verdict"])
+        self.assertEqual(("closed", 2), (record["ledger"][0]["state"], record["ledger"][0]["judged_in"]))
+        self.assertEqual("RF-000001 holds: every caller converts the total to float.",
+                         record["prior_dispositions"][0]["rationale"])
+
+    def test_a_re_review_is_not_prepared_from_a_malformed_flag_store(self) -> None:
+        self.record_initial_review()
+        self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
+        self.flags_path.parent.mkdir(parents=True, exist_ok=True)
+        self.flags_path.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
+            self.prepare(re_review=True, scope="full")
+
     @staticmethod
     def planned(run: Path | str) -> list[tuple[str, list[str], bool]]:
         plan = json.loads((Path(run) / "work" / "plan.json").read_text(encoding="utf-8"))

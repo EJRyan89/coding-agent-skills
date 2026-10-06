@@ -520,6 +520,19 @@ class LedgerReportTests(unittest.TestCase):
         self.assertEqual({"v1:F001": [flags[0], flags[1]], "v3:F002": [flags[2]]},
                          flagged_entries(ledger, flags, "Example/One", 12))
 
+    def test_a_carried_finding_brings_the_flags_on_its_entry_to_the_next_review(self) -> None:
+        # The resolved flag names version 3's repeat of the entry raised in version 1, so the entry carries it;
+        # a flag on another pull request or on no finding reaches no reviewer, and an unflagged entry has no key.
+        records = review_fixture.commit_fixture(self.archive)
+        flags = [flag(1, 3, "F001", status="resolved"), flag(2, 3, "F002", number=13), flag(3, None, None)]
+        carried = {item["id"]: item for item in carried_findings(records, flags)}
+        self.assertEqual(["v1:F001", "v3:F002"], sorted(carried))
+        self.assertEqual([{"id": "RF-000001", "category": "noise", "rationale": "The context manager\nreleases the lock."}],
+                         carried["v1:F001"]["flags"])
+        self.assertNotIn("flags", carried["v3:F002"])
+        self.assertEqual(carried_findings(records), [{key: value for key, value in item.items() if key != "flags"}
+                                                     for item in carried_findings(records, flags)])
+
 
 if __name__ == "__main__":
     unittest.main()
