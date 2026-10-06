@@ -919,7 +919,7 @@ REJECTED: list[Case] = [
             C,
             "verdict_policy.request_changes_for must be non-empty",
         )
-        for value in NULL_OR_EMPTY_LIST + ["MUST_FIX", {"MUST_FIX": 1}]
+        for value in [*NULL_OR_EMPTY_LIST, "MUST_FIX", {"MUST_FIX": 1}]
     ],
     *[
         (f"request_changes_for {value!r}", _set(("verdict_policy", "request_changes_for"), value), C, SEVERITY_MESSAGE)
@@ -942,7 +942,7 @@ REJECTED: list[Case] = [
             C,
             "operation_repository_sets must be an object",
         )
-        for value in NULL_OR_EMPTY_LIST + ["main"]
+        for value in [*NULL_OR_EMPTY_LIST, "main"]
     ],
     *[
         (
@@ -1048,7 +1048,7 @@ REJECTED: list[Case] = [
             C,
             "dashboard.status_overrides must be an object",
         )
-        for value in NULL_OR_EMPTY_LIST + ["x"]
+        for value in [*NULL_OR_EMPTY_LIST, "x"]
     ],
     *[
         (

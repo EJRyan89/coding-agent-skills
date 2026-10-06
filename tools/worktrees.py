@@ -474,7 +474,7 @@ def guard(stream: str) -> int:
         event = json.loads(stream)
         tool = event.get("tool_name", "")
         tool_input = event.get("tool_input") or {}
-        cwd = Path(platform_support.from_shell_path(event.get("cwd") or os.getcwd()))
+        cwd = Path(platform_support.from_shell_path(event.get("cwd") or str(Path.cwd())))
         refused = False
         if tool in FILE_TOOLS:
             target = tool_input.get("file_path") or tool_input.get("notebook_path")

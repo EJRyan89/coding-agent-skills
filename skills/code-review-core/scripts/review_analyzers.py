@@ -174,7 +174,9 @@ def _msbuild(found: _Inventory, path: str, text: str) -> None:
         return
     try:
         # The text is already decoded, so a declaration naming another encoding would only contradict it.
-        project = ElementTree.fromstring(XML_DECLARATION.sub("", text, count=1))
+        project = ElementTree.fromstring(  # noqa: S314 - DOCTYPE and ENTITY are refused above, so nothing expands
+            XML_DECLARATION.sub("", text, count=1)
+        )
     except (ElementTree.ParseError, ValueError):
         found.setting(path, UNREAD)
         return

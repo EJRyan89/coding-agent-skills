@@ -68,7 +68,7 @@ class SingleEntryPointTests(DeployerTestCase):
         )
         expected = {
             ("--help",): (
-                f"\n{usage}\n"
+                f"\n{usage}\n"  # noqa: S608 - argparse help text, not a query
                 "Render, validate, and deploy this repository's skills.\n"
                 "\n"
                 "options:\n"

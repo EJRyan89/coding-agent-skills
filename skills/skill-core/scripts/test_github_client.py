@@ -120,7 +120,8 @@ class ClassifierTests(unittest.TestCase):
         for errors, kind, retryable in cases:
             with self.subTest(errors=errors):
                 error = graphql_failure({"errors": errors})
-                assert error is not None
+                if error is None:
+                    self.fail("each case is a GraphQL failure")
                 self.assertEqual((kind, retryable), (error.kind, error.retryable))
                 self.assertTrue(str(error).startswith("GraphQL request failed"), str(error))
         error = graphql_failure({"errors": [{"type": "FORBIDDEN", "message": "SSO"}]})
@@ -130,7 +131,7 @@ class ClassifierTests(unittest.TestCase):
 
     def test_only_a_rate_limit_is_retryable(self) -> None:
         for stderr in ("gh: HTTP 429", "gh: HTTP 401", "error connecting to api.github.com", "gh: HTTP 502"):
-            client, sleeper = client_for(scripted(failed(stderr))[0])
+            client, _ = client_for(scripted(failed(stderr))[0])
             with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as context:
                 client.run(["api", "user"], retry=False)
             self.assertEqual(stderr.startswith("gh: HTTP 429"), context.exception.retryable)

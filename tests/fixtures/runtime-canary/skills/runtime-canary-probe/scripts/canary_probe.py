@@ -8,7 +8,6 @@ so a record exists only when the runtime resolved the skill's directory to the d
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -17,8 +16,8 @@ def main(arguments: list[str]) -> int:
     script = Path(__file__).resolve()
     log = script.parents[4] / ".runtime-canary" / "probe.jsonl"
     log.parent.mkdir(exist_ok=True)
-    record = {"script": script.as_posix(), "cwd": Path(os.getcwd()).as_posix(), "arguments": arguments}
-    with open(log, "a", encoding="utf-8", newline="\n") as handle:
+    record = {"script": script.as_posix(), "cwd": Path.cwd().as_posix(), "arguments": arguments}
+    with log.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(record) + "\n")
     print(f"RUNTIME_CANARY_PROBE RAN {script.as_posix()}")
     return 0

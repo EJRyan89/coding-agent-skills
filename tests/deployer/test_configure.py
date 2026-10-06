@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from harness import DeployerTestCase, forward
@@ -122,7 +123,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         before = self.digest()
         # The replace inside fsops.write_private, after the temporary copy is written.
-        with mock.patch("deployer.fsops.os.replace", side_effect=OSError("synthetic replace failure")):
+        with mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace failure")):
             result = self.configure(stdin="\n")
         self.assertEqual(1, result.code)
         self.assertIn("synthetic replace failure", result.output)

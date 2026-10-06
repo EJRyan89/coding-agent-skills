@@ -247,7 +247,7 @@ def _summary(arguments: argparse.Namespace) -> int:
     print(text, end="")
     target = arguments.summary or os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
-        with open(target, "a", encoding="utf-8", newline="\n") as handle:
+        with Path(target).open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
     return 0
 

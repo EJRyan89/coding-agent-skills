@@ -32,7 +32,8 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_config(repos_root=repos)
         self.deploy_ok("--all")
         bash = platform_support.find_bash()
-        assert bash is not None, "Git Bash is a validation prerequisite"
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
         result = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(repos), result.output.strip())
@@ -48,7 +49,8 @@ class RenderedExecutableTests(DeployerTestCase):
         self.deploy_from(clone, "--all")
         self.assertIn(f'"{forward(clone)}"', self.skill_text("alpha"))
         bash = platform_support.find_bash()
-        assert bash is not None, "Git Bash is a validation prerequisite"
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
         result = platform_support.run_tool([bash, forward(self.skills_dir / "alpha" / "run.sh")])
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(clone), result.output.strip())
@@ -73,13 +75,16 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertEqual((directory / "SKILL.md").read_text(encoding="utf-8"), skill, "deployed without rendering")
         adapter = (self.agents_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8")
         stated = re.search(r"`\$\{CLAUDE_SKILL_DIR\}` stands for `([^`]+)`", adapter)
-        assert stated is not None, adapter
+        if stated is None:
+            self.fail(adapter)
         self.assertEqual(forward(self.skills_dir / "alpha"), stated.group(1))
         fence = re.search(r"```bash\n(.*?)\n```", skill, re.DOTALL)
-        assert fence is not None, skill
+        if fence is None:
+            self.fail(skill)
         command = fence.group(1)
         bash = platform_support.find_bash()
-        assert bash is not None, "Git Bash is a validation prerequisite"
+        if bash is None:
+            self.fail("Git Bash is a validation prerequisite")
         # Claude Code substitutes the native absolute path; Codex and Copilot use the one the adapter states.
         for value in (str(self.skills_dir / "alpha"), stated.group(1)):
             with self.subTest(value=value):

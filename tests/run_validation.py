@@ -69,7 +69,7 @@ PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
-# A noqa comment names the codes it suppresses and says why, after a dash: `# noqa: F401 - <reason>`.
+# A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
@@ -266,22 +266,22 @@ def shell_commands(script: str) -> set[str]:
     functions |= {tokens[i + 1] for i in range(len(tokens) - 1) if tokens[i] == "function"}
     found: set[str] = set()
     state = "command"
-    for token in tokens:
+    for word in tokens:
         if state == "case-word":
-            state = "patterns" if token == "in" else state
+            state = "patterns" if word == "in" else state
         elif state == "patterns":
-            state = "command" if token == ")" else "arguments" if token == "esac" else state
-        elif token == ";;":
+            state = "command" if word == ")" else "arguments" if word == "esac" else state
+        elif word == ";;":
             state = "patterns"
-        elif token == "esac":
+        elif word == "esac":
             state = "arguments"
         elif state == "command":
-            if token in COMMAND_SEPARATORS or token in LEADING_KEYWORDS or ASSIGNMENT.match(token):
+            if word in COMMAND_SEPARATORS or word in LEADING_KEYWORDS or ASSIGNMENT.match(word):
                 continue
-            state = "case-word" if token == "case" else "arguments"
-            if token not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(token) and token not in functions:
-                found.add(token)
-        elif token in COMMAND_SEPARATORS:
+            state = "case-word" if word == "case" else "arguments"
+            if word not in HEADER_KEYWORDS and COMMAND_NAME.fullmatch(word) and word not in functions:
+                found.add(word)
+        elif word in COMMAND_SEPARATORS:
             state = "command"
     return found
 
@@ -1164,10 +1164,22 @@ def script_contract_problems(root: Path) -> list[str]:
 
 # Calls that change the filesystem. CLAUDE.md routes every one the deployer makes through deployer/fsops.py, whose
 # functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
-# tell a Path from another receiver; the names are chosen so that none is a common method of anything else.
+# tell a Path from another receiver; the names are chosen so that none is a common method of anything else. Path.replace
+# shares its name with str.replace, so _filesystem_writes tells them apart by their arguments instead.
 FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
     "method": frozenset(
-        {"write_bytes", "write_text", "touch", "mkdir", "unlink", "rmdir", "rename", "symlink_to", "hardlink_to"}
+        {
+            "write_bytes",
+            "write_text",
+            "touch",
+            "mkdir",
+            "unlink",
+            "rmdir",
+            "rename",
+            "chmod",
+            "symlink_to",
+            "hardlink_to",
+        }
     ),
     "qualified": frozenset(
         {
@@ -1175,6 +1187,7 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "os.unlink",
             "os.rename",
             "os.replace",
+            "os.chmod",
             "os.mkdir",
             "os.makedirs",
             "os.rmdir",
@@ -1220,6 +1233,17 @@ def _opens_for_writing(call: ast.Call, mode_position: int) -> bool:
     )
 
 
+def _replaces_a_path(call: ast.Call) -> bool:
+    """Whether a .replace() call is Path.replace(target): one argument, where str.replace takes two."""
+    return (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "replace"
+        and len(call.args) == 1
+        and not isinstance(call.args[0], ast.Starred)
+        and not call.keywords
+    )
+
+
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
     """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
     found: list[tuple[int, str]] = []
@@ -1244,7 +1268,7 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
                 qualified = f"{function.value.id}.{function.attr}" if isinstance(function.value, ast.Name) else ""
                 if qualified in FILESYSTEM_WRITES["qualified"]:
                     found.append((node.lineno, qualified))
-                elif function.attr in FILESYSTEM_WRITES["method"]:
+                elif function.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(node):
                     found.append((node.lineno, function.attr))
                 elif function.attr == "open" and _opens_for_writing(node, 0):
                     found.append((node.lineno, "open"))
@@ -1822,7 +1846,7 @@ def step_summary(
 def append_step_summary(environment: Mapping[str, str], text: str) -> None:
     path = environment.get("GITHUB_STEP_SUMMARY")
     if path:
-        with open(path, "a", encoding="utf-8") as summary:
+        with Path(path).open("a", encoding="utf-8") as summary:
             summary.write(text)
 
 
@@ -2723,6 +2747,11 @@ class RepositoryValidation(unittest.TestCase):
                 '    path.open(encoding="utf-8").read()\n'
                 '    text.replace("a", "b")\n'
                 "    os.path.exists(path)\n"
+                "    path.replace(path)\n"
+                "    path.chmod(0o600)\n"
+                "    os.chmod(path, 0o600)\n"
+                '    text.replace("a", "b", 1)\n'
+                "    moment.replace(year=1)\n"
                 "    return path.mkdir(parents=True)\n",
             )
             write(
@@ -2752,7 +2781,10 @@ class RepositoryValidation(unittest.TestCase):
                     f"deployer/writes.py:15 writes with open{route}",
                     f"deployer/writes.py:16 writes with open{route}",
                     f"deployer/writes.py:17 writes with open{route}",
-                    f"deployer/writes.py:23 writes with mkdir{route}",
+                    f"deployer/writes.py:23 writes with replace{route}",
+                    f"deployer/writes.py:24 writes with chmod{route}",
+                    f"deployer/writes.py:25 writes with os.chmod{route}",
+                    f"deployer/writes.py:28 writes with mkdir{route}",
                     "deployer/gone.py: FSOPS_ALLOWED allows shutil.rmtree, which it no longer names",
                     "deployer/unexplained.py: FSOPS_ALLOWED must map each token to the reason it is allowed",
                 ],
@@ -3454,7 +3486,16 @@ class RepositoryValidation(unittest.TestCase):
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
         self.assertEqual(120, configuration["line-length"])
         lint = configuration["lint"]
-        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915"], lint["select"])
+        self.assertEqual(
+            [
+                *("E", "F", "W", "I", "UP", "B", "SIM", "C901", "PLR0915", "PTH", "RUF"),
+                *("S1", "S2", "S3", "S5", "S601", "S602", "S604", "S605", "S606", "S608", "S609", "S61", "S7"),
+            ],
+            lint["select"],
+        )
+        # Every bandit rule but these two is selected; #90 records why they describe the design rather than a fault.
+        for unselected in ("S603", "S607"):
+            self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
         self.assertEqual(["mccabe", "pylint", "select"], sorted(lint))
         self.assertEqual(["max-complexity"], sorted(lint["mccabe"]))

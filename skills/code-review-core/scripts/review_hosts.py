@@ -95,7 +95,7 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[
 
 
 def replace_result(staging_path: Path, result_path: Path) -> bool:
-    os.replace(staging_path, result_path)
+    staging_path.replace(result_path)
     return True
 
 

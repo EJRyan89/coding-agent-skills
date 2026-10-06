@@ -34,7 +34,8 @@ def run_main(*arguments: str) -> tuple[int, str, str]:
         try:
             code = memory_audit.main(list(arguments))
         except SystemExit as exit_:
-            assert isinstance(exit_.code, int), exit_.code
+            if not isinstance(exit_.code, int):
+                raise AssertionError(f"exit code {exit_.code!r}") from exit_
             code = exit_.code
     return code, stdout.getvalue(), stderr.getvalue()
 
@@ -507,14 +508,14 @@ class DeleteTests(unittest.TestCase):
         self.assertTrue(link.exists())
 
     def test_a_failure_mid_way_reports_what_was_already_deleted(self) -> None:
-        remove = os.remove
+        unlink = Path.unlink
 
-        def failing(path: Path) -> None:
-            if Path(path).name == "other.md":
+        def failing(path: Path, missing_ok: bool = False) -> None:
+            if path.name == "other.md":
                 raise PermissionError(13, "Access is denied")
-            remove(path)
+            unlink(path, missing_ok)
 
-        with mock.patch.object(memory_audit.os, "remove", side_effect=failing):
+        with mock.patch.object(Path, "unlink", autospec=True, side_effect=failing):
             self.assertEqual(
                 (1, ["DELETED gone.md", "FAILED other.md: Access is denied"]),
                 self.delete("gone.md", "other.md", "keep.md"),

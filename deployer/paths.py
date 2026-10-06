@@ -113,7 +113,7 @@ def canary_home(value: str) -> Path:
             f"ERROR: --canary-home must be inside the temporary directory {platform_support.normalize(temporary)} "
             f"(got: {platform_support.normalize(resolved)})"
         )
-    entries = os.listdir(resolved)
+    entries = [entry.name for entry in resolved.iterdir()]
     if entries and CANARY_MARKER not in entries:
         raise DeployError(
             "ERROR: --canary-home must be an empty directory or one an earlier --canary-home deployment used: "

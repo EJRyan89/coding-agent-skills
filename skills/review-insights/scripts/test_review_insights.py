@@ -712,7 +712,7 @@ class DecideTests(InsightFixture):
         for row in report["recommendations"][0]["reviewers"]:
             del row["addressed"], row["still_present"]
         json_path.write_text(json.dumps(report), encoding="utf-8")
-        code, out, err = self.decide(json_path, "REC-001", "Correctness", "none", "deferred")
+        code, _, err = self.decide(json_path, "REC-001", "Correctness", "none", "deferred")
         self.assertEqual(0, code, err)
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(

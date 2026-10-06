@@ -119,7 +119,7 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
-            os.chmod(temporary, mode)
+            temporary.chmod(mode)
             with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
                 stream.write(content)
                 stream.flush()
@@ -128,7 +128,7 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
             with contextlib.suppress(OSError):
                 os.close(descriptor)
             raise
-        os.replace(temporary, path)
+        temporary.replace(path)
         temporary = None
     except OSError as exc:
         raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
@@ -144,7 +144,7 @@ def atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
-            os.chmod(temporary, mode)
+            temporary.chmod(mode)
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(content)
                 stream.flush()
@@ -153,7 +153,7 @@ def atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None
             with contextlib.suppress(OSError):
                 os.close(descriptor)
             raise
-        os.replace(temporary, path)
+        temporary.replace(path)
         temporary = None
     except OSError as exc:
         raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
@@ -258,7 +258,7 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             if same_process(self.probe(pid), recorded_start) is not False:
                 return False
             stale = self.directory.with_name(f"{self.directory.name}.stale.{secrets.token_hex(8)}")
-            os.replace(self.directory, stale)
+            self.directory.replace(stale)
             shutil.rmtree(stale)
             return True
         except (PersistenceError, OSError, AttributeError):

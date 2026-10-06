@@ -294,7 +294,8 @@ class CrossSkillContractTests(unittest.TestCase):
                 environment = {**os.environ, "USERPROFILE": str(profile)}
                 for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                     with self.subTest(case=case, shell=shell):
-                        assert executable is not None, f"{shell} is a validation prerequisite"
+                        if executable is None:
+                            self.fail(f"{shell} is a validation prerequisite")
                         result = subprocess.run(
                             [executable, *arguments],
                             input=event,
@@ -349,7 +350,8 @@ class CrossSkillContractTests(unittest.TestCase):
             )
             for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                 with self.subTest(shell=shell):
-                    assert executable is not None, f"{shell} is a validation prerequisite"
+                    if executable is None:
+                        self.fail(f"{shell} is a validation prerequisite")
                     result = subprocess.run(
                         [executable, *arguments],
                         input=event,

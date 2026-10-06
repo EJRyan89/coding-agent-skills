@@ -1623,7 +1623,7 @@ class JsonHashAuthorityTest(unittest.TestCase):
         manifest["artifacts"].append({"path": ".mcp.json"})
         (self.root / ".mcp.json").write_text('{"mcpServers": {}}\n', encoding="utf-8")
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-        cls, _, findings = audit.classify_authority(self.root)
+        _, _, findings = audit.classify_authority(self.root)
         schema_errors = [f for f in findings if f.severity == "ERROR" and "hash" in f.message.lower()]
         self.assertTrue(schema_errors, [f.message for f in findings])
 

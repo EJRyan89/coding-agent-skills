@@ -95,7 +95,7 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     dispatch reaches it, and the console programs it starts inherit that console instead of opening a window. It
     leaves the caller's job object when the job allows that, since a runtime may end a command's whole job.
     """
-    with open(log_path, "ab") as log:
+    with log_path.open("ab") as log:
 
         def start(flags: int) -> subprocess.Popen[bytes]:
             return subprocess.Popen(

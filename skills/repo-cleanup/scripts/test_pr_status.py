@@ -34,7 +34,8 @@ class Recorder:
         self.calls: list[list[str]] = []
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
-        assert command[0] == "gh", command
+        if command[0] != "gh":
+            raise AssertionError(command)
         arguments = list(command[1:])
         self.calls.append(arguments)
         answer = self.answer(arguments)

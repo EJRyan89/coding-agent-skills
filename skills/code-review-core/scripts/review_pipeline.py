@@ -1088,7 +1088,7 @@ def _copilot_run(run: Path) -> tuple[Path, dict[str, Any], str]:
 
 def dispatch_copilot(run: Path, services: Services) -> Path:
     """Start the Copilot CLI host detached and return at once; refuse while an earlier host is still going."""
-    run, state, reviewer = _copilot_run(run)
+    run, _, reviewer = _copilot_run(run)
     with host_lock(run):
         host = host_state(run, probe=services.probe, now=services.clock())
         if host.status == "running":
@@ -1127,7 +1127,7 @@ def run_host(run: Path, token: str, services: Services) -> str:
         with host_lock(run):
             if claim_holds(run, token, generation()) is None:
                 return False
-            os.replace(staging, result)
+            staging.replace(result)
             return True
 
     attempt = claim["attempt"]

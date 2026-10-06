@@ -188,8 +188,9 @@ def quote(value: str) -> str:
 
 
 def inside(path: str, directory: Path) -> bool:
-    candidate = os.path.normcase(os.path.abspath(path))
-    root = os.path.normcase(os.path.abspath(directory))
+    # Lexical: Path.absolute keeps "..", which would pass commonpath, and Path.resolve follows junctions.
+    candidate = os.path.normcase(os.path.abspath(path))  # noqa: PTH100 - lexical, as the comment says
+    root = os.path.normcase(os.path.abspath(directory))  # noqa: PTH100 - lexical, as the comment says
     return candidate != root and os.path.commonpath([candidate, root]) == root
 
 
@@ -411,7 +412,7 @@ def verdict(
         if not argv or not isinstance(argv[0], str) or argv[0] in ("", "-c", "-"):
             continue
         cwd = str(record.get("cwd", ""))
-        scripts.append((forward(os.path.join(cwd, argv[0]) if cwd else argv[0]), forward(cwd)))
+        scripts.append((forward(Path(cwd) / argv[0] if cwd else argv[0]), forward(cwd)))
     ran = [(script, cwd) for script, cwd in scripts if any(inside(script, directory) for directory in directories)]
     if ran and skill == FIXTURE_SKILL:
         return f"FAILED {quote(f'ran {ran[0][0]} but it wrote no marker; was the write denied?')}"

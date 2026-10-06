@@ -69,7 +69,8 @@ NEAR_LIMIT_FRACTION = 0.9
 OVERLAP_THRESHOLD = 0.3
 OVERLAP_LIMIT = 3
 INDEX_ENTRY = re.compile(r"^\s*-\s*\[(?P<title>[^\]]*)\]\((?P<file>[^)]+)\)")
-INDEX_HOOK = re.compile(r"^\s*-\s*\[[^\]]*\]\([^)]+\)\s*(?:[—–:-]\s*)?(?P<hook>.*?)\s*$")
+# The separator before a hook may be an em dash, an en dash, a colon, or a hyphen, as people write index lines.
+INDEX_HOOK = re.compile(r"^\s*-\s*\[[^\]]*\]\([^)]+\)\s*(?:[—–:-]\s*)?(?P<hook>.*?)\s*$")  # noqa: RUF001 - the en dash is meant
 HOOK_LIMIT = 150
 WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
 BACKTICKED = re.compile(r"`([^`\n]+)`")
@@ -436,7 +437,7 @@ def write_index(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     try:
         temporary.write_bytes(content.encode("utf-8"))
-        os.replace(temporary, path)
+        temporary.replace(path)
     except OSError:
         with contextlib.suppress(OSError):
             temporary.unlink(missing_ok=True)
@@ -477,7 +478,7 @@ def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
         return 1, output
     for name in names:
         try:
-            os.remove(memory_dir / name)
+            (memory_dir / name).unlink()
         except OSError as exc:
             output.append(f"FAILED {name}: {exc.strerror or exc}")
             return 1, output

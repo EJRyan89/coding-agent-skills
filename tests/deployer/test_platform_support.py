@@ -58,7 +58,8 @@ class FindBashTests(DeployerTestCase):
             ) as run_tool,
         ):
             found = platform_support.find_bash()
-        assert found is not None, "Git Bash beside the git on PATH is found"
+        if found is None:
+            self.fail("Git Bash beside the git on PATH is found")
         self.assertEqual(bash, Path(found))
         run_tool.assert_called_once_with([r"C:\Users\YourName\scoop\shims\git.exe", "--exec-path"])
 
@@ -84,7 +85,8 @@ class FindPwshTests(DeployerTestCase):
         (install / "pwsh.exe").write_bytes(b"")
         (self.root / "powershell.exe").write_bytes(b"")
         found = platform_support.find_pwsh(str(install))
-        assert found is not None, "pwsh.exe on the search path is found"
+        if found is None:
+            self.fail("pwsh.exe on the search path is found")
         self.assertEqual(install / "pwsh.exe", Path(found))
         # Windows PowerShell is never a stand-in, and an empty or missing PATH does not fall back to this process's.
         for search_path in (str(self.root), str(self.root / "missing"), ""):
@@ -106,7 +108,7 @@ class ShellPathTests(unittest.TestCase):
             ("C:/already/native", "C:/already/native"),
             ("relative/dir", "relative/dir"),
             ("/cd/not-a-drive", "/cd/not-a-drive"),
-            ("/tmp/x", "/tmp/x"),
+            ("/tmp/x", "/tmp/x"),  # noqa: S108 - a path string the converter must leave alone; nothing is created
         ):
             with self.subTest(value=value):
                 self.assertEqual(expected, platform_support.from_shell_path(value))
