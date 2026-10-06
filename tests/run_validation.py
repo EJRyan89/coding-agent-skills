@@ -1102,6 +1102,81 @@ def filesystem_write_problems(root: Path) -> list[str]:
     ] + problems
 
 
+# A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
+# every module holding the copy states it; "*" sanctions every definition in its module. An allowance the module no
+# longer needs is reported.
+DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
+EVERY_DEFINITION = "*"
+DUPLICATION_ROOTS = ("skills", "deployer", "tools")
+MINIMUM_DUPLICATED_LINES = 4
+
+
+def _definition_key(node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> str:
+    """The definition's syntax tree without docstrings or line numbers, equal for two copies of one body."""
+    for child in ast.walk(node):
+        if (
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and isinstance(child.body[0], ast.Expr)
+            and isinstance(child.body[0].value, ast.Constant)
+            and isinstance(child.body[0].value.value, str)
+        ):
+            child.body = child.body[1:] or [ast.Pass()]
+    return ast.dump(node)
+
+
+def _joined(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def duplicated_definition_problems(root: Path) -> list[str]:
+    """Report a top-level function or class defined identically in two files, and allowances no longer needed.
+
+    Every copy #27 lists began identical and then drifted; a copy caught while it is still identical is caught before
+    it diverges. Two scripts of one skill count, because one can import the other.
+    """
+    copies: dict[str, list[tuple[str, int, str]]] = {}
+    allowances: dict[str, dict[str, str]] = {}
+    problems: list[str] = []
+    files = [path for top in DUPLICATION_ROOTS for path in (root / top).rglob("*.py") if not is_test_script(path)]
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        allowed = _platform_allowance(tree, DUPLICATION_ALLOWANCE)
+        if allowed is None:
+            problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
+            allowed = {}
+        allowances[name] = allowed
+        for node in tree.body:
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and (node.end_lineno or node.lineno) - node.lineno + 1 >= MINIMUM_DUPLICATED_LINES
+            ):
+                copies.setdefault(_definition_key(node), []).append((name, node.lineno, node.name))
+    found: list[str] = []
+    copied: dict[str, set[str]] = {}
+    for group in copies.values():
+        modules = sorted({module for module, _, _ in group})
+        if len(modules) < 2:
+            continue
+        definition = group[0][2]
+        for module in modules:
+            copied.setdefault(module, set()).add(definition)
+        if all({definition, EVERY_DEFINITION} & set(allowances[module]) for module in modules):
+            continue
+        places = _joined([f"{module}:{line}" for module, line, _ in group])
+        found.append(
+            f"{definition} is defined identically in {places}; import one copy, or sanction it in each copy's module "
+            f"with {DUPLICATION_ALLOWANCE}"
+        )
+    for module, allowed in allowances.items():
+        problems += [
+            f"{module}: {DUPLICATION_ALLOWANCE} allows {entry}, which no other file defines identically"
+            for entry in sorted(allowed)
+            if not (copied.get(module) if entry == EVERY_DEFINITION else entry in copied.get(module, set()))
+        ]
+    return sorted(found) + sorted(problems)
+
+
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
 # A fixture executes a token in a context when it calls run_tool and one of these finders.
@@ -3060,6 +3135,106 @@ class RepositoryValidation(unittest.TestCase):
             self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
 
 
+def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:
+    """Write each relative path's literal text under root, creating its folders."""
+    for relative_path, text in files.items():
+        (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative_path).write_text(text, encoding="utf-8")
+
+
+class DuplicatedDefinitionPolicy(unittest.TestCase):
+    SHARED = "def shared(value):\n    total = value + 1\n    total *= 2\n    return total\n"
+    DOCUMENTED = SHARED.replace(":\n", ':\n    """The same body, documented."""\n', 1)
+    FIX = "; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            write_fixture_tree(Path(temporary), files)
+            return duplicated_definition_problems(Path(temporary))
+
+    def test_repository_copies_only_what_it_sanctions(self) -> None:
+        # Every copy #27 lists began identical and then drifted, so a copy is caught while it is still identical.
+        self.assertEqual([], duplicated_definition_problems(REPOSITORY_ROOT))
+
+    def test_a_definition_copied_into_another_file_fails_and_names_both(self) -> None:
+        self.assertEqual(
+            [f"shared is defined identically in deployer/one.py:1 and tools/two.py:3{self.FIX}"],
+            self.problems({"deployer/one.py": self.SHARED, "tools/two.py": '"""Module."""\n\n' + self.DOCUMENTED}),
+        )
+
+    def test_two_scripts_of_one_skill_count_because_one_can_import_the_other(self) -> None:
+        self.assertEqual(
+            [f"shared is defined identically in skills/s/scripts/a.py:1 and skills/s/scripts/b.py:1{self.FIX}"],
+            self.problems({"skills/s/scripts/a.py": self.SHARED, "skills/s/scripts/b.py": self.SHARED}),
+        )
+
+    def test_a_copy_sanctioned_in_every_module_passes(self) -> None:
+        allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n\n\n'
+        everything = 'DUPLICATION_ALLOWED = {"*": "the whole module is a sanctioned copy"}\n\n\n'
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": allowed + self.SHARED,
+                    "skills/s/scripts/two.py": allowed + self.SHARED,
+                    "deployer/whole.py": everything + self.SHARED.replace("shared", "whole"),
+                    "skills/s/scripts/whole.py": everything + self.SHARED.replace("shared", "whole"),
+                }
+            ),
+        )
+
+    def test_a_copy_sanctioned_in_only_some_modules_fails_and_names_every_copy(self) -> None:
+        allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n'
+        self.assertEqual(
+            [
+                "shared is defined identically in deployer/one.py:2, skills/s/scripts/two.py:2 and tools/three.py:1"
+                + self.FIX
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": allowed + self.SHARED,
+                    "skills/s/scripts/two.py": allowed + self.SHARED,
+                    "tools/three.py": self.SHARED,
+                }
+            ),
+        )
+
+    def test_a_stale_or_unexplained_sanction_fails(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/one.py: DUPLICATION_ALLOWED allows shared, which no other file defines identically",
+                "deployer/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+                "tools/vague.py: DUPLICATION_ALLOWED must map each name to the reason it is allowed",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": 'DUPLICATION_ALLOWED = {"shared": "copied into tools/two.py"}\n' + self.SHARED,
+                    "tools/two.py": self.SHARED.replace("+ 1", "+ 2"),
+                    "deployer/whole.py": 'DUPLICATION_ALLOWED = {"*": "no longer copied"}\n'
+                    + self.SHARED.replace("shared", "whole"),
+                    "tools/vague.py": 'DUPLICATION_ALLOWED = {"shared": ""}\n',
+                }
+            ),
+        )
+
+    def test_short_nested_test_and_other_root_definitions_and_repeats_in_one_file_are_not_copies(self) -> None:
+        short = "def short(value):\n    total = value + 1\n    return total\n"
+        nested = "".join(f"    {line}" for line in self.SHARED.splitlines(keepends=True))
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": self.SHARED + "\n\n" + short + "\n\n" + self.SHARED,
+                    "deployer/nested.py": "if True:\n" + nested,
+                    "deployer/test_one.py": self.SHARED,
+                    "skills/s/scripts/test_two.py": self.SHARED,
+                    "tests/three.py": self.SHARED,
+                    "tools/short.py": short,
+                }
+            ),
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
     parser.add_argument(
@@ -3081,7 +3256,7 @@ def main(argv: list[str] | None = None) -> int:
     loader = unittest.TestLoader()
     if patterns:
         loader.testNamePatterns = patterns
-    policies = loader.loadTestsFromTestCase(RepositoryValidation)
+    policies = loader.loadTestsFromModule(sys.modules[__name__])
     if patterns:
         jobs = [job for job in all_jobs() if any(fnmatch.fnmatchcase(job.name, pattern) for pattern in patterns)]
         mode = f"Selected by -k {' '.join(arguments.patterns)}."

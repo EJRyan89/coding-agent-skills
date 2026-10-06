@@ -22,6 +22,12 @@ import json
 import re
 from pathlib import Path
 
+# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
+DUPLICATION_ALLOWED = {
+    "*": "a deployed skill cannot import the deployer, so analyze-skill-cost ships this whole module as "
+    "skills/analyze-skill-cost/scripts/frontmatter.py; validation also holds the two copies byte-identical",
+}
+
 Value = str | list[str] | None
 
 DELIMITER = "---"
