@@ -14,6 +14,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import audit_ai_config as audit
@@ -425,7 +426,7 @@ class OrphanTests(unittest.TestCase):
         )
         result = audit.audit(self.root)
         self.assertTrue(
-            any(f.check == "orphan" and "orphan" in f.path for f in result.findings),
+            any(f.check == "orphan" and f.path is not None and "orphan" in f.path for f in result.findings),
         )
 
 
@@ -1056,7 +1057,7 @@ class CopilotConfigurationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _manifest(self) -> dict[str, object]:
+    def _manifest(self) -> dict[str, Any]:
         path = self.root / ".github/ai-config-manifest.json"
         return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1646,8 +1647,11 @@ class UnlistedGeneratedFileTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _orphans(self) -> list[str]:
+        # An orphan finding always names its path; one that did not would be missing here and fail the comparison.
         return sorted(
-            f.path for f in audit.audit(self.root).findings if f.check == "orphan" and "no longer listed" in f.message
+            f.path
+            for f in audit.audit(self.root).findings
+            if f.check == "orphan" and "no longer listed" in f.message and f.path is not None
         )
 
     def test_listed_artifacts_are_not_orphans(self) -> None:
