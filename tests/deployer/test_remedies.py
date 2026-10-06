@@ -16,7 +16,8 @@ from deployer.errors import DeployError
 ZERO_HASH = "sha256:" + "0" * 64
 NAME_RULES = (
     "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
-    'and not a Windows device name such as con or nul; see "Files" in docs/adding-a-skill.md.'
+    "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
+    'see "Files" in docs/adding-a-skill.md.'
 )
 RESET = "Run 'python deploy.py configure --reset' to write a new configuration for this source."
 SEE_OWNERSHIP = 'See "Ownership held by another source" in docs/recovery.md.'
@@ -58,6 +59,16 @@ class SourceRemedyTests(RemedyTestCase):
             ("Alpha", "ERROR: Skill name 'Alpha' does not match naming grammar"),
             ("a" * 65, f"ERROR: Skill name '{'a' * 65}' exceeds 64 characters"),
             ("con", "ERROR: Skill name 'con' is a Windows reserved name"),
+            (
+                "claude-helper",
+                "ERROR: Skill name 'claude-helper' contains the reserved word 'claude', "
+                "which the Agent Skills frontmatter rules forbid",
+            ),
+            (
+                "my-anthropic-tools",
+                "ERROR: Skill name 'my-anthropic-tools' contains the reserved word 'anthropic', "
+                "which the Agent Skills frontmatter rules forbid",
+            ),
         ):
             with self.subTest(name=name):
                 self.make_source_json()

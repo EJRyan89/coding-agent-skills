@@ -124,6 +124,10 @@ class NewSkillTestCase(unittest.TestCase):
         for name, arguments, message in (
             ("Bad_Name", {}, "not a valid skill name"),
             ("con", {}, "not a valid skill name"),
+            ("claude-helper", {}, "reserved word 'claude', which the Agent Skills frontmatter rules forbid"),
+            ("anthropic", {}, "reserved word 'anthropic'"),
+            ("fresh", {"description": "Emit <tag> markup. Use it when testing."},
+             "XML tag '<tag>', which the Agent Skills frontmatter rules forbid"),
             ("alpha", {}, "already a skill"),
             ("suite", {}, "already a skill, a bundle"),
             ("fresh", {"tools": ["jq"]}, "unknown tool jq"),

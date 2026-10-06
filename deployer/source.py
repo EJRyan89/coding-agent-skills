@@ -18,6 +18,12 @@ from .tools import SKILL_TOOLS
 SOURCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$")
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
 RESERVED_NAME_PATTERN = re.compile(r"^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])$")
+# The Agent Skills frontmatter rules ("YAML frontmatter requirements" in Anthropic's skill authoring best
+# practices): a skill name may not contain these words, and neither its name nor its description an XML tag.
+# The naming grammar already keeps angle brackets out of a name.
+RESERVED_WORDS = ("anthropic", "claude")
+XML_TAG_PATTERN = re.compile(r"</?[A-Za-z][^<>]*>")
+AGENT_SKILLS_RULE = "which the Agent Skills frontmatter rules forbid"
 
 
 @dataclass
@@ -110,8 +116,10 @@ def label(source_id: str, name: str) -> str:
 
 NAME_RULES = (
     "Rename it with only lowercase letters, digits, and hyphens, no leading or trailing hyphen, at most 64 characters, "
-    'and not a Windows device name such as con or nul; see "Files" in docs/adding-a-skill.md.'
+    "not a Windows device name such as con or nul, and, for a skill, without the reserved words anthropic or claude; "
+    'see "Files" in docs/adding-a-skill.md.'
 )
+XML_TAG_REMEDY = 'Remove the tag, or write it without angle brackets; see "Files" in docs/adding-a-skill.md.'
 METADATA_SHAPE = (
     "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, and agent_deps, where present, "
     "are lists of strings, and whose selectable and opt_in, where present, are true or false. "
@@ -125,6 +133,17 @@ def is_valid_name(name: str) -> bool:
         and bool(SKILL_NAME_PATTERN.fullmatch(name))
         and not RESERVED_NAME_PATTERN.fullmatch(name.upper())
     )
+
+
+def reserved_word(name: str) -> str | None:
+    """The first reserved word a skill name contains, or None."""
+    return next((word for word in RESERVED_WORDS if word in name.casefold()), None)
+
+
+def xml_tag(text: str) -> str | None:
+    """The first XML tag in a skill's name or description, or None."""
+    match = XML_TAG_PATTERN.search(text)
+    return match.group() if match else None
 
 
 def _reject_links(skills_src: Path) -> None:
@@ -208,6 +227,11 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         raise DeployError(f"ERROR: Skill name '{name}' does not match naming grammar", NAME_RULES)
     if RESERVED_NAME_PATTERN.fullmatch(name.upper()):
         raise DeployError(f"ERROR: Skill name '{name}' is a Windows reserved name", NAME_RULES)
+    word = reserved_word(name)
+    if word:
+        raise DeployError(
+            f"ERROR: Skill name '{name}' contains the reserved word '{word}', {AGENT_SKILLS_RULE}", NAME_RULES
+        )
     directory = directories.get(name)
     if directory is None:
         raise DeployError(f"ERROR: deploy-meta/{name}.json has no matching skill directory")
