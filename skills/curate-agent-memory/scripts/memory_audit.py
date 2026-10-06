@@ -1,4 +1,4 @@
-"""Audit and reindex a Claude Code memory directory.
+"""Audit, reindex, and delete from a Claude Code memory directory.
 
 resolve and audit are read-only and report as JSON: mechanical problems and candidate overlaps.
 They never decide what to keep or delete; the calling agent verifies every candidate. resolve prints
@@ -15,10 +15,17 @@ title, else the frontmatter name, else the file stem. The hook is the frontmatte
 else the existing entry's hook, else the first line of the body; a derived hook is collapsed to
 one line of at most 150 characters.
 
+delete removes the named memory files and nothing else. Each name must be a bare .md file name
+directly inside the memory directory: not MEMORY.md, not a path (no separator, drive, `.`, or
+`..`), not named twice, and an existing regular file, never a directory, symbolic link, or
+junction. When any name is refused it prints one `FAILED <name>: <reason>` line per refusal,
+deletes nothing, and exits 1; otherwise it prints one `DELETED <name>` line per file.
+
 Usage:
   python memory_audit.py resolve --repo ROOT
   python memory_audit.py audit --memory-dir DIR [--repo ROOT] [--user-dir DIR] [--instructions FILE ...] [--output FILE]
   python memory_audit.py reindex --memory-dir DIR [--write]
+  python memory_audit.py delete --memory-dir DIR FILE [FILE ...]
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -356,6 +364,48 @@ def write_index(path: Path, content: str) -> None:
     os.replace(temporary, path)
 
 
+def refusal(memory_dir: Path, name: str) -> str | None:
+    """Why name must not be deleted, or None when it is a memory file directly inside memory_dir."""
+    if not name or "/" in name or "\\" in name or Path(name).anchor or name in (".", ".."):
+        return "not a file name directly inside the memory directory"
+    if not name.lower().endswith(".md"):
+        return "not a .md file"
+    if name.casefold() == INDEX_NAME.casefold():
+        return "the index is rebuilt with reindex, never deleted"
+    try:
+        status = os.lstat(memory_dir / name)
+    except FileNotFoundError:
+        return "no such file"
+    except OSError as exc:
+        return f"cannot inspect: {exc.strerror or exc}"
+    # A symbolic link or Windows junction is never followed, whatever it points at.
+    reparse = getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    if not stat.S_ISREG(status.st_mode) or reparse:
+        return "not a regular file"
+    return None
+
+
+def delete(memory_dir: Path, names: list[str]) -> tuple[int, list[str]]:
+    """Delete the named memory files, or nothing when any name is refused; see the module docstring."""
+    output: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        reason = "named more than once" if name.casefold() in seen else refusal(memory_dir, name)
+        seen.add(name.casefold())
+        if reason:
+            output.append(f"FAILED {name}: {reason}")
+    if output:
+        return 1, output
+    for name in names:
+        try:
+            os.remove(memory_dir / name)
+        except OSError as exc:
+            output.append(f"FAILED {name}: {exc.strerror or exc}")
+            return 1, output
+        output.append(f"DELETED {name}")
+    return 0, output
+
+
 def managed_settings_path() -> Path:
     if sys.platform == "win32":
         return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ClaudeCode" / "managed-settings.json"
@@ -474,6 +524,9 @@ def main(arguments: list[str] | None = None) -> int:
     rebuild = commands.add_parser("reindex", help="rebuild MEMORY.md from the memories' frontmatter")
     rebuild.add_argument("--memory-dir", type=Path, required=True)
     rebuild.add_argument("--write", action="store_true", help="replace MEMORY.md; otherwise only report")
+    remove = commands.add_parser("delete", help="delete approved memory files from the memory directory")
+    remove.add_argument("--memory-dir", type=Path, required=True)
+    remove.add_argument("names", nargs="+", metavar="FILE", help="a memory file name, such as old-rule.md")
     args = parser.parse_args(arguments)
     if args.command == "resolve":
         result = resolve(args.repo, args.home, dict(os.environ), managed_settings_path())
@@ -484,6 +537,12 @@ def main(arguments: list[str] | None = None) -> int:
         return 2
     if args.command == "reindex":
         return print_reindex(args.memory_dir, args.write)
+    if args.command == "delete":
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        code, output = delete(args.memory_dir, args.names)
+        print("\n".join(output))
+        return code
     user_dir = args.user_dir or config_directory(Path.home(), dict(os.environ))
     report = json.dumps(audit(args.memory_dir, args.repo, args.instructions, user_dir=user_dir), indent=2) + "\n"
     if args.output:

@@ -62,8 +62,14 @@ Ask which groups to apply with a multi-select question, one option per non-empty
 ## Step 5: Apply the approved changes
 
 - Edit destination files first, reading each before changing it and keeping its existing style and structure. Never replace a whole existing file.
-- Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them.
-- For review findings, invoke `flag-review-finding` with the memory's substance; delete the memory once the finding is recorded.
+- Only then delete or rewrite the memories those changes cover. When rewriting one, keep its frontmatter `name` and `description` accurate: the index is built from them. Delete approved memories by file name, never with another command:
+
+  ```bash
+  python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
+  ```
+
+  It prints `DELETED <file>` for each. `FAILED <file>: <reason>` means it deleted nothing; show the reason and fix the list.
+- For review findings, invoke `flag-review-finding` with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
   ```bash
