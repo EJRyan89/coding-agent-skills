@@ -54,7 +54,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -392,7 +392,7 @@ def verdict(
     timeout: float,
     allowed: list[str] | None = None,
     installed: Path | None = None,
-    rejected: list[str] = (),
+    rejected: Sequence[str] = (),
     cause: str = "",
 ) -> str:
     """RAN with the script and directory, BLOCKED by the runtime's policy, or FAILED with what went wrong.

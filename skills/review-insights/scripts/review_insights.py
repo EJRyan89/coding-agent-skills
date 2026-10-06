@@ -665,12 +665,15 @@ def decide(
     if len(matching) != 1:
         raise InsightError(f"Unknown recommendation: {recommendation_id}")
     item = matching[0]
+    wanted: tuple[str, ...]
     if category is not None:
         shown_kind, shown, wanted = "category", category, ("category", category)
-    else:
-        coverage, tool, rule = analyzer  # type: ignore[misc]
+    elif analyzer is not None:
+        coverage, tool, rule = analyzer
         shown_kind, shown = "analyzer", f"{coverage} {tool} {rule}"
         wanted = subject_key({"kind": "analyzer", "coverage": coverage, "tool": tool, "rule": rule})
+    else:  # unreachable: exactly one subject was required above
+        raise InsightError("Name exactly one subject: a category or an analyzer")
     if subject_key(item) != wanted:
         raise InsightError(
             f"{recommendation_id} is now {item['kind']} {describe(item)!r}, not {shown_kind} {shown!r}; run report "

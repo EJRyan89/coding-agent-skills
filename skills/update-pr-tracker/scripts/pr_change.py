@@ -51,14 +51,20 @@ def contribution_fingerprint(comparison: object, modes: dict[str, str] | None) -
     files = comparison["files"]
     if len(files) >= COMPARE_FILE_LIMIT:
         return None
-    entries = []
+    entries: list[tuple[str, str, str, str, str]] = []
     for entry in files:
         if not isinstance(entry, dict):
             return None
         filename, status, content = entry.get("filename"), entry.get("status"), entry.get("sha")
         previous = entry.get("previous_filename") or ""
-        if not all(isinstance(value, str) and value for value in (filename, status, content)) or not isinstance(
-            previous, str
+        if not (
+            isinstance(filename, str)
+            and filename
+            and isinstance(status, str)
+            and status
+            and isinstance(content, str)
+            and content
+            and isinstance(previous, str)
         ):
             return None
         if status == "removed":

@@ -36,7 +36,7 @@ def _section(label: str, text: str) -> None:
 
 def adapter_names(owned: manifest.Manifest) -> list[str]:
     """Every runtime adapter the manifest records, from every source."""
-    names = set()
+    names: set[str] = set()
     for entry in owned.sources.values():
         if isinstance(entry, dict):
             names.update((entry.get(manifest.ADAPTERS) or {}).keys())
@@ -99,7 +99,7 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
             if probe.path is None:
                 _section(label, "Not installed; skipped.")
                 continue
-            if probe.outdated:
+            if probe.outdated and probe.version is not None:
                 version, minimum = tools.format_version(probe.version), tools.format_version(probe.tool.minimum)
                 _section(
                     label,

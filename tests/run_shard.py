@@ -39,6 +39,9 @@ def main(argv: list[str]) -> int:
     # Any name but __main__, so the suite's own `if __name__ == "__main__":` block does not run all its tests.
     name = "validation_shard_" + re.sub(r"\W", "_", path.stem)
     spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        print(f"{path} cannot be loaded as a Python module", file=sys.stderr)
+        return 2
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)

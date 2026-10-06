@@ -6,6 +6,7 @@ import json
 import re
 import tempfile
 import tomllib
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -267,7 +268,7 @@ def render(
     owned_shared: list[str],
     config: dict[str, str],
     skills_src: Path,
-    agents: list[str] = (),
+    agents: Sequence[str] = (),
 ) -> Staged:
     staged = Staged()
     for name in selected:

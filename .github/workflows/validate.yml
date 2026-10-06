@@ -67,6 +67,8 @@ jobs:
           }
           python -m ruff --version
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m mypy --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Run repository validation
         shell: pwsh

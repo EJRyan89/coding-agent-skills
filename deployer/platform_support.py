@@ -9,6 +9,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypedDict
 
 from .errors import DeployError
 
@@ -24,6 +25,7 @@ INSTALL_HINTS = {
     "PowerShell": "winget install --id Microsoft.PowerShell",
     # A validation-only dependency, installed into the interpreter that runs validation, which is python here.
     "ruff": "python -m pip install -r requirements-dev.txt",
+    "mypy": "python -m pip install -r requirements-dev.txt",
 }
 INSTALL_HELP = (
     'For Chocolatey, Scoop, or direct downloads, see "Installing the tools" in',
@@ -130,7 +132,7 @@ def is_link(path: Path) -> bool:
 
 def is_reparse_point(path: Path) -> bool:
     try:
-        attributes = os.lstat(path).st_file_attributes  # type: ignore[attr-defined]
+        attributes = os.lstat(path).st_file_attributes
     except (AttributeError, OSError):
         return False
     return bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
@@ -180,7 +182,13 @@ def find_pwsh(search_path: str) -> str | None:
     return shutil.which("pwsh", path=search_path) if search_path else None
 
 
-def hidden_window() -> dict[str, int]:
+class HiddenWindow(TypedDict):
+    """The subprocess.run keyword hidden_window gives, typed so that `**hidden_window()` checks as that keyword."""
+
+    creationflags: int
+
+
+def hidden_window() -> HiddenWindow:
     """Keyword arguments for subprocess.run that start a console program without a window of its own.
 
     A hook runs without a console, so a console program it starts would otherwise flash a window.
@@ -233,6 +241,8 @@ def current_process_id() -> int:
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
 DUPLICATION_ALLOWED = {
     "process_status": "skills/code-review-core/scripts/review_process.py carries a copy because a deployed skill "
+    "cannot import the deployer; #27 removes it",
+    "HiddenWindow": "skills/code-review-core/scripts/review_process.py carries a copy because a deployed skill "
     "cannot import the deployer; #27 removes it",
 }
 

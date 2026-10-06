@@ -259,7 +259,8 @@ class DeployerTestCase(unittest.TestCase):
     def selection_number(self, name: str, bundle: bool = False) -> str:
         output = self.deploy("--dry-run", stdin="\n").output
         match = re.search(rf"^  \[[ *]\] ([0-9]+)\. {re.escape(name)}(?: \(([^)]*)\))?$", output, re.MULTILINE)
-        self.assertIsNotNone(match, output)
+        if match is None:
+            self.fail(output)
         labels = (match.group(2) or "").split(", ")
         self.assertEqual(bundle, "bundle" in labels, output)
         return match.group(1)

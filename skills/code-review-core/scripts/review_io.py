@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import secrets
@@ -88,7 +89,7 @@ def map_in_order(
             return None, error
 
     if workers <= 1 or len(items) <= 1:
-        return [outcome(lambda item=item: function(item)) for item in items]
+        return [outcome(functools.partial(function, item)) for item in items]
     with ThreadPoolExecutor(max_workers=min(workers, len(items))) as executor:
         futures = [executor.submit(function, item) for item in items]
         try:
@@ -174,7 +175,7 @@ def atomic_write_json(
     path: Path,
     value: Any,
     *,
-    validator: Callable[[Any], None] | None = None,
+    validator: Callable[[Any], object] | None = None,
 ) -> None:
     if validator is not None:
         validator(value)

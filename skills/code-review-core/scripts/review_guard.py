@@ -102,7 +102,8 @@ def _check_bash(tool_input: dict[str, Any], cwd: Path) -> None:
     if match is None or not _same(_path(match.group("script"), cwd), PIPELINE):
         raise Denied("run no command except the self-check command the prompt gives, exactly as written")
     run = _path(match.group("run"), cwd)
-    if run_root(run) is None or not _same(run_root(run), run):
+    root = run_root(run)
+    if root is None or not _same(root, run):
         raise Denied("the self-check must name the review run folder")
 
 
