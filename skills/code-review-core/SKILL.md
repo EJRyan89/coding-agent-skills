@@ -12,7 +12,7 @@ This is a non-selectable dependency of the public code-review operations skills.
 
 Its scripts own deterministic configuration, state, GitHub enumeration, review-record, archive, flag, and runtime-adapter behavior. Public skills provide the agent-facing orchestration and must treat validated JSON records as the machine source of truth. `${CLAUDE_SKILL_DIR}/scripts/review_pipeline.py` is the only review entry point an orchestrating agent runs: `enumerate`, `prepare`, `dispatch`, `wait`, `check`, `finalize`, and `advance` cover every step except starting reviewer subagents. Reviewers run `validate-result` on their own result before replying; the orchestrator never runs it, and `check` stays authoritative.
 
-Read the relevant schema under `${CLAUDE_SKILL_DIR}/references/` before changing a persisted or adapter-facing contract. Unknown future schema or protocol versions fail closed.
+Before changing a persisted format (configuration, reviewer manifests, adapter request, review record, flag store, or legacy index), read its table in the "Formats" section of `docs/code-review-operations-contract.md` in this suite's source repository. Before changing the adapter result, read `${CLAUDE_SKILL_DIR}/references/review-adapter.schema.json`. Unknown future schema or protocol versions fail closed.
 
 Safety invariants:
 
