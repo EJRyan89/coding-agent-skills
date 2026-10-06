@@ -234,6 +234,8 @@ The request a reviewer is given, as `build_adapter_request` in `review_runtime.p
 | `manifest_path` | string | yes | Absolute path of the snapshot's manifest, which lists every file and its hash. |
 | `source_commit` | string | yes | The commit it holds: the head commit. |
 
+The snapshot's manifest records each path it leaves out under `excluded_paths`, with one reason: `agent-instruction`, `binary`, `file-size-limit`, `unsafe-path`, `symbolic-link`, or `non-regular` (any other entry that is not a regular file or a directory, such as a hard link, FIFO, or device). Only `file-size-limit` and `unsafe-path` are coverage gaps, which put a changed file in `coverage.unavailable_sources`. The others are deliberate, and reviewers judge those files from the diff.
+
 #### Request coverage (`request.coverage`)
 
 | Field | Type | Required | Meaning |

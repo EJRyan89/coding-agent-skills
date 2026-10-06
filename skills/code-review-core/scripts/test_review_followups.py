@@ -72,6 +72,30 @@ class GitHubSnapshotTests(unittest.TestCase):
         self.assertEqual([], list(destination.parent.rglob("escape.txt")))
         review_runtime.verify_source_snapshot(destination, expected_repository="owner/repo", expected_commit=HEAD)
 
+    def test_tarball_snapshot_excludes_a_symbolic_link_and_a_fifo(self) -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, kind, link in (("node_modules", tarfile.SYMTYPE, "/opt/runtime/node_modules"),
+                                     ("run/pipe", tarfile.FIFOTYPE, "")):
+                info = tarfile.TarInfo("owner-repo-ccc/" + name)
+                info.type, info.linkname = kind, link
+                archive.addfile(info)
+            info = tarfile.TarInfo("owner-repo-ccc/src/A.cs")
+            info.size = 11
+            archive.addfile(info, io.BytesIO(b"class A {}\n"))
+        data = buffer.getvalue()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        destination = Path(temporary.name).resolve() / "source"
+        metadata = review_runtime.materialize_source_snapshot_from_github(
+            "owner/repo", HEAD, destination, fetcher=lambda repository, commit, target: target.write_bytes(data),
+            changed_paths=("node_modules",),
+        )
+        self.assertEqual({"node_modules": "symbolic-link", "run/pipe": "non-regular"}, metadata["excluded_paths"])
+        self.assertFalse((destination / "node_modules").exists())
+        self.assertFalse((destination / "run").exists())
+        self.assertTrue((destination / "src" / "A.cs").is_file())
+
     def test_case_collisions_fail_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeContractError, "case-insensitive"):
             self.snapshot({"src/A.cs": b"one\n", "SRC/a.cs": b"two\n"})

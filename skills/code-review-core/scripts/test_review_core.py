@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from datetime import date
 import hashlib
+import io
 import json
 import os
 import re
@@ -1579,9 +1580,9 @@ class RuntimeContractTests(unittest.TestCase):
             # The full content check re-reads every written file against the hashes computed before writing.
             verify_source_snapshot(destination, expected_repository="example/one", expected_commit=head)
 
-    def test_source_snapshot_rejects_non_regular_archive_entries(self) -> None:
-        commit = "b" * 40
-
+    @staticmethod
+    def _archive_runner(commit: str, entries: list[tuple[str, bytes, str]]):
+        """A git runner whose `archive` writes `entries`, each (name, tar type, link name), as a tar."""
         def runner(arguments: list[str]) -> CommandResult:
             if arguments[-3:] == ["remote", "get-url", "origin"]:
                 return CommandResult(0, "https://github.com/example/one.git\n", "")
@@ -1590,22 +1591,70 @@ class RuntimeContractTests(unittest.TestCase):
             if "archive" in arguments:
                 output = next(item.split("=", 1)[1] for item in arguments if item.startswith("--output="))
                 with tarfile.open(output, mode="w") as archive:
-                    entry = tarfile.TarInfo("unsafe-link")
-                    entry.type = tarfile.SYMTYPE
-                    entry.linkname = "outside"
-                    archive.addfile(entry)
+                    for name, kind, link in entries:
+                        entry = tarfile.TarInfo(name)
+                        entry.type = kind
+                        if kind == tarfile.REGTYPE:
+                            entry.size = len(link.encode("utf-8"))
+                            archive.addfile(entry, io.BytesIO(link.encode("utf-8")))
+                        else:
+                            entry.linkname = link
+                            archive.addfile(entry)
                 return CommandResult(0, "", "")
             raise AssertionError(f"Unexpected command: {arguments}")
 
+        return runner
+
+    def test_source_snapshot_excludes_links_and_other_non_regular_entries(self) -> None:
+        commit = "b" * 40
+        runner = self._archive_runner(commit, [
+            ("src/A.cs", tarfile.REGTYPE, "class A {}\n"),
+            ("tools/cache", tarfile.SYMTYPE, "/home/dev/.cache/tool"),
+            ("src/Hard.cs", tarfile.LNKTYPE, "src/A.cs"),
+            ("run/pipe", tarfile.FIFOTYPE, ""),
+            ("dev/tty", tarfile.CHRTYPE, ""),
+        ])
         with tempfile.TemporaryDirectory() as temporary:
             destination = Path(temporary) / "snapshot"
-            with self.assertRaisesRegex(RuntimeContractError, "non-regular entry"):
+            metadata = materialize_source_snapshot(
+                Path(temporary) / "checkout", "example/one", commit, destination, runner=runner,
+            )
+            self.assertEqual({
+                "tools/cache": "symbolic-link",
+                "src/Hard.cs": "non-regular",
+                "run/pipe": "non-regular",
+                "dev/tty": "non-regular",
+            }, metadata["excluded_paths"])
+            self.assertEqual(["src/A.cs"], list(metadata["source_hashes"]))
+            self.assertEqual(
+                sorted([SOURCE_SNAPSHOT_MANIFEST, "src/A.cs"]),
+                sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()),
+            )
+            self.assertFalse((destination / "tools").exists(), "nothing is written for a link, not even its folder")
+            verify_source_snapshot(destination, expected_repository="example/one", expected_commit=commit)
+            # Deliberate, like binary and agent-instruction: reviewed from the diff, never a coverage gap.
+            diff = Path(temporary) / "diff.patch"
+            diff.write_text(
+                "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n"
+                "--- /dev/null\n+++ b/tools/cache\n@@ -0,0 +1 @@\n+/home/dev/.cache/tool\n"
+                "\\ No newline at end of file\n"
+                "diff --git a/run/pipe b/run/pipe\nnew file mode 100644\nindex 0000000..2222222\n"
+                "--- /dev/null\n+++ b/run/pipe\n@@ -0,0 +1 @@\n+x\n",
+                encoding="utf-8",
+            )
+            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata))
+        self.assertEqual({"agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link",
+                          "non-regular"}, review_runtime.SNAPSHOT_EXCLUSION_REASONS)
+        self.assertEqual({"file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
+
+    def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
+        commit = "b" * 40
+        runner = self._archive_runner(commit, [(SOURCE_SNAPSHOT_MANIFEST, tarfile.SYMTYPE, "/etc/passwd")])
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "snapshot"
+            with self.assertRaisesRegex(RuntimeContractError, "reserved snapshot path"):
                 materialize_source_snapshot(
-                    Path(temporary) / "checkout",
-                    "example/one",
-                    commit,
-                    destination,
-                    runner=runner,
+                    Path(temporary) / "checkout", "example/one", commit, destination, runner=runner,
                 )
             self.assertFalse(destination.exists())
 

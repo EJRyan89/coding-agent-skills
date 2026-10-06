@@ -202,6 +202,37 @@ class OtherFilesListTests(unittest.TestCase):
         self.assertEqual([], rs._listed([]))
 
 
+class SymbolicLinkPromptTests(unittest.TestCase):
+    DIFF = (
+        "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n"
+        "+++ b/tools/cache\n@@ -0,0 +1 @@\n+/home/dev/\"x\"\n\\ No newline at end of file\n"
+        "diff --git a/old b/renamed\nsimilarity index 100%\nrename from old\nrename to renamed\n"
+        "diff --git a/src/A.cs b/src/A.cs\n--- a/src/A.cs\n+++ b/src/A.cs\n@@ -1 +1 @@\n-a\n+b\n"
+    )
+
+    def test_links_come_from_the_snapshot_exclusions_and_their_target_from_the_diff(self) -> None:
+        diff = rs.parse_unified_diff(self.DIFF)
+        excluded = {"tools/cache": "symbolic-link", "renamed": "symbolic-link", "src/A.cs": "binary",
+                    "unchanged/link": "symbolic-link"}
+        links = rs.symbolic_links(diff, excluded)
+        self.assertEqual({"tools/cache": (1, '/home/dev/"x"'), "renamed": None}, links)
+        # The target is the pull request's text, so it is quoted rather than spliced into the prompt.
+        self.assertEqual('tools/cache -> "/home/dev/\\"x\\"" (added line 1)',
+                         rs.describe_link("tools/cache", links["tools/cache"]))
+        self.assertEqual("renamed (its target is not in the diff)", rs.describe_link("renamed", None))
+
+    def test_a_role_that_only_gives_dispositions_is_not_asked_for_link_findings(self) -> None:
+        request = {"repository": "example/one", "mode": "re-review", "source_snapshot": {"root": "C:/source"}}
+        links = {"tools/cache": (1, "/home/dev/x")}
+        for dispositions_only in (False, True):
+            role = {"id": rs.GENERIC_SPECIALIST, "instructions": "generic.md", "files": ["tools/cache"],
+                    "dispositions_only": dispositions_only, "result_file": "C:/work/result.json"}
+            prompt = rs.render_prompt(role, request=request, work=Path("C:/work"), trusted_root=None, prior=[],
+                                      links=links)
+            with self.subTest(dispositions_only=dispositions_only):
+                self.assertEqual(not dispositions_only, rs.LINK_FINDING in prompt)
+
+
 class DedupeTests(unittest.TestCase):
     def test_same_issue_rules(self) -> None:
         self.assertTrue(rs.same_issue(located(QUALIFIER_134, "qualifier-review"), located(CSHARP_134, "csharp-review")))
