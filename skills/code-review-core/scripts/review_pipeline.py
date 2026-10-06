@@ -292,6 +292,244 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _review_history(
+    archive_root: Path,
+    repository: str,
+    number: int,
+    head: str,
+    *,
+    re_review: bool,
+    force: bool,
+    notes: list[str],
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]] | None:
+    """What the archive says a review of `head` starts from: its mode, the previous record, and the prior findings.
+    None when that head is already reviewed and the review is not forced."""
+    selector = f"{repository}#{number}"
+    reviewed = reviewed_head(archive_root, repository, number)
+    if re_review and reviewed is None:
+        raise PipelineError(f"{selector} has no review yet; run review-prs --pull {selector}")
+    if reviewed is not None and reviewed["head_sha"] == head and not force:
+        return None
+    if re_review and reviewed is not None and reviewed["source"] == "legacy":
+        notes.append("This initial review supersedes the migrated legacy review.")
+        return "initial", None, []
+    if re_review:
+        # Every finding no review has closed, not only the latest review's: one a review only judged still
+        # present would otherwise never be offered again.
+        records = pull_records(archive_root, repository, number)
+        return "re-review", records[-1], carried_findings(records, load_store(default_flags_path())["flags"])
+    return "initial", None, []
+
+
+def _fetch_diff(
+    repository: str, number: int, pull: dict[str, Any], diff_path: Path, services: Services, notes: list[str]
+) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved. Returns the parsed diff, its
+    changed paths, their patch fingerprints, and the open review comments."""
+    selector = f"{repository}#{number}"
+    head = pull["headRefOid"]
+    diff, undecodable = services.github.get_pull_diff(repository, number)
+    # GitHub serves the diff by pull number, which follows pushes. Confirm the pull did not move after its
+    # head was read, so a new diff is never archived under the old head SHA.
+    current = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
+    if (current["headRefOid"], current["baseRefOid"]) != (head, pull["baseRefOid"]):
+        raise PipelineError(
+            f"{selector} changed while it was being prepared (head {head[:12]} is now "
+            f"{current['headRefOid'][:12]}); run prepare again"
+        )
+    atomic_write_text(diff_path, diff)
+    if undecodable:
+        notes.append(f"{undecodable} undecodable bytes replaced in the diff")
+    parsed = parse_unified_diff(diff)
+    changed = list(parsed)
+    patches = patch_fingerprints(parsed)
+    if not changed:
+        raise PipelineError(f"{selector} changes no files")
+    comments = services.github.list_open_review_threads(repository, number)
+    return parsed, changed, patches, comments
+
+
+def _snapshot(
+    checkout: Path | None,
+    repository: str,
+    number: int,
+    head: str,
+    source: Path,
+    parsed: dict[str, dict[str, Any]],
+    changed: list[str],
+    services: Services,
+    notes: list[str],
+) -> dict[str, tuple[int, str] | None]:
+    """Snapshot the head at `source`, from the checkout or else GitHub's tarball. Returns the symbolic links the
+    snapshot leaves out that the pull request changes, each one noted."""
+    if checkout is not None:
+        verify_checkout_remote(checkout, repository, services.git)
+        ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
+        snapshot = materialize_source_snapshot(
+            checkout, repository, head, source, runner=services.git, changed_paths=changed
+        )
+    else:
+        snapshot = materialize_source_snapshot_from_github(
+            repository, head, source, fetcher=services.fetch_tarball, changed_paths=changed
+        )
+    # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
+    links = symbolic_links(parsed, snapshot["excluded_paths"])
+    notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
+    return links
+
+
+def _materialize_reviewer(
+    reviewer: dict[str, Any],
+    *,
+    checkout: Path | None,
+    pull: dict[str, Any],
+    mode: str,
+    runtime: str,
+    run: Path,
+    config_path: Path,
+    repository: str,
+    services: Services,
+    notes: list[str],
+) -> tuple[str, dict[str, Any], Path | None, str | None]:
+    """The reviewer's kind, the adapter the record names, the root its trusted files were materialized under, and
+    its entrypoint. The suite's generic reviewer has no root and no entrypoint, and neither has a specialists
+    manifest."""
+    if reviewer["scope"] == "generic":
+        negotiate_capabilities(runtime, ["agent-delegation"])
+        return (
+            "generic",
+            {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            None,
+            None,
+        )
+    if checkout is None:  # validate_config requires a checkout for a repository reviewer
+        raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
+    head = pull["headRefOid"]
+    ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
+    reviewer_commit = resolve_reviewer_commit(
+        checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
+    )
+    resolved = resolve_reviewer(
+        reviewer,
+        checkout=checkout,
+        commit=reviewer_commit,
+        config_path=config_path,
+        repository=repository,
+        runner=services.git,
+    )
+    manifest = resolved.manifest
+    if resolved.inspection is not None and resolved.source == "skill" and resolved.inspection.delegates == "unknown":
+        notes.append(
+            f"{resolved.inspection.skill} may start subagents ({resolved.inspection.reason}); "
+            "if its review fails, give it a specialists manifest."
+        )
+    if mode not in manifest["supports"]:
+        raise PipelineError(f"Reviewer {manifest['id']} does not support {mode} reviews")
+    negotiate_capabilities(runtime, manifest["required_capabilities"])
+    reviewer_root = run / "reviewer"
+    hashes = materialize_reviewer(
+        checkout,
+        reviewer_commit,
+        manifest,
+        reviewer_root,
+        runner=services.git,
+        guideline_commit=pull["baseRefOid"],
+        local_root=resolved.local_root,
+    )
+    kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
+    adapter = {
+        "name": manifest["id"],
+        "scope": "repository",
+        "source_commit": reviewer_commit,
+        "source_hashes": hashes,
+    }
+    return kind, adapter, reviewer_root, manifest["entrypoint"] if kind == "entrypoint" else None
+
+
+def _write_request(
+    request_path: Path,
+    *,
+    mode: str,
+    repository: str,
+    number: int,
+    pull: dict[str, Any],
+    diff_path: Path,
+    source: Path,
+    prior: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+) -> None:
+    request = build_adapter_request(
+        mode=mode,
+        repository=repository,
+        pull_number=number,
+        base_ref=pull["baseRefName"],
+        head_ref=pull["headRefName"],
+        base_sha=pull["baseRefOid"],
+        head_sha=pull["headRefOid"],
+        title=pull["title"],
+        url=pull["url"],
+        diff_path=diff_path,
+        source_snapshot_root=source,
+        prior_findings=prior,
+        github_comments=comments,
+        verify_contents=False,  # prepare materialized it, in this call
+    )
+    write_adapter_request(request_path, request)
+
+
+def _write_roles(
+    kind: str,
+    run: Path,
+    request_path: Path,
+    result_path: Path,
+    *,
+    adapter: dict[str, Any],
+    reviewer_root: Path | None,
+    entrypoint: str | None,
+    links: dict[str, tuple[int, str] | None],
+    checkout: Path | None,
+    review_files: set[str] | None,
+    notes: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
+    and the changed files the plan leaves unreviewed."""
+    if kind == "entrypoint":
+        prompt_path = run / "reviewer.prompt.md"
+        atomic_write_text(
+            prompt_path,
+            ENTRYPOINT_PROMPT.format(
+                request=request_path,
+                root=reviewer_root,
+                entrypoint=entrypoint,
+                result=result_path,
+                check=self_check_command(run, adapter["name"]),
+                links=entrypoint_links(links),
+            ),
+        )
+        return [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}], []
+    plan = build_plan(
+        request_path,
+        reviewer_root,
+        run / "work",
+        self_check=lambda identity: self_check_command(run, identity),
+        verify_contents=False,
+        local_checkout=checkout,
+        review_files=review_files,
+    )
+    roles = [
+        {
+            "id": role["id"],
+            "prompt_file": role["prompt_file"],
+            "result_file": role["result_file"],
+            "model": role["model"],
+            "effort": role["effort"],
+        }
+        for role in plan["roles"]
+    ]
+    notes.extend(plan["notes"])
+    return roles, plan["uncovered_files"]
+
+
 def prepare(
     selector: str,
     *,
@@ -324,25 +562,16 @@ def prepare(
     pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
     head = pull["headRefOid"]
     mode = "re-review" if re_review else "initial"
-    archive_root = Path(config["archive_root"])
     prior: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
     notes: list[str] = []
     if not canary:
-        reviewed = reviewed_head(archive_root, repository, number)
-        if re_review and reviewed is None:
-            raise PipelineError(f"{selector} has no review yet; run review-prs --pull {selector}")
-        if reviewed is not None and reviewed["head_sha"] == head and not force:
+        history = _review_history(
+            Path(config["archive_root"]), repository, number, head, re_review=re_review, force=force, notes=notes
+        )
+        if history is None:
             return _skip(selector, f"head {head[:12]} is already reviewed")
-        if re_review and reviewed is not None and reviewed["source"] == "legacy":
-            mode = "initial"
-            notes.append("This initial review supersedes the migrated legacy review.")
-        elif re_review:
-            # Every finding no review has closed, not only the latest review's: one a review only judged still
-            # present would otherwise never be offered again.
-            records = pull_records(archive_root, repository, number)
-            previous = records[-1]
-            prior = carried_findings(records, load_store(default_flags_path())["flags"])
+        mode, previous, prior = history
 
     reviewer = entry["reviewer"]
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
@@ -359,94 +588,21 @@ def prepare(
     try:
         run.mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
-        diff, undecodable = services.github.get_pull_diff(repository, number)
-        # GitHub serves the diff by pull number, which follows pushes. Confirm the pull did not move after its
-        # head was read, so a new diff is never archived under the old head SHA.
-        current = validate_canary_pull(
-            services.github.get_pull(repository, number), repository=repository, number=number
-        )
-        if (current["headRefOid"], current["baseRefOid"]) != (head, pull["baseRefOid"]):
-            raise PipelineError(
-                f"{selector} changed while it was being prepared (head {head[:12]} is now "
-                f"{current['headRefOid'][:12]}); run prepare again"
-            )
-        atomic_write_text(diff_path, diff)
-        if undecodable:
-            notes.append(f"{undecodable} undecodable bytes replaced in the diff")
-        parsed = parse_unified_diff(diff)
-        changed = list(parsed)
-        patches = patch_fingerprints(parsed)
-        if not changed:
-            raise PipelineError(f"{selector} changes no files")
-        comments = services.github.list_open_review_threads(repository, number)
-
+        parsed, changed, patches, comments = _fetch_diff(repository, number, pull, diff_path, services, notes)
         source = run / "source"
-        if checkout is not None:
-            verify_checkout_remote(checkout, repository, services.git)
-            ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
-            snapshot = materialize_source_snapshot(
-                checkout, repository, head, source, runner=services.git, changed_paths=changed
-            )
-        else:
-            snapshot = materialize_source_snapshot_from_github(
-                repository, head, source, fetcher=services.fetch_tarball, changed_paths=changed
-            )
-        # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
-        links = symbolic_links(parsed, snapshot["excluded_paths"])
-        notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
-
-        reviewer_root: Path | None = None
-        adapter: dict[str, Any]
-        if reviewer["scope"] == "generic":
-            negotiate_capabilities(runtime, ["agent-delegation"])
-            kind = "generic"
-            adapter = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
-        else:
-            if checkout is None:  # validate_config requires a checkout for a repository reviewer
-                raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
-            ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
-            reviewer_commit = resolve_reviewer_commit(
-                checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
-            )
-            resolved = resolve_reviewer(
-                reviewer,
-                checkout=checkout,
-                commit=reviewer_commit,
-                config_path=config_path,
-                repository=repository,
-                runner=services.git,
-            )
-            manifest = resolved.manifest
-            if (
-                resolved.inspection is not None
-                and resolved.source == "skill"
-                and resolved.inspection.delegates == "unknown"
-            ):
-                notes.append(
-                    f"{resolved.inspection.skill} may start subagents ({resolved.inspection.reason}); "
-                    "if its review fails, give it a specialists manifest."
-                )
-            if mode not in manifest["supports"]:
-                raise PipelineError(f"Reviewer {manifest['id']} does not support {mode} reviews")
-            negotiate_capabilities(runtime, manifest["required_capabilities"])
-            reviewer_root = run / "reviewer"
-            hashes = materialize_reviewer(
-                checkout,
-                reviewer_commit,
-                manifest,
-                reviewer_root,
-                runner=services.git,
-                guideline_commit=pull["baseRefOid"],
-                local_root=resolved.local_root,
-            )
-            kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
-            adapter = {
-                "name": manifest["id"],
-                "scope": "repository",
-                "source_commit": reviewer_commit,
-                "source_hashes": hashes,
-            }
-
+        links = _snapshot(checkout, repository, number, head, source, parsed, changed, services, notes)
+        kind, adapter, reviewer_root, entrypoint = _materialize_reviewer(
+            reviewer,
+            checkout=checkout,
+            pull=pull,
+            mode=mode,
+            runtime=runtime,
+            run=run,
+            config_path=config_path,
+            repository=repository,
+            services=services,
+            notes=notes,
+        )
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
         if previous is not None and scope is not None:  # a re-review, which always names its scope
@@ -454,64 +610,32 @@ def prepare(
                 scope, previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
             )
             notes.append(f"Scope {describe_scope(scope_record)}.")
-
         request_path = run / "request.json"
-        request = build_adapter_request(
+        _write_request(
+            request_path,
             mode=mode,
             repository=repository,
-            pull_number=number,
-            base_ref=pull["baseRefName"],
-            head_ref=pull["headRefName"],
-            base_sha=pull["baseRefOid"],
-            head_sha=head,
-            title=pull["title"],
-            url=pull["url"],
+            number=number,
+            pull=pull,
             diff_path=diff_path,
-            source_snapshot_root=source,
-            prior_findings=prior,
-            github_comments=comments,
-            verify_contents=False,  # materialized above, in this call
+            source=source,
+            prior=prior,
+            comments=comments,
         )
-        write_adapter_request(request_path, request)
-
         result_path = run / "result.json"
-        if kind == "entrypoint":
-            prompt_path = run / "reviewer.prompt.md"
-            atomic_write_text(
-                prompt_path,
-                ENTRYPOINT_PROMPT.format(
-                    request=request_path,
-                    root=reviewer_root,
-                    entrypoint=manifest["entrypoint"],
-                    result=result_path,
-                    check=self_check_command(run, adapter["name"]),
-                    links=entrypoint_links(links),
-                ),
-            )
-            roles = [{"id": adapter["name"], "prompt_file": str(prompt_path), "result_file": str(result_path)}]
-            uncovered_files: list[str] = []
-        else:
-            plan = build_plan(
-                request_path,
-                reviewer_root,
-                run / "work",
-                self_check=lambda identity: self_check_command(run, identity),
-                verify_contents=False,
-                local_checkout=checkout,
-                review_files=review_files,
-            )
-            roles = [
-                {
-                    "id": role["id"],
-                    "prompt_file": role["prompt_file"],
-                    "result_file": role["result_file"],
-                    "model": role["model"],
-                    "effort": role["effort"],
-                }
-                for role in plan["roles"]
-            ]
-            notes.extend(plan["notes"])
-            uncovered_files = plan["uncovered_files"]
+        roles, uncovered_files = _write_roles(
+            kind,
+            run,
+            request_path,
+            result_path,
+            adapter=adapter,
+            reviewer_root=reviewer_root,
+            entrypoint=entrypoint,
+            links=links,
+            checkout=checkout,
+            review_files=review_files,
+            notes=notes,
+        )
         state = {
             "schema_version": RUN_SCHEMA_VERSION,
             "selector": selector,
