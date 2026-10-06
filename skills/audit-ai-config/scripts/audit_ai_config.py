@@ -651,148 +651,123 @@ def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
     return errors
 
 
-def classify_authority(root: Path) -> tuple[str, dict[str, Any], list[Finding]]:
-    """Return (classification, manifest_data_or_empty, findings)."""
-    findings: list[Finding] = []
-    signals: list[str] = []
-    manifest_data: dict[str, Any] = {}
+def _manifest_authority_finding(severity: str, message: str) -> Finding:
+    return Finding(severity, "authority", ".github/ai-config-manifest.json", message=message)
 
-    # Signal 1: Valid manifest
+
+def _manifest_signal(root: Path) -> tuple[str | None, dict[str, Any], list[Finding]]:
+    """Return ("manifest", "alternative", or None), the manifest data that signal carries, and findings."""
     manifest_path = root / ".github/ai-config-manifest.json"
-    if manifest_path.is_file():
-        try:
-            data = json.loads(read_text(manifest_path))
-            if not isinstance(data, dict):
-                findings.append(Finding(
-                    severity="WARNING",
-                    check="authority",
-                    path=".github/ai-config-manifest.json",
-                    message="Manifest is not a JSON object",
-                ))
-            elif data.get("generatedBy") == "ai_config.py" and data.get("canonicalSource"):
-                canonical = data["canonicalSource"]
-                if canonical == "CLAUDE.md":
-                    schema_errors = _validate_manifest_schema(data)
-                    if schema_errors:
-                        for msg in schema_errors:
-                            findings.append(Finding(
-                                severity="ERROR",
-                                check="authority",
-                                path=".github/ai-config-manifest.json",
-                                message=f"Manifest schema: {msg}",
-                            ))
-                    elif not (root / canonical).is_file():
-                        findings.append(Finding(
-                            severity="ERROR",
-                            check="authority",
-                            path=".github/ai-config-manifest.json",
-                            message=f"Manifest declares canonical source"
-                                    f" '{canonical}' but it does not exist",
-                        ))
-                    elif not any(
-                        isinstance(a, dict)
-                        and isinstance(a.get("path"), str)
-                        and a["path"] != ".github/ai-config-manifest.json"
-                        for a in data.get("artifacts", [])
-                    ):
-                        findings.append(Finding(
-                            severity="ERROR",
-                            check="authority",
-                            path=".github/ai-config-manifest.json",
-                            message="Manifest declares no derived artifacts",
-                        ))
-                    else:
-                        signals.append("manifest")
-                        manifest_data = data
-                else:
-                    findings.append(Finding(
-                        severity="INFO",
-                        check="authority",
-                        path=".github/ai-config-manifest.json",
-                        message=f"Manifest declares alternative canonical source: {canonical}",
-                    ))
-                    return "alternative", data if isinstance(data, dict) else {}, findings
-            elif data.get("generatedBy") and data.get("canonicalSource"):
-                canonical = data["canonicalSource"]
-                if canonical != "CLAUDE.md":
-                    findings.append(Finding(
-                        severity="INFO",
-                        check="authority",
-                        path=".github/ai-config-manifest.json",
-                        message=f"Manifest declares alternative canonical source: {canonical}",
-                    ))
-                    return "alternative", data, findings
-        except (json.JSONDecodeError, KeyError, OSError, UnicodeError):
-            findings.append(Finding(
-                severity="WARNING",
-                check="authority",
-                path=".github/ai-config-manifest.json",
-                message="Manifest exists but is malformed",
-            ))
+    if not manifest_path.is_file():
+        return None, {}, []
+    try:
+        return _judge_manifest(root, json.loads(read_text(manifest_path)))
+    except (json.JSONDecodeError, KeyError, OSError, UnicodeError):
+        return None, {}, [_manifest_authority_finding("WARNING", "Manifest exists but is malformed")]
 
-    # Signal 2: CLAUDE.md exists
+
+def _judge_manifest(root: Path, data: Any) -> tuple[str | None, dict[str, Any], list[Finding]]:
+    if not isinstance(data, dict):
+        return None, {}, [_manifest_authority_finding("WARNING", "Manifest is not a JSON object")]
+    canonical = data.get("canonicalSource")
+    if not data.get("generatedBy") or not canonical:
+        return None, {}, []
+    if canonical != "CLAUDE.md":
+        return "alternative", data, [_manifest_authority_finding(
+            "INFO", f"Manifest declares alternative canonical source: {canonical}")]
+    if data["generatedBy"] != "ai_config.py":
+        return None, {}, []
+    return _validate_claude_manifest(root, data)
+
+
+def _validate_claude_manifest(root: Path, data: dict[str, Any]) -> tuple[str | None, dict[str, Any], list[Finding]]:
+    """A manifest that names CLAUDE.md is a signal only when its schema, source, and artifacts hold."""
+    schema_errors = _validate_manifest_schema(data)
+    if schema_errors:
+        return None, {}, [_manifest_authority_finding("ERROR", f"Manifest schema: {msg}") for msg in schema_errors]
+    if not (root / "CLAUDE.md").is_file():
+        return None, {}, [_manifest_authority_finding(
+            "ERROR", "Manifest declares canonical source 'CLAUDE.md' but it does not exist")]
+    if not any(
+        isinstance(a, dict) and isinstance(a.get("path"), str) and a["path"] != ".github/ai-config-manifest.json"
+        for a in data.get("artifacts", [])
+    ):
+        return None, {}, [_manifest_authority_finding("ERROR", "Manifest declares no derived artifacts")]
+    return "manifest", data, []
+
+
+def _has_claude_md(root: Path) -> bool:
+    return (root / "CLAUDE.md").is_file()
+
+
+def _has_maintaining_section(root: Path) -> bool:
     claude_path = root / "CLAUDE.md"
-    if claude_path.is_file():
-        signals.append("claude_md_exists")
+    if not claude_path.is_file():
+        return False
+    try:
+        content = read_text(claude_path)
+    except (OSError, UnicodeError):
+        return False
+    return re.search(r"^##\s+Maintaining\s+AI\s+Agent\s+Config", content, re.MULTILINE | re.IGNORECASE) is not None
 
-        # Signal 3: "Maintaining AI Agent Config" section
-        try:
-            content = read_text(claude_path)
-            if re.search(
-                r"^##\s+Maintaining\s+AI\s+Agent\s+Config",
-                content,
-                re.MULTILINE | re.IGNORECASE,
-            ):
-                signals.append("maintaining_section")
-        except (OSError, UnicodeError):
-            pass
 
-    # Signal 4: Generator script referencing CLAUDE.md
+def _has_generator_script(root: Path) -> bool:
+    """True when a generator candidate references CLAUDE.md."""
     for candidate in GENERATOR_CANDIDATES:
         gen_path = root / candidate
-        if gen_path.is_file():
-            try:
-                gen_content = read_text(gen_path)
-                if "CLAUDE.md" in gen_content:
-                    signals.append("generator_script")
-                    break
-            except (OSError, UnicodeError):
-                pass
+        if not gen_path.is_file():
+            continue
+        try:
+            if "CLAUDE.md" in read_text(gen_path):
+                return True
+        except (OSError, UnicodeError):
+            pass
+    return False
 
-    # Signal 5: CI parity workflow referencing generator
+
+def _has_ci_parity_workflow(root: Path) -> bool:
+    """True when a workflow runs the generator's parity check."""
     workflows_dir = root / ".github/workflows"
-    ci_found = False
-    if workflows_dir.is_dir():
-        for pattern in ("*.yml", "*.yaml"):
-            if ci_found:
-                break
-            for wf in workflows_dir.glob(pattern):
-                try:
-                    wf_content = read_text(wf)
-                    if "ai_config" in wf_content and "--check" in wf_content:
-                        signals.append("ci_parity")
-                        ci_found = True
-                        break
-                except (OSError, UnicodeError):
-                    pass
+    if not workflows_dir.is_dir():
+        return False
+    for pattern in ("*.yml", "*.yaml"):
+        for wf in workflows_dir.glob(pattern):
+            try:
+                wf_content = read_text(wf)
+            except (OSError, UnicodeError):
+                continue
+            if "ai_config" in wf_content and "--check" in wf_content:
+                return True
+    return False
 
-    # Classify
-    if "manifest" in signals:
-        classification = "conforming"
-    elif len([s for s in signals if s != "manifest"]) >= 2:
-        classification = "conforming"
-    elif len(signals) == 0:
-        classification = "unconfigured"
-    else:
-        classification = "ambiguous"
 
+def _classify_signals(signals: list[str]) -> str:
+    if "manifest" in signals or len(signals) >= 2:
+        return "conforming"
+    if not signals:
+        return "unconfigured"
+    return "ambiguous"
+
+
+def classify_authority(root: Path) -> tuple[str, dict[str, Any], list[Finding]]:
+    """Return (classification, manifest_data_or_empty, findings)."""
+    manifest_signal, manifest_data, findings = _manifest_signal(root)
+    if manifest_signal == "alternative":
+        return "alternative", manifest_data, findings
+    signals = [manifest_signal] if manifest_signal else []
+    signals.extend(name for name, present in (
+        ("claude_md_exists", _has_claude_md(root)),
+        ("maintaining_section", _has_maintaining_section(root)),
+        ("generator_script", _has_generator_script(root)),
+        ("ci_parity", _has_ci_parity_workflow(root)),
+    ) if present)
+    classification = _classify_signals(signals)
     findings.append(Finding(
         severity="INFO",
         check="authority",
         message=f"Authority classification: {classification} "
                 f"(signals: {', '.join(signals) or 'none'})",
     ))
-
     return classification, manifest_data, findings
 
 
@@ -913,120 +888,87 @@ def _expected_skill_shim(
     )
 
 
+def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
+    """Return (content, None) for a readable artifact, or (None, why it cannot be compared)."""
+    full_path = root / path_str
+    if not full_path.is_file():
+        return None, f"Generated artifact missing: {path_str}"
+    try:
+        return read_text(full_path), None
+    except (OSError, UnicodeError):
+        return None, "Generated artifact exists but could not be read"
+
+
+def _hash_problem(content: str, stored_hash: Any) -> str | None:
+    if stored_hash and content_hash(content) != stored_hash:
+        return "JSON artifact modified (hash mismatch with manifest)"
+    return None
+
+
+def _marker_problem(path_str: str, content: str) -> str | None:
+    """Comment-supporting formats must carry the ownership marker."""
+    if not path_str.endswith(".json") and not has_ownership_marker(content):
+        return "Generated file missing ownership marker"
+    return None
+
+
+def _copilot_content_problem(root: Path, manifest: dict[str, Any], content: str) -> str | None:
+    expected_body = _expected_copilot_sections_body(root, manifest)
+    if expected_body is None:
+        return None
+    if COPILOT_BANNER not in content:
+        return "Copilot instructions missing banner"
+    after_banner = content[content.index(COPILOT_BANNER) + len(COPILOT_BANNER):].strip()
+    if after_banner != expected_body.strip():
+        return "Copilot instructions sections do not match CLAUDE.md content"
+    return None
+
+
+def _expected_artifact(root: Path, path_str: str) -> str | None:
+    """The deterministic content of AGENTS.md or a skill shim, or None for other artifacts."""
+    if path_str == "AGENTS.md":
+        return _expected_agents_adapter(root.name)
+    match = re.match(r"\.agents/skills/([^/]+)/SKILL\.md$", path_str)
+    return _expected_skill_shim(root, match.group(1)) if match else None
+
+
+def _content_problem(root: Path, manifest: dict[str, Any], path_str: str, content: str) -> str | None:
+    """Compare known comment-supporting artifacts with the content they are generated to hold."""
+    if path_str.endswith(".json"):
+        return None
+    if path_str == ".github/copilot-instructions.md":
+        return _copilot_content_problem(root, manifest, content)
+    expected = _expected_artifact(root, path_str)
+    if expected is not None and content != expected:
+        return "Content does not match deterministic template"
+    return None
+
+
+def _artifact_problem(root: Path, manifest: dict[str, Any], artifact: dict[str, Any]) -> str | None:
+    """The first check a manifest artifact fails, in order: path, existence, hash, marker, content."""
+    path_str = artifact.get("path", "")
+    path_error = validate_manifest_path(path_str)
+    if path_error:
+        return f"Manifest path rejected: {path_error}"
+    content, read_problem = _read_artifact(root, path_str)
+    if content is None:
+        return read_problem
+    return (
+        _hash_problem(content, artifact.get("hash"))
+        or _marker_problem(path_str, content)
+        or _content_problem(root, manifest, path_str, content)
+    )
+
+
 def check_parity(
     root: Path,
     manifest: dict[str, Any],
 ) -> list[Finding]:
     findings: list[Finding] = []
-
-    artifacts = manifest.get("artifacts", [])
-    for artifact in artifacts:
-        path_str = artifact.get("path", "")
-
-        # Validate path safety
-        path_error = validate_manifest_path(path_str)
-        if path_error:
-            findings.append(Finding(
-                severity="ERROR",
-                check="parity",
-                path=path_str,
-                message=f"Manifest path rejected: {path_error}",
-            ))
-            continue
-
-        full_path = root / path_str
-        if not full_path.is_file():
-            findings.append(Finding(
-                severity="ERROR",
-                check="parity",
-                path=path_str,
-                message=f"Generated artifact missing: {path_str}",
-            ))
-            continue
-
-        try:
-            actual_content = read_text(full_path)
-        except (OSError, UnicodeError):
-            findings.append(Finding(
-                severity="ERROR",
-                check="parity",
-                path=path_str,
-                message="Generated artifact exists but could not be read",
-            ))
-            continue
-
-        # JSON artifacts: check hash
-        stored_hash = artifact.get("hash")
-        if stored_hash:
-            actual_hash = content_hash(actual_content)
-            if actual_hash != stored_hash:
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="parity",
-                    path=path_str,
-                    message="JSON artifact modified (hash mismatch with manifest)",
-                ))
-                continue
-
-        # Comment-supporting formats: ownership marker + deterministic content
-        if not path_str.endswith(".json"):
-            if not has_ownership_marker(actual_content):
-                findings.append(Finding(
-                    severity="ERROR",
-                    check="parity",
-                    path=path_str,
-                    message="Generated file missing ownership marker",
-                ))
-                continue
-
-            # Deterministic content comparison for known artifact types
-            if path_str == ".github/copilot-instructions.md":
-                expected_body = _expected_copilot_sections_body(root, manifest)
-                if expected_body is not None:
-                    if COPILOT_BANNER not in actual_content:
-                        findings.append(Finding(
-                            severity="ERROR",
-                            check="parity",
-                            path=path_str,
-                            message="Copilot instructions missing banner",
-                        ))
-                    else:
-                        banner_idx = actual_content.index(COPILOT_BANNER)
-                        after_banner = actual_content[
-                            banner_idx + len(COPILOT_BANNER):
-                        ].strip()
-                        if after_banner != expected_body.strip():
-                            findings.append(Finding(
-                                severity="ERROR",
-                                check="parity",
-                                path=path_str,
-                                message="Copilot instructions sections "
-                                        "do not match CLAUDE.md content",
-                            ))
-            else:
-                expected: str | None = None
-                if path_str == "AGENTS.md":
-                    expected = _expected_agents_adapter(root.name)
-                elif re.match(
-                    r"\.agents/skills/([^/]+)/SKILL\.md$", path_str
-                ):
-                    match = re.match(
-                        r"\.agents/skills/([^/]+)/SKILL\.md$", path_str
-                    )
-                    if match:
-                        expected = _expected_skill_shim(
-                            root, match.group(1)
-                        )
-
-                if expected is not None and actual_content != expected:
-                    findings.append(Finding(
-                        severity="ERROR",
-                        check="parity",
-                        path=path_str,
-                        message="Content does not match deterministic "
-                                "template",
-                    ))
-
+    for artifact in manifest.get("artifacts", []):
+        problem = _artifact_problem(root, manifest, artifact)
+        if problem:
+            findings.append(Finding("ERROR", "parity", artifact.get("path", ""), message=problem))
     return findings
 
 
