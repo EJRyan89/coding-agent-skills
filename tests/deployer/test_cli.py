@@ -15,11 +15,11 @@ from harness import REPOSITORY_ROOT, DeployerTestCase, Result, forward
 from deployer import cli, platform_support
 
 
-class Interrupting(io.StringIO):
+def interrupting() -> io.StringIO:
     """Standard input whose next read behaves as if the user pressed Ctrl+C."""
-
-    def readline(self, size: int | None = -1) -> str:
-        raise KeyboardInterrupt
+    # A mock rather than a subclass: typeshed's StringIO.readline cannot be overridden without breaking the override
+    # rule against io's binary base class.
+    return mock.Mock(io.StringIO, readline=mock.Mock(side_effect=KeyboardInterrupt))
 
 
 class SingleEntryPointTests(DeployerTestCase):
@@ -150,7 +150,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         before = self.config_file().read_bytes()
-        result = self.run_cli("configure", stdin=Interrupting())
+        result = self.run_cli("configure", stdin=interrupting())
         self.assertEqual(1, result.code, result.output)
         self.assertIn("Ctrl+C cancels", result.output)
         self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
@@ -163,7 +163,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.make_config()
         for arguments in ((), ("--dry-run",)):
             with self.subTest(arguments=arguments):
-                result = self.run_cli(*arguments, stdin=Interrupting())
+                result = self.run_cli(*arguments, stdin=interrupting())
                 self.assertEqual(130, result.code, result.output)
                 self.assertIn("Cancelled; nothing was changed.", result.output)
                 self.assertNotIn("Deployment failed", result.output)
@@ -182,12 +182,12 @@ class SingleEntryPointTests(DeployerTestCase):
             (("--dry",), ""),
             (("configure", "--bogus"), ""),
             (("--all", "--dry-run"), ""),
-            (("configure",), Interrupting()),
-            ((), Interrupting()),
+            (("configure",), interrupting()),
+            ((), interrupting()),
             ((), "\n"),
         )
         for arguments, stdin in cases:
-            with self.subTest(arguments=arguments, interrupted=isinstance(stdin, Interrupting)):
+            with self.subTest(arguments=arguments, interrupted=not isinstance(stdin, str)):
                 if arguments == ("--all", "--dry-run"):
                     self.config_file().unlink(missing_ok=True)
                 else:

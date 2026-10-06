@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -136,7 +137,8 @@ class NewSkillTestCase(unittest.TestCase):
 
     def test_refusals_change_nothing(self) -> None:
         before = self.snapshot()
-        for name, arguments, message in (
+        # Each case's keyword arguments for scaffold, with or without a description.
+        cases: tuple[tuple[str, dict[str, Any], str], ...] = (
             ("Bad_Name", {}, "not a valid skill name"),
             ("con", {}, "not a valid skill name"),
             ("claude-helper", {}, "reserved word 'claude', which the Agent Skills frontmatter rules forbid"),
@@ -157,7 +159,8 @@ class NewSkillTestCase(unittest.TestCase):
             ("fresh", {"allowed_tools": ["Bash", "Read"]}, "grants Bash for every command"),
             ("fresh", {"allowed_tools": ["PowerShell(*)"]}, r"grants PowerShell\(\*\) for every command"),
             ("fresh", {"allowed_tools": ["Bash(git status)"]}, r"Bash\(git status\) has no PowerShell twin"),
-        ):
+        )
+        for name, arguments, message in cases:
             with self.subTest(name=name, arguments=arguments):
                 description = arguments.pop("description", "Fresh. Use it when testing.")
                 with self.assertRaisesRegex(new_skill.ScaffoldError, message):

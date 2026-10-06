@@ -73,7 +73,7 @@ FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
-# the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration and its exclusions.
+# the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
 # A type: ignore names its error codes and states its reason in a comment after it: `# type: ignore[code]  # <why>`.
 TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b")
@@ -678,10 +678,27 @@ def scripts_put_on_path(source: str) -> list[str]:
     return names
 
 
-def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
-    """mypy_path must name exactly the skills' scripts directories that a module other than a suite puts on sys.path.
+def imports_a_sibling(path: Path, source: str) -> bool:
+    """Whether the module imports, by its bare name, another module in its own directory."""
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module]
+        else:
+            continue
+        if any((path.parent / f"{name.split('.')[0]}.py").is_file() for name in names):
+            return True
+    return False
 
-    A skill reaches a skill_deps sibling that way, and the repository's tools reach analyze-skill-cost's inventory.
+
+def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
+    """mypy_path must name exactly the directories that modules reach outside mypy's own module resolution.
+
+    Those are the skills' scripts directories a module or suite puts on sys.path, as a skill reaches a skill_deps
+    sibling and the repository's tools reach analyze-skill-cost's inventory, and each directory outside a skill's
+    scripts/ whose modules import a module beside them by its bare name, as the deployer suites import harness. A
+    skill's scripts/ is checked from inside it, where such imports already resolve.
     """
     configuration = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     configured = configuration.get("tool", {}).get("mypy", {}).get("mypy_path", [])
@@ -689,12 +706,22 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
         return ["pyproject.toml: [tool.mypy] mypy_path must be a list"]
     expected: dict[str, str] = {}
     for path in sorted(files):
-        if path.suffix != ".py" or is_test_script(path):
+        if path.suffix != ".py":
             continue
-        for name in scripts_put_on_path(path.read_text(encoding="utf-8")):
-            expected.setdefault(f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", path.relative_to(root).as_posix())
+        relative_path = path.relative_to(root)
+        source = path.read_text(encoding="utf-8")
+        for name in scripts_put_on_path(source):
+            expected.setdefault(
+                f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", f"{relative_path.as_posix()} puts on sys.path"
+            )
+        in_skill_scripts = len(relative_path.parts) == 4 and relative_path.parts[::2] == ("skills", "scripts")
+        if len(relative_path.parts) > 1 and not in_skill_scripts and imports_a_sibling(path, source):
+            expected.setdefault(
+                f"$MYPY_CONFIG_FILE_DIR/{relative_path.parent.as_posix()}",
+                f"{relative_path.as_posix()} imports a module from by its bare name",
+            )
     problems = [
-        f"pyproject.toml: [tool.mypy] mypy_path lacks {entry}, which {expected[entry]} puts on sys.path"
+        f"pyproject.toml: [tool.mypy] mypy_path lacks {entry}, which {expected[entry]}"
         for entry in sorted(set(expected) - set(configured))
     ]
     problems += [
@@ -2060,12 +2087,8 @@ def mypy_type_check(cwd: Path, targets: list[str], configuration: Path) -> None:
 
 
 def type_check_skill_roots() -> list[Path]:
-    """The scripts directory of each skill that holds a Python module other than a regression suite."""
-    return [
-        skill / "scripts"
-        for skill in skill_directories()
-        if any(not is_test_script(path) for path in (skill / "scripts").glob("*.py"))
-    ]
+    """The scripts directory of each skill that holds a Python module or regression suite."""
+    return [skill / "scripts" for skill in skill_directories() if any((skill / "scripts").glob("*.py"))]
 
 
 def type_check_jobs() -> list[Job]:
@@ -3475,22 +3498,26 @@ class RepositoryValidation(unittest.TestCase):
                     jobs[name].run()
                     check.assert_called_once_with(root, ["."], configuration)
 
+    def test_type_check_roots_include_a_skill_whose_scripts_are_all_suites(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            skills = Path(temporary)
+            for name, files in {"module": ["run.py"], "suites": ["test_run.py"], "shell": ["test_run.sh"]}.items():
+                (skills / name / "scripts").mkdir(parents=True)
+                for file in files:
+                    (skills / name / "scripts" / file).write_text("", encoding="utf-8")
+            (skills / "none").mkdir()
+            with mock.patch(f"{__name__}.SKILLS_ROOT", skills):
+                self.assertEqual(
+                    [skills / "module" / "scripts", skills / "suites" / "scripts"], type_check_skill_roots()
+                )
+
     def test_type_check_configuration_is_pinned(self) -> None:
         configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["mypy"]
         self.assertEqual("3.11", configuration["python_version"])
         self.assertEqual("win32", configuration["platform"])
         self.assertIs(True, configuration["explicit_package_bases"])
-        # Default strictness, and no module or import is exempt; test suites wait for #92's second pass.
-        self.assertEqual(
-            ["exclude", "explicit_package_bases", "mypy_path", "platform", "python_version"], sorted(configuration)
-        )
-        excluded = re.compile(configuration["exclude"])
-        for path in ("tests/run_validation.py", "tests/deployer/harness.py", "skills/x/scripts/review_records.py"):
-            with self.subTest(checked=path):
-                self.assertIsNone(excluded.search(path))
-        for path in ("tests/deployer/test_cli.py", "test_review_core.py", "tests/fixtures/runtime-canary/x.py"):
-            with self.subTest(excluded=path):
-                self.assertIsNotNone(excluded.search(path))
+        # Default strictness, and no module, suite, or import is exempt.
+        self.assertEqual(["explicit_package_bases", "mypy_path", "platform", "python_version"], sorted(configuration))
 
     def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
         self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
@@ -3499,11 +3526,19 @@ class RepositoryValidation(unittest.TestCase):
             (root / "skills" / "user" / "scripts").mkdir(parents=True)
             sibling = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
             (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling, encoding="utf-8")
-            # A regression suite's own path changes do not count: suites are not type-checked yet.
-            suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\n'
+            # A regression suite is type-checked too, so the directories it puts on sys.path count.
+            suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\nimport user\n'
             (root / "skills" / "user" / "scripts" / "test_user.py").write_text(suite, encoding="utf-8")
             # Text that only names the call is not one.
             (root / "skills" / "user" / "scripts" / "notes.py").write_text(f"TEXT = {sibling!r}\n", encoding="utf-8")
+            # A suite outside a skill's scripts/ that imports a module beside it by its bare name needs its directory.
+            (root / "tests" / "suites").mkdir(parents=True)
+            (root / "tests" / "suites" / "helper.py").write_text("import os\n", encoding="utf-8")
+            (root / "tests" / "suites" / "test_a.py").write_text("import helper\nimport json\n", encoding="utf-8")
+            (root / "tests" / "suites" / "test_b.py").write_text("from helper import x\n", encoding="utf-8")
+            # A package import from the repository root is not a sibling import.
+            (root / "tests" / "other").mkdir()
+            (root / "tests" / "other" / "test_c.py").write_text("from tools import x\nimport os\n", encoding="utf-8")
             (root / "pyproject.toml").write_text(
                 '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/skills/stale/scripts"]\n', encoding="utf-8"
             )
@@ -3511,6 +3546,10 @@ class RepositoryValidation(unittest.TestCase):
                 [
                     "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/core/scripts, which "
                     "skills/user/scripts/user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/suite-only/scripts, "
+                    "which skills/user/scripts/test_user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/tests/suites, which "
+                    "tests/suites/test_a.py imports a module from by its bare name",
                     "pyproject.toml: [tool.mypy] mypy_path names $MYPY_CONFIG_FILE_DIR/skills/stale/scripts, which "
                     "no module puts on sys.path",
                 ],

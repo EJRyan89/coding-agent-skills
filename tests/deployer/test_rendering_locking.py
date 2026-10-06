@@ -17,6 +17,14 @@ from deployer import fsops, lock, platform_support
 from deployer.paths import Paths
 
 
+def git_bash() -> str:
+    """Git Bash, which validation requires as a prerequisite."""
+    bash = platform_support.find_bash()
+    if bash is None:
+        raise AssertionError("Git Bash is a validation prerequisite")
+    return bash
+
+
 def probe_returning(alive: bool, start_time: int | None):
     return lambda pid: platform_support.ProcessStatus(alive, start_time)
 
@@ -31,9 +39,7 @@ class RenderedExecutableTests(DeployerTestCase):
         repos = self.root / "Repos With Spaces"
         self.make_config(repos_root=repos)
         self.deploy_ok("--all")
-        result = platform_support.run_tool(
-            [platform_support.find_bash(), forward(self.skills_dir / "alpha" / "run.sh")]
-        )
+        result = platform_support.run_tool([git_bash(), forward(self.skills_dir / "alpha" / "run.sh")])
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(repos), result.output.strip())
 
@@ -47,9 +53,7 @@ class RenderedExecutableTests(DeployerTestCase):
         clone = self.snapshot_source("Clone With Spaces (dev)")
         self.deploy_from(clone, "--all")
         self.assertIn(f'"{forward(clone)}"', self.skill_text("alpha"))
-        result = platform_support.run_tool(
-            [platform_support.find_bash(), forward(self.skills_dir / "alpha" / "run.sh")]
-        )
+        result = platform_support.run_tool([git_bash(), forward(self.skills_dir / "alpha" / "run.sh")])
         self.assertEqual(0, result.returncode, result.output)
         self.assertEqual(forward(clone), result.output.strip())
 
@@ -73,15 +77,15 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertEqual((directory / "SKILL.md").read_text(encoding="utf-8"), skill, "deployed without rendering")
         adapter = (self.agents_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8")
         stated = re.search(r"`\$\{CLAUDE_SKILL_DIR\}` stands for `([^`]+)`", adapter)
-        self.assertIsNotNone(stated, adapter)
+        assert stated is not None, adapter
         self.assertEqual(forward(self.skills_dir / "alpha"), stated.group(1))
-        command = re.search(r"```bash\n(.*?)\n```", skill, re.DOTALL).group(1)
+        fence = re.search(r"```bash\n(.*?)\n```", skill, re.DOTALL)
+        assert fence is not None, skill
+        command = fence.group(1)
         # Claude Code substitutes the native absolute path; Codex and Copilot use the one the adapter states.
         for value in (str(self.skills_dir / "alpha"), stated.group(1)):
             with self.subTest(value=value):
-                result = platform_support.run_tool(
-                    [platform_support.find_bash(), "-c", command.replace("${CLAUDE_SKILL_DIR}", value)]
-                )
+                result = platform_support.run_tool([git_bash(), "-c", command.replace("${CLAUDE_SKILL_DIR}", value)])
                 self.assertEqual(0, result.returncode, result.output)
                 self.assertEqual("alpha a b", result.output.strip())
 
@@ -155,11 +159,11 @@ class RenderedExecutableTests(DeployerTestCase):
             and re.search(r'^if __name__ == "__main__":', path.read_text(encoding="utf-8"), re.MULTILINE)
         )
         self.assertEqual(15, len(entry_points), entry_points)
-        for relative in entry_points:
-            with self.subTest(entry_point=relative.as_posix()):
-                hook = relative.name == "review_guard.py"  # a hook reads its event on stdin and takes no options
+        for entry_point in entry_points:
+            with self.subTest(entry_point=entry_point.as_posix()):
+                hook = entry_point.name == "review_guard.py"  # a hook reads its event on stdin and takes no options
                 result = subprocess.run(
-                    [sys.executable, "-B", str(self.skills_dir / relative), *([] if hook else ["--help"])],
+                    [sys.executable, "-B", str(self.skills_dir / entry_point), *([] if hook else ["--help"])],
                     input=b"{}" if hook else b"",
                     capture_output=True,
                     env={**os.environ, "PYTHONIOENCODING": "cp1252"},

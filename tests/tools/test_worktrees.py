@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -126,7 +127,7 @@ class WorktreesTestCase(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         return run_worktrees(arguments, cwd, environment or self.environment, stdin)
 
-    def decision(self, event: dict[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
+    def decision(self, event: Mapping[str, object] | str, environment: dict[str, str] | None = None) -> str | None:
         stdin = event if isinstance(event, str) else json.dumps(event)
         result = self.run_script(["guard"], cwd=self.root, stdin=stdin, environment=environment)
         self.assertEqual(0, result.returncode, result.stderr)
@@ -452,7 +453,7 @@ class PowerShellGuardTests(WorktreesTestCase):
 
     def test_a_powershell_command_is_allowed_with_a_note_when_pwsh_cannot_be_started(self) -> None:
         git = shutil.which("git")
-        self.assertIsNotNone(git)
+        assert git is not None, "git is not on PATH"
         path = os.pathsep.join([str(Path(git).parent), str(self.root / "no-such-directory")])
         self.assertIsNone(self.powershell("git switch feat/demo", self.hub, {**self.environment, "PATH": path}))
         self.assertIn("could not find pwsh", self.stderr)

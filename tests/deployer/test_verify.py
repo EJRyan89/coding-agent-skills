@@ -9,7 +9,7 @@ import sys
 import textwrap
 import time
 import unittest
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -176,7 +176,7 @@ class ConverseTests(DeployerTestCase):
     def talk(
         self,
         arguments: list[str],
-        requests: list[str] = (),
+        requests: Sequence[str] = (),
         answered: Callable[[str], bool] | None = None,
         timeout: float = 30,
     ) -> list[str]:

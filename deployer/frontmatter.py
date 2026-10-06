@@ -91,7 +91,7 @@ class Frontmatter:
             current = []
             self._raw[key] = (match.group(2) or "", current)
 
-    def __contains__(self, key: str) -> bool:
+    def __contains__(self, key: object) -> bool:
         return key in self._raw
 
     def keys(self) -> list[str]:

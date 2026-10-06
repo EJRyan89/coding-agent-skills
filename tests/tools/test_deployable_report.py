@@ -86,6 +86,15 @@ class DeployableReportTests(unittest.TestCase):
         results = report.check_runtimes(self.paths, {}, find=self.fake.find, talk=self.fake.talk)
         return {result.runtime: result for result in results}
 
+    def use_fake_runtimes(self) -> None:
+        """Have the report's command line find and talk to the fake runtimes until the test ends."""
+        for patcher in (
+            mock.patch.object(report.platform_support, "find_executable", self.fake.find),
+            mock.patch.object(discovery, "converse", self.fake.talk),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def run_main(self, *arguments: str) -> tuple[int, str]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
@@ -180,8 +189,8 @@ class DeployableReportTests(unittest.TestCase):
                 return [json.dumps(other + json.loads(lines[0]))]
             return lines
 
-        self.fake.talk = talk
-        results = self.check()
+        with mock.patch.object(self.fake, "talk", talk):
+            results = self.check()
         self.assertEqual(report.FAILED, results["copilot"].status)
         self.assertIn("SHADOWED", results["copilot"].detail)
 
@@ -197,15 +206,7 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_verify_prints_a_line_per_runtime_and_records_the_pass(self) -> None:
         self.fake.errors["copilot"] = SIGN_IN
-        original = (report.platform_support.find_executable, discovery.converse)
-        report.platform_support.find_executable = self.fake.find
-        discovery.converse = self.fake.talk
-        self.addCleanup(
-            lambda: (
-                setattr(report.platform_support, "find_executable", original[0]),
-                setattr(discovery, "converse", original[1]),
-            )
-        )
+        self.use_fake_runtimes()
         code, output = self.verify(deploy_exit=1)
         self.assertEqual(0, code, output)
         self.assertIn("PASSED codex", output)
@@ -219,15 +220,7 @@ class DeployableReportTests(unittest.TestCase):
 
     def test_a_second_pass_is_appended_to_the_results(self) -> None:
         self.results_file.write_text(json.dumps([{"label": "first deploy", "results": []}]), encoding="utf-8")
-        original = (report.platform_support.find_executable, discovery.converse)
-        report.platform_support.find_executable = self.fake.find
-        discovery.converse = self.fake.talk
-        self.addCleanup(
-            lambda: (
-                setattr(report.platform_support, "find_executable", original[0]),
-                setattr(discovery, "converse", original[1]),
-            )
-        )
+        self.use_fake_runtimes()
         self.verify(label="after reinstall")
         recorded = json.loads(self.results_file.read_text(encoding="utf-8"))
         self.assertEqual(["first deploy", "after reinstall"], [item["label"] for item in recorded])
