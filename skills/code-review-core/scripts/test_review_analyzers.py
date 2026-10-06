@@ -297,6 +297,28 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(["is_global = true", "global_level = 100", "dotnet_diagnostic.CA1000.severity = warning"],
                          self.settings(result, "config/team.globalconfig"))
 
+    def test_an_indented_editorconfig_line_is_its_own_setting(self) -> None:
+        # EditorConfig has no continuation lines, so configparser folded CA2000 into CA1000's value.
+        paths = self.write({
+            ".editorconfig": "[*.cs]\n"
+                             "dotnet_diagnostic.CA1000.severity = warning\n"
+                             "    dotnet_diagnostic.CA2000.severity = error\n",
+            "team.globalconfig": "  is_global = true\n"
+                                 "dotnet_diagnostic.CA1000.severity = warning\n"
+                                 "\tdotnet_diagnostic.CA2000.severity = error\n",
+        })
+        result = inventory(self.root, paths)
+        self.assertEqual(["[*.cs] dotnet_diagnostic.CA1000.severity = warning",
+                          "[*.cs] dotnet_diagnostic.CA2000.severity = error"], self.settings(result, ".editorconfig"))
+        self.assertEqual(["is_global = true", "dotnet_diagnostic.CA1000.severity = warning",
+                          "dotnet_diagnostic.CA2000.severity = error"], self.settings(result, "team.globalconfig"))
+
+    def test_editorconfig_lines_that_are_neither_section_nor_setting_leave_it_unread(self) -> None:
+        for text in ("[*.cs]\nbroken\n", "[*.cs]\n  = error\n", "[]\nroot = true\n"):
+            with self.subTest(text=text):
+                result = inventory(self.root, self.write({".editorconfig": text}))
+                self.assertEqual([UNREAD], self.settings(result, ".editorconfig"))
+
     def test_ruff_and_pyproject_tool_tables(self) -> None:
         paths = self.write({
             "a/pyproject.toml": '[tool.ruff]\nselect = ["E"]\n[tool.ruff.lint]\nextend-select = ["I"]\n'
