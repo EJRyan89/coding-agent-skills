@@ -111,24 +111,40 @@ class InspectionTests(unittest.TestCase):
     def test_frontmatter_edge_forms(self) -> None:
         for text, expected in (
             ("---\ntools: []\n---\nBody.\n", []),
-            ("---\nTools: Read\n---\nBody.\n", ["Read"]),
             ("---\r\ntools: Read\r\n---\r\nBody.\r\n", ["Read"]),
             ("---\nallowed-tools: Bash\ntools: Read\n---\nBody.\n", ["Read"]),
             ("---\ntools:\n  - Read\nmetadata:\n  - Agent\n---\nBody.\n", ["Read"]),
-            ("---\ntools: Read\n", None),
             ("\n---\ntools: Read\n---\n", None),
         ):
             with self.subTest(text=text):
                 self.assertEqual(expected, inspect(text).tools)
 
-    def test_frontmatter_the_shared_reader_would_refuse_or_read_otherwise(self) -> None:
-        # Pinned while this parser is kept instead of skill-core's frontmatter.py; see the comment above _frontmatter.
+    def test_malformed_frontmatter_fails_with_the_readers_message(self) -> None:
+        # A grant the shared reader cannot read fails the review: guessing it once made a skill look unable to delegate.
+        prefix = "The review skill .claude/agents/review.md has frontmatter that cannot be read: "
+        for text, message in (
+            ("---\ntools:\n  read: true\n---\nSpawn reviewers.\n", "tools: a nested mapping is not supported"),
+            ("---\ntools: Read\ntools: Agent\n---\nReview it.\n", "tools appears more than once"),
+            (
+                "---\nname: x\njust prose\ntools: Read\n---\nSpawn reviewers.\n",
+                "frontmatter line 2 is not a 'key: value' line",
+            ),
+            ("---\ntools: Read\nSpawn reviewers.\n", "frontmatter is not closed"),
+            ("---\ntools: *\n---\nReview it.\n", "tools: an alias is not supported"),
+        ):
+            with self.subTest(text=text), self.assertRaises(RuntimeContractError) as raised:
+                inspect(text)
+            self.assertEqual(prefix + message, str(raised.exception))
+
+    def test_frontmatter_rows_the_shared_reader_reads(self) -> None:
         for text, tools, delegates in (
-            ("---\ntools: *\n---\nReview it.\n", ["*"], "unknown"),
-            ("---\ntools: Read\ntools: Agent\n---\nReview it.\n", ["Agent"], "unknown"),
-            ("---\nname: x\njust prose\ntools: Read\n---\nSpawn reviewers.\n", ["Read"], "no"),
-            ("---\ntools:\n  read: true\n---\nSpawn reviewers.\n", [], "no"),
-            ("---\ntools: Read # note\n---\nSpawn reviewers.\n", ["Read # note"], "no"),
+            ("---\nTools: Read\n---\nSpawn reviewers.\n", None, "yes"),  # `Tools` is not `tools`: all are inherited
+            ("---\ntools: Read # note\n---\nSpawn reviewers.\n", ["Read"], "no"),
+            ('---\ntools: ["Bash(a,b)", Read]\n---\nSpawn reviewers.\n', ["Bash(a,b)", "Read"], "no"),
+            (" ---\ntools: Read\n---\nSpawn reviewers.\n", None, "yes"),  # not a delimiter, so no frontmatter
+            ("---\nallowed-tools: Read Agent\n---\nSpawn reviewers.\n", ["Read", "Agent"], "yes"),
+            ("---\nallowed-tools: Read, Bash(git log:*)\n---\nSpawn reviewers.\n", ["Read", "Bash(git log:*)"], "no"),
+            ("---\ntools: Bash(a,b) Read\n---\nSpawn reviewers.\n", ["Bash(a,b)", "Read"], "no"),
         ):
             with self.subTest(text=text):
                 result = inspect(text)
@@ -183,12 +199,9 @@ class InspectionTests(unittest.TestCase):
         long = "Spawn " + "x" * 200
         result = inspect(f"---\ndescription: uses subagents\n---\n  Start   a\tsubagent.  \n{long}\n")
         self.assertEqual([(4, "Start a subagent."), (5, long[:160])], result.evidence)
-        unterminated = inspect("---\ndescription: uses subagents\n")
-        self.assertEqual((None, "yes"), (unterminated.tools, unterminated.delegates))
+        without = inspect(" ---\ndescription: uses subagents\n---\n")
         self.assertEqual(
-            [(2, "description: uses subagents")],
-            unterminated.evidence,
-            "an unterminated block is body text, counted from line 1",
+            [(2, "description: uses subagents")], without.evidence, "text with no frontmatter is body from line 1"
         )
 
     def test_named_agents_live_in_agent_directories_and_match_whole_names(self) -> None:
@@ -309,18 +322,28 @@ class InspectionTests(unittest.TestCase):
         )
 
     def test_frontmatter_value(self) -> None:
-        text = "---\nname: x\nModel: 'sonnet'\nmodel: opus\neffort: \"high\"\nempty:\n---\nmodel: haiku\n"
-        self.assertEqual("sonnet", frontmatter_value(text, "model"), "the first match wins, whatever its case")
-        self.assertEqual("high", frontmatter_value(text, "EFFORT"))
-        self.assertIsNone(frontmatter_value(text, "empty"))
-        self.assertIsNone(frontmatter_value(text, "missing"))
-        self.assertIsNone(frontmatter_value("---\nname: x\n---\nmodel: haiku\n", "model"), "the body is not read")
-        self.assertIsNone(frontmatter_value("model: haiku\n", "model"))
-        self.assertIsNone(frontmatter_value("", "model"))
-        self.assertIsNone(
-            frontmatter_value("---\nmodel: haiku\n", "model"),
-            "an unterminated block is no frontmatter, as inspect_skill reads it",
+        text = (
+            "---\nname: x\nModel: 'sonnet'\nmodel: opus # strong\neffort: \"high\"\nempty:\nquoted: ''\n---\n"
+            "model: haiku\n"
         )
+        self.assertEqual("opus", frontmatter_value("db.md", text, "model"), "`Model` is another key; # is a comment")
+        self.assertEqual("high", frontmatter_value("db.md", text, "effort"))
+        self.assertIsNone(frontmatter_value("db.md", text, "EFFORT"), "keys are matched exactly")
+        self.assertIsNone(frontmatter_value("db.md", text, "empty"))
+        self.assertIsNone(frontmatter_value("db.md", text, "quoted"))
+        self.assertIsNone(frontmatter_value("db.md", text, "missing"))
+        self.assertIsNone(frontmatter_value("db.md", "---\nname: x\n---\nmodel: haiku\n", "model"), "body is not read")
+        self.assertIsNone(frontmatter_value("db.md", "model: haiku\n", "model"))
+        self.assertIsNone(frontmatter_value("db.md", "", "model"))
+        for text, message in (
+            ("---\nmodel: haiku\n", "frontmatter is not closed"),
+            ("---\nmodel: [haiku]\n---\n", "model must be a single value, not a list"),
+        ):
+            with self.subTest(text=text), self.assertRaises(RuntimeContractError) as raised:
+                frontmatter_value("Specialist profile db.md", text, "model")
+            self.assertEqual(
+                f"Specialist profile db.md has frontmatter that cannot be read: {message}", str(raised.exception)
+            )
 
     def test_entrypoint_manifest_shape_and_validation(self) -> None:
         inspection = inspect("---\ntools: Read\n---\nApply `docs/rules.md` and `src/A.cs`.\n")

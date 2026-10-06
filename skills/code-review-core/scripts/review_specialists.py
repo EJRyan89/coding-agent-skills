@@ -540,7 +540,7 @@ def profile_model(profile: str, text: str) -> tuple[str | None, str | None]:
     Reviewers otherwise inherit whatever model the runtime resolves at start, which a skill's own model setting
     can leave pointing at a smaller model for minutes; a profile that names its model is protected from that.
     """
-    value = frontmatter_value(text, "model")
+    value = frontmatter_value(f"Specialist profile {profile}", text, "model")
     if value is None or value.casefold() == "inherit":
         return None, None
     if value.casefold() in MODEL_ALIASES:
