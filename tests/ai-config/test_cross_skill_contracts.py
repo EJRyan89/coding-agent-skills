@@ -124,6 +124,26 @@ class CrossSkillContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8-sig")
         self.assertIn("For `Skill`, use native skill invocation.", contract)
 
+    def test_runtime_compatibility_holds_only_rules_a_shipped_skill_uses(self) -> None:
+        # Every Codex and Copilot run of any skill reads this file first, so a rule no shipped skill needs is paid for
+        # on every run (#28).
+        contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
+        mapping = next(line for line in contract.splitlines() if "as Claude adapter names" in line)
+        mapped = set(re.findall(r"`([A-Za-z]+)`", mapping))
+        granted: set[str] = set()
+        for path in [*(REPOSITORY_ROOT / "skills").glob("*/SKILL.md"), *(REPOSITORY_ROOT / "agents").glob("*.md")]:
+            document = skill_frontmatter.read(path)
+            for key in ("allowed-tools", "tools"):
+                if key in document.keys():
+                    value = document.value(key)
+                    entries = value if isinstance(value, list) else str(value).split(",")
+                    granted |= {entry.strip().split("(", 1)[0] for entry in entries if entry.strip()}
+        self.assertTrue(mapped, "the tool-mapping line was not found")
+        self.assertEqual(set(), mapped - granted, "runtime-compatibility.md maps a tool nothing shipped grants")
+        for unused in ("EnterWorktree", "CLAUDE_SESSION_ID", "model:", "MCP", "<usage>", "gh pr review", "KEY=value"):
+            with self.subTest(unused=unused):
+                self.assertNotIn(unused, contract)
+
     def test_only_skills_no_other_skill_invokes_leave_the_model_skill_list(self) -> None:
         def flag(name: str, key: str) -> str | None:
             return skill_frontmatter.read(REPOSITORY_ROOT / "skills" / name / "SKILL.md").string(key)

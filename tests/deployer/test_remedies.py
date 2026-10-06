@@ -91,8 +91,9 @@ class SourceRemedyTests(RemedyTestCase):
         self.assert_lines(
             result.output,
             "ERROR: deploy-meta/alpha.json has an invalid metadata shape",
-            "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, and agent_deps, where "
-            "present, are lists of strings, and whose selectable and opt_in, where present, are true or false. "
+            "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, optional_tools, and "
+            "agent_deps, where present, are lists of strings, and whose selectable and opt_in, where present, are "
+            "true or false. "
             "docs/adding-a-skill.md describes each key.",
         )
 

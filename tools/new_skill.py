@@ -77,13 +77,19 @@ def shell_grant_problems(allowed_tools: list[str]) -> list[str]:
     return found
 
 
+def metadata_text(document: dict[str, object]) -> str:
+    """The canonical text of a deploy-meta file: one key per line, indented four spaces, each value on that line."""
+    lines = [f"    {json.dumps(key)}: {json.dumps(value)}" for key, value in document.items()]
+    return "{\n" + ",\n".join(lines) + "\n}\n"
+
+
 def metadata(tools: list[str], opt_in: bool) -> str:
     document: dict[str, object] = {"required_vars": [], "shared_deps": ["runtime-compatibility.md"]}
     if tools:
         document["tools"] = tools
     if opt_in:
         document["opt_in"] = True
-    return json.dumps(document, indent=4) + "\n"
+    return metadata_text(document)
 
 
 def _one_line(label: str, value: str) -> str:

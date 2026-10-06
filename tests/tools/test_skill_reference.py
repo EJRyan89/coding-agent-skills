@@ -32,12 +32,12 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.add_skill(
             "alpha",
             'description: "Sweeps every repository under {{REPOS_ROOT}}, \\"carefully\\". Use it when asked to sweep."\nargument-hint: "[--flag X]"',
-            {"required_vars": ["REPOS_ROOT"], "opt_in": True},
+            {"required_vars": ["REPOS_ROOT"], "opt_in": True, "tools": ["copilot"]},
         )
         self.add_skill(
             "beta",
             "description: 'Beta''s plain description.'\ndisable-model-invocation: true",
-            {"skill_deps": ["gamma"], "tools": ["gh"]},
+            {"skill_deps": ["gamma"], "tools": ["gh"], "optional_tools": ["dotnet-format"]},
         )
         self.add_skill("gamma", "description: Internal support.", {"selectable": False, "tools": ["copilot"]})
         (self.root / "README.md").write_text(README, encoding="utf-8")
@@ -75,17 +75,24 @@ class SkillReferenceTestCase(unittest.TestCase):
 
         self.assertLess(text.index("## `alpha`"), text.index("## `beta`"))
         self.assertNotIn("gamma", text)
-        self.assertIn("| [`alpha`](#alpha) | You or the agent | Opt-in | the `REPOS_ROOT` setting |", text)
-        self.assertIn("| [`beta`](#beta) | You | `suite` bundle | `copilot` (optional), `gh` |", text)
+        self.assertIn(
+            "| [`alpha`](#alpha) | You or the agent | Opt-in | `copilot` (optional), the `REPOS_ROOT` setting |", text
+        )
+        self.assertIn("| [`beta`](#beta) | You | `suite` bundle | `dotnet-format` (optional), `gh` |", text)
         self.assertIn('Sweeps every repository under `REPOS_ROOT`, "carefully".', text)
         self.assertIn("```text\n/alpha [--flag X]\n```", text)
-        self.assertIn("Opt-in: deploy it with `--include alpha`. Needs the `REPOS_ROOT` setting.", text)
+        self.assertIn(
+            "Opt-in: deploy it with `--include alpha`. Needs `copilot` (optional) and the `REPOS_ROOT` setting.", text
+        )
         self.assertIn("Beta's plain description.", text)
         self.assertIn("```text\n/beta\n```", text)
         self.assertIn(
-            "Started by you. Installed with the `suite` bundle. Needs `copilot` (optional) and `gh`. Takes no arguments.",
+            "Started by you. Installed with the `suite` bundle. Needs `dotnet-format` (optional) and `gh`. "
+            "Takes no arguments.",
             text,
         )
+        # A skill lists only the tools it declares: beta does not run gamma's copilot through its dependency.
+        self.assertNotIn("copilot", text[text.index("## `beta`"):])
 
     def test_a_section_without_hand_written_prose_is_reported(self) -> None:
         skill_reference.write(self.root)
@@ -221,7 +228,7 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.add_skill(
             "alpha",
             "description: >-\n  Folded across\n  two lines.\nargument-hint: '[--flag X]'",
-            {"required_vars": ["REPOS_ROOT"], "opt_in": True},
+            {"required_vars": ["REPOS_ROOT"], "opt_in": True, "tools": ["copilot"]},
         )
         skill_reference.write(self.root)
         self.assertIn("<!-- generated:alpha -->\nFolded across two lines.\n", self.text())
