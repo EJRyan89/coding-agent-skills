@@ -69,7 +69,7 @@ PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
-# A noqa comment names the codes it suppresses and says why, after a dash: `# noqa: F401 - <reason>`.
+# A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where

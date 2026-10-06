@@ -823,11 +823,8 @@ def sweep(target: str | None, repos_root: str, plans: str, services: Services, s
             emit("PLAN", result["plan"])
         for line in result["lines"]:
             kind = line.split("\t")[0]
-            if (
-                kind in SWEEP_KINDS
-                and not (kind == "SUMMARY" and result["state"] == "quiet")
-                or kind == "CHECKOUT"
-                and line.split("\t")[1] == "failed"
+            if (kind in SWEEP_KINDS and not (kind == "SUMMARY" and result["state"] == "quiet")) or (
+                kind == "CHECKOUT" and line.split("\t")[1] == "failed"
             ):
                 print(line)
     emit(

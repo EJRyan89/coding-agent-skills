@@ -558,8 +558,7 @@ def _surviving_skills(context: Context, selected: list[str]) -> list[str]:
         if (
             not destination.is_dir()
             or hashing.find_link(destination) is not None
-            or hashing.hash_path(destination) != owned_hash
-            and not (name in selected and context.forced(name))
+            or (hashing.hash_path(destination) != owned_hash and not (name in selected and context.forced(name)))
         ):
             survivors.append(name)
     return survivors

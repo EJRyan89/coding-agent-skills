@@ -472,7 +472,7 @@ def _validate_reviewers(value: Any, identifier: str) -> None:
         or set(row) != REVIEWER_FIELDS
         or not all(isinstance(row[field], str) and row[field] for field in ("reviewer", "model"))
         or not all(type(row[field]) is int and row[field] >= 0 for field in ("findings", "flagged_findings"))
-        or not all(row[field] is None or type(row[field]) is int and row[field] >= 0 for field in OUTCOMES)
+        or not all(row[field] is None or (type(row[field]) is int and row[field] >= 0) for field in OUTCOMES)
         for row in value
     ):
         raise InsightError(f"{identifier}.reviewers must be a list of reviewer counts")

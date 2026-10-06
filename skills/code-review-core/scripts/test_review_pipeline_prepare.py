@@ -445,7 +445,7 @@ class PrepareFixture(unittest.TestCase):
         with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
             try:
                 rp.prepare(selector, config_path=self.config_path, services=self.services, **options)
-            except Exception as exc:  # noqa: BLE001 - the test reports whichever class prepare raises
+            except Exception as exc:  # the test reports whichever class prepare raises
                 return type(exc), self.normalize(str(exc)), printed.getvalue()
         raise AssertionError("prepare did not raise")
 

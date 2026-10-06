@@ -676,9 +676,8 @@ def _validate_scope(scope: Any, review: dict[str, Any]) -> None:
     if not _count(scope["files_total"]) or not _count(scope["lines_total"]):
         raise RecordError("Review scope totals must be non-negative integers")
     compared = scope["files_changed"] is not None
-    if (
-        compared != (scope["lines_changed"] is not None)
-        or compared
+    if compared != (scope["lines_changed"] is not None) or (
+        compared
         and not (
             _count(scope["files_changed"])
             and scope["files_changed"] <= scope["files_total"]
