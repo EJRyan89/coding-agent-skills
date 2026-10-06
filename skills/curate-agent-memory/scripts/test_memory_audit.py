@@ -303,6 +303,96 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual(2, memory_audit.main(["reindex", "--memory-dir", str(self.memory_dir / "absent")]))
 
 
+class DeleteTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+        self.memory_dir = self.root / "memory"
+        write(self.memory_dir / "keep.md", memory("keep", "Keep."))
+        write(self.memory_dir / "gone.md", memory("gone", "Gone."))
+        write(self.memory_dir / "other.md", memory("other", "Other."))
+        write(self.memory_dir / "MEMORY.md", "- [keep](keep.md) — keep description\n")
+        write(self.memory_dir / "sub" / "inner.md", memory("inner", "Inner."))
+        write(self.memory_dir / "notes.txt", "Notes.\n")
+        write(self.root / "outside.md", memory("outside", "Outside."))
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def delete(self, *names: str) -> tuple[int, list[str]]:
+        captured = io.StringIO()
+        with redirect_stdout(captured):
+            code = memory_audit.main(["delete", "--memory-dir", str(self.memory_dir), *names])
+        return code, captured.getvalue().splitlines()
+
+    def snapshot(self) -> dict[str, bytes]:
+        return {
+            path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()
+        }
+
+    def test_named_memories_are_deleted(self) -> None:
+        index = (self.memory_dir / "MEMORY.md").read_bytes()
+        self.assertEqual((0, ["DELETED gone.md", "DELETED other.md"]), self.delete("gone.md", "other.md"))
+        self.assertEqual(
+            ["memory/MEMORY.md", "memory/keep.md", "memory/notes.txt", "memory/sub/inner.md", "outside.md"],
+            sorted(self.snapshot()),
+        )
+        self.assertEqual(index, (self.memory_dir / "MEMORY.md").read_bytes())
+
+    def test_any_refused_name_deletes_nothing(self) -> None:
+        refusals = {
+            "../outside.md": "FAILED ../outside.md: not a file name directly inside the memory directory",
+            "..\\outside.md": "FAILED ..\\outside.md: not a file name directly inside the memory directory",
+            "..": "FAILED ..: not a file name directly inside the memory directory",
+            str(self.root / "outside.md"): f"FAILED {self.root / 'outside.md'}: not a file name directly inside the memory directory",
+            "sub/inner.md": "FAILED sub/inner.md: not a file name directly inside the memory directory",
+            "sub": "FAILED sub: not a .md file",
+            "notes.txt": "FAILED notes.txt: not a .md file",
+            "MEMORY.md": "FAILED MEMORY.md: the index is rebuilt with reindex, never deleted",
+            "memory.md": "FAILED memory.md: the index is rebuilt with reindex, never deleted",
+            "absent.md": "FAILED absent.md: no such file",
+        }
+        before = self.snapshot()
+        for name, failure in refusals.items():
+            with self.subTest(name=name):
+                self.assertEqual((1, [failure]), self.delete(name))
+                self.assertEqual((1, [failure]), self.delete("keep.md", name, "gone.md"))
+                self.assertEqual(before, self.snapshot())
+
+    def test_every_refusal_is_reported(self) -> None:
+        before = self.snapshot()
+        self.assertEqual(
+            (1, ["FAILED MEMORY.md: the index is rebuilt with reindex, never deleted", "FAILED absent.md: no such file"]),
+            self.delete("gone.md", "MEMORY.md", "absent.md"),
+        )
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_name_given_twice_is_refused(self) -> None:
+        before = self.snapshot()
+        self.assertEqual((1, ["FAILED KEEP.md: named more than once"]), self.delete("keep.md", "KEEP.md"))
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_subdirectory_named_like_a_memory_is_refused(self) -> None:
+        (self.memory_dir / "folder.md").mkdir()
+        before = self.snapshot()
+        self.assertEqual((1, ["FAILED folder.md: not a regular file"]), self.delete("folder.md", "gone.md"))
+        self.assertEqual(before, self.snapshot())
+        self.assertTrue((self.memory_dir / "folder.md").is_dir())
+
+    def test_a_link_is_never_followed(self) -> None:
+        target = self.root / "target"
+        write(target / "precious.md", memory("precious", "Precious."))
+        link = self.memory_dir / "linked.md"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+        self.assertEqual((1, ["FAILED linked.md: not a regular file"]), self.delete("linked.md", "gone.md"))
+        self.assertTrue((target / "precious.md").is_file())
+        self.assertTrue((self.memory_dir / "gone.md").is_file())
+        self.assertTrue(link.exists())
+
+    def test_missing_directory_is_rejected(self) -> None:
+        self.assertEqual(2, memory_audit.main(["delete", "--memory-dir", str(self.root / "absent"), "keep.md"]))
+
+
 def git(*arguments: str) -> None:
     subprocess.run(["git", *arguments], check=True, capture_output=True)
 
