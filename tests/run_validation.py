@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import io
 import json
 import os
 import re
@@ -26,6 +27,8 @@ import sys
 import tempfile
 import threading
 import time
+import tokenize
+import tomllib
 import unittest
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -64,6 +67,9 @@ PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
 FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
+# A noqa comment names the codes it suppresses and says why, after a dash: `# noqa: F401 - <reason>`.
+NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
+NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 # Every Claude Code tool that can edit a file or run git, each of which the hub guard's hook must see.
 HUB_GUARD_TOOLS = {"Bash", "Edit", "MultiEdit", "NotebookEdit", "PowerShell", "Write"}
@@ -603,6 +609,23 @@ def repository_files(root: Path) -> list[Path]:
         check=True,
     ).stdout.decode("utf-8")
     return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
+
+
+def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
+    """Each `# noqa` comment that does not name its codes and state its reason after ` - `, as path:line."""
+    found: list[str] = []
+    for path in sorted(files):
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if (
+                token.type == tokenize.COMMENT
+                and NOQA.search(token.string)
+                and not NOQA_WITH_REASON.search(token.string)
+            ):
+                found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+    return found
 
 
 def private_references(root: Path, files: list[Path]) -> list[str]:
@@ -2847,6 +2870,43 @@ class RepositoryValidation(unittest.TestCase):
         with mock.patch(f"{__name__}.ruff_lint_check") as lint:
             jobs["static lint check (ruff check)"].run()
         lint.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", "deploy.py"])
+
+    def test_lint_rule_set_is_pinned_and_ignores_nothing(self) -> None:
+        configuration = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]
+        self.assertEqual(120, configuration["line-length"])
+        lint = configuration["lint"]
+        self.assertEqual(["E", "F", "W", "I", "UP", "B", "SIM"], lint["select"])
+        # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
+        self.assertEqual(["select"], sorted(lint))
+        self.assertEqual(["format", "line-length", "lint", "target-version"], sorted(configuration))
+
+    def test_repository_has_no_noqa_without_a_reason(self) -> None:
+        self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_noqa_scan_requires_codes_and_a_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # The comments are assembled so this file does not carry the comments it tests.
+            marker = "# no" + "qa"
+            (root / "module.py").write_text(
+                "\n".join(
+                    [
+                        f"import os  {marker}",
+                        f"import re  {marker}: F401",
+                        f"import io  {marker}: F401 -",
+                        f"import sys  {marker}: F401 - imported for its effect",
+                        f"import json  {marker}: F401, E402 - kept for the plugin loader",
+                        f'TEXT = "{marker}: F401"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (root / "notes.md").write_text(f"{marker}\n", encoding="utf-8")
+            self.assertEqual(
+                ["module.py:1", "module.py:2", "module.py:3"],
+                noqa_without_reason(root, [root / "module.py", root / "notes.md"]),
+            )
 
     def test_missing_ruff_fails_the_lint_check_with_the_install_command(self) -> None:
         with mock.patch(f"{__name__}.find_ruff", return_value=None), self.assertRaises(AssertionError) as raised:
