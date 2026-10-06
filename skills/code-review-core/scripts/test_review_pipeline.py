@@ -36,7 +36,7 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY = "example/one"
 SELECTOR = "example/one#12"
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
-SPECIALIST_MANIFEST = {
+SPECIALIST_MANIFEST: dict[str, Any] = {
     "schema_version": 2,
     "id": "fixture-specialists",
     "protocol_version": 1,
@@ -57,7 +57,7 @@ SPECIALIST_MANIFEST = {
     ],
     "conditions": {},
 }
-ENTRYPOINT_MANIFEST = {
+ENTRYPOINT_MANIFEST: dict[str, Any] = {
     "schema_version": 1,
     "id": "fixture-review",
     "protocol_version": 1,
@@ -67,7 +67,7 @@ ENTRYPOINT_MANIFEST = {
     "resources": ["review/rules.md"],
     "agent_profiles": [],
 }
-COPILOT_MANIFEST = {
+COPILOT_MANIFEST: dict[str, Any] = {
     **ENTRYPOINT_MANIFEST,
     "id": "fixture-copilot",
     "required_capabilities": ["isolated-added-root", "read-diff", "write-result"],
@@ -107,6 +107,14 @@ def workflow_output(out: str) -> tuple[Path, str, list[dict[str, Any]]]:
         for identity, prompt, model, effort in entries
     ]
     return script, text, roles
+
+
+def archived_record(archive: Path, pull_number: int) -> dict[str, Any]:
+    """The pull request's latest archived record, which the test expects to exist."""
+    record = latest_record(archive, REPOSITORY, pull_number)
+    if record is None:
+        raise AssertionError(f"no record is archived for {REPOSITORY}#{pull_number}")
+    return record
 
 
 def git(path: Path, *arguments: str) -> str:
@@ -552,7 +560,7 @@ class GenericReviewTests(PipelineFixture):
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
         self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=1", out)
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(self.head, record["pull_request"]["head_sha"])
         self.assertEqual("feature-12", record["pull_request"]["head_ref"])
         self.assertEqual(
@@ -643,7 +651,7 @@ class GenericReviewTests(PipelineFixture):
             encoding="utf-8",
         )
         rp.finalize(ready["run"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(["C1", "C2"], [comment["id"] for comment in record["github_comments"]])
         self.assertEqual("addressed", record["comment_dispositions"][0]["disposition"])
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
@@ -665,7 +673,7 @@ class GenericReviewTests(PipelineFixture):
         # The rerun does not restart the clock: the role's time runs from its first dispatch to its accepted result.
         self.finish_after(ready["run"], ready["roles"][0], 125.4)
         rp.finalize(ready["run"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(
             [
                 {
@@ -735,7 +743,7 @@ class GenericReviewTests(PipelineFixture):
                     del state["dispatched_at"]
                     path.write_text(json.dumps(state), encoding="utf-8")
                 result = rp.finalize(ready["run"])
-                record = latest_record(self.archive, REPOSITORY, 12)
+                record = archived_record(self.archive, 12)
                 self.assertEqual(timed, "seconds" in record["review"]["reviewers"][0])
                 markdown = Path(result["markdown"]).read_text(encoding="utf-8")
                 self.assertIn(f"| `generic-review` | General | fixture-model | 2 | 1 | 0 {cell}", markdown)
@@ -827,7 +835,7 @@ class UndecodableDiffTests(PipelineFixture):
         result = rp.finalize(ready["run"])
         self.assertEqual("APPROVED", result["verdict"])
         self.assertIn("1 undecodable bytes replaced in the diff", result["notes"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(3, record["review"]["reviewers"][0]["files"])
 
     def test_a_decoding_fault_from_the_runner_ends_as_failed(self) -> None:
@@ -884,7 +892,7 @@ class SymbolicLinkTests(PipelineFixture):
         result = rp.finalize(run)
         self.assertEqual("APPROVED", result["verdict"], "a deliberate exclusion is not a coverage gap")
         self.assertIn("snapshot excludes symbolic link app/cache", result["notes"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertNotIn("coverage", record["review"], "no source was unavailable and no file left unreviewed")
 
     def test_a_link_the_pull_request_does_not_change_gets_no_note(self) -> None:
@@ -1302,7 +1310,7 @@ class ReReviewTests(PipelineFixture):
             dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
         )
         rp.finalize(ready["run"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual((2, "re-review"), (record["review"]["version"], record["review"]["mode"]))
         self.assertEqual("addressed", record["prior_dispositions"][0]["disposition"])
 
@@ -1327,7 +1335,7 @@ class ReReviewTests(PipelineFixture):
         self.flags_path.write_text("{}", encoding="utf-8")
         with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
             rp.finalize(ready["run"])
-        self.assertEqual(1, latest_record(self.archive, REPOSITORY, 12)["review"]["version"], "nothing archived")
+        self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"], "nothing archived")
         self.flags_path.unlink()
         add_flag(
             self.flags_path,
@@ -1353,7 +1361,7 @@ class ReReviewTests(PipelineFixture):
         ready = self.prepare()
         self.write_role_result(ready["roles"][0], findings=[{**self.finding(), "severity": "MUST_FIX"}])
         rp.finalize(ready["run"])
-        self.assertEqual("CHANGES_REQUESTED", latest_record(self.archive, REPOSITORY, 12)["review"]["verdict"])
+        self.assertEqual("CHANGES_REQUESTED", archived_record(self.archive, 12)["review"]["verdict"])
         add_flag(
             self.flags_path,
             category="false-positive",
@@ -1386,7 +1394,7 @@ class ReReviewTests(PipelineFixture):
             ],
         )
         rp.finalize(ready["run"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual("APPROVED", record["review"]["verdict"])
         self.assertEqual(("closed", 2), (record["ledger"][0]["state"], record["ledger"][0]["judged_in"]))
         self.assertEqual(
@@ -1413,7 +1421,7 @@ class ReReviewTests(PipelineFixture):
 
     def test_an_incremental_re_review_reviews_only_the_files_that_changed(self) -> None:
         self.record_initial_review()
-        first = latest_record(self.archive, REPOSITORY, 12)["review"]["patches"]
+        first = archived_record(self.archive, 12)["review"]["patches"]
         self.assertEqual({"CLAUDE.md": 2, "app/service.py": 2}, {path: patch["lines"] for path, patch in first.items()})
         self.push({"CLAUDE.md": "Changed again\n"})
         code, out, err = self.run_main("prepare", "--re-review", SELECTOR, "--scope", "incremental")
@@ -1436,7 +1444,7 @@ class ReReviewTests(PipelineFixture):
         )
         code, out, err = self.run_main("finalize", "--run", run)
         self.assertEqual(0, code, err)
-        review = latest_record(self.archive, REPOSITORY, 12)["review"]
+        review = archived_record(self.archive, 12)["review"]
         self.assertEqual(
             {
                 "requested": "incremental",
@@ -1477,7 +1485,7 @@ class ReReviewTests(PipelineFixture):
             )
             code, out, err = self.run_main("finalize", "--run", run)
             self.assertEqual(0, code, err)
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(
             (3, [], "CHANGES_REQUESTED"), (record["review"]["version"], record["findings"], record["review"]["verdict"])
         )
@@ -1652,21 +1660,26 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual(
             (2, "re-review"),
             (
-                latest_record(self.archive, REPOSITORY, 12)["review"]["version"],
-                latest_record(self.archive, REPOSITORY, 12)["review"]["mode"],
+                archived_record(self.archive, 12)["review"]["version"],
+                archived_record(self.archive, 12)["review"]["mode"],
             ),
         )
         self.assertEqual(
             (1, "initial"),
             (
-                latest_record(self.archive, REPOSITORY, 13)["review"]["version"],
-                latest_record(self.archive, REPOSITORY, 13)["review"]["mode"],
+                archived_record(self.archive, 13)["review"]["version"],
+                archived_record(self.archive, 13)["review"]["mode"],
             ),
         )
 
     def test_prepare_resolves_the_runtime_from_the_stated_host_and_records_both(self) -> None:
         asked: list[tuple[str, str | None]] = []
-        self.services.resolve_runtime = lambda configured, host: asked.append((configured, host)) or "codex"
+
+        def resolve_runtime(configured: str, host: str | None) -> str:
+            asked.append((configured, host))
+            return "codex"
+
+        self.services.resolve_runtime = resolve_runtime
         code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--host", "codex")
         self.assertEqual(0, code, err)
         state = json.loads(
@@ -1753,7 +1766,7 @@ class RepositoryReviewerTests(PipelineFixture):
             self.write_role_result(role)
         result = rp.finalize(ready["run"])
         self.assertEqual("APPROVED", result["verdict"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual("fixture-specialists", record["review"]["adapter"]["name"])
 
     def test_entrypoint_reviewer_gets_the_fixed_delegation_prompt(self) -> None:
@@ -1790,7 +1803,7 @@ class RepositoryReviewerTests(PipelineFixture):
         self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(ready["run"]))[1])
         self.finish_after(ready["run"], ready["roles"][0], 42)
         self.assertEqual("APPROVED", rp.finalize(ready["run"])["verdict"])
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual(
             [
                 {
@@ -1834,7 +1847,7 @@ class RepositoryReviewerTests(PipelineFixture):
         Path(ready["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         self.assertEqual(f"ALL_VALID {SELECTOR}\n", self.run_main("check", "--run", str(ready["run"]))[1])
         rp.finalize(ready["run"])
-        self.assertNotIn("github_comments", latest_record(self.archive, REPOSITORY, 12))
+        self.assertNotIn("github_comments", archived_record(self.archive, 12))
 
     def test_dispatch_refuses_a_natively_delegated_run(self) -> None:
         ready = self.prepare()
@@ -1950,7 +1963,7 @@ class CopilotHostTests(PipelineFixture):
         self.assertEqual(
             [f"RUN {SELECTOR} {self.run_directory}", f"HOST copilot-cli {self.run_directory}"], out.splitlines()
         )
-        self.run = str(self.run_directory)
+        self.run_path = str(self.run_directory)
         self.result = self.run_directory / "result.json"
 
     def launch(self, arguments: Sequence[str], cwd: Path, log: Path) -> int:
@@ -1993,7 +2006,7 @@ class CopilotHostTests(PipelineFixture):
         """Run a host dispatch launched, in this process, with the arguments dispatch gave it."""
         arguments = self.launched[index]
         self.assertEqual(
-            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "host", "--run", self.run],
+            [sys.executable, "-B", str(SCRIPT_DIRECTORY / "review_pipeline.py"), "host", "--run", self.run_path],
             arguments[:6],
         )
         return self.run_main(*arguments[3:])
@@ -2006,7 +2019,7 @@ class CopilotHostTests(PipelineFixture):
 
     def test_dispatch_starts_the_host_detached_and_returns_at_once(self) -> None:
         with mock.patch("time.time", return_value=3_000.0):
-            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+            self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
         self.assertEqual(1, len(self.launched))
         self.assertEqual(0, self.copilot_calls, "dispatch only starts the host; it never runs Copilot itself")
         token = self.launched[0][self.launched[0].index("--token") + 1]
@@ -2022,87 +2035,87 @@ class CopilotHostTests(PipelineFixture):
 
         self.assertEqual(0, self.run_host()[0])
         self.assertEqual(
-            (0, f"DISPATCHED {self.result}\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "90")
+            (0, f"DISPATCHED {self.result}\n", ""), self.run_main("wait", "--run", self.run_path, "--timeout", "90")
         )
         self.assertEqual(self.valid_result(), json.loads(self.result.read_text(encoding="utf-8")))
         self.assertFalse((self.run_directory / "copilot-result-1.json").exists(), "the staging file was promoted")
         self.assertTrue((self.run_directory / "copilot-isolation-1").is_dir())
         self.assertTrue((self.run_directory / "copilot-diagnostic-1.jsonl").is_file())
-        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), self.run_main("check", "--run", self.run)[:2])
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n"), self.run_main("check", "--run", self.run_path)[:2])
 
     def test_wait_reports_a_running_host_after_its_timeout_and_never_longer(self) -> None:
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         self.clock.now += 30
         # A host still running is a state the skill polls again, not a failure: exit 0.
-        self.assertEqual((0, "RUNNING 120s\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "90"))
+        self.assertEqual((0, "RUNNING 120s\n", ""), self.run_main("wait", "--run", self.run_path, "--timeout", "90"))
         self.assertEqual(10_120.0, self.clock.now, "wait returns at its timeout")
-        self.assertEqual((0, "RUNNING 125s\n", ""), self.run_main("wait", "--run", self.run, "--timeout", "5"))
+        self.assertEqual((0, "RUNNING 125s\n", ""), self.run_main("wait", "--run", self.run_path, "--timeout", "5"))
 
     def test_wait_bounds_its_timeout(self) -> None:
         for timeout in ("0", "301", "ninety"):  # a usage error: argparse's own exit 2
             with self.subTest(timeout=timeout), contextlib.redirect_stderr(io.StringIO()):
                 with self.assertRaises(SystemExit) as raised:
-                    self.run_main("wait", "--run", self.run, "--timeout", timeout)
+                    self.run_main("wait", "--run", self.run_path, "--timeout", timeout)
                 self.assertEqual(2, raised.exception.code)
 
     def test_wait_reports_a_failed_host_by_its_reviewer(self) -> None:
         self.review = "failed"
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         self.assertEqual(0, self.run_host()[0])
         diagnostic = self.run_directory / "copilot-diagnostic-1.jsonl"
         self.assertEqual(
             (1, f"FAILED fixture-copilot: GitHub Copilot CLI failed with exit code 1; see {diagnostic}\n", ""),
-            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+            self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
         self.assertFalse(self.result.exists())
-        code, out, _ = self.run_main("check", "--run", self.run)
+        code, out, _ = self.run_main("check", "--run", self.run_path)
         self.assertEqual(1, code)
         self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
 
     def test_wait_reports_a_host_that_ended_without_a_result(self) -> None:
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         del self.alive[4001]  # killed before it wrote an outcome
         log = self.run_directory / "copilot-host-1.log"
         self.assertEqual(
             (1, f"FAILED fixture-copilot: the Copilot CLI host (PID 4001) ended without a result; see {log}\n", ""),
-            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+            self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
         self.alive[4001] = 8  # the PID now belongs to another process
-        self.assertEqual(1, self.run_main("wait", "--run", self.run, "--timeout", "90")[0])
+        self.assertEqual(1, self.run_main("wait", "--run", self.run_path, "--timeout", "90")[0])
 
     def test_wait_reports_a_host_past_its_limit_and_a_run_never_dispatched(self) -> None:
         self.assertEqual(
             (1, "FAILED fixture-copilot: no Copilot CLI host was dispatched for this run\n", ""),
-            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+            self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         self.clock.now += 1800 + 300 + 1
         self.assertEqual(
             (1, "FAILED fixture-copilot: the Copilot CLI host (PID 4001) ran past its 1800s limit\n", ""),
-            self.run_main("wait", "--run", self.run, "--timeout", "90"),
+            self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
 
     def test_a_rerun_refuses_while_the_recorded_host_is_alive(self) -> None:
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         self.assertEqual(
             (1, "FAILED fixture-copilot: the Copilot CLI host is still running (PID 4001)\n", ""),
-            self.run_main("dispatch", "--run", self.run),
+            self.run_main("dispatch", "--run", self.run_path),
         )
         self.assertEqual(1, len(self.launched))
         self.alive[4001] = 8  # the recorded host ended and its PID was reused
         with mock.patch("time.time", return_value=4_000.0):
-            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+            self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
         self.assertEqual(2, self.claim()["attempt"])
         self.assertEqual(4002, self.claim()["pid"])
         dispatched = json.loads((self.run_directory / rp.RUN_FILE).read_text(encoding="utf-8"))["dispatched_at"]
         self.assertNotEqual({"fixture-copilot": 4_000.0}, dispatched, "a rerun does not restart the reviewer's clock")
 
     def test_check_treats_a_running_host_as_not_ready(self) -> None:
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         self.clock.now += 42
         # Only RUNNING lines: a state the skill polls again, so exit 0; a RETRY or FAILED line makes it 1.
         self.assertEqual(
-            (0, f"RUNNING {SELECTOR} fixture-copilot 42s\n", ""), self.run_main("check", "--run", self.run)
+            (0, f"RUNNING {SELECTOR} fixture-copilot 42s\n", ""), self.run_main("check", "--run", self.run_path)
         )
         self.assertEqual({"fixture-copilot": 0}, self.attempts(), "a running host's role is not set aside")
         self.assertEqual([], list(self.run_directory.glob("result.json*")))
@@ -2114,16 +2127,18 @@ class CopilotHostTests(PipelineFixture):
 
         self.services.launch = interrupted
         with self.assertRaises(KeyboardInterrupt):
-            self.run_main("dispatch", "--run", self.run)
+            self.run_main("dispatch", "--run", self.run_path)
         self.assertIsNone(self.claim()["pid"])
         self.assertEqual(
             (1, "FAILED fixture-copilot: the Copilot CLI host is still starting\n", ""),
-            self.run_main("dispatch", "--run", self.run),
+            self.run_main("dispatch", "--run", self.run_path),
         )
-        self.assertEqual((0, f"RUNNING {SELECTOR} fixture-copilot 0s\n", ""), self.run_main("check", "--run", self.run))
+        self.assertEqual(
+            (0, f"RUNNING {SELECTOR} fixture-copilot 0s\n", ""), self.run_main("check", "--run", self.run_path)
+        )
 
         self.clock.now += 61  # the host never recorded itself, so check sets the role aside
-        code, out, _ = self.run_main("check", "--run", self.run)
+        code, out, _ = self.run_main("check", "--run", self.run_path)
         self.assertEqual(1, code)
         self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
         self.assertEqual({"fixture-copilot": 1}, self.attempts())
@@ -2133,11 +2148,11 @@ class CopilotHostTests(PipelineFixture):
         self.assertFalse(self.result.exists())
 
     def test_a_host_whose_role_is_set_aside_mid_review_never_promotes_its_result(self) -> None:
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
 
         def killed_then_checked() -> None:
             del self.alive[4001]  # check sees the host gone, though it is still writing
-            code, out, _ = self.run_main("check", "--run", self.run)
+            code, out, _ = self.run_main("check", "--run", self.run_path)
             self.assertTrue(out.startswith(f"RETRY {SELECTOR} fixture-copilot "), out)
 
         self.during_review = killed_then_checked
@@ -2147,18 +2162,18 @@ class CopilotHostTests(PipelineFixture):
         self.assertTrue((self.run_directory / "copilot-result-1.json").is_file(), "it stays in its staging file")
         outcome = json.loads((self.run_directory / "copilot-outcome-1.json").read_text(encoding="utf-8"))
         self.assertEqual("superseded", outcome["status"])
-        self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+        self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
         self.assertEqual({"attempt": 2, "generation": 1}, {key: self.claim()[key] for key in ("attempt", "generation")})
 
     def test_a_partial_result_is_never_read(self) -> None:
         self.review = "partial"
-        self.run_main("dispatch", "--run", self.run)
+        self.run_main("dispatch", "--run", self.run_path)
         checked: list[tuple[int, str, str]] = []
-        self.during_review = lambda: checked.append(self.run_main("check", "--run", self.run))
+        self.during_review = lambda: checked.append(self.run_main("check", "--run", self.run_path))
         self.assertEqual(0, self.run_host()[0])
         self.assertEqual([(0, f"RUNNING {SELECTOR} fixture-copilot 0s\n", "")], checked)
         self.assertFalse(self.result.exists(), "an invalid staging file is never promoted")
-        code, out, err = self.run_main("wait", "--run", self.run, "--timeout", "90")
+        code, out, err = self.run_main("wait", "--run", self.run_path, "--timeout", "90")
         self.assertEqual((1, ""), (code, err))
         self.assertTrue(out.startswith("FAILED fixture-copilot: GitHub Copilot CLI result is not valid JSON"), out)
         self.assertEqual([], list(self.run_directory.glob("result.json*")))
@@ -2172,12 +2187,12 @@ class CopilotHostTests(PipelineFixture):
             self.services = rp.Services(
                 github=self.services.github, resolve_runtime=self.services.resolve_runtime, today=self.services.today
             )
-            self.assertEqual((0, f"STARTED {self.run}\n", ""), self.run_main("dispatch", "--run", self.run))
+            self.assertEqual((0, f"STARTED {self.run_path}\n", ""), self.run_main("dispatch", "--run", self.run_path))
             pid = self.claim()["pid"]
             self.addCleanup(self.until_ended, pid)  # it holds its log open until it exits
             self.assertEqual(
                 (1, "FAILED fixture-copilot: GitHub Copilot CLI is not available\n", ""),
-                self.run_main("wait", "--run", self.run, "--timeout", "60"),
+                self.run_main("wait", "--run", self.run_path, "--timeout", "60"),
             )
         self.assertIsInstance(self.claim()["start_time"], int)
         self.until_ended(pid)
@@ -2477,13 +2492,14 @@ class ReviewerSourceTests(PipelineFixture):
     def test_validate_reviewer_lists_the_files_no_routed_specialist_covers(self) -> None:
         # The fixture's head changes app/service.py, which the Python specialist takes, and CLAUDE.md, which no
         # specialist covers.
-        for settings, last in (
+        cases: tuple[tuple[dict[str, Any], str], ...] = (
             ({}, "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"),
             (
                 {"uncovered": "ignore"},
                 "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)",
             ),
-        ):
+        )
+        for settings, last in cases:
             manifest = self.local_manifest(**settings)
             self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
             code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
@@ -2543,7 +2559,7 @@ class ReviewerSourceTests(PipelineFixture):
         code, out, err = self.run_main("finalize", "--run", str(run))
         self.assertEqual(0, code, err)
         self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=0", out)
-        record = latest_record(self.archive, REPOSITORY, 12)
+        record = archived_record(self.archive, 12)
         self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
         report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")

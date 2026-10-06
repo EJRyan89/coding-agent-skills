@@ -13,8 +13,10 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -81,6 +83,16 @@ from review_runtime import (
 from review_state import StateError, empty_state, load_state, update_state
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+
+
+def answering(result: CommandResult) -> Callable[[Sequence[str]], CommandResult]:
+    """A command runner that answers every command with the result."""
+    return lambda _arguments: result
+
+
+def reporting(status: ProcessStatus) -> Callable[[int], ProcessStatus]:
+    """A process probe that reports the status for every process."""
+    return lambda _pid: status
 
 
 def valid_config() -> dict:
@@ -239,7 +251,7 @@ class ConfigurationTests(unittest.TestCase):
                     {"manifest_path", "skill", "manifest"} & set(fields),
                     {key for key in ("manifest_path", "skill", "manifest") if reviewer[key] is not None},
                 )
-        for fields, message in (
+        for invalid, message in (
             ({}, "needs skill"),
             ({"manifest": True}, "needs skill"),
             ({"manifest_path": ".review/adapter.json", "skill": "review.md"}, "cannot also set skill or manifest"),
@@ -247,8 +259,8 @@ class ConfigurationTests(unittest.TestCase):
             ({"skill": "review.md", "manifest": "relative/manifest.json"}, "absolute drive-letter path"),
             ({"skill": "review.md", "manifest": False}, "absolute Windows path"),
         ):
-            with self.subTest(fields=fields), self.assertRaisesRegex(ConfigurationError, message):
-                validate_config(reviewer_config(**fields))
+            with self.subTest(fields=invalid), self.assertRaisesRegex(ConfigurationError, message):
+                validate_config(reviewer_config(**invalid))
         generic = valid_config()
         generic["repositories"]["example/one"]["reviewer"]["skill"] = "review.md"
         with self.assertRaisesRegex(ConfigurationError, "generic scope"):
@@ -466,7 +478,7 @@ class StateAndLockTests(unittest.TestCase):
                 self._old_lock(path, owner)
                 with (
                     self.assertRaisesRegex(PersistenceError, "Timed out"),
-                    ResourceLock(path, timeout_seconds=0.01, probe=lambda pid, status=status: status),
+                    ResourceLock(path, timeout_seconds=0.01, probe=reporting(status)),
                 ):
                     pass
                 self.assertEqual(owner["pid"], read_json(path / "owner.json")["pid"])
@@ -642,10 +654,10 @@ class RecordTests(unittest.TestCase):
             build_record(valid_request(), validate(valid_adapter_result()), version=1, policy={})["findings"][0],
         )
         covered = valid_adapter_result()
-        coverage = {"coverage": "available", "tool": "Microsoft.CodeAnalysis.NetAnalyzers", "rule": "CA2000"}
-        covered["findings"][0]["analyzer"] = coverage
+        analyzer_coverage = {"coverage": "available", "tool": "Microsoft.CodeAnalysis.NetAnalyzers", "rule": "CA2000"}
+        covered["findings"][0]["analyzer"] = analyzer_coverage
         record = build_record(valid_request(), validate(covered), version=1, policy={})
-        self.assertEqual(coverage, validate_record(record)["findings"][0]["analyzer"])
+        self.assertEqual(analyzer_coverage, validate_record(record)["findings"][0]["analyzer"])
         markdown = render_markdown(record, record_payload_hash="0" * 64)
         self.assertIn(
             "> **Analyzer:** `CA2000` in `Microsoft.CodeAnalysis.NetAnalyzers`, which the repository "
@@ -692,7 +704,7 @@ class RecordTests(unittest.TestCase):
             )
 
     def test_comment_dispositions_are_required_except_from_older_repository_reviewers(self) -> None:
-        arguments = {
+        arguments: dict[str, Any] = {
             "expected_repository": "example/one",
             "expected_number": 12,
             "expected_head_sha": "b" * 40,
@@ -839,7 +851,11 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(1, markdown.count(" addressed**"), "the prior findings' count is in the verdict row")
 
     def test_unhashable_values_are_validation_errors_not_crashes(self) -> None:
-        arguments = {"expected_repository": "example/one", "expected_number": 12, "expected_head_sha": "b" * 40}
+        arguments: dict[str, Any] = {
+            "expected_repository": "example/one",
+            "expected_number": 12,
+            "expected_head_sha": "b" * 40,
+        }
         for mutate, message in (
             (lambda r: r.update(status=["complete"]), "status is invalid"),
             (lambda r: r["findings"][0].update(severity=["MUST_FIX"]), "Invalid finding severity"),
@@ -1074,7 +1090,9 @@ class ArchiveTests(unittest.TestCase):
                 self._record("example/one", 12, 2),
                 expected_latest_version=1,
             )
-            self.assertEqual(2, latest_record(root, "example/one", 12)["review"]["version"])
+            latest = latest_record(root, "example/one", 12)
+            assert latest is not None, "the second version is archived"
+            self.assertEqual(2, latest["review"]["version"])
 
     def test_versions_list_every_number_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1098,7 +1116,9 @@ class ArchiveTests(unittest.TestCase):
                     expected_latest_version=version - 1 if version > 1 else None,
                 )
             self.assertEqual("review-v11.json", json_path.name)
-            self.assertEqual(11, latest_record(root, "example/one", 12)["review"]["version"])
+            latest = latest_record(root, "example/one", 12)
+            assert latest is not None, "eleven versions are archived"
+            self.assertEqual(11, latest["review"]["version"])
 
 
 class FlagTests(unittest.TestCase):
@@ -1126,13 +1146,14 @@ class FlagTests(unittest.TestCase):
     def test_a_finding_is_named_with_its_review_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "flags.json"
-            for options in (
+            invalid_options: tuple[dict[str, Any], ...] = (
                 {"repository": "example/one", "pull_number": 12, "finding_id": "F001"},
                 {"repository": "example/one", "review_version": 1, "finding_id": "F001"},
                 {"repository": "example/one", "pull_number": 12, "review_version": 0, "finding_id": "F001"},
                 {"repository": "example/one", "review_version": 1},
                 {"repository": "example/one", "pull_number": 12, "review_version": True},
-            ):
+            )
+            for options in invalid_options:
                 with self.subTest(options=options), self.assertRaises(FlagError):
                     add_flag(path, category="Guideline", body="Body.", **options)
             self.assertFalse(path.exists())
@@ -1194,7 +1215,7 @@ class GitHubTests(unittest.TestCase):
     def test_pagination_is_flattened(self) -> None:
         calls: list[list[str]] = []
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             calls.append(list(arguments))
             return CommandResult(
                 0,
@@ -1226,7 +1247,7 @@ class GitHubTests(unittest.TestCase):
         calls: list[list[str]] = []
         pages = {None: self._graphql_page([1, 2], "c1"), "c1": self._graphql_page([3], None)}
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             calls.append(list(arguments))
             after = next((value.removeprefix("after=") for value in arguments if value.startswith("after=")), None)
             return CommandResult(0, pages[after], "")
@@ -1271,7 +1292,7 @@ class GitHubTests(unittest.TestCase):
         )
         for response, kind, message in cases:
             with self.subTest(kind=kind, message=message):
-                client = GitHubClient(lambda arguments, result=response: result)
+                client = GitHubClient(answering(response))
                 with self.assertRaisesRegex(GitHubError, message) as context:
                     client.graphql_nodes("query", {}, connection)
                 self.assertEqual(kind, context.exception.kind)
@@ -1287,7 +1308,7 @@ class GitHubTests(unittest.TestCase):
     def test_single_pull_fetch_is_explicit_and_shape_checked(self) -> None:
         calls: list[list[str]] = []
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             calls.append(list(arguments))
             return CommandResult(0, json.dumps(self._api_pull(42)), "")
 
@@ -1308,7 +1329,7 @@ class GitHubTests(unittest.TestCase):
             client.get_pull("example/one", 42)
 
     def test_api_errors_fail_closed_and_expected_404_can_be_absent(self) -> None:
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             return CommandResult(1, "", "HTTP 404: Not Found")
 
         client = GitHubClient(runner)
@@ -1335,7 +1356,7 @@ class GitHubTests(unittest.TestCase):
         )
         for stderr, expected in cases:
             with self.subTest(stderr=stderr):
-                client = GitHubClient(lambda arguments, message=stderr: CommandResult(1, "", message))
+                client = GitHubClient(answering(CommandResult(1, "", stderr)))
                 with self.assertRaises(GitHubError) as context:
                     client.api_json("repos/example/one")
                 self.assertEqual(expected, context.exception.kind)
@@ -1363,7 +1384,7 @@ class GitHubTests(unittest.TestCase):
         for data, text, count in cases:
             with self.subTest(data=data):
                 value = undecodable(data)
-                client = GitHubClient(lambda arguments, value=value: CommandResult(0, value, ""))
+                client = GitHubClient(answering(CommandResult(0, value, "")))
                 self.assertEqual((text, count), client.get_pull_diff("example/one", 7))
 
     def test_json_and_errors_replace_undecodable_bytes(self) -> None:
@@ -1526,9 +1547,9 @@ class RuntimeContractTests(unittest.TestCase):
     def test_git_symlink_entries_are_rejected_before_materialization(self) -> None:
         manifest = self._manifest()
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
             if "ls-tree" in arguments:
-                return CommandResult(
+                return review_runtime.CommandResult(
                     0,
                     f"120000 blob {'a' * 40}\t{manifest['entrypoint']}\n",
                     "",
@@ -1629,7 +1650,7 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual(0, result.returncode)
 
     def test_a_git_failure_never_carries_an_undecodable_byte_into_its_message(self) -> None:
-        def runner(arguments: list[str]) -> review_runtime.CommandResult:
+        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
             return review_runtime.CommandResult(128, "caf\udce9", "")
 
         with self.assertRaises(RuntimeContractError) as raised:
@@ -1684,7 +1705,11 @@ class RuntimeContractTests(unittest.TestCase):
                     expected_commit=head,
                 )
             # The structural check skips content but still holds the file set to the manifest.
-            arguments = {"expected_repository": "example/one", "expected_commit": head, "contents": False}
+            arguments: dict[str, Any] = {
+                "expected_repository": "example/one",
+                "expected_commit": head,
+                "contents": False,
+            }
             verify_source_snapshot(destination, **arguments)
             (destination / "src" / "Extra.cs").write_text("class Extra {}\n", encoding="utf-8")
             with self.assertRaisesRegex(RuntimeContractError, r"extra=\['src/Extra.cs'\]"):
@@ -1730,7 +1755,7 @@ class RuntimeContractTests(unittest.TestCase):
     def _archive_runner(commit: str, entries: list[tuple[str, bytes, str]]):
         """A git runner whose `archive` writes `entries`, each (name, tar type, link name), as a tar."""
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> CommandResult:
             if arguments[-3:] == ["remote", "get-url", "origin"]:
                 return CommandResult(0, "https://github.com/example/one.git\n", "")
             if "rev-parse" in arguments:
@@ -1861,11 +1886,11 @@ class RuntimeContractTests(unittest.TestCase):
     def test_source_snapshot_materialization_enforces_file_count_limit(self) -> None:
         commit = "b" * 40
 
-        def runner(arguments: list[str]) -> CommandResult:
+        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
             if arguments[-3:] == ["remote", "get-url", "origin"]:
-                return CommandResult(0, "https://github.com/example/one.git\n", "")
+                return review_runtime.CommandResult(0, "https://github.com/example/one.git\n", "")
             if "rev-parse" in arguments:
-                return CommandResult(0, commit + "\n", "")
+                return review_runtime.CommandResult(0, commit + "\n", "")
             if "archive" in arguments:
                 output = next(item.split("=", 1)[1] for item in arguments if item.startswith("--output="))
                 with tarfile.open(output, mode="w") as archive:
@@ -1873,7 +1898,7 @@ class RuntimeContractTests(unittest.TestCase):
                         path = Path(temporary) / name
                         path.write_bytes(b"x")
                         archive.add(path, arcname=name)
-                return CommandResult(0, "", "")
+                return review_runtime.CommandResult(0, "", "")
             raise AssertionError(f"Unexpected command: {arguments}")
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -2107,7 +2132,7 @@ class ReviewOperationTests(unittest.TestCase):
             archive = root / "archive"
             archive.write_text("blocks directory creation", encoding="utf-8")
             local = root / "local"
-            arguments = {
+            arguments: dict[str, Any] = {
                 "request_path": request_path,
                 "result_path": result_path,
                 "archive_root": archive,
@@ -2126,10 +2151,9 @@ class ReviewOperationTests(unittest.TestCase):
             archive.unlink()
             json_path, _, persisted = commit_adapter_result(**arguments)
             self.assertTrue(json_path.is_file())
-            self.assertEqual(
-                latest_record(local, "example/one", 12)["artifacts"],
-                persisted["artifacts"],
-            )
+            latest = latest_record(local, "example/one", 12)
+            assert latest is not None, "the retried commit is in the local mirror"
+            self.assertEqual(latest["artifacts"], persisted["artifacts"])
 
     def test_latest_reviewed_heads_ignores_missing_pull_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -2325,7 +2349,7 @@ class RuntimeHostTests(unittest.TestCase):
             isolation = root / "isolation"
             invocations: list[tuple[list[str], Path, dict[str, str]]] = []
 
-            def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+            def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
                 invocations.append((list(arguments), cwd, dict(environment)))
                 if "--version" in arguments:
                     return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
@@ -2373,9 +2397,9 @@ class RuntimeHostTests(unittest.TestCase):
                 promoted: list[tuple[Path, Path]] = []
 
                 def runner(
-                    arguments: list[str],
+                    arguments: Sequence[str],
                     cwd: Path,
-                    environment: dict[str, str],
+                    environment: Mapping[str, str],
                     *,
                     case: str = case,
                     staging: Path = staging,
@@ -2453,7 +2477,7 @@ class RuntimeHostTests(unittest.TestCase):
             request = root / "request.json"
             self._write_request_with_snapshot(root, request)
 
-            def runner(arguments: list[str], cwd: Path, environment: dict[str, str]) -> ProcessResult:
+            def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
                 del cwd, environment
                 self.assertIn("--version", arguments)
                 return ProcessResult(0, "GitHub Copilot CLI 1.0.87\n", "")
@@ -2480,9 +2504,9 @@ class RuntimeHostTests(unittest.TestCase):
                 diagnostic = root / "diagnostic.jsonl"
 
                 def runner(
-                    arguments: list[str],
+                    arguments: Sequence[str],
                     cwd: Path,
-                    environment: dict[str, str],
+                    environment: Mapping[str, str],
                     *,
                     timed_out: str = timed_out,
                     partial: bytes | None = partial,

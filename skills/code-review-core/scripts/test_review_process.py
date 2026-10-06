@@ -67,7 +67,7 @@ class StartDetachedTests(unittest.TestCase):
             self.addCleanup(terminate, pid)
             status = process_status(pid)
             self.assertTrue(status.alive)
-            self.assertIsInstance(status.start_time, int)
+            assert isinstance(status.start_time, int), "a live process reports its start time"
             self.assertTrue(wait_until(lambda: "to stderr" in log.read_text(encoding="utf-8", errors="replace")))
             text = log.read_text(encoding="utf-8", errors="replace")
             self.assertIn("host started", text)

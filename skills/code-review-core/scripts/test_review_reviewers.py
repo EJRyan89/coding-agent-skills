@@ -6,7 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -41,7 +41,7 @@ class FakeGit:
     what git prints, so each undecodable byte survives as a lone surrogate.
     """
 
-    def __init__(self, files: dict[str, str | bytes], modes: dict[str, str] | None = None) -> None:
+    def __init__(self, files: Mapping[str, str | bytes], modes: dict[str, str] | None = None) -> None:
         self.files = files
         self.modes = modes or {}
         self.calls: list[list[str]] = []
@@ -424,6 +424,7 @@ class RepositoryTests(unittest.TestCase):
 
     def test_manifest_location(self) -> None:
         location = manifest_location({"manifest": True}, self.config, "Octo/Repo")
+        assert location is not None, "a manifest set to true has a default location"
         self.assertEqual(self.config.parent, location.parents[3])
         self.assertEqual(
             ("reviewers", "octo", "repo", "manifest.json"),
