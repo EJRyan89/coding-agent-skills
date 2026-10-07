@@ -3254,6 +3254,68 @@ class RepositoryValidation(unittest.TestCase):
                 skill_path_problems(root),
             )
 
+    def test_skill_path_policy_reads_each_document_once_and_each_check_only_where_it_applies(self) -> None:
+        """Which documents skill_path_problems reads (every agent, grouped skills, nested files, never a directory
+        without SKILL.md), and where each check is off: fence openers, non-shell fences, prose, agents, skills."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(relative_path: str, text: str) -> None:
+                (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative_path).write_text(text, encoding="utf-8")
+
+            for skill, metadata in {
+                "alpha": {"skill_deps": ["core"]},
+                "analyze-skill-cost": {},
+                "core": {},
+                "hollow": {},
+                "inner": {"skill_deps": ["core"]},
+            }.items():
+                write(f"deploy-meta/{skill}.json", json.dumps(metadata))
+            write(
+                "skills/alpha/SKILL.md",
+                "Names `scripts/`, which only analyze-skill-cost may.\n"  # 1
+                "Then run scripts/run.py yourself.\n"  # 2
+                "Read {{HOME}}/.claude/skills/unknown/x and {{HOME}}/.claude/skills/inner/y.\n"  # 3
+                'Use "$HOME/x" freely.\n'  # 4
+                "See ${CLAUDE_SKILL_DIR}/references/ and ${CLAUDE_SKILL_DIR}/references/deep/notes.md.\n"  # 5
+                "```bash ${CLAUDE_SKILL_DIR}/../undeclared/x\n"  # 6
+                "sh scripts/x.sh\n"  # 7
+                "```\n"  # 8
+                "```python\n"  # 9
+                "subprocess.run(['python', 'scripts/x.py'])\n"  # 10
+                "```\n"  # 11
+                "```Shell\n"  # 12
+                "bash ./scripts/y.sh\n"  # 13
+                "```\n",  # 14
+            )
+            write(
+                "skills/alpha/references/deep/notes.md",
+                "Reach ${CLAUDE_SKILL_DIR}/../stranger/x.md, as `scripts/z.py` says.\n",
+            )
+            write("skills/analyze-skill-cost/SKILL.md", "Recommend `scripts/`.\n")
+            write("skills/core/SKILL.md", "# core\n")
+            write("skills/hollow/notes.md", "Read {{HOME}}/.claude/skills/core/x.\n")
+            write("skills/group/inner/SKILL.md", "Read `scripts/run.py`.\n")
+            write("agents/a.md", "Run ${CLAUDE_SKILL_DIR}/../core/x and ${CLAUDE_SKILL_DIR}/gone.md.\n")
+            write("agents/b.md", 'command: "$HOME/x"\n')
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            agents_doc = '"Subagent definitions" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"agents/b.md:1 finds a file through $HOME; see {agents_doc}",
+                    "skills/alpha/references/deep/notes.md:1 reaches ../stranger without declaring it in skill_deps",
+                    "skills/alpha/references/deep/notes.md:1 names ${CLAUDE_SKILL_DIR}/../stranger/x.md, "
+                    "which does not exist",
+                    f"skills/alpha/SKILL.md:1 names `scripts/` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:3 names skill inner by its install path; see {doc}",
+                    f"skills/alpha/SKILL.md:7 runs a script by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:13 runs a script by a bare relative path; see {doc}",
+                    f"skills/group/inner/SKILL.md:1 names `scripts/run.py` by a bare relative path; see {doc}",
+                ],
+                skill_path_problems(root),
+            )
+
     def test_skills_never_leave_an_output_path_to_the_agent(self) -> None:
         self.assertEqual([], output_placeholder_problems(REPOSITORY_ROOT))
 
