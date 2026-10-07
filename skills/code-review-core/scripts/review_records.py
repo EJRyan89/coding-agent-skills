@@ -34,6 +34,8 @@ FINDING_ID = re.compile(r"F[0-9]{3,}")
 LEDGER_ID = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 LEDGER_FIELDS = frozenset({"version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"})
 OPEN_DISPOSITIONS = frozenset({"still_present", "partially_addressed"})
+# A ledger entry's key: the version and finding ID where the finding first appeared.
+LedgerKey = tuple[int, str]
 LEDGER_STATES = {
     "still_present": "open",
     "partially_addressed": "open",
@@ -834,9 +836,23 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
         if any("repeats" in finding for finding in findings.values()):
             raise RecordError("Review finding repeats need a ledger")
         return
+    entries = _ledger_entries(ledger, version, mode)
+    _validate_opened_entries(entries, findings, version)
+    given = _validate_ledger_judgments(ledger, record["prior_dispositions"], version)
+    linked = [
+        (identifier, _validate_repeat_link(identifier, finding, findings, entries, given, version))
+        for identifier, finding in findings.items()
+        if "repeats" in finding
+    ]
+    _validate_listed_repeats(ledger, linked, version)
+
+
+def _ledger_entries(ledger: Any, version: int, mode: str) -> dict[LedgerKey, dict[str, Any]]:
+    """The ledger's entries by key: each well formed and unique, in order, and all of this version in an initial
+    review."""
     if not isinstance(ledger, list):
         raise RecordError("Review ledger must be an array")
-    entries: dict[tuple[int, str], dict[str, Any]] = {}
+    entries: dict[LedgerKey, dict[str, Any]] = {}
     for entry in ledger:
         _validate_ledger_entry(entry, version)
         if (entry["version"], entry["id"]) in entries:
@@ -846,6 +862,14 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
         raise RecordError("Review ledger entries must be ordered by version and finding ID")
     if mode == "initial" and any(entry["version"] != version for entry in ledger):
         raise RecordError("An initial review starts a fresh ledger")
+    return entries
+
+
+def _validate_opened_entries(
+    entries: dict[LedgerKey, dict[str, Any]], findings: dict[str, dict[str, Any]], version: int
+) -> None:
+    """The entries of this version are exactly this review's findings without repeats, each with its severity and
+    category."""
     for identifier, finding in findings.items():
         if "repeats" in finding:
             continue
@@ -856,47 +880,78 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
             raise RecordError(f"Review ledger entry for {identifier} does not match the finding")
     if {key[1] for key in entries if key[0] == version} != {i for i, f in findings.items() if "repeats" not in f}:
         raise RecordError("Review ledger entries of this version must be its findings without repeats")
+
+
+def _validate_ledger_judgments(
+    ledger: list[dict[str, Any]], prior_dispositions: list[dict[str, Any]], version: int
+) -> dict[str, str]:
+    """The prior dispositions are the ledger's judgments in this version. Returns them by ledger ID."""
     judged = {
         ledger_id(entry["version"], entry["id"]): item["disposition"]
         for entry in ledger
         for item in entry["dispositions"]
         if item["version"] == version
     }
-    given = {item["finding_id"]: item["disposition"] for item in record["prior_dispositions"]}
+    given = {item["finding_id"]: item["disposition"] for item in prior_dispositions}
     if judged != given:
         raise RecordError("Review prior dispositions do not match the ledger")
-    linked: list[tuple[str, tuple[int, str]]] = []
-    for identifier, finding in findings.items():
-        if "repeats" not in finding:
-            continue
-        target = finding["repeats"]
-        if not _reference(target, version):
-            raise RecordError(f"Review finding {identifier}.repeats is malformed")
-        key = (target["version"], target["id"])
-        if target["version"] == version:
-            if target["id"] == identifier:
-                raise RecordError(f"Review finding {identifier} cannot repeat itself")
-            other = findings.get(target["id"])
-            if other is None:
-                raise RecordError(f"Review finding {identifier} repeats an unknown finding: {target['id']}")
-            if "repeats" in other:
-                raise RecordError(f"Review finding {identifier} repeats a repeat: {target['id']}")
-            severity = other["severity"]
-        else:
-            entry = entries.get(key)
-            if entry is None:
-                raise RecordError(f"Review finding {identifier} repeats an unknown finding: {ledger_id(*key)}")
-            if given.get(ledger_id(*key)) not in OPEN_DISPOSITIONS:
-                raise RecordError(
-                    f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
-                    "be still_present or partially_addressed"
-                )
-            severity = entry["severity"]
-        if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
-            raise RecordError(f"Review finding {identifier} repeats a less severe finding")
-        if {"version": version, "id": identifier} not in entries[key]["repeats"]:
-            raise RecordError(f"Review finding {identifier} is not in its target's ledger entry")
-        linked.append((identifier, key))
+    return given
+
+
+def _validate_repeat_link(
+    identifier: str,
+    finding: dict[str, Any],
+    findings: dict[str, dict[str, Any]],
+    entries: dict[LedgerKey, dict[str, Any]],
+    given: dict[str, str],
+    version: int,
+) -> LedgerKey:
+    """A finding's `repeats` names a finding at least as severe, whose ledger entry lists the repeat. Returns that
+    entry's key."""
+    target = finding["repeats"]
+    if not _reference(target, version):
+        raise RecordError(f"Review finding {identifier}.repeats is malformed")
+    key = (target["version"], target["id"])
+    if target["version"] == version:
+        severity = _same_review_target_severity(identifier, target["id"], findings)
+    else:
+        severity = _earlier_target_severity(identifier, key, entries, given)
+    if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
+        raise RecordError(f"Review finding {identifier} repeats a less severe finding")
+    if {"version": version, "id": identifier} not in entries[key]["repeats"]:
+        raise RecordError(f"Review finding {identifier} is not in its target's ledger entry")
+    return key
+
+
+def _same_review_target_severity(identifier: str, target_id: str, findings: dict[str, dict[str, Any]]) -> str:
+    """The severity of the finding of this review that `identifier` repeats: another finding, not itself a repeat."""
+    if target_id == identifier:
+        raise RecordError(f"Review finding {identifier} cannot repeat itself")
+    other = findings.get(target_id)
+    if other is None:
+        raise RecordError(f"Review finding {identifier} repeats an unknown finding: {target_id}")
+    if "repeats" in other:
+        raise RecordError(f"Review finding {identifier} repeats a repeat: {target_id}")
+    return other["severity"]
+
+
+def _earlier_target_severity(
+    identifier: str, key: LedgerKey, entries: dict[LedgerKey, dict[str, Any]], given: dict[str, str]
+) -> str:
+    """The severity of the earlier finding that `identifier` repeats: an entry this review judged still open."""
+    entry = entries.get(key)
+    if entry is None:
+        raise RecordError(f"Review finding {identifier} repeats an unknown finding: {ledger_id(*key)}")
+    if given.get(ledger_id(*key)) not in OPEN_DISPOSITIONS:
+        raise RecordError(
+            f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
+            "be still_present or partially_addressed"
+        )
+    return entry["severity"]
+
+
+def _validate_listed_repeats(ledger: list[dict[str, Any]], linked: list[tuple[str, LedgerKey]], version: int) -> None:
+    """The repeats of this version that the entries list are exactly this review's linked findings."""
     listed = [
         (item["id"], (entry["version"], entry["id"]))
         for entry in ledger
