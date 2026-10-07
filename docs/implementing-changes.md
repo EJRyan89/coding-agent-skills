@@ -70,3 +70,9 @@ and ships:
 A balanced model suffices for a concrete plan that follows an existing pattern, such as a new tool test, a
 documentation change, or a skill whose scripts and tests mirror an existing one. The cheapest model suits a fully
 specified mechanical edit whose test already exists.
+
+## Shared code
+
+Shared code has one home. A module that more than one of the skills, the deployer, and `tools/` need lives in
+`skills/skill-core/scripts`, and each imports it from there; never copy it. [Validation](adding-a-skill.md#validation)
+in the skill contract states how each part reaches it and what validation holds.

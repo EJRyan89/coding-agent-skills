@@ -12,8 +12,8 @@ Reading a key whose value has any other form, such as a nested mapping, a flow m
 tag, or an explicit indentation indicator, raises FrontmatterError rather than guessing. A key that is never read is
 never parsed, so a skill or agent may carry hooks or other structured settings this reader does not interpret.
 
-skills/skill-core/scripts/frontmatter.py is an identical copy, which skill scripts import from skill-core because a
-deployed skill cannot import the deployer. Validation fails when the two differ, so change both together.
+This is the one reader. skill-core is the home of the repository's shared modules, so skill scripts, the deployer,
+the repository tools, and the tests all import it from here as `frontmatter`.
 """
 
 from __future__ import annotations
@@ -21,12 +21,6 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "*": "a deployed skill cannot import the deployer, so skill-core ships this whole module as "
-    "skills/skill-core/scripts/frontmatter.py; validation also holds the two copies byte-identical",
-}
 
 Value = str | list[str] | None
 

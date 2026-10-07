@@ -11,7 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import frontmatter, fsops, hashing, platform_support
+import frontmatter
+
+from . import fsops, hashing, platform_support
 from .config import DERIVED_VARIABLES
 from .errors import DeployError
 from .source import AGENT_SKILLS_RULE, XML_TAG_REMEDY, Source, xml_tag

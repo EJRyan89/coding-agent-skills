@@ -1412,10 +1412,9 @@ def filesystem_write_problems(root: Path) -> list[str]:
 
 
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
-# every module holding the copy states it; "*" sanctions every definition in its module. An allowance the module no
-# longer needs is reported.
+# every module holding the copy states it. Nothing sanctions a whole module: shared code lives in skill-core. An
+# allowance the module no longer needs is reported.
 DUPLICATION_ALLOWANCE = "DUPLICATION_ALLOWED"
-EVERY_DEFINITION = "*"
 DUPLICATION_ROOTS = ("skills", "deployer", "tools")
 MINIMUM_DUPLICATED_LINES = 4
 
@@ -1470,7 +1469,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
         definition = group[0][2]
         for module in modules:
             copied.setdefault(module, set()).add(definition)
-        if all({definition, EVERY_DEFINITION} & set(allowances[module]) for module in modules):
+        if all(definition in allowances[module] for module in modules):
             continue
         places = _joined([f"{module}:{line}" for module, line, _ in group])
         found.append(
@@ -1481,9 +1480,125 @@ def duplicated_definition_problems(root: Path) -> list[str]:
         problems += [
             f"{module}: {DUPLICATION_ALLOWANCE} allows {entry}, which no other file defines identically"
             for entry in sorted(allowed)
-            if not (copied.get(module) if entry == EVERY_DEFINITION else entry in copied.get(module, set()))
+            if entry not in copied.get(module, set())
         ]
     return sorted(found) + sorted(problems)
+
+
+# skills/skill-core/scripts is the one home of the repository's shared modules: skill scripts, the deployer, and
+# tools/ import them from there. deployer/__init__.py puts the directory on sys.path for every deployer module, since a
+# package runs its __init__.py before any of its modules; a tools module states the same path statement itself, above
+# its imports, because ruff sorts a skill-core import above the deployer's.
+SKILL_CORE = "skill-core"
+SKILL_CORE_SCRIPTS = f"skills/{SKILL_CORE}/scripts"
+SKILL_CORE_DOC = '"Validation" in docs/adding-a-skill.md'
+DEPLOYER_PACKAGE = "deployer/__init__.py"
+
+
+def skill_core_modules(root: Path) -> set[str]:
+    """The names of skill-core's shared modules, which skill scripts, the deployer, and tools/ import."""
+    return {path.stem for path in (root / SKILL_CORE_SCRIPTS).glob("*.py") if not is_test_script(path)}
+
+
+def skill_core_copy_problems(root: Path) -> list[str]:
+    """Report a module outside skill-core with the name of a skill-core module: another copy of shared code.
+
+    A renamed copy is caught by the duplication policy, which sanctions no whole module, and a same-named one here
+    even after it drifts, as the frontmatter reader's deployer copy would have.
+    """
+    shared = skill_core_modules(root)
+    problems: list[str] = []
+    for top in DUPLICATION_ROOTS:
+        for path in sorted((root / top).rglob("*.py")):
+            name = path.relative_to(root).as_posix()
+            if path.stem in shared and not is_test_script(path) and not name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
+                problems.append(
+                    f"{name} has the name of {SKILL_CORE_SCRIPTS}/{path.stem}.py; import {path.stem} from "
+                    f"{SKILL_CORE} instead of keeping another copy; see {SKILL_CORE_DOC}"
+                )
+    return sorted(problems)
+
+
+def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
+    """Lines of the module-level statements that put skill-core's scripts first on sys.path, located from __file__."""
+    lines: list[int] = []
+    for node in tree.body:
+        call = node.value if isinstance(node, ast.Expr) else None
+        if (
+            isinstance(call, ast.Call)
+            and ast.unparse(call.func) == "sys.path.insert"
+            and len(call.args) == 2
+            and isinstance(call.args[0], ast.Constant)
+            and call.args[0].value == 0
+            and "__file__" in ast.unparse(call.args[1])
+            and SKILL_CORE in scripts_put_on_path(ast.unparse(call))
+        ):
+            lines.append(node.lineno)
+    return lines
+
+
+def _imported_modules(tree: ast.Module) -> list[tuple[int, str]]:
+    """Each absolute import in the module, as its line and the dotted module name it imports."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found += [(node.lineno, alias.name) for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.append((node.lineno, node.module))
+    return sorted(found)
+
+
+def skill_core_import_problems(root: Path) -> list[str]:
+    """Report a deployer or tools module that imports skill-core before putting it on sys.path, and an import that
+    breaks the direction or the standard-library rule.
+
+    deployer/__init__.py holds the deployer's one path statement, located from its own file and never through the
+    configured source path; a tools module states it above its skill-core imports. Skill-core imports nothing from the
+    deployer or tools/, so a deployed skill never needs the checkout, and the deployer and skill-core import only the
+    standard library, the deployer, and skill-core.
+    """
+    shared = skill_core_modules(root)
+    problems: list[str] = []
+    package = root / DEPLOYER_PACKAGE
+    package_lines = (
+        _skill_core_statement_lines(ast.parse(package.read_text(encoding="utf-8"))) if package.is_file() else []
+    )
+    if not package_lines:
+        problems.append(
+            f"{DEPLOYER_PACKAGE} does not put {SKILL_CORE_SCRIPTS} first on sys.path, located from its own file; "
+            f"see {SKILL_CORE_DOC}"
+        )
+    allowed = set(sys.stdlib_module_names) | shared | {"deployer"}
+    for top in ("deployer", "tools", SKILL_CORE_SCRIPTS):
+        for path in sorted((root / top).rglob("*.py")):
+            name = path.relative_to(root).as_posix()
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            statements = _skill_core_statement_lines(tree)
+            if top == "deployer" and name != DEPLOYER_PACKAGE:
+                problems += [
+                    f"{name}:{line} puts {SKILL_CORE} on sys.path; {DEPLOYER_PACKAGE} is the deployer's one place; "
+                    f"see {SKILL_CORE_DOC}"
+                    for line in statements
+                ]
+                statements = [0] if package_lines else []
+            for line, module in _imported_modules(tree):
+                first = module.split(".")[0]
+                if top == SKILL_CORE_SCRIPTS and first in {"deployer", "tools"}:
+                    problems.append(
+                        f"{name}:{line} imports {module}; {SKILL_CORE} imports nothing from the deployer or tools/; "
+                        f"see {SKILL_CORE_DOC}"
+                    )
+                elif top != "tools" and not is_test_script(path) and first not in allowed:
+                    problems.append(
+                        f"{name}:{line} imports {module}, which is neither the standard library, the deployer, nor "
+                        f"{SKILL_CORE}; see {SKILL_CORE_DOC}"
+                    )
+                elif top != SKILL_CORE_SCRIPTS and first in shared and not any(at < line for at in statements):
+                    problems.append(
+                        f"{name}:{line} imports {module} before putting {SKILL_CORE_SCRIPTS} on sys.path; see "
+                        f"{SKILL_CORE_DOC}"
+                    )
+    return sorted(problems)
 
 
 MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
@@ -3141,20 +3256,6 @@ class RepositoryValidation(unittest.TestCase):
                 ],
                 private_references(root, [root / name for name in samples]),
             )
-
-    def test_skill_core_carries_the_shared_frontmatter_reader_unchanged(self) -> None:
-        # A deployed skill cannot import the deployer, so skill-core ships the one copy of the reader skills import.
-        shared = (REPOSITORY_ROOT / "deployer" / "frontmatter.py").read_bytes()
-        copy = SKILLS_ROOT / "skill-core" / "scripts" / "frontmatter.py"
-        self.assertEqual(
-            shared, copy.read_bytes(), "Copy deployer/frontmatter.py to skills/skill-core/scripts/ unchanged."
-        )
-        # The copy sanctions its own duplication, so a second copy elsewhere would pass the duplication policy.
-        self.assertEqual(
-            [copy],
-            [path for path in sorted(SKILLS_ROOT.rglob("*.py")) if path.read_bytes() == shared],
-            "Import frontmatter from skill-core instead of carrying another copy.",
-        )
 
     def test_python_suites_run_their_tests_when_executed(self) -> None:
         # Every suite runs as `python <file>`, so one without a __main__ entry point defines its tests, runs none,
@@ -4954,13 +5055,22 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
 
     def test_a_copy_sanctioned_in_every_module_passes(self) -> None:
         allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n\n\n'
-        everything = 'DUPLICATION_ALLOWED = {"*": "the whole module is a sanctioned copy"}\n\n\n'
         self.assertEqual(
             [],
+            self.problems({"deployer/one.py": allowed + self.SHARED, "skills/s/scripts/two.py": allowed + self.SHARED}),
+        )
+
+    def test_no_allowance_sanctions_a_whole_module(self) -> None:
+        # A module shared whole lives in skill-core and is imported from there, so "*" is a name nothing defines.
+        everything = 'DUPLICATION_ALLOWED = {"*": "the whole module is a sanctioned copy"}\n\n\n'
+        self.assertEqual(
+            [
+                f"whole is defined identically in deployer/whole.py:4 and skills/s/scripts/whole.py:4{self.FIX}",
+                "deployer/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+                "skills/s/scripts/whole.py: DUPLICATION_ALLOWED allows *, which no other file defines identically",
+            ],
             self.problems(
                 {
-                    "deployer/one.py": allowed + self.SHARED,
-                    "skills/s/scripts/two.py": allowed + self.SHARED,
                     "deployer/whole.py": everything + self.SHARED.replace("shared", "whole"),
                     "skills/s/scripts/whole.py": everything + self.SHARED.replace("shared", "whole"),
                 }
@@ -5015,6 +5125,122 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
                     "tests/three.py": self.SHARED,
                     "tools/short.py": short,
                 }
+            ),
+        )
+
+
+class SkillCoreHomePolicy(unittest.TestCase):
+    STATEMENT = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))\n'
+    HEADER = "import sys\nfrom pathlib import Path\n\n"
+    CORE: ClassVar[dict[str, str]] = {
+        "skills/skill-core/scripts/shared.py": "import json\n",
+        "skills/skill-core/scripts/test_shared.py": "",
+    }
+    DOC = '"Validation" in docs/adding-a-skill.md'
+
+    def run_policy(self, policy: Callable[[Path], list[str]], files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            write_fixture_tree(Path(temporary), {**self.CORE, **files})
+            return policy(Path(temporary))
+
+    def test_repository_keeps_shared_modules_in_skill_core(self) -> None:
+        self.assertEqual([], skill_core_copy_problems(REPOSITORY_ROOT))
+        self.assertEqual([], skill_core_import_problems(REPOSITORY_ROOT))
+
+    def test_a_module_named_like_a_skill_core_module_outside_it_is_a_copy(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/shared.py has the name of skills/skill-core/scripts/shared.py; import shared from "
+                f"skill-core instead of keeping another copy; see {self.DOC}",
+                "skills/other/scripts/shared.py has the name of skills/skill-core/scripts/shared.py; import shared "
+                f"from skill-core instead of keeping another copy; see {self.DOC}",
+            ],
+            self.run_policy(
+                skill_core_copy_problems,
+                {
+                    "deployer/shared.py": "import json\n",
+                    "skills/other/scripts/shared.py": "import json\n",
+                    # Suites, and files outside deployer/, tools/, and skills/, may carry the name.
+                    "skills/other/scripts/test_shared.py": "import shared\n",
+                    "tests/shared.py": "import json\n",
+                    "tools/sharing.py": "import json\n",
+                },
+            ),
+        )
+
+    def test_deployer_and_tools_import_skill_core_after_the_path_statement(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/extra.py:4 puts skill-core on sys.path; deployer/__init__.py is the deployer's one place; "
+                f"see {self.DOC}",
+                f"tools/early.py:1 imports shared before putting skills/skill-core/scripts on sys.path; see {self.DOC}",
+                "tools/missing.py:1 imports shared before putting skills/skill-core/scripts on sys.path; see "
+                f"{self.DOC}",
+            ],
+            self.run_policy(
+                skill_core_import_problems,
+                {
+                    "deployer/__init__.py": '"""Package."""\n\n' + self.HEADER + self.STATEMENT,
+                    # A package's __init__.py runs before its modules, so a deployer module imports skill-core freely.
+                    "deployer/user.py": "from __future__ import annotations\n\nimport shared\n\nfrom . import extra\n",
+                    "deployer/extra.py": self.HEADER + self.STATEMENT,
+                    "tools/good.py": self.HEADER + self.STATEMENT + "\nimport shared\n",
+                    "tools/early.py": "import shared\n" + self.HEADER + self.STATEMENT,
+                    "tools/missing.py": "from shared import thing\n",
+                    "tools/unrelated.py": "import json\n",
+                },
+            ),
+        )
+
+    def test_the_deployer_states_the_path_first_and_relative_to_itself(self) -> None:
+        expected = [
+            "deployer/__init__.py does not put skills/skill-core/scripts first on sys.path, located from its own "
+            f"file; see {self.DOC}"
+        ]
+        for statement in (
+            "",
+            'sys.path.insert(0, str(Path(SOURCE) / "skills" / "skill-core" / "scripts"))\n',
+            self.STATEMENT.replace("insert(0,", "insert(1,"),
+            self.STATEMENT.replace("insert(0, ", "append("),
+            "def later() -> None:\n    " + self.STATEMENT,
+        ):
+            with self.subTest(statement=statement):
+                files = {"deployer/__init__.py": self.HEADER + statement}
+                self.assertEqual(expected, self.run_policy(skill_core_import_problems, files))
+
+    def test_skill_core_imports_nothing_from_the_deployer_and_the_deployer_only_the_standard_library(self) -> None:
+        def reaches(name: str, line: int, module: str) -> str:
+            return (
+                f"{name}:{line} imports {module}; skill-core imports nothing from the deployer or tools/; see "
+                f"{self.DOC}"
+            )
+
+        def foreign(name: str, line: int, module: str) -> str:
+            return (
+                f"{name}:{line} imports {module}, which is neither the standard library, the deployer, nor skill-core; "
+                f"see {self.DOC}"
+            )
+
+        self.assertEqual(
+            [
+                foreign("deployer/plan.py", 1, "yaml"),
+                reaches("skills/skill-core/scripts/reach.py", 1, "deployer"),
+                reaches("skills/skill-core/scripts/reach.py", 2, "tools.thing"),
+                foreign("skills/skill-core/scripts/reach.py", 3, "requests"),
+                reaches("skills/skill-core/scripts/test_shared.py", 1, "deployer.paths"),
+            ],
+            self.run_policy(
+                skill_core_import_problems,
+                {
+                    "deployer/__init__.py": self.HEADER + self.STATEMENT,
+                    "deployer/plan.py": "import yaml\nimport tomllib\n\nimport shared\n\nfrom . import paths\n",
+                    "skills/skill-core/scripts/reach.py": (
+                        "from deployer import paths\nimport tools.thing\nimport requests\n"
+                    ),
+                    "skills/skill-core/scripts/test_shared.py": "import deployer.paths\nimport shared\n",
+                    # A suite may import what it tests with; only the direction rule holds it.
+                    "skills/skill-core/scripts/test_other.py": "import unittest\nimport shared\nimport harness\n",
+                },
             ),
         )
 

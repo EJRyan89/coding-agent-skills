@@ -9,7 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import frontmatter, platform_support
+import frontmatter
+
+from . import platform_support
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DeployError, os_error
 from .paths import Paths
