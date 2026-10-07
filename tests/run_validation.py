@@ -2796,6 +2796,91 @@ class RepositoryValidation(unittest.TestCase):
                 [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(root)],
             )
 
+    def test_platform_names_lists_each_token_a_module_names_in_visit_order(self) -> None:
+        """_platform_names on its own, before platform_code_problems drops duplicates and sorts: every node kind, the
+        skipped tables, docstrings, and test cases."""
+        source = (
+            '"""Module docstring: sys.platform, LOCALAPPDATA, cygpath."""\n'  # 1
+            "import os, ctypes.wintypes\n"  # 2
+            "import msvcrt as m\n"  # 3
+            "from winreg import HKEY\n"  # 4
+            "from os import name, chmod, path\n"  # 5
+            "from sys import platform\n"  # 6
+            "from . import helper\n"  # 7
+            "from ctypes import windll, chmod\n"  # 8
+            "\n"  # 9
+            'PLATFORM_ALLOWED = {"cygpath": "a reason"}\n'  # 10
+            'TABLE: dict = {"USERPROFILE": "cygpath"}\n'  # 11
+            'holder.TABLE = "USERPROFILE"\n'  # 12
+            'OTHER, TABLE2 = "APPDATA", "cygpath"\n'  # 13
+            "\n"  # 14
+            "\n"  # 15
+            "class Plain(Base):\n"  # 16
+            '    """Class docstring: os.name, USERPROFILE."""\n'  # 17
+            "\n"  # 18
+            "    def method(self):\n"  # 19
+            '        """USERPROFILE"""\n'  # 20
+            "        return sys.platform, os.name, os.startfile, os.sep\n"  # 21
+            "\n"  # 22
+            "\n"  # 23
+            "async def run():\n"  # 24
+            '    """cygpath"""\n'  # 25
+            '    subprocess.run(["cygpath", "-w"], creationflags=1, text=True)\n'  # 26
+            "    p.chmod(1), st.st_file_attributes, x.y.fchmod, os.lchmod, os.environ\n"  # 27
+            '    "cygpath -u and cygpath -w, not cygpaths"\n'  # 28
+            '    ("LOCALAPPDATA", "ProgramFiles", "localappdata", "%USERPROFILE%", "cygpathx")\n'  # 29
+            '    "APPDATA"\n'  # 30
+            "\n"  # 31
+            "\n"  # 32
+            "class Tests(unittest.TestCase):\n"  # 33
+            "    def test(self):\n"  # 34
+            '        return sys.platform, "USERPROFILE"\n'  # 35
+            "\n"  # 36
+            "\n"  # 37
+            "class MoreTests(TestCase):\n"  # 38
+            "    value = os.name\n"  # 39
+            "\n"  # 40
+            "\n"  # 41
+            "class Generic(Base[int]):\n"  # 42
+            '    value = "cygpath"\n'  # 43
+        )
+        common_head = [
+            (2, "ctypes"),
+            (3, "msvcrt"),
+            (4, "winreg"),
+            (5, "os.name"),
+            (5, "chmod"),
+            (6, "sys.platform"),
+            (8, "ctypes"),
+        ]
+        common_tail = [
+            (12, "USERPROFILE"),
+            (13, "APPDATA"),
+            (13, "cygpath"),
+            (21, "sys.platform"),
+            (21, "os.name"),
+            (21, "os.startfile"),
+            (26, "cygpath"),
+            (26, "creationflags"),
+            (27, "chmod"),
+            (27, "st_file_attributes"),
+            (27, "fchmod"),
+            (27, "lchmod"),
+            (28, "cygpath"),
+            (29, "LOCALAPPDATA"),
+            (29, "ProgramFiles"),
+            (30, "APPDATA"),
+            (43, "cygpath"),
+        ]
+        self.assertEqual(
+            [*common_head, *common_tail],
+            _platform_names(ast.parse(source), {"PLATFORM_ALLOWED", "TABLE"}),
+        )
+        self.assertEqual(
+            [*common_head, (10, "cygpath"), (11, "USERPROFILE"), (11, "cygpath"), *common_tail],
+            _platform_names(ast.parse(source), set()),
+        )
+
     def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
