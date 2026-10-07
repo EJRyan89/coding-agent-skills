@@ -591,6 +591,70 @@ class LockTests(DeployerTestCase):
         self.assertTrue((stale / "info.json").is_file())
         self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
+    def failing_metadata_write(self) -> mock._patch:
+        real_write = fsops.write_atomic
+
+        def failing_write(path: Path, content: bytes) -> None:
+            if path.name == "info.json":
+                raise OSError("synthetic metadata write failure")
+            real_write(path, content)
+
+        return mock.patch("deployer.fsops.write_atomic", side_effect=failing_write)
+
+    def test_a_failed_metadata_write_during_a_reclaim_deletes_the_lock_moved_aside(self) -> None:
+        self.fixture()
+        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        with self.failing_metadata_write():
+            result = self.deploy_fails(
+                "--all", pattern="Failed to initialize deployment lock", probe=probe_returning(False, None)
+            )
+        self.assertIn(
+            "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\nRetry the deployment.\n",
+            result.output,
+        )
+        self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
+        self.assertFalse(lock_dir.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_lock_moved_aside_that_cannot_be_deleted_after_a_failed_reclaim_is_named(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        with self.failing_metadata_write(), self.denied_at(stale):
+            result = self.deploy_fails(
+                "--all", pattern="Failed to initialize deployment lock", probe=probe_returning(False, None)
+            )
+        self.assertIn(
+            "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\n"
+            "Retry the deployment.\n"
+            f"Could not delete the stale lock moved to {forward(stale)}: Access is denied. "
+            "Delete it once no deployment is running.\n",
+            result.output,
+        )
+        self.assertTrue((stale / "info.json").is_file())
+
+    def test_a_lock_left_aside_by_an_earlier_reclaim_is_named_instead_of_reported_as_contention(self) -> None:
+        self.fixture()
+        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        self.write(stale / "info.json", json.dumps({"pid": 4141, "token": "older-token", "start_time": 1}))
+        result = self.deploy_fails(
+            "--all", pattern="moved aside by an earlier reclaim", probe=probe_returning(False, None)
+        )
+        self.assertIn(
+            f"ERROR: The lock moved aside by an earlier reclaim is still at {forward(stale)}.\n"
+            "Delete it once no deployment is running, then retry.\n"
+            'See "The deployment lock" in docs/recovery.md.\n',
+            result.output,
+        )
+        self.assertNotIn("another process may have claimed it", result.output)
+        self.assertTrue((lock_dir / "info.json").is_file())
+        self.assertTrue((stale / "info.json").is_file())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
         self.make_source_json("test/source-a")
         self.make_skill("alpha", "Identical content")

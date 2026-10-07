@@ -14,10 +14,11 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import configure, pipeline
+from deployer import configure, fsops, pipeline
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -255,6 +256,23 @@ class DeployerTestCase(unittest.TestCase):
     def append(self, path: Path, text: str) -> None:
         with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
+
+    def killed_while_journaling(self, op: str, item: str) -> mock._patch:
+        """Kill the deployment partway through writing the journal entry for op on item.
+
+        The patched fsops.append_line writes the first half of that entry with no newline, as a process killed
+        mid-write leaves it, then raises SystemExit, which the pipeline does not reconcile, so its staging run remains.
+        """
+        real_append = fsops.append_line
+
+        def append_line(path: Path, line: str) -> None:
+            entry = json.loads(line)
+            if entry["op"] == op and entry["item"] == item:
+                self.append(path, line[: len(line) // 2])
+                raise SystemExit(1)
+            real_append(path, line)
+
+        return mock.patch("deployer.fsops.append_line", side_effect=append_line)
 
     def selection_number(self, name: str, bundle: bool = False) -> str:
         output = self.deploy("--dry-run", stdin="\n").output

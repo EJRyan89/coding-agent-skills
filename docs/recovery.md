@@ -20,11 +20,11 @@ The deployer changes your home directory only through a journaled transaction, s
 
 ## Interrupted deployments
 
-Before a run changes an item, it writes the change to its journal: a `backup` line when it moves the existing copy to `<name>.deploying-bak`, an `install` line when it moves the new copy into place, and a `preserve` line when it moves a backup to `.backups/<run-id>/`. Only after every item is in place does it record its run ID in the manifest, which commits the run. It then removes the transient backups it no longer needs, moves the ones it keeps to `.backups/`, and deletes its staging directory.
+Before a run changes an item, it writes the change to its journal: a `backup` line when it moves the existing copy to `<name>.deploying-bak`, an `install` line when it moves the new copy into place, and a `preserve` line when it moves a backup to `.backups/<run-id>/`. Only after every item is in place does it record its run ID in the manifest, which commits the run. It then removes the transient backups it no longer needs, moves the ones it keeps to `.backups/`, and deletes its staging directory. A transient backup is removed only while it matches the hash the run recorded before moving it. One that differs was changed after the run read it, for example by an editor saving the item just before the move, so it is kept in `.backups/<run-id>/` as a forced replacement's would be, listed under `BACKED UP`, with a `WARNING` naming it.
 
 A run that fails with an error or is stopped with Ctrl+C reconciles its own journal before it exits. If it cannot, or the process is killed outright, for example by closing the terminal, its staging directory remains and the next run reconciles it before deploying anything:
 
-- A run the manifest records as committed is completed: each installed item is checked against the hash in the journal, kept backups are moved to `.backups/<run-id>/`, and the other transient backups are deleted.
+- A run the manifest records as committed is completed: each installed item is checked against the hash in the journal, kept backups are moved to `.backups/<run-id>/`, and the other transient backups are deleted if they still match the journal's hash, or kept in `.backups/<run-id>/` with a `WARNING` if they do not.
 - A run that was not committed is rolled back: each item it installed is removed if it still matches what it installed, and each `<name>.deploying-bak` is moved back into place.
 
 Either way, the staging directory is then deleted and the deployment you asked for continues. You do not need to do anything.
@@ -46,7 +46,7 @@ To reconcile a run by hand:
 5. When no `.deploying-bak` remains in any of the three roots, delete the run's staging directory, `~/.claude/deployer/staging/<run-id>/`.
 6. Run `python deploy.py --all --dry-run`. An item whose content no longer matches the manifest is reported as modified and left alone; replace it with `--force-item <name>` when you are sure, which keeps a backup.
 
-A journal line that cannot be parsed stops recovery the same way, with `Malformed journal entry`, and is reconciled by the same steps.
+A journal line that cannot be parsed stops recovery the same way, with `Malformed journal entry`, and is reconciled by the same steps. The one exception is a last line with no newline at its end. The deployer writes each line in full, newline included, before the change it records, so such a line was cut off when the run was stopped, before its change began. Recovery drops it with a `WARNING` that quotes it and proceeds, provided every line before it is valid; a bad line anywhere else still stops recovery.
 
 ## Backups
 
@@ -56,7 +56,7 @@ A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement
 
 ## The deployment lock
 
-`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning. Reclaiming moves the lock aside to `~/.claude/deployer/.deploy.lock.stale.<pid>` and checks that what it moved is the lock it judged stale; if another deployment reclaimed it first and holds a fresh one, the run moves that lock back and stops with `contention`, so retry. In the rare case it cannot move it back, the message names the `.deploy.lock.stale.<pid>` directory; delete it once no deployment is running.
+`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning. Reclaiming moves the lock aside to `~/.claude/deployer/.deploy.lock.stale.<pid>` and checks that what it moved is the lock it judged stale; if another deployment reclaimed it first and holds a fresh one, the run moves that lock back and stops with `contention`, so retry. In the rare case it cannot move it back, the message names the `.deploy.lock.stale.<pid>` directory; delete it once no deployment is running. A reclaim that fails after moving the lock aside deletes that directory, or names it when it cannot. A later reclaim that finds one left behind stops and names it rather than moving the lock; delete it once no deployment is running, and rerun.
 
 The deployer refuses only when it cannot tell: the lock has no readable `info.json`, or its process is running but cannot be confirmed to be the deployment that took the lock. Check that no `python deploy.py` process is running, for example with `Get-Process python` in PowerShell, then delete the lock directory and rerun. Removing it while a deployment is running would let a second one interleave with it.
 
