@@ -103,6 +103,7 @@ UNIQUE = "Flag IDs must be unique strings"
 ID_FORMAT = "Flag ID format is invalid"
 PULL = "Flag pull number is invalid"
 REVIEW_VERSION = "Flag review version is invalid"
+FINDING = "Flag finding ID is invalid"
 OPEN_METADATA = "Open flag cannot contain resolution metadata"
 RESOLVED_METADATA = "Resolved flag requires resolution metadata"
 ALLOCATED = "Flag next_id must be greater than every allocated ID"
@@ -122,7 +123,8 @@ ACCEPTED: list[tuple[str, Mutation]] = [
         "no repository, pull number, or review version",
         _chain(*(_set(("flags", 0, k), None) for k in ("repository", "pull_number", "review_version"))),
     ),
-    ("a finding ID of any value", _set(("flags", 0, "finding_id"), 5)),
+    ("a finding ID in any form", _set(("flags", 0, "finding_id"), "v2 F002")),
+    ("an empty finding ID", _set(("flags", 0, "finding_id"), "")),
     ("a created_at with Z", _set(("flags", 0, "created_at"), "2026-10-06T12:00:00Z")),
     ("a created_at that is only a date", _set(("flags", 0, "created_at"), "2026-10-06")),
     ("a resolution with spaces around it", _set(("flags", 1, "resolution"), " Tuned. ")),
@@ -178,6 +180,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         FlagError,
         REVIEW_VERSION,
     ),
+    ("a finding ID that is a number", _set(("flags", 0, "finding_id"), 5), FlagError, FINDING),
+    ("a finding ID that is a list", _set(("flags", 0, "finding_id"), ["F001"]), FlagError, FINDING),
     ("a created_at that is not a string", _set(("flags", 0, "created_at"), 5), FlagError, "Flag created_at is invalid"),
     ("a blank created_at", _set(("flags", 0, "created_at"), " "), FlagError, "Flag created_at is invalid"),
     ("an empty category", _set(("flags", 0, "category"), ""), FlagError, "Flag category is invalid"),
@@ -238,6 +242,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ),
     ("pull number", _set(("flags", 0, "pull_number"), 0), FlagError, PULL),
     ("review version", _set(("flags", 0, "review_version"), 0), FlagError, REVIEW_VERSION),
+    ("finding ID", _set(("flags", 0, "finding_id"), ["F001"]), FlagError, FINDING),
     ("text field", _set(("flags", 0, "category"), ""), FlagError, "Flag category is invalid"),
     ("created_at", _set(("flags", 0, "created_at"), "yesterday"), FlagError, "Flag created_at is invalid"),
     ("open metadata", _set(("flags", 0, "resolution"), "Done."), FlagError, OPEN_METADATA),
