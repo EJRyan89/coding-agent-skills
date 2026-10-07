@@ -1,13 +1,15 @@
 """verify_source_snapshot and validate_adapter_manifest, pinned: every input each accepts (and what it returns), every
 fault it refuses with its exact error, and the order in which it detects faults. Each snapshot is written literally to
 a temporary directory and each manifest is a literal, so a change to what a reviewer may be given, or to which reviewer
-files are trusted, shows up here."""
+files are trusted, shows up here. One end-to-end case runs materialize_reviewer against a real commit to show that a
+manifest declaring the reserved path writes nothing."""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -957,12 +959,6 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("supports",), ["re-review"]),
         _entrypoint_result(supports=["re-review"]),
     ),
-    (
-        "an entrypoint resource named like the materialization record",
-        _entrypoint_manifest,
-        _put(("resources",), ["materialization.json"]),
-        _entrypoint_result(resources=["materialization.json"]),
-    ),
     ("specialists", _specialists_manifest, _as_is, _specialists_result()),
     (
         "specialists that review uncovered files",
@@ -1162,6 +1158,27 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         TWICE,
     ),
     (
+        "a reserved entrypoint, once normalized",
+        _entrypoint_manifest,
+        _put(("entrypoint",), "./materialization.json"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved entrypoint resource",
+        _entrypoint_manifest,
+        _put(("resources",), ["materialization.json"]),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved agent profile",
+        _entrypoint_manifest,
+        _put(("agent_profiles", 0), "materialization.json"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
         "another kind",
         _specialists_manifest,
         _put(("kind",), "entrypoint"),
@@ -1270,6 +1287,7 @@ ENTRYPOINT_STAGES: list[ManifestStage] = [
         "agent_profiles[0] is unsafe: '../x.md'",
     ),
     ("duplicates", _put(("agent_profiles", 0), "SKILL.md"), RuntimeContractError, TWICE),
+    ("reserved", _put(("resources", 1), "materialization.json"), RuntimeContractError, RESERVED),
 ]
 SPECIALISTS_STAGES: list[ManifestStage] = [
     ("shape", _put(("extra",), 1), RuntimeContractError, MANIFEST_FIELDS),
@@ -1343,6 +1361,47 @@ class AdapterManifestValidationTests(unittest.TestCase):
             validate_adapter_manifest(_put(("required_capabilities",), [[]])(_entrypoint_manifest()))
         self.assertIs(TypeError, type(caught.exception))
         self.assertIn("unhashable type: 'list'", str(caught.exception))
+
+
+class ReservedPathMaterializationTests(unittest.TestCase):
+    """materialize_reviewer writes its own record to materialization.json, so a trusted commit that holds a reviewer
+    file at that path must never reach it: the file would be written, then replaced by the record."""
+
+    @staticmethod
+    def _git(path: Path, *arguments: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", str(path), *arguments], capture_output=True, text=True, encoding="utf-8", check=False
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        return result.stdout.strip()
+
+    def test_a_reserved_path_in_an_entrypoint_manifest_materializes_nothing(self) -> None:
+        placements = {
+            "entrypoint": {"entrypoint": "materialization.json", "resources": [], "agent_profiles": []},
+            "resource": {"entrypoint": "SKILL.md", "resources": ["materialization.json"], "agent_profiles": []},
+            "agent profile": {"entrypoint": "SKILL.md", "resources": [], "agent_profiles": ["materialization.json"]},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            checkout = root / "checkout"
+            checkout.mkdir()
+            self._git(checkout, "init", "-b", "main")
+            (checkout / "SKILL.md").write_text("# Reviewer\n", encoding="utf-8")
+            (checkout / "materialization.json").write_text('{"reviewer": "file"}\n', encoding="utf-8")
+            self._git(checkout, "add", ".")
+            self._git(
+                checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "both"
+            )
+            commit = self._git(checkout, "rev-parse", "HEAD")
+            for name, paths in placements.items():
+                with self.subTest(name):
+                    manifest = {**_entrypoint_manifest(), **paths}
+                    destination = root / name.replace(" ", "-")
+                    with self.assertRaises(RuntimeContractError) as caught:
+                        review_runtime.materialize_reviewer(checkout, commit, manifest, destination)
+                    self.assertEqual(RESERVED, str(caught.exception))
+                    self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":
