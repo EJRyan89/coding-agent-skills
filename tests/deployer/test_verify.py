@@ -454,7 +454,7 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual(0, result.code, result.output)
         self.assertIn("No model is started; nothing is changed.", result.output)
         self.assertEqual([], self.runtimes.calls)
-        self.assertEqual(1, self.verify("--extra").code)
+        self.assertEqual(2, self.verify("--extra").code)
 
 
 if __name__ == "__main__":

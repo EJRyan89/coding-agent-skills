@@ -11,7 +11,7 @@ from typing import Any
 
 from . import frontmatter, platform_support
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
-from .errors import DeployError
+from .errors import DeployError, os_error
 from .paths import Paths
 from .tools import SKILL_TOOLS
 
@@ -375,6 +375,15 @@ def _discover_agents(paths: Paths) -> dict[str, Path]:
 
 
 def discover(paths: Paths, source_id: str) -> Source:
+    try:
+        return _discover(paths, source_id)
+    except OSError as exc:
+        raise os_error(
+            exc, "read the skill source", "Check that this checkout is complete and that you can read it, then retry."
+        ) from exc
+
+
+def _discover(paths: Paths, source_id: str) -> Source:
     _reject_links(paths.skills_src)
     directories = _discover_directories(paths)
     source = Source(source_id)

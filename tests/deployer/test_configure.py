@@ -28,7 +28,7 @@ class ConfigureTests(DeployerTestCase):
     def test_unknown_argument_is_rejected_without_touching_config(self) -> None:
         self.make_source_json()
         result = self.configure("--profile")
-        self.assertEqual(1, result.code)
+        self.assertEqual(2, result.code)
         self.assertIn("ERROR: unrecognized arguments: --profile", result.output)
         self.assertFalse(self.config_file().exists())
 
@@ -50,7 +50,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_config()
         before = self.digest()
         result = self.configure("--reset", stdin="")
-        self.assertEqual(1, result.code)
+        self.assertEqual(130, result.code)
         self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
         self.assertEqual(before, self.digest())
 

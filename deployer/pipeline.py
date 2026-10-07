@@ -6,6 +6,7 @@ per-item plan and its execution in plan.py, the reports in report.py, and --migr
 
 from __future__ import annotations
 
+import argparse
 import os
 import secrets
 import sys
@@ -15,9 +16,9 @@ from typing import TextIO
 
 from . import config, fsops, journal, lock, manifest, migrate, plan, platform_support, render, report, source
 from . import selection as selection_module
-from .arguments import ParserExit, deploy_parser
+from .arguments import USAGE_ERROR, parse_command
 from .context import Context, Options
-from .errors import Cancelled, DeployError, print_error, see_recovery
+from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import BY_LABEL, KINDS, SHARED, SKILL
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
@@ -26,8 +27,9 @@ from .report import DEPLOY_ACTIONS, DEPLOYED
 TAKE_OVER_SOURCE = "--take-over-source"
 
 
-def parse_arguments(arguments: list[str], source_id: str) -> Options:
-    options = Options(**vars(deploy_parser().parse_args(arguments)))
+def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
+    """The deployment's options, refused when they combine in a way only the source can rule out or that cannot run."""
+    options = Options(**{key: value for key, value in vars(namespace).items() if key != "command"})
     if options.include and not options.select_all:
         raise DeployError("ERROR: --include can only be used with --all")
     if options.migrate_from:
@@ -279,11 +281,29 @@ def run(
     probe: lock.ProcessProbe = platform_support.process_status,
     stdin: TextIO | None = None,
 ) -> int:
+    """Deploy with deploy.py's options, as `python deploy.py` with no subcommand does."""
+    namespace = parse_command(arguments)
+    if isinstance(namespace, int):
+        return namespace
+    if namespace.command is not None:
+        print_error(DeployError(f"ERROR: '{namespace.command}' is a command; run it with deploy.py itself."))
+        return USAGE_ERROR
+    return execute(namespace, paths, probe=probe, stdin=stdin)
+
+
+def execute(
+    namespace: argparse.Namespace,
+    paths: Paths,
+    *,
+    probe: lock.ProcessProbe = platform_support.process_status,
+    stdin: TextIO | None = None,
+) -> int:
     stdin = stdin if stdin is not None else sys.stdin
+    debug = debug_requested(namespace.debug)
     try:
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
-        options = parse_arguments(arguments, source_id)
+        options = parse_arguments(namespace, source_id)
         if options.canary_home:
             paths = Paths(paths.source_dir, canary_home(options.canary_home))
         validate_managed_roots(paths)
@@ -294,20 +314,16 @@ def run(
             else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
         )
         src = source.discover(paths, source_id)
-    except ParserExit as exc:
-        return exc.code
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
     if options.dry_run:
         try:
             if _stop_for_pending_recovery(paths):
                 return 0
             return _deploy(paths, options, src, values, stdin, None)
-        except DeployError as exc:
-            print_error(exc)
-            return exc.exit_code
+        except (DeployError, OSError, KeyboardInterrupt) as exc:
+            return fail(exc, debug, "finish the dry run")
     try:
         if options.canary_home:
             # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it.
@@ -316,13 +332,12 @@ def run(
         else:
             source.reject_linked_worktree(paths)
         held = lock.acquire(paths, probe)
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        return fail(exc, debug, "prepare the deployment")
     try:
         _reject_other_checkout(paths, source_id, options.take_over_source)
     except DeployError as exc:
-        print_error(exc)
+        print_error(exc, debug)
         held.release()
         return exc.exit_code
     if not journal.recover_incomplete(paths):
@@ -340,15 +355,17 @@ def run(
         code = _deploy(paths, options, src, values, stdin, run_id)
     except Cancelled as exc:
         # Raised only at the selection prompt, before staging or any destination change.
-        print_error(exc)
+        print_error(exc, debug)
         held.release()
         return exc.exit_code
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, DeployError):
-            print_error(exc)
+            print_error(exc, debug)
             code = exc.exit_code
         else:
             print(f"ERROR: Unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+            if debug:
+                print_traceback(exc)
             code = 130 if isinstance(exc, KeyboardInterrupt) else 1
         print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
         if journal.recover_incomplete(paths):

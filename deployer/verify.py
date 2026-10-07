@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import tempfile
@@ -9,9 +10,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import discovery, manifest, platform_support, tools
-from .arguments import ParserExit, verify_parser
+from .arguments import VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError
-from .errors import DeployError, print_error
+from .errors import DeployError, debug_requested, fail
 from .paths import Paths
 from .report import ReportLine, print_report
 
@@ -70,8 +71,14 @@ def runtime_lines(names: list[str], listing: Listing, adapters: Path) -> list[Re
 
 
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:
+    """`python deploy.py verify` with these arguments."""
+    namespace = parse_command([VERIFY_COMMAND, *arguments])
+    return namespace if isinstance(namespace, int) else execute(namespace, paths, environment)
+
+
+def execute(namespace: argparse.Namespace, paths: Paths, environment: Mapping[str, str] | None = None) -> int:
+    debug = debug_requested(namespace.debug)
     try:
-        verify_parser().parse_args(arguments)
         platform_support.ensure_supported()
         names = adapter_names(manifest.load(paths.manifest_file))
         if not names:
@@ -79,12 +86,12 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
             raise DeployError(
                 f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
             )
-    except ParserExit as exc:
-        return exc.code
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
-    environment = dict(os.environ if environment is None else environment)
+        return _verify(names, paths, dict(os.environ if environment is None else environment))
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        return fail(exc, debug, "finish verifying the adapters")
+
+
+def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
     adapters = paths.adapter_dest_dir
     print("")
     print(f"Adapters: {len(names)} in {platform_support.normalize(adapters)}")

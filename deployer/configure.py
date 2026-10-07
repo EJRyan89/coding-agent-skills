@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import TextIO
 
 from . import config, fsops, platform_support, source
-from .arguments import ParserExit, configure_parser
-from .errors import DeployError, print_error
+from .arguments import CONFIGURE_COMMAND, parse_command
+from .errors import Cancelled, DeployError, debug_requested, print_error, print_traceback
 from .paths import Paths, validate_managed_roots
+
+# Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
+CANCELLED = "Configuration cancelled; existing config was not changed."
 
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
-    print("")
-    print(f"{key}: {description}")
-    if current:
-        print(f"  Current: {current}")
+    """Ask for one value on stderr, which carries every prompt, so stdout holds only results."""
     sys.stdout.flush()
+    print("", file=sys.stderr)
+    print(f"{key}: {description}", file=sys.stderr)
+    if current:
+        print(f"  Current: {current}", file=sys.stderr)
     label = "New value (Enter keeps the current value, Ctrl+C cancels)" if current else "Value (Ctrl+C cancels)"
     print(f"  {label}: ", end="", file=sys.stderr, flush=True)
     try:
@@ -30,9 +35,15 @@ def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | No
 
 
 def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
+    """`python deploy.py configure` with these arguments."""
+    namespace = parse_command([CONFIGURE_COMMAND, *arguments])
+    return namespace if isinstance(namespace, int) else execute(namespace, paths, stdin)
+
+
+def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = None) -> int:
     stdin = stdin if stdin is not None else sys.stdin
+    reset, debug = namespace.reset, debug_requested(namespace.debug)
     try:
-        reset = configure_parser().parse_args(arguments).reset
         platform_support.ensure_supported()
         validate_managed_roots(paths)
         source_id = source.load_source_id(paths)
@@ -48,10 +59,7 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         for key, description in config.PROMPTS.items():
             answer = _prompt(key, description, existing.get(key, ""), stdin)
             if answer is None:
-                print("", file=sys.stderr)
-                print("Configuration cancelled; existing config was not changed.", file=sys.stderr)
-                print("", file=sys.stderr)
-                return 1
+                raise Cancelled(CANCELLED)
             if key in config.DIRECTORY_VARIABLES:
                 answer = platform_support.normalize_path_input(answer)
             values[key] = answer
@@ -60,15 +68,18 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         content = "\n".join(lines) + "\n"
         config.validate_directories(config.parse(content, source_id))
         fsops.write_private(config_file, content.encode("utf-8"))
-    except ParserExit as exc:
-        return exc.code
+    except KeyboardInterrupt:
+        print_error(Cancelled(CANCELLED), debug)
+        return 130
     except DeployError as exc:
-        print_error(exc)
+        print_error(exc, debug)
         return exc.exit_code
     except OSError as exc:
         print("", file=sys.stderr)
         print(f"ERROR: Could not write configuration: {exc}", file=sys.stderr)
         print("", file=sys.stderr)
+        if debug:
+            print_traceback(exc)
         return 1
     print("")
     print("Saved.")

@@ -7,7 +7,7 @@ import sys
 from . import config, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE
 from .context import Context, Selection
-from .errors import Cancelled, DeployError
+from .errors import CANCELLED, Cancelled, DeployError
 from .report import currently_chosen, plural, wrap
 
 
@@ -39,27 +39,31 @@ def select(context: Context) -> Selection | None:
         print("No current skills discovered; previously owned skills will be considered for removal.")
         selection.deselect_all = True
         return selection
-    print("Select what to deploy:")
     choices = [(name, "bundle") for name in sorted(src.bundles)] + [(name, "skill") for name in source.root_names(src)]
     if not choices:
         print("No selectable bundles or skills discovered; previously owned skills will be considered for removal.")
         selection.deselect_all = True
         return selection
+    # The menu is a prompt, so it goes to stderr with every other prompt; stdout holds only results.
+    sys.stdout.flush()
+    print("Select what to deploy:", file=sys.stderr)
     for index, (name, kind) in enumerate(choices, start=1):
         labels = [*(["bundle"] if kind == "bundle" else []), *(["opt-in"] if source.is_opt_in(src, name) else [])]
         suffix = f" ({', '.join(labels)})" if labels else ""
         mark = "*" if currently_chosen(src, context.owned, name, kind) else " "
-        print(f"  [{mark}] {index}. {name}{suffix}")
-    print("[*] = currently deployed")
-    print("Enter numbers separated by spaces, 'all', or 'none'. Ctrl+C cancels.")
-    print("Selection: ", end="", flush=True)
+        print(f"  [{mark}] {index}. {name}{suffix}", file=sys.stderr)
+    print("[*] = currently deployed", file=sys.stderr)
+    print("Enter numbers separated by spaces, 'all', or 'none'. Ctrl+C cancels.", file=sys.stderr)
+    print("Selection: ", end="", file=sys.stderr, flush=True)
     try:
         line = context.stdin.readline()
     except KeyboardInterrupt:
-        print("")
-        raise Cancelled("Cancelled; nothing was changed.") from None
+        print("", file=sys.stderr)
+        raise Cancelled(CANCELLED) from None
     if not line:
-        raise DeployError("ERROR: No selection was provided.")
+        # The end of input cancels like Ctrl+C: nobody is there to answer.
+        print("", file=sys.stderr)
+        raise Cancelled(CANCELLED)
     answer = line.rstrip("\r\n")
     if answer == "all":
         selection = select_all(context, [])

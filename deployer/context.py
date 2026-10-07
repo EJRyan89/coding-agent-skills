@@ -20,6 +20,7 @@ class Options:
     migrate_from: str = ""
     take_over_source: bool = False
     canary_home: str = ""
+    debug: bool = False
 
 
 @dataclass
