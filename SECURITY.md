@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Only the latest release is supported, and security fixes land on the default branch and in the next release. Upgrade to the latest release before reporting an issue that may already be resolved.
+`main` is the supported line. Releases are checkpoints: tags on `main` that are not patched separately, so a security fix lands on `main` and is carried into the next release. `update-coding-agent-skills` keeps an installation on `main` and stops at a release that raises the major version until the user accepts it. Update before reporting an issue that may already be resolved.
 
 ## Reporting a vulnerability
 
@@ -10,7 +10,7 @@ Do not open a public issue for a suspected vulnerability. Use [GitHub private vu
 
 Include enough information to reproduce and assess the issue:
 
-- affected version or commit;
+- the output of `python deploy.py check`, which names the deployed commit, or the affected commit;
 - relevant operating-system and tool versions;
 - minimal reproduction steps;
 - expected and observed behavior;

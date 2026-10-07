@@ -64,7 +64,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-`check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
+`check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. Its `Deployed commit` line names the commit the skills were last deployed from, with the nearest tag when Git can describe it, such as `v0.1.0-14-g71ad815 (<full hash>)`, or `unknown` before the first deployment that records one. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
 
 `configure` prompts for the root directory containing your local repositories; rerun it to change the value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value and Ctrl+C cancels without saving. Configured paths must be absolute drive-letter paths of directories that already exist. `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
 
@@ -100,7 +100,7 @@ Every `deploy.py` command exits 0 when it succeeds, 1 when it fails, 2 when its 
 
 ## Updating
 
-From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. See [Versioning](releasing.md#versioning) for what each level means.
+`main` is the supported line, and releases are checkpoints on it, so an installation follows `main` rather than the latest release. From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. See [Versioning](releasing.md#versioning) for what each level means.
 
 To update by hand, update the clone, preview the deployment, and then apply it:
 

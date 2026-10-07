@@ -22,7 +22,7 @@ A version number tells a user what the update asks of them, because `update-codi
 
 **Before `1.0.0`**, the minor level carries changes that would be major later, each with its migration or its stated manual step, and the patch level carries fixes only. `1.0.0` is tagged when the deployer runs on macOS and Linux as well as Windows, every contract above is pinned by a test against literal values, and a record or manifest migration has shipped and been exercised in a release.
 
-A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list under `deploy-meta/`, `skills/code-review-core/references/review-adapter.schema.json`, a format table in `docs/code-review-operations-contract.md`, or a skill directory name, is what raises the level. Until a validation check holds that rule, which [issue #24](https://github.com/EJRyan89/coding-agent-skills/issues/24) adds alongside the version identity, the person tagging reads the diff since the last tag against the list above.
+A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list under `deploy-meta/`, `skills/code-review-core/references/review-adapter.schema.json`, a format table in `docs/code-review-operations-contract.md`, or a skill directory name, is what raises the level. Until a validation check holds that rule, which [issue #129](https://github.com/EJRyan89/coding-agent-skills/issues/129) adds, the person tagging reads the diff since the last tag against the list above.
 
 ## Before tagging
 
@@ -43,7 +43,7 @@ A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list 
    ```
 
    `YourName` is the documented placeholder in test fixtures. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name, so the list never enters the repository. Any hit is a prompt to read the line, not a verdict; fix a real one through a pull request before tagging.
-4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` says which release is supported. Confirm both still describe the truth for this release.
+4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` names `main` as the supported line and releases as checkpoints. Confirm both still describe the truth for this release.
 5. **Secret scanning.** GitHub's secret scanning and push protection are on for the public repository; confirm they still are in the repository's security settings.
 
 ## Tagging
@@ -54,7 +54,16 @@ Write the notes to a file and create the release from `main`:
 gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file <file>
 ```
 
-The notes say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. They open with the level of the release and the action, if any, the update asks of the user, as [Versioning](#versioning) defines them. Drop `--prerelease` at `1.0.0`.
+The notes say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. They open with the level of the release and the action, if any, the update asks of the user, as [Versioning](#versioning) defines them. Carry the release milestone's description into them: its `Shipped:` list of issues and the pull requests that closed them, and any release-note obligation it records. Drop `--prerelease` at `1.0.0`.
+
+### Release notes
+
+The GitHub release notes are the record of what changed between tags; the repository keeps no `CHANGELOG.md`. Since `main` is the supported line and every installation follows it, the notes are where a user reads what an update brought and what it asks of them, and `MAJOR_UPDATE` points the user at them.
+
+The `v0.2.0` notes must also say:
+
+- updating removes `init-ai-config`, which was retired in [#29](https://github.com/EJRyan89/coding-agent-skills/issues/29); and
+- `update-coding-agent-skills` stops at `MAJOR_UPDATE` on every `v0.1.x` installation, since `v0.2.0` raises the minor version while the major is 0, until the user starts it again with `--cross-major`.
 
 ## After tagging
 

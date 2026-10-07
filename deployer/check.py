@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import manifest, platform_support, source, tools
+from . import manifest, platform_support, source, source_commit, tools
 from .arguments import CHECK_COMMAND, parse_command
 from .errors import DeployError, debug_requested, fail
 from .paths import Paths
@@ -84,13 +84,16 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
         src = source.discover(paths, source_id)
-        owned = manifest.load(paths.manifest_file).ownership(source_id)
+        recorded = manifest.load(paths.manifest_file)
+        owned = recorded.ownership(source_id)
+        deployed = source_commit.describe(paths.source_dir, recorded.source_commit(source_id))
         deploy_lines = _deploy_lines()
         skill_lines = _skill_lines(src, owned)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")
     print(f"Source: {source.label(src.source_id, src.name)}")
+    print(f"Deployed commit: {deployed}")
     print(f"Home: {platform_support.normalize(paths.home)}")
     warn_ignored_home(paths.home)
     print_report("CHECK", CHECK_ACTIONS, [*deploy_lines, *skill_lines])

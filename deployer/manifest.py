@@ -13,6 +13,7 @@ from .hashing import HASH_PATTERN
 from .kinds import ADAPTERS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
 from .source import SOURCE_ID_PATTERN, is_valid_name
+from .source_commit import COMMIT_PATTERN
 
 MANIFEST_VERSION = 7
 # Version 7 adds agent ownership. A version 6 manifest is read as having no agents and saved as version 7, which a
@@ -86,6 +87,11 @@ class Manifest:
         entry = self.sources.get(source_id)
         return entry if isinstance(entry, dict) else None
 
+    def source_commit(self, source_id: str) -> str | None:
+        """The commit this source was last deployed from, or None for an entry written before it was recorded."""
+        value = (self.source(source_id) or {}).get("source_commit")
+        return value if isinstance(value, str) else None
+
     def ownership(self, source_id: str) -> Ownership:
         entry = self.source(source_id) or {}
         owned = Ownership()
@@ -126,6 +132,15 @@ def _safe_names(values: Any) -> bool:
     )
 
 
+def _validate_source_commit(source_id: str, entry: dict[str, Any]) -> None:
+    """A recorded commit is a full object name; an entry written before it was recorded has none until it deploys."""
+    if "source_commit" not in entry:
+        return
+    value = entry["source_commit"]
+    if not isinstance(value, str) or not COMMIT_PATTERN.fullmatch(value):
+        raise DeployError(f"ERROR: Manifest source '{source_id}' source_commit is malformed")
+
+
 def _validate(data: dict[str, Any], path: Path) -> None:
     """Reject any manifest value that could later be joined to a path or trusted as a hash."""
     run_id = data.get("last_run_id", "")
@@ -136,6 +151,7 @@ def _validate(data: dict[str, Any], path: Path) -> None:
             raise DeployError(f"ERROR: Manifest source ID is malformed: {source_id!r}")
         if not isinstance(entry, dict):
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
+        _validate_source_commit(source_id, entry)
         # selected_skills is no longer written, but an entry from before #23 still carries it until its source next
         # deploys, so it is validated, never trusted, on read.
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
