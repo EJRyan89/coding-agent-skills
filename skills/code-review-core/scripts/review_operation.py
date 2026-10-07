@@ -8,7 +8,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from review_archive import commit_record, current_ledger, latest_record, list_versions, pull_directory, record_paths
+from review_archive import (
+    archive_head,
+    commit_record,
+    current_ledger,
+    latest_record,
+    ledger_digest,
+    list_versions,
+    pull_directory,
+    record_paths,
+)
 from review_config import validate_repository_identity
 from review_io import read_json
 from review_records import build_record, ledger_summary, payload_hash, validate_adapter_result
@@ -169,6 +178,40 @@ def _ids(items: Any, what: str) -> list[str]:
     return ids
 
 
+def archive_base(current: int | None, ledger: list[dict[str, Any]]) -> dict[str, Any]:
+    """The archive state a review is judged against, as prepare records it in run.json: its latest version (None
+    without one) and the SHA-256 of that version's ledger."""
+    return {"version": current, "ledger_sha256": ledger_digest(ledger)}
+
+
+def _version_name(version: Any) -> str:
+    return "no review" if version is None else f"version {version}"
+
+
+def check_archive_base(base: Any, current: int | None, ledger: list[dict[str, Any]]) -> None:
+    """Fail unless the archive still holds the version and ledger a review was judged against.
+
+    A review's dispositions are judged against the version prepare saw, so recording them on top of a later one
+    could reopen entries it closed or record an older head as the latest review. commit_record then holds the same
+    version under the pull request's lock while it writes.
+    """
+    if not isinstance(base, dict) or set(base) != {"version", "ledger_sha256"}:
+        raise ReviewOperationError(
+            "The run does not record the archive version it was prepared against; nothing was recorded. "
+            "Prepare the review again"
+        )
+    if base["version"] != current:
+        raise ReviewOperationError(
+            f"The archive moved since prepare: the review was judged against {_version_name(base['version'])}, "
+            f"and the archive now holds {_version_name(current)}; nothing was recorded. Prepare the review again"
+        )
+    if base["ledger_sha256"] != ledger_digest(ledger):
+        raise ReviewOperationError(
+            f"The ledger of {_version_name(current)} changed since prepare; nothing was recorded. "
+            "Prepare the review again"
+        )
+
+
 def commit_adapter_result(
     *,
     request_path: Path,
@@ -176,6 +219,7 @@ def commit_adapter_result(
     archive_root: Path,
     policy: dict[str, Any],
     adapter: dict[str, Any],
+    base: Any,
     local_mirror_root: Path | None = None,
     reviewers: list[dict[str, Any]] | None = None,
     require_comment_dispositions: bool = True,
@@ -202,14 +246,14 @@ def commit_adapter_result(
         raise ReviewOperationError(f"Reviewer result status is {result['status']}; incomplete results are not archived")
     repository = validate_repository_identity(request["repository"])
     number = request["pull_number"]
-    archive_versions = list_versions(pull_directory(archive_root, repository, number))
-    current = archive_versions[-1] if archive_versions else None
+    current, ledger = archive_head(archive_root, repository, number)
+    check_archive_base(base, current, ledger)
     version = 1 if current is None else current + 1
     record_input = request_to_record_input(
         request, adapter, reviewers, patches=patches, scope=scope, uncovered_files=uncovered_files
     )
     # A re-review judges and extends the archive's latest ledger; an initial review starts a fresh one.
-    prior_ledger = current_ledger(archive_root, repository, number) if request["mode"] == "re-review" else []
+    prior_ledger = ledger if request["mode"] == "re-review" else []
     record = build_record(record_input, result, version=version, policy=policy, prior_ledger=prior_ledger)
     if local_mirror_root is not None:
         local_versions = list_versions(pull_directory(local_mirror_root, repository, number))

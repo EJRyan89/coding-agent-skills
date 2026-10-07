@@ -523,6 +523,13 @@ class PrepareFixture(unittest.TestCase):
         record = build_record(request, result, version=1, policy=POLICY, reviewed_at="2026-10-01T09:30:00+00:00")
         commit_record(self.archive, REPOSITORY, NUMBER, record, expected_latest_version=None)
 
+    def seeded_base(self) -> dict[str, Any]:
+        """The archive base of the review seed_review recorded: version 1 and the SHA-256 of its ledger's canonical
+        JSON, computed here rather than by the code under test."""
+        record = json.loads((pull_directory(self.archive, REPOSITORY, NUMBER) / "review.json").read_text("utf-8"))
+        canonical = json.dumps(record["ledger"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return {"version": 1, "ledger_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest()}
+
     def seed_legacy(self) -> None:
         directory = pull_directory(self.archive, REPOSITORY, NUMBER)
         directory.mkdir(parents=True)
@@ -762,6 +769,8 @@ PATCHES = {
 }
 CHANGED = ["CLAUDE.md", "app/cache", "app/service.py"]
 LINK_NOTE = "snapshot excludes symbolic link app/cache"
+# The SHA-256 of an empty ledger's canonical JSON, `[]`: the base of a pull request without a review.
+NO_REVIEW = {"version": None, "ledger_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"}
 CHECKOUT_NOTE = (
     "This session runs inside <root>/checkout, so its CLAUDE.md files and project memory load into every reviewer on "
     "every turn; start review sessions from a directory outside the checkout."
@@ -851,6 +860,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "patches": PATCHES,
         "scope": None,
         "uncovered_files": [],
+        "archive_base": NO_REVIEW,
         **changes,
     }
 
@@ -1493,7 +1503,7 @@ class HistoryTests(PrepareFixture):
                 self.assertFalse(self.run_dir.exists())
                 self.assertEqual([], list(self.temporary.iterdir()))
         result, _ = self.prepare(force=True)
-        self.assertEqual({"status": "ready", "run": "<root>/run", **state()}, result)
+        self.assertEqual({"status": "ready", "run": "<root>/run", **state(archive_base=self.seeded_base())}, result)
         self.assertEqual(request(), self.json_file("request.json"), "a forced initial review carries nothing")
 
     def test_a_forced_re_review_of_a_reviewed_head(self) -> None:
@@ -1516,7 +1526,7 @@ class HistoryTests(PrepareFixture):
         self.seed_review(patches=current_patches())
         self.flag_prior()
         result, _ = self.prepare()
-        self.assertEqual({"status": "ready", "run": "<root>/run", **state()}, result)
+        self.assertEqual({"status": "ready", "run": "<root>/run", **state(archive_base=self.seeded_base())}, result)
         self.assertEqual(request(), self.json_file("request.json"))
 
     def test_a_re_review_carries_every_open_finding_with_its_flags(self) -> None:
@@ -1529,7 +1539,7 @@ class HistoryTests(PrepareFixture):
             "Scope full, 0 of 3 files and 0 of 4 changed lines differ from v1 (requested full: a full re-review was "
             "requested).",
         ]
-        expected = state(mode="re-review", notes=notes, scope=scope)
+        expected = state(mode="re-review", notes=notes, scope=scope, archive_base=self.seeded_base())
         self.assertEqual(({"status": "ready", "run": "<root>/run", **expected}, ""), (result, printed))
         self.assertEqual(expected, self.json_file("run.json"))
         self.assertEqual(request(mode="re-review", prior_findings=[PRIOR]), self.json_file("request.json"))

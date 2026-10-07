@@ -26,6 +26,7 @@ succeeds or fails on its own, and every line names its pull request.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import hashlib
 import json
@@ -45,7 +46,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from review_archive import ArchiveError, pull_records
+from review_archive import ArchiveError, archive_head, pull_records
 from review_config import (
     ConfigurationError,
     default_config_path,
@@ -80,6 +81,7 @@ from review_io import (
 )
 from review_operation import (
     ReviewOperationError,
+    archive_base,
     commit_adapter_result,
     latest_reviewed_heads,
     parse_pull_selector,
@@ -134,6 +136,11 @@ from review_state import StateError, default_state_path, load_state, update_stat
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1
 RUN_FILE = "run.json"
+# Written in a run once finalize records it, so a run folder that survives its removal is not reported unfinalized.
+RECORDED_FILE = "recorded.json"
+# Seconds between finalize's attempts to remove a recorded run whose files another process, such as antivirus or the
+# exiting Copilot CLI host, still holds open.
+RUN_REMOVAL_DELAYS = (0.25, 0.5, 1.0, 2.0)
 # Pull requests one prepare call takes: it bounds the call's duration and the reviewers started together.
 MAX_PREPARE_PULLS = 4
 MAX_RETRIES = 1
@@ -575,7 +582,12 @@ def prepare(
     prior: list[dict[str, Any]] = []
     previous: dict[str, Any] | None = None
     notes: list[str] = []
+    # A canary records under a new, empty archive root.
+    base = archive_base(None, [])
     if not canary:
+        # Read before the history the review starts from: a version recorded in between then fails finalize rather
+        # than slipping under the review.
+        base = archive_base(*archive_head(Path(config["archive_root"]), repository, number))
         history = _review_history(
             Path(config["archive_root"]), repository, number, head, re_review=re_review, force=force, notes=notes
         )
@@ -667,6 +679,7 @@ def prepare(
             "patches": patches,
             "scope": scope_record,
             "uncovered_files": uncovered_files,
+            "archive_base": base,
         }
         atomic_write_json(run / RUN_FILE, state)
     except BaseException:
@@ -1278,11 +1291,11 @@ def unfinalized_selector(run: Path) -> str | None:
     """The pull request a run directory still holds unfinalized, or None once finalize has removed the run.
 
     finalize is the only step that removes a prepared run, and prepare never prints RUN for a directory it removed,
-    so a run directory that is gone was recorded. One that remains, after a failure or with nobody finalizing it, is
-    its pull request's failure.
+    so a run directory that is gone was recorded, and so is one finalize marked recorded because it could not remove
+    it. One that remains otherwise, after a failure or with nobody finalizing it, is its pull request's failure.
     """
     run = run.resolve()
-    if not run.exists():
+    if not run.exists() or (run / RECORDED_FILE).is_file():
         return None
     return load_run(run)["selector"]
 
@@ -1333,9 +1346,40 @@ def reviewer_summaries(
     return summaries
 
 
-def finalize(run: Path) -> dict[str, Any]:
-    """Commit a validated review. Nothing is archived unless every reviewer result is valid."""
+def remove_recorded_run(run: Path, recorded: dict[str, str], sleep: Callable[[float], None]) -> str | None:
+    """Remove a run finalize recorded, retrying while another process holds one of its files.
+
+    The run is marked recorded first, so a run folder left by a crash or a held file is never reported unfinalized,
+    and marked again if removal deleted the mark but not the folder. Returns a note when the folder survives.
+    """
+    with contextlib.suppress(PersistenceError):
+        atomic_write_json(run / RECORDED_FILE, recorded)
+    error: OSError | None = None
+    for delay in (0.0, *RUN_REMOVAL_DELAYS):
+        if delay:
+            sleep(delay)
+        try:
+            shutil.rmtree(run)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            error = exc
+        else:
+            return None
+    try:
+        atomic_write_json(run / RECORDED_FILE, recorded)
+    except PersistenceError as exc:
+        return f"The recorded run {run} could not be removed ({error}) or marked recorded ({exc}); delete it."
+    return f"The recorded run {run} could not be removed ({error}); it is marked recorded, so delete it later."
+
+
+def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
+    """Commit a validated review. Nothing is archived unless every reviewer result is valid and the archive still
+    holds the version prepare judged the review against."""
+    services = services or Services()
     run = run.resolve()
+    if (run / RECORDED_FILE).is_file():
+        raise PipelineError(f"{run} is already recorded")
     state = load_run(run)
     errors = role_errors(run, state)
     if errors:
@@ -1382,6 +1426,7 @@ def finalize(run: Path) -> dict[str, Any]:
         else (Path(config["local_mirror_root"]) if config["local_mirror_root"] else None),
         policy=config["verdict_policy"],
         adapter=state["adapter"],
+        base=state.get("archive_base"),  # a run prepared before it was recorded fails rather than guess
         reviewers=reviewers,
         require_comment_dispositions=state["kind"] != "entrypoint",
         patches=state.get("patches"),  # absent from runs prepared before patches were recorded
@@ -1390,7 +1435,14 @@ def finalize(run: Path) -> dict[str, Any]:
         model_names=config["model_names"],
         flags=load_store(default_flags_path())["flags"],
     )
-    shutil.rmtree(run, ignore_errors=True)
+    notes = list(state["notes"])
+    left = remove_recorded_run(
+        run,
+        {"selector": state["selector"], "json": str(json_path), "markdown": str(markdown_path)},
+        services.sleep,
+    )
+    if left is not None:
+        notes.append(left)
     return {
         "selector": state["selector"],
         "json": json_path,
@@ -1399,7 +1451,7 @@ def finalize(run: Path) -> dict[str, Any]:
         "findings": len(record["findings"]),
         "canary_root": canary_root,
         "hashes": {json_path: _sha256(json_path), markdown_path: _sha256(markdown_path)} if canary_root else {},
-        "notes": state["notes"],
+        "notes": notes,
     }
 
 
@@ -1775,7 +1827,7 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
     failed = False
     for run in args.runs:
         try:
-            result = finalize(run)
+            result = finalize(run, services)
         except EXPECTED_ERRORS as exc:
             print(f"FAILED {run} {exc}")
             failed = True

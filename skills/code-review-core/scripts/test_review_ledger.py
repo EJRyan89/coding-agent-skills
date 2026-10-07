@@ -14,8 +14,8 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_fixture
-from review_archive import commit_record, current_ledger, pull_directory, pull_records, record_paths
-from review_operation import commit_adapter_result, reviewed_head
+from review_archive import archive_head, commit_record, current_ledger, pull_directory, pull_records, record_paths
+from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (
     RecordError,
     build_record,
@@ -184,6 +184,7 @@ class ArchiveFixture:
             archive_root=self.archive,
             policy=POLICY,
             adapter=ADAPTER,
+            base=archive_base(*archive_head(self.archive, "example/one", 12)),
             scope=scope,
         )
         return record

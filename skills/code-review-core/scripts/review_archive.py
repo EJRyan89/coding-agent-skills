@@ -9,7 +9,7 @@ from typing import Any
 
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
-from review_records import ledger_history, validate_record_pair, write_record_pair
+from review_records import canonical_json, ledger_history, sha256_text, validate_record_pair, write_record_pair
 
 
 class ArchiveError(RuntimeError):
@@ -64,11 +64,26 @@ def pull_records(root: Path, repository: str, pull_number: int) -> list[dict[str
     return [validate_record_pair(*record_paths(directory, version)) for version in list_versions(directory)]
 
 
+def archive_head(root: Path, repository: str, pull_number: int) -> tuple[int | None, list[dict[str, Any]]]:
+    """A pull request's latest review version (None without one) and that version's finding ledger, from one read.
+
+    The ledger is computed from the earlier records when the latest was written before ledgers, and is empty when the
+    pull request has no review.
+    """
+    directory = pull_directory(root, repository, pull_number)
+    versions = list_versions(directory)
+    history = ledger_history(validate_record_pair(*record_paths(directory, version)) for version in versions)
+    return (versions[-1] if versions else None), (history[max(history)] if history else [])
+
+
 def current_ledger(root: Path, repository: str, pull_number: int) -> list[dict[str, Any]]:
-    """The latest record's finding ledger, computed from the earlier records when it was written before ledgers;
-    empty when the pull request has no review."""
-    history = ledger_history(pull_records(root, repository, pull_number))
-    return history[max(history)] if history else []
+    """The latest record's finding ledger; empty when the pull request has no review."""
+    return archive_head(root, repository, pull_number)[1]
+
+
+def ledger_digest(ledger: list[dict[str, Any]]) -> str:
+    """The SHA-256 of a ledger's canonical JSON, which prepare records so finalize can tell that it changed."""
+    return sha256_text(canonical_json(ledger))
 
 
 def commit_record(
