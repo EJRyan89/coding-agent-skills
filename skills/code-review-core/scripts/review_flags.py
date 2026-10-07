@@ -28,6 +28,8 @@ FIELDS = frozenset(
         "resolution",
     }
 )
+# A finding's ID within its review, as records assign it.
+FINDING_ID = re.compile(r"F[0-9]{3,}")
 
 
 class FlagError(ValueError):
@@ -85,7 +87,7 @@ def _validate_flag_identity(flag: Any, ids: set[str]) -> None:
 
 def _validate_flag_target(flag: dict[str, Any]) -> None:
     """A known status, and what the flag is about: an optional repository, pull request, and review version, the last
-    only with a pull request."""
+    only with a pull request, and an optional finding ID, which is a string."""
     if flag["status"] not in {"open", "resolved"}:
         raise FlagError("Flag status is invalid")
     if flag["repository"] is not None:
@@ -96,6 +98,9 @@ def _validate_flag_target(flag: dict[str, Any]) -> None:
         raise FlagError("Flag pull number is invalid")
     if flag["review_version"] is not None and (not _positive(flag["review_version"]) or flag["pull_number"] is None):
         raise FlagError("Flag review version is invalid")
+    # A flag written before add checked the finding ID's form keeps whatever string it was given.
+    if flag["finding_id"] is not None and not isinstance(flag["finding_id"], str):
+        raise FlagError("Flag finding ID is invalid")
 
 
 def _validate_flag_text(flag: dict[str, Any]) -> None:
@@ -148,6 +153,27 @@ def load_store(path: Path) -> dict[str, Any]:
     return validate_store(upgrade_store(read_json(path))) if path.exists() else empty_store()
 
 
+def validate_target(
+    repository: str | None, pull_number: int | None, review_version: int | None, finding_id: str | None
+) -> str | None:
+    """What a new flag is about, checked before anything is read: a finding ID in the form reports give it, named
+    with the repository, pull request, and review version that make it one finding. Returns the repository."""
+    if finding_id is not None and not FINDING_ID.fullmatch(finding_id):
+        raise FlagError(
+            f"Finding ID {finding_id!r} is not a finding ID such as F001; a report label such as v2 F003 names "
+            "review version 2 and finding F003"
+        )
+    if finding_id is not None and None in (repository, pull_number, review_version):
+        raise FlagError("A flag that names a finding must name its repository, pull request, and review version")
+    if review_version is not None and (pull_number is None or not _positive(review_version)):
+        raise FlagError("Review version must be positive and name a pull request")
+    if repository is not None:
+        repository = validate_repository_identity(repository)
+    if pull_number is not None and not _positive(pull_number):
+        raise FlagError("Pull number must be positive")
+    return repository
+
+
 def add_flag(
     path: Path,
     *,
@@ -158,19 +184,11 @@ def add_flag(
     review_version: int | None = None,
     finding_id: str | None = None,
 ) -> dict[str, Any]:
-    """Add an open flag. A finding is named by its ID within one review, so it needs the review version too."""
+    """Add an open flag. A finding is named by its ID within one review, so it needs the review version too. That the
+    finding exists is the caller's to check, against the archive."""
     if not category.strip() or not body.strip():
         raise FlagError("Flag category and body are required")
-    if finding_id is not None and None in (repository, pull_number, review_version):
-        raise FlagError("A flag that names a finding must name its repository, pull request, and review version")
-    if review_version is not None and (pull_number is None or not _positive(review_version)):
-        raise FlagError("Review version must be positive and name a pull request")
-    if repository is not None:
-        repository = validate_repository_identity(repository)
-    if pull_number is not None and (
-        not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1
-    ):
-        raise FlagError("Pull number must be positive")
+    repository = validate_target(repository, pull_number, review_version, finding_id)
     lock = path.parent / ".locks" / "flags.lock"
     with ResourceLock(lock):
         store = load_store(path)

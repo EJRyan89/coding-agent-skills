@@ -1579,14 +1579,23 @@ def write_record_pair(
     return persisted
 
 
+def record_artifacts(record: dict[str, Any]) -> dict[str, str] | None:
+    """A validated record's artifact hashes, or None when it has none: a null `artifacts` reads as absent."""
+    artifacts: dict[str, str] | None = record.get("artifacts")
+    return artifacts
+
+
 def validate_record_pair(json_path: Path, markdown_path: Path) -> dict[str, Any]:
     record = validate_record(read_json(json_path))
+    artifacts = record_artifacts(record)
+    if artifacts is None:
+        raise RecordError("Review record has no artifact hashes")
     markdown = markdown_path.read_text(encoding="utf-8")
-    if payload_hash(record) != record["artifacts"]["payload_sha256"]:
+    if payload_hash(record) != artifacts["payload_sha256"]:
         raise RecordError("Review JSON payload hash mismatch")
-    if sha256_text(markdown) != record["artifacts"]["markdown_sha256"]:
+    if sha256_text(markdown) != artifacts["markdown_sha256"]:
         raise RecordError("Review Markdown hash mismatch")
-    expected_marker = f"Record payload SHA-256** | `{record['artifacts']['payload_sha256']}`"
+    expected_marker = f"Record payload SHA-256** | `{artifacts['payload_sha256']}`"
     if expected_marker not in markdown:
         raise RecordError("Review Markdown does not reference the JSON payload hash")
     return record
