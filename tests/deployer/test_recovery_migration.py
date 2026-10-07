@@ -11,7 +11,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, forward
 
-from deployer import fsops, hashing, journal, platform_support, render
+from deployer import fsops, hashing, journal, manifest, platform_support, render
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -576,6 +576,218 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertIn("obsolete", self.report_groups(result.output, "DEPLOYED")["REMOVED"][0])
         self.assertFalse(transient.exists())
         self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+
+class RecoveryBranchTests(RecoveryTestCase):
+    """Each way recovery completes or stops, with the exact lines it prints and the tree it leaves."""
+
+    RUN = "20260101-000000-done"
+
+    def committed_with_kept_backup(self) -> tuple[Path, Path]:
+        """A committed --force-item run interrupted before it moved the copy it kept to .backups/."""
+        self.deployed(("alpha", "Alpha content"))
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "previous alpha\n")
+        backup_hash = hashing.hash_path(self.skills_dir / "alpha.deploying-bak")
+        self.commit(self.RUN)
+        journal_file = self.write_journal(
+            self.RUN,
+            backup_entry("alpha", backup_hash, retain=True, run_id=self.RUN),
+            install_entry("alpha", hashing.hash_path(self.skills_dir / "alpha")),
+        )
+        return journal_file, self.skills_dir / ".backups" / self.RUN / "alpha"
+
+    def assert_completion_stopped(self, journal_file: Path, warning: str) -> None:
+        result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {self.RUN} (completing finalization)...",
+            warning,
+            f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
+            "ERROR: Recovery failed, so nothing was deployed.",
+        )
+        self.assertNotIn("Preserved backup", result.output)
+        self.assertTrue(journal_file.is_file())
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_run_killed_after_its_commit_is_completed_and_its_kept_backup_preserved(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")
+        self.make_skill("alpha", "Updated alpha")
+        with mock.patch("deployer.pipeline._finalize", side_effect=SystemExit(1)), self.assertRaises(SystemExit):
+            self.deploy("--all", "--force-item", "alpha")
+        run_id = self.manifest()["last_run_id"]
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+        result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {run_id} (completing finalization)...",
+            f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
+            "  Recovery complete.",
+        )
+        self.assertEqual("edited by hand\n", (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging" / run_id).exists())
+
+    def test_a_kept_backup_already_preserved_completes_the_run(self) -> None:
+        _, destination = self.committed_with_kept_backup()
+        destination.parent.mkdir(parents=True)
+        (self.skills_dir / "alpha.deploying-bak").rename(destination)
+        result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering committed run {self.RUN} (completing finalization)...")
+        self.assertNotIn("Preserved backup", result.output)
+        self.assertEqual("previous alpha\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_both_a_transient_and_a_permanent_backup_stop_completion(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        self.write(destination / "SKILL.md", "previous alpha\n")
+        self.assert_completion_stopped(journal_file, "  WARNING: Both transient and permanent backups exist for alpha")
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+        self.assertTrue((destination / "SKILL.md").is_file())
+
+    def test_a_missing_backup_stops_completion(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        shutil.rmtree(self.skills_dir / "alpha.deploying-bak")
+        self.assert_completion_stopped(journal_file, "  WARNING: Cannot find backup for alpha")
+        self.assertFalse(destination.exists())
+
+    def test_a_changed_transient_backup_stops_completion(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "changed after the run\n")
+        self.assert_completion_stopped(journal_file, "  WARNING: Backup hash mismatch for alpha")
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+        self.assertFalse(destination.exists())
+
+    def test_a_changed_permanent_backup_stops_completion(self) -> None:
+        journal_file, destination = self.committed_with_kept_backup()
+        destination.parent.mkdir(parents=True)
+        (self.skills_dir / "alpha.deploying-bak").rename(destination)
+        self.write(destination / "SKILL.md", "changed after the run\n")
+        self.assert_completion_stopped(
+            journal_file, f"  WARNING: Permanent backup hash mismatch for alpha at .backups/{self.RUN}/alpha"
+        )
+        self.assertEqual("changed after the run\n", (destination / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_an_uncommitted_run_that_preserved_a_backup_puts_it_back(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        destination = self.skills_dir / ".backups" / self.RUN / "alpha"
+        destination.parent.mkdir(parents=True)
+        (self.skills_dir / "alpha").rename(destination)
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        preserve = {
+            "op": "preserve",
+            "root": "claude",
+            "item": "alpha",
+            "from": "skills/alpha.deploying-bak",
+            "to": f".backups/{self.RUN}/alpha",
+        }
+        self.write_journal(
+            self.RUN,
+            backup_entry("alpha", original, retain=True, run_id=self.RUN),
+            install_entry("alpha", installed),
+            preserve,
+        )
+        result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output, f"Recovering uncommitted run {self.RUN} (rolling back)...", "  Recovery complete."
+        )
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse(destination.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_items_already_deleted_by_hand_lose_their_ownership(self) -> None:
+        self.make_source_json(shared_assets={"shared.md": "owner"})
+        self.make_shared_asset("shared.md")
+        self.make_agent("reviewer")
+        self.make_skill("alpha", "Alpha", shared_deps=["shared.md"], agent_deps=["reviewer"])
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+        shutil.rmtree(self.skills_dir / "beta")
+        shutil.rmtree(self.agents_dir / "alpha")
+        (self.skills_dir / "shared.md").unlink()
+        (self.claude_agents_dir / "reviewer.md").unlink()
+        preview = self.report_groups(self.deploy_ok("--dry-run", stdin="none\n").output, "DRY RUN")
+        self.assertEqual(
+            [
+                "alpha (runtime adapter, already absent)",
+                "beta (destination already absent)",
+                "reviewer.md (agent, already absent)",
+                "shared.md (shared asset, already absent)",
+            ],
+            preview["DROP OWNERSHIP"],
+        )
+        deployed = self.report_groups(self.deploy_ok(stdin="none\n").output, "DEPLOYED")
+        self.assertEqual(
+            [
+                "alpha (runtime adapter, already absent)",
+                "beta (already absent)",
+                "reviewer.md (agent, already absent)",
+                "shared.md (shared asset, already absent)",
+            ],
+            deployed["DROPPED OWNERSHIP"],
+        )
+        self.assertEqual(
+            ["alpha (deselected or absent from source)", "beta (runtime adapter, obsolete)"], deployed["REMOVED"]
+        )
+        for kind in ("skills", "shared", manifest.ADAPTERS, "agents"):
+            self.assertEqual({}, self.manifest()["sources"]["test/skills"].get(kind, {}), kind)
+
+    def test_an_unexpected_exception_is_named_and_the_run_rolled_back(self) -> None:
+        self.deployed(("alpha", "Original alpha"))
+        self.make_skill("alpha", "Updated alpha")
+        real_move = fsops.move
+
+        def failing_move(source: Path, destination: Path) -> None:
+            if "staging" in source.parts and destination == self.skills_dir / "alpha":
+                raise RuntimeError("synthetic defect")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", side_effect=failing_move):
+            result = self.deploy_fails("--all", pattern="Unexpected")
+        self.assertEqual(1, result.code)
+        self.assert_lines(
+            result.output,
+            "ERROR: Unexpected RuntimeError: synthetic defect",
+            "Deployment failed; reconciling the current journal before exit...",
+            "  Recovery complete.",
+        )
+        self.assertIn("Original alpha", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_finalization_failure_after_the_commit_is_completed_before_exit(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "edited by hand\n")
+        self.make_skill("alpha", "Updated alpha")
+        real_move = fsops.move
+        state = {"failed": False}
+
+        def failing_move(source: Path, destination: Path) -> None:
+            if ".backups" in destination.parts and not state["failed"]:
+                state["failed"] = True
+                raise OSError("synthetic backup move failure")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", side_effect=failing_move):
+            result = self.deploy_fails("--all", "--force-item", "alpha", pattern="synthetic backup move failure")
+        run_id = self.manifest()["last_run_id"]
+        self.assert_lines(
+            result.output,
+            "ERROR: Unexpected OSError: synthetic backup move failure",
+            "Deployment failed; reconciling the current journal before exit...",
+            f"Recovering committed run {run_id} (completing finalization)...",
+            f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
+            "  Recovery complete.",
+        )
+        self.assertEqual("edited by hand\n", (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertFalse(self.lock_dir.exists())
 
 
 class MigrationTests(DeployerTestCase):

@@ -267,6 +267,20 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
 
+    def test_powershell_syntax_error_names_the_rendered_file_it_came_from(self) -> None:
+        self.make_source_json()
+        directory = self.make_skill("alpha", "PowerShell fixture")
+        self.write(directory / "scripts" / "fine.ps1", "Write-Output 'fine'\n")
+        self.write(directory / "scripts" / "broken.ps1", "function Broken {\n    Write-Output 'unclosed'\n")
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="Rendered PowerShell syntax validation failed")
+        lines = result.output.splitlines()
+        failure = lines.index("ERROR: Rendered PowerShell syntax validation failed: alpha/scripts/broken.ps1")
+        self.assertRegex(lines[failure + 1], r"\S", result.output)
+        self.assertNotIn("fine.ps1", result.output)
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertFalse(self.manifest_file.exists())
+
     def test_unclosed_bash_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Fence fixture\n\n```bash\necho open")
