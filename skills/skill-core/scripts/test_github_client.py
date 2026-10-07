@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import bounded_process
 import github_client
 from github_client import (
     Backoff,
@@ -298,7 +298,7 @@ class DecodingTests(unittest.TestCase):
 
     def test_missing_cli_is_a_prerequisite_error(self) -> None:
         with (
-            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            mock.patch.object(github_client, "run_bounded", side_effect=FileNotFoundError("gh")),
             self.assertRaises(GitHubError) as context,
         ):
             github_client.subprocess_runner(["gh", "api", "user"])
@@ -307,7 +307,7 @@ class DecodingTests(unittest.TestCase):
 
     def test_a_cli_that_cannot_start_is_an_execution_error(self) -> None:
         with (
-            mock.patch("subprocess.run", side_effect=PermissionError("denied")),
+            mock.patch.object(github_client, "run_bounded", side_effect=PermissionError("denied")),
             self.assertRaises(GitHubError) as context,
         ):
             github_client.subprocess_runner(["gh", "api", "user"])
@@ -348,7 +348,7 @@ class DownloadTests(unittest.TestCase):
     def test_missing_cli_is_a_prerequisite_error_for_a_download(self) -> None:
         with (
             tempfile.TemporaryDirectory() as temporary,
-            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            mock.patch.object(github_client, "run_bounded", side_effect=FileNotFoundError("gh")),
             self.assertRaises(GitHubError) as context,
         ):
             github_client.subprocess_downloader(["gh", "api", "x"], Path(temporary) / "out")
@@ -373,13 +373,53 @@ class JsonTests(unittest.TestCase):
 
 
 class SubprocessRunnerContractTests(unittest.TestCase):
-    def test_runner_runs_without_a_shell_and_captures_both_streams(self) -> None:
-        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 3, b"o", b"e")) as run:
+    def test_runner_runs_through_the_bounded_layer_and_captures_both_streams(self) -> None:
+        finished = bounded_process.Finished(3, b"o", b"e")
+        with mock.patch.object(github_client, "run_bounded", return_value=finished) as run:
             result = github_client.subprocess_runner(["gh", "api", "user"])
         self.assertEqual(CommandResult(3, "o", "e"), result)
-        self.assertEqual(["gh", "api", "user"], run.call_args.args[0])
-        self.assertTrue(run.call_args.kwargs["capture_output"])
-        self.assertFalse(run.call_args.kwargs.get("shell", False))
+        self.assertEqual(mock.call(["gh", "api", "user"], 300.0, stdout=None), run.call_args)
+
+    def test_a_command_that_runs_too_long_is_a_timeout_and_is_not_retried(self) -> None:
+        program = "import time; time.sleep(30)"
+        with self.assertRaises(GitHubError) as context:
+            github_client.subprocess_runner([sys.executable, "-c", program], timeout=0.5)
+        self.assertEqual(("timeout", False), (context.exception.kind, context.exception.retryable))
+        self.assertIn("did not finish within 0.5 seconds", str(context.exception))
+        with self.assertRaises(GitHubError) as context:
+            github_client.subprocess_downloader(
+                [sys.executable, "-c", program], Path(self.directory()) / "out", timeout=0.5
+            )
+        self.assertEqual("timeout", context.exception.kind)
+
+        calls: list[Sequence[str]] = []
+
+        def stalled(arguments: Sequence[str]) -> CommandResult:
+            calls.append(arguments)
+            raise GitHubError("GitHub CLI did not finish within 1 seconds", kind="timeout")
+
+        client, sleeper = client_for(stalled)
+        with self.assertRaises(GitHubError) as context:
+            client.run(["api", "user"])
+        self.assertEqual(("timeout", 1, []), (context.exception.kind, len(calls), sleeper.waits))
+
+    def test_the_client_timeout_bounds_its_default_runners(self) -> None:
+        finished = bounded_process.Finished(0, b"{}", b"")
+        with (
+            mock.patch.object(github_client, "run_bounded", return_value=finished) as run,
+            tempfile.TemporaryDirectory() as temporary,
+        ):
+            client = GitHubClient(timeout=7.5)
+            client.run(["api", "user"])
+            client.download(["api", "x"], Path(temporary) / "out")
+            GitHubClient().run(["api", "user"])
+        self.assertEqual([7.5, 7.5, 300.0], [call.args[1] for call in run.call_args_list])
+        self.assertEqual(300.0, github_client.DEFAULT_TIMEOUT_SECONDS)
+
+    def directory(self) -> str:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return temporary.name
 
 
 if __name__ == "__main__":

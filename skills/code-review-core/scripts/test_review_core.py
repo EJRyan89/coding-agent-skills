@@ -1308,7 +1308,7 @@ class GitHubTests(unittest.TestCase):
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
         with (
             mock.patch(
-                "subprocess.run",
+                "github_client.run_bounded",
                 side_effect=FileNotFoundError("gh was not found"),
             ),
             self.assertRaises(GitHubError) as context,

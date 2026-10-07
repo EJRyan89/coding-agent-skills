@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import github_activity_report as report
+from bounded_process import Finished
 from github_activity_report import (
     MAX_INTERVAL,
     SEARCH_INTERVAL,
@@ -371,14 +372,14 @@ class RetryTests(unittest.TestCase):
 
     def test_output_that_is_not_utf8_is_replaced_instead_of_failing(self) -> None:
         body = json.dumps(search_page([{"id": "i0", "title": "TITLE"}])).replace("TITLE", "caf\xe9")
-        process = subprocess.CompletedProcess([], 0, body.encode("latin-1"), b"")
-        with mock.patch("subprocess.run", return_value=process):
+        process = Finished(0, body.encode("latin-1"), b"")
+        with mock.patch("github_client.run_bounded", return_value=process):
             items, _ = GitHubSearchClient(sleeper=Recorder()).search_all("search/issues", "q", KEY)
         self.assertEqual("caf\ufffd", items[0]["title"])
 
     def test_missing_cli_fails_with_prerequisite_error(self) -> None:
         with (
-            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            mock.patch("github_client.run_bounded", side_effect=FileNotFoundError("gh")),
             self.assertRaises(GitHubError) as context,
         ):
             report.subprocess_runner(["gh", "api", "user"])
@@ -704,12 +705,15 @@ class MainTests(unittest.TestCase):
         # A Windows pipe defaults to a legacy code page, and a failure quotes gh's stderr as it came. The child runs
         # the script as a program with gh replaced, so nothing reaches the network.
         script = str(Path(report.__file__).resolve())
+        core = str(Path(report.__file__).resolve().parents[2] / "skill-core" / "scripts")
         program = (
-            "import runpy, subprocess, sys\n"
-            "def fake(arguments, **options):\n"
+            "import runpy, sys\n"
+            f"sys.path.insert(0, {core!r})\n"
+            "import bounded_process\n"
+            "def fake(command, timeout, **options):\n"
             "    stderr = 'gh: HTTP 502: proxy \\u2192 upstream \\u2713'.encode()\n"
-            "    return subprocess.CompletedProcess(arguments, 1, b'', stderr)\n"
-            "subprocess.run = fake\n"
+            "    return bounded_process.Finished(1, b'', stderr)\n"
+            "bounded_process.run_bounded = fake\n"
             f"sys.argv = [{script!r}, '--org', 'acme', '--user', 'octo', '--months', '1']\n"
             f"runpy.run_path({script!r}, run_name='__main__')\n"
         )
