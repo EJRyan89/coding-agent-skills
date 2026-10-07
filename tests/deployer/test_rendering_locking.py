@@ -655,7 +655,7 @@ class DryRunTests(DeployerTestCase):
         self.make_shared_asset("shared.md", "# Revised shared asset")
         result = self.deploy_ok("--all", "--dry-run")
         groups = self.report_groups(result.output, "DRY RUN")
-        self.assertEqual({"UPDATE": ["beta"], "EXISTS": ["shared.md (shared asset)"], "UNCHANGED": ["alpha"]}, groups)
+        self.assertEqual({"UPDATE": ["beta", "shared.md (shared asset)"], "UNCHANGED": ["alpha"]}, groups)
 
     def test_dry_run_groups_actions_with_attention_first_and_sorts_each_group(self) -> None:
         self.make_source_json()
@@ -788,7 +788,8 @@ class DryRunTests(DeployerTestCase):
         )
         self.assertEqual(0, result.returncode, result.output)
         self.assertIn(
-            "repo-cleanup (unmanaged, differs)", self.report_groups(result.output, "DRY RUN")["BOOTSTRAP DIFF"]
+            "repo-cleanup (unmanaged and differs from the rendered skill)",
+            self.report_groups(result.output, "DRY RUN")["CONFLICT"],
         )
         self.assertIn("Locally edited → copy", result.output)
 

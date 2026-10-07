@@ -84,7 +84,9 @@ class AgentDeploymentTests(DeployerTestCase):
             "reviewer.md (agent, unmanaged and differs)", self.report_groups(result.output, "DEPLOYED")["SKIPPED"]
         )
         dry = self.deploy_ok("--all", "--dry-run")
-        self.assertIn("reviewer.md (agent, differs)", self.report_groups(dry.output, "DRY RUN")["CONFLICT"])
+        self.assertIn(
+            "reviewer.md (agent, unmanaged and differs)", self.report_groups(dry.output, "DRY RUN")["CONFLICT"]
+        )
         forced = self.deploy_ok("--all", "--force-item", "reviewer.md")
         self.assertEqual(self.content, self.agent.read_bytes())
         self.assertIn(
