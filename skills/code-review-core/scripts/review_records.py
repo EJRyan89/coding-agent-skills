@@ -147,6 +147,23 @@ def validate_dispositions(dispositions: Any, key: str, expected: set[str], label
         raise RecordError(f"{label} dispositions mismatch; missing={missing}, unknown={unknown_ids}")
 
 
+ADAPTER_RESULT_FIELDS = frozenset(
+    {
+        "protocol_version",
+        "repository",
+        "pull_number",
+        "head_sha",
+        "summary",
+        "reviewer",
+        "status",
+        "findings",
+        "prior_dispositions",
+        "comment_dispositions",
+        "usage",
+    }
+)
+
+
 def validate_adapter_result(
     value: Any,
     *,
@@ -166,76 +183,95 @@ def validate_adapter_result(
     names another finding's candidate key or a prior finding ID (whose severity `prior_severities` gives).
     """
     prior_ids = list(prior_ids)
+    _validate_result_envelope(value)
+    _validate_result_request(value, expected_repository, expected_number, expected_head_sha)
+    _validate_result_metadata(value)
+    findings = _validate_result_findings(value.get("findings"))
+    _validate_result_dispositions(value, prior_ids, comment_ids, require_comment_dispositions)
+    _validate_result_repeats(findings, value.get("prior_dispositions", []), prior_severities or {}, set(prior_ids))
+    usage = value.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise RecordError("usage must be an object or null")
+    return value
+
+
+def _validate_result_envelope(value: Any) -> None:
+    """An object of known fields, in the protocol version this module reads."""
     if not isinstance(value, dict):
         raise RecordError("Adapter result must be an object")
-    allowed = {
-        "protocol_version",
-        "repository",
-        "pull_number",
-        "head_sha",
-        "summary",
-        "reviewer",
-        "status",
-        "findings",
-        "prior_dispositions",
-        "comment_dispositions",
-        "usage",
-    }
-    unknown = sorted(set(value) - allowed)
+    unknown = sorted(set(value) - ADAPTER_RESULT_FIELDS)
     if unknown:
         raise RecordError("Adapter result contains unknown fields: " + ", ".join(unknown))
     if value.get("protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Unsupported adapter protocol version")
+
+
+def _validate_result_request(
+    value: dict[str, Any], expected_repository: str, expected_number: int, expected_head_sha: str
+) -> None:
+    """The result answers the request: the same repository, pull request, and head."""
     if validate_repository_identity(value.get("repository")) != expected_repository.lower():
         raise RecordError("Adapter result repository does not match request")
     if value.get("pull_number") != expected_number:
         raise RecordError("Adapter result pull number does not match request")
     if value.get("head_sha") != expected_head_sha:
         raise RecordError("Adapter result head SHA does not match request")
+
+
+def _validate_result_metadata(value: dict[str, Any]) -> None:
     if not isinstance(value.get("summary"), str) or not value["summary"].strip():
         raise RecordError("Adapter result summary is required")
     if not isinstance(value.get("reviewer"), str) or not value["reviewer"].strip():
         raise RecordError("Adapter result reviewer is required")
     if not _one_of(value.get("status"), {"complete", "partial", "failed"}):
         raise RecordError("Adapter result status is invalid")
-    findings = value.get("findings")
+
+
+def _validate_result_findings(findings: Any) -> list[dict[str, Any]]:
+    """The findings, each checked in order; the first fault found is the one raised."""
     if not isinstance(findings, list):
         raise RecordError("Adapter findings must be an array")
     seen_keys: set[str] = set()
     for finding in findings:
-        if not isinstance(finding, dict):
-            raise RecordError("Every adapter finding must be an object")
-        if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
-            raise RecordError("Adapter finding fields do not match the protocol")
-        key = finding["candidate_key"]
-        if not isinstance(key, str) or not key or key in seen_keys:
-            raise RecordError("Adapter candidate keys must be unique non-empty strings")
-        seen_keys.add(key)
-        if "title" in finding and not valid_title(finding["title"]):
-            raise RecordError(f"Finding {key}.title {TITLE_RULE}")
-        if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
-            raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
-        if not _one_of(finding["severity"], SEVERITIES):
-            raise RecordError(f"Invalid finding severity for {key}")
-        for field in ("category", "path", "body", "evidence", "source"):
-            if not isinstance(finding[field], str) or not finding[field].strip():
-                raise RecordError(f"Finding {key}.{field} must be non-empty")
-        path = finding["path"]
-        if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
-            raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
-        line = finding["line"]
-        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
-            raise RecordError(f"Finding {key}.line must be a positive integer")
+        _validate_result_finding(finding, seen_keys)
+    return findings
 
+
+def _validate_result_finding(finding: Any, seen_keys: set[str]) -> None:
+    """One finding, whose candidate key must not be in `seen_keys`; the key is added to it."""
+    if not isinstance(finding, dict):
+        raise RecordError("Every adapter finding must be an object")
+    if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
+        raise RecordError("Adapter finding fields do not match the protocol")
+    key = finding["candidate_key"]
+    if not isinstance(key, str) or not key or key in seen_keys:
+        raise RecordError("Adapter candidate keys must be unique non-empty strings")
+    seen_keys.add(key)
+    if "title" in finding and not valid_title(finding["title"]):
+        raise RecordError(f"Finding {key}.title {TITLE_RULE}")
+    if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
+        raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
+    if not _one_of(finding["severity"], SEVERITIES):
+        raise RecordError(f"Invalid finding severity for {key}")
+    for field in ("category", "path", "body", "evidence", "source"):
+        if not isinstance(finding[field], str) or not finding[field].strip():
+            raise RecordError(f"Finding {key}.{field} must be non-empty")
+    path = finding["path"]
+    if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
+        raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
+    line = finding["line"]
+    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+        raise RecordError(f"Finding {key}.line must be a positive integer")
+
+
+def _validate_result_dispositions(
+    value: dict[str, Any], prior_ids: list[str], comment_ids: Iterable[str], require_comment_dispositions: bool
+) -> None:
+    """One disposition per prior finding, then the comment dispositions when given or required."""
     validate_dispositions(value.get("prior_dispositions", []), "finding_id", set(prior_ids), "Prior")
     expected_comments = set(comment_ids)
     if "comment_dispositions" in value or (expected_comments and require_comment_dispositions):
         validate_dispositions(value.get("comment_dispositions", []), "comment_id", expected_comments, "Comment")
-    _validate_result_repeats(findings, value.get("prior_dispositions", []), prior_severities or {}, set(prior_ids))
-    usage = value.get("usage")
-    if usage is not None and not isinstance(usage, dict):
-        raise RecordError("usage must be an object or null")
-    return value
 
 
 def _validate_result_repeats(
