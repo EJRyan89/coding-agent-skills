@@ -76,6 +76,8 @@ When both sources are still in use, do not migrate: the other source's next depl
 
 A name one source deploys as a skill and another as a shared asset cannot be migrated, because it would have to be both. Rename it in one source, or stop deploying it from the other.
 
+On Windows two names that differ only in case, such as `Guide.md` and `guide.md`, are one file, so they are one item. A deployment that would install a case variant of an item any source owns refuses as a collision, naming both. Rename it in one source, or stop deploying it from the other. A manifest written before this refusal can record both names, one under each source; the source that stops deploying its name then reports it under `DROP OWNERSHIP` and leaves the file to the other.
+
 ## Deploying from another checkout
 
 The manifest also records the checkout each source was deployed from. Two clones of one repository share its source ID and its configuration, so a deployment from the second would silently take over every item the first deployed: it would point the installed skills, and `update-coding-agent-skills`, at the second clone and remove whatever the second lacks. A deployment from any checkout other than the recorded one therefore refuses before it changes anything, naming both paths.
@@ -86,7 +88,7 @@ If you deployed from the wrong clone, deploy from the recorded one instead. If t
 python deploy.py --all --take-over-source
 ```
 
-It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose home starts empty. A linked worktree is refused whatever the flag; deploy from the main checkout.
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose home starts empty. A linked worktree is refused whatever the flag; deploy from the main checkout.
 
 ## Configuration that no longer reads
 
