@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import time
 import unittest
+from unittest import mock
 
 from harness import DeployerTestCase, forward
 
@@ -136,6 +138,20 @@ class CoreLifecycleTests(DeployerTestCase):
         self.deploy_ok("--all")
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
         self.assertEqual([], list((self.home / ".claude" / "deployer" / "staging").iterdir()))
+
+
+class RunIdTests(DeployerTestCase):
+    def test_the_run_id_and_deployed_at_both_use_utc(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+        # A UTC instant no local clock shows today, so a run ID taken from the local time cannot match it.
+        utc = time.struct_time((2030, 1, 2, 3, 4, 5, 2, 2, 0))
+        with mock.patch.object(time, "gmtime", return_value=utc):
+            self.deploy_ok("--all")
+        manifest = self.manifest()
+        self.assertRegex(manifest["last_run_id"], r"^20300102-030405-[0-9a-f]{4}$")
+        self.assertEqual("2030-01-02T03:04:05Z", manifest["sources"]["test/skills"]["deployed_at"])
 
 
 if __name__ == "__main__":

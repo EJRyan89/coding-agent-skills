@@ -344,7 +344,8 @@ def execute(
         print("", file=sys.stderr)
         held.release()
         return 1
-    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+    # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
     try:
         code = _deploy(paths, options, src, values, stdin, run_id)
     except Cancelled as exc:
