@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import sys
@@ -404,9 +405,13 @@ def _ai_cells(row: Row) -> list[str]:
     findings = _ledger_findings(review)
     link = ""
     if review and review["report"]:
-        link = f"[AI Review](vscode://file/{quote(review['report'].replace(chr(92), '/'), safe='/:')})"
+        link = f"[AI Review]({_file_url(review['report'])})"
     marker = {"stale": "(stale)", "incomplete": "(incomplete)"}.get(row.ai_review, "")
     return [verdict, findings, " ".join(part for part in (link, marker) if part) or "-"]
+
+
+def _file_url(path: str) -> str:
+    return f"vscode://file/{quote(path.replace(chr(92), '/'), safe='/:')}"
 
 
 def _pull_link(row: Row, home_repositories: set[str]) -> str:
@@ -461,8 +466,9 @@ def render(
     if rows:
         lines.extend([FINDINGS_LEGEND, ""])
     pinned_sections = sorted({row.section for row in rows if row.overridden}, key=str.casefold)
+    # Summaries sit in an HTML block (a line starting with <summary> opens one), so this one is written in HTML.
     config_link = (
-        f"[the code-review configuration](vscode://file/{quote(config_path.replace(chr(92), '/'), safe='/:')})"
+        f'<a href="{html.escape(_file_url(config_path))}">the code-review configuration</a>'
         if config_path
         else "the code-review configuration"
     )
@@ -473,7 +479,8 @@ def render(
         if not members:
             continue
         summary = (
-            f"Manually managed — edit `dashboard.status_overrides` in {config_link} to add or remove entries."
+            "Manually managed — edit <code>dashboard.status_overrides</code> in "
+            f"{config_link} to add or remove entries."
             if pinned
             else SECTION_SUMMARIES[section]
         )
@@ -485,13 +492,7 @@ def render(
     return "\n".join(lines)
 
 
-def splice(
-    document: str,
-    owned_section: str,
-    *,
-    start_marker: str = START_MARKER,
-    end_marker: str = END_MARKER,
-) -> str:
+def _owned_span(document: str, start_marker: str, end_marker: str) -> tuple[int, int]:
     if document.count(start_marker) != 1 or document.count(end_marker) != 1:
         raise TrackerError("Dashboard must contain exactly one marker pair")
     start = document.index(start_marker)
@@ -501,7 +502,30 @@ def splice(
         raise TrackerError("Dashboard markers are malformed") from exc
     if end <= start:
         raise TrackerError("Dashboard markers are malformed")
+    return start, end
+
+
+def splice(
+    document: str,
+    owned_section: str,
+    *,
+    start_marker: str = START_MARKER,
+    end_marker: str = END_MARKER,
+) -> str:
+    """The document with its owned section replaced, written with the document's dominant line ending."""
+    start, end = _owned_span(document, start_marker, end_marker)
+    crlf = document.count("\r\n")
+    if crlf > document.count("\n") - crlf:
+        owned_section = owned_section.replace("\n", "\r\n")
     return document[:start] + owned_section + document[end:]
+
+
+def _read_dashboard(dashboard: Path) -> str:
+    """The dashboard exactly as stored: decoded without newline translation, so its line endings survive."""
+    try:
+        return dashboard.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise TrackerError(str(exc)) from exc
 
 
 def update_dashboard(input_path: Path, dashboard: Path, login: str, **options: Any) -> list[dict[str, Any]]:
@@ -526,11 +550,12 @@ def update_dashboard_rows(
     """Update the owned section and return the rendered rows."""
     try:
         items = validate_items(json.loads(input_path.read_text(encoding="utf-8-sig")))
-        current = dashboard.read_text(encoding="utf-8")
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise TrackerError(str(exc)) from exc
     if not start_marker or not end_marker or start_marker == end_marker:
         raise TrackerError("Dashboard markers must be distinct non-empty strings")
+    # Refuse a dashboard without its markers before asking GitHub anything.
+    _owned_span(_read_dashboard(dashboard), start_marker, end_marker)
     rows = evaluate(
         apply_author_names(items, author_names),
         login,
@@ -545,8 +570,8 @@ def update_dashboard_rows(
         home_repositories=set(home_repositories or []),
         config_path=config_path,
     )
-    atomic_write_text(
-        dashboard,
-        splice(current, owned, start_marker=start_marker, end_marker=end_marker),
-    )
+    # The GitHub calls above take seconds; read the dashboard again so edits saved meanwhile outside the owned
+    # section are kept, since the owned section is rendered from the input alone.
+    current = _read_dashboard(dashboard)
+    atomic_write_text(dashboard, splice(current, owned, start_marker=start_marker, end_marker=end_marker))
     return rows
