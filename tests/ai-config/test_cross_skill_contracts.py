@@ -201,7 +201,14 @@ class CrossSkillContractTests(unittest.TestCase):
         template = (REPOSITORY_ROOT / ".github/pull_request_template.md").read_text(encoding="utf-8-sig")
         self.assertIn("the `runtime-canary` lines are below", template)
         # Each run calls a model, so neither the runner nor a policy check may start it.
-        self.assertNotIn("runtime_canary", (REPOSITORY_ROOT / "tests/run_validation.py").read_text(encoding="utf-8"))
+        runner = [
+            REPOSITORY_ROOT / "tests/run_validation.py",
+            *sorted((REPOSITORY_ROOT / "tests/validation").glob("*.py")),
+        ]
+        self.assertGreater(len(runner), 1)
+        for path in runner:
+            with self.subTest(path=path.name):
+                self.assertNotIn("runtime_canary", path.read_text(encoding="utf-8"))
 
     def test_no_skill_pins_a_model(self) -> None:
         # In Claude Code a skill's `model` applies for the rest of the turn that invoked it (#75), so a code review

@@ -1,0 +1,175 @@
+"""Regression suites: how they are found, sharded, and run, the rules the skill guide states for them, and that
+every module is named by a test.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import functools
+import re
+import sys
+import unittest
+from pathlib import Path
+
+from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
+from shell_targets import run_git_bash, shell_quote
+from toolchain import find_powershell
+from validation_support import (
+    PYTHON_ENTRY_POINT,
+    REPOSITORY_ROOT,
+    SKILL_GUIDE,
+    TEST_NAME_PATTERNS,
+    TEST_SCRIPT_EXTENSIONS,
+    _markdown_section,
+    is_executable_script,
+    is_test_script,
+    relative,
+    repository_files,
+    skill_directories,
+)
+
+SHARD_RUNNER = REPOSITORY_ROOT / "tests" / "run_shard.py"
+# A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
+# suite further, at the cost of one more process start and suite import each.
+TESTS_PER_SHARD = 6
+MAXIMUM_SHARDS = 8
+TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
+
+
+def _needs_a_test(name: str) -> bool:
+    """Whether a repository path is a module under skills/*/scripts/, deployer/, or tools/ that a test must name."""
+    parts = name.split("/")
+    in_scope = parts[0] in {"deployer", "tools"} or (len(parts) > 3 and parts[0] == "skills" and parts[2] == "scripts")
+    return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
+
+
+def untested_module_problems(root: Path) -> list[str]:
+    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py names.
+
+    A test names a module by importing, running, or mentioning it, or by being test_<module>.py. A package's
+    __init__.py needs no test.
+    """
+    files = repository_files(root)
+    tests = [path for path in files if fnmatch.fnmatchcase(path.name, "test_*.py")]
+    texts = [path.read_text(encoding="utf-8") for path in tests]
+    test_names = {path.name for path in tests}
+    problems: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if not _needs_a_test(name) or f"test_{path.name}" in test_names:
+            continue
+        mention = re.compile(rf"\b{re.escape(path.stem)}\b")
+        if not any(mention.search(text) for text in texts):
+            problems.append(f"{name} is named by no test_*.py; add a test that imports or runs it")
+    return problems
+
+
+def suite_discovery_documentation_problems(root: Path) -> list[str]:
+    """Report a rule that decides whether a regression suite runs and that "Validation" in the skill guide omits."""
+    section = _markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
+    if section is None:
+        return [f'{SKILL_GUIDE} has no "Validation" section']
+    rules = [*TEST_NAME_PATTERNS, *sorted(TEST_SCRIPT_EXTENSIONS), PYTHON_ENTRY_POINT]
+    return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
+
+
+def run_test_script(path: Path) -> None:
+    target = relative(path)
+    suffix = path.suffix.casefold()
+    if suffix == ".py":
+        run_process([sys.executable, "-B", target])
+    elif suffix == ".sh":
+        run_git_bash(f"bash {shell_quote(target)}")
+    elif suffix == ".ps1":
+        run_process([find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", target])
+    else:
+        raise AssertionError(f"Unsupported skill test type '{path.suffix}': {target}")
+
+
+def regression_suites() -> list[Path]:
+    """Every regression suite: the test scripts under tests/ and under each skill's scripts/."""
+    roots = [REPOSITORY_ROOT / "tests", *(skill / "scripts" for skill in skill_directories())]
+    found = (
+        path for root in roots if root.is_dir() for path in root.rglob("*") if path.is_file() and is_test_script(path)
+    )
+    return sorted(found, key=lambda path: relative(path).casefold())
+
+
+def shard_count(suite: Path) -> int:
+    if suite.suffix.casefold() != ".py":
+        return 1
+    tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
+    return max(1, min(MAXIMUM_SHARDS, tests // TESTS_PER_SHARD))
+
+
+def run_shard(suite: Path, index: int, count: int) -> None:
+    run_process([sys.executable, "-B", relative(SHARD_RUNNER), relative(suite), str(index), str(count)])
+
+
+def suite_jobs(suites: list[Path]) -> list[Job]:
+    jobs = []
+    for suite in suites:
+        label = relative(suite)
+        count = shard_count(suite)
+        if suite.suffix.casefold() != ".py":
+            jobs.append(Job(label, label, UNSPLIT_SUITE_WEIGHT, functools.partial(run_test_script, suite)))
+            continue
+        tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
+        if count == 1:
+            jobs.append(Job(label, label, tests, functools.partial(run_test_script, suite)))
+            continue
+        for index in range(count):
+            jobs.append(
+                Job(
+                    f"{label} [shard {index + 1}/{count}]",
+                    label,
+                    tests / count,
+                    functools.partial(run_shard, suite, index, count),
+                )
+            )
+    return jobs
+
+
+class SuiteDiscoveryPolicies(unittest.TestCase):
+    def test_scripted_skills_have_regression_suites(self) -> None:
+        for skill in skill_directories():
+            scripts = skill / "scripts"
+            if not scripts.is_dir():
+                continue
+            files = sorted(path for path in scripts.rglob("*") if path.is_file())
+            if not any(is_executable_script(path) and not is_test_script(path) for path in files):
+                continue
+            with self.subTest(skill=skill.name):
+                self.assertTrue(
+                    any(is_test_script(path) for path in files),
+                    f"Skill '{skill.name}' contains scripts but has no executable test "
+                    "suite. Add a test_*, test-*, *_test, *-test, or *.test.* Python, "
+                    "Bash, or PowerShell script under the skill's scripts/ directory.",
+                )
+
+    def test_every_regression_suite_is_found(self) -> None:
+        suites = {relative(path) for path in regression_suites()}
+        for expected in (
+            "tests/deployer/test_frontmatter.py",
+            "tests/tools/test_worktrees.py",
+            "tests/ai-config/test_cross_skill_contracts.py",
+            "skills/update-coding-agent-skills/scripts/test_update.sh",
+            "skills/code-review-core/scripts/test_review_pipeline.py",
+        ):
+            self.assertIn(expected, suites)
+        self.assertNotIn("tests/deployer/harness.py", suites)
+        self.assertNotIn("tests/run_shard.py", suites)
+
+    def test_python_suites_run_their_tests_when_executed(self) -> None:
+        # Every suite runs as `python <file>`, so one without a __main__ entry point defines its tests, runs none,
+        # and still exits 0.
+        suites = [path for path in regression_suites() if path.suffix.casefold() == ".py"]
+        self.assertTrue(suites)
+        missing = [relative(path) for path in suites if PYTHON_ENTRY_POINT not in path.read_text(encoding="utf-8")]
+        self.assertEqual([], missing)
+
+    def test_suite_discovery_rules_are_documented(self) -> None:
+        self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
+
+    def test_every_module_is_named_by_a_test(self) -> None:
+        self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
