@@ -49,6 +49,8 @@ UNSAFE_CHARACTERS = {
     "yaml": "\"'\\#\n\r",
 }
 SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154\n"
+# One ShellCheck command line's length, kept a margin below the platform's limit; more units run as further batches.
+SHELLCHECK_COMMAND_BUDGET = platform_support.COMMAND_LINE_LIMIT - 1_024
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryDirectory": "validate_executables checks rendered scripts in a throwaway directory under the "
@@ -126,10 +128,58 @@ def _substitute(text: str, values: dict[str, str], context: str, logical: str) -
     return TOKEN.sub(replace, text)
 
 
-def _fence_context(opening: str) -> str:
-    """The substitution context of a fence from its opening line, such as shell for ```bash or ```shell."""
-    words = opening[3:].split()
-    return FENCE_CONTEXT.get(words[0].casefold(), "text") if words else "text"
+FENCE_OPENER = re.compile(r"(`{3,}|~{3,})(.*)")
+
+
+@dataclass(frozen=True)
+class Fence:
+    """A fenced code block: its opening and closing line indexes (None when unclosed) and its info string's language."""
+
+    opener: int
+    closer: int | None
+    language: str
+
+    @property
+    def context(self) -> str:
+        """The substitution context, such as shell for ```bash, ~~~sh, or ````shell."""
+        return FENCE_CONTEXT.get(self.language.casefold(), "text")
+
+    def body(self, line_count: int) -> range:
+        """The indexes of the lines between the opener and the closer, or the document's end when it is unclosed."""
+        return range(self.opener + 1, self.closer if self.closer is not None else line_count)
+
+
+def find_fences(lines: list[str]) -> list[Fence]:
+    """Every fenced code block, by CommonMark's rules for the forms this repository's Markdown can hold.
+
+    A run of three or more backticks or tildes opens a fence, except a backtick run whose info string holds a backtick,
+    which is inline code. Only a run of the same character at least as long as the opener's, with nothing after it,
+    closes it, so a ``` line inside a ```` fence is body, and a fence left open runs to the end. Indentation is
+    ignored rather than limited to three spaces, so a fence nested in a list item counts. Rendering, the extraction of
+    Bash for ShellCheck, and validation's Markdown policies all read fences through this one function.
+    """
+    fences: list[Fence] = []
+    index = 0
+    while index < len(lines):
+        match = FENCE_OPENER.fullmatch(lines[index].strip())
+        if match is None or (match.group(1)[0] == "`" and "`" in match.group(2)):
+            index += 1
+            continue
+        marker = match.group(1)
+        closer = next(
+            (
+                later
+                for later in range(index + 1, len(lines))
+                if len(closing := lines[later].strip()) >= len(marker) and set(closing) == {marker[0]}
+            ),
+            None,
+        )
+        words = match.group(2).split()
+        fences.append(Fence(index, closer, words[0] if words else ""))
+        if closer is None:
+            break
+        index = closer + 1
+    return fences
 
 
 def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str:
@@ -143,18 +193,12 @@ def _substitute_markdown(text: str, values: dict[str, str], logical: str) -> str
         # The frontmatter is YAML, and the deployer re-reads it to write the runtime adapters.
         rendered = [_substitute(line, values, "yaml", logical) for line in lines[: found[1]]]
         lines = lines[found[1] :]
-    context: str | None = None
-    for line in lines:
-        trimmed = line.strip()
-        if context is None and trimmed.startswith("```"):
-            context = _fence_context(trimmed)
-            rendered.append(_substitute(line, values, "text", logical))
-            continue
-        if context is not None and trimmed == "```":
-            context = None
-            rendered.append(line)
-            continue
-        rendered.append(_substitute(line, values, context or "text", logical))
+    # Each body line takes its fence's context; an opening or closing line, and prose, take the text context.
+    contexts = ["text"] * len(lines)
+    for fence in find_fences(lines):
+        for index in fence.body(len(lines)):
+            contexts[index] = fence.context
+    rendered += [_substitute(line, values, context, logical) for line, context in zip(lines, contexts, strict=True)]
     return "\n".join(rendered)
 
 
@@ -319,24 +363,16 @@ def _extract_units(staged: Staged, workspace: Path) -> list[ShellUnit]:
     for logical in sorted(files):
         if Path(logical).suffix.casefold() != ".md":
             continue
-        block_number = 0
-        block: list[str] | None = None
-        for line in files[logical].decode("utf-8", "replace").split("\n"):
-            trimmed = line.strip()
-            if block is None:
-                # Validate every fence substituted as shell, whichever name its info string uses.
-                if trimmed.startswith("```") and _fence_context(trimmed) == "shell":
-                    block_number += 1
-                    block = []
-            elif trimmed == "```":
-                target = workspace / "blocks" / f"{len(units)}.sh"
-                _write(target, (SHELLCHECK_HEADER + "".join(f"{text}\n" for text in block)).encode("utf-8"))
-                units.append(ShellUnit(target, f"{logical} block {block_number}", True))
-                block = None
-            else:
-                block.append(line)
-        if block is not None:
-            raise DeployError(f"ERROR: Unclosed Bash code fence in {logical}")
+        lines = files[logical].decode("utf-8", "replace").split("\n")
+        # Validate every fence substituted as shell, whichever name its info string uses.
+        shell = [fence for fence in find_fences(lines) if fence.context == "shell"]
+        for block_number, fence in enumerate(shell, start=1):
+            if fence.closer is None:
+                raise DeployError(f"ERROR: Unclosed Bash code fence in {logical}")
+            target = workspace / "blocks" / f"{len(units)}.sh"
+            body = "".join(f"{lines[index]}\n" for index in fence.body(len(lines)))
+            _write(target, (SHELLCHECK_HEADER + body).encode("utf-8"))
+            units.append(ShellUnit(target, f"{logical} block {block_number}", True))
     return units
 
 
@@ -383,28 +419,47 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             )
 
 
+def _shellcheck_batches(command: list[str], paths: list[str]) -> list[list[str]]:
+    """The paths in order, split so each command line stays within SHELLCHECK_COMMAND_BUDGET."""
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    length = platform_support.command_line_length(command)
+    for path in paths:
+        added = 1 + platform_support.command_line_length([path])
+        if batch and length + added > SHELLCHECK_COMMAND_BUDGET:
+            batches.append(batch)
+            batch, length = [], platform_support.command_line_length(command)
+        batch.append(path)
+        length += added
+    return [*batches, batch] if batch else batches
+
+
 def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
-    arguments = [platform_support.normalize(unit.path) for unit in units]
-    result = platform_support.run_tool([shellcheck, "--format=gcc", *arguments])
-    if result.returncode == 0:
-        return
+    """Lint every unit, in batches when one command line cannot hold them all, and report every finding once."""
+    command = [shellcheck, "--format=gcc"]
     origins = {platform_support.normalize(unit.path): unit for unit in units}
     reported: dict[str, list[str]] = {}
-    for line in result.output.splitlines():
-        for path, unit in origins.items():
-            if line.startswith(path + ":"):
-                reported.setdefault(path, []).append(unit.origin + line[len(path) :])
-                break
-    for unit in units:
-        path = platform_support.normalize(unit.path)
-        if path in reported:
-            prefix = (
-                "ShellCheck failed for rendered Bash block"
-                if unit.is_block
-                else ("ShellCheck failed for rendered content")
-            )
-            raise DeployError(f"ERROR: {prefix}: {unit.origin}", *reported[path])
-    raise DeployError("ERROR: ShellCheck failed for rendered content", *result.output.splitlines())
+    unattributed: list[str] = []
+    failed = False
+    for batch in _shellcheck_batches(command, list(origins)):
+        result = platform_support.run_tool([*command, *batch])
+        if result.returncode == 0:
+            continue
+        failed = True
+        for line in result.output.splitlines():
+            path = next((path for path in batch if line.startswith(path + ":")), None)
+            if path is None:
+                unattributed.append(line)
+            else:
+                reported.setdefault(path, []).append(origins[path].origin + line[len(path) :])
+    failing = [unit for unit in units if platform_support.normalize(unit.path) in reported]
+    if failing:
+        first = failing[0]
+        prefix = "ShellCheck failed for rendered " + ("Bash block" if first.is_block else "content")
+        findings = (line for unit in failing for line in reported[platform_support.normalize(unit.path)])
+        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings)
+    if failed:
+        raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed)
 
 
 POWERSHELL_PARSE = (

@@ -48,7 +48,7 @@ class Source:
     bundles: dict[str, list[str]] = field(default_factory=dict)
     skill_bundle: dict[str, str] = field(default_factory=dict)
     opt_in_bundles: set[str] = field(default_factory=set)
-    shared_assets: dict[str, Any] = field(default_factory=dict)
+    shared_assets: dict[str, str] = field(default_factory=dict)
     agents: dict[str, Path] = field(default_factory=dict)
 
 
@@ -400,9 +400,19 @@ def _discover(paths: Paths, source_id: str) -> Source:
         for agent in source.skills[name].agent_deps:
             if agent not in source.agents:
                 raise DeployError(f"ERROR: Skill '{name}' depends on unknown agent '{agent}'")
-    shared = document.get("shared_assets", {})
-    source.shared_assets = shared if isinstance(shared, dict) else {}
+    source.shared_assets = _shared_assets(document)
     return source
+
+
+def _shared_assets(document: dict[str, Any]) -> dict[str, str]:
+    """source.json's shared assets and their roles, refused when malformed rather than dropped or stringified."""
+    shared = document.get("shared_assets", {})
+    if not isinstance(shared, dict):
+        raise DeployError("ERROR: source.json shared_assets must be an object mapping each asset to its role")
+    for name, role in shared.items():
+        if not isinstance(role, str):
+            raise DeployError(f"ERROR: source.json shared_assets '{name}' has a role that is not a string")
+    return shared
 
 
 def expand(source: Source, bundles: list[str], skills: list[str]) -> list[str]:

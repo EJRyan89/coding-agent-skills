@@ -111,28 +111,29 @@ class ExecutableFence:
 
 def find_executable_fences(lines: list[str]) -> list[ExecutableFence]:
     fences: list[ExecutableFence] = []
-    inside = False
-    executable = False
-    language = ""
-    start = 0
-    for index, raw in enumerate(lines):
-        line = raw.strip()
-        if not inside and line.startswith("```"):
-            inside = True
-            start = index
-            info = line[3:].split()
-            language = info[0] if info else ""
-            executable = language.casefold() in EXECUTABLE_FENCE_LANGUAGES
+    for fence in render.find_fences(lines):
+        if fence.language.casefold() not in EXECUTABLE_FENCE_LANGUAGES:
             continue
-        if inside and line == "```":
-            if executable:
-                fences.append(ExecutableFence(start + 1, language, index - start - 1))
-            inside = False
-            executable = False
-            language = ""
-    if inside and executable:
-        raise AssertionError(f"Unclosed executable {language} fence at line {start + 1}.")
+        if fence.closer is None:
+            raise AssertionError(f"Unclosed executable {fence.language} fence at line {fence.opener + 1}.")
+        fences.append(ExecutableFence(fence.opener + 1, fence.language, fence.closer - fence.opener - 1))
     return fences
+
+
+def fence_holders(lines: list[str]) -> list[render.Fence | None]:
+    """For each line, the fence holding it as its opener, body, or closer, or None outside every fence.
+
+    Every Markdown policy here reads fences through render.find_fences, the detector the deployer renders with.
+    """
+    holders: list[render.Fence | None] = [None] * len(lines)
+    for fence in render.find_fences(lines):
+        for index in range(fence.opener, fence.closer + 1 if fence.closer is not None else len(lines)):
+            holders[index] = fence
+    return holders
+
+
+def _fence_body_line(holder: render.Fence | None, index: int) -> bool:
+    return holder is not None and index not in (holder.opener, holder.closer)
 
 
 def _template_tokens(directory: Path) -> set[str]:
@@ -287,19 +288,12 @@ def shell_commands(script: str) -> set[str]:
 
 
 def _shell_fences(markdown: str) -> list[str]:
-    blocks: list[str] = []
-    current: list[str] | None = None
-    for line in markdown.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("```"):
-            if current is not None:
-                blocks.append("\n".join(current))
-                current = None
-            elif stripped[3:].strip().casefold() in SHELL_FENCES:
-                current = []
-        elif current is not None:
-            current.append(line)
-    return blocks
+    lines = markdown.splitlines()
+    return [
+        "\n".join(lines[index] for index in fence.body(len(lines)))
+        for fence in render.find_fences(lines)
+        if fence.closer is not None and fence.language.casefold() in SHELL_FENCES
+    ]
 
 
 def _file_commands(path: Path, known_call: re.Pattern[str]) -> set[str]:
@@ -533,13 +527,14 @@ def skill_path_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path, dependencies, directory in documents:
         name = path.relative_to(root).as_posix()
-        in_fence = in_shell_fence = False
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                in_shell_fence = not in_fence and stripped[3:].strip().casefold() in SHELL_FENCES
-                in_fence = not in_fence
-                continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        holders = fence_holders(lines)
+        for number, line in enumerate(lines, start=1):
+            holder = holders[number - 1]
+            if holder is not None and not _fence_body_line(holder, number - 1):
+                continue  # an opening or closing line
+            in_fence = holder is not None
+            in_shell_fence = holder is not None and holder.language.casefold() in SHELL_FENCES
             if path.name == "SKILL.md" and directory is not None and not in_fence:
                 for span in PROSE_CODE_SPAN.findall(line):
                     if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT:
@@ -580,14 +575,13 @@ def output_placeholder_problems(root: Path) -> list[str]:
     problems: list[str] = []
     for path in sorted((root / "skills").rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
-        in_command_fence = False
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                in_command_fence = (
-                    not in_command_fence and stripped[3:].strip().casefold() in EXECUTABLE_FENCE_LANGUAGES
-                )
-                continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for number, (line, holder) in enumerate(zip(lines, fence_holders(lines), strict=True), start=1):
+            in_command_fence = (
+                _fence_body_line(holder, number - 1)
+                and holder is not None
+                and holder.language.casefold() in EXECUTABLE_FENCE_LANGUAGES
+            )
             if in_command_fence:
                 for match in OUTPUT_PLACEHOLDER.finditer(line):
                     problems.append(
@@ -1376,7 +1370,6 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     return sorted(found) + sorted(problems)
 
 
-MARKDOWN_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
 MARKDOWN_LINK = re.compile(r"\]\(\s*(?:<([^>\n]+)>|([^\s()<>]+))")
@@ -1388,19 +1381,8 @@ SLUG_REMOVED = re.compile(r"[^\w\- ]")
 
 def _outside_fences(text: str) -> list[str]:
     """The Markdown's lines, with fenced code blocks blanked so their text is never read as a link or heading."""
-    lines: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines():
-        marker = MARKDOWN_FENCE.match(line)
-        if fence is None and marker:
-            fence = marker.group(1)
-        elif fence is not None and marker and marker.group(1).startswith(fence) and line.strip() == marker.group(1):
-            fence = None
-        elif fence is None:
-            lines.append(line)
-            continue
-        lines.append("")
-    return lines
+    lines = text.splitlines()
+    return ["" if holder is not None else line for line, holder in zip(lines, fence_holders(lines), strict=True)]
 
 
 def heading_slugs(text: str) -> set[str]:
@@ -1492,20 +1474,12 @@ def _shell_units(path: Path) -> list[tuple[str, int, str]]:
         return [(context, 1, text)]
     if context != "markdown":
         return []
-    units: list[tuple[str, int, str]] = []
-    fence: tuple[str, int, list[str]] | None = None
-    for number, line in enumerate(text.split("\n"), start=1):
-        trimmed = line.strip()
-        if fence is None and trimmed.startswith("```"):
-            words = trimmed[3:].split()
-            fence = (render.FENCE_CONTEXT.get(words[0].casefold(), "text") if words else "text", number + 1, [])
-        elif fence is not None and trimmed == "```":
-            if fence[0] in SHELL_LABELS:
-                units.append((fence[0], fence[1], "\n".join(fence[2])))
-            fence = None
-        elif fence is not None:
-            fence[2].append(line)
-    return units
+    lines = text.split("\n")
+    return [
+        (fence.context, fence.opener + 2, "\n".join(lines[index] for index in fence.body(len(lines))))
+        for fence in render.find_fences(lines)
+        if fence.closer is not None and fence.context in SHELL_LABELS
+    ]
 
 
 def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
@@ -2321,6 +2295,11 @@ class RepositoryValidation(unittest.TestCase):
         self.assertEqual([], find_executable_fences(["```text", *["x"] * 9, "```"]))
         with self.assertRaisesRegex(AssertionError, "Unclosed executable"):
             find_executable_fences(["```sh", "echo open"])
+        # The detector the renderer uses: a tilde fence counts, and a longer opener holds a three-backtick line.
+        tilde_program = ["~~~bash", *[f"echo {n}" for n in range(6)], "~~~"]
+        self.assertEqual([ExecutableFence(1, "bash", 6)], find_executable_fences(tilde_program))
+        nested = ["````markdown", "```bash", *[f"echo {n}" for n in range(6)], "```", "````"]
+        self.assertEqual([], find_executable_fences(nested), "a Markdown example is not an executable fence")
 
     def test_scripted_skills_have_regression_suites(self) -> None:
         for skill in skill_directories():

@@ -200,7 +200,7 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
     assets: dict[str, str] = {}
     for asset, role in src.shared_assets.items():
         require_safe_name(asset, "shared asset name")
-        assets[asset] = role if isinstance(role, str) else str(role)
+        assets[asset] = role
     for asset in sorted(assets):
         if asset in src.skills:
             raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")

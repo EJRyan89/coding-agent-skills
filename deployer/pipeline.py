@@ -52,7 +52,7 @@ def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
     return options
 
 
-def _apply(context: Context, selected: list[str], entries: list[PlanEntry], staged: render.Staged, run_id: str) -> None:
+def _apply(context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str) -> None:
     paths = context.paths
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
@@ -63,13 +63,13 @@ def _apply(context: Context, selected: list[str], entries: list[PlanEntry], stag
     fsops.make_directories(paths.agent_dest_dir)
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)
-    _commit_manifest(context, selected, entries, run_id)
+    _commit_manifest(context, entries, run_id)
     backups = _finalize(context, record, run_id)
     fsops.remove(staging_dir)
     _summary(context, run_id, entries, backups)
 
 
-def _commit_manifest(context: Context, selected: list[str], entries: list[PlanEntry], run_id: str) -> None:
+def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str) -> None:
     owned, data = context.owned, context.manifest
     recorded: dict[str, dict[str, dict]] = {
         kind.key: {name: {"hash": value} for name, value in owned.of(kind).items()} for kind in KINDS
@@ -89,19 +89,13 @@ def _commit_manifest(context: Context, selected: list[str], entries: list[PlanEn
             elif kind is SHARED:
                 details["role"] = "owner"
             recorded[kind.key][entry.name] = details
-    removed_skills = {entry.name for entry in entries if entry.kind == SKILL.label and entry.action in RELEASING}
-    selected_skills = list(owned.selected_skills)
-    for name in selected:
-        if name not in selected_skills:
-            selected_skills.append(name)
-    selected_skills = [name for name in selected_skills if name not in removed_skills]
     data.data["last_run_id"] = run_id
+    # An entry written before selected_skills was dropped loses it here: nothing reads it (#23).
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
         "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "requested_bundles": list(context.selection.bundles),
         "requested_skills": list(context.selection.skills),
-        "selected_skills": selected_skills,
         **{kind.key: dict(sorted(recorded[kind.key].items())) for kind in KINDS},
     }
     data.save()
@@ -197,7 +191,7 @@ def _deploy(
     if run_id is None:
         plan.dry_run(entries)
         return 0
-    _apply(context, selected, entries, staged, run_id)
+    _apply(context, entries, staged, run_id)
     return 0
 
 
@@ -350,7 +344,8 @@ def execute(
         print("", file=sys.stderr)
         held.release()
         return 1
-    run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}"
+    # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
+    run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
     try:
         code = _deploy(paths, options, src, values, stdin, run_id)
     except Cancelled as exc:

@@ -16,7 +16,7 @@ The deployer changes your home directory only through a journaled transaction, s
 | `<root>/<name>.deploying-bak` | The previous copy of an item while a run replaces or removes it. |
 | `<root>/.backups/<run-id>/<name>` | A permanent backup of a copy a run replaced with `--force` or `--force-item`. |
 
-`<root>` is whichever of `~/.claude/skills`, `~/.agents/skills`, and `~/.claude/agents` holds the item.
+`<root>` is whichever of `~/.claude/skills`, `~/.agents/skills`, and `~/.claude/agents` holds the item. A `<run-id>` is the time the run started, in UTC, as `YYYYMMDD-HHMMSS`, followed by four random hexadecimal characters, such as `20261006-214501-3fa2`; runs before October 2026 used local time.
 
 ## Interrupted deployments
 
@@ -90,7 +90,7 @@ It prints the recorded checkout and how many items the source owns, then deploys
 
 ## Configuration that no longer reads
 
-`python deploy.py configure` writes each source's configuration, and every deployment reads it strictly. If it no longer parses, for example because an update removed a variable it still sets, or it was edited by hand, deployment stops and names the problem. `configure` reads the same file, so start from an empty one:
+`python deploy.py configure` writes each source's configuration, and every deployment reads it strictly. When an update removes a variable the file still sets, deployment stops, names the key, and asks you to run `python deploy.py configure`, which drops that key with a `NOTE`, keeps every other value, and saves the file. If the file no longer parses for another reason, for example because it was edited by hand, deployment stops and names the problem. `configure` reads the same file, so start from an empty one:
 
 ```bash
 python deploy.py configure --reset

@@ -32,7 +32,6 @@ class Ownership:
     shared_roles: dict[str, str] = field(default_factory=dict)
     requested_skills: set[str] = field(default_factory=set)
     requested_bundles: set[str] = field(default_factory=set)
-    selected_skills: list[str] = field(default_factory=list)
 
     def of(self, kind: ItemKind) -> dict[str, str]:
         return self.hashes[kind.key]
@@ -100,7 +99,6 @@ class Manifest:
                     owned.shared_roles[name] = details.get("role", "owner")
         owned.requested_skills = set(entry.get("requested_skills", []))
         owned.requested_bundles = set(entry.get("requested_bundles", []))
-        owned.selected_skills = list(entry.get("selected_skills", []))
         return owned
 
     def entry(self, source_id: str, kind: str, name: str) -> dict[str, Any] | None:
@@ -138,6 +136,8 @@ def _validate(data: dict[str, Any], path: Path) -> None:
             raise DeployError(f"ERROR: Manifest source ID is malformed: {source_id!r}")
         if not isinstance(entry, dict):
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
+        # selected_skills is no longer written, but an entry from before #23 still carries it until its source next
+        # deploys, so it is validated, never trusted, on read.
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
             values = entry.get(field_name, [])
             if not isinstance(values, list) or not all(

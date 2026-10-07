@@ -50,11 +50,16 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         config_file = paths.config_file(source_id)
         fsops.make_directories(config_file.parent)
         existing: dict[str, str] = {}
+        dropped: list[str] = []
         if not reset and config_file.is_file():
-            existing = config.read(config_file, source_id)
+            existing = config.read(config_file, source_id, dropped)
         print("")
         print(f"Source: {source.label(source_id, source.load_source_name(paths))}")
         print(f"Config: {platform_support.normalize(config_file)}")
+        if dropped:
+            sys.stdout.flush()
+            for key in dropped:
+                print(f"NOTE: Dropping {key}, which this deployer no longer reads.", file=sys.stderr)
         values = {key: existing[key] for key in config.CONFIGURED_VARIABLES if key in existing}
         for key, description in config.PROMPTS.items():
             answer = _prompt(key, description, existing.get(key, ""), stdin)
