@@ -20,6 +20,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none, unless `prepare` prints `FAILED` saying GitHub's tarball is not the commit's exact tree. Then set `checkout_path` for that repository.
 - Pull request: #141
 
+### A changed path no reviewer prompt can carry safely is an unavailable source
+
+- Level: patch. The field's format is unchanged; it now also lists a changed path with a control character, a backslash, or an absolute, empty, `.`, or `..` segment, which no reviewer is given, so the review is `INCOMPLETE` instead of failing or reaching a prompt.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none.
+- Pull request: #142
+
 ## v0.2.0
 
 ### init-ai-config is removed on update

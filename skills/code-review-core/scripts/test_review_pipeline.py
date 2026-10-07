@@ -1046,12 +1046,20 @@ class WorkflowTests(PipelineFixture):
             text,
         )
         self.assertNotIn('"medium"', text, "no reviewer_effort is configured, so no role names one")
-        # Each role runs as the deployed reviewer agent, falling back to general-purpose when the session lacks it.
-        self.assertIn("start(role, 'code-review-reviewer').catch(() => start(role, 'general-purpose'))", text)
+        # Each role runs as the guarded reviewer agent. One that fails is left unfinished for check to retry under
+        # the guard, never rerun as an unguarded general-purpose agent (#142).
+        self.assertIn("start(role, 'code-review-reviewer').catch(() => null)", text)
+        self.assertNotIn("general-purpose", text)
 
+        runs = ["--run", str(first["run"]), "--run", str(second["run"])]
+        # A role the Workflow left unfinished has no result; check hands it back for a retry under the guard.
+        code, out, err = self.run_main("check", *runs)
+        self.assertEqual((1, ""), (code, err), "a RETRY line is for the skill to act on")
+        for ready in (first, second):
+            role = ready["roles"][0]
+            self.assertIn(f"RETRY {ready['selector']} {role['id']} {role['prompt_file']} ", out)
         for ready in (first, second):  # what the Workflow's reviewers would write
             self.write_role_result(ready["roles"][0], findings=[self.finding()])
-        runs = ["--run", str(first["run"]), "--run", str(second["run"])]
         self.assertEqual(0, self.run_main("check", *runs)[0])
         code, out, err = self.run_main("finalize", *runs)
         self.assertEqual(0, code, err)
