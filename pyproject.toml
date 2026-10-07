@@ -66,10 +66,10 @@ platform = "win32"
 # tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths.
 explicit_package_bases = true
 # Each skills/<name>/scripts directory a module or suite puts on sys.path: the code-review-core and skill-core scripts
-# their skill_deps dependents import, the analyze-skill-cost inventory tools/new_skill.py and the validation runner
-# import, and the update-pr-tracker scripts a code-review-core suite imports. Then tests/deployer, whose suites import
-# harness from beside them. Their imports then resolve as they do at run time. Validation keeps this list equal to
-# those directories.
+# their skill_deps dependents import, skill-core's also imported by the deployer, tools/, and tests, the
+# analyze-skill-cost inventory tools/new_skill.py and the validation runner import, and the update-pr-tracker scripts a
+# code-review-core suite imports. Then tests/deployer, whose suites import harness from beside them. Their imports then
+# resolve as they do at run time. Validation keeps this list equal to those directories.
 mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/skills/analyze-skill-cost/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/code-review-core/scripts",

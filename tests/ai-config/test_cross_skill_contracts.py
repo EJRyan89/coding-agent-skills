@@ -14,8 +14,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from deployer import frontmatter as skill_frontmatter
+import frontmatter as skill_frontmatter
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 

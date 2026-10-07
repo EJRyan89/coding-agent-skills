@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import unittest
+from pathlib import Path
 from typing import Any
 
-from harness import DeployerTestCase, forward
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from deployer import frontmatter
+import frontmatter
+from harness import DeployerTestCase, forward
 
 BUNDLE = {"operations": {"members": ["alpha", "beta"]}}
 

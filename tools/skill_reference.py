@@ -19,8 +19,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from deployer import frontmatter
+import frontmatter
+
 from deployer import source as deploy_source
 from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError

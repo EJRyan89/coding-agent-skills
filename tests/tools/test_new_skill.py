@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
-from deployer import frontmatter as fm
+import frontmatter as fm
+
 from tools import new_skill, skill_reference
 
 README = (

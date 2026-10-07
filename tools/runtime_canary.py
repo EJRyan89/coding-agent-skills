@@ -59,8 +59,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from deployer import discovery, frontmatter, pipeline, platform_support
+import frontmatter
+
+from deployer import discovery, pipeline, platform_support
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
