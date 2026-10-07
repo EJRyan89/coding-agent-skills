@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import config, pipeline, source
+from deployer import cli, config, pipeline, source
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -383,6 +383,41 @@ class SharedAssetValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Test")
         self.make_config()
         self.deploy_fails("--all", pattern="shared asset name '../escape.md' contains path separator")
+
+    def write_shared_assets(self, value: object) -> None:
+        self.make_source_json()
+        document = json.loads((self.source / "source.json").read_text(encoding="utf-8"))
+        document["shared_assets"] = value
+        (self.source / "source.json").write_text(json.dumps(document), encoding="utf-8")
+
+    def test_shared_assets_that_is_not_an_object_fails_discovery(self) -> None:
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        for value in (["shared.md"], "shared.md", None):
+            for arguments in (("--all", "--dry-run"), ("check",)):
+                with self.subTest(value=value, arguments=arguments):
+                    self.write_shared_assets(value)
+                    captured = io.StringIO()
+                    with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                        code = cli.main(list(arguments), self.paths, io.StringIO(""))
+                    self.assertEqual(1, code, captured.getvalue())
+                    self.assertIn(
+                        "ERROR: source.json shared_assets must be an object mapping each asset to its role",
+                        captured.getvalue(),
+                    )
+
+    def test_a_role_that_is_not_a_string_fails_discovery_naming_the_asset(self) -> None:
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        for role in (1, None, ["owner"]):
+            with self.subTest(role=role):
+                self.write_shared_assets({"shared.md": role})
+                result = self.deploy_fails(
+                    "--all",
+                    "--dry-run",
+                    pattern="ERROR: source.json shared_assets 'shared.md' has a role that is not a string",
+                )
+                self.assertEqual(1, result.code)
 
 
 class LinkedWorktreeTestCase(DeployerTestCase):

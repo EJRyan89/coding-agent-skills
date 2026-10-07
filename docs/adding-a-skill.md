@@ -231,7 +231,7 @@ Place an owned shared file directly under `skills/` and declare it in `source.js
 
 A shared Markdown asset is runtime guidance for Codex and Copilot. Declare it in the skill's `shared_deps`, but do not mention it in `SKILL.md`: Claude runs the skill directly and would spend a read on it every run, and the generated adapter already points other runtimes to it. Validation rejects a `SKILL.md` that names one, so keep anything Claude also needs, such as a rule about posting to GitHub, in the skill itself.
 
-Use the `dependency` role only when another installed source owns the asset. The deployer verifies the owning source and manifest hash before installing a skill that needs the dependency.
+`shared_assets` must be an object, and each role a string, `owner` or `dependency`; source discovery stops with an error naming the asset otherwise. Use the `dependency` role only when another installed source owns the asset. The deployer verifies the owning source and manifest hash before installing a skill that needs the dependency.
 
 The manifest records each installed skill's `shared_deps`, and those records move with the skill during `--migrate-from`. A shared asset is installed only while a selected skill needs it. When no selected skill needs an owned asset, the deployer removes it unless a skill that stays installed still needs it: a locally modified skill that was preserved or skipped, or a skill owned by another source. In that case the asset is kept and reported as `KEEP` until nothing installed needs it.
 
