@@ -112,30 +112,11 @@ def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
     current: dict[str, Any] | None = None
     new_line = 0
     in_hunk = False
-
-    def finish() -> None:
-        if current is None:
-            return
-        path = current["new"] or current["old"] or current["header"]
-        if path is None:
-            raise SpecialistError("Diff block without a resolvable path")
-        entry = files.setdefault(_safe_path(path), {"block": "", "numbered": "", "added": {}})
-        entry["block"] += "\n".join(current["lines"]) + "\n"
-        entry["numbered"] += "\n".join(current["numbered"]) + "\n"
-        entry["added"].update(current["added"])
-
     for raw in text.split("\n"):
         line = raw[:-1] if raw.endswith("\r") else raw
         if line.startswith("diff --git "):
-            finish()
-            current = {
-                "header": _header_path(line[len("diff --git ") :]),
-                "old": None,
-                "new": None,
-                "lines": [line],
-                "numbered": [line],
-                "added": {},
-            }
+            _finish_diff_block(files, current)
+            current = _new_diff_block(line)
             in_hunk = False
             continue
         if current is None:
@@ -143,14 +124,7 @@ def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
         current["lines"].append(line)
         numbered = line
         if not in_hunk:
-            if line.startswith("--- "):
-                current["old"] = _strip_prefix(line[4:])
-            elif line.startswith("+++ "):
-                current["new"] = _strip_prefix(line[4:])
-            elif line.startswith("rename to "):
-                current["new"] = _unquote(line[len("rename to ") :])
-            elif line.startswith("rename from "):
-                current["old"] = _unquote(line[len("rename from ") :])
+            _read_diff_header(current, line)
         match = HUNK.match(line)
         if match:
             in_hunk = True
@@ -158,18 +132,59 @@ def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
             current["numbered"].append(line)
             continue
         if in_hunk:
-            if line.startswith("+"):
-                current["added"][new_line] = line[1:]
-                numbered = _numbered("+", new_line, line[1:])
-                new_line += 1
-            elif line.startswith(" ") or line == "":
-                numbered = _numbered(" ", new_line, line[1:])
-                new_line += 1
-            elif line.startswith("-"):
-                numbered = _numbered("-", None, line[1:])
+            numbered, new_line = _numbered_hunk_line(line, new_line, current["added"])
         current["numbered"].append(numbered)
-    finish()
+    _finish_diff_block(files, current)
     return files
+
+
+def _new_diff_block(line: str) -> dict[str, Any]:
+    """A file's block, from its `diff --git` line: the path the header names, if it names one unambiguously."""
+    return {
+        "header": _header_path(line[len("diff --git ") :]),
+        "old": None,
+        "new": None,
+        "lines": [line],
+        "numbered": [line],
+        "added": {},
+    }
+
+
+def _read_diff_header(current: dict[str, Any], line: str) -> None:
+    """Take the old or new path from a header line before the block's first hunk."""
+    if line.startswith("--- "):
+        current["old"] = _strip_prefix(line[4:])
+    elif line.startswith("+++ "):
+        current["new"] = _strip_prefix(line[4:])
+    elif line.startswith("rename to "):
+        current["new"] = _unquote(line[len("rename to ") :])
+    elif line.startswith("rename from "):
+        current["old"] = _unquote(line[len("rename from ") :])
+
+
+def _numbered_hunk_line(line: str, new_line: int, added: dict[int, str]) -> tuple[str, int]:
+    """A hunk line as a reviewer reads it, and the next line's number in the new file. An added line is recorded."""
+    if line.startswith("+"):
+        added[new_line] = line[1:]
+        return _numbered("+", new_line, line[1:]), new_line + 1
+    if line.startswith(" ") or line == "":
+        return _numbered(" ", new_line, line[1:]), new_line + 1
+    if line.startswith("-"):
+        return _numbered("-", None, line[1:]), new_line
+    return line, new_line
+
+
+def _finish_diff_block(files: dict[str, dict[str, Any]], current: dict[str, Any] | None) -> None:
+    """Add a finished block to its path's entry: a path given twice gets both blocks, in order."""
+    if current is None:
+        return
+    path = current["new"] or current["old"] or current["header"]
+    if path is None:
+        raise SpecialistError("Diff block without a resolvable path")
+    entry = files.setdefault(_safe_path(path), {"block": "", "numbered": "", "added": {}})
+    entry["block"] += "\n".join(current["lines"]) + "\n"
+    entry["numbered"] += "\n".join(current["numbered"]) + "\n"
+    entry["added"].update(current["added"])
 
 
 def patch_fingerprints(diff: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
