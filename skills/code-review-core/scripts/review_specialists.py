@@ -64,7 +64,8 @@ def _unquote(value: str) -> str:
     if not value.endswith('"') or len(value) < 2:
         raise SpecialistError(f"Malformed quoted diff path: {value!r}")
     raw = value[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape")
-    return raw.encode("latin-1").decode("utf-8")
+    # One U+FFFD per undecodable byte, as the GitHub client writes the diff and the source snapshot keys the name.
+    return raw.encode("latin-1").decode("utf-8", "replace")
 
 
 def _strip_prefix(value: str) -> str | None:
@@ -89,11 +90,19 @@ def _header_path(rest: str) -> str | None:
     return None
 
 
-def _safe_path(value: str) -> str:
-    path = PurePosixPath(value)
-    if not value or "\\" in value or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise SpecialistError(f"Unsafe path in diff: {value!r}")
-    return path.as_posix()
+# A character that could end or reshape a line of a reviewer prompt: every C0 control, DEL, and the characters
+# Python's own `splitlines` also breaks on.
+LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _safe_path(value: str) -> str | None:
+    """The path as reviewers see it, or None when no prompt, work file, or link may carry it: empty, absolute,
+    with a backslash, an empty, `.`, or `..` segment, or a character `LINE_UNSAFE` matches."""
+    if not value or "\\" in value or LINE_UNSAFE.search(value) or value.startswith("/"):
+        return None
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        return None
+    return value
 
 
 NUMBER_WIDTH = 6
@@ -107,15 +116,23 @@ def _numbered(marker: str, number: int | None, text: str) -> str:
 
 def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
     """Return {path: {"block": raw diff text, "numbered": block with new-file line numbers, "added": {new_line:
-    text}}} in diff order."""
+    text}}} in diff order, for every path `_safe_path` accepts. `split_unified_diff` also names the others."""
+    return split_unified_diff(text)[0]
+
+
+def split_unified_diff(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    """The parsed diff of every safe path, as `parse_unified_diff` returns it, and each path `_safe_path` rejects,
+    once, in diff order. A rejected path's block is left out whole: no reviewer prompt, work file, or link may
+    carry its name, so no reviewer is given the file."""
     files: dict[str, dict[str, Any]] = {}
+    unsafe: list[str] = []
     current: dict[str, Any] | None = None
     new_line = 0
     in_hunk = False
     for raw in text.split("\n"):
         line = raw[:-1] if raw.endswith("\r") else raw
         if line.startswith("diff --git "):
-            _finish_diff_block(files, current)
+            _finish_diff_block(files, unsafe, current)
             current = _new_diff_block(line)
             in_hunk = False
             continue
@@ -134,8 +151,8 @@ def parse_unified_diff(text: str) -> dict[str, dict[str, Any]]:
         if in_hunk:
             numbered, new_line = _numbered_hunk_line(line, new_line, current["added"])
         current["numbered"].append(numbered)
-    _finish_diff_block(files, current)
-    return files
+    _finish_diff_block(files, unsafe, current)
+    return files, unsafe
 
 
 def _new_diff_block(line: str) -> dict[str, Any]:
@@ -174,14 +191,20 @@ def _numbered_hunk_line(line: str, new_line: int, added: dict[int, str]) -> tupl
     return line, new_line
 
 
-def _finish_diff_block(files: dict[str, dict[str, Any]], current: dict[str, Any] | None) -> None:
-    """Add a finished block to its path's entry: a path given twice gets both blocks, in order."""
+def _finish_diff_block(files: dict[str, dict[str, Any]], unsafe: list[str], current: dict[str, Any] | None) -> None:
+    """Add a finished block to its path's entry: a path given twice gets both blocks, in order. A block whose path
+    is unsafe only adds that path to `unsafe`."""
     if current is None:
         return
     path = current["new"] or current["old"] or current["header"]
     if path is None:
         raise SpecialistError("Diff block without a resolvable path")
-    entry = files.setdefault(_safe_path(path), {"block": "", "numbered": "", "added": {}})
+    safe = _safe_path(path)
+    if safe is None:
+        if path not in unsafe:
+            unsafe.append(path)
+        return
+    entry = files.setdefault(safe, {"block": "", "numbered": "", "added": {}})
     entry["block"] += "\n".join(current["lines"]) + "\n"
     entry["numbered"] += "\n".join(current["numbered"]) + "\n"
     entry["added"].update(current["added"])

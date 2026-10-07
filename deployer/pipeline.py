@@ -117,10 +117,18 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str) ->
 
 
 def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tuple[str, str]]:
-    """Move retained backups to permanent storage and return each (item, backup destination)."""
+    """Move kept backups to permanent storage, delete the others, and return each (item, backup destination).
+
+    A backup the run does not keep is deleted only while it matches the hash the plan recorded; one changed after the
+    plan read it is kept like a modified item's, with a warning.
+    """
     backups: list[tuple[str, str]] = []
+    unkept: list[dict] = []
     for entry in list(record.entries):
-        if entry["op"] != "backup" or not entry["retain"]:
+        if entry["op"] != "backup":
+            continue
+        if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
+            unkept.append(entry)
             continue
         root = entry.get("root", "claude")
         item = entry["item"]
@@ -138,12 +146,18 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
                 )
             record.preserve(root, item)
             fsops.move(transient, destination)
-            backups.append((item, entry["backup_dest"]))
-    for entry in record.entries:
-        if entry["op"] == "backup" and not entry["retain"]:
-            fsops.remove(
-                journal.root_directory(context.paths, entry.get("root", "claude")) / f"{entry['item']}.deploying-bak"
-            )
+            kept_at = f".backups/{run_id}/{item}"
+            backups.append((item, kept_at))
+            if not entry["retain"]:
+                print(
+                    f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
+                    f"{kept_at} instead of being deleted.",
+                    file=sys.stderr,
+                )
+    for entry in unkept:
+        fsops.remove(
+            journal.root_directory(context.paths, entry.get("root", "claude")) / f"{entry['item']}.deploying-bak"
+        )
     return backups
 
 

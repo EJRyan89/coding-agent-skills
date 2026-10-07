@@ -125,6 +125,7 @@ from review_specialists import (
     reviewer_models,
     route,
     specialist_model,
+    split_unified_diff,
     symbolic_links,
     uncovered,
 )
@@ -323,9 +324,10 @@ def _review_history(
 
 def _fetch_diff(
     repository: str, number: int, pull: dict[str, Any], diff_path: Path, services: Services, notes: list[str]
-) -> tuple[dict[str, dict[str, Any]], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
     """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved. Returns the parsed diff, its
-    changed paths, their patch fingerprints, and the open review comments."""
+    changed paths, the changed paths no reviewer can be given (each noted), their patch fingerprints, and the open
+    review comments."""
     selector = f"{repository}#{number}"
     head = pull["headRefOid"]
     diff, undecodable = services.github.get_pull_diff(repository, number)
@@ -340,13 +342,23 @@ def _fetch_diff(
     atomic_write_text(diff_path, diff)
     if undecodable:
         notes.append(f"{undecodable} undecodable bytes replaced in the diff")
-    parsed = parse_unified_diff(diff)
+    parsed, unsafe = split_unified_diff(diff)
     changed = list(parsed)
     patches = patch_fingerprints(parsed)
+    # Escaped, because each note is a line the orchestrator reads, and a raw path could add a line of its own.
+    named = ", ".join(json.dumps(path) for path in unsafe)
     if not changed:
-        raise PipelineError(f"{selector} changes no files")
+        raise PipelineError(
+            f"{selector} changes no files" + (f" a reviewer can be given safely: {named}" if unsafe else "")
+        )
+    if unsafe:
+        notes.append(
+            f"Not reviewed: {len(unsafe)} changed file{'s' if len(unsafe) != 1 else ''} whose path a reviewer prompt "
+            f"cannot carry safely (a control character, a backslash, or an absolute, empty, '.', or '..' segment), "
+            f"recorded as unavailable sources: {named}."
+        )
     comments = services.github.list_open_review_threads(repository, number)
-    return parsed, changed, patches, comments
+    return parsed, changed, unsafe, patches, comments
 
 
 def _snapshot(
@@ -457,7 +469,9 @@ def _write_request(
     source: Path,
     prior: list[dict[str, Any]],
     comments: list[dict[str, Any]],
+    unsafe: list[str],
 ) -> None:
+    """The adapter request, whose unavailable sources include every changed path no reviewer could be given."""
     request = build_adapter_request(
         mode=mode,
         repository=repository,
@@ -474,6 +488,8 @@ def _write_request(
         github_comments=comments,
         verify_contents=False,  # prepare materialized it, in this call
     )
+    coverage = request["coverage"]
+    coverage["unavailable_sources"] = sorted({*coverage["unavailable_sources"], *unsafe})
     write_adapter_request(request_path, request)
 
 
@@ -582,7 +598,7 @@ def prepare(
     try:
         run.mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
-        parsed, changed, patches, comments = _fetch_diff(repository, number, pull, diff_path, services, notes)
+        parsed, changed, unsafe, patches, comments = _fetch_diff(repository, number, pull, diff_path, services, notes)
         source = run / "source"
         links = _snapshot(checkout, repository, number, head, source, parsed, changed, services, notes)
         kind, adapter, reviewer_root, entrypoint = _materialize_reviewer(
@@ -615,6 +631,7 @@ def prepare(
             source=source,
             prior=prior,
             comments=comments,
+            unsafe=unsafe,
         )
         result_path = run / "result.json"
         roles, uncovered_files = _write_roles(
@@ -1025,7 +1042,7 @@ def validate_result(run: Path, role: str) -> str | None:
 
 # The exact task each reviewer receives, on the native-subagent path and in a Workflow alike.
 REVIEWER_TASK = "Read {prompt} and follow it exactly. It is your complete task."
-# The subagent type that runs each role, deployed from agents/ with code-review-core; general-purpose is the fallback.
+# The subagent type that runs each role, deployed from agents/ with code-review-core. Its hook runs review_guard.py.
 REVIEWER_AGENT = "code-review-reviewer"
 WORKFLOW_SCRIPT = """export const meta = {{
   name: 'review-prs-reviewers',
@@ -1043,9 +1060,8 @@ const ROLES = RUNS.flatMap(([pull, run, roles]) => roles.map(([id, prompt, model
 const start = (role, agentType) =>
   agent(role.task, {{ label: role.label, phase: 'Review', agentType,
     ...(role.model ? {{ model: role.model }} : {{}}), ...(role.effort ? {{ effort: role.effort }} : {{}}) }})
-// The reviewer agent is deployed with the skills; a session started before that deployment may not have it.
-const replies = await parallel(ROLES.map(role => () =>
-  start(role, '{reviewer_agent}').catch(() => start(role, 'general-purpose'))))
+// A role whose guarded reviewer fails is left unfinished, never rerun unguarded: check retries it.
+const replies = await parallel(ROLES.map(role => () => start(role, '{reviewer_agent}').catch(() => null)))
 return {{ roles: ROLES.length, unfinished: ROLES.filter((role, index) => !replies[index]).map(role => role.label) }}
 """
 # The script is passed to the Workflow tool inline: it refuses a script path in a run folder under the system temp

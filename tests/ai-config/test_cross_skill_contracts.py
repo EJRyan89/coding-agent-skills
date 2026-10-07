@@ -356,7 +356,7 @@ class CrossSkillContractTests(unittest.TestCase):
             # core.
             cwd = root / "session"
             cwd.mkdir()
-            for module in ("json", "runpy", "pathlib", "re", "console"):
+            for module in ("json", "runpy", "pathlib", "re", "tempfile", "contextlib", "console"):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")
             other = root / "other home"
             environment = {
@@ -364,8 +364,14 @@ class CrossSkillContractTests(unittest.TestCase):
                 "USERPROFILE": str(profile),
                 "HOME": "/" + other.as_posix()[0].lower() + other.as_posix()[2:],
             }
+            # A subagent's event carries its agent ID; a reviewer that has read no prompt yet may read nothing else.
             event = json.dumps(
-                {"tool_name": "Read", "tool_input": {"file_path": str(cwd / "json.py")}, "cwd": str(cwd)}
+                {
+                    "tool_name": "Read",
+                    "tool_input": {"file_path": str(cwd / "json.py")},
+                    "cwd": str(cwd),
+                    "agent_id": "a71dab35ebc1b97eb",
+                }
             )
             for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
                 with self.subTest(shell=shell):
@@ -384,7 +390,7 @@ class CrossSkillContractTests(unittest.TestCase):
                     self.assertNotIn("HIJACKED", result.stdout)
                     decision = json.loads(result.stdout)["hookSpecificOutput"]
                     self.assertEqual("deny", decision["permissionDecision"])
-                    self.assertIn("may only look inside the review run folder", decision["permissionDecisionReason"])
+                    self.assertIn("read the prompt file your task names first", decision["permissionDecisionReason"])
             self.assertFalse(other.exists())
 
     def test_native_and_workflow_reviewers_get_the_same_task(self) -> None:

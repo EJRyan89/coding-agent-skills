@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sys
 import time
@@ -103,6 +104,29 @@ def _contention(*detail: str) -> DeployError:
     return DeployError("ERROR: Failed to acquire lock after stale reclaim (contention).", *detail, see_recovery(LOCK))
 
 
+def _undeleted_stale(stale: Path, error: OSError) -> str:
+    return (
+        f"Could not delete the stale lock moved to {platform_support.normalize(stale)}: {error.strerror or error}. "
+        "Delete it once no deployment is running."
+    )
+
+
+def _initialize_reclaimed(paths: Paths, stale: Path, token: str, probe: ProcessProbe) -> None:
+    """Initialize the lock this process took after a reclaim, deleting the stale lock it moved aside if that fails.
+
+    A failure leaves no .deploy.lock.stale.<pid> behind unless it cannot be deleted, and then the error names it.
+    """
+    try:
+        _write_metadata(paths, token, probe)
+    except DeployError as exc:
+        try:
+            fsops.remove(stale)
+        except OSError as removal:
+            lines = [line for line in exc.lines if line != see_recovery(LOCK)]
+            raise DeployError(*lines, _undeleted_stale(stale, removal), see_recovery(LOCK)) from exc
+        raise
+
+
 def _confirm_reclaimed(paths: Paths, stale: Path, judged: tuple[int, object]) -> None:
     """Put back a lock that another deployment took between the stale judgment and the move, and fail.
 
@@ -131,6 +155,13 @@ def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status)
     except FileExistsError:
         judged = _existing_holder(paths, probe)
         stale = paths.deployer_dir / f".deploy.lock.stale.{pid}"
+        if os.path.lexists(stale):
+            # Left by an earlier reclaim from a process with this PID; it may hold another deployment's lock.
+            raise DeployError(
+                f"ERROR: The lock moved aside by an earlier reclaim is still at {platform_support.normalize(stale)}.",
+                "Delete it once no deployment is running, then retry.",
+                see_recovery(LOCK),
+            ) from None
         try:
             fsops.move(paths.lock_dir, stale)
         except OSError as exc:
@@ -148,16 +179,12 @@ def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status)
             except OSError:
                 fsops.remove(stale)
             raise _contention("Retry the deployment.") from exc
-        _write_metadata(paths, token, probe)
+        _initialize_reclaimed(paths, stale, token, probe)
         try:
             fsops.remove(stale)
         except OSError as exc:
             # This run holds a valid lock, so only the leftover needs the user.
-            print(
-                f"WARNING: Could not delete the stale lock moved to {platform_support.normalize(stale)}: "
-                f"{exc.strerror or exc}. Delete it once no deployment is running.",
-                file=sys.stderr,
-            )
+            print(f"WARNING: {_undeleted_stale(stale, exc)}", file=sys.stderr)
         return Lock(paths, token)
     _write_metadata(paths, token, probe)
     return Lock(paths, token)
