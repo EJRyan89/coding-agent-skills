@@ -13,6 +13,8 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+## v0.2.0
+
 ### init-ai-config is removed on update
 
 - Level: minor. Major-level, a removed skill, carried in the pre-1.0 minor.
