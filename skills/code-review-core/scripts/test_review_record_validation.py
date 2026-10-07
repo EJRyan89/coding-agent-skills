@@ -13,7 +13,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from review_config import ConfigurationError
-from review_records import RecordError, validate_record
+from review_records import RecordError, validate_adapter_result, validate_record
 
 Mutation = Callable[[Any], Any]
 Key = str | int
@@ -680,6 +680,536 @@ class RecordValidationTests(unittest.TestCase):
         stage_errors = {(error, message) for _name, _mutation, error, message in STAGES}
         rejected_errors = {(error, message) for _name, _mutation, error, message in REJECTED}
         self.assertEqual(set(), rejected_errors - stage_errors - VALUE_VARIANTS)
+
+
+# validate_adapter_result, pinned the same way: every reviewer result it accepts, every fault it refuses with its
+# exact error, and the order in which it detects faults. The request arguments are literal too.
+REQUEST: dict[str, Any] = {"expected_repository": "owner/repo", "expected_number": 7, "expected_head_sha": HEAD_SHA}
+PRIOR_ID = "v1:F001"
+RESULT_PRIOR = {"finding_id": PRIOR_ID, "disposition": "still_present", "rationale": "Still."}
+RESULT_COMMENT = {"comment_id": "C1", "disposition": "addressed", "rationale": "Fixed."}
+# The arguments that go with the full result: the prior finding and the comment it answers.
+FULL_REQUEST: dict[str, Any] = {
+    "prior_ids": [PRIOR_ID],
+    "comment_ids": ["C1"],
+    "prior_severities": {PRIOR_ID: "MUST_FIX"},
+}
+PRIOR_REPEAT: dict[str, Any] = {"prior_ids": [PRIOR_ID], "prior_severities": {PRIOR_ID: "MUST_FIX"}}
+ResultCase = tuple[str, Mutation, type[Exception], str, dict[str, Any]]
+
+
+def _result_finding(key: str, severity: str = "MUST_FIX") -> dict[str, Any]:
+    return {
+        "candidate_key": key,
+        "severity": severity,
+        "category": "correctness",
+        "path": "src/app.py",
+        "line": 3,
+        "body": "Zero is not handled.",
+        "evidence": "divide(1, 0) raises.",
+        "source": "reviewer",
+    }
+
+
+def _result() -> dict[str, Any]:
+    """The smallest valid reviewer result: one finding, no dispositions, and none of the optional fields."""
+    return {
+        "protocol_version": 1,
+        "repository": "owner/repo",
+        "pull_number": 7,
+        "head_sha": HEAD_SHA,
+        "summary": "One problem.",
+        "reviewer": "claude-code",
+        "status": "complete",
+        "findings": [_result_finding("key-a")],
+        "prior_dispositions": [],
+        "usage": None,
+    }
+
+
+def _full_result() -> dict[str, Any]:
+    """A valid result using every optional field: a titled finding with analyzer coverage, a repeat of it, a repeat of
+    a prior finding, the prior and comment dispositions, and usage. It goes with FULL_REQUEST."""
+    result = _result()
+    first = _result_finding("key-a")
+    first["title"] = "Zero is not handled"
+    first["analyzer"] = {"coverage": "available", "tool": "ruff", "rule": "B006"}
+    second = _result_finding("key-b", "SHOULD_FIX")
+    second["repeats"] = "key-a"
+    third = _result_finding("key-c", "SUGGESTION")
+    third["repeats"] = PRIOR_ID
+    result["findings"] = [first, second, third]
+    result["prior_dispositions"] = [RESULT_PRIOR]
+    result["comment_dispositions"] = [RESULT_COMMENT]
+    result["usage"] = {"input_tokens": 1}
+    return result
+
+
+RESULT_FINDING = ("findings", 0)
+SECOND_FINDING = ("findings", 1)
+THIRD_FINDING = ("findings", 2)
+TWO_FINDINGS = _set(("findings",), [_result_finding("key-a"), _result_finding("key-b", "SHOULD_FIX")])
+DISPOSITION_VALUES = ("addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify")
+
+# Results validate_adapter_result accepts: the name, the result builder, the mutation, and the extra arguments.
+ACCEPTED_RESULTS: list[tuple[str, Callable[[], dict[str, Any]], Mutation, dict[str, Any]]] = [
+    ("minimal result", _result, _chain(), {}),
+    ("every optional field", _full_result, _chain(), FULL_REQUEST),
+    ("no findings", _result, _set(("findings",), []), {}),
+    ("partial status", _result, _set(("status",), "partial"), {}),
+    ("failed status", _result, _set(("status",), "failed"), {}),
+    ("SHA-256 head", _result, _set(("head_sha",), SHA256), {"expected_head_sha": SHA256}),
+    ("repository in another case", _result, _set(("repository",), "Owner/Repo"), {}),
+    ("expected repository in another case", _result, _chain(), {"expected_repository": "OWNER/REPO"}),
+    ("usage object", _result, _set(("usage",), {}), {}),
+    ("usage absent", _result, _delete(("usage",)), {}),
+    ("prior dispositions absent", _result, _delete(("prior_dispositions",)), {}),
+    ("comment dispositions empty with no comments", _result, _set(("comment_dispositions",), []), {}),
+    (
+        "comment dispositions omitted by an older repository reviewer",
+        _result,
+        _chain(),
+        {"comment_ids": ["C1"], "require_comment_dispositions": False},
+    ),
+    (
+        "comment dispositions given by an older repository reviewer",
+        _result,
+        _set(("comment_dispositions",), [RESULT_COMMENT]),
+        {"comment_ids": ["C1"], "require_comment_dispositions": False},
+    ),
+    (
+        "partially addressed prior repeat",
+        _full_result,
+        _set(("prior_dispositions", 0, "disposition"), "partially_addressed"),
+        FULL_REQUEST,
+    ),
+    (
+        "repeat of an equally severe finding",
+        _full_result,
+        _set((*SECOND_FINDING, "severity"), "MUST_FIX"),
+        FULL_REQUEST,
+    ),
+    (
+        "every disposition value for prior findings not repeated",
+        _result,
+        _set(
+            ("prior_dispositions",),
+            [
+                {"finding_id": f"v1:F00{index}", "disposition": disposition, "rationale": "Judged."}
+                for index, disposition in enumerate(DISPOSITION_VALUES, start=1)
+            ],
+        ),
+        {"prior_ids": [f"v1:F00{index}" for index in range(1, 6)]},
+    ),
+    # Quirks pinned as they stand, not endorsed: the version and pull number compare with `!=`, so true and 1.0 equal
+    # 1 and 7.0 equals 7, and a drive-letter path is not caught by the relative-path check.
+    ("protocol_version true", _result, _set(("protocol_version",), True), {}),
+    ("protocol_version 1.0", _result, _set(("protocol_version",), 1.0), {}),
+    ("pull_number 7.0", _result, _set(("pull_number",), 7.0), {}),
+    ("drive-letter finding path", _result, _set((*RESULT_FINDING, "path"), "C:/x.py"), {}),
+]
+
+
+def _result_text(field: str, message: str) -> list[ResultCase]:
+    return [
+        (f"{field} blank", _set((field,), " "), R, message, {}),
+        (f"{field} not a string", _set((field,), 1), R, message, {}),
+        (f"{field} missing", _delete((field,)), R, message, {}),
+    ]
+
+
+def _result_finding_text(field: str) -> list[ResultCase]:
+    message = f"Finding key-a.{field} must be non-empty"
+    return [
+        (f"finding {field} blank", _set((*RESULT_FINDING, field), " "), R, message, {}),
+        (f"finding {field} not a string", _set((*RESULT_FINDING, field), None), R, message, {}),
+    ]
+
+
+def _disposition_faults(label: str, key: str, item: dict[str, Any], identifier: str, ids: str) -> list[ResultCase]:
+    """The faults validate_dispositions refuses, for the prior or the comment dispositions of a result."""
+    field = f"{label.lower()}_dispositions"
+    subject = {"Prior": "prior finding", "Comment": "review comment"}[label]
+    listed = {ids: [identifier]}
+
+    def given(value: Any) -> Mutation:
+        return _set((field,), value)
+
+    fields = f"{label} disposition fields do not match the protocol"
+    unique = f"{label} disposition IDs must be unique strings"
+    invalid = f"Invalid disposition for {subject} {identifier}"
+    rationale = f"{subject[0].upper()}{subject[1:]} {identifier} requires a rationale"
+    return [
+        (f"{field} not a list", given({}), R, f"{field} must be an array", {}),
+        (f"{field} null", given(None), R, f"{field} must be an array", {}),
+        (f"{label} disposition not an object", given([identifier]), R, fields, {}),
+        (f"{label} disposition field missing", given([{key: identifier, "disposition": "addressed"}]), R, fields, {}),
+        (f"{label} disposition field unknown", given([{**item, "extra": 1}]), R, fields, {}),
+        (f"{label} disposition ID not a string", given([{**item, key: 1}]), R, unique, {}),
+        (f"{label} disposition ID duplicated", given([item, item]), R, unique, listed),
+        (f"{label} disposition unknown", given([{**item, "disposition": "fixed"}]), R, invalid, listed),
+        (f"{label} disposition unhashable", given([{**item, "disposition": []}]), R, invalid, listed),
+        (f"{label} rationale blank", given([{**item, "rationale": " "}]), R, rationale, listed),
+        (f"{label} rationale not a string", given([{**item, "rationale": None}]), R, rationale, listed),
+        (
+            f"{label} disposition missing",
+            given([]),
+            R,
+            f"{label} dispositions mismatch; missing=['{identifier}'], unknown=[]",
+            listed,
+        ),
+        (
+            f"{label} disposition for an unlisted ID",
+            given([item]),
+            R,
+            f"{label} dispositions mismatch; missing=[], unknown=['{identifier}']",
+            {},
+        ),
+        (
+            f"{label} dispositions missing and unknown, sorted",
+            given([{**item, key: "Z9"}, {**item, key: "A1"}]),
+            R,
+            f"{label} dispositions mismatch; missing=['{identifier}', 'x2'], unknown=['A1', 'Z9']",
+            {ids: ["x2", identifier]},
+        ),
+    ]
+
+
+def _repeat(target: Any) -> Mutation:
+    """Two findings, the second SHOULD_FIX and repeating `target`."""
+    return _chain(TWO_FINDINGS, _set((*SECOND_FINDING, "repeats"), target))
+
+
+KEYS = "Adapter candidate keys must be unique non-empty strings"
+UNSAFE_PATH = "Finding key-a.path must be a safe repository-relative path"
+LINE = "Finding key-a.line must be a positive integer"
+OPEN_RULE = "so that finding's disposition must be still_present or partially_addressed"
+
+# Results validate_adapter_result refuses, from the minimal result: the exception class, the message, and the extra
+# arguments.
+REJECTED_RESULTS: list[ResultCase] = [
+    ("result not an object", _replace([]), R, "Adapter result must be an object", {}),
+    ("result null", _replace(None), R, "Adapter result must be an object", {}),
+    ("unknown field", _set(("extra",), 1), R, "Adapter result contains unknown fields: extra", {}),
+    (
+        "unknown fields, sorted",
+        _chain(_set(("zeta",), 1), _set(("alpha",), 1)),
+        R,
+        "Adapter result contains unknown fields: alpha, zeta",
+        {},
+    ),
+    ("a record field", _set(("ledger",), []), R, "Adapter result contains unknown fields: ledger", {}),
+    ("protocol_version 2", _set(("protocol_version",), 2), R, "Unsupported adapter protocol version", {}),
+    ("protocol_version string", _set(("protocol_version",), "1"), R, "Unsupported adapter protocol version", {}),
+    ("protocol_version missing", _delete(("protocol_version",)), R, "Unsupported adapter protocol version", {}),
+    ("repository malformed", _set(("repository",), "bad"), C, "Invalid repository identity: 'bad'", {}),
+    ("repository missing", _delete(("repository",)), C, "Invalid repository identity: None", {}),
+    (
+        "repository other",
+        _set(("repository",), "owner/other"),
+        R,
+        "Adapter result repository does not match request",
+        {},
+    ),
+    ("pull_number other", _set(("pull_number",), 8), R, "Adapter result pull number does not match request", {}),
+    ("pull_number string", _set(("pull_number",), "7"), R, "Adapter result pull number does not match request", {}),
+    ("pull_number missing", _delete(("pull_number",)), R, "Adapter result pull number does not match request", {}),
+    ("head_sha other", _set(("head_sha",), BASE_SHA), R, "Adapter result head SHA does not match request", {}),
+    (
+        "head_sha uppercase",
+        _set(("head_sha",), "2" * 39 + "A"),
+        R,
+        "Adapter result head SHA does not match request",
+        {},
+    ),
+    ("head_sha missing", _delete(("head_sha",)), R, "Adapter result head SHA does not match request", {}),
+    *_result_text("summary", "Adapter result summary is required"),
+    *_result_text("reviewer", "Adapter result reviewer is required"),
+    ("status unknown", _set(("status",), "done"), R, "Adapter result status is invalid", {}),
+    ("status unhashable", _set(("status",), []), R, "Adapter result status is invalid", {}),
+    ("status missing", _delete(("status",)), R, "Adapter result status is invalid", {}),
+    ("findings not a list", _set(("findings",), {}), R, "Adapter findings must be an array", {}),
+    ("findings missing", _delete(("findings",)), R, "Adapter findings must be an array", {}),
+    ("finding not an object", _set(("findings",), ["key-a"]), R, "Every adapter finding must be an object", {}),
+    (
+        "finding field missing",
+        _delete((*RESULT_FINDING, "body")),
+        R,
+        "Adapter finding fields do not match the protocol",
+        {},
+    ),
+    (
+        "finding field unknown",
+        _set((*RESULT_FINDING, "id"), "F001"),
+        R,
+        "Adapter finding fields do not match the protocol",
+        {},
+    ),
+    ("candidate_key empty", _set((*RESULT_FINDING, "candidate_key"), ""), R, KEYS, {}),
+    ("candidate_key not a string", _set((*RESULT_FINDING, "candidate_key"), 1), R, KEYS, {}),
+    ("candidate_key unhashable", _set((*RESULT_FINDING, "candidate_key"), []), R, KEYS, {}),
+    ("candidate_key duplicated", _chain(TWO_FINDINGS, _set((*SECOND_FINDING, "candidate_key"), "key-a")), R, KEYS, {}),
+    ("title blank", _set((*RESULT_FINDING, "title"), " "), R, f"Finding key-a.title {TITLE_RULE}", {}),
+    ("title too long", _set((*RESULT_FINDING, "title"), "x" * 121), R, f"Finding key-a.title {TITLE_RULE}", {}),
+    ("analyzer empty", _set((*RESULT_FINDING, "analyzer"), {}), R, f"Finding key-a.analyzer {ANALYZER_RULE}", {}),
+    ("severity unknown", _set((*RESULT_FINDING, "severity"), "LOW"), R, "Invalid finding severity for key-a", {}),
+    ("severity unhashable", _set((*RESULT_FINDING, "severity"), []), R, "Invalid finding severity for key-a", {}),
+    *[case for field in ("category", "path", "body", "evidence", "source") for case in _result_finding_text(field)],
+    *[
+        (f"finding path {path!r}", _set((*RESULT_FINDING, "path"), path), R, UNSAFE_PATH, {})
+        for path in ("/a.py", "\\a.py", "a\\b.py", "../a.py", "a/../b.py")
+    ],
+    ("line true", _set((*RESULT_FINDING, "line"), True), R, LINE, {}),
+    ("line zero", _set((*RESULT_FINDING, "line"), 0), R, LINE, {}),
+    ("line string", _set((*RESULT_FINDING, "line"), "3"), R, LINE, {}),
+    (
+        "first bad finding wins",
+        _chain(TWO_FINDINGS, _set((*SECOND_FINDING, "line"), 0), _set((*RESULT_FINDING, "body"), "")),
+        R,
+        "Finding key-a.body must be non-empty",
+        {},
+    ),
+    *_disposition_faults("Prior", "finding_id", RESULT_PRIOR, PRIOR_ID, "prior_ids"),
+    *_disposition_faults("Comment", "comment_id", RESULT_COMMENT, "C1", "comment_ids"),
+    (
+        "comment dispositions required",
+        _chain(),
+        R,
+        "Comment dispositions mismatch; missing=['C1'], unknown=[]",
+        {"comment_ids": ["C1"]},
+    ),
+    (
+        "partial comment dispositions from an older repository reviewer",
+        _set(("comment_dispositions",), [RESULT_COMMENT]),
+        R,
+        "Comment dispositions mismatch; missing=['C2'], unknown=[]",
+        {"comment_ids": ["C1", "C2"], "require_comment_dispositions": False},
+    ),
+    (
+        "prior dispositions before comment dispositions",
+        _set(("comment_dispositions",), {}),
+        R,
+        f"Prior dispositions mismatch; missing=['{PRIOR_ID}'], unknown=[]",
+        {"prior_ids": [PRIOR_ID]},
+    ),
+    ("repeats empty", _repeat(""), R, "Finding key-b.repeats must be a candidate key or prior finding ID", {}),
+    ("repeats not a string", _repeat(1), R, "Finding key-b.repeats must be a candidate key or prior finding ID", {}),
+    ("repeats itself", _repeat("key-b"), R, "Finding key-b cannot repeat itself", {}),
+    (
+        "repeats an ambiguous target",
+        _chain(
+            _repeat(PRIOR_ID),
+            _set((*RESULT_FINDING, "candidate_key"), PRIOR_ID),
+            _set(("prior_dispositions",), [RESULT_PRIOR]),
+        ),
+        R,
+        f"Finding key-b.repeats is ambiguous: {PRIOR_ID} is a candidate key and a prior finding ID",
+        PRIOR_REPEAT,
+    ),
+    (
+        "repeats a repeat",
+        _chain(
+            _set(("findings",), [_result_finding("key-a"), _result_finding("key-b"), _result_finding("key-c")]),
+            _set((*SECOND_FINDING, "repeats"), "key-a"),
+            _set((*THIRD_FINDING, "repeats"), "key-b"),
+        ),
+        R,
+        "Finding key-c repeats a repeat: link it to what key-b repeats instead",
+        {},
+    ),
+    (
+        "repeats a prior finding judged addressed",
+        _chain(_repeat(PRIOR_ID), _set(("prior_dispositions",), [{**RESULT_PRIOR, "disposition": "addressed"}])),
+        R,
+        f"Finding key-b repeats prior finding {PRIOR_ID}, {OPEN_RULE}",
+        PRIOR_REPEAT,
+    ),
+    (
+        "repeats a prior finding of unknown severity",
+        _chain(_repeat(PRIOR_ID), _set(("prior_dispositions",), [RESULT_PRIOR])),
+        R,
+        f"Finding key-b repeats prior finding {PRIOR_ID}, whose severity is unknown",
+        {"prior_ids": [PRIOR_ID]},
+    ),
+    (
+        "repeats a prior finding of invalid severity",
+        _chain(_repeat(PRIOR_ID), _set(("prior_dispositions",), [RESULT_PRIOR])),
+        R,
+        f"Finding key-b repeats prior finding {PRIOR_ID}, whose severity is unknown",
+        {"prior_ids": [PRIOR_ID], "prior_severities": {PRIOR_ID: "LOW"}},
+    ),
+    ("repeats an unknown finding", _repeat("key-z"), R, "Finding key-b repeats an unknown finding: key-z", {}),
+    (
+        "repeats a prior severity with no prior ID",
+        _repeat(PRIOR_ID),
+        R,
+        f"Finding key-b repeats an unknown finding: {PRIOR_ID}",
+        {"prior_severities": {PRIOR_ID: "MUST_FIX"}},
+    ),
+    (
+        "repeats a less severe finding",
+        _chain(_repeat("key-a"), _set((*RESULT_FINDING, "severity"), "SUGGESTION")),
+        R,
+        "Finding key-b repeats a less severe finding: key-a",
+        {},
+    ),
+    (
+        "repeats a less severe prior finding",
+        _chain(_repeat(PRIOR_ID), _set(("prior_dispositions",), [RESULT_PRIOR])),
+        R,
+        f"Finding key-b repeats a less severe finding: {PRIOR_ID}",
+        {"prior_ids": [PRIOR_ID], "prior_severities": {PRIOR_ID: "SUGGESTION"}},
+    ),
+    ("usage a list", _set(("usage",), []), R, "usage must be an object or null", {}),
+    ("usage a string", _set(("usage",), "1"), R, "usage must be an object or null", {}),
+]
+
+# One fault per check, in the order validate_adapter_result makes its checks, under the default arguments. Each
+# touches its own field or replaces what a check before it would read, so any suffix can be applied at once.
+RESULT_STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
+    ("object", _replace([]), R, "Adapter result must be an object"),
+    ("unknown fields", _set(("extra",), 1), R, "Adapter result contains unknown fields: extra"),
+    ("protocol", _set(("protocol_version",), 2), R, "Unsupported adapter protocol version"),
+    ("repository identity", _set(("repository",), "bad"), C, "Invalid repository identity: 'bad'"),
+    ("repository", _set(("repository",), "owner/other"), R, "Adapter result repository does not match request"),
+    ("pull number", _set(("pull_number",), 8), R, "Adapter result pull number does not match request"),
+    ("head SHA", _set(("head_sha",), BASE_SHA), R, "Adapter result head SHA does not match request"),
+    ("summary", _set(("summary",), ""), R, "Adapter result summary is required"),
+    ("reviewer", _set(("reviewer",), ""), R, "Adapter result reviewer is required"),
+    ("status", _set(("status",), "done"), R, "Adapter result status is invalid"),
+    ("findings", _set(("findings",), {}), R, "Adapter findings must be an array"),
+    ("finding object", _set(RESULT_FINDING, "key-a"), R, "Every adapter finding must be an object"),
+    ("finding fields", _set((*RESULT_FINDING, "extra"), 1), R, "Adapter finding fields do not match the protocol"),
+    ("candidate key", _set((*RESULT_FINDING, "candidate_key"), ""), R, KEYS),
+    ("title", _set((*RESULT_FINDING, "title"), ""), R, f"Finding key-a.title {TITLE_RULE}"),
+    ("analyzer", _set((*RESULT_FINDING, "analyzer"), {}), R, f"Finding key-a.analyzer {ANALYZER_RULE}"),
+    ("severity", _set((*RESULT_FINDING, "severity"), "LOW"), R, "Invalid finding severity for key-a"),
+    *[
+        (f"finding {field}", _set((*RESULT_FINDING, field), ""), R, f"Finding key-a.{field} must be non-empty")
+        for field in ("category", "path", "body", "evidence", "source")
+    ],
+    ("finding path unsafe", _set((*RESULT_FINDING, "path"), "/a.py"), R, UNSAFE_PATH),
+    ("finding line", _set((*RESULT_FINDING, "line"), 0), R, LINE),
+    ("prior dispositions", _set(("prior_dispositions",), {}), R, "prior_dispositions must be an array"),
+    ("prior fields", _set(("prior_dispositions",), [{}]), R, "Prior disposition fields do not match the protocol"),
+    (
+        "prior IDs",
+        _set(("prior_dispositions",), [{**RESULT_PRIOR, "finding_id": 1}]),
+        R,
+        "Prior disposition IDs must be unique strings",
+    ),
+    (
+        "prior disposition",
+        _set(("prior_dispositions",), [{**RESULT_PRIOR, "disposition": "fixed"}]),
+        R,
+        f"Invalid disposition for prior finding {PRIOR_ID}",
+    ),
+    (
+        "prior rationale",
+        _set(("prior_dispositions",), [{**RESULT_PRIOR, "rationale": ""}]),
+        R,
+        f"Prior finding {PRIOR_ID} requires a rationale",
+    ),
+    (
+        "prior mismatch",
+        _set(("prior_dispositions",), [RESULT_PRIOR]),
+        R,
+        f"Prior dispositions mismatch; missing=[], unknown=['{PRIOR_ID}']",
+    ),
+    ("comment dispositions", _set(("comment_dispositions",), {}), R, "comment_dispositions must be an array"),
+    (
+        "comment fields",
+        _set(("comment_dispositions",), [{}]),
+        R,
+        "Comment disposition fields do not match the protocol",
+    ),
+    (
+        "comment IDs",
+        _set(("comment_dispositions",), [{**RESULT_COMMENT, "comment_id": 1}]),
+        R,
+        "Comment disposition IDs must be unique strings",
+    ),
+    (
+        "comment disposition",
+        _set(("comment_dispositions",), [{**RESULT_COMMENT, "disposition": "fixed"}]),
+        R,
+        "Invalid disposition for review comment C1",
+    ),
+    (
+        "comment rationale",
+        _set(("comment_dispositions",), [{**RESULT_COMMENT, "rationale": ""}]),
+        R,
+        "Review comment C1 requires a rationale",
+    ),
+    (
+        "comment mismatch",
+        _set(("comment_dispositions",), [RESULT_COMMENT]),
+        R,
+        "Comment dispositions mismatch; missing=[], unknown=['C1']",
+    ),
+    ("repeats", _set((*RESULT_FINDING, "repeats"), "key-z"), R, "Finding key-a repeats an unknown finding: key-z"),
+    ("usage", _set(("usage",), []), R, "usage must be an object or null"),
+]
+
+
+class AdapterResultValidationTests(unittest.TestCase):
+    def assert_refused(self, result: Any, error: type[Exception], message: str, arguments: dict[str, Any]) -> None:
+        with self.assertRaises(Exception) as caught:
+            validate_adapter_result(result, **{**REQUEST, **arguments})
+        self.assertIs(error, type(caught.exception))
+        self.assertEqual(message, str(caught.exception))
+
+    def test_accepted_results_are_returned_unchanged(self) -> None:
+        for name, build, mutation, arguments in ACCEPTED_RESULTS:
+            with self.subTest(name):
+                result = mutation(build())
+                before = copy.deepcopy(result)
+                self.assertIs(result, validate_adapter_result(result, **{**REQUEST, **arguments}))
+                self.assertEqual(before, result)
+
+    def test_prior_ids_may_be_a_one_shot_iterator(self) -> None:
+        # The IDs are read twice, for the dispositions and for the repeats, so a generator must be read only once.
+        result = _full_result()
+        arguments = {**FULL_REQUEST, "prior_ids": (identifier for identifier in [PRIOR_ID])}
+        self.assertIs(result, validate_adapter_result(result, **{**REQUEST, **arguments}))
+
+    def test_each_fault_is_refused_with_its_error(self) -> None:
+        for name, mutation, error, message, arguments in REJECTED_RESULTS:
+            with self.subTest(name):
+                self.assert_refused(mutation(_result()), error, message, arguments)
+
+    def test_each_stage_is_refused_alone(self) -> None:
+        for name, mutation, error, message in RESULT_STAGES:
+            with self.subTest(name):
+                self.assert_refused(mutation(_result()), error, message, {})
+
+    def test_faults_are_detected_in_order(self) -> None:
+        # With the fault of every check from k on present at once, check k's fault is the one reported.
+        for index, (name, _mutation, error, message) in enumerate(RESULT_STAGES):
+            with self.subTest(name):
+                result: Any = _result()
+                for _later, mutation, _error, _message in reversed(RESULT_STAGES[index:]):
+                    result = mutation(result)
+                self.assert_refused(result, error, message, {})
+
+    def test_stages_cover_every_check(self) -> None:
+        # Every raise site of validate_adapter_result has a stage. The checks inside validate_dispositions and
+        # _validate_result_repeats, which the split does not touch, are placed by their stages above.
+        stage_errors = {(error, message) for _name, _mutation, error, message in RESULT_STAGES}
+        own_errors = {
+            (error, message)
+            for _name, _mutation, error, message, arguments in REJECTED_RESULTS
+            if not arguments and not message.startswith(("Finding key-b", "Finding key-c"))
+        }
+        self.assertEqual(set(), own_errors - stage_errors - RESULT_VARIANTS)
+
+
+# Refusals another stage already places in the order: the same check with another value.
+RESULT_VARIANTS = {
+    (C, "Invalid repository identity: None"),
+    (R, "Adapter result contains unknown fields: alpha, zeta"),
+    (R, "Adapter result contains unknown fields: ledger"),
+}
 
 
 if __name__ == "__main__":
