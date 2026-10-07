@@ -24,10 +24,12 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import bounded_process
 import github_client
 import review_github
 import review_io
 import review_runtime
+from git_client import GitResult
 from github_client import CommandResult
 from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory
 from review_config import (
@@ -1671,9 +1673,9 @@ class RuntimeContractTests(unittest.TestCase):
     def test_git_symlink_entries_are_rejected_before_materialization(self) -> None:
         manifest = self._manifest()
 
-        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
+        def runner(arguments: Sequence[str], timeout: float) -> GitResult:
             if "ls-tree" in arguments:
-                return review_runtime.CommandResult(
+                return GitResult(
                     0,
                     f"120000 blob {'a' * 40}\t{manifest['entrypoint']}\n",
                     "",
@@ -1761,21 +1763,19 @@ class RuntimeContractTests(unittest.TestCase):
 
     def test_the_git_runner_decodes_in_the_caller_and_keeps_every_byte(self) -> None:
         # Decoding in subprocess.run happens in a reader thread on Windows, where a bad byte leaves stdout None, and
-        # in the caller on POSIX. Capturing bytes and decoding here gives both platforms the same, lossless path.
-        completed = subprocess.CompletedProcess(["git"], 0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
-        with mock.patch("review_runtime.subprocess.run", return_value=completed) as run:
-            result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"])
-        options = run.call_args.kwargs
-        self.assertTrue(options.get("capture_output"))
-        for decoding in ("text", "encoding", "errors", "universal_newlines"):
-            self.assertNotIn(decoding, options)
+        # in the caller on POSIX. The shared git runner takes bytes from the bounded layer and decodes them itself,
+        # which gives both platforms the same, lossless path.
+        finished = bounded_process.Finished(0, b"caf\xe9\r\nok\r\n", b"fatal: caf\xe9\n")
+        with mock.patch("git_client.run_bounded", return_value=finished) as run:
+            result = review_runtime.subprocess_runner(["git", "show", "HEAD:latin1.md"], 60)
+        self.assertEqual(mock.call(["git", "show", "HEAD:latin1.md"], 60), run.call_args)
         self.assertEqual(b"caf\xe9\r\nok\r\n", result.stdout.encode("utf-8", "surrogateescape"))
         self.assertEqual("fatal: caf�\n", result.stderr)
         self.assertEqual(0, result.returncode)
 
     def test_a_git_failure_never_carries_an_undecodable_byte_into_its_message(self) -> None:
-        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
-            return review_runtime.CommandResult(128, "caf\udce9", "")
+        def runner(arguments: Sequence[str], timeout: float) -> GitResult:
+            return GitResult(128, "caf\udce9", "")
 
         with self.assertRaises(RuntimeContractError) as raised:
             review_runtime._run_git(Path("checkout"), runner, "rev-parse", "HEAD")

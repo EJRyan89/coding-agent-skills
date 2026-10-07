@@ -7,16 +7,23 @@ A git exit status is often an answer, such as `merge-base --is-ancestor` saying 
 that git produced and raises only when git could not run or finish; `output` raises on a nonzero exit as well.
 stdout is decoded with surrogateescape, so `stdout.encode("utf-8", "surrogateescape")` is exactly what git printed;
 stderr only feeds messages, so a byte that is not UTF-8 becomes U+FFFD there.
+
+`stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
+environment; there the time limit bounds each wait for output rather than the whole command.
 """
 
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, TypeVar
 
-from bounded_process import run_bounded
+from bounded_process import Streaming, run_bounded, streaming
+
+T = TypeVar("T")
 
 DEFAULT_TIMEOUT_SECONDS = 300.0
 NOT_REPOSITORY_MARKERS = ("not a git repository",)
@@ -75,6 +82,41 @@ def classify_failure(stderr: str) -> str:
     return "git"
 
 
+def _command(arguments: Sequence[str], directory: str | Path | None) -> list[str]:
+    return ["git", *(["-C", str(directory)] if directory is not None else []), *arguments]
+
+
+class GitStream:
+    """A running git command's pipes: requests go to `stdin`, and each read waits at most the idle timeout."""
+
+    def __init__(self, running: Streaming) -> None:
+        self._running = running
+        self.stdin: IO[bytes] = running.stdin
+
+    def read(self, size: int) -> bytes:
+        """The next `size` bytes of output, fewer only at its end."""
+        return self._bounded(lambda: self._running.read(size))
+
+    def readline(self) -> bytes:
+        """The next line of output with its newline, or what is left at its end."""
+        return self._bounded(self._running.readline)
+
+    def wait(self) -> int:
+        """The exit status once git has exited."""
+        return self._bounded(self._running.wait)
+
+    def stderr(self) -> str:
+        """What git has written to stderr so far, with each byte that is not UTF-8 as U+FFFD."""
+        return self._running.errors().decode("utf-8", "replace")
+
+    def _bounded(self, call: Callable[[], T]) -> T:
+        try:
+            return call()
+        except subprocess.TimeoutExpired as exc:
+            command = " ".join(str(part) for part in exc.cmd) if isinstance(exc.cmd, list) else str(exc.cmd)
+            raise GitError(f"{command} gave no output for {exc.timeout:g} seconds", kind="timeout") from exc
+
+
 class GitClient:
     """Runs git within a time limit, with no stdin and no prompt, and classifies its failures."""
 
@@ -90,8 +132,7 @@ class GitClient:
         Raises GitError when git is missing, cannot start, or does not finish within `timeout` (the client's default
         when None).
         """
-        command = ["git", *(["-C", str(directory)] if directory is not None else []), *arguments]
-        return self.runner(command, self.timeout if timeout is None else timeout)
+        return self.runner(_command(arguments, directory), self.timeout if timeout is None else timeout)
 
     def output(
         self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
@@ -104,3 +145,25 @@ class GitClient:
             )
             raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.stdout
+
+    @contextmanager
+    def stream(
+        self, arguments: Sequence[str], *, directory: str | Path | None = None, idle_timeout: float | None = None
+    ) -> Iterator[GitStream]:
+        """Start `git <arguments>` with a pipe for requests, and stop it on leaving the block.
+
+        Each read fails as a `timeout` when no output arrives for `idle_timeout` seconds (the client's default when
+        None), so a long answer that keeps arriving never times out. Leaving the block closes git's output, so git
+        exits by itself; see `bounded_process.Streaming`.
+        """
+        command = _command(arguments, directory)
+        with ExitStack() as stack:
+            try:
+                running = stack.enter_context(
+                    streaming(command, idle_timeout=self.timeout if idle_timeout is None else idle_timeout)
+                )
+            except FileNotFoundError as exc:
+                raise GitError(MISSING_GIT, kind="prerequisite") from exc
+            except OSError as exc:
+                raise GitError(f"Git could not be started: {exc}", kind="execution") from exc
+            yield GitStream(running)

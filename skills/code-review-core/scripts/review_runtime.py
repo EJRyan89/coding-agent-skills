@@ -8,7 +8,6 @@ import os
 import re
 import shutil
 import stat
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -23,7 +22,8 @@ from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from github_client import CommandResult, GitHubClient, GitHubError, replace_undecodable
+from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
+from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
 
@@ -35,7 +35,7 @@ MAX_SOURCE_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
 BINARY_PROBE_BYTES = 8000
 SNAPSHOT_WRITE_WORKERS = 8
-GIT_EXIT_SECONDS = 60  # how long a stopped `git cat-file` gets to exit before it is killed
+GIT_WRITER_SECONDS = 10  # how long the id writer gets to finish once git is gone
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
 SNAPSHOT_EXCLUSION_REASONS = {
     "agent-instruction",
@@ -91,23 +91,10 @@ class RuntimeContractError(ValueError):
     """Raised when a runtime or repository reviewer violates the trust contract."""
 
 
-Runner = Callable[[Sequence[str]], CommandResult]
 # Reads blobs by id from a checkout's object store, yielding each one's exact bytes in the order asked.
 BlobReader = Callable[[Path, Sequence[str]], Iterable[bytes]]
 # A snapshot path with its content bytes when the snapshot keeps it, or the reason it leaves the path out.
 SnapshotMember = tuple[str, bytes | str]
-
-
-def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
-    """Run a command, capturing bytes and decoding them here, never in subprocess's reader threads.
-
-    stdout is UTF-8 with surrogateescape and its line endings untouched, so `stdout.encode("utf-8",
-    "surrogateescape")` is exactly what the command printed. stderr only feeds messages, so a bad byte becomes U+FFFD.
-    """
-    process = subprocess.run(list(arguments), capture_output=True, check=False)
-    return CommandResult(
-        process.returncode, process.stdout.decode("utf-8", "surrogateescape"), process.stderr.decode("utf-8", "replace")
-    )
 
 
 def output_bytes(text: str) -> bytes:
@@ -347,8 +334,20 @@ def resolve_runtime(configured: str, host: str | None = None) -> str:
     raise RuntimeContractError("No supported local runtime host is available")
 
 
+def _git(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
+    """Run git in the checkout through skill-core's client, whose `runner` tests replace.
+
+    git reads no stdin, shows no prompt, and stops at the client's time limit; git that cannot run or finish breaks
+    the contract like a failed command.
+    """
+    try:
+        return GitClient(runner).run(arguments, directory=checkout)
+    except GitError as exc:
+        raise RuntimeContractError(str(exc)) from exc
+
+
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
-    result = runner(["git", "-C", str(checkout), *arguments])
+    result = _git(checkout, runner, *arguments)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
         raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
@@ -395,7 +394,7 @@ def _read_git_file(checkout: Path, commit: str, relative: str, runner: Runner) -
     fields = mode_line.split(None, 3)
     if len(fields) != 4 or fields[1] != "blob" or fields[0] == "120000":
         raise RuntimeContractError(f"Declared reviewer file is not a regular file: {relative}")
-    result = runner(["git", "-C", str(checkout), "show", f"{commit}:{relative}"])
+    result = _git(checkout, runner, "show", f"{commit}:{relative}")
     if result.returncode != 0:
         raise RuntimeContractError(f"Cannot read declared reviewer file: {relative}")
     return output_bytes(result.stdout)
@@ -787,7 +786,7 @@ def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
             stdin.write(f"{blob}\n".encode("ascii"))
 
 
-def _read_batch_blob(stdout: IO[bytes], blob: str) -> bytes:
+def _read_batch_blob(stdout: GitStream, blob: str) -> bytes:
     """One `git cat-file --batch` answer: a `<id> blob <size>` line, exactly that many bytes, and a newline."""
     header = stdout.readline()
     fields = header.split()
@@ -805,43 +804,32 @@ def _read_batch_blob(stdout: IO[bytes], blob: str) -> bytes:
 def git_blob_reader(checkout: Path, blobs: Sequence[str]) -> Generator[bytes, None, None]:
     """The exact bytes of each blob, in order, streamed from one `git cat-file --batch`.
 
-    cat-file applies no attribute, filter, or line-ending conversion. The ids are written from a thread, so a large
-    answer never waits on a full input pipe. Stopping early closes git's output, so its next write fails and it
-    exits by itself; it is killed only if it has not exited a minute later. A killed process can hold its working
-    directory, the checkout, for a moment after it is reported gone, which made removing the checkout fail.
+    cat-file applies no attribute, filter, or line-ending conversion. It runs through skill-core's client, with no
+    prompt, and each wait for its output is bounded, so a large tree that keeps arriving is never cut off while a
+    stalled git is. The ids are written from a thread, so a large answer never waits on a full input pipe. Stopping
+    early closes git's output, so its next write fails and it exits by itself; it is killed only if it has not
+    exited a minute later. A killed process can hold its working directory, the checkout, for a moment after it is
+    reported gone, which made removing the checkout fail.
     """
     for blob in blobs:
         if not GIT_OBJECT_ID.fullmatch(blob):
             raise RuntimeContractError(f"Not a git object id: {blob!r}")
-    with tempfile.TemporaryFile() as errors:
-        process = subprocess.Popen(
-            ["git", "-C", str(checkout), "cat-file", "--batch"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=errors,
-        )
-        if process.stdin is None or process.stdout is None:
-            raise RuntimeContractError("git cat-file started without its pipes")
-        stdout = process.stdout
-        writer = threading.Thread(target=_write_object_ids, args=(process.stdin, blobs), daemon=True)
-        writer.start()
-        try:
+    writer: threading.Thread | None = None
+    try:
+        with GitClient().stream(["cat-file", "--batch"], directory=checkout) as stream:
+            writer = threading.Thread(target=_write_object_ids, args=(stream.stdin, blobs), daemon=True)
+            writer.start()
             for blob in blobs:
-                yield _read_batch_blob(stdout, blob)
-            if stdout.read(1):
+                yield _read_batch_blob(stream, blob)
+            if stream.read(1):
                 raise RuntimeContractError("git cat-file printed more than it was asked for")
-            if process.wait() != 0:
-                errors.seek(0)
-                detail = errors.read().decode("utf-8", "replace").strip() or "git cat-file failed"
-                raise RuntimeContractError(detail)
-        finally:
-            stdout.close()
-            try:
-                process.wait(timeout=GIT_EXIT_SECONDS)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            writer.join()  # git is gone, so a write it was blocked on has failed
+            if stream.wait() != 0:
+                raise RuntimeContractError(stream.stderr().strip() or "git cat-file failed")
+    except GitError as exc:
+        raise RuntimeContractError(str(exc)) from exc
+    finally:
+        if writer is not None:
+            writer.join(GIT_WRITER_SECONDS)  # git is gone, so a write it was blocked on has failed
 
 
 def _commit_members(

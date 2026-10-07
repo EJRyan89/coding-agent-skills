@@ -1519,6 +1519,53 @@ def skill_core_copy_problems(root: Path) -> list[str]:
     return sorted(problems)
 
 
+# The command each shared client runs, and the client a skill script runs it through.
+CLIENT_COMMANDS = {"git": "git_client.py's GitClient", "gh": "github_client.py's GitHubClient"}
+SUBPROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+CLIENTS_DOC = '"Script results" in docs/adding-a-skill.md'
+
+
+def _client_command(node: ast.AST) -> tuple[int, str] | None:
+    """The line and the git or gh command a node starts: a list or tuple that begins with it, or a subprocess call
+    given it as a string, such as `subprocess.run("git fetch", shell=True)`."""
+    first: ast.AST | None = None
+    if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+        first = node.elts[0]
+    elif (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in SUBPROCESS_CALLS
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "subprocess"
+        and node.args
+    ):
+        first = node.args[0]
+    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+        return None
+    command = first.value.split(" ", 1)[0]
+    return (first.lineno, command) if command in CLIENT_COMMANDS else None
+
+
+def client_command_problems(root: Path) -> list[str]:
+    """Report a Python skill script outside skill-core that runs git or gh itself instead of through skill-core.
+
+    The clients read no stdin, turn every prompt off, bound each command with a timeout, and classify its failures;
+    a command a script starts itself has none of that, so a sweep can wait forever on a credential prompt.
+    """
+    problems: list[str] = []
+    for path in sorted((root / "skills").glob("*/scripts/**/*.py")):
+        name = path.relative_to(root).as_posix()
+        if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+        for line, command in sorted({found for node in ast.walk(tree) if (found := _client_command(node))}):
+            problems.append(
+                f"{name}:{line} runs {command} itself; run it through {SKILL_CORE}'s {CLIENT_COMMANDS[command]}, "
+                f"which bounds it and turns prompts off; see {CLIENTS_DOC}"
+            )
+    return problems
+
+
 def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
     """Lines of the module-level statements that put skill-core's scripts first on sys.path, located from __file__."""
     lines: list[int] = []
@@ -4195,6 +4242,45 @@ class RepositoryValidation(unittest.TestCase):
 
     def test_skill_scripts_parse_gh_json_instead_of_filtering_it(self) -> None:
         self.assertEqual([], gh_filter_problems(REPOSITORY_ROOT))
+
+    def test_skill_scripts_run_git_and_gh_through_skill_core(self) -> None:
+        self.assertEqual([], client_command_problems(REPOSITORY_ROOT))
+
+    def test_client_command_policy_detects_git_and_gh_a_script_runs_itself(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "skills" / "alpha" / "scripts"
+            (scripts / "nested").mkdir(parents=True)
+            (scripts / "tool.py").write_text(
+                "import subprocess\n"
+                'subprocess.run(["git", "fetch", "--all"], capture_output=True)\n'
+                'runner(("gh", "api", "user"))\n'
+                'subprocess.run("git status", shell=True)\n'
+                'subprocess.check_output("gh")\n'
+                'client.run(["fetch", "--all"])\n'
+                'which("gh")\n'
+                'print(["github", "gitlab"])\n',
+                encoding="utf-8",
+            )
+            (scripts / "nested" / "helper.py").write_text('run(["git", "status"])\n', encoding="utf-8")
+            (scripts / "test_tool.py").write_text('run(["git", "init"])\n', encoding="utf-8")
+            (scripts / "tool.sh").write_text("git fetch --all\n", encoding="utf-8")
+            core = root / "skills" / "skill-core" / "scripts"
+            core.mkdir(parents=True)
+            (core / "git_client.py").write_text('command = ["git", *arguments]\n', encoding="utf-8")
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/nested/helper.py:1 runs git itself; {git}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:2 runs git itself; {git}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:3 runs gh itself; {gh}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:4 runs git itself; {git}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:5 runs gh itself; {gh}; see {doc}",
+                ],
+                client_command_problems(root),
+            )
 
     def test_gh_filter_policy_detects_jq_template_and_json_query_flags(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
