@@ -10,6 +10,7 @@ import contextlib
 import copy
 import io
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -31,22 +32,65 @@ PROTECTION = {
     "allow_deletions": {"enabled": False},
     "required_conversation_resolution": {"enabled": True},
 }
-REPOSITORY = {"allow_squash_merge": True, "allow_merge_commit": False, "allow_rebase_merge": False}
+REPOSITORY = {
+    "allow_squash_merge": True,
+    "allow_merge_commit": False,
+    "allow_rebase_merge": False,
+    "security_and_analysis": {
+        "secret_scanning": {"status": "enabled"},
+        "secret_scanning_push_protection": {"status": "enabled"},
+        "dependabot_security_updates": {"status": "enabled"},
+    },
+}
+# The private vulnerability reporting and workflow token responses on the same day.
+REPORTING = {"enabled": True}
+WORKFLOW = {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False}
+DOCUMENTS: dict[str, dict[str, Any]] = {
+    "protection": PROTECTION,
+    "repository": REPOSITORY,
+    "reporting": REPORTING,
+    "workflow": WORKFLOW,
+}
+ENDPOINTS = {
+    "protection": "repos/{owner}/{repo}/branches/main/protection",
+    "repository": "repos/{owner}/{repo}",
+    "reporting": "repos/{owner}/{repo}/private-vulnerability-reporting",
+    "workflow": "repos/{owner}/{repo}/actions/permissions/workflow",
+}
+
+
+def problems(documents: dict[str, dict[str, Any]]) -> list[str]:
+    return branch_protection.protection_problems(
+        documents["protection"], documents["repository"], documents["reporting"], documents["workflow"]
+    )
 
 
 def drifted(path: tuple[str, ...], value: object, document: str = "protection") -> list[str]:
-    protection: dict[str, Any] = copy.deepcopy(PROTECTION)
-    repository: dict[str, Any] = copy.deepcopy(REPOSITORY)
-    target = protection if document == "protection" else repository
+    documents: dict[str, dict[str, Any]] = copy.deepcopy(DOCUMENTS)
+    target = documents[document]
     for key in path[:-1]:
         target = target[key]
     target[path[-1]] = value
-    return branch_protection.protection_problems(protection, repository)
+    return problems(documents)
+
+
+def required_step(pattern: str, text: str) -> str:
+    """The line matching pattern, failing the test with the text when none does."""
+    match = re.search(pattern, text)
+    if match is None:
+        raise AssertionError(f"no line matches {pattern!r} in:\n{text}")
+    return match.group(0)
+
+
+def answers(**replaced: tuple[int, str]) -> dict[str, tuple[int, str]]:
+    """What each endpoint answers: the recorded documents, with any named one replaced."""
+    recorded = {name: (0, json.dumps(document)) for name, document in DOCUMENTS.items()}
+    return {ENDPOINTS[name]: answer for name, answer in {**recorded, **replaced}.items()}
 
 
 class ProtectionProblemsTests(unittest.TestCase):
     def test_the_live_settings_hold_every_invariant(self) -> None:
-        self.assertEqual([], branch_protection.protection_problems(PROTECTION, REPOSITORY))
+        self.assertEqual([], problems(DOCUMENTS))
 
     def test_each_drift_is_reported_by_name(self) -> None:
         cases: list[tuple[tuple[str, ...], object, str, str]] = [
@@ -61,6 +105,21 @@ class ProtectionProblemsTests(unittest.TestCase):
             (("allow_merge_commit",), True, "repository", "merge commits"),
             (("allow_rebase_merge",), True, "repository", "rebase merges"),
             (("allow_squash_merge",), False, "repository", "squash merges"),
+            (("security_and_analysis", "secret_scanning", "status"), "disabled", "repository", "secret scanning"),
+            (
+                ("security_and_analysis", "secret_scanning_push_protection", "status"),
+                "disabled",
+                "repository",
+                "push protection",
+            ),
+            (
+                ("security_and_analysis", "dependabot_security_updates", "status"),
+                "disabled",
+                "repository",
+                "Dependabot security updates",
+            ),
+            (("enabled",), False, "reporting", "private vulnerability reporting"),
+            (("default_workflow_permissions",), "write", "workflow", "workflow token"),
         ]
         for path, value, document, name in cases:
             with self.subTest(path=path):
@@ -70,9 +129,40 @@ class ProtectionProblemsTests(unittest.TestCase):
 
     def test_a_missing_section_is_drift_not_a_crash(self) -> None:
         protection = {key: value for key, value in PROTECTION.items() if key != "required_pull_request_reviews"}
-        problems = branch_protection.protection_problems(protection, REPOSITORY)
-        self.assertEqual(1, len(problems), problems)
-        self.assertIn("approvals", problems[0])
+        found = problems({**DOCUMENTS, "protection": protection})
+        self.assertEqual(1, len(found), found)
+        self.assertIn("approvals", found[0])
+
+    def test_security_settings_hidden_from_the_reader_are_drift_not_a_crash(self) -> None:
+        # GitHub omits security_and_analysis for a reader without admin rights.
+        repository = {key: value for key, value in REPOSITORY.items() if key != "security_and_analysis"}
+        found = problems({**DOCUMENTS, "repository": repository, "workflow": {}})
+        self.assertEqual(4, len(found), found)
+        for name in ("secret scanning", "push protection", "Dependabot security updates", "workflow token"):
+            with self.subTest(name=name):
+                self.assertTrue(any(name in problem for problem in found), found)
+
+    def test_each_security_setting_is_reported_with_its_value(self) -> None:
+        self.assertEqual(
+            [
+                ("secret scanning", "enabled"),
+                ("push protection", "enabled"),
+                ("private vulnerability reporting", "enabled"),
+                ("Dependabot security updates", "enabled"),
+                ("default workflow token", "read"),
+            ],
+            branch_protection.security_settings(REPOSITORY, REPORTING, WORKFLOW),
+        )
+        self.assertEqual(
+            [
+                ("secret scanning", "unknown"),
+                ("push protection", "unknown"),
+                ("private vulnerability reporting", "disabled"),
+                ("Dependabot security updates", "unknown"),
+                ("default workflow token", "unknown"),
+            ],
+            branch_protection.security_settings({}, {"enabled": False}, {}),
+        )
 
     def test_validate_need_not_be_the_only_required_check(self) -> None:
         self.assertEqual([], drifted(("required_status_checks", "contexts"), ["validate", "other"]))
@@ -93,46 +183,46 @@ class MainTests(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_protected_when_nothing_drifted(self) -> None:
-        code, stdout, _ = self.run_main(
-            {
-                "repos/{owner}/{repo}/branches/main/protection": (0, json.dumps(PROTECTION)),
-                "repos/{owner}/{repo}": (0, json.dumps(REPOSITORY)),
-            }
+        code, stdout, _ = self.run_main(answers())
+        self.assertEqual(
+            (
+                0,
+                "PROTECTED\n"
+                "Security settings:\n"
+                "  secret scanning: enabled\n"
+                "  push protection: enabled\n"
+                "  private vulnerability reporting: enabled\n"
+                "  Dependabot security updates: enabled\n"
+                "  default workflow token: read\n",
+            ),
+            (code, stdout),
         )
-        self.assertEqual((0, "PROTECTED\n"), (code, stdout))
 
     def test_each_drift_is_printed_and_the_check_fails(self) -> None:
         loose = {**REPOSITORY, "allow_merge_commit": True, "allow_rebase_merge": True}
         code, stdout, _ = self.run_main(
-            {
-                "repos/{owner}/{repo}/branches/main/protection": (0, json.dumps(PROTECTION)),
-                "repos/{owner}/{repo}": (0, json.dumps(loose)),
-            }
+            answers(
+                repository=(0, json.dumps(loose)),
+                workflow=(0, json.dumps({**WORKFLOW, "default_workflow_permissions": "write"})),
+            )
         )
         self.assertEqual(1, code)
         lines = stdout.splitlines()
         self.assertEqual("DRIFTED", lines[0])
-        self.assertEqual(2, len(lines[1:]), lines)
+        self.assertEqual(3, len([line for line in lines if line.startswith("- ")]), lines)
+        self.assertIn("  default workflow token: write", lines)
 
     def test_a_gh_failure_is_reported_without_a_traceback(self) -> None:
-        code, stdout, stderr = self.run_main(
-            {
-                "repos/{owner}/{repo}/branches/main/protection": (1, "HTTP 404: Branch not protected"),
-                "repos/{owner}/{repo}": (0, json.dumps(REPOSITORY)),
-            }
-        )
-        self.assertEqual(2, code)
-        self.assertEqual("", stdout)
-        self.assertIn("Branch not protected", stderr)
-        self.assertNotIn("Traceback", stderr)
+        for endpoint in ENDPOINTS:
+            with self.subTest(endpoint=endpoint):
+                code, stdout, stderr = self.run_main(answers(**{endpoint: (1, "HTTP 404: Not Found")}))
+                self.assertEqual(2, code)
+                self.assertEqual("", stdout)
+                self.assertIn(f"gh api {ENDPOINTS[endpoint]} failed: HTTP 404: Not Found", stderr)
+                self.assertNotIn("Traceback", stderr)
 
     def test_output_that_is_not_json_is_reported_without_a_traceback(self) -> None:
-        code, _, stderr = self.run_main(
-            {
-                "repos/{owner}/{repo}/branches/main/protection": (0, "not json"),
-                "repos/{owner}/{repo}": (0, json.dumps(REPOSITORY)),
-            }
-        )
+        code, _, stderr = self.run_main(answers(protection=(0, "not json")))
         self.assertEqual(2, code)
         self.assertNotIn("Traceback", stderr)
 
@@ -151,6 +241,11 @@ class DocumentationTests(unittest.TestCase):
             "conversation",
             "approval",
             "force push",
+            "secret scanning",
+            "push protection",
+            "private vulnerability reporting",
+            "Dependabot security updates",
+            "read-only",
             "python tools/branch_protection.py",
         ):
             with self.subTest(phrase=phrase):
@@ -160,6 +255,21 @@ class DocumentationTests(unittest.TestCase):
         text = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
         before_tagging = text.split("## Before tagging", 1)[1].split("\n## ", 1)[0]
         self.assertIn("python tools/branch_protection.py", before_tagging)
+
+    def test_the_release_procedure_checks_the_security_settings_with_the_tool(self) -> None:
+        text = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
+        before_tagging = text.split("## Before tagging", 1)[1].split("\n## ", 1)[0]
+        step = required_step(r"(?m)^5\. \*\*Security settings\.\*\* .*$", before_tagging)
+        for phrase in (
+            "python tools/branch_protection.py",
+            "secret scanning",
+            "push protection",
+            "private vulnerability reporting",
+            "Dependabot security updates",
+            "read-only",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, step)
 
 
 if __name__ == "__main__":

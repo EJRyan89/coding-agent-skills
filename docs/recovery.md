@@ -67,7 +67,7 @@ Each repository you deploy from is a source with an ID in its `source.json`, and
 When the other source is an earlier ID of the same repository, or a clone you no longer deploy from, take its items over:
 
 ```bash
-python deploy.py --migrate-from <source-id>
+python deploy.py --migrate-from '<source-id>'
 ```
 
 This changes nothing on disk. It moves ownership in the manifest of every item both sources deploy, provided each still matches the hash the old source recorded, and prints them under `MIGRATED`. Then deploy as usual. If an item is missing or has been changed since the old source deployed it, migration refuses without moving anything; restore that copy, for example by deploying from the old source again, and rerun it. `--migrate-from` cannot be combined with `--dry-run`, and the source IDs the manifest knows are listed under `sources` in `~/.claude/skills/.deploy-manifest.json`.

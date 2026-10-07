@@ -75,8 +75,8 @@ itself, and `repo-cleanup` reports the tree as preserved.
 To retire a tree by hand instead, run these from the hub:
 
 ```bash
-git worktree remove .claude/worktrees/<kind>-<name>
-git branch -D <kind>/<name>
+git worktree remove '.claude/worktrees/<kind>-<name>'
+git branch -D '<kind>/<name>'
 ```
 
 ## What is shared even across worktrees
