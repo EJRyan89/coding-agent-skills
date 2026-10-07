@@ -233,6 +233,8 @@ A shared Markdown asset is runtime guidance for Codex and Copilot. Declare it in
 
 `shared_assets` must be an object, and each role a string, `owner` or `dependency`; source discovery stops with an error naming the asset otherwise. Use the `dependency` role only when another installed source owns the asset. The deployer verifies the owning source and manifest hash before installing a skill that needs the dependency.
 
+A shared asset's name is one file name of letters, digits, dots, hyphens, underscores, and spaces. The deployer compares names as the file system does, so on Windows `Guide.md` and `guide.md` name one file: an asset may not share its name, in any case, with a skill or another asset of its source, or with an item another source has deployed. A name ending in `.deploying-bak` or containing `.tmp.` is reserved for the deployer's own files.
+
 The manifest records each installed skill's `shared_deps`, and those records move with the skill during `--migrate-from`. A shared asset is installed only while a selected skill needs it. When no selected skill needs an owned asset, the deployer removes it unless a skill that stays installed still needs it: a locally modified skill that was preserved or skipped, or a skill owned by another source. In that case the asset is kept and reported as `KEEP` until nothing installed needs it.
 
 ## Subagent definitions

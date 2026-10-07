@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import hashing, journal, platform_support
 from .context import Context
 from .errors import DeployError, see_recovery
@@ -44,6 +46,24 @@ def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> 
     return candidates
 
 
+def _record_takeover(context: Context) -> None:
+    """Record this checkout as the source's, as --take-over-source promised, when a migration moves nothing.
+
+    A migration that moves items records the checkout with them. Without --take-over-source, or from the recorded
+    checkout, the manifest is left as it is.
+    """
+    entry = context.manifest.source(context.source_id)
+    if not context.options.take_over_source or entry is None:
+        return
+    recorded = entry.get("source_dir")
+    current = context.paths.source_dir
+    if isinstance(recorded, str) and recorded and platform_support.same_directory(Path(recorded), current):
+        return
+    entry["source_dir"] = platform_support.normalize(current)
+    context.manifest.save()
+    print(f"Recorded this checkout, {platform_support.normalize(current)}, as the source of '{context.source_id}'.")
+
+
 def migrate(context: Context, old: str) -> None:
     paths, data = context.paths, context.manifest
     if not paths.manifest_file.is_file():
@@ -62,6 +82,7 @@ def migrate(context: Context, old: str) -> None:
     if not any(candidates.values()):
         print("")
         print(f"No intersecting ownership entries to migrate from '{old}'.")
+        _record_takeover(context)
         print("")
         return
     new_entry = data.sources.setdefault(

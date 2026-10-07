@@ -170,5 +170,13 @@ class HomeDirectoryTests(unittest.TestCase):
         self.assertIsNone(platform_support.ignored_home_variable(Path("C:/Temp/canary"), environment))
 
 
+class NameKeyTests(unittest.TestCase):
+    def test_windows_compares_item_names_without_regard_to_case(self) -> None:
+        self.assertEqual(platform_support.name_key("Guide.md"), platform_support.name_key("guide.md"))
+        self.assertEqual(platform_support.name_key("ALPHA"), platform_support.name_key("alpha"))
+        self.assertEqual("guide.md", platform_support.name_key("GUIDE.MD"))
+        self.assertNotEqual(platform_support.name_key("guide.md"), platform_support.name_key("guide-md"))
+
+
 if __name__ == "__main__":
     unittest.main()
