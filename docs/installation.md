@@ -92,6 +92,10 @@ python deploy.py --all --force-item dotnet-format
 
 Forced replacements are retained under `~/.claude/skills/.backups/<run-id>/`.
 
+### When a command fails
+
+Every `deploy.py` command ends a failure with lines that say what failed, on which path, and what to do next, and prints no traceback. To see the traceback behind the message, add `--debug` to the command, or set the `DEPLOYER_DEBUG` environment variable to `1` for a run whose command line you do not control, such as the one `update-coding-agent-skills` starts. The traceback follows the message.
+
 ## Updating
 
 From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. See [Versioning](releasing.md#versioning) for what each level means.

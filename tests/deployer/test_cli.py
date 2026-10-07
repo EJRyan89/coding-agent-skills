@@ -81,6 +81,7 @@ class SingleEntryPointTests(DeployerTestCase):
                 "  --migrate-from ID   take over items from another source ID\n"
                 "  --take-over-source  deploy from this checkout in place of the recorded one\n"
                 "  --canary-home DIR   deploy into a throwaway home under the temp directory\n"
+                "  --debug             print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
                 "\n"
                 "commands:\n"
                 "  configure           set the values skills need; see its --help\n"
@@ -96,6 +97,7 @@ class SingleEntryPointTests(DeployerTestCase):
                 "options:\n"
                 "  -h, --help  show this help message and exit\n"
                 "  --reset     start from an empty configuration\n"
+                "  --debug     print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
                 "\n"
             ),
             ("verify", "--help"): (
@@ -106,6 +108,7 @@ class SingleEntryPointTests(DeployerTestCase):
                 "\n"
                 "options:\n"
                 "  -h, --help  show this help message and exit\n"
+                "  --debug     print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
                 "\n"
             ),
         }

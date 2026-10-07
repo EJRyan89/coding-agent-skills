@@ -7,7 +7,7 @@ import functools
 import sys
 from typing import NoReturn
 
-from .errors import DeployError
+from .errors import DEBUG_VARIABLE, DeployError
 
 PROG = "python deploy.py"
 CONFIGURE_COMMAND = "configure"
@@ -105,6 +105,7 @@ def deploy_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--canary-home", default="", metavar="DIR", help="deploy into a throwaway home under the temp directory"
     )
+    _add_debug(parser)
     return parser
 
 
@@ -117,25 +118,36 @@ def configure_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--reset", action="store_true", help="start from an empty configuration")
+    _add_debug(parser)
     return parser
 
 
 def check_parser() -> argparse.ArgumentParser:
-    return _Parser(
+    parser = _Parser(
         CHECK_COMMAND_LINE,
         description=(
             "List the tools the deployer and the skills need, with their versions,\n"
             "and which are missing or outdated. Nothing is changed."
         ),
     )
+    _add_debug(parser)
+    return parser
 
 
 def verify_parser() -> argparse.ArgumentParser:
-    return _Parser(
+    parser = _Parser(
         VERIFY_COMMAND_LINE,
         description=(
             "Check that Codex CLI and Copilot CLI, whichever are installed, find every\n"
             "deployed runtime adapter under ~/.agents/skills, enabled and not shadowed\n"
             "by another skill of the same name. No model is started; nothing is changed."
         ),
+    )
+    _add_debug(parser)
+    return parser
+
+
+def _add_debug(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--debug", action="store_true", help=f"print the traceback when it fails; or set {DEBUG_VARIABLE}=1"
     )

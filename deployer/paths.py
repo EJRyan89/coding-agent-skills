@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import fsops, platform_support
-from .errors import DeployError
+from .errors import DeployError, os_error
 
 
 @dataclass(frozen=True)
@@ -113,7 +113,11 @@ def canary_home(value: str) -> Path:
             f"ERROR: --canary-home must be inside the temporary directory {platform_support.normalize(temporary)} "
             f"(got: {platform_support.normalize(resolved)})"
         )
-    entries = [entry.name for entry in resolved.iterdir()]
+    try:
+        entries = [entry.name for entry in resolved.iterdir()]
+    except OSError as exc:
+        remedy = "Choose an empty directory you can read under the temporary directory, then retry."
+        raise os_error(exc, "list --canary-home", remedy) from exc
     if entries and CANARY_MARKER not in entries:
         raise DeployError(
             "ERROR: --canary-home must be an empty directory or one an earlier --canary-home deployment used: "

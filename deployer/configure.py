@@ -7,7 +7,7 @@ from typing import TextIO
 
 from . import config, fsops, platform_support, source
 from .arguments import ParserExit, configure_parser
-from .errors import DeployError, print_error
+from .errors import DeployError, debug_requested, print_error, print_traceback
 from .paths import Paths, validate_managed_roots
 
 
@@ -31,8 +31,10 @@ def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | No
 
 def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
     stdin = stdin if stdin is not None else sys.stdin
+    debug = debug_requested()
     try:
-        reset = configure_parser().parse_args(arguments).reset
+        options = configure_parser().parse_args(arguments)
+        reset, debug = options.reset, debug_requested(options.debug)
         platform_support.ensure_supported()
         validate_managed_roots(paths)
         source_id = source.load_source_id(paths)
@@ -63,12 +65,14 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
     except ParserExit as exc:
         return exc.code
     except DeployError as exc:
-        print_error(exc)
+        print_error(exc, debug)
         return exc.exit_code
     except OSError as exc:
         print("", file=sys.stderr)
         print(f"ERROR: Could not write configuration: {exc}", file=sys.stderr)
         print("", file=sys.stderr)
+        if debug:
+            print_traceback(exc)
         return 1
     print("")
     print("Saved.")

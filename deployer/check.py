@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from . import manifest, platform_support, source, tools
 from .arguments import ParserExit, check_parser
-from .errors import DeployError, print_error
+from .errors import DeployError, debug_requested, fail
 from .paths import Paths
 from .report import ReportLine, currently_chosen, print_report, warn_ignored_home
 
@@ -71,19 +71,19 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
 
 
 def run(arguments: list[str], paths: Paths) -> int:
+    debug = debug_requested()
     try:
-        check_parser().parse_args(arguments)
+        debug = debug_requested(check_parser().parse_args(arguments).debug)
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
         src = source.discover(paths, source_id)
         owned = manifest.load(paths.manifest_file).ownership(source_id)
+        deploy_lines = _deploy_lines()
+        skill_lines = _skill_lines(src, owned)
     except ParserExit as exc:
         return exc.code
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
-    deploy_lines = _deploy_lines()
-    skill_lines = _skill_lines(src, owned)
+    except (DeployError, OSError) as exc:
+        return fail(exc, debug, "finish the check")
     print("")
     print(f"Source: {source.label(src.source_id, src.name)}")
     print(f"Home: {platform_support.normalize(paths.home)}")

@@ -17,7 +17,7 @@ from . import config, fsops, journal, lock, manifest, migrate, plan, platform_su
 from . import selection as selection_module
 from .arguments import ParserExit, deploy_parser
 from .context import Context, Options
-from .errors import Cancelled, DeployError, print_error, see_recovery
+from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import BY_LABEL, KINDS, SHARED, SKILL
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
@@ -280,10 +280,12 @@ def run(
     stdin: TextIO | None = None,
 ) -> int:
     stdin = stdin if stdin is not None else sys.stdin
+    debug = debug_requested()
     try:
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
         options = parse_arguments(arguments, source_id)
+        debug = debug_requested(options.debug)
         if options.canary_home:
             paths = Paths(paths.source_dir, canary_home(options.canary_home))
         validate_managed_roots(paths)
@@ -296,18 +298,16 @@ def run(
         src = source.discover(paths, source_id)
     except ParserExit as exc:
         return exc.code
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
+    except (DeployError, OSError) as exc:
+        return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
     if options.dry_run:
         try:
             if _stop_for_pending_recovery(paths):
                 return 0
             return _deploy(paths, options, src, values, stdin, None)
-        except DeployError as exc:
-            print_error(exc)
-            return exc.exit_code
+        except (DeployError, OSError) as exc:
+            return fail(exc, debug, "finish the dry run")
     try:
         if options.canary_home:
             # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it.
@@ -316,13 +316,12 @@ def run(
         else:
             source.reject_linked_worktree(paths)
         held = lock.acquire(paths, probe)
-    except DeployError as exc:
-        print_error(exc)
-        return exc.exit_code
+    except (DeployError, OSError) as exc:
+        return fail(exc, debug, "prepare the deployment")
     try:
         _reject_other_checkout(paths, source_id, options.take_over_source)
     except DeployError as exc:
-        print_error(exc)
+        print_error(exc, debug)
         held.release()
         return exc.exit_code
     if not journal.recover_incomplete(paths):
@@ -340,15 +339,17 @@ def run(
         code = _deploy(paths, options, src, values, stdin, run_id)
     except Cancelled as exc:
         # Raised only at the selection prompt, before staging or any destination change.
-        print_error(exc)
+        print_error(exc, debug)
         held.release()
         return exc.exit_code
     except (Exception, KeyboardInterrupt) as exc:
         if isinstance(exc, DeployError):
-            print_error(exc)
+            print_error(exc, debug)
             code = exc.exit_code
         else:
             print(f"ERROR: Unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+            if debug:
+                print_traceback(exc)
             code = 130 if isinstance(exc, KeyboardInterrupt) else 1
         print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
         if journal.recover_incomplete(paths):
