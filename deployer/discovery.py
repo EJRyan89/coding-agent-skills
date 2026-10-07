@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from . import platform_support
 
@@ -60,74 +61,105 @@ def converse(
 ) -> list[str]:
     lines: queue.Queue[str | None] = queue.Queue()
     with tempfile.TemporaryFile() as errors:
-        try:
-            process = subprocess.Popen(
-                arguments,
-                cwd=cwd,
-                env=dict(environment),
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=errors,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except OSError as exc:
-            raise ListingError(f"cannot start it: {exc}") from exc
-        stdin, stdout = process.stdin, process.stdout
-        # Both were requested as pipes above; a program started without them cannot be asked anything.
-        if stdin is None or stdout is None:
-            process.kill()
-            process.wait()
-            raise ListingError("its pipes did not open")
-
-        def read() -> None:
-            with stdout:
-                for line in stdout:
-                    lines.put(line)
-            lines.put(None)
-
-        reader = threading.Thread(target=read, daemon=True)
+        process, stdin, stdout = _start(arguments, cwd, environment, errors)
+        reader = threading.Thread(target=_read_lines, args=(stdout, lines), daemon=True)
         reader.start()
         received: list[str] = []
         deadline = time.monotonic() + timeout
         try:
-            # A program that has already exited refuses its requests; its exit code and errors say why.
-            with contextlib.suppress(OSError):
-                for request in requests:
-                    stdin.write(request + "\n")
-                stdin.flush()
-                if answered is None:
-                    # The Codex app server stops at the end of stdin, before it answers, so stdin stays open
-                    # until an awaited answer arrives.
-                    stdin.close()
-            while True:
-                try:
-                    line = lines.get(timeout=max(deadline - time.monotonic(), 0))
-                except queue.Empty:
-                    process.kill()
-                    raise ListingError(f"no answer within {timeout:g} seconds") from None
-                if line is None:
-                    break
-                received.append(line.rstrip("\n"))
-                if answered is not None and answered(line):
-                    return received
+            _send(stdin, requests, answered)
+            if _receive(lines, process, received, answered, deadline, timeout):
+                return received
         finally:
-            with contextlib.suppress(OSError):
-                stdin.close()
-            try:
-                process.wait(timeout=CLOSE_GRACE)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            reader.join(timeout=CLOSE_GRACE)
-            errors.seek(0)
-            stderr = errors.read().decode("utf-8", "replace").strip()
+            stderr = _close(process, stdin, reader, errors)
     if answered is not None:
         raise ListingError(_ended("it exited before answering", process.returncode, stderr))
     if process.returncode != 0:
         raise ListingError(_ended("it failed", process.returncode, stderr))
     return received
+
+
+def _start(
+    arguments: list[str], cwd: Path, environment: Mapping[str, str], errors: IO[bytes]
+) -> tuple[subprocess.Popen[str], IO[str], IO[str]]:
+    """The started program and its stdin and stdout pipes, its stderr going to errors."""
+    try:
+        process = subprocess.Popen(
+            arguments,
+            cwd=cwd,
+            env=dict(environment),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        raise ListingError(f"cannot start it: {exc}") from exc
+    stdin, stdout = process.stdin, process.stdout
+    # Both were requested as pipes above; a program started without them cannot be asked anything.
+    if stdin is None or stdout is None:
+        process.kill()
+        process.wait()
+        raise ListingError("its pipes did not open")
+    return process, stdin, stdout
+
+
+def _read_lines(stdout: IO[str], lines: queue.Queue[str | None]) -> None:
+    """Queue each line the program prints, then None at the end of its output."""
+    with stdout:
+        for line in stdout:
+            lines.put(line)
+    lines.put(None)
+
+
+def _send(stdin: IO[str], requests: list[str], answered: Callable[[str], bool] | None) -> None:
+    # A program that has already exited refuses its requests; its exit code and errors say why.
+    with contextlib.suppress(OSError):
+        for request in requests:
+            stdin.write(request + "\n")
+        stdin.flush()
+        if answered is None:
+            # The Codex app server stops at the end of stdin, before it answers, so stdin stays open
+            # until an awaited answer arrives.
+            stdin.close()
+
+
+def _receive(
+    lines: queue.Queue[str | None],
+    process: subprocess.Popen[str],
+    received: list[str],
+    answered: Callable[[str], bool] | None,
+    deadline: float,
+    timeout: float,
+) -> bool:
+    """Add each line to received until answered accepts one, which returns True, or the output ends."""
+    while True:
+        try:
+            line = lines.get(timeout=max(deadline - time.monotonic(), 0))
+        except queue.Empty:
+            process.kill()
+            raise ListingError(f"no answer within {timeout:g} seconds") from None
+        if line is None:
+            return False
+        received.append(line.rstrip("\n"))
+        if answered is not None and answered(line):
+            return True
+
+
+def _close(process: subprocess.Popen[str], stdin: IO[str], reader: threading.Thread, errors: IO[bytes]) -> str:
+    """Close stdin, wait for the program (killing it after the grace), and return what it wrote to stderr."""
+    with contextlib.suppress(OSError):
+        stdin.close()
+    try:
+        process.wait(timeout=CLOSE_GRACE)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    reader.join(timeout=CLOSE_GRACE)
+    errors.seek(0)
+    return errors.read().decode("utf-8", "replace").strip()
 
 
 def _ended(what: str, code: int, stderr: str) -> str:

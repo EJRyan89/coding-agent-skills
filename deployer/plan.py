@@ -18,6 +18,7 @@ from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, MODIFIED, SHARED, SHARED_
 from .names import require_safe_name
 from .paths import Paths
 from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL, ReportLine, print_report
+from .source import Source
 
 # Actions that move the rendered copy into place, and actions that end this source's ownership of an item.
 INSTALLING = frozenset({"INSTALL", "UPDATE", "UNCHANGED", "ADOPT", "REPLACE"})
@@ -196,49 +197,13 @@ def dry_run(entries: list[PlanEntry]) -> None:
 
 
 def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, str]:
-    paths, src, data = context.paths, context.source, context.manifest
-    assets: dict[str, str] = {}
-    for asset, role in src.shared_assets.items():
-        require_safe_name(asset, "shared asset name")
-        assets[asset] = role
-    for asset in sorted(assets):
-        if asset in src.skills:
-            raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")
+    src = context.source
+    assets = _declared_assets(src)
     needed = {dependency for name in selected for dependency in src.skills[name].shared_deps}
     for asset, role in sorted(assets.items()):
-        if role not in ("owner", "dependency"):
-            raise DeployError(
-                f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')"
-            )
-        if role == "owner" and not (paths.skills_src / asset).is_file():
-            raise DeployError(
-                f"ERROR: source.json declares '{asset}' as owned but file not found at "
-                f"{platform_support.normalize(paths.skills_src / asset)}"
-            )
+        _check_role(context.paths, asset, role)
         if role == "dependency" and asset in needed:
-            destination = paths.dest_dir / asset
-            if not destination.is_file():
-                raise DeployError(
-                    f"ERROR: Dependency '{asset}' not found at destination ({platform_support.normalize(destination)})"
-                )
-            owner = data.shared_owners.get(asset)
-            if owner is None:
-                raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest")
-            if owner == context.source_id:
-                raise DeployError(
-                    f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source"
-                )
-            entry = data.entry(owner, "shared", asset) or {}
-            owner_role = entry.get("role", "")
-            if owner_role != "owner":
-                raise DeployError(
-                    f"ERROR: Dependency '{asset}' owner '{owner}' does not have role 'owner' (has '{owner_role}')"
-                )
-            expected = entry.get("hash", "")
-            if not isinstance(expected, str) or not hashing.HASH_PATTERN.fullmatch(expected):
-                raise DeployError(f"ERROR: Dependency '{asset}' owner '{owner}' has no valid SHA-256 hash in manifest")
-            if hashing.hash_path(destination) != expected:
-                raise DeployError(f"ERROR: Dependency '{asset}' at destination does not match owner's manifest hash")
+            _check_dependency(context, asset)
     for name in selected:
         for dependency in src.skills[name].shared_deps:
             if dependency not in assets:
@@ -247,6 +212,54 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
                     f"'{dependency}' but it is not in source.json shared_assets"
                 )
     return assets
+
+
+def _declared_assets(src: Source) -> dict[str, str]:
+    """source.json's shared assets and their roles, once every name is safe and none is also a skill's."""
+    assets: dict[str, str] = {}
+    for asset, role in src.shared_assets.items():
+        require_safe_name(asset, "shared asset name")
+        assets[asset] = role
+    for asset in sorted(assets):
+        if asset in src.skills:
+            raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")
+    return assets
+
+
+def _check_role(paths: Paths, asset: str, role: str) -> None:
+    """A role is owner or dependency, and an owned asset is a file in this source."""
+    if role not in ("owner", "dependency"):
+        raise DeployError(f"ERROR: Shared asset '{asset}' has invalid role '{role}' (must be 'owner' or 'dependency')")
+    if role == "owner" and not (paths.skills_src / asset).is_file():
+        raise DeployError(
+            f"ERROR: source.json declares '{asset}' as owned but file not found at "
+            f"{platform_support.normalize(paths.skills_src / asset)}"
+        )
+
+
+def _check_dependency(context: Context, asset: str) -> None:
+    """A needed dependency is installed, and another source owns it with the hash of what is installed."""
+    destination = context.paths.dest_dir / asset
+    if not destination.is_file():
+        raise DeployError(
+            f"ERROR: Dependency '{asset}' not found at destination ({platform_support.normalize(destination)})"
+        )
+    owner = context.manifest.shared_owners.get(asset)
+    if owner is None:
+        raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest")
+    if owner == context.source_id:
+        raise DeployError(f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source")
+    entry = context.manifest.entry(owner, "shared", asset) or {}
+    owner_role = entry.get("role", "")
+    if owner_role != "owner":
+        raise DeployError(
+            f"ERROR: Dependency '{asset}' owner '{owner}' does not have role 'owner' (has '{owner_role}')"
+        )
+    expected = entry.get("hash", "")
+    if not isinstance(expected, str) or not hashing.HASH_PATTERN.fullmatch(expected):
+        raise DeployError(f"ERROR: Dependency '{asset}' owner '{owner}' has no valid SHA-256 hash in manifest")
+    if hashing.hash_path(destination) != expected:
+        raise DeployError(f"ERROR: Dependency '{asset}' at destination does not match owner's manifest hash")
 
 
 def shared_to_stage(context: Context, selected: list[str], assets: dict[str, str]) -> list[str]:

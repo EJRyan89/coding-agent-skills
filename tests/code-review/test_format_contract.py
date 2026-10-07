@@ -259,51 +259,87 @@ def check_table(heading: str, rows: dict[str, Row], found: list[Instance]) -> li
     """Where a table and its fixtures disagree, as one message each; empty when they agree."""
     if not found:
         return [f"{heading}: no fixture has this object"]
-    problems: list[str] = []
     judged = [item for item in found if item.fixture.accepts is not None]
+    problems = _field_problems(heading, rows, found, judged)
+    for name, row in rows.items():
+        present = [item for item in found if name in item.object]
+        if not present:
+            continue
+        problems += _row_problems(f"{heading}: {name}", name, row, found, judged, present)
+    return problems
+
+
+def _field_problems(heading: str, rows: dict[str, Row], found: list[Instance], judged: list[Instance]) -> list[str]:
+    """Fields with no row, rows with no field, and fixtures that accept a field no row names."""
+    problems: list[str] = []
     seen = set().union(*(item.object for item in found))
     problems += [f"{heading}: {name} occurs in a fixture but has no row" for name in sorted(seen - set(rows))]
     problems += [f"{heading}: {name} occurs in no fixture" for name in sorted(set(rows) - seen)]
     for item in judged:
         if item.accepts(_set(UNDOCUMENTED_FIELD, "x")):
             problems.append(f"{heading}: an unlisted field is accepted in {item.fixture.name}")
-    for name, row in rows.items():
-        present = [item for item in found if name in item.object]
-        if not present:
+    return problems
+
+
+def _row_problems(
+    label: str, name: str, row: Row, found: list[Instance], judged: list[Instance], present: list[Instance]
+) -> list[str]:
+    """Where one row disagrees with the values fixtures have and the changes their validators accept."""
+    values = [item.object[name] for item in present]
+    problems = _value_problems(label, row, values)
+    problems += _required(label, name, row, found, judged)
+    removable = [item for item in judged if name in item.object]
+    if row.types is not None:
+        problems += _type_probe_problems(label, name, row.types, values, removable)
+    if row.values is not None:
+        problems += _listed_probe_problems(label, name, row.values, values, removable)
+    return problems
+
+
+def _value_problems(label: str, row: Row, values: list[Any]) -> list[str]:
+    """Each fixture value of an undocumented type, then each value the row does not list."""
+    problems: list[str] = []
+    if row.types is not None:
+        problems += [
+            f"{label} has the undocumented type {json_type(value)}"
+            for value in values
+            if not has_type(row.types, value)
+        ]
+    if row.values is not None:
+        problems += [
+            f"{label} has the unlisted value {value!r}"
+            for value in values
+            if value not in row.values and not (value is None and "null" in (row.types or ()))
+        ]
+    return problems
+
+
+def _type_probe_problems(
+    label: str, name: str, types: frozenset[str], values: list[Any], removable: list[Instance]
+) -> list[str]:
+    """Undocumented types a validator accepts, then documented types no fixture has and no validator accepts."""
+    problems: list[str] = []
+    for kind, probe in _wrong_probes(types):
+        accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
+        problems += [f"{label} accepts {kind}, which is not documented, in {fixture}" for fixture in accepted]
+    for kind in sorted(types):
+        if any(json_type(value) == kind or (kind, json_type(value)) == ("number", "integer") for value in values):
             continue
-        label = f"{heading}: {name}"
-        values = [item.object[name] for item in present]
-        if row.types is not None:
-            problems += [
-                f"{label} has the undocumented type {json_type(value)}"
-                for value in values
-                if not has_type(row.types, value)
-            ]
-        if row.values is not None:
-            problems += [
-                f"{label} has the unlisted value {value!r}"
-                for value in values
-                if value not in row.values and not (value is None and "null" in (row.types or ()))
-            ]
-        problems += _required(label, name, row, found, judged)
-        removable = [item for item in judged if name in item.object]
-        if row.types is not None:
-            for kind, probe in _wrong_probes(row.types):
-                accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
-                problems += [f"{label} accepts {kind}, which is not documented, in {fixture}" for fixture in accepted]
-            for kind in sorted(row.types):
-                if any(
-                    json_type(value) == kind or (kind, json_type(value)) == ("number", "integer") for value in values
-                ):
-                    continue
-                if not any(item.accepts(_set(name, EXAMPLES[kind])) for item in removable):
-                    problems.append(f"{label} documents {kind}, which no fixture has or accepts")
-        if row.values is not None:
-            for value in row.values:
-                if value not in values and not any(item.accepts(_set(name, value)) for item in removable):
-                    problems.append(f"{label} lists {value!r}, which no fixture has or accepts")
-            accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
-            problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
+        if not any(item.accepts(_set(name, EXAMPLES[kind])) for item in removable):
+            problems.append(f"{label} documents {kind}, which no fixture has or accepts")
+    return problems
+
+
+def _listed_probe_problems(
+    label: str, name: str, listed: tuple[Any, ...], values: list[Any], removable: list[Instance]
+) -> list[str]:
+    """Listed values no fixture has and no validator accepts, then validators that accept an unlisted value."""
+    problems: list[str] = []
+    for value in listed:
+        if value not in values and not any(item.accepts(_set(name, value)) for item in removable):
+            problems.append(f"{label} lists {value!r}, which no fixture has or accepts")
+    accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
+    problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
     return problems
 
 
@@ -994,6 +1030,186 @@ class FormatContractTest(unittest.TestCase):
         for cells in (["usage", "any", "no", "x"], ["`usage`", "map", "no", "x"], ["`usage`", "any", "maybe", "x"]):
             with self.subTest(cells=cells), self.assertRaises(ValueError):
                 parse_row(cells)
+
+
+def toy_validator(
+    kinds: tuple[str, ...] = ("x", "y"), note_types: tuple[type, ...] = (str,), notes: tuple[str, ...] | None = None
+) -> Callable[[Any], Any]:
+    """A validator for {"item": {...}}: kind is required and listed, count an optional integer, note optional and
+    nullable but only beside count, and listed when notes is given, and no other field."""
+
+    def validate(value: Any) -> None:
+        item = value["item"]
+        if not isinstance(item, dict) or not set(item) <= {"kind", "count", "note"}:
+            raise ValueError("fields")
+        if "kind" not in item or item["kind"] not in kinds:
+            raise ValueError("kind")
+        if "count" in item and (not isinstance(item["count"], int) or isinstance(item["count"], bool)):
+            raise ValueError("count")
+        if "note" in item and item["note"] is not None and not isinstance(item["note"], note_types):
+            raise ValueError("note")
+        if notes is not None and isinstance(item.get("note"), str) and item["note"] not in notes:
+            raise ValueError("unlisted note")
+        if "note" in item and "count" not in item:
+            raise ValueError("note needs count")
+
+    return validate
+
+
+def toy_instances(accepts: Accepts, *extra: dict[str, Any]) -> list[Instance]:
+    values = [{"kind": "x", "count": 1, "note": "n"}, {"kind": "y"}, *extra]
+    names = ["full", "bare", *(f"extra {index}" for index in range(len(extra)))]
+    fixtures = [Fixture(name, {"item": value}, accepts) for name, value in zip(names, values, strict=True)]
+    return instances(("toy.item",), {"toy": fixtures})
+
+
+def toy_rows(**changed: list[str] | None) -> dict[str, Row]:
+    """The rows that agree with toy_validator, with any named row replaced by its cells or removed by None."""
+    cells = {
+        "kind": ["`kind`", "string", "yes", "One of `x` or `y`."],
+        "count": ["`count`", "integer", "with `note`", "A count."],
+        "note": ["`note`", "string or null", "no", "A note."],
+        **changed,
+    }
+    return {name: parse_row(row) for name, row in cells.items() if row is not None}
+
+
+class CheckTableTests(unittest.TestCase):
+    """check_table called directly on literal rows and fixtures, with every message it gives, in its order."""
+
+    def check(self, rows: dict[str, Row], found: list[Instance]) -> list[str]:
+        return check_table("toy.item", rows, found)
+
+    def test_a_table_that_agrees_with_its_validator_has_no_problems(self) -> None:
+        self.assertEqual([], self.check(toy_rows(), toy_instances(_judge(toy_validator()))))
+
+    def test_a_table_no_fixture_has_says_only_that(self) -> None:
+        self.assertEqual(["toy.item: no fixture has this object"], self.check(toy_rows(), []))
+
+    def test_fields_without_rows_and_rows_without_fields_are_named_in_sorted_order(self) -> None:
+        rows = toy_rows(count=None, note=None, gone=["`gone`", "string", "yes", "One of `a`."])
+        rows["absent"] = parse_row(["`absent`", "integer", "no", "Never present."])
+        self.assertEqual(
+            [
+                "toy.item: count occurs in a fixture but has no row",
+                "toy.item: note occurs in a fixture but has no row",
+                "toy.item: absent occurs in no fixture",
+                "toy.item: gone occurs in no fixture",
+            ],
+            self.check(rows, toy_instances(_judge(toy_validator()))),
+        )
+
+    def test_fixtures_without_a_validator_are_compared_but_never_judged(self) -> None:
+        rows = toy_rows(kind=["`kind`", "any", "yes", "Anything."], note=["`note`", "string", "no", "A note."])
+        self.assertEqual([], self.check(rows, toy_instances(None)))
+        wide = {"kind": "x", "f": 1, "b": 2, "e": 3, "a": 4, "d": 5, "c": 6}
+        self.assertEqual(
+            [f"toy.item: {name} occurs in a fixture but has no row" for name in "abcdef"],
+            self.check(rows, toy_instances(None, wide)),
+        )
+        # With nothing to judge a probe by, a documented type no fixture has is never shown to be accepted.
+        self.assertEqual(
+            [
+                "toy.item: kind has the undocumented type string",
+                "toy.item: kind has the undocumented type string",
+                "toy.item: kind documents integer, which no fixture has or accepts",
+                "toy.item: note documents null, which no fixture has or accepts",
+            ],
+            self.check(toy_rows(kind=["`kind`", "integer", "yes", "A kind."]), toy_instances(None)),
+        )
+
+    def test_a_validator_that_accepts_everything_is_reported_row_by_row(self) -> None:
+        self.assertEqual(
+            [
+                "toy.item: an unlisted field is accepted in full",
+                "toy.item: an unlisted field is accepted in bare",
+                "toy.item: kind is required but removing it is accepted in full",
+                "toy.item: kind is required but removing it is accepted in bare",
+                "toy.item: kind accepts null, which is not documented, in full",
+                "toy.item: kind accepts null, which is not documented, in bare",
+                "toy.item: kind accepts integer, which is not documented, in full",
+                "toy.item: kind accepts integer, which is not documented, in bare",
+                "toy.item: kind accepts an unlisted value in full",
+                "toy.item: kind accepts an unlisted value in bare",
+                "toy.item: count needs note but removing it alone is accepted in full",
+                "toy.item: count accepts null, which is not documented, in full",
+                "toy.item: count accepts string, which is not documented, in full",
+                "toy.item: note accepts integer, which is not documented, in full",
+            ],
+            self.check(toy_rows(), toy_instances(_judge(lambda value: None))),
+        )
+
+    def test_values_of_an_undocumented_type_or_unlisted_value_are_reported_each_time(self) -> None:
+        rows = toy_rows(kind=["`kind`", "integer", "yes", "One of `1`."])
+        self.assertEqual(
+            [
+                "toy.item: kind has the undocumented type string",
+                "toy.item: kind has the undocumented type string",
+                "toy.item: kind has the unlisted value 'x'",
+                "toy.item: kind has the unlisted value 'y'",
+                "toy.item: kind documents integer, which no fixture has or accepts",
+                "toy.item: kind lists 1, which no fixture has or accepts",
+            ],
+            self.check(rows, toy_instances(_judge(toy_validator()))),
+        )
+
+    def test_a_null_value_of_a_nullable_row_is_not_an_unlisted_value(self) -> None:
+        nullable = toy_rows(note=["`note`", "string or null", "no", "One of `n`."])
+        extra = {"kind": "x", "count": 2, "note": None}
+        listed = _judge(toy_validator(notes=("n",)))
+        self.assertEqual([], self.check(nullable, toy_instances(listed, extra)))
+        not_nullable = toy_rows(note=["`note`", "string", "no", "One of `n`."])
+        self.assertEqual(
+            [
+                "toy.item: note has the undocumented type null",
+                "toy.item: note has the unlisted value None",
+                "toy.item: note accepts null, which is not documented, in full",
+                "toy.item: note accepts null, which is not documented, in extra 0",
+            ],
+            self.check(not_nullable, toy_instances(listed, extra)),
+        )
+
+    def test_a_documented_type_or_listed_value_no_fixture_has_must_be_accepted_somewhere(self) -> None:
+        rows = toy_rows(
+            kind=["`kind`", "string", "yes", "One of `x`, `y`, or `z`."],
+            note=["`note`", "string or integer or array or object or boolean or null", "no", "A note."],
+        )
+        self.assertEqual(
+            [
+                "toy.item: kind lists 'z', which no fixture has or accepts",
+                "toy.item: note documents array, which no fixture has or accepts",
+                "toy.item: note documents boolean, which no fixture has or accepts",
+                "toy.item: note documents integer, which no fixture has or accepts",
+                "toy.item: note documents object, which no fixture has or accepts",
+            ],
+            self.check(rows, toy_instances(_judge(toy_validator()))),
+        )
+        wider = _judge(toy_validator(kinds=("x", "y", "z"), note_types=(str, int, list, dict)))
+        self.assertEqual([], self.check(rows, toy_instances(wider)))
+
+    def test_an_integer_value_stands_for_a_documented_number(self) -> None:
+        rows = toy_rows(count=["`count`", "number", "with `note`", "A count."])
+        self.assertEqual([], self.check(rows, toy_instances(_judge(toy_validator()))))
+        rows = toy_rows(count=["`count`", "number or string", "with `note`", "A count."])
+        self.assertEqual(
+            ["toy.item: count documents string, which no fixture has or accepts"],
+            self.check(rows, toy_instances(_judge(toy_validator()))),
+        )
+
+    def test_a_row_of_any_type_or_without_listed_values_skips_those_checks(self) -> None:
+        rows = toy_rows(kind=["`kind`", "any", "yes", "A kind."], count=["`count`", "any", "with `note`", "A count."])
+        self.assertEqual([], self.check(rows, toy_instances(_judge(toy_validator()))))
+        self.assertEqual(
+            [
+                "toy.item: an unlisted field is accepted in full",
+                "toy.item: an unlisted field is accepted in bare",
+                "toy.item: kind is required but removing it is accepted in full",
+                "toy.item: kind is required but removing it is accepted in bare",
+                "toy.item: count needs note but removing it alone is accepted in full",
+                "toy.item: note accepts integer, which is not documented, in full",
+            ],
+            self.check(rows, toy_instances(_judge(lambda value: None))),
+        )
 
 
 if __name__ == "__main__":
