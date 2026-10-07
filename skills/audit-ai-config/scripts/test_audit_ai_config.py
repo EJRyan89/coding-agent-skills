@@ -2805,6 +2805,366 @@ class AuthorityAndParitySequenceTests(unittest.TestCase):
                 self.assertEqual(PARITY_EXPECTED[name], parity_rows(files, manifest))
 
 
+# ---------------------------------------------------------------------------
+# Results of the manifest schema validation and the inventory check
+# ---------------------------------------------------------------------------
+
+ABSENT = object()
+
+
+def _schema(**overrides: Any) -> dict[str, Any]:
+    """A manifest that passes the schema, with fields replaced, or removed when given ABSENT."""
+    data: dict[str, Any] = {
+        "schemaVersion": 1,
+        "runtimes": [],
+        "surfaces": [],
+        "features": [],
+        "artifacts": [],
+        "mcp_servers": [],
+    }
+    data.update(overrides)
+    return {key: value for key, value in data.items() if value is not ABSENT}
+
+
+SCHEMA_SCENARIOS: dict[str, dict[str, Any]] = {
+    "minimal": _schema(),
+    "every_field_valid": _schema(
+        runtimes=["claude", "codex"],
+        surfaces=["copilot_cli"],
+        features=["mcp"],
+        artifacts=[
+            {"path": "AGENTS.md"},
+            {"path": "AGENTS.md", "hash": "abc"},
+            {"path": ".mcp.json", "hash": "h"},
+            {"path": MANIFEST_PATH},
+        ],
+        mcp_servers=[{"name": "docs", "transport": "stdio", "targets": ["claude"]}],
+        runtimeRoles={"copilot_cli": "full_local_host"},
+        copilot_sections=["Build"],
+    ),
+    "schema_version_absent": _schema(schemaVersion=ABSENT),
+    "schema_version_null": _schema(schemaVersion=None),
+    "schema_version_string": _schema(schemaVersion="1"),
+    "schema_version_bool": _schema(schemaVersion=True),
+    "schema_version_float": _schema(schemaVersion=1.0),
+    "schema_version_unsupported": _schema(schemaVersion=2),
+    "schema_version_zero": _schema(schemaVersion=0),
+    "string_lists_absent": _schema(runtimes=ABSENT, surfaces=None, features=ABSENT),
+    "string_lists_not_lists": _schema(runtimes="claude", surfaces={}, features=3),
+    "string_lists_with_non_strings": _schema(runtimes=["claude", 1, None], surfaces=[True], features=["a", ["b"]]),
+    "artifacts_absent": _schema(artifacts=ABSENT),
+    "artifacts_null": _schema(artifacts=None),
+    "artifacts_not_a_list": _schema(artifacts="AGENTS.md"),
+    "artifact_entries_malformed": _schema(artifacts=["AGENTS.md", {}, {"path": 3}, {"path": None, "hash": 5}]),
+    "json_artifact_hashes": _schema(
+        artifacts=[
+            {"path": ".mcp.json"},
+            {"path": ".vscode/mcp.json", "hash": ""},
+            {"path": ".github/mcp.json", "hash": 7},
+            {"path": ".mcp.json", "hash": "h"},
+        ]
+    ),
+    "manifest_artifact_is_not_json": _schema(artifacts=[{"path": MANIFEST_PATH}, {"path": MANIFEST_PATH, "hash": 3}]),
+    "other_artifact_hashes": _schema(
+        artifacts=[
+            {"path": "AGENTS.md", "hash": 3},
+            {"path": "AGENTS.md", "hash": ""},
+            {"path": "AGENTS.md", "hash": None},
+        ]
+    ),
+    "mcp_servers_absent": _schema(mcp_servers=ABSENT),
+    "mcp_servers_not_a_list": _schema(mcp_servers={}),
+    "mcp_server_entries_malformed": _schema(
+        mcp_servers=[
+            "docs",
+            {},
+            {"name": "   ", "transport": 1, "targets": "claude"},
+            {"name": 5, "transport": "stdio", "targets": ["claude", 2, None]},
+        ]
+    ),
+    "runtime_roles_null": _schema(runtimeRoles=None),
+    "runtime_roles_not_an_object": _schema(runtimeRoles=[]),
+    "runtime_roles_entries": _schema(
+        runtimeRoles={"copilot_cli": "full_local_host", "vscode": "x", "code_review": 3, "jetbrains": None}
+    ),
+    "copilot_sections_null": _schema(copilot_sections=None),
+    "copilot_sections_empty": _schema(copilot_sections=[]),
+    "copilot_sections_not_a_list": _schema(copilot_sections="Build"),
+    "copilot_sections_with_a_non_string": _schema(copilot_sections=["Build", 1]),
+    # Keys in reverse order, so the result's order is the validator's, not the manifest's.
+    "every_field_wrong": {
+        "copilot_sections": 1,
+        "runtimeRoles": {"bad": 1},
+        "mcp_servers": [1],
+        "artifacts": [1],
+        "features": [1],
+        "surfaces": "s",
+        "schemaVersion": "x",
+    },
+}
+
+SCHEMA_EXPECTED: dict[str, list[str]] = {
+    "minimal": [],
+    "every_field_valid": [],
+    "schema_version_absent": ["schemaVersion must be an integer"],
+    "schema_version_null": ["schemaVersion must be an integer"],
+    "schema_version_string": ["schemaVersion must be an integer"],
+    "schema_version_bool": ["schemaVersion must be an integer"],
+    "schema_version_float": ["schemaVersion must be an integer"],
+    "schema_version_unsupported": ["schemaVersion 2 is not supported (expected 1)"],
+    "schema_version_zero": ["schemaVersion 0 is not supported (expected 1)"],
+    "string_lists_absent": ["runtimes is required", "surfaces is required", "features is required"],
+    "string_lists_not_lists": ["runtimes must be a list", "surfaces must be a list", "features must be a list"],
+    "string_lists_with_non_strings": [
+        "runtimes[1] must be a string",
+        "runtimes[2] must be a string",
+        "surfaces[0] must be a string",
+        "features[1] must be a string",
+    ],
+    "artifacts_absent": ["artifacts is required"],
+    "artifacts_null": ["artifacts is required"],
+    "artifacts_not_a_list": ["artifacts must be a list"],
+    "artifact_entries_malformed": [
+        "artifacts[0] must be an object",
+        "artifacts[1].path must be a string",
+        "artifacts[2].path must be a string",
+        "artifacts[3].path must be a string",
+    ],
+    "json_artifact_hashes": [
+        "artifacts[0].hash is required for JSON artifact '.mcp.json'",
+        "artifacts[1].hash is required for JSON artifact '.vscode/mcp.json'",
+        "artifacts[2].hash is required for JSON artifact '.github/mcp.json'",
+    ],
+    "manifest_artifact_is_not_json": ["artifacts[1].hash must be a string or absent"],
+    "other_artifact_hashes": ["artifacts[0].hash must be a string or absent"],
+    "mcp_servers_absent": ["mcp_servers is required"],
+    "mcp_servers_not_a_list": ["mcp_servers must be a list"],
+    "mcp_server_entries_malformed": [
+        "mcp_servers[0] must be an object",
+        "mcp_servers[1].name must be a non-empty string",
+        "mcp_servers[1].transport must be a string",
+        "mcp_servers[1].targets must be a list",
+        "mcp_servers[2].name must be a non-empty string",
+        "mcp_servers[2].transport must be a string",
+        "mcp_servers[2].targets must be a list",
+        "mcp_servers[3].name must be a non-empty string",
+        "mcp_servers[3].targets[1] must be a string",
+        "mcp_servers[3].targets[2] must be a string",
+    ],
+    "runtime_roles_null": [],
+    "runtime_roles_not_an_object": ["runtimeRoles must be an object when present"],
+    "runtime_roles_entries": [
+        "runtimeRoles has unknown Copilot surface 'vscode'",
+        "runtimeRoles.code_review must be a string",
+        "runtimeRoles has unknown Copilot surface 'jetbrains'",
+        "runtimeRoles.jetbrains must be a string",
+    ],
+    "copilot_sections_null": [],
+    "copilot_sections_empty": [],
+    "copilot_sections_not_a_list": ["copilot_sections must be a list of strings when present"],
+    "copilot_sections_with_a_non_string": ["copilot_sections must be a list of strings when present"],
+    "every_field_wrong": [
+        "schemaVersion must be an integer",
+        "runtimes is required",
+        "surfaces must be a list",
+        "features[0] must be a string",
+        "artifacts[0] must be an object",
+        "mcp_servers[0] must be an object",
+        "runtimeRoles has unknown Copilot surface 'bad'",
+        "runtimeRoles.bad must be a string",
+        "copilot_sections must be a list of strings when present",
+    ],
+}
+
+SCHEMA_AUTHORITY_ROWS: list[tuple[str, str, str | None, str]] = [
+    ("ERROR", "authority", ".github/ai-config-manifest.json", f"Manifest schema: {message}")
+    for message in (
+        "schemaVersion must be an integer",
+        "runtimes is required",
+        "surfaces must be a list",
+        "features[0] must be a string",
+        "artifacts[0] must be an object",
+        "mcp_servers[0] must be an object",
+        "runtimeRoles has unknown Copilot surface 'bad'",
+        "runtimeRoles.bad must be a string",
+        "copilot_sections must be a list of strings when present",
+    )
+]
+
+DIRECTORY = "<directory>"
+
+INVENTORY_SCENARIOS: dict[str, dict[str, str | bytes]] = {
+    "nothing": {},
+    "every_fixed_file": {
+        "CLAUDE.md": "x",
+        "GEMINI.md": "x",
+        "REVIEW.md": "x",
+        ".codex/config.toml": "x",
+        ".mcp.json": "x",
+        ".github/mcp.json": "x",
+        ".vscode/mcp.json": "x",
+        ".github/copilot-instructions.md": "x",
+        ".github/workflows/copilot-setup-steps.yml": "x",
+        MANIFEST_PATH: "x",
+    },
+    "fixed_file_is_a_directory": {"CLAUDE.md": DIRECTORY},
+    "recursive_files": {
+        "AGENTS.md": "x",
+        "sub/AGENTS.md": "x",
+        "sub/deeper/AGENTS.md": "x",
+        "AGENTS.override.md": "x",
+        ".git/AGENTS.md": "x",
+        "sub/.git/hooks/AGENTS.override.md": "x",
+    },
+    "skill_directories": {
+        ".claude/skills/Beta/SKILL.md": "x",
+        ".claude/skills/alpha/SKILL.md": "x",
+        ".claude/skills/notes/README.md": "x",
+        ".agents/skills": DIRECTORY,
+        ".github/skills/demo/SKILL.md": "x",
+    },
+    "skill_directory_is_a_file": {".agents/skills": "x"},
+    "agent_directories": {
+        ".github/agents/Reviewer.md": "x",
+        ".github/agents/author.agent.md": "x",
+        ".github/agents/nested/inner.md": "x",
+        ".claude/agents/only-a-folder/inner.md": "x",
+    },
+    "agent_directory_is_empty": {".claude/agents": DIRECTORY},
+    "agent_directory_is_a_file": {".github/agents": "x"},
+    "path_specific_instructions": {
+        ".github/instructions/a.instructions.md": "x",
+        ".github/instructions/deep/b.instructions.md": "x",
+        ".github/instructions/c.md": "x",
+    },
+    "instructions_without_matches": {".github/instructions/notes.md": "x"},
+    "generator_scripts": {"scripts/ai_config.py": "x", ".github/scripts/ai_config.py": "x"},
+    "parity_workflows": {
+        ".github/workflows/check.yaml": "run: python scripts/AI_CONFIG.py",
+        ".github/workflows/parity.yml": "run: ai-config --check",
+    },
+    "workflow_not_naming_ai_config": {".github/workflows/build.yml": "run: make"},
+    "unreadable_workflows": {
+        ".github/workflows/broken.yml": UNDECODABLE,
+        ".github/workflows/folder.yaml": DIRECTORY,
+        ".github/workflows/parity.yaml": "ai_config",
+    },
+    "workflows_is_a_file": {".github/workflows": "ai-config"},
+    "one_of_each_group": {
+        ".github/workflows/copilot-setup-steps.yml": "uses ai_config",
+        "scripts/ai_config.py": "x",
+        ".github/instructions/a.instructions.md": "x",
+        ".claude/agents/reviewer.md": "x",
+        ".agents/skills/demo/SKILL.md": "x",
+        "docs/AGENTS.md": "x",
+        "CLAUDE.md": "x",
+    },
+}
+
+INVENTORY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
+    "nothing": [],
+    "every_fixed_file": [
+        ("INFO", "inventory", "CLAUDE.md", "Found CLAUDE.md"),
+        ("INFO", "inventory", "GEMINI.md", "Found GEMINI.md"),
+        ("INFO", "inventory", "REVIEW.md", "Found REVIEW.md"),
+        ("INFO", "inventory", ".codex/config.toml", "Found .codex/config.toml"),
+        ("INFO", "inventory", ".mcp.json", "Found .mcp.json"),
+        ("INFO", "inventory", ".github/mcp.json", "Found .github/mcp.json"),
+        ("INFO", "inventory", ".vscode/mcp.json", "Found .vscode/mcp.json"),
+        ("INFO", "inventory", ".github/copilot-instructions.md", "Found .github/copilot-instructions.md"),
+        (
+            "INFO",
+            "inventory",
+            ".github/workflows/copilot-setup-steps.yml",
+            "Found .github/workflows/copilot-setup-steps.yml",
+        ),
+        ("INFO", "inventory", ".github/ai-config-manifest.json", "Found .github/ai-config-manifest.json"),
+    ],
+    "fixed_file_is_a_directory": [],
+    "recursive_files": [
+        ("INFO", "inventory", "AGENTS.md", "Found AGENTS.md"),
+        ("INFO", "inventory", "sub/AGENTS.md", "Found sub/AGENTS.md"),
+        ("INFO", "inventory", "sub/deeper/AGENTS.md", "Found sub/deeper/AGENTS.md"),
+        ("INFO", "inventory", "AGENTS.override.md", "Found AGENTS.override.md"),
+    ],
+    "skill_directories": [
+        ("INFO", "inventory", ".claude/skills", "Skills found: Beta, alpha"),
+        ("INFO", "inventory", ".github/skills", "Skills found: demo"),
+    ],
+    "skill_directory_is_a_file": [],
+    "agent_directories": [
+        ("INFO", "inventory", ".github/agents", "Custom agent files found: Reviewer.md, author.agent.md"),
+    ],
+    "agent_directory_is_empty": [],
+    "agent_directory_is_a_file": [],
+    "path_specific_instructions": [
+        ("INFO", "inventory", ".github/instructions", "2 path-specific instruction file(s)"),
+    ],
+    "instructions_without_matches": [],
+    "generator_scripts": [
+        ("INFO", "inventory", ".github/scripts/ai_config.py", "Generator script found: .github/scripts/ai_config.py"),
+        ("INFO", "inventory", "scripts/ai_config.py", "Generator script found: scripts/ai_config.py"),
+    ],
+    "parity_workflows": [
+        ("INFO", "inventory", ".github/workflows/parity.yml", "AI config parity workflow found"),
+        ("INFO", "inventory", ".github/workflows/check.yaml", "AI config parity workflow found"),
+    ],
+    "workflow_not_naming_ai_config": [],
+    "unreadable_workflows": [
+        ("INFO", "inventory", ".github/workflows/parity.yaml", "AI config parity workflow found"),
+    ],
+    "workflows_is_a_file": [],
+    "one_of_each_group": [
+        ("INFO", "inventory", "CLAUDE.md", "Found CLAUDE.md"),
+        (
+            "INFO",
+            "inventory",
+            ".github/workflows/copilot-setup-steps.yml",
+            "Found .github/workflows/copilot-setup-steps.yml",
+        ),
+        ("INFO", "inventory", "docs/AGENTS.md", "Found docs/AGENTS.md"),
+        ("INFO", "inventory", ".agents/skills", "Skills found: demo"),
+        ("INFO", "inventory", ".claude/agents", "Custom agent files found: reviewer.md"),
+        ("INFO", "inventory", ".github/instructions", "1 path-specific instruction file(s)"),
+        ("INFO", "inventory", "scripts/ai_config.py", "Generator script found: scripts/ai_config.py"),
+        ("INFO", "inventory", ".github/workflows/copilot-setup-steps.yml", "AI config parity workflow found"),
+    ],
+}
+
+
+def inventory_rows(files: dict[str, str | bytes]) -> list[tuple[str, str, str | None, str]]:
+    """Inventory a fixture whose DIRECTORY entries are empty folders."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        for relative in (path for path, content in files.items() if content == DIRECTORY):
+            (root / relative).mkdir(parents=True)
+        _write_fixture(root, {path: content for path, content in files.items() if content != DIRECTORY})
+        return _finding_rows(audit.check_inventory(root))
+
+
+class ManifestSchemaAndInventorySequenceTests(unittest.TestCase):
+    """The exact result of the manifest schema validation and the inventory check for each branch they take."""
+
+    def test_manifest_schema_errors_and_their_order(self) -> None:
+        self.assertEqual(set(SCHEMA_SCENARIOS), set(SCHEMA_EXPECTED))
+        for name, data in SCHEMA_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(SCHEMA_EXPECTED[name], audit._validate_manifest_schema(data))
+
+    def test_schema_errors_become_authority_findings_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data = SCHEMA_SCENARIOS["every_field_wrong"]
+            classification, returned, findings = audit._validate_claude_manifest(Path(temporary), data)
+        self.assertEqual((None, {}), (classification, returned))
+        self.assertEqual(SCHEMA_AUTHORITY_ROWS, _finding_rows(findings))
+
+    def test_inventory_findings_and_their_order(self) -> None:
+        self.assertEqual(set(INVENTORY_SCENARIOS), set(INVENTORY_EXPECTED))
+        for name, files in INVENTORY_SCENARIOS.items():
+            with self.subTest(scenario=name):
+                self.assertEqual(INVENTORY_EXPECTED[name], inventory_rows(files))
+
+
 class GeneratedLayoutReferenceTests(unittest.TestCase):
     """references/generated-layout.md documents the layout the audit checks; it must agree with the engine."""
 
