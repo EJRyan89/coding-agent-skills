@@ -50,7 +50,7 @@ select = [
 
 # #91's ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]
-max-complexity = 26
+max-complexity = 22
 
 # #91's ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
 [tool.ruff.lint.pylint]
