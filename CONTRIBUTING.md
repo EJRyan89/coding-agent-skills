@@ -57,6 +57,19 @@ The runner reports each failing suite by path. When diagnosing a failure, run th
 
 Changes to deployment behavior should also be exercised against an isolated temporary home: `python deploy.py --canary-home <dir>` with a directory under the temporary directory, or a test that builds the deployer's paths on one. On Windows the deployer takes its home from the profile folder, not `HOME`, so setting `HOME` alone does not isolate a run. Never use ordinary development validation to deploy into the contributor's real agent directories.
 
+## How `main` is protected
+
+`main` changes only through a pull request, and its branch protection is what keeps it green:
+
+- the `validate` check is required, and it is strict: a branch must be up to date with `main` before it can merge, so a pull request that is behind is refused until `origin/main` is merged into it;
+- linear history is required, and the repository allows squash merges only, with merge commits and rebase merges turned off, so each pull request lands as one commit;
+- unresolved review conversations block the merge until each one is resolved;
+- no approval is required, so a passing, current, resolved pull request can merge;
+- force pushes to `main` and deleting it are refused; and
+- the rules are enforced for administrators too, so nobody bypasses them.
+
+Branch protection is a live repository setting, not a tracked file, so it can drift without a diff. `python tools/branch_protection.py` reads it and the merge settings through `gh api` and prints `PROTECTED`, or `DRIFTED` and each invariant that no longer holds; reading branch protection needs admin rights on the repository. The [release procedure](docs/releasing.md#before-tagging) runs it before every tag.
+
 ## Issues and pull requests
 
 Open issues and pull requests from the templates in `.github/`: an enhancement, bug, or documentation issue template, and the pull request template, whose Validation checklist mirrors the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
