@@ -267,6 +267,20 @@ class RenderedExecutableTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="Rendered Bash syntax validation failed: alpha/run.sh")
 
+    def test_powershell_syntax_error_names_the_rendered_file_it_came_from(self) -> None:
+        self.make_source_json()
+        directory = self.make_skill("alpha", "PowerShell fixture")
+        self.write(directory / "scripts" / "fine.ps1", "Write-Output 'fine'\n")
+        self.write(directory / "scripts" / "broken.ps1", "function Broken {\n    Write-Output 'unclosed'\n")
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="Rendered PowerShell syntax validation failed")
+        lines = result.output.splitlines()
+        failure = lines.index("ERROR: Rendered PowerShell syntax validation failed: alpha/scripts/broken.ps1")
+        self.assertRegex(lines[failure + 1], r"\S", result.output)
+        self.assertNotIn("fine.ps1", result.output)
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertFalse(self.manifest_file.exists())
+
     def test_unclosed_bash_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Fence fixture\n\n```bash\necho open")
@@ -478,6 +492,104 @@ class LockTests(DeployerTestCase):
             )
         self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
         self.assertTrue(lock_dir.is_dir())
+
+    def reclaimed_before_the_move(self, lock_dir: Path, fail_move_back: bool = False) -> Callable[[Path, Path], None]:
+        """A move that lets another deployment reclaim the stale lock and take a fresh one just before it runs."""
+        real_move = fsops.move
+        state = {"reclaimed": False}
+
+        def move(source: Path, destination: Path) -> None:
+            if source == lock_dir and not state["reclaimed"]:
+                state["reclaimed"] = True
+                shutil.rmtree(lock_dir)
+                self.write_lock({"pid": 5151, "token": "fresh-token", "start_time": 9})
+            elif destination == lock_dir and fail_move_back:
+                raise OSError("synthetic move-back failure")
+            real_move(source, destination)
+
+        return move
+
+    def assert_fresh_lock(self, directory: Path) -> None:
+        self.assertEqual("fresh-token", (directory / "token").read_text(encoding="utf-8"))
+        info = json.loads((directory / "info.json").read_text(encoding="utf-8"))
+        self.assertEqual({"pid": 5151, "token": "fresh-token", "start_time": 9}, info)
+
+    def test_a_lock_reclaimed_between_the_judgment_and_the_move_is_put_back(self) -> None:
+        self.fixture()
+        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        with mock.patch("deployer.fsops.move", side_effect=self.reclaimed_before_the_move(lock_dir)):
+            result = self.deploy_fails(
+                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+            )
+        self.assertIn(
+            "ERROR: Failed to acquire lock after stale reclaim (contention).\n"
+            "Retry the deployment.\n"
+            'See "The deployment lock" in docs/recovery.md.\n',
+            result.output,
+        )
+        self.assert_fresh_lock(lock_dir)
+        self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_a_reclaimed_lock_that_cannot_be_put_back_is_kept_and_named(self) -> None:
+        self.fixture()
+        lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        move = self.reclaimed_before_the_move(lock_dir, fail_move_back=True)
+        with mock.patch("deployer.fsops.move", side_effect=move):
+            result = self.deploy_fails(
+                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+            )
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        self.assertIn(
+            "ERROR: Failed to acquire lock after stale reclaim (contention).\n"
+            f"Another deployment's lock was moved to {forward(stale)} and could not be moved back to "
+            f"{forward(lock_dir)}: synthetic move-back failure. Delete it once no deployment is running.\n"
+            'See "The deployment lock" in docs/recovery.md.\n',
+            result.output,
+        )
+        self.assert_fresh_lock(stale)
+        self.assertFalse(lock_dir.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def denied_at(self, path: Path) -> mock._patch:
+        real_remove = fsops.remove
+
+        def remove(target: Path) -> None:
+            if target == path:
+                raise PermissionError(13, "Access is denied", str(path))
+            real_remove(target)
+
+        return mock.patch("deployer.fsops.remove", side_effect=remove)
+
+    def test_a_lock_that_cannot_be_released_is_reported_and_reclaimed_next_time(self) -> None:
+        self.fixture()
+        lock_dir = self.home / ".claude" / "deployer" / ".deploy.lock.d"
+        with self.denied_at(lock_dir):
+            result = self.deploy_ok("--all")
+        self.assertIn(
+            f"WARNING: Could not remove the deployment lock {forward(lock_dir)}: Access is denied. "
+            "The next deployment reclaims it.\n",
+            result.output,
+        )
+        self.assertNotIn("Traceback", result.output)
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+        result = self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.assertIn("Stale lock detected", result.output)
+        self.assertFalse(lock_dir.exists())
+
+    def test_a_reclaimed_stale_lock_that_cannot_be_deleted_is_reported_and_kept(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        with self.denied_at(stale):
+            result = self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.assertIn(
+            f"WARNING: Could not delete the stale lock moved to {forward(stale)}: Access is denied. "
+            "Delete it once no deployment is running.\n",
+            result.output,
+        )
+        self.assertTrue((stale / "info.json").is_file())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
 
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
         self.make_source_json("test/source-a")

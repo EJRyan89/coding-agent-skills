@@ -4,7 +4,14 @@ import sys
 
 RECOVERY_GUIDE = "docs/recovery.md"
 # The guide's sections that refusals point at; a test checks each is a heading of the guide.
-RECOVERY_SECTIONS = ("When recovery fails", "Backups", "The deployment lock", "Ownership held by another source")
+RECOVERY_SECTIONS = (
+    "Interrupted deployments",
+    "When recovery fails",
+    "Backups",
+    "The deployment lock",
+    "Ownership held by another source",
+    "Deploying from another checkout",
+)
 
 
 def see_recovery(section: str) -> str:

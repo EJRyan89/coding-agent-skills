@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -174,113 +176,170 @@ def _hash_existing(path: Path) -> str | None:
         return UNSAFE_HASH
 
 
+def _report(error: DeployError) -> None:
+    print(*error.lines, sep="\n", file=sys.stderr)
+
+
+def _os_failure(run_id: str, path: Path, error: OSError) -> DeployError:
+    """An OSError during recovery, such as a file another program holds open, named by its run and its path."""
+    where = os.fsdecode(error.filename) if error.filename is not None else path
+    reason = error.strerror or str(error)
+    return DeployError(f"  ERROR: Recovery of run {run_id} failed at {platform_support.normalize(where)}: {reason}")
+
+
+def _guarded(run_id: str, path: Path, step: Callable[[], bool]) -> bool:
+    """Run one recovery step; an OSError fails only that step, so the steps after it still run.
+
+    Each step checks the tree before it changes anything, so replaying a run whose earlier attempt stopped partway
+    reaches the same result; the failed step is left for the next run or for the user.
+    """
+    try:
+        return step()
+    except OSError as error:
+        _report(_os_failure(run_id, path, error))
+        return False
+
+
+def _item_path(paths: Paths, entry: dict[str, Any], suffix: str = "") -> Path:
+    return root_directory(paths, entry.get("root", "claude")) / f"{entry['item']}{suffix}"
+
+
+def _verify_install(paths: Paths, entry: dict[str, Any]) -> bool:
+    target = _item_path(paths, entry)
+    actual = _hash_existing(target)
+    if actual is None and not os.path.lexists(target):
+        _warn(f"Installed destination missing for {entry['item']}")
+        return False
+    if actual is not None and actual != entry["staged_hash"]:
+        _warn(f"Installed {entry['item']} hash mismatch (expected {entry['staged_hash']}, got {actual})")
+        return False
+    return True
+
+
+def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
+    """Delete a transient backup the committed run did not keep, or move a kept one to permanent storage."""
+    root = entry.get("root", "claude")
+    item = entry["item"]
+    transient = _item_path(paths, entry, ".deploying-bak")
+    if not entry["retain"]:
+        fsops.remove(transient)
+        return True
+    try:
+        destination = prepare_backup_destination(paths, run_id, item, root)
+    except DeployError as exc:
+        _report(exc)
+        return False
+    if os.path.lexists(transient):
+        if os.path.lexists(destination):
+            _warn(f"Both transient and permanent backups exist for {item}")
+            return False
+        if _hash_existing(transient) != entry["backup_hash"]:
+            _warn(f"Backup hash mismatch for {item}")
+            return False
+        fsops.move(transient, destination)
+        print(f"  Preserved backup: {item} -> {entry['backup_dest']}")
+        return True
+    if os.path.lexists(destination):
+        if _hash_existing(destination) != entry["backup_hash"]:
+            _warn(f"Permanent backup hash mismatch for {item} at {entry['backup_dest']}")
+            return False
+        return True
+    _warn(f"Cannot find backup for {item}")
+    return False
+
+
 def _complete_committed(paths: Paths, run_id: str, entries: list[dict[str, Any]]) -> bool:
     print(f"Recovering committed run {run_id} (completing finalization)...")
     reconciled = True
     for entry in entries:
-        if entry["op"] != "install":
-            continue
-        target = root_directory(paths, entry.get("root", "claude")) / entry["item"]
-        actual = _hash_existing(target)
-        if actual is None and not os.path.lexists(target):
-            _warn(f"Installed destination missing for {entry['item']}")
-            reconciled = False
-        elif actual is not None and actual != entry["staged_hash"]:
-            _warn(f"Installed {entry['item']} hash mismatch (expected {entry['staged_hash']}, got {actual})")
-            reconciled = False
+        if entry["op"] == "install":
+            step = functools.partial(_verify_install, paths, entry)
+            reconciled = _guarded(run_id, _item_path(paths, entry), step) and reconciled
     if not reconciled:
         print("  ERROR: Install verification failed. Retaining all backups and journal.", file=sys.stderr)
         return False
     for entry in entries:
-        if entry["op"] != "backup":
-            continue
-        root = entry.get("root", "claude")
-        item = entry["item"]
-        transient = root_directory(paths, root) / f"{item}.deploying-bak"
-        if not entry["retain"]:
-            fsops.remove(transient)
-            continue
-        try:
-            destination = prepare_backup_destination(paths, run_id, item, root)
-        except DeployError as exc:
-            print(*exc.lines, sep="\n", file=sys.stderr)
-            reconciled = False
-            continue
-        if os.path.lexists(transient):
-            if os.path.lexists(destination):
-                _warn(f"Both transient and permanent backups exist for {item}")
-                reconciled = False
-            elif _hash_existing(transient) != entry["backup_hash"]:
-                _warn(f"Backup hash mismatch for {item}")
-                reconciled = False
-            else:
-                try:
-                    fsops.move(transient, destination)
-                except OSError:
-                    reconciled = False
-                    continue
-                print(f"  Preserved backup: {item} -> {entry['backup_dest']}")
-        elif os.path.lexists(destination):
-            if _hash_existing(destination) != entry["backup_hash"]:
-                _warn(f"Permanent backup hash mismatch for {item} at {entry['backup_dest']}")
-                reconciled = False
-        else:
-            _warn(f"Cannot find backup for {item}")
-            reconciled = False
+        if entry["op"] == "backup":
+            step = functools.partial(_finish_backup, paths, run_id, entry)
+            reconciled = _guarded(run_id, _item_path(paths, entry, ".deploying-bak"), step) and reconciled
     return reconciled
+
+
+def _undo_install(paths: Paths, entry: dict[str, Any], backup_hash: str | None) -> bool:
+    """Remove what the run installed; backup_hash is the hash of the copy it replaced, if it replaced one."""
+    target = _item_path(paths, entry)
+    actual = _hash_existing(target)
+    if actual is None:
+        if os.path.lexists(target):
+            _warn(f"Unexpected state for {entry['item']} during rollback")
+            return False
+        return True
+    if actual == entry["staged_hash"]:
+        fsops.remove(target)
+        return True
+    if actual == backup_hash and not os.path.lexists(_item_path(paths, entry, ".deploying-bak")):
+        # An earlier rollback that stopped partway already put the replaced copy back.
+        return True
+    _warn(f"Cannot rollback install of {entry['item']} (hash mismatch)")
+    return False
+
+
+def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
+    item = entry["item"]
+    target = _item_path(paths, entry)
+    transient = _item_path(paths, entry, ".deploying-bak")
+    transient_exists = os.path.lexists(transient)
+    target_exists = os.path.lexists(target)
+    if transient_exists and not target_exists:
+        if _hash_existing(transient) != entry["backup_hash"]:
+            _warn(f"Backup hash mismatch for {item} during rollback")
+            return False
+        try:
+            fsops.move(transient, target)
+        except OSError:
+            _warn(f"Failed to restore backup for {item}")
+            return False
+        return True
+    if transient_exists and target_exists:
+        _warn(f"Both {item} and {item}.deploying-bak exist during rollback")
+        return False
+    if not transient_exists and not target_exists:
+        _warn(f"Both {item} and backup are missing during rollback")
+        return False
+    return True
+
+
+def _undo_preserve(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
+    """Move a backup the run had already preserved back beside its item, so the backup entry can restore it."""
+    try:
+        destination = prepare_backup_destination(paths, run_id, entry["item"], entry.get("root", "claude"))
+    except DeployError as exc:
+        _report(exc)
+        return False
+    transient = _item_path(paths, entry, ".deploying-bak")
+    if os.path.lexists(destination) and not os.path.lexists(transient):
+        fsops.move(destination, transient)
+    return True
 
 
 def _roll_back(paths: Paths, run_id: str, entries: list[dict[str, Any]]) -> bool:
     print(f"Recovering uncommitted run {run_id} (rolling back)...")
     reconciled = True
+    replaced = {
+        (entry.get("root", "claude"), entry["item"]): entry["backup_hash"]
+        for entry in entries
+        if entry["op"] == "backup"
+    }
     for entry in reversed(entries):
-        root = entry.get("root", "claude")
-        item = entry["item"]
-        target = root_directory(paths, root) / item
+        step: Callable[[], bool]
         if entry["op"] == "install":
-            actual = _hash_existing(target)
-            if actual is None:
-                if os.path.lexists(target):
-                    _warn(f"Unexpected state for {item} during rollback")
-                    reconciled = False
-            elif actual == entry["staged_hash"]:
-                fsops.remove(target)
-            else:
-                _warn(f"Cannot rollback install of {item} (hash mismatch)")
-                reconciled = False
+            backup_hash = replaced.get((entry.get("root", "claude"), entry["item"]))
+            step = functools.partial(_undo_install, paths, entry, backup_hash)
         elif entry["op"] == "backup":
-            transient = root_directory(paths, root) / f"{item}.deploying-bak"
-            transient_exists = os.path.lexists(transient)
-            target_exists = os.path.lexists(target)
-            if transient_exists and not target_exists:
-                if _hash_existing(transient) != entry["backup_hash"]:
-                    _warn(f"Backup hash mismatch for {item} during rollback")
-                    reconciled = False
-                    continue
-                try:
-                    fsops.move(transient, target)
-                except OSError:
-                    _warn(f"Failed to restore backup for {item}")
-                    reconciled = False
-            elif transient_exists and target_exists:
-                _warn(f"Both {item} and {item}.deploying-bak exist during rollback")
-                reconciled = False
-            elif not transient_exists and not target_exists:
-                _warn(f"Both {item} and backup are missing during rollback")
-                reconciled = False
-        elif entry["op"] == "preserve":
-            try:
-                destination = prepare_backup_destination(paths, run_id, item, root)
-            except DeployError as exc:
-                print(*exc.lines, sep="\n", file=sys.stderr)
-                reconciled = False
-                continue
-            transient = root_directory(paths, root) / f"{item}.deploying-bak"
-            if os.path.lexists(destination) and not os.path.lexists(transient):
-                try:
-                    fsops.move(destination, transient)
-                except OSError:
-                    reconciled = False
+            step = functools.partial(_restore_backup, paths, entry)
+        else:
+            step = functools.partial(_undo_preserve, paths, run_id, entry)
+        reconciled = _guarded(run_id, _item_path(paths, entry), step) and reconciled
     return reconciled
 
 
@@ -311,69 +370,130 @@ def _committed_run_id(paths: Paths) -> str | None:
     return value if isinstance(value, str) else ""
 
 
-def recover_incomplete(paths: Paths) -> bool:
-    """Reconcile every interrupted run; return False when any run needs manual inspection."""
-    if not paths.staging_root.is_dir():
+def _read_entries(journal_file: Path, run_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    """A journal's entries up to its first malformed line, and that line, or None when every line is valid."""
+    entries: list[dict[str, Any]] = []
+    for line in journal_file.read_text(encoding="utf-8", errors="replace").split("\n"):
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            entry = None
+        if not valid_entry(entry, run_id):
+            return entries, line
+        entries.append(entry)
+    return entries, None
+
+
+def _recover_run(paths: Paths, run_dir: Path) -> bool:
+    """Reconcile one interrupted run; return False when it needs manual inspection."""
+    if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
+        print(
+            "  ERROR: Staging run is a symlink or junction and was "
+            f"not replayed: {platform_support.normalize(run_dir)}",
+            file=sys.stderr,
+        )
+        return False
+    journal_file = run_dir / "journal.jsonl"
+    if not journal_file.is_file():
+        fsops.remove(run_dir)
         return True
-    succeeded = True
-    for run_dir in sorted(path for path in paths.staging_root.iterdir() if path.is_dir()):
+    run_id = run_dir.name
+    committed = _committed_run_id(paths)
+    if committed is None:
+        print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
+        return False
+    entries, malformed = _read_entries(journal_file, run_id)
+    if malformed is not None:
+        print(f"  ERROR: Malformed journal entry in run {run_id}: {malformed}", file=sys.stderr)
+        print(
+            f"  ERROR: Journal validation failed. Retaining {platform_support.normalize(journal_file)} "
+            "for manual inspection.",
+            file=sys.stderr,
+        )
+        _print_manual_steps(run_dir, run_id, committed == run_id)
+        return False
+    if not entries:
+        fsops.remove(run_dir)
+        return True
+    if committed == run_id:
+        reconciled = _complete_committed(paths, run_id, entries)
+    else:
+        reconciled = _roll_back(paths, run_id, entries)
+    if not reconciled:
+        print(
+            "  ERROR: Recovery has unreconciled entries. Journal retained at: "
+            f"{platform_support.normalize(journal_file)}",
+            file=sys.stderr,
+        )
+        _print_manual_steps(run_dir, run_id, committed == run_id)
+        return False
+    fsops.remove(run_dir)
+    print("  Recovery complete.")
+    return True
+
+
+def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
+    """Each interrupted run the next deployment will reconcile, with whether it can do so without the user.
+
+    Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it.
+    """
+    if not paths.staging_root.is_dir():
+        return []
+    try:
+        run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
+    except OSError as error:
+        raise DeployError(
+            f"ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "
+            f"{error.strerror or error}",
+            see_recovery("When recovery fails"),
+        ) from error
+    pending: list[tuple[str, bool]] = []
+    for run_dir in run_dirs:
         if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
-            print(
-                "  ERROR: Staging run is a symlink or junction and was "
-                f"not replayed: {platform_support.normalize(run_dir)}",
-                file=sys.stderr,
-            )
-            succeeded = False
+            pending.append((run_dir.name, False))
             continue
         journal_file = run_dir / "journal.jsonl"
         if not journal_file.is_file():
-            fsops.remove(run_dir)
             continue
-        run_id = run_dir.name
-        committed = _committed_run_id(paths)
-        if committed is None:
-            print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
-            succeeded = False
+        try:
+            entries, malformed = _read_entries(journal_file, run_dir.name)
+        except OSError:
+            pending.append((run_dir.name, False))
             continue
-        entries: list[dict[str, Any]] = []
-        malformed = None
-        for line in journal_file.read_text(encoding="utf-8", errors="replace").split("\n"):
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                entry = None
-            if not valid_entry(entry, run_id):
-                malformed = line
-                break
-            entries.append(entry)
         if malformed is not None:
-            print(f"  ERROR: Malformed journal entry in run {run_id}: {malformed}", file=sys.stderr)
-            print(
-                f"  ERROR: Journal validation failed. Retaining {platform_support.normalize(journal_file)} "
-                "for manual inspection.",
-                file=sys.stderr,
-            )
-            _print_manual_steps(run_dir, run_id, committed == run_id)
-            succeeded = False
-            continue
-        if not entries:
-            fsops.remove(run_dir)
-            continue
-        if committed == run_id:
-            reconciled = _complete_committed(paths, run_id, entries)
-        else:
-            reconciled = _roll_back(paths, run_id, entries)
-        if not reconciled:
-            print(
-                "  ERROR: Recovery has unreconciled entries. Journal retained at: "
-                f"{platform_support.normalize(journal_file)}",
-                file=sys.stderr,
-            )
-            _print_manual_steps(run_dir, run_id, committed == run_id)
-            succeeded = False
-            continue
-        fsops.remove(run_dir)
-        print("  Recovery complete.")
+            pending.append((run_dir.name, False))
+        elif entries:
+            pending.append((run_dir.name, True))
+    return pending
+
+
+def recover_incomplete(paths: Paths) -> bool:
+    """Reconcile every interrupted run; return False when any run needs manual inspection.
+
+    An OSError, such as a file another program holds open, fails the run it hit, and recovery moves on to the next run,
+    so one held file neither hides the state of the others nor prints a traceback in place of the guidance.
+    """
+    if not paths.staging_root.is_dir():
+        return True
+    try:
+        run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
+    except OSError as error:
+        print(
+            f"  ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "
+            f"{error.strerror or error}",
+            file=sys.stderr,
+        )
+        print(f"  {see_recovery('When recovery fails')}", file=sys.stderr)
+        return False
+    succeeded = True
+    for run_dir in run_dirs:
+        try:
+            recovered = _recover_run(paths, run_dir)
+        except OSError as error:
+            _report(_os_failure(run_dir.name, run_dir, error))
+            _print_manual_steps(run_dir, run_dir.name, _committed_run_id(paths) == run_dir.name)
+            recovered = False
+        succeeded = recovered and succeeded
     return succeeded

@@ -29,9 +29,15 @@ A run that fails with an error or is stopped with Ctrl+C reconciles its own jour
 
 Either way, the staging directory is then deleted and the deployment you asked for continues. You do not need to do anything.
 
+A dry run changes nothing, so it recovers nothing either. While an interrupted run is waiting, `--dry-run` says `Pending recovery: the next deployment will recover run <run-id>` and stops before planning, because recovery changes what is installed and a preview made before it would be wrong; leave the `.deploying-bak` files where they are. Deploy to recover and continue. If it instead says a run `cannot be recovered automatically`, the next deployment would stop too; see [When recovery fails](#when-recovery-fails).
+
 ## When recovery fails
 
-Recovery stops instead of guessing when what it finds on disk does not match the journal: an item changed after the run installed it, a backup is missing, or an item and its `.deploying-bak` both exist. It then refuses to deploy, keeps the journal, and prints a `WARNING` line for each item it could not reconcile, followed by the run ID, whether that run was committed, and its staging directory. To reconcile it by hand:
+Recovery stops instead of guessing when what it finds on disk does not match the journal: an item changed after the run installed it, a backup is missing, or an item and its `.deploying-bak` both exist. It then refuses to deploy, keeps the journal, and prints a `WARNING` line for each item it could not reconcile, followed by the run ID, whether that run was committed, and its staging directory. Other runs are still recovered.
+
+A file recovery cannot read, move, or delete, usually because an editor or an antivirus scanner holds it open, stops it the same way, with `ERROR: Recovery of run <run-id> failed at <path>` and the reason. Close whatever holds that path and rerun; recovery repeats safely, picking up where it stopped. Reconcile by hand only if it fails again.
+
+To reconcile a run by hand:
 
 1. Do not rerun with `--force`; it would replace items whose correct state you have not checked yet.
 2. Open the run's `journal.jsonl`. Each line names an `item` and a `root`: no `root` means `~/.claude/skills`, `agents` means `~/.agents/skills`, and `claude-agents` means `~/.claude/agents`. The items the `WARNING` lines name are the ones to look at.
@@ -50,7 +56,7 @@ A permanent backup, `.backups/<run-id>/<name>`, is the copy a forced replacement
 
 ## The deployment lock
 
-`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning.
+`~/.claude/deployer/.deploy.lock.d/` exists while a deployment runs, so two cannot run at once. Its `info.json` records the process ID and start time of the deployment that holds it. A lock whose process has exited, or whose process ID now belongs to another program, is stale, and the next run reclaims it with a warning. Reclaiming moves the lock aside to `~/.claude/deployer/.deploy.lock.stale.<pid>` and checks that what it moved is the lock it judged stale; if another deployment reclaimed it first and holds a fresh one, the run moves that lock back and stops with `contention`, so retry. In the rare case it cannot move it back, the message names the `.deploy.lock.stale.<pid>` directory; delete it once no deployment is running.
 
 The deployer refuses only when it cannot tell: the lock has no readable `info.json`, or its process is running but cannot be confirmed to be the deployment that took the lock. Check that no `python deploy.py` process is running, for example with `Get-Process python` in PowerShell, then delete the lock directory and rerun. Removing it while a deployment is running would let a second one interleave with it.
 
@@ -69,6 +75,18 @@ This changes nothing on disk. It moves ownership in the manifest of every item b
 When both sources are still in use, do not migrate: the other source's next deployment would refuse in turn. Deploy the item from only one of them, by deselecting it in the other and redeploying that one.
 
 A name one source deploys as a skill and another as a shared asset cannot be migrated, because it would have to be both. Rename it in one source, or stop deploying it from the other.
+
+## Deploying from another checkout
+
+The manifest also records the checkout each source was deployed from. Two clones of one repository share its source ID and its configuration, so a deployment from the second would silently take over every item the first deployed: it would point the installed skills, and `update-coding-agent-skills`, at the second clone and remove whatever the second lacks. A deployment from any checkout other than the recorded one therefore refuses before it changes anything, naming both paths.
+
+If you deployed from the wrong clone, deploy from the recorded one instead. If this checkout replaces the recorded one, because you moved or re-cloned the repository, take the source over:
+
+```bash
+python deploy.py --all --take-over-source
+```
+
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose home starts empty. A linked worktree is refused whatever the flag; deploy from the main checkout.
 
 ## Configuration that no longer reads
 
