@@ -565,36 +565,28 @@ def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[s
     return profile_model(specialist["profile"], text)
 
 
-def build_plan(
-    request_path: Path,
-    reviewer_root: Path | None,
-    work: Path,
-    *,
-    generic_instructions: Path = DEFAULT_GENERIC_INSTRUCTIONS,
-    self_check: Callable[[str], str] | None = None,
-    verify_contents: bool = True,
-    local_checkout: Path | None = None,
-    review_files: set[str] | None = None,
-) -> dict[str, Any]:
-    """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
-
-    `verify_contents=False` is for a caller that materialized the snapshot itself, moments earlier.
-    `review_files`, for an incremental re-review, names the files to review in full. A role with none of them
-    only gives dispositions, and a specialist with no prior finding or comment either is left out.
-    """
+def _load_request(request_path: Path) -> dict[str, Any]:
+    """The adapter request, refused unless it is protocol 1 in a supported mode."""
     request = read_json(request_path)
     if not isinstance(request, dict) or request.get("protocol_version") != 1:
         raise SpecialistError("Adapter request protocol version is unsupported")
     if request.get("mode") not in {"initial", "re-review"}:
         raise SpecialistError("Adapter request mode is invalid")
-    manifest: dict[str, Any]
+    return request
+
+
+def _load_reviewer(reviewer_root: Path | None, mode: str) -> tuple[dict[str, Any], str | None]:
+    """The specialist manifest and its source commit; without a reviewer root, the generic reviewer's empty one."""
     if reviewer_root is None:
-        manifest = {"id": "generic", "specialists": [], "conditions": {}}
-        source_commit = None
-    else:
-        manifest, source_commit = load_materialized_manifest(reviewer_root)
-        if request["mode"] not in manifest["supports"]:
-            raise SpecialistError(f"Reviewer {manifest['id']} does not support {request['mode']} reviews")
+        return {"id": "generic", "specialists": [], "conditions": {}}, None
+    manifest, source_commit = load_materialized_manifest(reviewer_root)
+    if mode not in manifest["supports"]:
+        raise SpecialistError(f"Reviewer {manifest['id']} does not support {mode} reviews")
+    return manifest, source_commit
+
+
+def _verified_snapshot(request: dict[str, Any], *, verify_contents: bool) -> tuple[Path, dict[str, Any]]:
+    """The snapshot's root and its verified manifest."""
     source_root = Path(request["source_snapshot"]["root"])
     try:
         snapshot = verify_source_snapshot(
@@ -605,13 +597,24 @@ def build_plan(
         )
     except RuntimeContractError as exc:
         raise SpecialistError(str(exc)) from exc
+    return source_root, snapshot
+
+
+def _read_changes(request: dict[str, Any], work: Path) -> dict[str, dict[str, Any]]:
+    """The parsed diff, read once the work directory is known to be empty and is made."""
     if work.exists() and any(work.iterdir()):
         raise SpecialistError("Work directory must be empty")
     work.mkdir(parents=True, exist_ok=True)
     diff = parse_unified_diff(read_diff(Path(request["diff_path"])))
-    changed = list(diff)
-    if not changed:
+    if not diff:
         raise SpecialistError("The diff contains no changed files")
+    return diff
+
+
+def _route_files(
+    manifest: dict[str, Any], changed: list[str], reviewer_root: Path | None, source_root: Path, work: Path
+) -> dict[str, list[str]]:
+    """Each routed specialist's files, running a condition only for specialists that matched files."""
     conditions = manifest["conditions"]
 
     def condition(name: str) -> bool:
@@ -620,8 +623,15 @@ def build_plan(
             raise SpecialistError(f"Condition {name} has no reviewer root to run from")
         return evaluate_condition(reviewer_root, conditions[name]["script"], source_root, work)
 
-    routes = route(manifest, changed, condition)
-    by_id = {specialist["id"]: specialist for specialist in manifest["specialists"]}
+    return route(manifest, changed, condition)
+
+
+def _assign(
+    request: dict[str, Any], routes: dict[str, list[str]]
+) -> tuple[
+    dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], list[dict[str, Any]], list[dict[str, Any]]
+]:
+    """Prior findings and open review comments by the specialist that owns their file, then the unowned ones."""
 
     def owner_of(item: dict[str, Any]) -> str | None:
         path = item.get("path")
@@ -639,14 +649,28 @@ def build_plan(
     for comment in request.get("github_comments") or []:
         owner = owner_of(comment)
         (assigned_comments[owner] if owner else unowned_comments).append(comment)
+    return assigned, assigned_comments, unowned, unowned_comments
+
+
+def _to_review(files: list[str], review_files: set[str] | None) -> list[str]:
+    return files if review_files is None else [path for path in files if path in review_files]
+
+
+def _specialist_roles(
+    manifest: dict[str, Any],
+    routes: dict[str, list[str]],
+    reviewer_root: Path | None,
+    *,
+    assigned: dict[str, list[dict[str, Any]]],
+    assigned_comments: dict[str, list[dict[str, Any]]],
+    review_files: set[str] | None,
+    notes: list[str],
+) -> list[dict[str, Any]]:
+    """A role for each routed specialist with files to review or items to disposition, in routing order."""
+    by_id = {specialist["id"]: specialist for specialist in manifest["specialists"]}
     roles: list[dict[str, Any]] = []
-    notes: list[str] = []
-
-    def to_review(files: list[str]) -> list[str]:
-        return files if review_files is None else [path for path in files if path in review_files]
-
     for identity, files in routes.items():
-        reviewed = to_review(files)
+        reviewed = _to_review(files, review_files)
         if not reviewed and not assigned[identity] and not assigned_comments[identity]:
             continue  # incremental, and none of its files changed nor awaits a disposition
         specialist = by_id[identity]
@@ -666,6 +690,22 @@ def build_plan(
                 "effort": specialist.get("effort"),
             }
         )
+    return roles
+
+
+def _generic_role(
+    manifest: dict[str, Any],
+    changed: list[str],
+    routes: dict[str, list[str]],
+    *,
+    specialists_planned: bool,
+    unowned: list[dict[str, Any]],
+    unowned_comments: list[dict[str, Any]],
+    review_files: set[str] | None,
+    generic_instructions: Path,
+    notes: list[str],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """The generic reviewer's role, or None when it has nothing to do, and the changed files left unreviewed."""
     # When no specialist routes, the generic reviewer reviews the whole change. When some do, it reviews the changed
     # files none of them matches, unless the manifest leaves those unreviewed; then the record lists them instead.
     outside = uncovered(manifest, changed) if routes else []
@@ -677,69 +717,152 @@ def build_plan(
             f"{', '.join(ignored)}."
         )
     if not routes:
-        reviewed = to_review(changed)
+        reviewed = _to_review(changed, review_files)
     elif ignored:
         reviewed = []
     else:
-        reviewed = to_review(outside)
+        reviewed = _to_review(outside, review_files)
     # Every review needs a role, so an incremental one in which nothing changed still records a pass.
-    if not routes or reviewed or unowned or unowned_comments or not roles:
+    if not routes or reviewed or unowned or unowned_comments or not specialists_planned:
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
         files = reviewed or (changed if not routes else [p for p in changed if p in paths] or changed)
-        roles.append(
-            {
-                "id": GENERIC_SPECIALIST,
-                "category": "General",
-                "profile": None,
-                "instructions": str(generic_instructions),
-                "files": files,
-                "dispositions_only": not reviewed,
-                "model": None,
-                "effort": None,
-            }
-        )
-        assigned[GENERIC_SPECIALIST] = unowned
-        assigned_comments[GENERIC_SPECIALIST] = unowned_comments
-    links = symbolic_links(diff, snapshot["excluded_paths"])
+        role = {
+            "id": GENERIC_SPECIALIST,
+            "category": "General",
+            "profile": None,
+            "instructions": str(generic_instructions),
+            "files": files,
+            "dispositions_only": not reviewed,
+            "model": None,
+            "effort": None,
+        }
+        return role, ignored
+    return None, ignored
+
+
+def _write_shared(work: Path, request: dict[str, Any], source_root: Path, snapshot: dict[str, Any]) -> dict[str, Any]:
+    """The analyzer inventory and every open review comment, which all roles share; returns the inventory."""
     analyzers = inventory(source_root, snapshot["source_hashes"])
     atomic_write_json(work / ANALYZERS, analyzers)
     atomic_write_text(
         work / "github-comments.json",
         json.dumps(request.get("github_comments") or [], indent=2, ensure_ascii=False) + "\n",
     )
+    return analyzers
+
+
+def _write_role(
+    role: dict[str, Any],
+    work: Path,
+    diff: dict[str, dict[str, Any]],
+    *,
+    request: dict[str, Any],
+    reviewer_root: Path | None,
+    prior: list[dict[str, Any]],
+    comments: list[dict[str, Any]],
+    links: dict[str, tuple[int, str] | None],
+    self_check: Callable[[str], str] | None,
+    local_checkout: Path | None,
+) -> None:
+    """A role's result and prompt paths and its disposition IDs, then its inputs and prompt, in that order."""
+    identity = role["id"]
+    role["result_file"] = str(work / f"{identity}.result.json")
+    role["prompt_file"] = str(work / f"{identity}.prompt.md")
+    role["prior_ids"] = [f["id"] for f in prior]
+    role["prior_severities"] = {f["id"]: f.get("severity") for f in prior}
+    role["comment_ids"] = [c["id"] for c in comments]
+    atomic_write_text(work / f"{identity}.files.txt", "\n".join(role["files"]) + "\n")
+    atomic_write_text(work / f"{identity}.diff", "".join(diff[p]["numbered"] for p in role["files"]))
+    # Only the files outside the role's scope: its own are already in its diff, and a reviewer that read a
+    # whole-pull-request diff carried its own files twice for the rest of the review.
+    atomic_write_text(
+        work / f"{identity}.other-changes.diff",
+        "".join(entry["numbered"] for path, entry in diff.items() if path not in role["files"]),
+    )
+    # Names only, so a reviewer can check a long list cheaply before deciding whether to read any diff.
+    atomic_write_text(
+        work / f"{identity}.other-files.txt", "".join(f"{path}\n" for path in diff if path not in role["files"])
+    )
+    atomic_write_text(
+        Path(role["prompt_file"]),
+        render_prompt(
+            role,
+            request=request,
+            work=work,
+            trusted_root=reviewer_root,
+            prior=prior,
+            comments=comments,
+            self_check=self_check(identity) if self_check else None,
+            local_checkout=local_checkout,
+            other_files=[path for path in diff if path not in role["files"]],
+            links={path: link for path, link in links.items() if path in role["files"]},
+        ),
+    )
+
+
+def build_plan(
+    request_path: Path,
+    reviewer_root: Path | None,
+    work: Path,
+    *,
+    generic_instructions: Path = DEFAULT_GENERIC_INSTRUCTIONS,
+    self_check: Callable[[str], str] | None = None,
+    verify_contents: bool = True,
+    local_checkout: Path | None = None,
+    review_files: set[str] | None = None,
+) -> dict[str, Any]:
+    """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
+
+    `verify_contents=False` is for a caller that materialized the snapshot itself, moments earlier.
+    `review_files`, for an incremental re-review, names the files to review in full. A role with none of them
+    only gives dispositions, and a specialist with no prior finding or comment either is left out.
+    """
+    request = _load_request(request_path)
+    manifest, source_commit = _load_reviewer(reviewer_root, request["mode"])
+    source_root, snapshot = _verified_snapshot(request, verify_contents=verify_contents)
+    diff = _read_changes(request, work)
+    changed = list(diff)
+    routes = _route_files(manifest, changed, reviewer_root, source_root, work)
+    assigned, assigned_comments, unowned, unowned_comments = _assign(request, routes)
+    notes: list[str] = []
+    roles = _specialist_roles(
+        manifest,
+        routes,
+        reviewer_root,
+        assigned=assigned,
+        assigned_comments=assigned_comments,
+        review_files=review_files,
+        notes=notes,
+    )
+    generic, ignored = _generic_role(
+        manifest,
+        changed,
+        routes,
+        specialists_planned=bool(roles),
+        unowned=unowned,
+        unowned_comments=unowned_comments,
+        review_files=review_files,
+        generic_instructions=generic_instructions,
+        notes=notes,
+    )
+    if generic is not None:
+        roles.append(generic)
+        assigned[GENERIC_SPECIALIST] = unowned
+        assigned_comments[GENERIC_SPECIALIST] = unowned_comments
+    links = symbolic_links(diff, snapshot["excluded_paths"])
+    analyzers = _write_shared(work, request, source_root, snapshot)
     for role in roles:
-        identity = role["id"]
-        role["result_file"] = str(work / f"{identity}.result.json")
-        role["prompt_file"] = str(work / f"{identity}.prompt.md")
-        role["prior_ids"] = [f["id"] for f in assigned[identity]]
-        role["prior_severities"] = {f["id"]: f.get("severity") for f in assigned[identity]}
-        role["comment_ids"] = [c["id"] for c in assigned_comments[identity]]
-        atomic_write_text(work / f"{identity}.files.txt", "\n".join(role["files"]) + "\n")
-        atomic_write_text(work / f"{identity}.diff", "".join(diff[p]["numbered"] for p in role["files"]))
-        # Only the files outside the role's scope: its own are already in its diff, and a reviewer that read a
-        # whole-pull-request diff carried its own files twice for the rest of the review.
-        atomic_write_text(
-            work / f"{identity}.other-changes.diff",
-            "".join(entry["numbered"] for path, entry in diff.items() if path not in role["files"]),
-        )
-        # Names only, so a reviewer can check a long list cheaply before deciding whether to read any diff.
-        atomic_write_text(
-            work / f"{identity}.other-files.txt", "".join(f"{path}\n" for path in diff if path not in role["files"])
-        )
-        atomic_write_text(
-            Path(role["prompt_file"]),
-            render_prompt(
-                role,
-                request=request,
-                work=work,
-                trusted_root=reviewer_root,
-                prior=assigned[identity],
-                comments=assigned_comments[identity],
-                self_check=self_check(identity) if self_check else None,
-                local_checkout=local_checkout,
-                other_files=[path for path in diff if path not in role["files"]],
-                links={path: link for path, link in links.items() if path in role["files"]},
-            ),
+        _write_role(
+            role,
+            work,
+            diff,
+            request=request,
+            reviewer_root=reviewer_root,
+            prior=assigned[role["id"]],
+            comments=assigned_comments[role["id"]],
+            links=links,
+            self_check=self_check,
+            local_checkout=local_checkout,
         )
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION,
