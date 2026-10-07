@@ -60,7 +60,11 @@ EXECUTABLE_FENCE_LANGUAGES = {
     "ts",
     "typescript",
 }
-EXECUTABLE_SCRIPT_EXTENSIONS = {".bash", ".cjs", ".js", ".mjs", ".ps1", ".py", ".sh", ".ts"}
+# A skill's executable files are Bash, Python, and PowerShell, each run by a standard command in deployer/tools.py.
+SCRIPT_INTERPRETERS = {".bash": "bash", ".sh": "bash", ".py": "python", ".ps1": "pwsh"}
+EXECUTABLE_SCRIPT_EXTENSIONS = set(SCRIPT_INTERPRETERS)
+# No runtime these need is a deployment prerequisite and the renderer cannot validate them, so a skill holds none.
+UNSUPPORTED_SCRIPT_EXTENSIONS = {".cjs", ".js", ".mjs", ".ts"}
 TEST_SCRIPT_EXTENSIONS = {".py", ".sh", ".ps1"}
 # A regression suite is found by its name alone, matched against the file's stem or its whole name, ignoring case.
 TEST_NAME_PATTERNS = ("test_*", "test-*", "*_test", "*-test", "*.test.*")
@@ -1652,6 +1656,46 @@ def suite_discovery_documentation_problems(root: Path) -> list[str]:
     return [f'{SKILL_GUIDE} "Validation" does not name `{rule}`' for rule in rules if f"`{rule}`" not in section]
 
 
+def unsupported_script_problems(root: Path) -> list[str]:
+    """Report each JavaScript or TypeScript file anywhere in a skill, scripts/ included."""
+    return [
+        f"{path.relative_to(root).as_posix()}: a skill's executable files are Bash, Python, and PowerShell"
+        for path in sorted((root / "skills").rglob("*"), key=lambda p: p.as_posix())
+        if path.is_file() and path.suffix.casefold() in UNSUPPORTED_SCRIPT_EXTENSIONS
+    ]
+
+
+def script_language_problems(root: Path, standard_commands: set[str]) -> list[str]:
+    """Report where the skill guide or the tool catalogue disagrees with the runner on a skill's script languages."""
+    found = [
+        f"deployer/tools.py does not list `{interpreter}`, which runs `{extension}` scripts"
+        for extension, interpreter in sorted(SCRIPT_INTERPRETERS.items())
+        if interpreter not in standard_commands
+    ]
+    statement = "A skill's executable files are Bash, Python, and PowerShell"
+    line = next(
+        (line for line in (root / SKILL_GUIDE).read_text(encoding="utf-8").splitlines() if statement in line), None
+    )
+    if line is None:
+        return [*found, f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"]
+    supported, _, unsupported = line.partition("JavaScript and TypeScript")
+    named = set(re.findall(r"`(\.[a-z0-9]+)`", supported))
+    found += [
+        f"{SKILL_GUIDE} names `{extension}` as an executable extension"
+        for extension in sorted(named - EXECUTABLE_SCRIPT_EXTENSIONS)
+    ]
+    found += [
+        f"{SKILL_GUIDE} does not name `{extension}` as executable"
+        for extension in sorted(EXECUTABLE_SCRIPT_EXTENSIONS - named)
+    ]
+    rejected = set(re.findall(r"`(\.[a-z0-9]+)`", unsupported))
+    found += [
+        f"{SKILL_GUIDE} does not name `{extension}` as unsupported"
+        for extension in sorted(UNSUPPORTED_SCRIPT_EXTENSIONS - rejected)
+    ]
+    return found
+
+
 def is_executable_script(path: Path) -> bool:
     return path.suffix.casefold() in EXECUTABLE_SCRIPT_EXTENSIONS
 
@@ -2288,6 +2332,11 @@ class RepositoryValidation(unittest.TestCase):
 
         self.assertEqual([], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")))
         self.assertEqual([], hub_guard_matcher_problems(settings("*")))
+        # The tracked command checks the opt-in before starting Python; the guard it runs is still the one matched.
+        gated = '[ "$(git config --type=bool --get coding-agent-skills.hubGuard)" = true ] || exit 0; ' + command
+        self.assertEqual(
+            [], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell", gated))
+        )
         self.assertEqual(
             ["the hub guard's hook does not match the PowerShell tool"],
             hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash")),
@@ -3084,6 +3133,63 @@ class RepositoryValidation(unittest.TestCase):
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
+
+    def test_skill_scripts_are_bash_python_or_powershell(self) -> None:
+        # Pinned here, not read back from the constants: a new script language is a decision for the skill contract,
+        # the deployment prerequisites, and the renderer, never a one-line change to the runner.
+        self.assertEqual({".bash", ".ps1", ".py", ".sh"}, EXECUTABLE_SCRIPT_EXTENSIONS)
+        self.assertEqual({".cjs", ".js", ".mjs", ".ts"}, UNSUPPORTED_SCRIPT_EXTENSIONS)
+        self.assertEqual({".bash": "bash", ".sh": "bash", ".py": "python", ".ps1": "pwsh"}, dict(SCRIPT_INTERPRETERS))
+        self.assertEqual([], unsupported_script_problems(REPOSITORY_ROOT))
+
+    def test_script_languages_agree_with_the_tool_catalogue_and_the_skill_guide(self) -> None:
+        from deployer import tools
+
+        self.assertEqual([], script_language_problems(REPOSITORY_ROOT, set(tools.STANDARD_COMMANDS)))
+
+    def test_unsupported_script_policy_rejects_javascript_and_typescript_anywhere_in_a_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name in ("scripts/run.js", "scripts/tool.MJS", "scripts/test_tool.cjs", "types.ts", "scripts/ok.py"):
+                path = root / "skills" / "demo" / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("\n", encoding="utf-8")
+            reason = "a skill's executable files are Bash, Python, and PowerShell"
+            self.assertEqual(
+                [
+                    f"skills/demo/scripts/run.js: {reason}",
+                    f"skills/demo/scripts/test_tool.cjs: {reason}",
+                    f"skills/demo/scripts/tool.MJS: {reason}",
+                    f"skills/demo/types.ts: {reason}",
+                ],
+                unsupported_script_problems(root),
+            )
+
+    def test_script_language_policy_detects_a_missing_interpreter_and_a_stale_guide(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "docs").mkdir()
+            guide = root / "docs" / "adding-a-skill.md"
+            guide.write_text(
+                "# Adding a skill\n\nA skill's executable files are Bash, Python, and PowerShell: `.bash`, `.sh`, "
+                "`.py`, `.ps1`, and `.js` files. JavaScript and TypeScript (`.mjs`) are rejected.\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                [
+                    "deployer/tools.py does not list `pwsh`, which runs `.ps1` scripts",
+                    f"{SKILL_GUIDE} names `.js` as an executable extension",
+                    f"{SKILL_GUIDE} does not name `.cjs` as unsupported",
+                    f"{SKILL_GUIDE} does not name `.js` as unsupported",
+                    f"{SKILL_GUIDE} does not name `.ts` as unsupported",
+                ],
+                script_language_problems(root, {"bash", "python"}),
+            )
+            guide.write_text("# Adding a skill\n", encoding="utf-8")
+            self.assertEqual(
+                [f"{SKILL_GUIDE} does not state which languages a skill's executable files may use"],
+                script_language_problems(root, {"bash", "python", "pwsh"}),
+            )
 
     def test_suite_discovery_documentation_policy_detects_each_missing_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

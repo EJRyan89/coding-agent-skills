@@ -110,6 +110,12 @@ git config coding-agent-skills.hubGuard true
 The setting lives in the shared `.git/config`, so one command covers the hub and all of its worktrees. Because
 the setting is not tracked, someone who clones the repository and works in a single checkout is never blocked.
 
+The hook command reads the setting itself, in Bash, and exits before starting Python when the clone has not opted
+in. Elsewhere the hook is inert and costs one `git config` call per tool call: `python` never runs, so a `python`
+that still resolves to the Microsoft Store alias cannot fail the hook. In an opted-in clone it runs
+`tools/worktrees.py guard` under `$CLAUDE_PROJECT_DIR`, which checks the same setting again.
+`tests/tools/test_worktrees.py` runs the tracked command both ways.
+
 With the guard enabled:
 
 - **File tools.** `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` is refused when its target lies in the hub.
