@@ -112,11 +112,30 @@ class ConfigureTests(DeployerTestCase):
 
     def test_invalid_existing_config_aborts_before_prompting(self) -> None:
         self.make_source_json()
-        self.make_config(extra="UNKNOWN=1\n")
+        self.make_config(extra="not a key-value line\n")
         result = self.configure(stdin=f"{forward(self.repos)}\n")
         self.assertEqual(1, result.code)
-        self.assertIn("Config key UNKNOWN is not a recognized variable", result.output)
+        self.assertIn("Config line 3: malformed entry: not a key-value line", result.output)
         self.assertNotIn("REPOS_ROOT", result.output)
+
+    def test_a_key_no_longer_declared_is_dropped_with_a_notice(self) -> None:
+        self.make_source_json()
+        self.make_config(extra="GH_ORG=someone\n")
+        result = self.configure(stdin="\n")
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn("NOTE: Dropping GH_ORG, which this deployer no longer reads.", result.output)
+        self.assertEqual(
+            f"_source_id=test/skills\nREPOS_ROOT={forward(self.repos)}\n".encode(), self.config_file().read_bytes()
+        )
+        self.deploy_ok("--all", "--dry-run")
+
+    def test_a_dropped_key_stays_when_configure_is_cancelled(self) -> None:
+        self.make_source_json()
+        self.make_config(extra="GH_ORG=someone\n")
+        before = self.digest()
+        result = self.configure(stdin="")
+        self.assertEqual(130, result.code, result.output)
+        self.assertEqual(before, self.digest())
 
     def test_atomic_replace_failure_preserves_config_and_cleans_temporary_file(self) -> None:
         self.make_source_json()

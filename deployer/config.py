@@ -49,7 +49,12 @@ def _require_allowed(key: str, value: str) -> None:
         raise DeployError(f"ERROR: Config key {key} contains disallowed character '{char}' at position {position}")
 
 
-def parse(text: str, source_id: str) -> dict[str, str]:
+class UnknownKey(DeployError):
+    """A saved key this deployer no longer declares, which `configure` drops and a deployment refuses."""
+
+
+def parse(text: str, source_id: str, dropped: list[str] | None = None) -> dict[str, str]:
+    """The configuration's values. Given a dropped list, a key no longer declared is added to it and skipped."""
     lines = text.split("\n")
     if lines and lines[-1] == "":
         lines.pop()
@@ -63,10 +68,15 @@ def parse(text: str, source_id: str) -> dict[str, str]:
         if match is None:
             raise DeployError(f"ERROR: Config line {number}: malformed entry: {line}")
         key, value = match.groups()
+        unknown = key != SOURCE_KEY and key not in CONFIGURED_VARIABLES
+        if unknown and dropped is not None:
+            # Its value is never used, so it is not checked: an obsolete key must not stop configure.
+            dropped.append(key)
+            continue
         if "$" in value or "`" in value:
             raise DeployError(f"ERROR: Config key {key} contains shell-active character ($ or backtick)")
-        if key != SOURCE_KEY and key not in CONFIGURED_VARIABLES:
-            raise DeployError(f"ERROR: Config key {key} is not a recognized variable")
+        if unknown:
+            raise UnknownKey(f"ERROR: Config key {key} is not a recognized variable")
         if key in values:
             raise DeployError(f"ERROR: Duplicate config key: {key}")
         _require_allowed(key, value)
@@ -78,15 +88,21 @@ def parse(text: str, source_id: str) -> dict[str, str]:
     return values
 
 
-def read(path: Path, source_id: str) -> dict[str, str]:
-    """Parse a saved configuration. `configure` reads it too, so only `--reset` gets past one that fails."""
+def read(path: Path, source_id: str, dropped: list[str] | None = None) -> dict[str, str]:
+    """Parse a saved configuration.
+
+    `configure` reads it too, passing a dropped list, so it drops a key no longer declared; only `--reset` gets past
+    any other failure.
+    """
     remedy = f"Run '{CONFIGURE_COMMAND_LINE} --reset' to write a new configuration for this source."
     try:
         text = path.read_bytes().decode("utf-8")
     except UnicodeDecodeError as exc:
         raise DeployError(f"ERROR: Config file is not valid UTF-8: {path}", remedy) from exc
     try:
-        return parse(text, source_id)
+        return parse(text, source_id, dropped)
+    except UnknownKey as exc:
+        raise DeployError(*exc.lines, f"Run '{CONFIGURE_COMMAND_LINE}' to drop it.") from exc
     except DeployError as exc:
         raise DeployError(*exc.lines, remedy) from exc
 

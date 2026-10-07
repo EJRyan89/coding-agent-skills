@@ -111,11 +111,16 @@ class ConfigurationRemedyTests(RemedyTestCase):
         self.assertEqual(0, self.configure("--reset", stdin=f"{forward(self.repos)}\n").code)
         self.deploy_ok("--all")
 
-    def test_unrecognized_key_names_configure_reset(self) -> None:
+    def test_unrecognized_key_names_configure_which_drops_it(self) -> None:
         self.fixture()
         self.make_config(extra="GH_ORG=someone\n")
         result = self.deploy_fails("--all", pattern="not a recognized variable")
-        self.assert_lines(result.output, "ERROR: Config key GH_ORG is not a recognized variable", RESET)
+        self.assert_lines(
+            result.output,
+            "ERROR: Config key GH_ORG is not a recognized variable",
+            "Run 'python deploy.py configure' to drop it.",
+        )
+        self.assertNotIn(RESET, result.output)
 
     def test_invalid_directory_names_configure(self) -> None:
         self.make_source_json()
