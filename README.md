@@ -37,8 +37,9 @@ You need Python 3.11 or newer, Git for Windows, ShellCheck, and PowerShell; seve
 
 ```bash
 git clone https://github.com/EJRyan89/coding-agent-skills.git
-cd coding-agent-skills
 ```
+
+Then, from the `coding-agent-skills` folder the clone created:
 
 ```bash
 python deploy.py check

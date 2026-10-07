@@ -39,19 +39,19 @@ A change to a contract file is what raises the level, and validation holds that 
 3. **Private-name scan.** Scan the tracked tree against the private list kept outside the repository, one term per line, and expect no hits:
 
    ```bash
-   git grep -n -i -w -F -f <list> -- . | grep -v YourName
+   git grep -n -i -w -F -f '<list>' -- . | grep -v YourName
    ```
 
    `YourName` is the documented placeholder in test fixtures. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name, so the list never enters the repository. Any hit is a prompt to read the line, not a verdict; fix a real one through a pull request before tagging.
 4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` names `main` as the supported line and releases as checkpoints. Confirm both still describe the truth for this release.
-5. **Secret scanning.** GitHub's secret scanning and push protection are on for the public repository; confirm they still are in the repository's security settings.
+5. **Security settings.** The `python tools/branch_protection.py` run in step 1 also confirms that secret scanning, push protection, private vulnerability reporting, and Dependabot security updates are enabled and that the default workflow token is read-only, and prints each setting as it found it; `PROTECTED` covers them.
 
 ## Tagging
 
 Write the notes to a file and create the release from `main`:
 
 ```bash
-gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file <file>
+gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file '<file>'
 ```
 
 The notes open with the `## Unreleased` entries of [upgrade-notes.md](upgrade-notes.md): the level of the release, the largest any entry names, and the action, if any, each asks of the user, as [Versioning](#versioning) defines them. Before tagging, rename that heading to the version and open a new empty `## Unreleased` above it, through a pull request. The notes then say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Carry the release milestone's description into them: its `Shipped:` list of issues and the pull requests that closed them, and any release-note obligation it records. Drop `--prerelease` at `1.0.0`.

@@ -2016,6 +2016,40 @@ def required_match(pattern: str, text: str) -> re.Match[str]:
     return match
 
 
+def action_pins(workflow: str) -> list[tuple[str, str, str]]:
+    """Each `uses:` in a workflow as (action, reference, the rest of the line)."""
+    return re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)@(\S+)(.*)$", workflow)
+
+
+def workflow_guard_problems(workflow: str, triggers: list[str], actions: set[str]) -> list[str]:
+    """Report how a workflow departs from its expected triggers and actions, a read-only token, and no secrets.
+
+    Every action is pinned to a full commit SHA with its version in a comment, which docs/dependency-updates.md
+    states and Dependabot reviews.
+    """
+    problems: list[str] = []
+    on_block = re.search(r"(?ms)^on:\n(.*?)^\S", workflow)
+    found = re.findall(r"(?m)^  ([A-Za-z_]+):", on_block.group(1)) if on_block else []
+    if found != triggers:
+        problems.append(f"the triggers are {found}, expected {triggers}")
+    if len(re.findall(r"(?m)^\s*permissions:", workflow)) != 1 or not re.search(
+        r"(?m)^permissions:\n  contents: read\n(?!  )", workflow
+    ):
+        problems.append("the permissions are not exactly one top-level `contents: read`")
+    if "secrets." in workflow:
+        problems.append("the workflow reads a secret")
+    if "GITHUB_TOKEN" in workflow or "github.token" in workflow:
+        problems.append("the workflow passes the token to a step")
+    pins = action_pins(workflow)
+    for action, reference, rest in pins:
+        if not re.fullmatch(r"[0-9a-f]{40}", reference) or not re.fullmatch(r"\s+# v\d+(?:\.\d+)*", rest):
+            problems.append(f"{action}@{reference} is not pinned to a commit SHA with its version in a comment")
+    used = {action for action, _, _ in pins}
+    if used != actions:
+        problems.append(f"the actions used are {sorted(used)}, expected {sorted(actions)}")
+    return problems
+
+
 def shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
@@ -2437,8 +2471,80 @@ def script_analyzer_check(root: Path, files: list[Path]) -> None:
         )
 
 
-def static_powershell_check() -> None:
-    script_analyzer_check(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT))
+def static_powershell_check(root: Path = REPOSITORY_ROOT) -> None:
+    script_analyzer_check(root, repository_files(root))
+
+
+# ShellCheck reads every Bash fence in Markdown outside these roots: Markdown under skills/ is rendered and checked at
+# deployment, with its tokens substituted, and tests/ holds fixtures.
+MARKDOWN_SHELL_EXCLUDED_ROOTS = ("skills", "tests")
+
+
+@dataclass(frozen=True)
+class BashFence:
+    """A Bash fence in Markdown, named by its file and the line its body starts on."""
+
+    name: str
+    first_line: int
+    text: str
+
+
+def markdown_shell_targets(root: Path, files: list[Path]) -> list[BashFence]:
+    """Every closed, non-empty Bash fence in Markdown outside MARKDOWN_SHELL_EXCLUDED_ROOTS."""
+    targets: list[BashFence] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.suffix.casefold() != ".md" or name.split("/")[0] in MARKDOWN_SHELL_EXCLUDED_ROOTS:
+            continue
+        targets += [
+            BashFence(name, start, text)
+            for context, start, text in _shell_units(path)
+            if context == "shell" and text.strip()
+        ]
+    return targets
+
+
+def markdown_shell_check(root: Path, files: list[Path]) -> None:
+    """Fail, naming each finding by file, line, and code, when ShellCheck warns on a Bash fence in Markdown.
+
+    Each fence is checked as a fragment under the header deployer/render.py gives the command examples it extracts,
+    the one sanctioned suppression (CLAUDE.md, "Required validation").
+    """
+    shellcheck = find_shellcheck()
+    if shellcheck is None:
+        raise AssertionError(f"ShellCheck was not found: {platform_support.install_hint('ShellCheck')}")
+    targets = markdown_shell_targets(root, files)
+    if not targets:
+        return
+    header_lines = render.SHELLCHECK_HEADER.count("\n")
+    with tempfile.TemporaryDirectory(prefix="markdown-shellcheck-") as directory:
+        fragments: dict[str, BashFence] = {}
+        for index, target in enumerate(targets):
+            path = Path(directory) / f"{index}.sh"
+            path.write_text(f"{render.SHELLCHECK_HEADER}{target.text}\n", encoding="utf-8", newline="\n")
+            fragments[platform_support.normalize(path)] = target
+        result = platform_support.run_tool([shellcheck, "--format=gcc", "--severity=warning", *fragments])
+    if result.returncode == 0:
+        return
+    reported: list[str] = []
+    for line in result.output.splitlines():
+        found = next((path for path in fragments if line.startswith(f"{path}:")), None)
+        position = re.match(r":(\d+)(:.*)$", line[len(found) :]) if found else None
+        if found is None or position is None:
+            reported.append(f"  {line}")
+            continue
+        target = fragments[found]
+        reported.append(
+            f"  {target.name}:{target.first_line + int(position.group(1)) - header_lines - 1}{position.group(2)}"
+        )
+    raise AssertionError(
+        "ShellCheck found these warnings in Bash fences in Markdown. Fix each at its cause; never suppress one "
+        '(CLAUDE.md, "Required validation"):\n' + "\n".join(reported)
+    )
+
+
+def static_markdown_shell_check(root: Path = REPOSITORY_ROOT) -> None:
+    markdown_shell_check(root, repository_files(root))
 
 
 def ruff_format_check(root: Path, targets: list[str]) -> None:
@@ -2515,14 +2621,36 @@ def static_lint_check() -> None:
     ruff_lint_check(REPOSITORY_ROOT, list(FORMAT_ROOTS))
 
 
+POWERSHELL_JOB = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
+MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences outside skills/ and tests/)"
+
+
+def markdown_jobs(root: Path) -> list[Job]:
+    """The static jobs that read fences in Markdown, which a documentation-only change can reach."""
+    return [
+        Job(POWERSHELL_JOB, POWERSHELL_JOB, UNSPLIT_SUITE_WEIGHT, functools.partial(static_powershell_check, root)),
+        Job(
+            MARKDOWN_SHELL_JOB,
+            MARKDOWN_SHELL_JOB,
+            UNSPLIT_SUITE_WEIGHT,
+            functools.partial(static_markdown_shell_check, root),
+        ),
+    ]
+
+
+def documentation_jobs(root: Path, paths: list[str], suites: list[Path]) -> list[Job]:
+    """What a documentation-only change runs: the fence checks when Markdown changed, and the suites naming a file."""
+    fences = markdown_jobs(root) if any(path.casefold().endswith(".md") for path in paths) else []
+    return [*fences, *suite_jobs(suites_naming(paths, suites))]
+
+
 def all_jobs() -> list[Job]:
     shell = "static shell checks (bash -n and ShellCheck on skill scripts)"
-    powershell = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
     python_format = "static format check (ruff format --check)"
     python_lint = "static lint check (ruff check)"
     return [
         Job(shell, shell, UNSPLIT_SUITE_WEIGHT, static_shell_check),
-        Job(powershell, powershell, UNSPLIT_SUITE_WEIGHT, static_powershell_check),
+        *markdown_jobs(REPOSITORY_ROOT),
         Job(python_format, python_format, UNSPLIT_SUITE_WEIGHT, static_format_check),
         Job(python_lint, python_lint, UNSPLIT_SUITE_WEIGHT, static_lint_check),
         *type_check_jobs(),
@@ -2864,6 +2992,91 @@ class RepositoryValidation(unittest.TestCase):
                 )
                 self.assertIsNone(changed_paths(root, "no-such-base"))
                 self.assertIsNone(changed_paths(Path(temporary), "main"))
+
+    @staticmethod
+    def documentation_failures(files: dict[str, str], changed: list[str]) -> dict[str, str]:
+        """Run the jobs a documentation-only change to `changed` selects in a fixture repository; failures by label."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository with spaces"
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+            failures: dict[str, str] = {}
+            for job in documentation_jobs(root, changed, []):
+                try:
+                    job.run()
+                except AssertionError as error:
+                    failures[job.label] = str(error)
+            return failures
+
+    def test_a_documentation_only_change_with_a_violating_powershell_fence_fails(self) -> None:
+        unused = "function Get-Answer {\n    $unused = 1\n    'answer'\n}\n"
+        failures = self.documentation_failures(
+            {"docs/install.md": f"# Install\n\n```powershell\n{unused}```\n\n```bash\necho ready\n```\n"},
+            ["docs/install.md"],
+        )
+        self.assertEqual([POWERSHELL_JOB], list(failures))
+        # The fence opens on line 3, so the fragment's second line is the file's fifth.
+        self.assertIn("docs/install.md:5: PSUseDeclaredVarsMoreThanAssignments (Warning)", failures[POWERSHELL_JOB])
+
+    def test_a_documentation_only_change_with_a_violating_bash_fence_fails(self) -> None:
+        failures = self.documentation_failures(
+            {"README.md": "# Read me\n\n```powershell\nGet-Date\n```\n\nThen:\n\n```bash\ncd 'some folder'\nls\n```\n"},
+            ["README.md"],
+        )
+        self.assertEqual([MARKDOWN_SHELL_JOB], list(failures))
+        self.assertIn("README.md:10:1: warning:", failures[MARKDOWN_SHELL_JOB])
+        self.assertIn("[SC2164]", failures[MARKDOWN_SHELL_JOB])
+        self.assertIn("never suppress", failures[MARKDOWN_SHELL_JOB])
+
+    def test_a_documentation_only_change_runs_the_fence_checks_only_when_markdown_changed(self) -> None:
+        def labels(paths: list[str], suites: list[Path]) -> list[str]:
+            # By name, so a suite split into shards appears once.
+            return list(dict.fromkeys(job.name for job in documentation_jobs(REPOSITORY_ROOT, paths, suites)))
+
+        # This suite reads docs/releasing.md, so a change to it still runs the suite.
+        naming = REPOSITORY_ROOT / "tests" / "tools" / "test_branch_protection.py"
+        # No Markdown changed, so no fence can have changed; the Python, type, and skill-script checks never run,
+        # since a documentation-only change cannot reach Python or skills/.
+        self.assertEqual([], labels([".github/ISSUE_TEMPLATE/config.yml"], [naming]))
+        self.assertEqual(
+            [POWERSHELL_JOB, MARKDOWN_SHELL_JOB, "tests/tools/test_branch_protection.py"],
+            labels(["docs/releasing.md", ".github/ISSUE_TEMPLATE/config.yml"], [naming]),
+        )
+        self.assertEqual([POWERSHELL_JOB, MARKDOWN_SHELL_JOB], labels(["docs/GUIDE.MD"], [naming]))
+
+    def test_markdown_bash_fences_outside_skills_and_tests_are_shellcheck_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "docs/guide.md": (
+                    "# Guide\n\n```bash\necho one\n```\n\n```python\nprint()\n```\n\n```sh\necho two\n```\n"
+                ),
+                ".claude/skills/a/SKILL.md": "```shell\necho three\n```\n",
+                "docs/empty.md": "```bash\n\n```\n",
+                "docs/unclosed.md": "```bash\necho never\n",
+                "skills/a/SKILL.md": "```bash\necho {{TOKEN}}\n```\n",
+                "tests/fixture.md": "```bash\ncd x\n```\n",
+                "tools/run.sh": "echo script\n",
+            }
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            targets = markdown_shell_targets(root, [root / name for name in files])
+        self.assertEqual(
+            [
+                (".claude/skills/a/SKILL.md", 2, "echo three"),
+                ("docs/guide.md", 4, "echo one"),
+                ("docs/guide.md", 12, "echo two"),
+            ],
+            [(target.name, target.first_line, target.text) for target in targets],
+        )
+
+    def test_missing_shellcheck_fails_the_markdown_shell_check_with_the_install_command(self) -> None:
+        with mock.patch(f"{__name__}.find_shellcheck", return_value=None), self.assertRaises(AssertionError) as raised:
+            markdown_shell_check(REPOSITORY_ROOT, [])
+        self.assertIn("ShellCheck was not found: winget install --id koalaman.shellcheck", str(raised.exception))
 
     def test_large_python_suites_are_sharded_and_others_run_whole(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -4538,7 +4751,13 @@ class RepositoryValidation(unittest.TestCase):
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
         self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
         self.assertIn("Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force", workflow)
-        self.assertIn("python-version: ['3.11', '3.x']", workflow)
+        # The floor runs on every event; the latest release only on the schedule, where it cannot block a pull request.
+        self.assertIn(
+            "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "
+            "|| fromJSON('[\"3.11\"]') }}",
+            workflow,
+        )
+        self.assertIn("if: github.event_name == 'schedule' && matrix.python-version == '3.x'", workflow)
         # Both matrix entries install the pinned development dependencies, so ruff and mypy run at their floors.
         self.assertIn("python -m pip install -r requirements-dev.txt", workflow)
         self.assertIn("python -m mypy --version", workflow)
@@ -4556,19 +4775,16 @@ class RepositoryValidation(unittest.TestCase):
         workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
         # Dispatch is its only trigger, so it can never be a required status check or run on a pull request.
-        triggers = required_match(r"(?ms)^on:\n(.*?)^permissions:", workflow).group(1)
-        self.assertEqual(["workflow_dispatch"], re.findall(r"(?m)^  ([A-Za-z_]+):", triggers))
-        self.assertRegex(workflow, r"(?m)^permissions:\n  contents: read\n")
-        self.assertNotIn("secrets.", workflow)
-        self.assertNotIn("GITHUB_TOKEN", workflow)
-        pins = re.findall(r"(?m)^\s*-?\s*uses:\s*(\S+)@(\S+)(.*)$", workflow)
-        self.assertTrue(pins)
-        for action, reference, rest in pins:
-            with self.subTest(action=action):
-                self.assertRegex(reference, r"^[0-9a-f]{40}$")
-                self.assertRegex(rest, r"^\s+# v\d+(?:\.\d+)*$")
+        self.assertEqual(
+            [],
+            workflow_guard_problems(
+                workflow,
+                ["workflow_dispatch"],
+                {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
+            ),
+        )
         # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
-        shared = {action for action, _, _ in pins} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
+        shared = {action for action, _, _ in action_pins(workflow)} & set(re.findall(r"uses:\s*(\S+)@", reviewed))
         self.assertTrue(shared)
         for action in shared:
             with self.subTest(shared=action):
@@ -4576,6 +4792,42 @@ class RepositoryValidation(unittest.TestCase):
                     required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", reviewed).group(1),
                     required_match(rf"{re.escape(action)}@(\S+ +# v\S+)", workflow).group(1),
                 )
+
+    def test_validate_workflow_is_pinned_read_only_and_runs_on_its_own_events(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        # No pull_request_target: a pull request's code never runs with the base repository's token or secrets.
+        self.assertEqual(
+            [],
+            workflow_guard_problems(
+                workflow,
+                ["pull_request", "push", "schedule", "workflow_dispatch"],
+                {"actions/checkout", "actions/setup-python"},
+            ),
+        )
+
+    def test_workflow_guard_reports_each_drift(self) -> None:
+        clean = (
+            "name: Example\n\non:\n  pull_request:\n  # A comment is not a trigger.\n  push:\n    branches: [main]\n\n"
+            "permissions:\n  contents: read\n\njobs:\n  run:\n    runs-on: windows-latest\n    steps:\n"
+            f"      - uses: actions/checkout@{'a' * 40} # v7.0.1\n"
+        )
+        expected = ["pull_request", "push"]
+        self.assertEqual([], workflow_guard_problems(clean, expected, {"actions/checkout"}))
+        for drifted, problem in (
+            (clean.replace("  push:\n", "  pull_request_target:\n  push:\n"), "triggers"),
+            (clean.replace("  contents: read\n", "  contents: write\n"), "permissions"),
+            (clean.replace("  contents: read\n", "  contents: read\n  pull-requests: write\n"), "permissions"),
+            (clean.replace("    steps:\n", "    permissions: write-all\n    steps:\n"), "permissions"),
+            (clean + "        env:\n          TOKEN: ${{ secrets.TOKEN }}\n", "secret"),
+            (clean + "        env:\n          TOKEN: ${{ github.token }}\n          OTHER: $GITHUB_TOKEN\n", "token"),
+            (clean.replace(f"@{'a' * 40} # v7.0.1", "@v7"), "not pinned"),
+            (clean.replace(" # v7.0.1", ""), "not pinned"),
+            (clean + f"      - uses: actions/cache@{'b' * 40} # v5.0.0\n", "actions"),
+        ):
+            with self.subTest(problem=problem, drifted=drifted):
+                problems = workflow_guard_problems(drifted, expected, {"actions/checkout"})
+                self.assertTrue(problems)
+                self.assertTrue(any(problem in found for found in problems), problems)
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
@@ -5110,11 +5362,13 @@ def main(argv: list[str] | None = None) -> int:
         paths = None if arguments.full else changed_paths(REPOSITORY_ROOT, base)
         only, reason = (False, "--full was given") if arguments.full else documentation_only(paths)
         if only and paths is not None:
-            suites = suites_naming(paths, regression_suites())
-            jobs = suite_jobs(suites)
+            jobs = documentation_jobs(REPOSITORY_ROOT, paths, regression_suites())
+            fences = [job.label for job in jobs if job.label in (POWERSHELL_JOB, MARKDOWN_SHELL_JOB)]
+            suites = sorted({job.name for job in jobs if job.label not in fences})
             mode = (
-                f"Documentation only: {reason} since {base}. Running the policy checks and the "
-                f"{len(suites)} suites that name a changed file; pass --full to run every suite."
+                f"Documentation only: {reason} since {base}. Running the policy checks, "
+                + (f"the {len(fences)} Markdown fence checks, " if fences else "")
+                + f"and the {len(suites)} suites that name a changed file; pass --full to run every suite."
             )
         else:
             jobs = all_jobs()

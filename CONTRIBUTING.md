@@ -28,7 +28,7 @@ Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older vers
 pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
 ```
 
-Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, and `skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command.
+Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, and `skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command. It also runs ShellCheck on every Bash fence in Markdown outside `skills/` and `tests/`; write a placeholder there quoted, as in `'<file>'`, so the fence still parses.
 
 [Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
 
@@ -68,7 +68,9 @@ Changes to deployment behavior should also be exercised against an isolated temp
 - force pushes to `main` and deleting it are refused; and
 - the rules are enforced for administrators too, so nobody bypasses them.
 
-Branch protection is a live repository setting, not a tracked file, so it can drift without a diff. `python tools/branch_protection.py` reads it and the merge settings through `gh api` and prints `PROTECTED`, or `DRIFTED` and each invariant that no longer holds; reading branch protection needs admin rights on the repository. The [release procedure](docs/releasing.md#before-tagging) runs it before every tag.
+The repository's security settings back this up: secret scanning, push protection, private vulnerability reporting, and Dependabot security updates are enabled, and the default workflow token is read-only.
+
+Branch protection and these settings are live repository settings, not tracked files, so they can drift without a diff. `python tools/branch_protection.py` reads them and the merge settings through `gh api` and prints `PROTECTED`, or `DRIFTED` and each invariant that no longer holds, then each security setting as it found it; reading branch protection and the security settings needs admin rights on the repository. The [release procedure](docs/releasing.md#before-tagging) runs it before every tag.
 
 ## Issues and pull requests
 
