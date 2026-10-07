@@ -275,110 +275,94 @@ GENERATOR_CANDIDATES: list[str] = [".github/scripts/ai_config.py", "scripts/ai_c
 
 
 def check_inventory(root: Path) -> list[Finding]:
+    return [
+        *_inventory_fixed_files(root),
+        *_inventory_recursive_files(root),
+        *_inventory_skill_directories(root),
+        *_inventory_agent_directories(root),
+        *_inventory_path_instructions(root),
+        *_inventory_generator_scripts(root),
+        *_inventory_parity_workflows(root),
+    ]
+
+
+def _inventory_finding(path: str, message: str) -> Finding:
+    return Finding(severity="INFO", check="inventory", path=path, message=message)
+
+
+def _inventory_fixed_files(root: Path) -> list[Finding]:
+    return [
+        _inventory_finding(rel_path, f"Found {rel_path}") for rel_path in INVENTORY_FILES if (root / rel_path).is_file()
+    ]
+
+
+def _inventory_recursive_files(root: Path) -> list[Finding]:
     findings: list[Finding] = []
-
-    for rel_path in INVENTORY_FILES:
-        full = root / rel_path
-        if full.is_file():
-            findings.append(
-                Finding(
-                    severity="INFO",
-                    check="inventory",
-                    path=rel_path,
-                    message=f"Found {rel_path}",
-                )
-            )
-
-    # Recursive scans
     for name in RECURSIVE_INVENTORY_NAMES:
         for found in root.rglob(name):
             if ".git" in found.parts:
                 continue
             rel = found.relative_to(root).as_posix()
-            findings.append(
-                Finding(
-                    severity="INFO",
-                    check="inventory",
-                    path=rel,
-                    message=f"Found {rel}",
-                )
-            )
+            findings.append(_inventory_finding(rel, f"Found {rel}"))
+    return findings
 
-    # Skills directories
+
+def _inventory_skill_directories(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
     for skill_dir in (".claude/skills", ".agents/skills", ".github/skills"):
         d = root / skill_dir
         if d.is_dir():
             skills = [p.parent.name for p in d.glob("*/SKILL.md")]
             if skills:
-                findings.append(
-                    Finding(
-                        severity="INFO",
-                        check="inventory",
-                        path=skill_dir,
-                        message=f"Skills found: {', '.join(sorted(skills))}",
-                    )
-                )
+                findings.append(_inventory_finding(skill_dir, f"Skills found: {', '.join(sorted(skills))}"))
+    return findings
 
+
+def _inventory_agent_directories(root: Path) -> list[Finding]:
+    findings: list[Finding] = []
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
         if d.is_dir():
             agents = [p.name for p in d.iterdir() if p.is_file()]
             if agents:
-                findings.append(
-                    Finding(
-                        severity="INFO",
-                        check="inventory",
-                        path=agent_dir,
-                        message=f"Custom agent files found: {', '.join(sorted(agents))}",
-                    )
-                )
+                findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
+    return findings
 
-    # Path-specific Copilot instructions
+
+def _inventory_path_instructions(root: Path) -> list[Finding]:
+    """Path-specific Copilot instructions."""
     instructions_dir = root / ".github/instructions"
-    if instructions_dir.is_dir():
-        instr_files = list(instructions_dir.rglob("*.instructions.md"))
-        if instr_files:
-            findings.append(
-                Finding(
-                    severity="INFO",
-                    check="inventory",
-                    path=".github/instructions",
-                    message=f"{len(instr_files)} path-specific instruction file(s)",
-                )
-            )
+    if not instructions_dir.is_dir():
+        return []
+    instr_files = list(instructions_dir.rglob("*.instructions.md"))
+    if not instr_files:
+        return []
+    return [_inventory_finding(".github/instructions", f"{len(instr_files)} path-specific instruction file(s)")]
 
-    # Generator scripts
-    for candidate in GENERATOR_CANDIDATES:
-        if (root / candidate).is_file():
-            findings.append(
-                Finding(
-                    severity="INFO",
-                    check="inventory",
-                    path=candidate,
-                    message=f"Generator script found: {candidate}",
-                )
-            )
 
-    # AI parity workflows
+def _inventory_generator_scripts(root: Path) -> list[Finding]:
+    return [
+        _inventory_finding(candidate, f"Generator script found: {candidate}")
+        for candidate in GENERATOR_CANDIDATES
+        if (root / candidate).is_file()
+    ]
+
+
+def _inventory_parity_workflows(root: Path) -> list[Finding]:
+    """Workflows under .github/workflows that name ai-config or ai_config; unreadable ones are skipped."""
     workflows_dir = root / ".github/workflows"
-    if workflows_dir.is_dir():
-        for pattern in ("*.yml", "*.yaml"):
-            for wf in workflows_dir.glob(pattern):
-                try:
-                    wf_content = read_text(wf)
-                    if "ai-config" in wf_content.lower() or "ai_config" in wf_content.lower():
-                        rel = wf.relative_to(root).as_posix()
-                        findings.append(
-                            Finding(
-                                severity="INFO",
-                                check="inventory",
-                                path=rel,
-                                message="AI config parity workflow found",
-                            )
-                        )
-                except (OSError, UnicodeError):
-                    pass
-
+    if not workflows_dir.is_dir():
+        return []
+    findings: list[Finding] = []
+    for pattern in ("*.yml", "*.yaml"):
+        for wf in workflows_dir.glob(pattern):
+            try:
+                wf_content = read_text(wf)
+                if "ai-config" in wf_content.lower() or "ai_config" in wf_content.lower():
+                    rel = wf.relative_to(root).as_posix()
+                    findings.append(_inventory_finding(rel, "AI config parity workflow found"))
+            except (OSError, UnicodeError):
+                pass
     return findings
 
 
@@ -694,11 +678,26 @@ def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, li
 
 def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
     """Validate manifest structure recursively. Returns error messages."""
-    errors: list[str] = []
+    return [
+        *_schema_version_errors(data),
+        *_string_list_errors(data),
+        *_artifact_errors(data),
+        *_mcp_server_errors(data),
+        *_runtime_role_errors(data),
+        *_copilot_section_errors(data),
+    ]
+
+
+def _schema_version_errors(data: dict[str, Any]) -> list[str]:
     if type(data.get("schemaVersion")) is not int:
-        errors.append("schemaVersion must be an integer")
-    elif data["schemaVersion"] != 1:
-        errors.append(f"schemaVersion {data['schemaVersion']} is not supported (expected 1)")
+        return ["schemaVersion must be an integer"]
+    if data["schemaVersion"] != 1:
+        return [f"schemaVersion {data['schemaVersion']} is not supported (expected 1)"]
+    return []
+
+
+def _string_list_errors(data: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
     for name in ("runtimes", "surfaces", "features"):
         val = data.get(name)
         if val is None:
@@ -710,67 +709,85 @@ def _validate_manifest_schema(data: dict[str, Any]) -> list[str]:
         for i, item in enumerate(val):
             if not isinstance(item, str):
                 errors.append(f"{name}[{i}] must be a string")
+    return errors
+
+
+def _artifact_errors(data: dict[str, Any]) -> list[str]:
     artifacts = data.get("artifacts")
     if artifacts is None:
-        errors.append("artifacts is required")
-    elif not isinstance(artifacts, list):
-        errors.append("artifacts must be a list")
-    else:
-        for i, art in enumerate(artifacts):
-            if not isinstance(art, dict):
-                errors.append(f"artifacts[{i}] must be an object")
-                continue
-            if "path" not in art or not isinstance(art.get("path"), str):
-                errors.append(f"artifacts[{i}].path must be a string")
-            path_val = art.get("path")
-            if not isinstance(path_val, str):
-                continue
-            hash_val = art.get("hash")
-            is_json = path_val.endswith(".json") and path_val != ".github/ai-config-manifest.json"
-            if is_json:
-                if not isinstance(hash_val, str) or not hash_val:
-                    errors.append(f"artifacts[{i}].hash is required for JSON artifact '{path_val}'")
-            elif hash_val is not None and not isinstance(hash_val, str):
-                errors.append(f"artifacts[{i}].hash must be a string or absent")
+        return ["artifacts is required"]
+    if not isinstance(artifacts, list):
+        return ["artifacts must be a list"]
+    return [error for i, art in enumerate(artifacts) for error in _artifact_entry_errors(i, art)]
+
+
+def _artifact_entry_errors(i: int, art: Any) -> list[str]:
+    if not isinstance(art, dict):
+        return [f"artifacts[{i}] must be an object"]
+    path_val = art.get("path")
+    if not isinstance(path_val, str):
+        return [f"artifacts[{i}].path must be a string"]
+    hash_val = art.get("hash")
+    is_json = path_val.endswith(".json") and path_val != ".github/ai-config-manifest.json"
+    if is_json:
+        if not isinstance(hash_val, str) or not hash_val:
+            return [f"artifacts[{i}].hash is required for JSON artifact '{path_val}'"]
+    elif hash_val is not None and not isinstance(hash_val, str):
+        return [f"artifacts[{i}].hash must be a string or absent"]
+    return []
+
+
+def _mcp_server_errors(data: dict[str, Any]) -> list[str]:
     mcp_servers = data.get("mcp_servers")
     if mcp_servers is None:
-        errors.append("mcp_servers is required")
-    elif not isinstance(mcp_servers, list):
-        errors.append("mcp_servers must be a list")
+        return ["mcp_servers is required"]
+    if not isinstance(mcp_servers, list):
+        return ["mcp_servers must be a list"]
+    return [error for i, srv in enumerate(mcp_servers) for error in _mcp_server_entry_errors(i, srv)]
+
+
+def _mcp_server_entry_errors(i: int, srv: Any) -> list[str]:
+    if not isinstance(srv, dict):
+        return [f"mcp_servers[{i}] must be an object"]
+    errors: list[str] = []
+    srv_name = srv.get("name")
+    if not isinstance(srv_name, str) or not srv_name.strip():
+        errors.append(f"mcp_servers[{i}].name must be a non-empty string")
+    srv_transport = srv.get("transport")
+    if not isinstance(srv_transport, str):
+        errors.append(f"mcp_servers[{i}].transport must be a string")
+    targets = srv.get("targets")
+    if not isinstance(targets, list):
+        errors.append(f"mcp_servers[{i}].targets must be a list")
     else:
-        for i, srv in enumerate(mcp_servers):
-            if not isinstance(srv, dict):
-                errors.append(f"mcp_servers[{i}] must be an object")
-                continue
-            srv_name = srv.get("name")
-            if not isinstance(srv_name, str) or not srv_name.strip():
-                errors.append(f"mcp_servers[{i}].name must be a non-empty string")
-            srv_transport = srv.get("transport")
-            if not isinstance(srv_transport, str):
-                errors.append(f"mcp_servers[{i}].transport must be a string")
-            targets = srv.get("targets")
-            if not isinstance(targets, list):
-                errors.append(f"mcp_servers[{i}].targets must be a list")
-            else:
-                for j, t in enumerate(targets):
-                    if not isinstance(t, str):
-                        errors.append(f"mcp_servers[{i}].targets[{j}] must be a string")
+        for j, t in enumerate(targets):
+            if not isinstance(t, str):
+                errors.append(f"mcp_servers[{i}].targets[{j}] must be a string")
+    return errors
+
+
+def _runtime_role_errors(data: dict[str, Any]) -> list[str]:
     roles = data.get("runtimeRoles")
-    if roles is not None:
-        if not isinstance(roles, dict):
-            errors.append("runtimeRoles must be an object when present")
-        else:
-            for surface, role in roles.items():
-                if surface not in COPILOT_ROLE_BY_SURFACE:
-                    errors.append(f"runtimeRoles has unknown Copilot surface '{surface}'")
-                if not isinstance(role, str):
-                    errors.append(f"runtimeRoles.{surface} must be a string")
+    if roles is None:
+        return []
+    if not isinstance(roles, dict):
+        return ["runtimeRoles must be an object when present"]
+    errors: list[str] = []
+    for surface, role in roles.items():
+        if surface not in COPILOT_ROLE_BY_SURFACE:
+            errors.append(f"runtimeRoles has unknown Copilot surface '{surface}'")
+        if not isinstance(role, str):
+            errors.append(f"runtimeRoles.{surface} must be a string")
+    return errors
+
+
+def _copilot_section_errors(data: dict[str, Any]) -> list[str]:
     copilot_sections = data.get("copilot_sections")
     if copilot_sections is not None and (
         not isinstance(copilot_sections, list) or not all(isinstance(section, str) for section in copilot_sections)
     ):
-        errors.append("copilot_sections must be a list of strings when present")
-    return errors
+        return ["copilot_sections must be a list of strings when present"]
+    return []
 
 
 def _manifest_authority_finding(severity: str, message: str) -> Finding:
