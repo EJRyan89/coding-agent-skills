@@ -272,14 +272,20 @@ def _normalized_specialists_manifest(value: dict[str, Any], capabilities: list[s
     declared.extend(condition["script"] for condition in normalized["conditions"].values())
     if len(set(normalized["resources"])) != len(normalized["resources"]):
         raise RuntimeContractError("Adapter declares a file more than once")
-    for path in declared:
-        if path == "materialization.json":
-            raise RuntimeContractError("Adapter declares a reserved path")
+    _refuse_reserved_paths(declared)
     return normalized
 
 
+def _refuse_reserved_paths(declared: list[str]) -> None:
+    """Refuse a declared file at the path of the materialization record, in any case: on a file system that ignores
+    case, the record would replace it after its hash is taken."""
+    if any(path.casefold() == "materialization.json" for path in declared):
+        raise RuntimeContractError("Adapter declares a reserved path")
+
+
 def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
-    """An entrypoint manifest (schema 1) with its paths normalized, once each is safe and none is declared twice."""
+    """An entrypoint manifest (schema 1) with its paths normalized, once each is safe, none is declared twice, and
+    none is the reserved materialization record."""
     entrypoint = _safe_relative_path(value["entrypoint"], "entrypoint")
     resources = value["resources"]
     agents = value["agent_profiles"]
@@ -290,6 +296,7 @@ def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
     declared = [entrypoint, *normalized_resources, *normalized_agents]
     if len(set(declared)) != len(declared):
         raise RuntimeContractError("Adapter declares a file more than once")
+    _refuse_reserved_paths(declared)
     normalized = dict(value)
     normalized["entrypoint"] = entrypoint
     normalized["resources"] = normalized_resources

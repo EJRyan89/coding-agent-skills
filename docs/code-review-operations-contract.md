@@ -146,7 +146,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 
 ### Reviewer manifests
 
-A repository reviewer's manifest, validated by `validate_adapter_manifest` in `review_runtime.py` when a review loads it. Every file a manifest names is a path in the repository, may not be named twice, and may not be `materialization.json`.
+A repository reviewer's manifest, validated by `validate_adapter_manifest` in `review_runtime.py` when a review loads it. Every file a manifest names is a path in the repository and may not be named twice. `materialization.json` at the top of the reviewer's files is reserved in both schemas, in any case, because materialization writes its own record there and a file system that ignores case would let the record replace a file such as `Materialization.json`. A manifest that names it, as an entrypoint, resource, agent profile, specialist profile or resource, or condition script, is refused with `Adapter declares a reserved path`, and nothing is materialized. The same name below the top, such as `references/materialization.json`, is allowed.
 
 #### Entrypoint manifest (`entrypoint-manifest`)
 
