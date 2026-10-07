@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import re
 import shutil
@@ -913,8 +915,7 @@ class MigrationTests(DeployerTestCase):
         self.assertIn("alpha", sources["new/source"]["skills"])
         self.assertNotIn("beta", sources["new/source"]["skills"])
         self.assertIn("old-only", sources["old/source"]["skills"])
-        self.assertIn("alpha", sources["new/source"]["selected_skills"])
-        self.assertNotIn("alpha", sources["old/source"]["selected_skills"])
+        self.assertNotIn("selected_skills", sources["new/source"])
         self.assertEqual("owner", sources["new/source"]["shared"]["shared-doc.md"]["role"])
         self.assertNotIn("shared-doc.md", sources["old/source"]["shared"])
 
@@ -949,6 +950,62 @@ class MigrationTests(DeployerTestCase):
         self.deploy_fails("--migrate-from", "Not Valid", pattern="Invalid migration source ID")
         self.deploy_fails("--migrate-from", "test/skills", pattern="must name a different source")
         self.deploy_fails("--migrate-from", "old/source", "--dry-run", pattern="cannot be combined with --dry-run")
+
+
+class ManifestStateTests(RecoveryTestCase):
+    """The manifest state the deployer still reads: last_run_id through the validated loader, and no selected_skills."""
+
+    def test_recovery_reads_the_committed_run_only_from_a_valid_manifest(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write_journal("20260101-000000-fake", backup_entry("alpha", original))
+        data = self.manifest()
+        data["sources"]["test/skills"]["skills"]["alpha"]["hash"] = "not-a-hash"
+        self.write_manifest(data)
+        # A deployment refuses this manifest before recovery, so recovery is called as the next run would call it.
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            recovered = journal.recover_incomplete(self.paths)
+        self.assertFalse(recovered, captured.getvalue())
+        self.assertIn("ERROR: Cannot read manifest during recovery.", captured.getvalue())
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir(), "an unreadable manifest decides nothing")
+        self.assertTrue((self.staging_run("20260101-000000-fake") / "journal.jsonl").is_file())
+
+    def test_a_manifest_with_the_old_selected_skills_key_loads_and_loses_it_on_commit(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        data = self.manifest()
+        data["sources"]["test/skills"]["selected_skills"] = ["alpha"]
+        data["sources"]["other/source"] = {"source_dir": "other", "selected_skills": ["beta"], "skills": {}}
+        self.write_manifest(data)
+        self.deploy_ok("--all")
+        sources = self.manifest()["sources"]
+        self.assertNotIn("selected_skills", sources["test/skills"])
+        self.assertEqual(["beta"], sources["other/source"]["selected_skills"], "another source's entry is left as is")
+
+    def test_migration_leaves_no_old_source_held_only_by_selected_skills(self) -> None:
+        self.make_source_json("new/source")
+        alpha = self.make_skill("alpha", "Alpha content")
+        self.make_config("new/source")
+        shutil.copytree(alpha, self.skills_dir / "alpha")
+        self.write_manifest(
+            {
+                "manifest_version": 7,
+                "sources": {
+                    "old/source": {
+                        "source_dir": "old",
+                        "requested_skills": ["alpha"],
+                        "selected_skills": ["alpha"],
+                        "skills": {"alpha": {"hash": hashing.hash_path(self.skills_dir / "alpha")}},
+                    }
+                },
+            }
+        )
+        self.deploy_ok("--migrate-from", "old/source")
+        sources = self.manifest()["sources"]
+        self.assertNotIn("old/source", sources)
+        self.assertEqual(["alpha"], sources["new/source"]["requested_skills"])
+        self.assertNotIn("selected_skills", sources["new/source"])
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertEqual(7, self.manifest()["manifest_version"])
         self.assertEqual(["operations"], entry["requested_bundles"])
         self.assertEqual([], entry["requested_skills"])
-        self.assertEqual(["alpha", "beta", "core"], sorted(entry["selected_skills"]))
+        self.assertEqual(["alpha", "beta", "core"], sorted(entry["skills"]))
         self.assertEqual(["alpha", "beta"], sorted(entry["wrappers"]))
         rerun = self.deploy("--dry-run", stdin="\n").output
         self.assertRegex(rerun, r"(?m)^  \[\*\] [0-9]+\. operations \(bundle\)$")
@@ -155,7 +155,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         entry = self.manifest()["sources"]["test/skills"]
         self.assertEqual([], entry["requested_bundles"])
         self.assertEqual([], entry["requested_skills"])
-        self.assertEqual([], entry["selected_skills"])
+        self.assertEqual({}, entry["skills"])
 
     def test_a_member_retired_from_an_installed_bundle_is_removed_and_the_bundle_kept(self) -> None:
         # Retiring a skill from a bundle (as re-review was, #116) relies on the next deployment removing it.
@@ -174,7 +174,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertTrue((self.skills_dir / "core" / "SKILL.md").is_file())
         entry = self.manifest()["sources"]["test/skills"]
         self.assertEqual(["operations"], entry["requested_bundles"])
-        self.assertEqual(["alpha", "core"], sorted(entry["selected_skills"]))
+        self.assertEqual(["alpha", "core"], sorted(entry["skills"]))
         self.assertNotIn("beta", self.owned("skills"))
         self.assertNotIn("beta", self.owned("wrappers"))
 

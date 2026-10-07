@@ -71,7 +71,6 @@ def migrate(context: Context, old: str) -> None:
             "deployed_at": None,
             "requested_bundles": [],
             "requested_skills": [],
-            "selected_skills": [],
             **{kind.key: {} for kind in KINDS},
         },
     )
@@ -79,15 +78,12 @@ def migrate(context: Context, old: str) -> None:
     for kind in KINDS:
         for name in candidates[kind.key]:
             new_entry.setdefault(kind.key, {})[name] = old_entry[kind.key].pop(name)
-            if kind is not SKILL:
-                continue
-            for field_name in ("selected_skills", "requested_skills"):
-                if name in old_entry.get(field_name, []):
-                    new_entry[field_name] = sorted(set(new_entry.get(field_name, [])) | {name})
-                    old_entry[field_name] = [value for value in old_entry[field_name] if value != name]
+            if kind is SKILL and name in old_entry.get("requested_skills", []):
+                new_entry["requested_skills"] = sorted(set(new_entry.get("requested_skills", [])) | {name})
+                old_entry["requested_skills"] = [value for value in old_entry["requested_skills"] if value != name]
     # A bundle request alone does not keep the old source: it names no item, and the new source counts a bundle whose
-    # members it owns as chosen.
-    if not any(old_entry.get(key) for key in (*(kind.key for kind in KINDS), "requested_skills", "selected_skills")):
+    # members it owns as chosen. Nor does an old entry's selected_skills, which nothing reads any more.
+    if not any(old_entry.get(key) for key in (*(kind.key for kind in KINDS), "requested_skills")):
         del data.sources[old]
     data.save()
     print("")

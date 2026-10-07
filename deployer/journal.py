@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import fsops, hashing, platform_support
+from . import fsops, hashing, manifest, platform_support
 from .errors import DeployError, see_recovery
 from .names import safe_name_problem
 from .paths import Paths
@@ -360,14 +360,14 @@ def _print_manual_steps(run_dir: Path, run_id: str, committed: bool) -> None:
 
 
 def _committed_run_id(paths: Paths) -> str | None:
-    if not paths.manifest_file.is_file():
-        return ""
+    """The run the manifest records as committed, "" when none, or None when the manifest cannot be trusted.
+
+    It is read through the validated loader: a manifest the deployment would refuse decides no recovery either.
+    """
     try:
-        data = json.loads(paths.manifest_file.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        return manifest.load(paths.manifest_file).last_run_id()
+    except DeployError:
         return None
-    value = data.get("last_run_id", "") if isinstance(data, dict) else ""
-    return value if isinstance(value, str) else ""
 
 
 def _read_entries(journal_file: Path, run_id: str) -> tuple[list[dict[str, Any]], str | None]:
