@@ -34,6 +34,8 @@ FINDING_ID = re.compile(r"F[0-9]{3,}")
 LEDGER_ID = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 LEDGER_FIELDS = frozenset({"version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"})
 OPEN_DISPOSITIONS = frozenset({"still_present", "partially_addressed"})
+# A ledger entry's key: the version and finding ID where the finding first appeared.
+LedgerKey = tuple[int, str]
 LEDGER_STATES = {
     "still_present": "open",
     "partially_addressed": "open",
@@ -147,6 +149,23 @@ def validate_dispositions(dispositions: Any, key: str, expected: set[str], label
         raise RecordError(f"{label} dispositions mismatch; missing={missing}, unknown={unknown_ids}")
 
 
+ADAPTER_RESULT_FIELDS = frozenset(
+    {
+        "protocol_version",
+        "repository",
+        "pull_number",
+        "head_sha",
+        "summary",
+        "reviewer",
+        "status",
+        "findings",
+        "prior_dispositions",
+        "comment_dispositions",
+        "usage",
+    }
+)
+
+
 def validate_adapter_result(
     value: Any,
     *,
@@ -166,76 +185,95 @@ def validate_adapter_result(
     names another finding's candidate key or a prior finding ID (whose severity `prior_severities` gives).
     """
     prior_ids = list(prior_ids)
+    _validate_result_envelope(value)
+    _validate_result_request(value, expected_repository, expected_number, expected_head_sha)
+    _validate_result_metadata(value)
+    findings = _validate_result_findings(value.get("findings"))
+    _validate_result_dispositions(value, prior_ids, comment_ids, require_comment_dispositions)
+    _validate_result_repeats(findings, value.get("prior_dispositions", []), prior_severities or {}, set(prior_ids))
+    usage = value.get("usage")
+    if usage is not None and not isinstance(usage, dict):
+        raise RecordError("usage must be an object or null")
+    return value
+
+
+def _validate_result_envelope(value: Any) -> None:
+    """An object of known fields, in the protocol version this module reads."""
     if not isinstance(value, dict):
         raise RecordError("Adapter result must be an object")
-    allowed = {
-        "protocol_version",
-        "repository",
-        "pull_number",
-        "head_sha",
-        "summary",
-        "reviewer",
-        "status",
-        "findings",
-        "prior_dispositions",
-        "comment_dispositions",
-        "usage",
-    }
-    unknown = sorted(set(value) - allowed)
+    unknown = sorted(set(value) - ADAPTER_RESULT_FIELDS)
     if unknown:
         raise RecordError("Adapter result contains unknown fields: " + ", ".join(unknown))
     if value.get("protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Unsupported adapter protocol version")
+
+
+def _validate_result_request(
+    value: dict[str, Any], expected_repository: str, expected_number: int, expected_head_sha: str
+) -> None:
+    """The result answers the request: the same repository, pull request, and head."""
     if validate_repository_identity(value.get("repository")) != expected_repository.lower():
         raise RecordError("Adapter result repository does not match request")
     if value.get("pull_number") != expected_number:
         raise RecordError("Adapter result pull number does not match request")
     if value.get("head_sha") != expected_head_sha:
         raise RecordError("Adapter result head SHA does not match request")
+
+
+def _validate_result_metadata(value: dict[str, Any]) -> None:
     if not isinstance(value.get("summary"), str) or not value["summary"].strip():
         raise RecordError("Adapter result summary is required")
     if not isinstance(value.get("reviewer"), str) or not value["reviewer"].strip():
         raise RecordError("Adapter result reviewer is required")
     if not _one_of(value.get("status"), {"complete", "partial", "failed"}):
         raise RecordError("Adapter result status is invalid")
-    findings = value.get("findings")
+
+
+def _validate_result_findings(findings: Any) -> list[dict[str, Any]]:
+    """The findings, each checked in order; the first fault found is the one raised."""
     if not isinstance(findings, list):
         raise RecordError("Adapter findings must be an array")
     seen_keys: set[str] = set()
     for finding in findings:
-        if not isinstance(finding, dict):
-            raise RecordError("Every adapter finding must be an object")
-        if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
-            raise RecordError("Adapter finding fields do not match the protocol")
-        key = finding["candidate_key"]
-        if not isinstance(key, str) or not key or key in seen_keys:
-            raise RecordError("Adapter candidate keys must be unique non-empty strings")
-        seen_keys.add(key)
-        if "title" in finding and not valid_title(finding["title"]):
-            raise RecordError(f"Finding {key}.title {TITLE_RULE}")
-        if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
-            raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
-        if not _one_of(finding["severity"], SEVERITIES):
-            raise RecordError(f"Invalid finding severity for {key}")
-        for field in ("category", "path", "body", "evidence", "source"):
-            if not isinstance(finding[field], str) or not finding[field].strip():
-                raise RecordError(f"Finding {key}.{field} must be non-empty")
-        path = finding["path"]
-        if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
-            raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
-        line = finding["line"]
-        if not isinstance(line, int) or isinstance(line, bool) or line < 1:
-            raise RecordError(f"Finding {key}.line must be a positive integer")
+        _validate_result_finding(finding, seen_keys)
+    return findings
 
+
+def _validate_result_finding(finding: Any, seen_keys: set[str]) -> None:
+    """One finding, whose candidate key must not be in `seen_keys`; the key is added to it."""
+    if not isinstance(finding, dict):
+        raise RecordError("Every adapter finding must be an object")
+    if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
+        raise RecordError("Adapter finding fields do not match the protocol")
+    key = finding["candidate_key"]
+    if not isinstance(key, str) or not key or key in seen_keys:
+        raise RecordError("Adapter candidate keys must be unique non-empty strings")
+    seen_keys.add(key)
+    if "title" in finding and not valid_title(finding["title"]):
+        raise RecordError(f"Finding {key}.title {TITLE_RULE}")
+    if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
+        raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
+    if not _one_of(finding["severity"], SEVERITIES):
+        raise RecordError(f"Invalid finding severity for {key}")
+    for field in ("category", "path", "body", "evidence", "source"):
+        if not isinstance(finding[field], str) or not finding[field].strip():
+            raise RecordError(f"Finding {key}.{field} must be non-empty")
+    path = finding["path"]
+    if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
+        raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
+    line = finding["line"]
+    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
+        raise RecordError(f"Finding {key}.line must be a positive integer")
+
+
+def _validate_result_dispositions(
+    value: dict[str, Any], prior_ids: list[str], comment_ids: Iterable[str], require_comment_dispositions: bool
+) -> None:
+    """One disposition per prior finding, then the comment dispositions when given or required."""
     validate_dispositions(value.get("prior_dispositions", []), "finding_id", set(prior_ids), "Prior")
     expected_comments = set(comment_ids)
     if "comment_dispositions" in value or (expected_comments and require_comment_dispositions):
         validate_dispositions(value.get("comment_dispositions", []), "comment_id", expected_comments, "Comment")
-    _validate_result_repeats(findings, value.get("prior_dispositions", []), prior_severities or {}, set(prior_ids))
-    usage = value.get("usage")
-    if usage is not None and not isinstance(usage, dict):
-        raise RecordError("usage must be an object or null")
-    return value
 
 
 def _validate_result_repeats(
@@ -798,9 +836,23 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
         if any("repeats" in finding for finding in findings.values()):
             raise RecordError("Review finding repeats need a ledger")
         return
+    entries = _ledger_entries(ledger, version, mode)
+    _validate_opened_entries(entries, findings, version)
+    given = _validate_ledger_judgments(ledger, record["prior_dispositions"], version)
+    linked = [
+        (identifier, _validate_repeat_link(identifier, finding, findings, entries, given, version))
+        for identifier, finding in findings.items()
+        if "repeats" in finding
+    ]
+    _validate_listed_repeats(ledger, linked, version)
+
+
+def _ledger_entries(ledger: Any, version: int, mode: str) -> dict[LedgerKey, dict[str, Any]]:
+    """The ledger's entries by key: each well formed and unique, in order, and all of this version in an initial
+    review."""
     if not isinstance(ledger, list):
         raise RecordError("Review ledger must be an array")
-    entries: dict[tuple[int, str], dict[str, Any]] = {}
+    entries: dict[LedgerKey, dict[str, Any]] = {}
     for entry in ledger:
         _validate_ledger_entry(entry, version)
         if (entry["version"], entry["id"]) in entries:
@@ -810,6 +862,14 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
         raise RecordError("Review ledger entries must be ordered by version and finding ID")
     if mode == "initial" and any(entry["version"] != version for entry in ledger):
         raise RecordError("An initial review starts a fresh ledger")
+    return entries
+
+
+def _validate_opened_entries(
+    entries: dict[LedgerKey, dict[str, Any]], findings: dict[str, dict[str, Any]], version: int
+) -> None:
+    """The entries of this version are exactly this review's findings without repeats, each with its severity and
+    category."""
     for identifier, finding in findings.items():
         if "repeats" in finding:
             continue
@@ -820,47 +880,78 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
             raise RecordError(f"Review ledger entry for {identifier} does not match the finding")
     if {key[1] for key in entries if key[0] == version} != {i for i, f in findings.items() if "repeats" not in f}:
         raise RecordError("Review ledger entries of this version must be its findings without repeats")
+
+
+def _validate_ledger_judgments(
+    ledger: list[dict[str, Any]], prior_dispositions: list[dict[str, Any]], version: int
+) -> dict[str, str]:
+    """The prior dispositions are the ledger's judgments in this version. Returns them by ledger ID."""
     judged = {
         ledger_id(entry["version"], entry["id"]): item["disposition"]
         for entry in ledger
         for item in entry["dispositions"]
         if item["version"] == version
     }
-    given = {item["finding_id"]: item["disposition"] for item in record["prior_dispositions"]}
+    given = {item["finding_id"]: item["disposition"] for item in prior_dispositions}
     if judged != given:
         raise RecordError("Review prior dispositions do not match the ledger")
-    linked: list[tuple[str, tuple[int, str]]] = []
-    for identifier, finding in findings.items():
-        if "repeats" not in finding:
-            continue
-        target = finding["repeats"]
-        if not _reference(target, version):
-            raise RecordError(f"Review finding {identifier}.repeats is malformed")
-        key = (target["version"], target["id"])
-        if target["version"] == version:
-            if target["id"] == identifier:
-                raise RecordError(f"Review finding {identifier} cannot repeat itself")
-            other = findings.get(target["id"])
-            if other is None:
-                raise RecordError(f"Review finding {identifier} repeats an unknown finding: {target['id']}")
-            if "repeats" in other:
-                raise RecordError(f"Review finding {identifier} repeats a repeat: {target['id']}")
-            severity = other["severity"]
-        else:
-            entry = entries.get(key)
-            if entry is None:
-                raise RecordError(f"Review finding {identifier} repeats an unknown finding: {ledger_id(*key)}")
-            if given.get(ledger_id(*key)) not in OPEN_DISPOSITIONS:
-                raise RecordError(
-                    f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
-                    "be still_present or partially_addressed"
-                )
-            severity = entry["severity"]
-        if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
-            raise RecordError(f"Review finding {identifier} repeats a less severe finding")
-        if {"version": version, "id": identifier} not in entries[key]["repeats"]:
-            raise RecordError(f"Review finding {identifier} is not in its target's ledger entry")
-        linked.append((identifier, key))
+    return given
+
+
+def _validate_repeat_link(
+    identifier: str,
+    finding: dict[str, Any],
+    findings: dict[str, dict[str, Any]],
+    entries: dict[LedgerKey, dict[str, Any]],
+    given: dict[str, str],
+    version: int,
+) -> LedgerKey:
+    """A finding's `repeats` names a finding at least as severe, whose ledger entry lists the repeat. Returns that
+    entry's key."""
+    target = finding["repeats"]
+    if not _reference(target, version):
+        raise RecordError(f"Review finding {identifier}.repeats is malformed")
+    key = (target["version"], target["id"])
+    if target["version"] == version:
+        severity = _same_review_target_severity(identifier, target["id"], findings)
+    else:
+        severity = _earlier_target_severity(identifier, key, entries, given)
+    if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
+        raise RecordError(f"Review finding {identifier} repeats a less severe finding")
+    if {"version": version, "id": identifier} not in entries[key]["repeats"]:
+        raise RecordError(f"Review finding {identifier} is not in its target's ledger entry")
+    return key
+
+
+def _same_review_target_severity(identifier: str, target_id: str, findings: dict[str, dict[str, Any]]) -> str:
+    """The severity of the finding of this review that `identifier` repeats: another finding, not itself a repeat."""
+    if target_id == identifier:
+        raise RecordError(f"Review finding {identifier} cannot repeat itself")
+    other = findings.get(target_id)
+    if other is None:
+        raise RecordError(f"Review finding {identifier} repeats an unknown finding: {target_id}")
+    if "repeats" in other:
+        raise RecordError(f"Review finding {identifier} repeats a repeat: {target_id}")
+    return other["severity"]
+
+
+def _earlier_target_severity(
+    identifier: str, key: LedgerKey, entries: dict[LedgerKey, dict[str, Any]], given: dict[str, str]
+) -> str:
+    """The severity of the earlier finding that `identifier` repeats: an entry this review judged still open."""
+    entry = entries.get(key)
+    if entry is None:
+        raise RecordError(f"Review finding {identifier} repeats an unknown finding: {ledger_id(*key)}")
+    if given.get(ledger_id(*key)) not in OPEN_DISPOSITIONS:
+        raise RecordError(
+            f"Review finding {identifier} repeats {ledger_id(*key)}, so its disposition must "
+            "be still_present or partially_addressed"
+        )
+    return entry["severity"]
+
+
+def _validate_listed_repeats(ledger: list[dict[str, Any]], linked: list[tuple[str, LedgerKey]], version: int) -> None:
+    """The repeats of this version that the entries list are exactly this review's linked findings."""
     listed = [
         (item["id"], (entry["version"], entry["id"]))
         for entry in ledger
