@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
 
@@ -58,6 +60,67 @@ class SubstitutionContextTests(unittest.TestCase):
     def test_undeclared_tokens_and_unknown_suffixes_are_left_untouched(self) -> None:
         self.assertEqual(b"{{Y}}", render.render_file("s/a.md", b"{{Y}}", {"X": "v"}))
         self.assertEqual(b"{{X}}", render.render_file("s/image.bin", b"{{X}}", {"X": "v"}))
+
+
+class FenceTests(unittest.TestCase):
+    """The one fence detector, which rendering, ShellCheck extraction, and validation's Markdown policies share."""
+
+    def fences(self, text: str) -> list[tuple[int, int | None, str, str]]:
+        return [
+            (fence.opener, fence.closer, fence.language, fence.context)
+            for fence in render.find_fences(text.split("\n"))
+        ]
+
+    def test_backtick_and_tilde_fences_follow_commonmark(self) -> None:
+        cases = {
+            "three backticks": ("```bash\necho\n```", [(0, 2, "bash", "shell")]),
+            "tilde fence": ("~~~bash\necho\n~~~", [(0, 2, "bash", "shell")]),
+            "closer longer than the opener": ("```sh\necho\n`````", [(0, 2, "sh", "shell")]),
+            "four backticks hold a three-backtick line": (
+                "````markdown\n```bash\necho\n```\n````",
+                [(0, 4, "markdown", "text")],
+            ),
+            "a tilde closer does not close a backtick fence": ("```text\n~~~\n```", [(0, 2, "text", "text")]),
+            "a tilde fence's info may hold backticks": ("~~~bash `x`\necho\n~~~", [(0, 2, "bash", "shell")]),
+            "a backtick line with a backtick in its info is inline code": ("```a`b```\nprose", []),
+            "a closer with info is not a closer": ("```text\n```bash\n```", [(0, 2, "text", "text")]),
+            "an unclosed fence runs to the end": ("```bash\necho", [(0, None, "bash", "shell")]),
+            "an indented fence inside a list item": ("1. Run:\n   ```bash\n   echo\n   ```", [(1, 3, "bash", "shell")]),
+            "two fences": (
+                "```bash\na\n```\ntext\n~~~ps1\nb\n~~~",
+                [(0, 2, "bash", "shell"), (4, 6, "ps1", "powershell")],
+            ),
+        }
+        for name, (text, expected) in cases.items():
+            with self.subTest(case=name):
+                self.assertEqual(expected, self.fences(text))
+
+    def test_a_tilde_bash_fence_is_substituted_as_shell(self) -> None:
+        with self.assertRaisesRegex(DeployError, r"\(shell context\)"):
+            render.render_file("s/SKILL.md", b"~~~bash\necho {{X}}\n~~~\n", {"X": "O'Brien"})
+        self.assertEqual(
+            b"~~~text\necho O'Brien\n~~~\n",
+            render.render_file("s/SKILL.md", b"~~~text\necho {{X}}\n~~~\n", {"X": "O'Brien"}),
+        )
+
+    def test_an_inner_three_backtick_line_stays_in_a_four_backtick_fence(self) -> None:
+        text = b"````text\n```bash\necho {{X}}\n```\n````\n"
+        self.assertIn(b"echo O'Brien", render.render_file("s/SKILL.md", text, {"X": "O'Brien"}))
+
+    def test_shellcheck_extraction_uses_the_same_detector(self) -> None:
+        markdown = "~~~bash\necho one\n~~~\n\n````text\n```bash\necho never\n```\n````\n\n```sh\necho two\n`````\n"
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": markdown.encode("utf-8")}})
+            units = render._extract_units(staged, Path(workspace))
+            self.assertEqual(["s/SKILL.md block 1", "s/SKILL.md block 2"], [unit.origin for unit in units])
+            bodies = [unit.path.read_text(encoding="utf-8").removeprefix(render.SHELLCHECK_HEADER) for unit in units]
+        self.assertEqual(["echo one\n", "echo two\n"], bodies)
+
+    def test_an_unclosed_tilde_shell_fence_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as workspace:
+            staged = render.Staged(skills={"s": {"SKILL.md": b"~~~bash\necho\n"}})
+            with self.assertRaisesRegex(DeployError, "Unclosed Bash code fence in s/SKILL.md"):
+                render._extract_units(staged, Path(workspace))
 
 
 class NameValidationTests(unittest.TestCase):
