@@ -19,6 +19,8 @@ GIT_BASH_DRIVE = re.compile(r"^/([A-Za-z])(?:/(.*))?$", re.DOTALL)
 DRIVE_PATH = re.compile(r"^([A-Za-z]):(.*)$", re.DOTALL)
 FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 CREATE_NO_WINDOW = 0x08000000
+# The longest command line CreateProcess accepts, in characters. A tool given one path per file batches below it.
+COMMAND_LINE_LIMIT = 32_767
 INSTALL_HINTS = {
     "Git Bash": "winget install --id Git.Git",
     "ShellCheck": "winget install --id koalaman.shellcheck",
@@ -206,6 +208,13 @@ def install_hint(tool: str) -> str:
 class ToolResult:
     returncode: int
     output: str
+
+
+def command_line_length(arguments: list[str]) -> int:
+    """The characters these arguments take on a command line, quoting included, as run_tool passes them."""
+    import subprocess
+
+    return len(subprocess.list2cmdline(arguments))
 
 
 def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> ToolResult:

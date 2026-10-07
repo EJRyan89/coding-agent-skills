@@ -49,6 +49,8 @@ UNSAFE_CHARACTERS = {
     "yaml": "\"'\\#\n\r",
 }
 SHELLCHECK_HEADER = "# shellcheck shell=bash\n# shellcheck disable=SC2034,SC2154\n"
+# One ShellCheck command line's length, kept a margin below the platform's limit; more units run as further batches.
+SHELLCHECK_COMMAND_BUDGET = platform_support.COMMAND_LINE_LIMIT - 1_024
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
     "tempfile.TemporaryDirectory": "validate_executables checks rendered scripts in a throwaway directory under the "
@@ -417,28 +419,47 @@ def _check_bash_syntax(units: list[ShellUnit], bash: str) -> None:
             )
 
 
+def _shellcheck_batches(command: list[str], paths: list[str]) -> list[list[str]]:
+    """The paths in order, split so each command line stays within SHELLCHECK_COMMAND_BUDGET."""
+    batches: list[list[str]] = []
+    batch: list[str] = []
+    length = platform_support.command_line_length(command)
+    for path in paths:
+        added = 1 + platform_support.command_line_length([path])
+        if batch and length + added > SHELLCHECK_COMMAND_BUDGET:
+            batches.append(batch)
+            batch, length = [], platform_support.command_line_length(command)
+        batch.append(path)
+        length += added
+    return [*batches, batch] if batch else batches
+
+
 def _run_shellcheck(units: list[ShellUnit], shellcheck: str) -> None:
-    arguments = [platform_support.normalize(unit.path) for unit in units]
-    result = platform_support.run_tool([shellcheck, "--format=gcc", *arguments])
-    if result.returncode == 0:
-        return
+    """Lint every unit, in batches when one command line cannot hold them all, and report every finding once."""
+    command = [shellcheck, "--format=gcc"]
     origins = {platform_support.normalize(unit.path): unit for unit in units}
     reported: dict[str, list[str]] = {}
-    for line in result.output.splitlines():
-        for path, unit in origins.items():
-            if line.startswith(path + ":"):
-                reported.setdefault(path, []).append(unit.origin + line[len(path) :])
-                break
-    for unit in units:
-        path = platform_support.normalize(unit.path)
-        if path in reported:
-            prefix = (
-                "ShellCheck failed for rendered Bash block"
-                if unit.is_block
-                else ("ShellCheck failed for rendered content")
-            )
-            raise DeployError(f"ERROR: {prefix}: {unit.origin}", *reported[path])
-    raise DeployError("ERROR: ShellCheck failed for rendered content", *result.output.splitlines())
+    unattributed: list[str] = []
+    failed = False
+    for batch in _shellcheck_batches(command, list(origins)):
+        result = platform_support.run_tool([*command, *batch])
+        if result.returncode == 0:
+            continue
+        failed = True
+        for line in result.output.splitlines():
+            path = next((path for path in batch if line.startswith(path + ":")), None)
+            if path is None:
+                unattributed.append(line)
+            else:
+                reported.setdefault(path, []).append(origins[path].origin + line[len(path) :])
+    failing = [unit for unit in units if platform_support.normalize(unit.path) in reported]
+    if failing:
+        first = failing[0]
+        prefix = "ShellCheck failed for rendered " + ("Bash block" if first.is_block else "content")
+        findings = (line for unit in failing for line in reported[platform_support.normalize(unit.path)])
+        raise DeployError(f"ERROR: {prefix}: {first.origin}", *findings)
+    if failed:
+        raise DeployError("ERROR: ShellCheck failed for rendered content", *unattributed)
 
 
 POWERSHELL_PARSE = (
