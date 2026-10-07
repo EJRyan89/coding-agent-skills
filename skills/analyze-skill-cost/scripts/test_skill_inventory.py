@@ -99,6 +99,25 @@ class LocateTests(TemporaryTestCase):
             [f"AMBIGUOUS user {user.as_posix()}", f"AMBIGUOUS project-claude {project.as_posix()}"], lines[1:]
         )
 
+    def test_a_shim_that_points_to_the_project_skill_is_that_skill(self) -> None:
+        pointer = "Read and follow `../../../.claude/skills/alpha/SKILL.md` as the authoritative workflow.\n"
+        write(self.repo / ".agents" / "skills" / "alpha" / "SKILL.md", pointer)
+        project = write(self.repo / ".claude" / "skills" / "alpha" / "SKILL.md", "y")
+        code, lines, _ = self.locate("alpha", "--repo", str(self.repo))
+        self.assertEqual(0, code)
+        self.assertEqual([f"SKILL_FILE {project.as_posix()}", "SCOPE project-claude"], [lines[1], lines[3]])
+
+    def test_a_project_agents_copy_that_points_elsewhere_stays_ambiguous(self) -> None:
+        pointer = "Read and follow `../../../.claude/skills/beta/SKILL.md` as the authoritative workflow.\n"
+        agents = write(self.repo / ".agents" / "skills" / "alpha" / "SKILL.md", pointer)
+        project = write(self.repo / ".claude" / "skills" / "alpha" / "SKILL.md", "y")
+        code, lines, _ = self.locate("alpha", "--repo", str(self.repo))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [f"AMBIGUOUS project-agents {agents.as_posix()}", f"AMBIGUOUS project-claude {project.as_posix()}"],
+            lines[1:],
+        )
+
     def source_skill(self, name: str) -> Path:
         write(self.repo / "deploy-meta" / f"{name}.json", "{}")
         return write(self.repo / "skills" / name / "SKILL.md", "source")
