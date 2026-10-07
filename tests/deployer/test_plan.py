@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import os
 import shutil
+import tempfile
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,6 +17,10 @@ from unittest import mock
 from harness import DeployerTestCase
 
 from deployer import hashing, manifest, plan, report
+from deployer.context import Context, Options
+from deployer.errors import DeployError
+from deployer.paths import Paths
+from deployer.source import Skill, Source
 
 
 @dataclass(frozen=True)
@@ -377,6 +384,170 @@ class PlanTests(DeployerTestCase):
                 "KEEP": ("KEEP", "KEPT"),
             },
             report.ACTION_LABELS,
+        )
+
+
+OWN_SOURCE = "test/skills"
+OTHER_SOURCE = "other/skills"
+DEPENDENCY_BYTES = b"shared by another source\n"
+DEPENDENCY_HASH = "sha256:" + hashlib.sha256(DEPENDENCY_BYTES).hexdigest()
+
+
+class ValidateSharedAssetsTests(unittest.TestCase):
+    """plan.validate_shared_assets called directly: the mapping it returns, and each refusal's exact message in the
+    order its checks run."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="shared-assets.")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.paths = Paths(self.root / "source", self.root / "home")
+        self.paths.skills_src.mkdir(parents=True)
+        self.paths.dest_dir.mkdir(parents=True)
+
+    def shown(self, path: Path) -> str:
+        return os.fspath(path).replace("\\", "/")
+
+    def context(
+        self,
+        assets: dict[str, str],
+        skills: dict[str, list[str]],
+        owners: dict[str, str] | None = None,
+        sources: dict[str, Any] | None = None,
+    ) -> Context:
+        src = Source(OWN_SOURCE, shared_assets=assets)
+        for name, shared in skills.items():
+            src.skills[name] = Skill(name, self.paths.skills_src / name, [], shared, [], True)
+        data = manifest.Manifest(self.paths.manifest_file, {"sources": sources or {}})
+        data.owners["shared"].update(owners or {})
+        return Context(self.paths, Options(), src, {}, data, data.ownership(OWN_SOURCE), io.StringIO())
+
+    def owned_by_other(self, entry: Any) -> dict[str, Any]:
+        """A manifest in which the other source records d.md with entry."""
+        return {"owners": {"d.md": OTHER_SOURCE}, "sources": {OTHER_SOURCE: {"shared": {"d.md": entry}}}}
+
+    def installed_dependency(self) -> None:
+        (self.paths.dest_dir / "d.md").write_bytes(DEPENDENCY_BYTES)
+
+    def refusal(self, context: Context, selected: list[str]) -> str:
+        with self.assertRaises(DeployError) as caught:
+            plan.validate_shared_assets(context, selected)
+        return str(caught.exception)
+
+    def test_valid_assets_are_returned_in_source_order(self) -> None:
+        (self.paths.skills_src / "o.md").write_text("owned\n", encoding="utf-8")
+        self.installed_dependency()
+        context = self.context(
+            {"o.md": "owner", "d.md": "dependency", "unused.md": "dependency"},
+            {"alpha": ["d.md", "o.md"], "beta": ["unused.md"]},
+            **self.owned_by_other({"role": "owner", "hash": DEPENDENCY_HASH}),
+        )
+        result = plan.validate_shared_assets(context, ["alpha"])
+        self.assertEqual([("o.md", "owner"), ("d.md", "dependency"), ("unused.md", "dependency")], list(result.items()))
+        self.assertEqual({}, plan.validate_shared_assets(self.context({}, {"alpha": []}), ["alpha"]))
+
+    def test_an_unsafe_asset_name_is_refused_in_source_order(self) -> None:
+        context = self.context({"ok.md": "owner", "bad/x.md": "bogus", ".hidden": "owner"}, {})
+        self.assertEqual("ERROR: shared asset name 'bad/x.md' contains path separator", self.refusal(context, []))
+
+    def test_a_collision_with_a_skill_is_refused_before_any_role_check(self) -> None:
+        context = self.context({"zeta": "owner", "a.md": "bogus", "beta": "owner"}, {"beta": [], "zeta": []})
+        self.assertEqual("ERROR: Shared asset 'beta' collides with a skill of the same name", self.refusal(context, []))
+
+    def test_roles_are_checked_in_name_order(self) -> None:
+        context = self.context({"b.md": "owned", "a.md": "Owner"}, {})
+        self.assertEqual(
+            "ERROR: Shared asset 'a.md' has invalid role 'Owner' (must be 'owner' or 'dependency')",
+            self.refusal(context, []),
+        )
+
+    def test_an_owned_asset_must_be_a_file_in_the_source(self) -> None:
+        missing = self.paths.skills_src / "o.md"
+        message = f"ERROR: source.json declares 'o.md' as owned but file not found at {self.shown(missing)}"
+        self.assertEqual(message, self.refusal(self.context({"o.md": "owner"}, {}), []))
+        missing.mkdir()
+        self.assertEqual(message, self.refusal(self.context({"o.md": "owner"}, {}), []))
+
+    def test_a_dependency_no_selected_skill_needs_is_not_checked(self) -> None:
+        context = self.context({"d.md": "dependency"}, {"alpha": [], "beta": ["d.md"]})
+        self.assertEqual({"d.md": "dependency"}, plan.validate_shared_assets(context, ["alpha"]))
+
+    def test_a_needed_dependency_must_be_a_file_at_the_destination(self) -> None:
+        destination = self.paths.dest_dir / "d.md"
+        message = f"ERROR: Dependency 'd.md' not found at destination ({self.shown(destination)})"
+        context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]})
+        self.assertEqual(message, self.refusal(context, ["alpha"]))
+        destination.mkdir()
+        self.assertEqual(message, self.refusal(context, ["alpha"]))
+
+    def test_a_needed_dependency_needs_another_source_that_owns_it_with_a_matching_hash(self) -> None:
+        self.installed_dependency()
+        good = {"role": "owner", "hash": DEPENDENCY_HASH}
+        cases: list[tuple[dict[str, Any], str]] = [
+            ({}, "ERROR: Dependency 'd.md' has no owner in the manifest"),
+            (
+                {"owners": {"d.md": OWN_SOURCE}, "sources": {OWN_SOURCE: {"shared": {"d.md": good}}}},
+                "ERROR: Dependency 'd.md' is declared as both dependency and owned by this source",
+            ),
+            (
+                {"owners": {"d.md": OTHER_SOURCE}, "sources": {}},
+                f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has '')",
+            ),
+            (
+                self.owned_by_other("sha256:" + "0" * 64),
+                f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has '')",
+            ),
+            (
+                self.owned_by_other({"hash": DEPENDENCY_HASH}),
+                f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has '')",
+            ),
+            (
+                self.owned_by_other({"role": "dependency", "hash": DEPENDENCY_HASH}),
+                f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' does not have role 'owner' (has 'dependency')",
+            ),
+            *(
+                (
+                    self.owned_by_other({"role": "owner", **hashed}),
+                    f"ERROR: Dependency 'd.md' owner '{OTHER_SOURCE}' has no valid SHA-256 hash in manifest",
+                )
+                for hashed in ({}, {"hash": 7}, {"hash": "0" * 64}, {"hash": "sha256:" + "A" * 64})
+            ),
+            (
+                self.owned_by_other({"role": "owner", "hash": "sha256:" + "0" * 64}),
+                "ERROR: Dependency 'd.md' at destination does not match owner's manifest hash",
+            ),
+        ]
+        for recorded, message in cases:
+            with self.subTest(message=message, recorded=recorded):
+                context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]}, **recorded)
+                self.assertEqual(message, self.refusal(context, ["alpha"]))
+        context = self.context({"d.md": "dependency"}, {"alpha": ["d.md"]}, **self.owned_by_other(good))
+        self.assertEqual({"d.md": "dependency"}, plan.validate_shared_assets(context, ["alpha"]))
+
+    def test_assets_are_checked_one_at_a_time_in_name_order(self) -> None:
+        context = self.context({"b.md": "owner", "a.md": "dependency"}, {"alpha": ["a.md"]})
+        self.assertEqual(
+            f"ERROR: Dependency 'a.md' not found at destination ({self.shown(self.paths.dest_dir / 'a.md')})",
+            self.refusal(context, ["alpha"]),
+        )
+        context = self.context({"b.md": "dependency", "a.md": "owner"}, {"alpha": ["b.md"]})
+        self.assertEqual(
+            "ERROR: source.json declares 'a.md' as owned but file not found at "
+            f"{self.shown(self.paths.skills_src / 'a.md')}",
+            self.refusal(context, ["alpha"]),
+        )
+
+    def test_a_shared_dependency_the_source_does_not_declare_is_refused_last_in_selection_order(self) -> None:
+        context = self.context({}, {"alpha": ["x.md"], "beta": ["y.md"], "gamma": ["z.md"]})
+        self.assertEqual(
+            "ERROR: Skill 'beta' declares shared_dep 'y.md' but it is not in source.json shared_assets",
+            self.refusal(context, ["beta", "alpha"]),
+        )
+        context = self.context({"o.md": "owner"}, {"alpha": ["x.md"]})
+        self.assertEqual(
+            "ERROR: source.json declares 'o.md' as owned but file not found at "
+            f"{self.shown(self.paths.skills_src / 'o.md')}",
+            self.refusal(context, ["alpha"]),
         )
 
 

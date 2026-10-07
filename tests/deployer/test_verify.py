@@ -241,6 +241,81 @@ class ConverseTests(DeployerTestCase):
                 process.kill.assert_called_once_with()
                 process.wait.assert_called_once_with()
 
+    def test_requests_go_one_per_line_and_stdin_closes_when_no_answer_is_awaited(self) -> None:
+        # The program reads to the end of stdin, so it answers only once stdin closes.
+        arguments = self.program("""
+            import sys
+            for line in sys.stdin.read().splitlines():
+                print("got " + line)
+        """)
+        self.assertEqual(['got {"id": 0}', "got second"], self.talk(arguments, ['{"id": 0}', "second"]))
+
+    def test_lines_before_the_awaited_answer_are_returned_with_it(self) -> None:
+        arguments = self.program("""
+            import sys
+            sys.stdin.readline()
+            print("progress\\nstill going", flush=True)
+            print("done", flush=True)
+            for line in sys.stdin:
+                pass
+        """)
+        self.assertEqual(
+            ["progress", "still going", "done"],
+            self.talk(arguments, ["ask"], answered=lambda line: line.startswith("done")),
+        )
+
+    def test_a_program_that_exits_without_reading_names_how_it_ended(self) -> None:
+        # Writing to a program that has already exited fails; its exit code and last error line say why.
+        requests = ["x" * 65536] * 16
+        failing = self.program("""
+            import sys
+            print("first", file=sys.stderr)
+            print("refused", file=sys.stderr)
+            sys.exit(5)
+        """)
+        with self.assertRaises(ListingError) as caught:
+            self.talk(failing, requests)
+        self.assertEqual("it failed with exit code 5: refused", str(caught.exception))
+        with self.assertRaises(ListingError) as caught:
+            self.talk(failing, requests, answered=lambda line: True)
+        self.assertEqual("it exited before answering with exit code 5: refused", str(caught.exception))
+        silent = self.program("print('not an answer')\n")
+        self.assertEqual(["not an answer"], self.talk(silent, requests))
+        with self.assertRaises(ListingError) as caught:
+            self.talk(silent, requests, answered=lambda line: False)
+        self.assertEqual("it exited before answering with exit code 0", str(caught.exception))
+
+    def test_the_timeout_is_named_as_given(self) -> None:
+        arguments = self.program("import time\ntime.sleep(60)\n")
+        for timeout, shown in ((0.5, "0.5"), (1.0, "1")):
+            with self.subTest(timeout=timeout), self.assertRaises(ListingError) as caught:
+                self.talk(arguments, answered=lambda line: True, timeout=timeout)
+            self.assertEqual(f"no answer within {shown} seconds", str(caught.exception))
+
+    def test_stdin_stays_open_while_an_answer_is_awaited(self) -> None:
+        # Like the Codex app server, the program stops as soon as stdin ends, before its slower answer.
+        arguments = self.program("""
+            import os, sys, threading, time
+            sys.stdin.readline()
+            threading.Thread(target=lambda: (sys.stdin.read(), os._exit(7)), daemon=True).start()
+            time.sleep(0.5)
+            print("done", flush=True)
+            time.sleep(60)
+        """)
+        with mock.patch.object(discovery, "CLOSE_GRACE", 0.5):
+            self.assertEqual(["done"], self.talk(arguments, ["ask"], answered=lambda line: line == "done\n"))
+
+    def test_a_program_that_runs_on_after_its_answer_is_killed_after_the_grace(self) -> None:
+        arguments = self.program("""
+            import time
+            print("done", flush=True)
+            time.sleep(60)
+        """)
+        started = time.monotonic()
+        with mock.patch.object(discovery, "CLOSE_GRACE", 0.5):
+            self.assertEqual(["done"], self.talk(arguments, ["ask"], answered=lambda line: line == "done\n"))
+        self.assertLess(time.monotonic() - started, 10)
+
 
 class VerifyCommandTests(DeployerTestCase):
     def setUp(self) -> None:

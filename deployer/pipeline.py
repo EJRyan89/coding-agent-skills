@@ -295,37 +295,14 @@ def execute(
     stdin = stdin if stdin is not None else sys.stdin
     debug = debug_requested(namespace.debug)
     try:
-        platform_support.ensure_supported()
-        source_id = source.load_source_id(paths)
-        options = parse_arguments(namespace, source_id)
-        if options.canary_home:
-            paths = Paths(paths.source_dir, canary_home(options.canary_home))
-        validate_managed_roots(paths)
-        # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
-        values = (
-            {}
-            if options.canary_home
-            else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
-        )
-        src = source.discover(paths, source_id)
+        paths, source_id, options, values, src = _prepare(namespace, paths)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
     if options.dry_run:
-        try:
-            if _stop_for_pending_recovery(paths):
-                return 0
-            return _deploy(paths, options, src, values, stdin, None)
-        except (DeployError, OSError, KeyboardInterrupt) as exc:
-            return fail(exc, debug, "finish the dry run")
+        return _dry_run(paths, options, src, values, stdin, debug)
     try:
-        if options.canary_home:
-            # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it.
-            claim_canary_home(paths.home)
-            values = config.canary(source_id, paths.home, paths.source_dir)
-        else:
-            source.reject_linked_worktree(paths)
-        held = lock.acquire(paths, probe)
+        values, held = _claim(paths, options, source_id, values, probe)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     try:
@@ -335,13 +312,7 @@ def execute(
         held.release()
         return exc.exit_code
     if not journal.recover_incomplete(paths):
-        print("", file=sys.stderr)
-        print("ERROR: Recovery failed, so nothing was deployed.", file=sys.stderr)
-        print(
-            f"Reconcile the run named above by hand, then rerun with --dry-run. {see_recovery(RECOVERY_FAILED)}",
-            file=sys.stderr,
-        )
-        print("", file=sys.stderr)
+        _report_failed_recovery()
         held.release()
         return 1
     # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
@@ -354,25 +325,82 @@ def execute(
         held.release()
         return exc.exit_code
     except (Exception, KeyboardInterrupt) as exc:
-        if isinstance(exc, DeployError):
-            print_error(exc, debug)
-            code = exc.exit_code
-        else:
-            print(f"ERROR: Unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
-            if debug:
-                print_traceback(exc)
-            code = 130 if isinstance(exc, KeyboardInterrupt) else 1
-        print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
-        if journal.recover_incomplete(paths):
-            held.release()
-        else:
-            print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
-            print(
-                "The next run reclaims the lock and retries recovery. If that fails too, "
-                f"reconcile the run by hand. {see_recovery(RECOVERY_FAILED)}",
-                file=sys.stderr,
-            )
-        print("", file=sys.stderr)
-        return code
+        return _recover_from_failure(exc, debug, paths, held)
     held.release()
+    return code
+
+
+def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, Options, dict[str, str], source.Source]:
+    """The run's paths (a canary home's, when given), source ID, options, configured values, and source."""
+    platform_support.ensure_supported()
+    source_id = source.load_source_id(paths)
+    options = parse_arguments(namespace, source_id)
+    if options.canary_home:
+        paths = Paths(paths.source_dir, canary_home(options.canary_home))
+    validate_managed_roots(paths)
+    # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
+    values = (
+        {}
+        if options.canary_home
+        else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
+    )
+    return paths, source_id, options, values, source.discover(paths, source_id)
+
+
+def _dry_run(
+    paths: Paths, options: Options, src: source.Source, values: dict[str, str], stdin: TextIO, debug: bool
+) -> int:
+    """Report what a deployment would do, holding no lock and changing nothing, unless a recovery is pending."""
+    try:
+        if _stop_for_pending_recovery(paths):
+            return 0
+        return _deploy(paths, options, src, values, stdin, None)
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        return fail(exc, debug, "finish the dry run")
+
+
+def _claim(
+    paths: Paths, options: Options, source_id: str, values: dict[str, str], probe: lock.ProcessProbe
+) -> tuple[dict[str, str], lock.Lock]:
+    """Claim a canary home and its values, or refuse a linked worktree; then take the lock."""
+    if options.canary_home:
+        # A throwaway home is discarded with its recorded source path, so a linked worktree may deploy into it.
+        claim_canary_home(paths.home)
+        values = config.canary(source_id, paths.home, paths.source_dir)
+    else:
+        source.reject_linked_worktree(paths)
+    return values, lock.acquire(paths, probe)
+
+
+def _report_failed_recovery() -> None:
+    print("", file=sys.stderr)
+    print("ERROR: Recovery failed, so nothing was deployed.", file=sys.stderr)
+    print(
+        f"Reconcile the run named above by hand, then rerun with --dry-run. {see_recovery(RECOVERY_FAILED)}",
+        file=sys.stderr,
+    )
+    print("", file=sys.stderr)
+
+
+def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
+    """Report a failed deployment, then recover its journal and release the lock, or keep both when that fails."""
+    if isinstance(exc, DeployError):
+        print_error(exc, debug)
+        code = exc.exit_code
+    else:
+        print(f"ERROR: Unexpected {type(exc).__name__}: {exc}", file=sys.stderr)
+        if debug:
+            print_traceback(exc)
+        code = 130 if isinstance(exc, KeyboardInterrupt) else 1
+    print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
+    if journal.recover_incomplete(paths):
+        held.release()
+    else:
+        print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
+        print(
+            "The next run reclaims the lock and retries recovery. If that fails too, "
+            f"reconcile the run by hand. {see_recovery(RECOVERY_FAILED)}",
+            file=sys.stderr,
+        )
+    print("", file=sys.stderr)
     return code
