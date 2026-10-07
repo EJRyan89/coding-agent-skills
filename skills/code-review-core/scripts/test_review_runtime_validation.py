@@ -959,6 +959,12 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("supports",), ["re-review"]),
         _entrypoint_result(supports=["re-review"]),
     ),
+    (
+        "a materialization.json below the root, where the record is not written",
+        _entrypoint_manifest,
+        _put(("resources",), ["references/materialization.json"]),
+        _entrypoint_result(resources=["references/materialization.json"]),
+    ),
     ("specialists", _specialists_manifest, _as_is, _specialists_result()),
     (
         "specialists that review uncovered files",
@@ -1179,6 +1185,20 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         RESERVED,
     ),
     (
+        "a reserved entrypoint resource in another case",
+        _entrypoint_manifest,
+        _put(("resources",), ["Materialization.json"]),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved entrypoint in upper case",
+        _entrypoint_manifest,
+        _put(("entrypoint",), "MATERIALIZATION.JSON"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
         "another kind",
         _specialists_manifest,
         _put(("kind",), "entrypoint"),
@@ -1259,6 +1279,20 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "a reserved condition script",
         _specialists_manifest,
         _put(("conditions", "window", "script"), "materialization.json"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved resource in another case",
+        _specialists_manifest,
+        _put(("resources",), ["Materialization.json"]),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved profile in upper case",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "MATERIALIZATION.JSON"),
         RuntimeContractError,
         RESERVED,
     ),
@@ -1365,7 +1399,8 @@ class AdapterManifestValidationTests(unittest.TestCase):
 
 class ReservedPathMaterializationTests(unittest.TestCase):
     """materialize_reviewer writes its own record to materialization.json, so a trusted commit that holds a reviewer
-    file at that path must never reach it: the file would be written, then replaced by the record."""
+    file at that path, in any case (Windows file systems ignore it), must never reach it: the file would be written,
+    then replaced by the record."""
 
     @staticmethod
     def _git(path: Path, *arguments: str) -> str:
@@ -1376,30 +1411,75 @@ class ReservedPathMaterializationTests(unittest.TestCase):
             raise AssertionError(result.stderr)
         return result.stdout.strip()
 
-    def test_a_reserved_path_in_an_entrypoint_manifest_materializes_nothing(self) -> None:
-        placements = {
-            "entrypoint": {"entrypoint": "materialization.json", "resources": [], "agent_profiles": []},
-            "resource": {"entrypoint": "SKILL.md", "resources": ["materialization.json"], "agent_profiles": []},
-            "agent profile": {"entrypoint": "SKILL.md", "resources": [], "agent_profiles": ["materialization.json"]},
+    def _commit(self, checkout: Path, reserved: str) -> str:
+        """A repository whose only commit holds SKILL.md and a reviewer file named reserved."""
+        checkout.mkdir()
+        self._git(checkout, "init", "-b", "main")
+        (checkout / "SKILL.md").write_text("# Reviewer\n", encoding="utf-8")
+        (checkout / reserved).write_text('{"reviewer": "file"}\n', encoding="utf-8")
+        self._git(checkout, "add", ".")
+        self._git(
+            checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "both"
+        )
+        return self._git(checkout, "rev-parse", "HEAD")
+
+    def test_a_reserved_path_in_either_schema_materializes_nothing(self) -> None:
+        specialists = {
+            "schema_version": 2,
+            "id": "team-specialists",
+            "protocol_version": 1,
+            "kind": "specialists",
+            "supports": ["initial"],
+            "required_capabilities": ["agent-delegation", "read-diff"],
+            "specialists": [
+                {
+                    "id": "python-reviewer",
+                    "category": "Python",
+                    "profile": "SKILL.md",
+                    "include": [r"\.py$"],
+                    "exclude": [],
+                    "resources": [],
+                    "when": None,
+                }
+            ],
+            "conditions": {},
         }
+        # (name, the reviewer file's name, the manifest that declares it)
+        cases: list[tuple[str, str, dict[str, Any]]] = [
+            (
+                "entrypoint",
+                "materialization.json",
+                {**_entrypoint_manifest(), "entrypoint": "materialization.json", "resources": [], "agent_profiles": []},
+            ),
+            (
+                "resource",
+                "materialization.json",
+                {**_entrypoint_manifest(), "resources": ["materialization.json"], "agent_profiles": []},
+            ),
+            (
+                "agent profile",
+                "materialization.json",
+                {**_entrypoint_manifest(), "resources": [], "agent_profiles": ["materialization.json"]},
+            ),
+            (
+                "resource in another case",
+                "Materialization.json",
+                {**_entrypoint_manifest(), "resources": ["Materialization.json"], "agent_profiles": []},
+            ),
+            (
+                "specialists resource in another case",
+                "MATERIALIZATION.JSON",
+                {**specialists, "resources": ["MATERIALIZATION.JSON"]},
+            ),
+        ]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            checkout = root / "checkout"
-            checkout.mkdir()
-            self._git(checkout, "init", "-b", "main")
-            (checkout / "SKILL.md").write_text("# Reviewer\n", encoding="utf-8")
-            (checkout / "materialization.json").write_text('{"reviewer": "file"}\n', encoding="utf-8")
-            self._git(checkout, "add", ".")
-            self._git(
-                checkout, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "both"
-            )
-            commit = self._git(checkout, "rev-parse", "HEAD")
-            for name, paths in placements.items():
+            for index, (name, reserved, manifest) in enumerate(cases):
                 with self.subTest(name):
-                    manifest = {**_entrypoint_manifest(), **paths}
-                    destination = root / name.replace(" ", "-")
+                    commit = self._commit(root / f"checkout-{index}", reserved)
+                    destination = root / f"destination-{index}"
                     with self.assertRaises(RuntimeContractError) as caught:
-                        review_runtime.materialize_reviewer(checkout, commit, manifest, destination)
+                        review_runtime.materialize_reviewer(root / f"checkout-{index}", commit, manifest, destination)
                     self.assertEqual(RESERVED, str(caught.exception))
                     self.assertFalse(destination.exists())
 
