@@ -16,8 +16,11 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
-from typing import Any, NamedTuple, Protocol, TypeVar
+from typing import IO, Any, NamedTuple, Protocol, TypeVar
+
+from bounded_process import Finished, run_bounded
 
 T = TypeVar("T")
 
@@ -40,6 +43,7 @@ NETWORK_MARKERS = (
 )
 GRAPHQL_KINDS = {"RATE_LIMITED": "rate_limit", "NOT_FOUND": "not_found", "FORBIDDEN": "forbidden"}
 RETRYABLE_KINDS = frozenset({"rate_limit"})
+DEFAULT_TIMEOUT_SECONDS = 300.0
 MISSING_CLI = "GitHub CLI executable 'gh' was not found; install GitHub CLI and authenticate first"
 
 
@@ -85,27 +89,31 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", "surrogateescape")
 
 
-def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
+def _bounded(arguments: Sequence[str], timeout: float, stdout: IO[bytes] | None = None) -> Finished:
+    """Run gh through the bounded, non-interactive layer, classifying why it could not run or finish."""
+    try:
+        return run_bounded(arguments, timeout, stdout=stdout)
+    except FileNotFoundError as exc:
+        raise GitHubError(MISSING_CLI, kind="prerequisite") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitHubError(f"GitHub CLI did not finish within {timeout:g} seconds", kind="timeout") from exc
+    except OSError as exc:
+        raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
+
+
+def subprocess_runner(arguments: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> CommandResult:
     """Run a command; output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte."""
-    try:
-        process = subprocess.run(list(arguments), capture_output=True, check=False)
-    except FileNotFoundError as exc:
-        raise GitHubError(MISSING_CLI, kind="prerequisite") from exc
-    except OSError as exc:
-        raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
-    return CommandResult(process.returncode, _decode(process.stdout), _decode(process.stderr))
+    finished = _bounded(arguments, timeout)
+    return CommandResult(finished.returncode, _decode(finished.stdout), _decode(finished.stderr))
 
 
-def subprocess_downloader(arguments: Sequence[str], target: Path) -> CommandResult:
+def subprocess_downloader(
+    arguments: Sequence[str], target: Path, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
+) -> CommandResult:
     """Run a command with its stdout written to `target` byte for byte; the result's stdout is empty."""
-    try:
-        with target.open("wb") as handle:
-            process = subprocess.run(list(arguments), stdout=handle, stderr=subprocess.PIPE, check=False)
-    except FileNotFoundError as exc:
-        raise GitHubError(MISSING_CLI, kind="prerequisite") from exc
-    except OSError as exc:
-        raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
-    return CommandResult(process.returncode, "", _decode(process.stderr))
+    with target.open("wb") as handle:
+        finished = _bounded(arguments, timeout, handle)
+    return CommandResult(finished.returncode, "", _decode(finished.stderr))
 
 
 # surrogateescape decodes each byte that is not UTF-8 to one of these, and never yields one otherwise.
@@ -210,23 +218,28 @@ def _identity(result: CommandResult) -> CommandResult:
 
 
 class GitHubClient:
-    """Runs gh, classifies its failures, and waits out rate limits with one bounded backoff policy."""
+    """Runs gh, classifies its failures, and waits out rate limits with one bounded backoff policy.
+
+    Every gh command reads no stdin, shows no prompt, and fails as a `timeout` when it runs longer than `timeout`
+    seconds; that bound is the default runners', so an injected runner keeps its own.
+    """
 
     def __init__(
         self,
-        runner: Runner = subprocess_runner,
+        runner: Runner | None = None,
         *,
         sleeper: Sleeper | None = None,
         clock: Clock | None = None,
         backoff: Backoff = BACKOFF,
-        downloader: Downloader = subprocess_downloader,
+        downloader: Downloader | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
-        self.runner = runner
+        self.runner = runner or partial(subprocess_runner, timeout=timeout)
         # Looked up per client, so a test that patches time.sleep reaches a client built deep inside a call.
         self.sleeper = sleeper or time.sleep
         self.clock = clock or time.time
         self.backoff = backoff
-        self.downloader = downloader
+        self.downloader = downloader or partial(subprocess_downloader, timeout=timeout)
 
     def request(
         self,

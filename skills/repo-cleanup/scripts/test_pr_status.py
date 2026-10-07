@@ -13,6 +13,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from bounded_process import Finished
 from github_client import CommandResult
 from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
 
@@ -144,7 +145,7 @@ class ClassifyTests(unittest.TestCase):
 
     def test_gh_missing_from_the_shared_runner_fails_closed(self) -> None:
         with (
-            mock.patch("subprocess.run", side_effect=FileNotFoundError("gh")),
+            mock.patch("github_client.run_bounded", side_effect=FileNotFoundError("gh")),
             self.assertRaisesRegex(QueryError, "could not run gh: GitHub CLI executable 'gh' was not found"),
         ):
             classify("owner/repo", "topic", TIP)
@@ -169,7 +170,7 @@ class ClassifyTests(unittest.TestCase):
     def test_output_that_is_not_utf8_is_replaced_instead_of_failing(self) -> None:
         # A pull request field gh prints can hold any bytes; strict decoding used to end the sweep with a traceback.
         listed = json.dumps([dict(pull("MERGED"), title="TITLE")]).replace("TITLE", "caf\xe9").encode("latin-1")
-        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, listed, b"")):
+        with mock.patch("github_client.run_bounded", return_value=Finished(0, listed, b"")):
             self.assertEqual("MERGED", classify("owner/repo", "topic", TIP))
 
 
