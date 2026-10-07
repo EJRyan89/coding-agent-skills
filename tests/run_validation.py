@@ -916,7 +916,26 @@ def _platform_scanned_files(root: Path) -> list[Path]:
 
 def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[int, str]]:
     """The platform tokens a module's code names, as (line, token), ignoring comments, docstrings, and test cases."""
-    docstrings = {
+    docstrings = _docstring_ids(tree)
+    command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
+    found: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST) -> None:
+        if _is_test_case(node):
+            return  # A test names what it tests, and its fixtures name tokens on purpose.
+        if _assigns_table(node, skipped_tables):
+            return
+        found.extend(_platform_node_names(node, docstrings, command))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
+def _docstring_ids(tree: ast.Module) -> set[int]:
+    """The id of each docstring's node: the module's, and each class's and function's."""
+    return {
         id(node.body[0].value)
         for node in ast.walk(tree)
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
@@ -925,55 +944,72 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
         and isinstance(node.body[0].value, ast.Constant)
         and isinstance(node.body[0].value.value, str)
     }
-    command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
-    found: list[tuple[int, str]] = []
 
-    def module_token(line: int, module: str) -> bool:
-        top = module.split(".")[0]
-        if top in PLATFORM_TOKENS["module"]:
-            found.append((line, top))
+
+def _is_test_case(node: ast.AST) -> bool:
+    return isinstance(node, ast.ClassDef) and any(
+        (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
+        for base in node.bases
+    )
+
+
+def _assigns_table(node: ast.AST, skipped_tables: set[str]) -> bool:
+    """Whether node assigns one of skipped_tables, by name, with or without an annotation."""
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id in skipped_tables for target in targets):
             return True
-        return False
+    return False
 
-    def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.ClassDef) and any(
-            (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
-            for base in node.bases
-        ):
-            return  # A test names what it tests, and its fixtures name tokens on purpose.
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id in skipped_tables for target in targets):
-                return
-        if isinstance(node, ast.Attribute):
-            qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
-            if qualified in PLATFORM_TOKENS["qualified"]:
-                found.append((node.lineno, qualified))
-            elif node.attr in PLATFORM_TOKENS["attribute"]:
-                found.append((node.lineno, node.attr))
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                module_token(node.lineno, alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if not module_token(node.lineno, module):
-                for alias in node.names:
-                    qualified = f"{module}.{alias.name}"
-                    if qualified in PLATFORM_TOKENS["qualified"]:
-                        found.append((node.lineno, qualified))
-                    elif alias.name in PLATFORM_TOKENS["attribute"]:
-                        found.append((node.lineno, alias.name))
-        elif isinstance(node, ast.keyword) and node.arg in PLATFORM_TOKENS["keyword"]:
-            found.append((node.lineno, node.arg))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
-            # Equality catches an environment lookup or entry, never prose that mentions the variable.
-            if node.value in PLATFORM_TOKENS["variable"]:
-                found.append((node.lineno, node.value))
-            found.extend((node.lineno, name) for name in sorted(set(command.findall(node.value))))
-        for child in ast.iter_child_nodes(node):
-            visit(child)
 
-    visit(tree)
+def _platform_node_names(node: ast.AST, docstrings: set[int], command: re.Pattern[str]) -> list[tuple[int, str]]:
+    """The platform tokens node itself names, without its children's."""
+    if isinstance(node, ast.Attribute):
+        return _platform_attribute_names(node)
+    if isinstance(node, ast.Import):
+        return [found for alias in node.names for found in _platform_module_name(node.lineno, alias.name)]
+    if isinstance(node, ast.ImportFrom):
+        return _platform_import_from_names(node)
+    if isinstance(node, ast.keyword) and node.arg in PLATFORM_TOKENS["keyword"]:
+        return [(node.lineno, node.arg)]
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+        return _platform_string_names(node.lineno, node.value, command)
+    return []
+
+
+def _platform_module_name(line: int, module: str) -> list[tuple[int, str]]:
+    top = module.split(".")[0]
+    return [(line, top)] if top in PLATFORM_TOKENS["module"] else []
+
+
+def _platform_attribute_names(node: ast.Attribute) -> list[tuple[int, str]]:
+    qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
+    if qualified in PLATFORM_TOKENS["qualified"]:
+        return [(node.lineno, qualified)]
+    if node.attr in PLATFORM_TOKENS["attribute"]:
+        return [(node.lineno, node.attr)]
+    return []
+
+
+def _platform_import_from_names(node: ast.ImportFrom) -> list[tuple[int, str]]:
+    """The module's token, or else each imported name that is a token."""
+    module = node.module or ""
+    found = _platform_module_name(node.lineno, module)
+    if found:
+        return found
+    for alias in node.names:
+        qualified = f"{module}.{alias.name}"
+        if qualified in PLATFORM_TOKENS["qualified"]:
+            found.append((node.lineno, qualified))
+        elif alias.name in PLATFORM_TOKENS["attribute"]:
+            found.append((node.lineno, alias.name))
+    return found
+
+
+def _platform_string_names(line: int, value: str, command: re.Pattern[str]) -> list[tuple[int, str]]:
+    # Equality catches an environment lookup or entry, never prose that mentions the variable.
+    found = [(line, value)] if value in PLATFORM_TOKENS["variable"] else []
+    found.extend((line, name) for name in sorted(set(command.findall(value))))
     return found
 
 
