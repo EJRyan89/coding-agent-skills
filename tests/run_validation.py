@@ -1737,6 +1737,47 @@ def untested_module_problems(root: Path) -> list[str]:
     return problems
 
 
+THREAT_MODEL_DOC = "docs/code-review-operations-contract.md"
+THREAT_MODEL_HEADING = "## Threat model"
+THREAT_MODEL_SUITES = "skills/code-review-core/scripts"
+CITED_TEST = re.compile(r"`(test_[\w-]+\.py)::(test_\w+)`")
+
+
+def threat_model_test_problems(root: Path) -> list[str]:
+    """Report each row of the code-review threat model that names no test, and each `<suite>::<test>` it names that is
+    not a test function in that suite under skills/code-review-core/scripts/."""
+    section = _markdown_section((root / THREAT_MODEL_DOC).read_text(encoding="utf-8"), THREAT_MODEL_HEADING)
+    rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
+    if not rows:
+        return [f"{THREAT_MODEL_DOC} has no table under {THREAT_MODEL_HEADING!r}"]
+    defined: dict[str, set[str] | None] = {}
+    problems: list[str] = []
+    for row in rows:
+        cited = CITED_TEST.findall(row)
+        if not cited:
+            problems.append(f"{THREAT_MODEL_DOC}: the threat-model row {row.split('|')[1].strip()!r} names no test")
+        for suite, test in cited:
+            if suite not in defined:
+                path = root / THREAT_MODEL_SUITES / suite
+                defined[suite] = (
+                    {
+                        node.name
+                        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    }
+                    if path.is_file()
+                    else None
+                )
+            names = defined[suite]
+            if names is None:
+                problems.append(
+                    f"{THREAT_MODEL_DOC} names {suite}::{test}, but {THREAT_MODEL_SUITES}/{suite} does not exist"
+                )
+            elif test not in names:
+                problems.append(f"{THREAT_MODEL_DOC} names {suite}::{test}, which {suite} does not define")
+    return problems
+
+
 # The upgrade-notes guard: the contract files the Versioning section of docs/releasing.md judges a release by, read at
 # the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
 # needs no entry.
@@ -5430,6 +5471,47 @@ class TestedModulePolicy(unittest.TestCase):
     def test_package_initializers_need_no_test(self) -> None:
         self.assertEqual(
             [], self.problems({"deployer/__init__.py": "", "tools/__init__.py": "", "skills/s/scripts/__init__.py": ""})
+        )
+
+
+class ThreatModelPolicy(unittest.TestCase):
+    TABLE = (
+        "# Contract\n\n## Threat model\n\n"
+        "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
+        "| Diff text | Data only. | `test_a.py::test_held`, `test_a.py::test_in_a_class` |\n"
+        "| Paths | Excluded. | `test_a.py::test_gone`, `test_missing.py::test_held` |\n"
+        "| Links | Excluded. | the snapshot tests |\n\n## Formats\n\n| `not_cited.py::test_x` |\n"
+    )
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            return threat_model_test_problems(root)
+
+    def test_every_test_the_threat_model_names_exists(self) -> None:
+        self.assertEqual([], threat_model_test_problems(REPOSITORY_ROOT))
+
+    def test_a_missing_test_a_missing_suite_and_a_row_without_a_test_fail(self) -> None:
+        suite = (
+            "import unittest\n\n\ndef test_held() -> None:\n    pass\n\n\n"
+            "class Tests(unittest.TestCase):\n    def test_in_a_class(self) -> None:\n        pass\n\n\n"
+            "# test_gone is only a comment\n"
+        )
+        self.assertEqual(
+            [
+                f"{THREAT_MODEL_DOC} names test_a.py::test_gone, which test_a.py does not define",
+                f"{THREAT_MODEL_DOC} names test_missing.py::test_held, but {THREAT_MODEL_SUITES}/test_missing.py does "
+                "not exist",
+                f"{THREAT_MODEL_DOC}: the threat-model row 'Links' names no test",
+            ],
+            self.problems({THREAT_MODEL_DOC: self.TABLE, f"{THREAT_MODEL_SUITES}/test_a.py": suite}),
+        )
+
+    def test_a_contract_without_the_table_fails(self) -> None:
+        self.assertEqual(
+            [f"{THREAT_MODEL_DOC} has no table under '## Threat model'"],
+            self.problems({THREAT_MODEL_DOC: "# Contract\n\n## Formats\n"}),
         )
 
 
