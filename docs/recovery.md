@@ -31,7 +31,11 @@ Either way, the staging directory is then deleted and the deployment you asked f
 
 ## When recovery fails
 
-Recovery stops instead of guessing when what it finds on disk does not match the journal: an item changed after the run installed it, a backup is missing, or an item and its `.deploying-bak` both exist. It then refuses to deploy, keeps the journal, and prints a `WARNING` line for each item it could not reconcile, followed by the run ID, whether that run was committed, and its staging directory. To reconcile it by hand:
+Recovery stops instead of guessing when what it finds on disk does not match the journal: an item changed after the run installed it, a backup is missing, or an item and its `.deploying-bak` both exist. It then refuses to deploy, keeps the journal, and prints a `WARNING` line for each item it could not reconcile, followed by the run ID, whether that run was committed, and its staging directory. Other runs are still recovered.
+
+A file recovery cannot read, move, or delete, usually because an editor or an antivirus scanner holds it open, stops it the same way, with `ERROR: Recovery of run <run-id> failed at <path>` and the reason. Close whatever holds that path and rerun; recovery repeats safely, picking up where it stopped. Reconcile by hand only if it fails again.
+
+To reconcile a run by hand:
 
 1. Do not rerun with `--force`; it would replace items whose correct state you have not checked yet.
 2. Open the run's `journal.jsonl`. Each line names an `item` and a `root`: no `root` means `~/.claude/skills`, `agents` means `~/.agents/skills`, and `claude-agents` means `~/.claude/agents`. The items the `WARNING` lines name are the ones to look at.

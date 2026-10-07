@@ -537,6 +537,46 @@ class LockTests(DeployerTestCase):
         self.assertFalse(lock_dir.exists())
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def denied_at(self, path: Path) -> mock._patch:
+        real_remove = fsops.remove
+
+        def remove(target: Path) -> None:
+            if target == path:
+                raise PermissionError(13, "Access is denied", str(path))
+            real_remove(target)
+
+        return mock.patch("deployer.fsops.remove", side_effect=remove)
+
+    def test_a_lock_that_cannot_be_released_is_reported_and_reclaimed_next_time(self) -> None:
+        self.fixture()
+        lock_dir = self.home / ".claude" / "deployer" / ".deploy.lock.d"
+        with self.denied_at(lock_dir):
+            result = self.deploy_ok("--all")
+        self.assertIn(
+            f"WARNING: Could not remove the deployment lock {forward(lock_dir)}: Access is denied. "
+            "The next deployment reclaims it.\n",
+            result.output,
+        )
+        self.assertNotIn("Traceback", result.output)
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+        result = self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.assertIn("Stale lock detected", result.output)
+        self.assertFalse(lock_dir.exists())
+
+    def test_a_reclaimed_stale_lock_that_cannot_be_deleted_is_reported_and_kept(self) -> None:
+        self.fixture()
+        self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
+        stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
+        with self.denied_at(stale):
+            result = self.deploy_ok("--all", probe=probe_returning(False, None))
+        self.assertIn(
+            f"WARNING: Could not delete the stale lock moved to {forward(stale)}: Access is denied. "
+            "Delete it once no deployment is running.\n",
+            result.output,
+        )
+        self.assertTrue((stale / "info.json").is_file())
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
     def test_manifest_ownership_is_loaded_after_lock_acquisition(self) -> None:
         self.make_source_json("test/source-a")
         self.make_skill("alpha", "Identical content")

@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import DeployerTestCase
+from harness import DeployerTestCase, forward
 
-from deployer import fsops, hashing, journal, render
+from deployer import fsops, hashing, journal, platform_support, render
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -19,7 +20,37 @@ def journal_line(entry: dict) -> str:
     return json.dumps(entry, separators=(",", ":")) + "\n"
 
 
-class RecoveryTests(DeployerTestCase):
+SEE_RECOVERY_FAILED = 'See "When recovery fails" in docs/recovery.md.'
+
+
+def backup_entry(item: str, backup_hash: str, retain: bool = False, run_id: str = "", root: str = "") -> dict:
+    prefix = {"": "skills", "agents": "agents", "claude-agents": "claude-agents"}[root]
+    entry: dict = {"op": "backup", **({"root": root} if root else {})}
+    entry.update(
+        {
+            "item": item,
+            "from": f"{prefix}/{item}",
+            "to": f"{prefix}/{item}.deploying-bak",
+            "retain": retain,
+            "backup_hash": backup_hash,
+        }
+    )
+    if retain:
+        entry["backup_dest"] = f".backups/{run_id}/{item}"
+    return entry
+
+
+def install_entry(item: str, staged_hash: str) -> dict:
+    return {
+        "op": "install",
+        "item": item,
+        "from": f"staging/{item}",
+        "to": f"skills/{item}",
+        "staged_hash": staged_hash,
+    }
+
+
+class RecoveryTestCase(DeployerTestCase):
     def deployed(self, *skills: tuple[str, str]) -> None:
         self.make_source_json()
         for name, content in skills:
@@ -32,11 +63,32 @@ class RecoveryTests(DeployerTestCase):
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
+    def write_journal(self, run_id: str, *entries: dict) -> Path:
+        path = self.staging_run(run_id) / "journal.jsonl"
+        self.write(path, "".join(journal_line(entry) for entry in entries))
+        return path
+
+    def commit(self, run_id: str) -> None:
+        data = self.manifest()
+        data["last_run_id"] = run_id
+        self.write_manifest(data)
+
     def sentinel(self) -> Path:
         path = self.home / ".claude" / "sentinel" / "data.txt"
         self.write(path, "precious data\n")
         return path
 
+    @property
+    def lock_dir(self) -> Path:
+        return self.home / ".claude" / "deployer" / ".deploy.lock.d"
+
+    def assert_lines(self, output: str, *lines: str) -> None:
+        printed = output.splitlines()
+        for line in lines:
+            self.assertIn(line, printed, output)
+
+
+class RecoveryTests(RecoveryTestCase):
     def test_uncommitted_journal_rolls_back(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         original = hashing.hash_path(self.skills_dir / "alpha")
@@ -351,6 +403,179 @@ class RecoveryTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="Backup path contains a symlink or junction")
         self.assertEqual("precious data\n", sentinel.read_text(encoding="utf-8"))
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+
+
+def denied(path: Path) -> PermissionError:
+    """What Windows raises when another program, such as an antivirus scanner or an editor, holds a file open."""
+    return PermissionError(13, "Access is denied", str(path))
+
+
+def failing_at(function: str, path: Path, module: str = "deployer.fsops") -> mock._patch:
+    """Patch one function so it raises PermissionError for one path and behaves normally for every other."""
+    owner = {"deployer.fsops": fsops, "deployer.hashing": hashing}[module]
+    real = getattr(owner, function)
+
+    def fail(target: Path, *rest: object) -> object:
+        if target == path:
+            raise denied(path)
+        return real(target, *rest)
+
+    return mock.patch(f"{module}.{function}", side_effect=fail)
+
+
+def path_method_failing_at(method: str, path: Path) -> mock._patch:
+    real = getattr(Path, method)
+
+    def fail(self: Path, *rest: object, **options: object) -> object:
+        if self == path:
+            raise denied(path)
+        return real(self, *rest, **options)
+
+    return mock.patch.object(Path, method, autospec=True, side_effect=fail)
+
+
+class RecoveryFailureTests(RecoveryTestCase):
+    """An OSError during recovery fails the step it hit, names the run and the path, and lets later runs recover."""
+
+    HELD = "20260101-000000-held"
+    NEXT = "20260101-000001-next"
+
+    def later_run(self) -> Path:
+        """A run sorted after the failing one, whose rollback has nothing to undo, so it always recovers."""
+        self.write_journal(self.NEXT, install_entry("ghost", ZERO_HASH))
+        return self.staging_run(self.NEXT)
+
+    def rolled_back_fixture(self) -> Path:
+        """An uncommitted run that replaced alpha; rolling it back removes the new copy and restores the old one."""
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        return self.write_journal(self.HELD, backup_entry("alpha", original), install_entry("alpha", installed))
+
+    def committed_fixture(self, retain: bool) -> Path:
+        """A committed run that replaced alpha and was interrupted before it cleared or kept the previous copy."""
+        self.deployed(("alpha", "Alpha content"))
+        self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "previous alpha\n")
+        backup_hash = hashing.hash_path(self.skills_dir / "alpha.deploying-bak")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        self.commit(self.HELD)
+        return self.write_journal(
+            self.HELD, backup_entry("alpha", backup_hash, retain, self.HELD), install_entry("alpha", installed)
+        )
+
+    def assert_recovery_failed(self, result_output: str, path: Path, committed: bool = False) -> None:
+        run = self.staging_run(self.HELD)
+        keep = "keep the copies it installed" if committed else "put back the copies it replaced"
+        self.assert_lines(
+            result_output,
+            f"  ERROR: Recovery of run {self.HELD} failed at {forward(path)}: Access is denied",
+            f"  Run {self.HELD} was {'' if committed else 'not '}committed to the manifest, so {keep}. "
+            "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
+            f".backups/{self.HELD}/ in the same root.",
+            f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
+            f"Recovering uncommitted run {self.NEXT} (rolling back)...",
+            "ERROR: Recovery failed, so nothing was deployed.",
+        )
+        self.assertNotIn("Traceback", result_output)
+        self.assertTrue((run / "journal.jsonl").is_file())
+        self.assertFalse((self.home / ".claude" / "deployer" / "staging" / self.NEXT).exists())
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_a_held_installed_copy_fails_its_rollback_step_only(self) -> None:
+        self.rolled_back_fixture()
+        self.later_run()
+        alpha = self.skills_dir / "alpha"
+        with failing_at("remove", alpha):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, alpha)
+        self.assert_lines(result.output, "  WARNING: Both alpha and alpha.deploying-bak exist during rollback")
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+
+    def test_an_unreadable_installed_copy_fails_its_rollback_step_only(self) -> None:
+        self.rolled_back_fixture()
+        self.later_run()
+        alpha = self.skills_dir / "alpha"
+        with failing_at("hash_path", alpha, "deployer.hashing"):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, alpha)
+
+    def test_a_held_transient_backup_fails_finalization_of_a_committed_run(self) -> None:
+        self.committed_fixture(retain=False)
+        self.later_run()
+        transient = self.skills_dir / "alpha.deploying-bak"
+        with failing_at("remove", transient):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, transient, committed=True)
+        self.assertTrue((transient / "SKILL.md").is_file())
+
+    def test_a_backup_directory_that_cannot_be_created_fails_finalization_of_a_committed_run(self) -> None:
+        self.committed_fixture(retain=True)
+        self.later_run()
+        backups = self.skills_dir / ".backups" / self.HELD
+        with failing_at("make_directories", backups):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, backups, committed=True)
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
+
+    def test_an_unreadable_journal_fails_its_run_only(self) -> None:
+        journal_file = self.rolled_back_fixture()
+        self.later_run()
+        with path_method_failing_at("read_text", journal_file):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, journal_file)
+        self.assertIn("installed by the interrupted run", self.skill_text("alpha"))
+
+    def test_a_staging_directory_that_cannot_be_removed_fails_its_run_only(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.write_journal(self.HELD, install_entry("ghost", ZERO_HASH))
+        self.later_run()
+        run = self.staging_run(self.HELD)
+        with failing_at("remove", run):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_recovery_failed(result.output, run)
+
+    def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        staging = self.home / ".claude" / "deployer" / "staging"
+        with path_method_failing_at("iterdir", staging):
+            result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_lines(
+            result.output,
+            f"  ERROR: Cannot list the staging runs in {forward(staging)}: Access is denied",
+            f"  {SEE_RECOVERY_FAILED}",
+            "ERROR: Recovery failed, so nothing was deployed.",
+        )
+        self.assertNotIn("Traceback", result.output)
+        self.assertFalse(self.lock_dir.exists())
+
+    def test_an_os_error_while_reconciling_a_failed_deployment_keeps_the_original_error(self) -> None:
+        self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))
+        self.remove_skill("obsolete")
+        self.make_skill("alpha", "Updated alpha")
+        real_move = fsops.move
+
+        def failing_move(source: Path, destination: Path) -> None:
+            if "staging" in source.parts and source.name == "alpha" and destination == self.skills_dir / "alpha":
+                raise OSError("synthetic install move failure")
+            real_move(source, destination)
+
+        transient = self.skills_dir / "obsolete.deploying-bak"
+        with (
+            mock.patch("deployer.fsops.move", side_effect=failing_move),
+            failing_at("hash_path", transient, "deployer.hashing"),
+        ):
+            result = self.deploy_fails("--all", pattern="Immediate recovery failed")
+        self.assertIn("synthetic install move failure", result.output)
+        self.assertRegex(result.output, rf"  ERROR: Recovery of run \S+ failed at {re.escape(forward(transient))}: ")
+        self.assertNotIn("Traceback", result.output)
+        self.assertTrue((transient / "SKILL.md").is_file())
+        result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
+        self.assertIn("Recovery complete.", result.output)
+        self.assertIn("obsolete", self.report_groups(result.output, "DEPLOYED")["REMOVED"][0])
+        self.assertFalse(transient.exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
 
 
 class MigrationTests(DeployerTestCase):

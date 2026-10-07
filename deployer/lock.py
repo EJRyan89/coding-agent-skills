@@ -30,8 +30,17 @@ class Lock:
             current = token_file.read_text(encoding="utf-8")
         except OSError:
             return
-        if current == self.token:
+        if current != self.token:
+            return
+        try:
             fsops.remove(self.paths.lock_dir)
+        except OSError as exc:
+            # The deployment already finished or failed and said so; its lock is stale once this process exits.
+            print(
+                f"WARNING: Could not remove the deployment lock {platform_support.normalize(self.paths.lock_dir)}: "
+                f"{exc.strerror or exc}. The next deployment reclaims it.",
+                file=sys.stderr,
+            )
 
 
 def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
@@ -140,7 +149,15 @@ def acquire(paths: Paths, probe: ProcessProbe = platform_support.process_status)
                 fsops.remove(stale)
             raise _contention("Retry the deployment.") from exc
         _write_metadata(paths, token, probe)
-        fsops.remove(stale)
+        try:
+            fsops.remove(stale)
+        except OSError as exc:
+            # This run holds a valid lock, so only the leftover needs the user.
+            print(
+                f"WARNING: Could not delete the stale lock moved to {platform_support.normalize(stale)}: "
+                f"{exc.strerror or exc}. Delete it once no deployment is running.",
+                file=sys.stderr,
+            )
         return Lock(paths, token)
     _write_metadata(paths, token, probe)
     return Lock(paths, token)
