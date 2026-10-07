@@ -240,7 +240,7 @@ The snapshot's manifest records each path it leaves out under `excluded_paths`, 
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `unavailable_sources` | array | yes | Changed files the snapshot could not hold, for size or an unsafe name. |
+| `unavailable_sources` | array | yes | Changed files the snapshot could not hold, for size or an unsafe name, and changed paths no reviewer prompt can carry safely. |
 
 #### Prior finding (`request.prior_findings[]`)
 
@@ -314,7 +314,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `unavailable_sources` | array | yes | Distinct changed files whose source the snapshot could not provide, so reviewers saw only their diff. One makes the verdict `INCOMPLETE` unless findings request changes. |
+| `unavailable_sources` | array | yes | Distinct changed files whose source the snapshot could not provide, so reviewers saw only their diff, and changed paths no reviewer prompt can carry safely, which no reviewer was given. One makes the verdict `INCOMPLETE` unless findings request changes. |
 | `uncovered_files` | array | no | Distinct changed files no specialist covers, left unreviewed because the manifest sets `uncovered` to `ignore`. A deliberate opt-out that does not change the verdict. |
 
 #### Reviewer that ran (`record.review.reviewers[]`)
