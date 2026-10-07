@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import github_client
 import review_github
 import review_io
 import review_runtime
@@ -1774,77 +1775,152 @@ class RuntimeContractTests(unittest.TestCase):
             # The full content check re-reads every written file against the hashes computed before writing.
             verify_source_snapshot(destination, expected_repository="example/one", expected_commit=head)
 
+    def _plumbing_repository(self, root: Path, entries: dict[bytes, tuple[str, bytes]]) -> tuple[Path, str]:
+        """A checkout whose head commit holds `entries`, each raw path -> (mode, content), written with git plumbing,
+        so a path need not be one Windows can create and no attribute, filter, or line-ending setting touches a byte.
+        A gitlink's content is the commit it names."""
+        checkout = root / "checkout"
+        checkout.mkdir()
+        self._git(checkout, "init", "-b", "main")
+        self._git(checkout, "remote", "add", "origin", "https://github.com/example/one.git")
+        records = b""
+        for path, (mode, content) in entries.items():
+            if mode == "160000":
+                object_id = content
+            else:
+                object_id = self._git_bytes(checkout, "hash-object", "-w", "--stdin", data=content).strip()
+            records += mode.encode("ascii") + b" " + object_id + b"\t" + path + b"\0"
+        self._git_bytes(checkout, "update-index", "-z", "--index-info", data=records)
+        tree = self._git(checkout, "write-tree")
+        identity = ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid")
+        head = self._git(checkout, *identity, "commit-tree", tree, "-m", "fixture")
+        self._git(checkout, "update-ref", "refs/heads/main", head)
+        return checkout, head
+
     @staticmethod
-    def _archive_runner(commit: str, entries: list[tuple[str, bytes, str]]):
-        """A git runner whose `archive` writes `entries`, each (name, tar type, link name), as a tar."""
+    def _git_bytes(path: Path, *arguments: str, data: bytes = b"") -> bytes:
+        result = subprocess.run(["git", "-C", str(path), *arguments], input=data, capture_output=True, check=False)
+        if result.returncode != 0:
+            raise AssertionError(result.stderr.decode("utf-8", "replace"))
+        return result.stdout
 
-        def runner(arguments: Sequence[str]) -> CommandResult:
-            if arguments[-3:] == ["remote", "get-url", "origin"]:
-                return CommandResult(0, "https://github.com/example/one.git\n", "")
-            if "rev-parse" in arguments:
-                return CommandResult(0, commit + "\n", "")
-            if "archive" in arguments:
-                output = next(item.split("=", 1)[1] for item in arguments if item.startswith("--output="))
-                with tarfile.open(output, mode="w") as archive:
-                    for name, kind, link in entries:
-                        entry = tarfile.TarInfo(name)
-                        entry.type = kind
-                        if kind == tarfile.REGTYPE:
-                            entry.size = len(link.encode("utf-8"))
-                            archive.addfile(entry, io.BytesIO(link.encode("utf-8")))
-                        else:
-                            entry.linkname = link
-                            archive.addfile(entry)
-                return CommandResult(0, "", "")
-            raise AssertionError(f"Unexpected command: {arguments}")
+    @staticmethod
+    def _archived(archive: tarfile.TarFile, name: str) -> bytes:
+        member = archive.extractfile(name)
+        if member is None:
+            raise AssertionError(f"{name} is not a file in the archive")
+        return member.read()
 
-        return runner
+    def test_source_snapshot_holds_the_exact_blobs_whatever_attributes_and_configuration_say(self) -> None:
+        files = {
+            b".gitattributes": (
+                b"hidden.py export-ignore\nstamp.py export-subst\nupper.txt filter=upper\n*.txt text eol=crlf\n"
+            ),
+            b"hidden.py": b"print('hidden')\n",
+            b"stamp.py": b"VERSION = '$Format:%H$'\n",
+            b"upper.txt": b"lower case\n",
+            b"lines.txt": b"one\ntwo\n",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {path: ("100644", content) for path, content in files.items()}
+            )
+            self._git(checkout, "config", "core.autocrlf", "true")
+            self._git(checkout, "config", "filter.upper.smudge", "tr a-z A-Z")
+            # `git archive`, which the snapshot was once extracted from, drops or rewrites every file but one here.
+            with tarfile.open(fileobj=io.BytesIO(self._git_bytes(checkout, "archive", "--format=tar", head))) as tar:
+                self.assertNotIn("hidden.py", tar.getnames())
+                self.assertEqual(f"VERSION = '{head}'\r\n".encode("ascii"), self._archived(tar, "stamp.py"))
+                self.assertEqual(b"LOWER CASE\r\n", self._archived(tar, "upper.txt"))
+                self.assertEqual(b"one\r\ntwo\r\n", self._archived(tar, "lines.txt"))
+            snapshot = root / "snapshot"
+            metadata = materialize_source_snapshot(checkout, "example/one", head, snapshot, changed_paths=["hidden.py"])
+            for path, content in files.items():
+                name = path.decode("ascii")
+                self.assertEqual(content, (snapshot / name).read_bytes(), name)
+                self.assertEqual(hashlib.sha256(content).hexdigest(), metadata["source_hashes"][name], name)
+            self.assertEqual({}, metadata["excluded_paths"])
+            verify_source_snapshot(snapshot, expected_repository="example/one", expected_commit=head)
+            diff = root / "diff.patch"
+            diff.write_text(
+                "diff --git a/hidden.py b/hidden.py\nnew file mode 100644\nindex 0000000..1111111\n"
+                "--- /dev/null\n+++ b/hidden.py\n@@ -0,0 +1 @@\n+print('hidden')\n",
+                encoding="utf-8",
+            )
+            self.assertEqual([], review_runtime.unavailable_sources(diff, metadata), "reviewers have its source")
 
-    def test_source_snapshot_excludes_links_and_other_non_regular_entries(self) -> None:
-        commit = "b" * 40
-        runner = self._archive_runner(
-            commit,
-            [
-                ("src/A.cs", tarfile.REGTYPE, "class A {}\n"),
-                ("tools/cache", tarfile.SYMTYPE, "/home/dev/.cache/tool"),
-                ("src/Hard.cs", tarfile.LNKTYPE, "src/A.cs"),
-                ("run/pipe", tarfile.FIFOTYPE, ""),
-                ("dev/tty", tarfile.CHRTYPE, ""),
-            ],
+    def test_an_undecodable_name_is_an_unsafe_path_and_a_coverage_gap_only_where_changed(self) -> None:
+        # Two bytes that open a UTF-8 sequence and never finish it: one U+FFFD each, as diff.patch shows them.
+        name = "src/bad\ufffd\ufffd.py"
+        self.assertEqual(
+            name, github_client.replace_undecodable(b"src/bad\xe2\x82.py".decode("utf-8", "surrogateescape"))[0]
         )
         with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary) / "snapshot"
-            metadata = materialize_source_snapshot(
-                Path(temporary) / "checkout",
-                "example/one",
-                commit,
-                destination,
-                runner=runner,
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {b"src/ok.py": ("100644", b"ok\n"), b"src/bad\xe2\x82.py": ("100644", b"bad\n")}
             )
-            self.assertEqual(
+            snapshot = root / "snapshot"
+            metadata = materialize_source_snapshot(checkout, "example/one", head, snapshot, changed_paths=[name])
+            self.assertEqual(["src/ok.py"], list(metadata["source_hashes"]))
+            self.assertEqual({name: "unsafe-path"}, metadata["excluded_paths"])
+            self.assertEqual(["ok.py"], [path.name for path in (snapshot / "src").iterdir()])
+            verify_source_snapshot(snapshot, expected_repository="example/one", expected_commit=head)
+            # validate-reviewer measures with the same rules, so it reports the exclusion rather than failing.
+            measured = review_runtime.measure_source_snapshot(checkout, head, changed_paths=[name])
+            self.assertEqual((1, 3, {"unsafe-path": 1}), (measured.files, measured.bytes, measured.excluded))
+            diff = root / "diff.patch"
+            for changed, unavailable, verdict in ((name, [name], "INCOMPLETE"), ("src/ok.py", [], "APPROVED")):
+                diff.write_text(
+                    f"diff --git a/{changed} b/{changed}\nindex 1111111..2222222 100644\n"
+                    f"--- a/{changed}\n+++ b/{changed}\n@@ -1 +1 @@\n-old\n+new\n",
+                    encoding="utf-8",
+                )
+                self.assertEqual(unavailable, review_runtime.unavailable_sources(diff, metadata), changed)
+                self.assertEqual(verdict, calculate_verdict([], {}, unavailable), changed)
+            # git quotes the name with octal escapes, which the diff parser decodes with one U+FFFD for the whole
+            # truncated sequence, not one per byte; the two forms still match.
+            octal = "".join(f"{chr(92)}{byte:o}" for byte in bytes([0xE2, 0x82]))
+            quoted = f"src/bad{octal}.py"
+            diff.write_text(
+                f'diff --git "a/{quoted}" "b/{quoted}"\nindex 1111111..2222222 100644\n'
+                f'--- "a/{quoted}"\n+++ "b/{quoted}"\n@@ -1 +1 @@\n-old\n+new\n',
+                encoding="utf-8",
+            )
+            unavailable = review_runtime.unavailable_sources(diff, metadata)
+            self.assertEqual([f"src/bad{chr(0xFFFD)}.py"], unavailable)
+            self.assertEqual("INCOMPLETE", calculate_verdict([], {}, unavailable))
+
+    def test_source_snapshot_excludes_links_and_writes_nothing_for_a_submodule(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root,
                 {
-                    "tools/cache": "symbolic-link",
-                    "src/Hard.cs": "non-regular",
-                    "run/pipe": "non-regular",
-                    "dev/tty": "non-regular",
+                    b"src/A.cs": ("100644", b"class A {}\n"),
+                    b"tools/run.sh": ("100755", b"echo run\n"),
+                    b"tools/cache": ("120000", b"/home/dev/.cache/tool"),
+                    b"vendor/lib": ("160000", b"d" * 40),
                 },
-                metadata["excluded_paths"],
             )
-            self.assertEqual(["src/A.cs"], list(metadata["source_hashes"]))
+            destination = root / "snapshot"
+            metadata = materialize_source_snapshot(checkout, "example/one", head, destination)
+            self.assertEqual({"tools/cache": "symbolic-link"}, metadata["excluded_paths"])
+            self.assertEqual(["src/A.cs", "tools/run.sh"], sorted(metadata["source_hashes"]))
             self.assertEqual(
-                sorted([SOURCE_SNAPSHOT_MANIFEST, "src/A.cs"]),
+                sorted([SOURCE_SNAPSHOT_MANIFEST, "src/A.cs", "tools/run.sh"]),
                 sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()),
             )
-            self.assertFalse((destination / "tools").exists(), "nothing is written for a link, not even its folder")
-            verify_source_snapshot(destination, expected_repository="example/one", expected_commit=commit)
+            self.assertFalse((destination / "tools" / "cache").exists(), "nothing is written for a link")
+            self.assertFalse((destination / "vendor").exists(), "a submodule has no blob, so nothing is written")
+            verify_source_snapshot(destination, expected_repository="example/one", expected_commit=head)
             # Deliberate, like binary and agent-instruction: reviewed from the diff, never a coverage gap.
-            diff = Path(temporary) / "diff.patch"
+            diff = root / "diff.patch"
             diff.write_text(
                 "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n"
                 "--- /dev/null\n+++ b/tools/cache\n@@ -0,0 +1 @@\n+/home/dev/.cache/tool\n"
-                "\\ No newline at end of file\n"
-                "diff --git a/run/pipe b/run/pipe\nnew file mode 100644\nindex 0000000..2222222\n"
-                "--- /dev/null\n+++ b/run/pipe\n@@ -0,0 +1 @@\n+x\n",
+                "\\ No newline at end of file\n",
                 encoding="utf-8",
             )
             self.assertEqual([], review_runtime.unavailable_sources(diff, metadata))
@@ -1855,88 +1931,66 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertEqual({"file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
-        commit = "b" * 40
-        runner = self._archive_runner(commit, [(SOURCE_SNAPSHOT_MANIFEST, tarfile.SYMTYPE, "/etc/passwd")])
-        with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary) / "snapshot"
-            with self.assertRaisesRegex(RuntimeContractError, "reserved snapshot path"):
-                materialize_source_snapshot(
-                    Path(temporary) / "checkout",
-                    "example/one",
-                    commit,
-                    destination,
-                    runner=runner,
-                )
-            self.assertFalse(destination.exists())
-
-    def test_source_snapshot_verification_rejects_instruction_paths_and_limits(self) -> None:
-        commit = "b" * 40
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            snapshot = root / "snapshot"
-            snapshot.mkdir()
-            instruction = snapshot / "CLAUDE.md"
-            content = b"Untrusted instructions\n"
-            instruction.write_bytes(content)
-            manifest = {
-                "schema_version": 1,
-                "repository": "example/one",
-                "source_commit": commit,
-                "source_hashes": {"CLAUDE.md": hashlib.sha256(content).hexdigest()},
-                "excluded_paths": {},
-            }
-            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-            with self.assertRaisesRegex(RuntimeContractError, "agent-instruction"):
-                verify_source_snapshot(
-                    snapshot,
-                    expected_repository="example/one",
-                    expected_commit=commit,
-                )
+            checkout, head = self._plumbing_repository(
+                root, {SOURCE_SNAPSHOT_MANIFEST.encode("ascii"): ("120000", b"/etc/passwd")}
+            )
+            destination = root / "snapshot"
+            with self.assertRaisesRegex(RuntimeContractError, "reserved snapshot path"):
+                materialize_source_snapshot(checkout, "example/one", head, destination)
+            self.assertFalse(destination.exists())
 
-            instruction.rename(snapshot / "source.txt")
-            manifest["source_hashes"] = {"source.txt": hashlib.sha256(content).hexdigest()}
-            (snapshot / SOURCE_SNAPSHOT_MANIFEST).write_text(json.dumps(manifest), encoding="utf-8")
-            with (
-                mock.patch.object(review_runtime, "MAX_CHANGED_FILE_BYTES", 1),
-                self.assertRaisesRegex(RuntimeContractError, "file exceeds"),
-            ):
-                verify_source_snapshot(
-                    snapshot,
-                    expected_repository="example/one",
-                    expected_commit=commit,
-                )
+    def test_a_blob_reader_stopped_early_ends_git_and_releases_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            # Far more than a pipe buffers, so git is still writing when the reader stops.
+            checkout, head = self._plumbing_repository(root, {b"big.txt": ("100644", b"x" * (1024 * 1024))})
+            blob = self._git(checkout, "rev-parse", f"{head}:big.txt")
+            reader = review_runtime.git_blob_reader(checkout, [blob] * 32)
+            self.assertEqual(1024 * 1024, len(next(reader)))
+            reader.close()
+            # Git for Windows' git.exe is a launcher: ending only it leaves the real git running in the checkout, and
+            # Windows refuses to move a folder a running process works in.
+            checkout.rename(root / "moved")
+            self.assertFalse(checkout.exists())
+
+    def test_source_snapshot_fails_closed_when_the_blob_reader_answers_short_or_wrong(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {b"a.txt": ("100644", b"a\n"), b"b.txt": ("100644", b"b\n")}
+            )
+            blob = self._git(checkout, "rev-parse", f"{head}:a.txt")
+            self.assertEqual([b"a\n", b"a\n"], list(review_runtime.git_blob_reader(checkout, [blob, blob])))
+            with self.assertRaisesRegex(RuntimeContractError, "missing"):
+                list(review_runtime.git_blob_reader(checkout, ["0" * 40]))
+
+            def short(_checkout: Path, _blobs: Sequence[str]) -> Iterator[bytes]:
+                yield b"a\n"
+
+            def wrong(_checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
+                for _blob in blobs:
+                    yield b"rewritten\n"
+
+            for reader, message in ((short, "fewer blobs"), (wrong, "size")):
+                destination = root / "snapshot"
+                with self.subTest(message=message), self.assertRaisesRegex(RuntimeContractError, message):
+                    materialize_source_snapshot(checkout, "example/one", head, destination, blob_reader=reader)
+                self.assertFalse(destination.exists())
 
     def test_source_snapshot_materialization_enforces_file_count_limit(self) -> None:
-        commit = "b" * 40
-
-        def runner(arguments: Sequence[str]) -> review_runtime.CommandResult:
-            if arguments[-3:] == ["remote", "get-url", "origin"]:
-                return review_runtime.CommandResult(0, "https://github.com/example/one.git\n", "")
-            if "rev-parse" in arguments:
-                return review_runtime.CommandResult(0, commit + "\n", "")
-            if "archive" in arguments:
-                output = next(item.split("=", 1)[1] for item in arguments if item.startswith("--output="))
-                with tarfile.open(output, mode="w") as archive:
-                    for name in ("one.txt", "two.txt"):
-                        path = Path(temporary) / name
-                        path.write_bytes(b"x")
-                        archive.add(path, arcname=name)
-                return review_runtime.CommandResult(0, "", "")
-            raise AssertionError(f"Unexpected command: {arguments}")
-
         with tempfile.TemporaryDirectory() as temporary:
-            destination = Path(temporary) / "snapshot"
+            root = Path(temporary).resolve()
+            checkout, head = self._plumbing_repository(
+                root, {b"one.txt": ("100644", b"x"), b"two.txt": ("100644", b"x")}
+            )
+            destination = root / "snapshot"
             with (
                 mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_FILES", 1),
                 self.assertRaisesRegex(RuntimeContractError, "file-count"),
             ):
-                materialize_source_snapshot(
-                    Path(temporary) / "checkout",
-                    "example/one",
-                    commit,
-                    destination,
-                    runner=runner,
-                )
+                materialize_source_snapshot(checkout, "example/one", head, destination)
             self.assertFalse(destination.exists())
 
     def test_source_snapshot_excludes_binary_and_oversized_files_from_limits(self) -> None:

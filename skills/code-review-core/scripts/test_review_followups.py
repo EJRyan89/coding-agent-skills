@@ -31,6 +31,10 @@ from review_runtime import RuntimeContractError
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
 HEAD = "c" * 40
+# `printf 'a\n' | git hash-object --stdin`: the blob id of a file holding "a" and a newline.
+A_TXT_BLOB = "78981922613b2afb6025042ff6bd878ac1994e85"
+# `printf 'bad\n' | git hash-object --stdin`
+BAD_BLOB = "67be85f1274474029aad8a75b823592324305aa4"
 
 
 def tarball(members: dict[str, bytes], *, prefix: str = "owner-repo-ccc/") -> bytes:
@@ -50,6 +54,11 @@ def writing(data: bytes) -> Callable[[str, str, Path], None]:
         target.write_bytes(data)
 
     return fetch
+
+
+def serving(stdout: str) -> Callable[[Sequence[str]], CommandResult]:
+    """A gh runner that answers every command with `stdout`."""
+    return lambda _arguments: CommandResult(0, stdout, "")
 
 
 class GitHubSnapshotTests(unittest.TestCase):
@@ -98,6 +107,8 @@ class GitHubSnapshotTests(unittest.TestCase):
             for name, kind, link in (
                 ("node_modules", tarfile.SYMTYPE, "/opt/runtime/node_modules"),
                 ("run/pipe", tarfile.FIFOTYPE, ""),
+                ("src/Hard.cs", tarfile.LNKTYPE, "src/A.cs"),
+                ("dev/tty", tarfile.CHRTYPE, ""),
             ):
                 info = tarfile.TarInfo("owner-repo-ccc/" + name)
                 info.type, info.linkname = kind, link
@@ -116,10 +127,25 @@ class GitHubSnapshotTests(unittest.TestCase):
             fetcher=writing(data),
             changed_paths=("node_modules",),
         )
-        self.assertEqual({"node_modules": "symbolic-link", "run/pipe": "non-regular"}, metadata["excluded_paths"])
+        self.assertEqual(
+            {
+                "node_modules": "symbolic-link",
+                "run/pipe": "non-regular",
+                "src/Hard.cs": "non-regular",
+                "dev/tty": "non-regular",
+            },
+            metadata["excluded_paths"],
+        )
         self.assertFalse((destination / "node_modules").exists())
         self.assertFalse((destination / "run").exists())
         self.assertTrue((destination / "src" / "A.cs").is_file())
+
+    def test_an_undecodable_name_is_an_unsafe_path(self) -> None:
+        # tarfile keeps each undecodable byte as a lone surrogate; the manifest names it with U+FFFD, as the diff does.
+        destination, metadata = self.snapshot({"src/bad\udce2\udc82.py": b"bad\n", "src/ok.py": b"ok\n"})
+        self.assertEqual({"src/bad\ufffd\ufffd.py": "unsafe-path"}, metadata["excluded_paths"])
+        self.assertEqual(["ok.py"], [path.name for path in (destination / "src").iterdir()])
+        review_runtime.verify_source_snapshot(destination, expected_repository="owner/repo", expected_commit=HEAD)
 
     def test_case_collisions_fail_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeContractError, "case-insensitive"):
@@ -143,15 +169,22 @@ class GitHubSnapshotTests(unittest.TestCase):
             "not found": [CommandResult(1, "", "gh: Not Found (HTTP 404)")],
             "rate limit, then a tarball": [limited, CommandResult(0, "", "")],
         }
+        tree = {
+            "sha": HEAD,
+            "truncated": False,
+            "tree": [{"path": "a.txt", "mode": "100644", "type": "blob", "sha": A_TXT_BLOB}],
+        }
         for case, answers in cases.items():
             with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
-                downloader = ScriptedDownloader(answers)
+                downloader = ScriptedDownloader(answers, content=tarball({"a.txt": b"a\n"}))
                 waits: list[float] = []
-                github = github_client.GitHubClient(sleeper=waits.append, downloader=downloader)
+                github = github_client.GitHubClient(
+                    serving(json.dumps(tree)), sleeper=waits.append, downloader=downloader
+                )
                 target = Path(temporary) / "source.tar.gz"
                 if case.startswith("rate limit"):
                     review_runtime.github_tarball_fetcher("owner/repo", HEAD, target, github)
-                    self.assertEqual((b"archive", [5.0]), (target.read_bytes(), waits))
+                    self.assertEqual([5.0], waits)
                 else:
                     with self.assertRaisesRegex(RuntimeContractError, f"Cannot download owner/repo@{HEAD}") as context:
                         review_runtime.github_tarball_fetcher("owner/repo", HEAD, target, github)
@@ -163,8 +196,9 @@ class GitHubSnapshotTests(unittest.TestCase):
 class ScriptedDownloader:
     """Stands in for gh writing a tarball: each call takes the next answer, raising it if it is an error."""
 
-    def __init__(self, answers: list[CommandResult | GitHubError]) -> None:
+    def __init__(self, answers: list[CommandResult | GitHubError], *, content: bytes = b"archive") -> None:
         self.answers = list(answers)
+        self.content = content
         self.calls: list[list[str]] = []
 
     def __call__(self, arguments: Sequence[str], target: Path) -> CommandResult:
@@ -172,8 +206,135 @@ class ScriptedDownloader:
         answer = self.answers.pop(0)
         if isinstance(answer, GitHubError):
             raise answer
-        target.write_bytes(b"archive" if answer.returncode == 0 else b"partial")
+        target.write_bytes(self.content if answer.returncode == 0 else b"partial")
         return answer
+
+
+class GitHubTarballVerificationTests(unittest.TestCase):
+    """GitHub builds its tarball with `git archive`, which honours the commit's .gitattributes, so the fetcher checks
+    the tarball against the commit's tree and refuses any file it left out or rewrote."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        self.git("init", "-b", "main")
+        self.git("config", "core.autocrlf", "false")
+
+    def git(self, *arguments: str, data: bytes = b"") -> bytes:
+        result = subprocess.run(
+            ["git", "-C", str(self.checkout), *arguments], input=data, capture_output=True, check=False
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr.decode("utf-8", "replace"))
+        return result.stdout
+
+    def commit(self, files: dict[str, bytes], links: dict[str, bytes] | None = None) -> str:
+        for name, content in files.items():
+            target = self.checkout / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        self.git("add", ".")
+        for name, link_target in (links or {}).items():
+            blob = self.git("hash-object", "-w", "--stdin", data=link_target).decode("ascii").strip()
+            self.git("update-index", "--add", "--cacheinfo", f"120000,{blob},{name}")
+        self.git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture")
+        return self.git("rev-parse", "HEAD").decode("ascii").strip()
+
+    def tree(self, commit: str) -> dict[str, Any]:
+        """The commit's tree as GitHub's trees API lists it with `recursive=1`, folders included."""
+        entries = []
+        for record in self.git("ls-tree", "-r", "-t", "-z", commit).split(b"\0"):
+            if record:
+                meta, path = record.split(b"\t", 1)
+                mode, kind, sha = meta.decode("ascii").split()
+                entries.append({"path": path.decode("utf-8"), "mode": mode, "type": kind, "sha": sha})
+        return {"sha": commit, "truncated": False, "tree": entries}
+
+    def client(
+        self, commit: str, *, archive: Sequence[str] = (), tree: Any = None, data: bytes | None = None
+    ) -> tuple[github_client.GitHubClient, list[list[str]]]:
+        """A GitHub client whose tarball is `git archive` of the commit (with `archive` options before it) or `data`,
+        and whose trees API answers with `tree`, the commit's own tree by default."""
+        if data is None:
+            data = self.git(*archive, "archive", "--format=tar.gz", "--prefix=owner-repo-ccc/", commit)
+        listing = json.dumps(self.tree(commit) if tree is None else tree)
+        commands: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            commands.append(list(arguments))
+            return CommandResult(0, listing, "")
+
+        downloader = ScriptedDownloader([CommandResult(0, "", "")], content=data)
+        return github_client.GitHubClient(runner, sleeper=lambda _seconds: None, downloader=downloader), commands
+
+    def test_a_tarball_of_the_exact_tree_is_snapshotted(self) -> None:
+        head = self.commit({"src/A.cs": b"class A {}\r\n", "run.sh": b"echo run\n"}, links={"tools/cache": b"/opt"})
+        github, commands = self.client(head)
+        destination = self.root / "source"
+        metadata = review_runtime.materialize_source_snapshot_from_github(
+            "owner/repo",
+            head,
+            destination,
+            fetcher=lambda repository, commit, target: review_runtime.github_tarball_fetcher(
+                repository, commit, target, github
+            ),
+        )
+        self.assertEqual([["gh", "api", f"repos/owner/repo/git/trees/{head}?recursive=1"]], commands)
+        self.assertEqual(b"class A {}\r\n", (destination / "src" / "A.cs").read_bytes())
+        self.assertEqual(["run.sh", "src/A.cs"], sorted(metadata["source_hashes"]))
+        self.assertEqual({"tools/cache": "symbolic-link"}, metadata["excluded_paths"])
+
+    def test_a_file_the_attributes_dropped_or_rewrote_fails_closed(self) -> None:
+        head = self.commit(
+            {
+                ".gitattributes": b"hidden.py export-ignore\nstamp.py export-subst\n",
+                "hidden.py": b"print('hidden')\n",
+                "stamp.py": b"VERSION = '$Format:%H$'\n",
+                "plain.txt": b"plain\n",
+            }
+        )
+        cases = {
+            "attributes": ((), ['"hidden.py"', '"stamp.py"'], ['"plain.txt"']),
+            "line endings": (("-c", "core.autocrlf=true"), ['"plain.txt"'], []),
+        }
+        for case, (archive, named, unnamed) in cases.items():
+            github, _ = self.client(head, archive=archive)
+            with (
+                self.subTest(case=case),
+                self.assertRaisesRegex(RuntimeContractError, "is not the commit's exact tree") as context,
+            ):
+                review_runtime.github_tarball_fetcher("owner/repo", head, self.root / f"{case}.tar.gz", github)
+            message = str(context.exception)
+            self.assertIn("checkout_path", message)
+            for path in named:
+                self.assertIn(path, message)
+            for path in unnamed:
+                self.assertNotIn(path, message)
+
+    def test_a_listing_that_is_truncated_malformed_or_short_fails_closed(self) -> None:
+        head = self.commit({"a.txt": b"a\n"})
+        cases: dict[str, tuple[Any, str]] = {
+            "truncated": ({**self.tree(head), "truncated": True}, "truncated"),
+            "not an object": ([], "tree listing is malformed"),
+            "an entry without a sha": ({"truncated": False, "tree": [{"path": "a.txt", "type": "blob"}]}, "malformed"),
+            "a file the tarball holds is missing": ({"truncated": False, "tree": []}, '"a.txt"'),
+        }
+        for case, (tree, message) in cases.items():
+            github, _ = self.client(head, tree=tree)
+            with self.subTest(case=case), self.assertRaisesRegex(RuntimeContractError, message):
+                review_runtime.github_tarball_fetcher("owner/repo", head, self.root / "source.tar.gz", github)
+
+    def test_an_undecodable_name_matches_the_listing_that_replaces_its_bytes(self) -> None:
+        # GitHub's listing cannot carry the bytes; one U+FFFD each is what the tarball's name is compared as.
+        tree = {
+            "truncated": False,
+            "tree": [{"path": "bad\ufffd\ufffd.py", "mode": "100644", "type": "blob", "sha": BAD_BLOB}],
+        }
+        github, _ = self.client(HEAD, tree=tree, data=tarball({"bad\udce2\udc82.py": b"bad\n"}))
+        review_runtime.github_tarball_fetcher("owner/repo", HEAD, self.root / "source.tar.gz", github)
 
 
 class ConfigOperationSetTests(unittest.TestCase):

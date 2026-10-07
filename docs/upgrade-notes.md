@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### A review without checkout_path fails when GitHub's tarball is not the commit's exact tree
+
+- Level: patch. A fix: the snapshot could leave out a changed file or hold bytes the commit does not hold.
+- Contract: none
+- User action: none, unless `prepare` prints `FAILED` saying GitHub's tarball is not the commit's exact tree. Then set `checkout_path` for that repository.
+- Pull request: #141
+
 ### Item names the file system treats as one are one item, and the deployer's own suffixes are reserved
 
 - Level: minor. A deployment that was accepted can now be refused, carried in the pre-1.0 minor. A source whose shared asset is a case variant of another source's item, such as `guide.md` beside `Guide.md`, is refused as a collision, and a name ending in `.deploying-bak` or containing `.tmp.` is refused for every kind of item.
