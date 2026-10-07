@@ -57,7 +57,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from itertools import pairwise
@@ -67,6 +66,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import frontmatter
 from console import use_utf8_output
+from git_client import GitClient, GitError
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -458,12 +458,11 @@ def locate(name: str, home: Path, repo: Path | None) -> list[str]:
     return lines
 
 
-def git_toplevel(directory: Path) -> Path | None:
+def git_toplevel(directory: Path, git: GitClient | None = None) -> Path | None:
+    """The root of the repository containing directory, or None outside one or when git cannot run or finish."""
     try:
-        completed = subprocess.run(
-            ["git", "-C", str(directory), "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=False
-        )
-    except OSError:
+        completed = (git or GitClient()).run(["rev-parse", "--show-toplevel"], directory=directory)
+    except GitError:
         return None
     output = completed.stdout.strip()
     return Path(output) if completed.returncode == 0 and output else None

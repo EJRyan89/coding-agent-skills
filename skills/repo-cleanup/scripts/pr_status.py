@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +11,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult, GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 
@@ -22,7 +22,6 @@ COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
-Runner = Callable[[list[str]], subprocess.CompletedProcess]
 InBase = Callable[[str], bool]
 
 
@@ -40,51 +39,44 @@ def _head_repository(pull: dict[str, Any]) -> str | None:
     return f"{login}/{name}".casefold()
 
 
-def run_git(arguments: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *arguments], capture_output=True, text=True, encoding="utf-8")
-
-
-def _git_output(runner: Runner, arguments: list[str]) -> subprocess.CompletedProcess:
+def _git_output(git: GitClient, repository_root: str, arguments: list[str]) -> GitResult:
     try:
-        return runner(arguments)
-    except OSError as exc:
+        return git.run(arguments, directory=repository_root)
+    except GitError as exc:
         raise QueryError(f"could not run git: {exc}") from exc
 
 
-def branch_tips(repository_root: str, branch: str, runner: Runner = run_git) -> tuple[str, str | None]:
+def branch_tips(repository_root: str, branch: str, git: GitClient | None = None) -> tuple[str, str | None]:
     """Return the branch's local tip and its fetched upstream tip, or None when it has no existing upstream."""
-    local = _git_output(
-        runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"]
-    )
+    git = git or GitClient()
+    local = _git_output(git, repository_root, ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}^{{commit}}"])
     head = local.stdout.strip()
     if local.returncode != 0 or not SHA_PATTERN.fullmatch(head):
         raise QueryError(f"cannot resolve local branch {branch!r}")
     configured = _git_output(
-        runner,
-        ["-C", repository_root, "for-each-ref", "--format=%(upstream)|%(upstream:track)", f"refs/heads/{branch}"],
+        git, repository_root, ["for-each-ref", "--format=%(upstream)|%(upstream:track)", f"refs/heads/{branch}"]
     )
     if configured.returncode != 0 or "|" not in configured.stdout:
         raise QueryError(f"cannot read the upstream of {branch!r}: {(configured.stderr or '').strip()}")
     upstream_ref, track = configured.stdout.strip().split("|", 1)
     if not upstream_ref or track == "[gone]":
         return head, None
-    upstream = _git_output(
-        runner, ["-C", repository_root, "rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"]
-    )
+    upstream = _git_output(git, repository_root, ["rev-parse", "--verify", "--quiet", f"{upstream_ref}^{{commit}}"])
     upstream_sha = upstream.stdout.strip()
     if upstream.returncode != 0 or not SHA_PATTERN.fullmatch(upstream_sha):
         raise QueryError(f"cannot resolve upstream {upstream_ref!r} of {branch!r}")
     return head, upstream_sha
 
 
-def base_contains(repository_root: str, base_ref: str, runner: Runner = run_git) -> InBase:
+def base_contains(repository_root: str, base_ref: str, git: GitClient | None = None) -> InBase:
     """A test of whether a commit is reachable from base_ref; a commit missing locally is not."""
+    client = git or GitClient()
 
     def contains(sha: str) -> bool:
-        present = _git_output(runner, ["-C", repository_root, "cat-file", "-e", f"{sha}^{{commit}}"])
+        present = _git_output(client, repository_root, ["cat-file", "-e", f"{sha}^{{commit}}"])
         if present.returncode != 0:
             return False
-        result = _git_output(runner, ["-C", repository_root, "merge-base", "--is-ancestor", sha, base_ref])
+        result = _git_output(client, repository_root, ["merge-base", "--is-ancestor", sha, base_ref])
         if result.returncode not in (0, 1):
             raise QueryError(f"cannot test whether {sha} is in {base_ref}: {(result.stderr or '').strip()}")
         return result.returncode == 0

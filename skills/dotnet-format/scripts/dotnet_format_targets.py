@@ -31,21 +31,24 @@ exits 1. A usage error exits 2.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from github_client import CommandResult, GitHubClient, GitHubError
+from git_client import GitClient, GitError, GitResult
+from github_client import GitHubClient, GitHubError, subprocess_runner
+from github_client import Runner as GhRunner
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
@@ -54,47 +57,19 @@ WEB_PROJECT = re.compile(
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
-COMMAND_TIMEOUT_SECONDS = 300
 
 
-@dataclass(frozen=True)
-class Completed:
-    returncode: int
-    stdout: bytes
-    stderr: bytes = b""
-
-
-Runner = Callable[[Sequence[str], Path], Completed]
-
-
-def subprocess_runner(arguments: Sequence[str], cwd: Path) -> Completed:
-    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
-    try:
-        result = subprocess.run(
-            list(arguments),
-            cwd=cwd,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return Completed(127, b"")
-    return Completed(result.returncode, result.stdout, result.stderr)
-
-
-# Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
-DUPLICATION_ALLOWED = {
-    "Services": "run_dotnet_format.py defines it again; the follow-up has that script import it from here instead",
-}
+def gh_runner_in(directory: Path) -> GhRunner:
+    """A gh runner working in `directory`, since `gh pr view` reads the repository and branch from there."""
+    return partial(subprocess_runner, cwd=directory)
 
 
 @dataclass
 class Services:
     """External effects, replaceable in tests."""
 
-    run: Runner = subprocess_runner
+    git: GitClient = field(default_factory=GitClient)
+    gh: Callable[[Path], GhRunner] = gh_runner_in
     which: Callable[[str], str | None] = field(default=shutil.which)
 
 
@@ -122,22 +97,30 @@ def relative(path: Path, root: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def git(services: Services, directory: Path, *arguments: str) -> GitResult:
+    """Run git in directory; git that is missing, cannot start, or does not finish fails the resolution."""
+    try:
+        return services.git.run(arguments, directory=directory)
+    except GitError as exc:
+        raise Failed(str(exc)) from exc
+
+
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
-    result = services.run(["git", arguments[0], "-z", *arguments[1:]], root)
+    result = git(services, root, arguments[0], "-z", *arguments[1:])
     if result.returncode != 0:
         raise Failed(f"git {' '.join(arguments)} failed")
-    return [name for name in result.stdout.decode("utf-8", errors="surrogateescape").split("\0") if name]
+    return [name for name in result.stdout.split("\0") if name]
 
 
 def repository_root(services: Services, cwd: Path) -> Path:
-    result = services.run(["git", "rev-parse", "--show-toplevel"], cwd)
+    result = git(services, cwd, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
         raise Failed(f"{cwd} is not inside a Git repository")
-    return Path(result.stdout.decode("utf-8", errors="surrogateescape").strip()).resolve()
+    return Path(result.stdout.strip()).resolve()
 
 
 def ref_exists(services: Services, root: Path, ref: str) -> bool:
-    return services.run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], root).returncode == 0
+    return git(services, root, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").returncode == 0
 
 
 def pull_request_base(services: Services, root: Path) -> str | None:
@@ -145,13 +128,8 @@ def pull_request_base(services: Services, root: Path) -> str | None:
 
     Any gh failure gives None, and a rate limit is not waited out: the base is a hint with fallbacks after it.
     """
-
-    def run(arguments: Sequence[str]) -> CommandResult:
-        result = services.run(arguments, root)
-        return CommandResult(result.returncode, decoded(result.stdout), decoded(result.stderr))
-
     try:
-        output = GitHubClient(run).run(["pr", "view", "--json", "baseRefName"], retry=False)
+        output = GitHubClient(services.gh(root)).run(["pr", "view", "--json", "baseRefName"], retry=False)
         document = json.loads(output.stdout)
     except (GitHubError, ValueError):
         return None
@@ -161,16 +139,11 @@ def pull_request_base(services: Services, root: Path) -> str | None:
     return name.strip()
 
 
-def decoded(data: bytes) -> str:
-    """Command output as the shared GitHub client expects it: each byte that is not UTF-8 kept as a lone surrogate."""
-    return data.decode("utf-8", errors="surrogateescape")
-
-
-def remote_default_branch(result: Completed) -> str | None:
+def remote_default_branch(result: GitResult) -> str | None:
     """origin/<name> from `git symbolic-ref refs/remotes/origin/HEAD` output, or None when origin has no HEAD."""
     if result.returncode != 0:
         return None
-    target = result.stdout.decode("utf-8", errors="surrogateescape").strip()
+    target = result.stdout.strip()
     name = target.removeprefix(REMOTE_REFS)
     return f"origin/{name}" if name and name != target else None
 
@@ -178,13 +151,14 @@ def remote_default_branch(result: Completed) -> str | None:
 def base_ref(services: Services, root: Path) -> str:
     """The first that exists of the pull request's base branch when gh knows it, the remote's default branch
     (origin/HEAD, which clone sets), origin/main, and origin/master."""
-    services.run(["git", "fetch", "origin", "--quiet"], root)
+    with contextlib.suppress(GitError):  # offline, or a remote that does not answer: the local refs still serve
+        services.git.run(["fetch", "origin", "--quiet"], directory=root)
     candidates: list[str] = []
     if services.which("gh"):
         name = pull_request_base(services, root)
         if name:
             candidates.append(f"origin/{name}")
-    default = remote_default_branch(services.run(["git", "symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"], root))
+    default = remote_default_branch(git(services, root, "symbolic-ref", "--quiet", f"{REMOTE_REFS}HEAD"))
     if default:
         candidates.append(default)
     candidates += ["origin/main", "origin/master"]

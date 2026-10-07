@@ -20,7 +20,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import git_client
 import repo_cleanup as rc
+from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 
 REMOTE_URL = "https://github.com/owner/repo.git"
@@ -862,38 +864,60 @@ class SweepTests(Fixture):
         active = peak = 0
         changed = threading.Condition()
 
-        def git_runner(arguments: list[str]) -> subprocess.CompletedProcess:
+        def git_runner(command: Sequence[str], timeout: float) -> GitResult:
             nonlocal active, peak
-            if "fetch" not in arguments:
-                return rc.pr_status.run_git(arguments)
+            if "fetch" not in command:
+                return git_client.subprocess_runner(command, timeout)
             with changed:
                 active += 1
                 peak = max(peak, active)
                 changed.notify_all()
                 changed.wait_for(lambda: active >= 2, timeout=10)  # the last fetch may find no partner
             try:
-                return rc.pr_status.run_git(arguments)
+                return git_client.subprocess_runner(command, timeout)
             finally:
                 with changed:
                     active -= 1
 
-        code, lines = self.sweep(rc.Services(git=git_runner, gh=self.github))
+        code, lines = self.sweep(rc.Services(git=GitClient(git_runner), gh=self.github))
         self.assertEqual(0, code, lines)
         self.assertGreaterEqual(peak, 2)
 
     def test_a_git_failure_reports_every_repository_then_exits_1(self) -> None:
         self.make_clone("other repo")
 
-        def git_runner(arguments: list[str]) -> subprocess.CompletedProcess:
-            if arguments[1].endswith("other repo"):
-                raise OSError("git vanished")
-            return rc.pr_status.run_git(arguments)
+        def git_runner(command: Sequence[str], timeout: float) -> GitResult:
+            if command[2].endswith("other repo"):
+                raise GitError("git vanished", kind="execution")
+            return git_client.subprocess_runner(command, timeout)
 
-        code, lines = self.sweep(rc.Services(git=git_runner, gh=self.github))
+        code, lines = self.sweep(rc.Services(git=GitClient(git_runner), gh=self.github))
         self.assertEqual(1, code)
         root = self.repos.as_posix()
         self.assertEqual([[f"{root}/my repo", "quiet"], [f"{root}/other repo", "git-failed"]], facts(lines, "REPO"))
         self.assertEqual([["could not run git: git vanished"]], facts(self.blocks(lines)["other repo"], "ERROR"))
+
+    def test_a_fetch_that_never_finishes_fails_its_repository_and_the_sweep_goes_on(self) -> None:
+        # A private remote with an expired credential used to wait on a prompt; now the fetch is bounded.
+        self.make_clone("stale repo")
+        timeouts: list[float] = []
+
+        def git_runner(command: Sequence[str], timeout: float) -> GitResult:
+            if "fetch" in command:
+                timeouts.append(timeout)
+                if command[2].endswith("stale repo"):
+                    raise GitError("git fetch did not finish within 300 seconds", kind="timeout")
+            return git_client.subprocess_runner(command, timeout)
+
+        code, lines = self.sweep(rc.Services(git=GitClient(git_runner), gh=self.github))
+        self.assertEqual(1, code)
+        root = self.repos.as_posix()
+        self.assertEqual([[f"{root}/my repo", "quiet"], [f"{root}/stale repo", "git-failed"]], facts(lines, "REPO"))
+        self.assertEqual(
+            [["could not run git: git fetch did not finish within 300 seconds"]],
+            facts(self.blocks(lines)["stale repo"], "ERROR"),
+        )
+        self.assertEqual([300.0, 300.0], timeouts)
 
     def test_a_sweep_that_cannot_start_fails_with_one_line(self) -> None:
         self.github.authenticated = False

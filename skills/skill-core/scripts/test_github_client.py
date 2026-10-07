@@ -378,7 +378,13 @@ class SubprocessRunnerContractTests(unittest.TestCase):
         with mock.patch.object(github_client, "run_bounded", return_value=finished) as run:
             result = github_client.subprocess_runner(["gh", "api", "user"])
         self.assertEqual(CommandResult(3, "o", "e"), result)
-        self.assertEqual(mock.call(["gh", "api", "user"], 300.0, stdout=None), run.call_args)
+        self.assertEqual(mock.call(["gh", "api", "user"], 300.0, stdout=None, cwd=None), run.call_args)
+
+    def test_runner_runs_in_the_directory_it_is_given(self) -> None:
+        directory = Path(self.directory()) / "a repository"
+        directory.mkdir()
+        result = github_client.subprocess_runner([sys.executable, "-c", "import os; print(os.getcwd())"], cwd=directory)
+        self.assertEqual(directory.resolve(), Path(result.stdout.strip()).resolve())
 
     def test_a_command_that_runs_too_long_is_a_timeout_and_is_not_retried(self) -> None:
         program = "import time; time.sleep(30)"

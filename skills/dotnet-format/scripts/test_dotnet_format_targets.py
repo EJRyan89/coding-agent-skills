@@ -13,8 +13,13 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import dotnet_format_targets as targets
+import git_client
+from git_client import GitClient, GitError, GitResult
+from github_client import CommandResult
+from github_client import Runner as GhRunner
 
 SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 WEB_PROJECT = '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n'
@@ -86,15 +91,30 @@ class Services(targets.Services):
         if gh_output is None and pull_base:
             gh_output = json.dumps({"baseRefName": pull_base}).encode() + b"\n"
 
-        def run(arguments: Sequence[str], cwd: Path) -> targets.Completed:
-            self.calls.append(list(arguments))
-            if list(arguments[:2]) == ["git", "fetch"]:
-                return targets.Completed(128, b"")
-            if arguments[0] == "gh":
-                return targets.Completed(0, gh_output) if gh_output is not None else targets.Completed(1, b"")
-            return targets.subprocess_runner(arguments, cwd)
+        self.directories: list[Path] = []
 
-        super().__init__(run=run, which=lambda name: "gh" if name == "gh" and gh_output is not None else None)
+        def git(command: Sequence[str], timeout: float) -> GitResult:
+            # Recorded without `-C <directory>`, the way the commands read.
+            self.calls.append([command[0], *command[3:]])
+            if command[3] == "fetch":
+                return GitResult(128, "", "")
+            return git_client.subprocess_runner(command, timeout)
+
+        def gh(arguments: Sequence[str]) -> CommandResult:
+            self.calls.append(list(arguments))
+            if gh_output is None:
+                return CommandResult(1, "", "")
+            return CommandResult(0, gh_output.decode("utf-8", "surrogateescape"), "")
+
+        def gh_in(directory: Path) -> GhRunner:
+            self.directories.append(directory)
+            return gh
+
+        super().__init__(
+            git=GitClient(git),
+            gh=gh_in,
+            which=lambda name: "gh" if name == "gh" and gh_output is not None else None,
+        )
 
 
 class ResolveTests(unittest.TestCase):
@@ -320,6 +340,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([["origin/release"]], self.values(self.resolve(services=services), "BASE"))
         self.assertIn(["gh", "pr", "view", "--json", "baseRefName"], services.calls)
         self.assertIn(["git", "fetch", "origin", "--quiet"], services.calls)
+        self.assertEqual([repo.root.resolve()], services.directories)  # gh reads the repository from its directory
 
         services = Services(pull_base="missing")
         self.assertEqual([["origin/develop"]], self.values(self.resolve(services=services), "BASE"))
@@ -379,15 +400,12 @@ class ResolveTests(unittest.TestCase):
 
     def test_a_rate_limited_pull_request_base_falls_back_without_waiting(self) -> None:
         services = Services(pull_base="release")
-        answer = services.run
 
-        def limited(arguments: Sequence[str], cwd: Path) -> targets.Completed:
-            if arguments[0] == "gh":
-                services.calls.append(list(arguments))
-                return targets.Completed(1, b"", b"gh: API rate limit exceeded for user ID 1. (HTTP 403)")
-            return answer(arguments, cwd)
+        def limited(arguments: Sequence[str]) -> CommandResult:
+            services.calls.append(list(arguments))
+            return CommandResult(1, "", "gh: API rate limit exceeded for user ID 1. (HTTP 403)")
 
-        services.run = limited
+        services.gh = lambda directory: limited
         with mock.patch("time.sleep") as sleep:
             self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
         sleep.assert_not_called()
@@ -418,15 +436,32 @@ class ResolveTests(unittest.TestCase):
         self.repository.write("Code.cs")
         self.repository.commit("code")
         services = Services()
-        real = services.run
+        real = services.git.runner
 
-        def run(arguments: Sequence[str], cwd: Path) -> targets.Completed:
-            if list(arguments[:2]) == ["git", "ls-files"]:
-                return targets.Completed(128, b"")
-            return real(arguments, cwd)
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if command[3] == "ls-files":
+                return GitResult(128, "", "")
+            return real(command, timeout)
 
-        services.run = run
+        services.git = GitClient(run)
         self.assertEqual("git ls-files --others --exclude-standard -- *.cs failed", self.failed(services=services))
+
+    def test_a_git_command_that_never_finishes_fails_but_a_stalled_fetch_does_not(self) -> None:
+        self.repository.write("Code.cs")
+        self.repository.commit("code")
+        services = Services()
+        real = services.git.runner
+        stalled = {"fetch"}
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if command[3] in stalled:
+                raise GitError(f"git {command[3]} did not finish within {timeout:g} seconds", kind="timeout")
+            return real(command, timeout)
+
+        services.git = GitClient(run)
+        self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
+        stalled.add("ls-files")
+        self.assertEqual("git ls-files did not finish within 300 seconds", self.failed(services=services))
 
     def test_an_unreadable_project_fails(self) -> None:
         self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
