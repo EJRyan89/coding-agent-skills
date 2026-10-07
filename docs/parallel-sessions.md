@@ -122,13 +122,21 @@ With the guard enabled:
   This applies whichever session asks, so a worktree session that writes to a hub path by absolute path is also
   stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
 - **Refused git commands.** Any of the following that would run in the hub:
-  - `add`, `am`, `apply`, `checkout`, `cherry-pick`, `clean`, `commit`
-  - `merge`, `mv`, `pull`, `rebase`, `reset`, `restore`, `revert`, `rm`, `stash`, `switch`
-- **Still allowed in the hub.** The commands that keep the hub on `main` and current:
-  - `switch main` and `checkout main`
-  - `merge --ff-only` and `pull --ff-only`
+  - `add`, `am`, `apply`, `bisect`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
+  - `merge`, `mv`, `pull`, `read-tree`, `rebase`, `reset`, `restore`, `revert`, `rm`
+  - `sparse-checkout`, `stash`, `submodule update`, `switch`, `symbolic-ref`, `update-index`, `update-ref`
+- **Still allowed in the hub.** Only these forms of a refused command, which keep the hub on `main` and current:
+  - `switch main` and `checkout main`, optionally with `-q`
+  - `merge --ff-only origin/main`, and `pull --ff-only` with no target or with `origin main`; besides
+    `--ff-only`, each may take only `-q`, `--quiet`, `-v`, `--verbose`, or `--no-rebase`, and a fast-forward to
+    any other target is refused with a reason that names it
   - `stash list` and `stash show`
   - `apply --check`
+  - `submodule` with any subcommand other than `update`
+- **Aliases.** A subcommand that is not refused itself may be one of your git aliases, so the guard reads it
+  with `git config --get alias.<name>` in the hub and judges what it runs, through further aliases. A shell
+  alias (`!...`) is read as Bash from the top of the hub. An alias that cannot be read, nests more than four
+  deep, or runs something the guard cannot judge is refused.
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool.
 - **How the target is found.** The guard follows where each git call runs, so the hub can still act on a
@@ -153,8 +161,8 @@ With the guard enabled:
   quote and miss the command beside it. `tools/worktrees-powershell.ps1` only reports what the parser found,
   in the order PowerShell would run it, and `tools/worktrees.py` makes every decision.
   - **When pwsh starts.** Starting `pwsh` costs far more than the guard's git calls, so the guard starts it
-    only when the text names `git` and one of the refused subcommands as a word. `git status`, `git log`, and
-    every non-git command never wait for it.
+    only when the text names `git` and, as a word, one of the refused subcommands or one of the aliases git
+    lists where the command starts. `git status`, `git log`, and every non-git command never wait for it.
   - **A command that doesn't parse is allowed.** PowerShell parses a whole script before it runs any of it, so
     none of such a command runs. A Bash command is different: the lines before a syntax error do run.
 
@@ -167,7 +175,7 @@ The guard catches mistakes, not determined effort. It does not see:
 - a PowerShell command when `pwsh` cannot be started, or does not finish reading it within 20 seconds.
 
 It also fails open: input it cannot judge is allowed, with a note on stderr, so that a guard defect cannot
-block every tool. Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are
+block every tool. The one exception is an alias that runs in the hub: one it cannot read is refused. Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are
 the guard.
 
 `.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore declare hooks and
