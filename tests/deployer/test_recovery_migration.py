@@ -714,7 +714,7 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertEqual(
             [
                 "alpha (runtime adapter, already absent)",
-                "beta (destination already absent)",
+                "beta (already absent)",
                 "reviewer.md (agent, already absent)",
                 "shared.md (shared asset, already absent)",
             ],

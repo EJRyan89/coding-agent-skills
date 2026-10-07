@@ -8,8 +8,7 @@ import secrets
 import sys
 import textwrap
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TextIO
 
@@ -276,8 +275,9 @@ class ReportLine:
 
 
 ADAPTER = "runtime adapter"
+SHARED_ASSET = "shared asset"
 AGENT = "agent"
-KIND_ORDER = {"": 0, ADAPTER: 1, "shared asset": 2, AGENT: 3}
+KIND_ORDER = {"": 0, ADAPTER: 1, SHARED_ASSET: 2, AGENT: 3}
 
 
 def _detail(*parts: str) -> str:
@@ -287,19 +287,33 @@ def _detail(*parts: str) -> str:
 MODIFIED = "modified since last deploy"
 DIFFERS = "unmanaged and differs"
 DIFFERS_FROM_SKILL = "unmanaged and differs from the rendered skill"
-# Reasons that --force or --force-item resolve; a destination of the wrong type needs manual cleanup instead.
-FORCEABLE = {
-    "CONFLICT": frozenset({MODIFIED, "differs"}),
-    "BOOTSTRAP DIFF": frozenset({"unmanaged, differs"}),
-    "SKIPPED": frozenset({MODIFIED, DIFFERS, DIFFERS_FROM_SKILL}),
+SKIPPED_WITH_SKILL = "its skill was skipped"
+
+DRY_RUN = "DRY RUN"
+DEPLOYED = "DEPLOYED"
+# Each planned action, in report order with attention first, and its label in the dry run and the deployment report.
+ACTION_LABELS = {
+    "SKIP": ("CONFLICT", "SKIPPED"),
+    "PRESERVE": ("PRESERVE", "PRESERVED"),
+    "REPLACE": ("REPLACE", "REPLACED"),
+    "REMOVE": ("REMOVE", "REMOVED"),
+    "UPDATE": ("UPDATE", "UPDATED"),
+    "INSTALL": ("FRESH INSTALL", "INSTALLED"),
+    "ADOPT": ("ADOPT", "ADOPTED"),
+    "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
+    "KEEP": ("KEEP", "KEPT"),
+    "UNCHANGED": ("UNCHANGED", "UNCHANGED"),
 }
+DRY_RUN_ACTIONS = tuple(dry for dry, _ in ACTION_LABELS.values())
+DEPLOY_ACTIONS = tuple(applied for _, applied in ACTION_LABELS.values())
+# Reasons that --force or --force-item resolve; a destination of the wrong type needs manual cleanup instead.
+FORCEABLE = {label: frozenset({MODIFIED, DIFFERS, DIFFERS_FROM_SKILL}) for label in ACTION_LABELS["SKIP"]}
 FORCE_HINTS = {
-    "DRY RUN": "Replace conflicting items with --force-item NAME or --force (backups are kept).",
-    "DEPLOYED": "Replace skipped items with --force-item NAME or --force (backups are kept).",
+    DRY_RUN: "Replace conflicting items with --force-item NAME or --force (backups are kept).",
+    DEPLOYED: "Replace skipped items with --force-item NAME or --force (backups are kept).",
 }
 
-ATTENTION_ACTIONS = frozenset({"CONFLICT", "BOOTSTRAP DIFF", "PRESERVE", "SKIPPED", "PRESERVED", "REPLACED"})
-SKIPPED_WITH_SKILL = "its skill was skipped"
+ATTENTION_ACTIONS = frozenset(label for action in ("SKIP", "PRESERVE", "REPLACE") for label in ACTION_LABELS[action])
 
 
 def _fold_adapters(lines: list[ReportLine]) -> list[ReportLine]:
@@ -356,182 +370,182 @@ def print_report(title: str, order: tuple[str, ...], lines: list[ReportLine]) ->
         print("")
 
 
-DRY_RUN_ACTIONS = (
-    "CONFLICT",
-    "BOOTSTRAP DIFF",
-    "PRESERVE",
-    "REMOVE",
-    "UPDATE",
-    "FRESH INSTALL",
-    "ADOPT",
-    "DROP OWNERSHIP",
-    "KEEP",
-    "EXISTS",
-    "UNCHANGED",
-)
+# Actions that move the rendered copy into place, and actions that end this source's ownership of an item.
+INSTALLING = frozenset({"INSTALL", "UPDATE", "UNCHANGED", "ADOPT", "REPLACE"})
+RELEASING = frozenset({"REMOVE", "DROP"})
+DIFF_LINES_REPORTED = 40
 
 
-def _dry_run(
+@dataclass(frozen=True)
+class ItemKind:
+    """Where one kind of item is deployed, and the reasons the plan gives for it."""
+
+    label: str
+    root: str  # the journal's name for the managed root
+    staging: str  # the kind's directory under the run's staging directory
+    directory: bool
+    removal_reason: str
+    unmanaged_reason: str
+
+    @property
+    def type_name(self) -> str:
+        return "a directory" if self.directory else "a file"
+
+    def has_expected_type(self, path: Path) -> bool:
+        return path.is_dir() if self.directory else path.is_file()
+
+
+SKILL_KIND = ItemKind("", "claude", "", True, "deselected or absent from source", DIFFERS_FROM_SKILL)
+SHARED_KIND = ItemKind(SHARED_ASSET, "claude", "", False, "obsolete", DIFFERS)
+ADAPTER_KIND = ItemKind(ADAPTER, "agents", render.ADAPTER_STAGING, True, "obsolete", DIFFERS)
+AGENT_KIND = ItemKind(AGENT, "claude-agents", render.AGENT_STAGING, False, "no selected skill needs it", DIFFERS)
+ITEM_KINDS = {kind.label: kind for kind in (SKILL_KIND, SHARED_KIND, ADAPTER_KIND, AGENT_KIND)}
+
+
+@dataclass(frozen=True)
+class PlanEntry:
+    """What this run does to one item: the dry run prints it, and the deployment carries out exactly that.
+
+    state is what the run found at the destination: absent, wrong type, unmodified (it matches the manifest), modified,
+    unmanaged and identical, unmanaged and differs, or still needed (a retained shared asset, left unread).
+    """
+
+    name: str
+    kind: str
+    state: str
+    action: str
+    reason: str = ""
+    existing: str = ""  # the current copy's hash, when the destination has the expected type
+    staged: str = ""  # the rendered copy's hash, for an item this run selects
+    diff: tuple[str, ...] = ()
+
+    def report_line(self, title: str) -> ReportLine:
+        dry = title == DRY_RUN
+        label = ACTION_LABELS[self.action][0 if dry else 1]
+        return ReportLine(
+            self.name, label, self.reason, self.diff if dry else self.diff[:DIFF_LINES_REPORTED], self.kind
+        )
+
+
+def _plan_selected(
+    context: Context,
+    kind: ItemKind,
+    name: str,
+    owned_hash: str | None,
+    staged_hash: str,
+    staged_tree: dict[str, bytes] | None = None,
+) -> PlanEntry:
+    """Plan an item this run installs, with --force and --force-item applied."""
+    destination = journal.root_directory(context.paths, kind.root) / name
+    if not os.path.lexists(destination):
+        return PlanEntry(name, kind.label, "absent", "INSTALL", staged=staged_hash)
+    if not kind.has_expected_type(destination):
+        return PlanEntry(
+            name, kind.label, "wrong type", "SKIP", f"destination is not {kind.type_name}", staged=staged_hash
+        )
+    existing = hashing.hash_path(destination)
+
+    def found(state: str, action: str, reason: str = "", diff: list[str] | None = None) -> PlanEntry:
+        return PlanEntry(name, kind.label, state, action, reason, existing, staged_hash, tuple(diff or ()))
+
+    forced = context.forced(name)
+    if owned_hash is not None:
+        if existing == owned_hash:
+            return found("unmodified", "UNCHANGED" if existing == staged_hash else "UPDATE")
+        if forced:
+            return found("modified", "REPLACE", "forced, previous copy backed up")
+        return found("modified", "SKIP", MODIFIED)
+    if existing == staged_hash:
+        return found("unmanaged and identical", "ADOPT", "byte-identical")
+    if forced:
+        return found("unmanaged and differs", "REPLACE", "forced, was unmanaged, previous copy backed up")
+    diff = _tree_diff(destination, staged_tree, f"staged/{name}") if staged_tree is not None else []
+    return found("unmanaged and differs", "SKIP", kind.unmanaged_reason, diff)
+
+
+def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: str) -> PlanEntry:
+    """Plan an owned item this run no longer installs: removed when unmodified, otherwise left for the user."""
+    destination = journal.root_directory(context.paths, kind.root) / name
+    if kind.has_expected_type(destination):
+        existing = hashing.hash_path(destination)
+        if existing == owned_hash:
+            return PlanEntry(name, kind.label, "unmodified", "REMOVE", kind.removal_reason, existing)
+        return PlanEntry(name, kind.label, "modified", "PRESERVE", MODIFIED, existing)
+    if os.path.lexists(destination):
+        return PlanEntry(name, kind.label, "wrong type", "PRESERVE", f"destination is not {kind.type_name}")
+    return PlanEntry(name, kind.label, "absent", "DROP", "already absent")
+
+
+def _plan(
     context: Context,
     selected: list[str],
     adapters: list[str],
     staged: render.Staged,
-    plan: SharedPlan,
+    staged_shared: list[str],
     agents: list[str],
-) -> None:
-    paths, owned = context.paths, context.owned
-    lines: list[ReportLine] = []
-
-    def report(name: str, action: str, detail: str = "", extra: list[str] | None = None, kind: str = "") -> None:
-        lines.append(ReportLine(name, action, detail, tuple(extra or ()), kind))
-
-    for name in selected:
-        destination = paths.dest_dir / name
-        if destination.is_dir():
-            existing = hashing.hash_path(destination)
-            if name in owned.skills:
-                if existing != owned.skills[name]:
-                    report(name, "CONFLICT", MODIFIED)
-                elif existing == staged.skill_hash(name):
-                    report(name, "UNCHANGED")
-                else:
-                    report(name, "UPDATE")
-            elif existing == staged.skill_hash(name):
-                report(name, "ADOPT", "unmanaged, byte-identical")
-            else:
-                report(
-                    name,
-                    "BOOTSTRAP DIFF",
-                    "unmanaged, differs",
-                    _tree_diff(destination, staged.skills[name], f"staged/{name}"),
-                )
-        elif os.path.lexists(destination):
-            report(name, "CONFLICT", "destination is not a directory")
-        else:
-            report(name, "FRESH INSTALL")
+) -> list[PlanEntry]:
+    """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out."""
+    owned = context.owned
+    unselected_skills = [
+        _plan_unselected(context, SKILL_KIND, name, value)
+        for name, value in sorted(owned.skills.items())
+        if name not in selected
+    ]
+    skills = [
+        _plan_selected(context, SKILL_KIND, name, owned.skills.get(name), staged.skill_hash(name), staged.skills[name])
+        for name in selected
+    ]
+    # An owned skill whose installed copy this run leaves in place keeps the shared assets it was deployed with.
+    survivors = sorted(
+        entry.name
+        for entry in [*unselected_skills, *skills]
+        if entry.action in ("SKIP", "PRESERVE") and entry.name in owned.skills
+    )
+    retained = _retained_shared(context, survivors, staged_shared)
+    keep = set(staged_shared) | set(retained)
+    skipped_skills = {entry.name for entry in skills if entry.action == "SKIP"}
+    adapter_entries: list[PlanEntry] = []
     for name in adapters:
-        destination = paths.adapter_dest_dir / name
-        if destination.is_dir():
-            existing = hashing.hash_path(destination)
-            if owned.adapters.get(name) == existing:
-                report(name, "UNCHANGED" if existing == staged.adapter_hash(name) else "UPDATE", kind=ADAPTER)
-            elif existing == staged.adapter_hash(name):
-                report(name, "ADOPT", "byte-identical", kind=ADAPTER)
-            else:
-                report(name, "CONFLICT", "differs", kind=ADAPTER)
-        elif os.path.lexists(destination):
-            report(name, "CONFLICT", "destination is not a directory", kind=ADAPTER)
-        else:
-            report(name, "FRESH INSTALL", kind=ADAPTER)
-    for name in agents:
-        destination = paths.agent_dest_dir / name
-        if destination.is_file():
-            existing = hashing.hash_path(destination)
-            if name in owned.agents:
-                if existing != owned.agents[name]:
-                    report(name, "CONFLICT", MODIFIED, kind=AGENT)
-                else:
-                    report(name, "UNCHANGED" if existing == staged.agent_hash(name) else "UPDATE", kind=AGENT)
-            elif existing == staged.agent_hash(name):
-                report(name, "ADOPT", "unmanaged, byte-identical", kind=AGENT)
-            else:
-                report(name, "CONFLICT", "differs", kind=AGENT)
-        elif os.path.lexists(destination):
-            report(name, "CONFLICT", "destination is not a file", kind=AGENT)
-        else:
-            report(name, "FRESH INSTALL", kind=AGENT)
-    for name in sorted(owned.agents):
-        if name in agents:
-            continue
-        destination = paths.agent_dest_dir / name
-        if destination.is_file():
-            if hashing.hash_path(destination) == owned.agents[name]:
-                report(name, "REMOVE", "no selected skill needs it", kind=AGENT)
-            else:
-                report(name, "PRESERVE", "modified", kind=AGENT)
-        elif os.path.lexists(destination):
-            report(name, "PRESERVE", "unexpected destination type", kind=AGENT)
-        else:
-            report(name, "DROP OWNERSHIP", "already absent", kind=AGENT)
-    for asset in sorted(staged.shared):
-        destination = paths.dest_dir / asset
-        if not os.path.lexists(destination):
-            action = "FRESH INSTALL"
-        elif destination.is_file() and hashing.hash_path(destination) == staged.shared_hash(asset):
-            action = "UNCHANGED"
-        else:
-            action = "EXISTS"
-        report(asset, action, kind="shared asset")
-    for name in sorted(owned.skills):
-        if name in selected:
-            continue
-        destination = paths.dest_dir / name
-        if destination.is_dir():
-            if hashing.hash_path(destination) == owned.skills[name]:
-                report(name, "REMOVE", "deselected or absent from source")
-            else:
-                report(name, "PRESERVE", "deselected but modified")
-        elif os.path.lexists(destination):
-            report(name, "PRESERVE", "unexpected destination type")
-        else:
-            report(name, "DROP OWNERSHIP", "destination already absent")
-    for asset in sorted(owned.shared):
-        if asset in plan.retained:
-            report(asset, "KEEP", f"needed by {plan.retained[asset]}", kind="shared asset")
-        if asset in plan.keep:
-            continue
-        destination = paths.dest_dir / asset
-        if destination.is_file():
-            if hashing.hash_path(destination) == owned.shared[asset]:
-                report(asset, "REMOVE", "obsolete", kind="shared asset")
-            else:
-                report(asset, "PRESERVE", "obsolete but modified", kind="shared asset")
-        elif os.path.lexists(destination):
-            report(asset, "PRESERVE", "unexpected destination type", kind="shared asset")
-        else:
-            report(asset, "DROP OWNERSHIP", "already absent", kind="shared asset")
-    for name in sorted(owned.adapters):
-        if name in adapters:
-            continue
-        destination = paths.adapter_dest_dir / name
-        if destination.is_dir():
-            if hashing.hash_path(destination) == owned.adapters[name]:
-                report(name, "REMOVE", "obsolete", kind=ADAPTER)
-            else:
-                report(name, "PRESERVE", "modified", kind=ADAPTER)
-        else:
-            report(name, "DROP OWNERSHIP", "already absent", kind=ADAPTER)
-    print_report("DRY RUN", DRY_RUN_ACTIONS, lines)
+        entry = _plan_selected(context, ADAPTER_KIND, name, owned.adapters.get(name), staged.adapter_hash(name))
+        if name in skipped_skills:
+            entry = replace(entry, action="SKIP", reason=SKIPPED_WITH_SKILL, diff=())
+        adapter_entries.append(entry)
+    return [
+        *unselected_skills,
+        *(
+            PlanEntry(asset, SHARED_ASSET, "still needed", "KEEP", f"needed by {reason}")
+            for asset, reason in retained.items()
+        ),
+        *(
+            _plan_unselected(context, SHARED_KIND, asset, value)
+            for asset, value in sorted(owned.shared.items())
+            if asset not in keep
+        ),
+        *(
+            _plan_unselected(context, ADAPTER_KIND, name, value)
+            for name, value in sorted(owned.adapters.items())
+            if name not in adapters
+        ),
+        *(
+            _plan_unselected(context, AGENT_KIND, name, value)
+            for name, value in sorted(owned.agents.items())
+            if name not in agents
+        ),
+        *skills,
+        *adapter_entries,
+        *(
+            _plan_selected(context, SHARED_KIND, asset, owned.shared.get(asset), staged.shared_hash(asset))
+            for asset in sorted(staged.shared)
+        ),
+        *(
+            _plan_selected(context, AGENT_KIND, name, owned.agents.get(name), staged.agent_hash(name))
+            for name in agents
+        ),
+    ]
 
 
-DEPLOY_ACTIONS = (
-    "SKIPPED",
-    "PRESERVED",
-    "REPLACED",
-    "REMOVED",
-    "UPDATED",
-    "INSTALLED",
-    "ADOPTED",
-    "DROPPED OWNERSHIP",
-    "KEPT",
-    "UNCHANGED",
-)
-
-
-@dataclass
-class Outcome:
-    lines: list[ReportLine] = field(default_factory=list)
-    skipped_skills: set[str] = field(default_factory=set)
-    skipped_shared: set[str] = field(default_factory=set)
-    skipped_adapters: set[str] = field(default_factory=set)
-    skipped_agents: set[str] = field(default_factory=set)
-    removed_skills: set[str] = field(default_factory=set)
-    removed_shared: set[str] = field(default_factory=set)
-    removed_adapters: set[str] = field(default_factory=set)
-    removed_agents: set[str] = field(default_factory=set)
-
-    def add(self, name: str, action: str, detail: str = "", kind: str = "") -> None:
-        self.lines.append(ReportLine(name, action, detail, kind=kind))
+def _dry_run(entries: list[PlanEntry]) -> None:
+    print_report(DRY_RUN, DRY_RUN_ACTIONS, [entry.report_line(DRY_RUN) for entry in entries])
 
 
 def _ensure_transient_available(item: str, base: Path) -> None:
@@ -545,39 +559,16 @@ def _ensure_transient_available(item: str, base: Path) -> None:
         )
 
 
-@dataclass
-class SharedPlan:
-    """Which shared assets this run installs, and which owned assets it keeps for skills that stay installed."""
-
-    staged: list[str]
-    retained: dict[str, str]
-
-    @property
-    def keep(self) -> set[str]:
-        return set(self.staged) | set(self.retained)
-
-
-def _surviving_skills(context: Context, selected: list[str]) -> list[str]:
-    """Owned skills whose current installed copy will remain after this run: preserved or skipped as modified."""
-    survivors: list[str] = []
-    for name, owned_hash in sorted(context.owned.skills.items()):
-        destination = context.paths.dest_dir / name
-        if not os.path.lexists(destination):
-            continue
-        if (
-            not destination.is_dir()
-            or hashing.find_link(destination) is not None
-            or (hashing.hash_path(destination) != owned_hash and not (name in selected and context.forced(name)))
-        ):
-            survivors.append(name)
-    return survivors
-
-
-def _plan_shared(context: Context, selected: list[str], assets: dict[str, str]) -> SharedPlan:
+def _shared_to_stage(context: Context, selected: list[str], assets: dict[str, str]) -> list[str]:
+    """The shared assets this source owns that the selected skills need, which this run renders and installs."""
     needed = {dependency for name in selected for dependency in context.source.skills[name].shared_deps}
-    staged = sorted(asset for asset in needed if assets.get(asset) == "owner")
+    return sorted(asset for asset in needed if assets.get(asset) == "owner")
+
+
+def _retained_shared(context: Context, survivors: list[str], staged_shared: list[str]) -> dict[str, str]:
+    """Owned shared assets this run does not install but keeps, each with what still needs it."""
     required_by: dict[str, str] = {}
-    for name in _surviving_skills(context, selected):
+    for name in survivors:
         for asset in context.owned.skill_shared_deps.get(name, []):
             required_by.setdefault(asset, name)
     for other, entry in sorted(context.manifest.sources.items()):
@@ -586,16 +577,15 @@ def _plan_shared(context: Context, selected: list[str], assets: dict[str, str]) 
         for skill_entry in (entry.get("skills") or {}).values():
             for asset in skill_entry.get("shared_deps", []):
                 required_by.setdefault(asset, f"source {other}")
-    retained = {
+    return {
         asset: required_by[asset]
         for asset in sorted(context.owned.shared)
-        if asset not in staged and asset in required_by
+        if asset not in staged_shared and asset in required_by
     }
-    return SharedPlan(staged=staged, retained=retained)
 
 
 def _check_ownership(
-    context: Context, selected: list[str], adapters: list[str], plan: SharedPlan, agents: list[str]
+    context: Context, selected: list[str], adapters: list[str], staged_shared: list[str], agents: list[str]
 ) -> None:
     data, owned, source_id, paths = context.manifest, context.owned, context.source_id, context.paths
     ownership = see_recovery("Ownership held by another source")
@@ -624,7 +614,7 @@ def _check_ownership(
     for name in sorted(owned.skills):
         if name not in selected:
             _ensure_transient_available(name, paths.dest_dir)
-    for asset in plan.staged:
+    for asset in staged_shared:
         owner = data.shared_owners.get(asset)
         if owner is not None and owner != source_id:
             raise transfer(f"Shared asset '{asset}'", owner)
@@ -632,7 +622,7 @@ def _check_ownership(
             raise collision(f"Shared asset '{asset}'", "a skill", data.skill_owners[asset])
         _ensure_transient_available(asset, paths.dest_dir)
     for asset in sorted(owned.shared):
-        if asset not in plan.staged:
+        if asset not in staged_shared:
             _ensure_transient_available(asset, paths.dest_dir)
     for name in adapters:
         owner = data.adapter_owners.get(name)
@@ -652,7 +642,7 @@ def _check_ownership(
             _ensure_transient_available(name, paths.agent_dest_dir)
     candidates = [
         *(paths.dest_dir / name for name in [*selected, *owned.skills]),
-        *(paths.dest_dir / asset for asset in [*plan.staged, *owned.shared]),
+        *(paths.dest_dir / asset for asset in [*staged_shared, *owned.shared]),
         *(paths.adapter_dest_dir / name for name in [*adapters, *owned.adapters]),
         *(paths.agent_dest_dir / name for name in [*agents, *owned.agents]),
     ]
@@ -664,41 +654,6 @@ def _check_ownership(
                 f"symlink or junction: {platform_support.normalize(link)}",
                 "Remove it or restore the deployed copy after verifying its contents, then retry.",
             )
-
-
-def _remove_obsolete(
-    record: journal.Journal,
-    root: str,
-    base: Path,
-    owned: dict[str, str],
-    keep: set[str],
-    is_expected_type: Callable[[Path], bool],
-    labels: tuple[str, str, str],
-    outcome: Outcome,
-    removed: set[str],
-    skipped: set[str],
-) -> None:
-    kind, removal_reason, wrong_type = labels
-    for name in sorted(owned):
-        if name in keep:
-            continue
-        destination = base / name
-        if is_expected_type(destination):
-            existing = hashing.hash_path(destination)
-            if existing == owned[name]:
-                record.backup(root, name, existing, retain=False)
-                fsops.move(destination, base / f"{name}.deploying-bak")
-                removed.add(name)
-                outcome.add(name, "REMOVED", removal_reason, kind)
-            else:
-                outcome.add(name, "PRESERVED", MODIFIED, kind)
-                skipped.add(name)
-        elif os.path.lexists(destination):
-            outcome.add(name, "PRESERVED", f"destination is not {wrong_type}", kind)
-            skipped.add(name)
-        else:
-            removed.add(name)
-            outcome.add(name, "DROPPED OWNERSHIP", "already absent", kind)
 
 
 def _replace(
@@ -719,55 +674,28 @@ def _replace(
     fsops.move(source_path, destination)
 
 
-def _apply_item(
-    context: Context,
-    record: journal.Journal,
-    root: str,
-    name: str,
-    staged_path: Path,
-    staged_hash: str,
-    owned_hash: str | None,
-    is_expected_type: Callable[[Path], bool],
-    labels: dict[str, str],
-) -> ReportLine:
-    """Install one item and return the report line describing what happened to it."""
-    kind = labels["kind"]
-    base = journal.root_directory(context.paths, root)
-    destination = base / name
-    if not os.path.lexists(destination):
-        _replace(record, root, base, staged_path, name, staged_hash, None, False)
-        return ReportLine(name, "INSTALLED", kind=kind)
-    if not is_expected_type(destination):
-        return ReportLine(name, "SKIPPED", f"destination is not {labels['type']}", kind=kind)
-    existing = hashing.hash_path(destination)
-    if owned_hash is not None:
-        if existing == owned_hash:
-            _replace(record, root, base, staged_path, name, staged_hash, existing, False)
-            return ReportLine(name, "UNCHANGED" if existing == staged_hash else "UPDATED", kind=kind)
-        if context.forced(name):
-            _replace(record, root, base, staged_path, name, staged_hash, existing, True)
-            return ReportLine(name, "REPLACED", "forced, previous copy backed up", kind=kind)
-        return ReportLine(name, "SKIPPED", labels["modified"], kind=kind)
-    if existing == staged_hash:
-        _replace(record, root, base, staged_path, name, staged_hash, existing, False)
-        return ReportLine(name, "ADOPTED", "byte-identical", kind=kind)
-    if context.forced(name):
-        _replace(record, root, base, staged_path, name, staged_hash, existing, True)
-        return ReportLine(name, "REPLACED", "forced, was unmanaged, previous copy backed up", kind=kind)
-    diff = _tree_diff(destination, hashing.read_tree(staged_path), labels["diff"])[:40] if "diff" in labels else []
-    return ReportLine(name, "SKIPPED", labels["unmanaged"], tuple(diff), kind)
+def _carry_out(record: journal.Journal, paths: Paths, staging_dir: Path, entry: PlanEntry) -> None:
+    """Make the one filesystem change the plan entry names; skipped, preserved, kept, and dropped items need none."""
+    kind = ITEM_KINDS[entry.kind]
+    base = journal.root_directory(paths, kind.root)
+    if entry.action == "REMOVE":
+        record.backup(kind.root, entry.name, entry.existing, retain=False)
+        fsops.move(base / entry.name, base / f"{entry.name}.deploying-bak")
+    elif entry.action in INSTALLING:
+        _replace(
+            record,
+            kind.root,
+            base,
+            staging_dir / kind.staging / entry.name,
+            entry.name,
+            entry.staged,
+            entry.existing or None,
+            entry.action == "REPLACE",
+        )
 
 
-def _apply(
-    context: Context,
-    selected: list[str],
-    adapters: list[str],
-    staged: render.Staged,
-    plan: SharedPlan,
-    run_id: str,
-    agents: list[str],
-) -> None:
-    paths, owned = context.paths, context.owned
+def _apply(context: Context, selected: list[str], entries: list[PlanEntry], staged: render.Staged, run_id: str) -> None:
+    paths = context.paths
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
@@ -775,204 +703,47 @@ def _apply(
     fsops.make_directories(paths.dest_dir)
     fsops.make_directories(paths.adapter_dest_dir)
     fsops.make_directories(paths.agent_dest_dir)
-    outcome = Outcome()
-    is_dir = Path.is_dir
-    is_file = Path.is_file
-    _remove_obsolete(
-        record,
-        "claude",
-        paths.dest_dir,
-        owned.skills,
-        set(selected),
-        is_dir,
-        ("", "deselected or absent from source", "a directory"),
-        outcome,
-        outcome.removed_skills,
-        outcome.skipped_skills,
-    )
-    for asset, reason in plan.retained.items():
-        outcome.add(asset, "KEPT", f"needed by {reason}", "shared asset")
-    _remove_obsolete(
-        record,
-        "claude",
-        paths.dest_dir,
-        owned.shared,
-        plan.keep,
-        is_file,
-        ("shared asset", "obsolete", "a file"),
-        outcome,
-        outcome.removed_shared,
-        outcome.skipped_shared,
-    )
-    _remove_obsolete(
-        record,
-        "agents",
-        paths.adapter_dest_dir,
-        owned.adapters,
-        set(adapters),
-        is_dir,
-        (ADAPTER, "obsolete", "a directory"),
-        outcome,
-        outcome.removed_adapters,
-        outcome.skipped_adapters,
-    )
-    _remove_obsolete(
-        record,
-        "claude-agents",
-        paths.agent_dest_dir,
-        owned.agents,
-        set(agents),
-        is_file,
-        (AGENT, "no selected skill needs it", "a file"),
-        outcome,
-        outcome.removed_agents,
-        outcome.skipped_agents,
-    )
-
-    skill_labels = {
-        "kind": "",
-        "type": "a directory",
-        "modified": MODIFIED,
-        "unmanaged": DIFFERS_FROM_SKILL,
-    }
-    for name in selected:
-        labels = dict(skill_labels, diff=f"staged/{name}")
-        line = _apply_item(
-            context,
-            record,
-            "claude",
-            name,
-            staging_dir / name,
-            staged.skill_hash(name),
-            owned.skills.get(name),
-            is_dir,
-            labels,
-        )
-        _record(outcome, line, outcome.skipped_skills)
-
-    adapter_labels = {
-        "kind": ADAPTER,
-        "type": "a directory",
-        "modified": MODIFIED,
-        "unmanaged": DIFFERS,
-    }
-    for name in adapters:
-        if name in outcome.skipped_skills:
-            _record(outcome, ReportLine(name, "SKIPPED", SKIPPED_WITH_SKILL, kind=ADAPTER), outcome.skipped_adapters)
-            continue
-        line = _apply_item(
-            context,
-            record,
-            "agents",
-            name,
-            staging_dir / render.ADAPTER_STAGING / name,
-            staged.adapter_hash(name),
-            owned.adapters.get(name),
-            is_dir,
-            adapter_labels,
-        )
-        _record(outcome, line, outcome.skipped_adapters)
-
-    shared_labels = {
-        "kind": "shared asset",
-        "type": "a file",
-        "modified": MODIFIED,
-        "unmanaged": DIFFERS,
-    }
-    for asset in sorted(staged.shared):
-        line = _apply_item(
-            context,
-            record,
-            "claude",
-            asset,
-            staging_dir / asset,
-            staged.shared_hash(asset),
-            owned.shared.get(asset),
-            is_file,
-            shared_labels,
-        )
-        _record(outcome, line, outcome.skipped_shared)
-
-    agent_labels = {
-        "kind": AGENT,
-        "type": "a file",
-        "modified": MODIFIED,
-        "unmanaged": DIFFERS,
-    }
-    for name in agents:
-        line = _apply_item(
-            context,
-            record,
-            "claude-agents",
-            name,
-            staging_dir / render.AGENT_STAGING / name,
-            staged.agent_hash(name),
-            owned.agents.get(name),
-            is_file,
-            agent_labels,
-        )
-        _record(outcome, line, outcome.skipped_agents)
-
-    _commit_manifest(context, selected, adapters, staged, plan, outcome, run_id, agents)
+    for entry in entries:
+        _carry_out(record, paths, staging_dir, entry)
+    _commit_manifest(context, selected, entries, run_id)
     backups = _finalize(context, record, run_id)
     fsops.remove(staging_dir)
-    _summary(context, run_id, outcome, backups)
+    _summary(context, run_id, entries, backups)
 
 
-def _record(outcome: Outcome, line: ReportLine, skipped: set[str]) -> None:
-    outcome.lines.append(line)
-    if line.action == "SKIPPED":
-        skipped.add(line.name)
-
-
-def _commit_manifest(
-    context: Context,
-    selected: list[str],
-    adapters: list[str],
-    staged: render.Staged,
-    plan: SharedPlan,
-    outcome: Outcome,
-    run_id: str,
-    agents: list[str],
-) -> None:
+def _commit_manifest(context: Context, selected: list[str], entries: list[PlanEntry], run_id: str) -> None:
     owned, data = context.owned, context.manifest
     skills = {
         name: {"hash": value, "shared_deps": list(owned.skill_shared_deps.get(name, []))}
         for name, value in owned.skills.items()
     }
-    for name in selected:
-        if name not in outcome.skipped_skills:
-            skills[name] = {
-                "hash": staged.skill_hash(name),
-                "shared_deps": sorted(context.source.skills[name].shared_deps),
-            }
-    for name in outcome.removed_skills:
-        skills.pop(name, None)
     shared = {
         name: {"hash": value, "role": owned.shared_roles.get(name, "owner")} for name, value in owned.shared.items()
     }
-    for asset in staged.shared:
-        if asset not in outcome.skipped_shared:
-            shared[asset] = {"hash": staged.shared_hash(asset), "role": "owner"}
-    for name in outcome.removed_shared:
-        shared.pop(name, None)
     adapter_entries = {name: {"hash": value} for name, value in owned.adapters.items()}
-    for name in adapters:
-        if name not in outcome.skipped_adapters:
-            adapter_entries[name] = {"hash": staged.adapter_hash(name)}
-    for name in outcome.removed_adapters:
-        adapter_entries.pop(name, None)
     agent_entries = {name: {"hash": value} for name, value in owned.agents.items()}
-    for name in agents:
-        if name not in outcome.skipped_agents:
-            agent_entries[name] = {"hash": staged.agent_hash(name)}
-    for name in outcome.removed_agents:
-        agent_entries.pop(name, None)
+    recorded: dict[str, dict[str, dict]] = {
+        SKILL_KIND.label: skills,
+        SHARED_ASSET: shared,
+        ADAPTER: adapter_entries,
+        AGENT: agent_entries,
+    }
+    for entry in entries:
+        if entry.action in RELEASING:
+            recorded[entry.kind].pop(entry.name, None)
+        elif entry.action in INSTALLING:
+            details: dict[str, object] = {"hash": entry.staged}
+            if entry.kind == SKILL_KIND.label:
+                details["shared_deps"] = sorted(context.source.skills[entry.name].shared_deps)
+            elif entry.kind == SHARED_ASSET:
+                details["role"] = "owner"
+            recorded[entry.kind][entry.name] = details
+    removed_skills = {entry.name for entry in entries if entry.kind == SKILL_KIND.label and entry.action in RELEASING}
     selected_skills = list(owned.selected_skills)
     for name in selected:
         if name not in selected_skills:
             selected_skills.append(name)
-    selected_skills = [name for name in selected_skills if name not in outcome.removed_skills]
+    selected_skills = [name for name in selected_skills if name not in removed_skills]
     data.data["last_run_id"] = run_id
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
@@ -1019,8 +790,8 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
     return backups
 
 
-def _summary(context: Context, run_id: str, outcome: Outcome, backups: list[tuple[str, str]]) -> None:
-    print_report("DEPLOYED", DEPLOY_ACTIONS, outcome.lines)
+def _summary(context: Context, run_id: str, entries: list[PlanEntry], backups: list[tuple[str, str]]) -> None:
+    print_report(DEPLOYED, DEPLOY_ACTIONS, [entry.report_line(DEPLOYED) for entry in entries])
     if backups:
         print(f"BACKED UP ({len(backups)}):")
         for item, destination in sorted(backups):
@@ -1168,10 +939,10 @@ def _deploy(
     _print_selection(src, selection, selected)
     _warn_missing_tools(src, selection)
     _require_variables(context, selected)
-    plan = _plan_shared(context, selected, _validate_shared_assets(context, selected))
+    staged_shared = _shared_to_stage(context, selected, _validate_shared_assets(context, selected))
     agents = source.agent_closure(src, selected)
-    _check_ownership(context, selected, adapters, plan, agents)
-    staged = render.render(src, selected, adapters, plan.staged, values, paths.skills_src, agents)
+    _check_ownership(context, selected, adapters, staged_shared, agents)
+    staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
     render.reject_unexpanded_tokens(staged)
     render.validate_executables(staged)
     print("")
@@ -1179,10 +950,12 @@ def _deploy(
         print("Rendered and validated in memory (dry run).")
     else:
         print("Rendered and validated.")
+    # Planned last, after the slow validation, so the destinations it read are the ones the deployment changes.
+    entries = _plan(context, selected, adapters, staged, staged_shared, agents)
     if run_id is None:
-        _dry_run(context, selected, adapters, staged, plan, agents)
+        _dry_run(entries)
         return 0
-    _apply(context, selected, adapters, staged, plan, run_id, agents)
+    _apply(context, selected, entries, staged, run_id)
     return 0
 
 

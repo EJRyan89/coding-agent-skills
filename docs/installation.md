@@ -84,7 +84,7 @@ It reports each adapter as `FOUND`, `NOT FOUND`, `DISABLED`, or `SHADOWED` for e
 
 ### Skipped items
 
-If an unmanaged or locally modified destination differs from the rendered template, deployment skips it and lists it under `SKIPPED`, with a diff for unmanaged skills. Review the difference before explicitly replacing only that item:
+If an unmanaged or locally modified destination differs from the rendered template, deployment skips it and lists it under `SKIPPED`, with a diff for unmanaged skills; a dry run lists the same items under `CONFLICT`. Review the difference before explicitly replacing only that item:
 
 ```bash
 python deploy.py --all --force-item dotnet-format
@@ -104,7 +104,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-The dry run groups items by planned action, with anything that needs your attention, such as conflicts, first, and lists each group alphabetically. Installed items whose rendered content would not change are grouped under `UNCHANGED`, so the `UPDATE` group shows exactly what the update changes. A runtime adapter gets its own line, marked `(runtime adapter)`, only when it needs attention or does something its skill does not. The deployment itself ends with a report in the same layout, in the past tense: `SKIPPED`, `UPDATED`, `INSTALLED`, `UNCHANGED`, and so on, followed by the run ID and manifest path.
+The dry run and the deployment work from one plan, so the dry run shows, item by item, what the deployment with the same options will do, `--force` and `--force-item` included. It groups items by planned action, with anything that needs your attention, such as conflicts, first, and lists each group alphabetically. Installed items whose rendered content would not change are grouped under `UNCHANGED`, so the `UPDATE` group shows exactly what the update changes. A runtime adapter gets its own line, marked `(runtime adapter)`, only when it needs attention or does something its skill does not. The deployment itself ends with the same report, with the same reasons, in the past tense: `CONFLICT` becomes `SKIPPED`, `REPLACE` becomes `REPLACED`, `FRESH INSTALL` becomes `INSTALLED`, and so on, followed by the run ID and manifest path.
 
 Deploy from the same clone each time: the manifest records it, and a deployment from another checkout refuses. If you move or re-clone the repository, deploy once from the new checkout with `--take-over-source`; see [Deploying from another checkout](recovery.md#deploying-from-another-checkout).
 
