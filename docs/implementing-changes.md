@@ -26,8 +26,8 @@ and how a worktree is retired.
 
 Run `python -B tests/run_validation.py` in full. `-k <pattern>` narrows it while iterating only. A change to skill
 paths, `allowed-tools`, runtime adapters, or agents also runs the `runtime-canary` repository skill, and a change to a
-skill under `skills/` also runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation") holds the rules
-validation enforces.
+skill under `skills/` or `.claude/skills/` also runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation")
+holds the rules validation enforces.
 
 ## Contract files
 

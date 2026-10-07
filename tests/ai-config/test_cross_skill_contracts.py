@@ -172,9 +172,28 @@ class CrossSkillContractTests(unittest.TestCase):
                     expected = (REPOSITORY_ROOT / "skills" / name / "SKILL.md").as_posix()
                     self.assertEqual([f"SKILL_FILE {expected}", "SCOPE source"], [lines[1], lines[3]])
 
+    def test_the_cost_audit_finds_every_repository_skill_past_its_shim(self) -> None:
+        # change-skill audits a changed repository skill too; its .agents/skills shim must not make the name ambiguous.
+        change_skill = (REPOSITORY_ROOT / ".claude/skills/change-skill/SKILL.md").read_text(encoding="utf-8-sig")
+        self.assertIn("SCOPE project-claude", change_skill)
+        script = REPOSITORY_ROOT / "skills/analyze-skill-cost/scripts/skill_inventory.py"
+        names = sorted(path.parent.name for path in (REPOSITORY_ROOT / ".claude/skills").glob("*/SKILL.md"))
+        self.assertIn("change-skill", names)
+        with tempfile.TemporaryDirectory() as home:
+            for name in names:
+                with self.subTest(skill=name):
+                    arguments = ["locate", name, "--repo", str(REPOSITORY_ROOT), "--home", home]
+                    completed = subprocess.run(
+                        [sys.executable, "-B", str(script), *arguments], capture_output=True, text=True, check=False
+                    )
+                    self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+                    lines = completed.stdout.splitlines()
+                    expected = (REPOSITORY_ROOT / ".claude/skills" / name / "SKILL.md").as_posix()
+                    self.assertEqual([f"SKILL_FILE {expected}", "SCOPE project-claude"], [lines[1], lines[3]])
+
     def test_the_runtime_canary_is_a_manual_gate_that_validation_never_runs(self) -> None:
         canary = (REPOSITORY_ROOT / ".claude/skills/runtime-canary/SKILL.md").read_text(encoding="utf-8-sig")
-        self.assertIn("python -B tools/runtime_canary.py <skill>", canary)
+        self.assertIn('python -B tools/runtime_canary.py "<skill>"', canary)
         self.assertTrue((REPOSITORY_ROOT / "tools/runtime_canary.py").is_file())
         change_skill = (REPOSITORY_ROOT / ".claude/skills/change-skill/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn("run the `runtime-canary` repository skill", change_skill)

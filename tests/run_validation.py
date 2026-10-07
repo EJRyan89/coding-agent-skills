@@ -46,6 +46,7 @@ from deployer import platform_support, render, tools
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 SKILLS_ROOT = REPOSITORY_ROOT / "skills"
+REPOSITORY_SKILLS = ".claude/skills"
 MAXIMUM_INLINE_EXECUTABLE_LINES = 5
 COMMAND_TIMEOUT_SECONDS = 20 * 60
 EXECUTABLE_FENCE_LANGUAGES = {
@@ -123,6 +124,21 @@ def find_executable_fences(lines: list[str]) -> list[ExecutableFence]:
             raise AssertionError(f"Unclosed executable {fence.language} fence at line {fence.opener + 1}.")
         fences.append(ExecutableFence(fence.opener + 1, fence.language, fence.closer - fence.opener - 1))
     return fences
+
+
+def embedded_program_problems(root: Path, tree: str = "skills") -> list[str]:
+    """Report executable fences in a skill tree's Markdown that are programs rather than short command examples."""
+    problems: list[str] = []
+    for markdown in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
+        name = markdown.relative_to(root).as_posix()
+        for fence in find_executable_fences(markdown.read_text(encoding="utf-8").splitlines()):
+            if fence.body_line_count > MAXIMUM_INLINE_EXECUTABLE_LINES:
+                problems.append(
+                    f"{name}:{fence.line_number} contains a {fence.language} fence with {fence.body_line_count} "
+                    f"lines. Markdown may contain only short command examples of at most "
+                    f"{MAXIMUM_INLINE_EXECUTABLE_LINES} lines; move executable logic to the skill's scripts/ directory."
+                )
+    return problems
 
 
 def fence_holders(lines: list[str]) -> list[render.Fence | None]:
@@ -462,22 +478,37 @@ def gh_filter_problems(root: Path) -> list[str]:
 
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
+# A fence command that runs the skill's own scripts, which its grants must cover: a shipped skill names them through
+# its directory, and a repository skill runs the repository's tools and tests from the working tree.
+OWN_SCRIPT_COMMAND = re.compile(r"\$\{CLAUDE_SKILL_DIR\}")
+REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
 
 
-def skill_grant_problems(root: Path) -> list[str]:
+def shipped_skill_files(root: Path) -> list[Path]:
+    """Each shipped skill's SKILL.md: a skills/ folder with deploy-meta, which a shared asset lacks."""
+    found = (root / "skills" / metadata.stem / "SKILL.md" for metadata in (root / "deploy-meta").glob("*.json"))
+    return sorted((path for path in found if path.is_file()), key=lambda path: path.parent.name)
+
+
+def repository_skill_files(root: Path) -> list[Path]:
+    """Each repository skill's SKILL.md under .claude/skills, which the shipped-skill policies hold too."""
+    return sorted((root / REPOSITORY_SKILLS).glob("*/SKILL.md"), key=lambda path: path.parent.name)
+
+
+def skill_grant_problems(
+    root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
+) -> list[str]:
     """Report shell grants that cover every command or one shell only, grants no step uses, and own-script commands
     left ungranted.
 
-    The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree.
+    The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
+    own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
     """
     sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
     import skill_inventory
 
     problems: list[str] = []
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        skill_md = root / "skills" / metadata.stem / "SKILL.md"
-        if not skill_md.is_file():
-            continue
+    for skill_md in shipped_skill_files(root) if skill_files is None else skill_files:
         name = skill_md.relative_to(root).as_posix()
         for line in skill_inventory.tools(skill_md):
             kind, _, detail = line.partition(" ")
@@ -489,7 +520,7 @@ def skill_grant_problems(root: Path) -> list[str]:
                 problems.append(f"{name} grants {detail}, which no step uses; see {GRANTS_DOC}")
             elif kind == "MISSING_ALLOWED" and detail.split(" ")[0] == "Bash":
                 problems.append(f"{name}:{detail.split(' ')[1]} runs a command without a shell grant; see {GRANTS_DOC}")
-            elif kind == "UNGRANTED" and "${CLAUDE_SKILL_DIR}" in detail:
+            elif kind == "UNGRANTED" and own.search(detail.split(" ", 2)[2]):
                 tool, number, command = detail.split(" ", 2)
                 problems.append(f"{name}:{number} no {tool} grant covers {command}; see {GRANTS_DOC}")
             elif kind == "EXPANDS":
@@ -594,14 +625,14 @@ OUTPUT_PLACEHOLDER = re.compile(r"""(--(?:output(?:-[a-z]+)*|out(?:-dir)?|plans)
 WORKING_FILES_DOC = '"Working files" in docs/adding-a-skill.md'
 
 
-def output_placeholder_problems(root: Path) -> list[str]:
-    """Report command fences in shipped Markdown that leave the agent to choose where a script writes.
+def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
+    """Report command fences in a skill tree's Markdown that leave the agent to choose where a script writes.
 
     Given a placeholder and a skill directory it already knows, an agent writes beside SKILL.md, and the deployer
     then sees the installed skill as modified and stops updating it.
     """
     problems: list[str] = []
-    for path in sorted((root / "skills").rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
+    for path in sorted((root / tree).rglob("*.md"), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         for number, (line, holder) in enumerate(zip(lines, fence_holders(lines), strict=True), start=1):
@@ -882,6 +913,27 @@ def repository_skill_problems(root: Path) -> list[str]:
         if f"`../../../.claude/skills/{name}/SKILL.md`" not in shim.read_text(encoding="utf-8"):
             found.append(f".agents/skills/{name}/SKILL.md does not point to ../../../.claude/skills/{name}/SKILL.md")
     return found
+
+
+def description_problems(root: Path, skill_files: list[Path]) -> list[str]:
+    """Report descriptions a runtime adapter would refuse, and model-invocable ones that never say when to start.
+
+    The rules are the renderer's and the skill reference's, which hold every shipped skill as it deploys.
+    """
+    from deployer.errors import DeployError
+    from tools import skill_reference
+
+    problems: list[str] = []
+    for skill_md in skill_files:
+        name = skill_md.relative_to(root).as_posix()
+        try:
+            description, user_only = render._adapter_frontmatter(skill_md.parent.name, skill_md.read_bytes())
+        except DeployError as exc:
+            problems.append(f"{name}: {exc.lines[0].removeprefix('ERROR: ')}")
+            continue
+        if not user_only and not skill_reference.says_when(description):
+            problems.append(f"{name}: the model may start it, so its description must {skill_reference.WHEN_RULE}")
+    return problems
 
 
 def fixture_source_problems(root: Path) -> list[str]:
@@ -2610,17 +2662,7 @@ class RepositoryValidation(unittest.TestCase):
                 )
 
     def test_skill_markdown_does_not_embed_programs(self) -> None:
-        for markdown in sorted(SKILLS_ROOT.rglob("*.md")):
-            lines = markdown.read_text(encoding="utf-8").splitlines()
-            for fence in find_executable_fences(lines):
-                self.assertLessEqual(
-                    fence.body_line_count,
-                    MAXIMUM_INLINE_EXECUTABLE_LINES,
-                    f"{relative(markdown)}:{fence.line_number} contains a {fence.language} "
-                    f"fence with {fence.body_line_count} lines. Markdown may contain only "
-                    f"short command examples of at most {MAXIMUM_INLINE_EXECUTABLE_LINES} "
-                    "lines; move executable logic to the skill's scripts/ directory.",
-                )
+        self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT))
 
     def test_skills_leave_shared_runtime_guidance_to_their_adapters(self) -> None:
         # Claude runs a skill directly; only the generated ~/.agents adapter tells other runtimes to read shared
@@ -2945,6 +2987,106 @@ class RepositoryValidation(unittest.TestCase):
                     ".claude/skills/missing/SKILL.md has no .agents/skills/missing/SKILL.md shim",
                 ],
                 repository_skill_problems(root),
+            )
+
+    def test_repository_skills_meet_the_shipped_skill_policies(self) -> None:
+        # A repository skill loads into every session here as a shipped one does, so the same rules hold it.
+        skills = repository_skill_files(REPOSITORY_ROOT)
+        self.assertTrue(skills)
+        self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT, REPOSITORY_SKILLS))
+        self.assertEqual([], output_placeholder_problems(REPOSITORY_ROOT, REPOSITORY_SKILLS))
+        self.assertEqual([], skill_grant_problems(REPOSITORY_ROOT, skills, REPOSITORY_TOOL_COMMAND))
+        self.assertEqual([], description_problems(REPOSITORY_ROOT, skills))
+
+    def test_fence_length_policy_holds_repository_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            program = "```bash\n" + "".join(f"echo {n}\n" for n in range(6)) + "```\n"
+            example = "```powershell\n" + "".join(f"echo {n}\n" for n in range(5)) + "```\n"
+            write_fixture_tree(
+                root,
+                {".claude/skills/alpha/SKILL.md": example + program, "skills/beta/SKILL.md": program},
+            )
+            self.assertEqual(
+                [
+                    ".claude/skills/alpha/SKILL.md:8 contains a bash fence with 6 lines. Markdown may contain only "
+                    "short command examples of at most 5 lines; move executable logic to the skill's scripts/ "
+                    "directory."
+                ],
+                embedded_program_problems(root, REPOSITORY_SKILLS),
+            )
+
+    def test_output_placeholder_policy_holds_repository_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fence = '```bash\npython -B tools/a.py "<skill>"\npython -B tools/a.py --output "<file>"\n```\n'
+            write_fixture_tree(root, {".claude/skills/alpha/SKILL.md": fence})
+            self.assertEqual(
+                [
+                    ".claude/skills/alpha/SKILL.md:3 leaves --output to the agent; let the script choose and print "
+                    f"the path; see {WORKING_FILES_DOC}"
+                ],
+                output_placeholder_problems(root, REPOSITORY_SKILLS),
+            )
+
+    def test_grant_policy_holds_repository_skills_to_the_repository_tools_they_run(self) -> None:
+        own = "python -B tools/a.py"
+        twin = json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"])
+        skills = {
+            "bare": ('["Bash"]', own),
+            "unpaired": (json.dumps([f"Bash({own}*)"]), own),
+            # gh acts outside the conversation, so it may keep prompting; tools/b.py is the repository's own.
+            "ungranted": (twin, 'python -B tools/b.py\ngh pr create --body-file "<file>"'),
+            "good": (twin, f'{own} "<skill>"'),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    f".claude/skills/{skill}/SKILL.md": (
+                        f"---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n```bash\n{command}\n```\n"
+                    )
+                    for skill, (allowed, command) in skills.items()
+                },
+            )
+            self.assertEqual(
+                [
+                    f".claude/skills/bare/SKILL.md grants Bash for every command; see {GRANTS_DOC}",
+                    f".claude/skills/ungranted/SKILL.md:7 no Bash grant covers python -B tools/b.py; see {GRANTS_DOC}",
+                    ".claude/skills/ungranted/SKILL.md:7 no PowerShell grant covers python -B tools/b.py; "
+                    f"see {GRANTS_DOC}",
+                    f".claude/skills/unpaired/SKILL.md grants Bash({own}*) in one shell only; see {GRANTS_DOC}",
+                ],
+                skill_grant_problems(root, repository_skill_files(root), REPOSITORY_TOOL_COMMAND),
+            )
+
+    def test_description_policy_holds_repository_skills(self) -> None:
+        descriptions = {
+            "long": "x" * 1020 + " Use it when asked.",
+            "silent": "Does things.",
+            "user": "Does things.\ndisable-model-invocation: true",
+            "good": "Does things. Use it when asked.",
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    f".claude/skills/{skill}/SKILL.md": f"---\nname: {skill}\ndescription: {text}\n---\n\nBody.\n"
+                    for skill, text in descriptions.items()
+                },
+            )
+            from tools import skill_reference
+
+            self.assertEqual(
+                [
+                    ".claude/skills/long/SKILL.md: Skill 'long' description is 1039 characters; runtime adapters "
+                    "allow at most 1024",
+                    ".claude/skills/silent/SKILL.md: the model may start it, so its description must "
+                    f"{skill_reference.WHEN_RULE}",
+                ],
+                description_problems(root, repository_skill_files(root)),
             )
 
     def test_fixture_sources_never_ship_or_collide_with_what_ships(self) -> None:

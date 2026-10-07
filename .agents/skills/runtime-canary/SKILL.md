@@ -4,6 +4,7 @@ description: >-
   Check that Claude Code, Codex, and Copilot CLI find and run deployed skills, by deploying this checkout into a
   throwaway home and starting each runtime there. Use it before a pull request that changes skill paths,
   allowed-tools, runtime adapters, or agents. Each run calls a model.
+allowed-tools: ["Bash(python -B tools/runtime_canary.py*)", "PowerShell(python -B tools/runtime_canary.py*)"]
 ---
 
 Read and follow `../../../.claude/skills/runtime-canary/SKILL.md` as the authoritative workflow.

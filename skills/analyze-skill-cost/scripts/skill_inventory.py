@@ -9,9 +9,10 @@
     scan FILE...                            list lines with cost cues for the agent to judge, and subagent
                                             prompts that a script writes at runtime
 
-Every command prints one fact per line in forward-slash paths. locate exits 1 after NOT_FOUND or
-AMBIGUOUS; a missing or unreadable input prints FAILED <reason> as its last line and exits 1; only a usage
-error exits 2.
+Every command prints one fact per line in forward-slash paths. locate prefers a source skill to its deployed
+copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill; it
+exits 1 after NOT_FOUND or AMBIGUOUS. A missing or unreadable input prints FAILED <reason> as its last line and
+exits 1; only a usage error exits 2.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
@@ -431,6 +432,14 @@ def locate(name: str, home: Path, repo: Path | None) -> list[str]:
     # A developer in the source tree means the source, not the deployed copy of it.
     if any(scope == "source" for scope, _ in hits):
         hits = [(scope, path) for scope, path in hits if scope != "user"]
+    # A .agents/skills shim that sends other runtimes to the .claude/skills skill of its name is that skill.
+    if any(scope == "project-claude" for scope, _ in hits):
+        pointer = f".claude/skills/{name}/SKILL.md"
+        hits = [
+            (scope, path)
+            for scope, path in hits
+            if not (scope == "project-agents" and pointer in (read_text(path) or ""))
+        ]
     lines = [f"REPO {posix(repo)}" if repo is not None else "REPO none"]
     if len(hits) == 1:
         scope, path = hits[0]

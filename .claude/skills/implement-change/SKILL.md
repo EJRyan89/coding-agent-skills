@@ -1,10 +1,9 @@
 ---
 name: implement-change
 description: >-
-  Procedure for making a change in a repository that publishes an implementation profile: worktree, intake, size
-  gate, plan-first with a model recommendation, test-first implementation, validation, and the pull request. Use
-  it when asked to implement an issue or make a change in such a repository. Reads every repository-specific fact
-  from the profile.
+  Procedure for making a change in a repository that publishes an implementation profile
+  (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
+  an issue or make a change in such a repository.
 ---
 
 # Implementing a change
@@ -54,17 +53,9 @@ The user approves the plan and the model together, then chooses how to continue.
 
 ## 6. Implement
 
-Work test first: write the failing test, then make it pass. Update *Documentation* in the same change. Run *Validation* in full and get it green without skipping, weakening, or suppressing a check; rerun it after anything that changes the tree. Read the whole diff once more for personal paths, credentials, and generated artifacts.
+Work test first: write the failing test, then make it pass. Update *Documentation* in the same change. Run *Validation* in full and get it green without skipping, weakening, or suppressing a check; rerun it after anything that changes the tree. Read the whole diff once more for personal paths, credentials, and generated artifacts, and leave no scratch file or background command behind.
 
 ## 7. Pull request
 
 Bring the branch up to date with its base as the repository's instructions describe, and rerun validation if that brought in commits. Write the body from the repository's pull request template to a file and open the pull request with `gh pr create --body-file <file>`, naming `Closes #<number>` for an issue. In its two model lines, name the model that planned (or "no plan" with the size-gate reason) and the model that implemented. Do not merge.
 
-## Done when
-
-- [ ] The change was made in its own working tree.
-- [ ] Either a plan was approved with a model recommendation, or the size gate passed and the pull request says why.
-- [ ] Validation passes in full, with regression coverage for every behavior change.
-- [ ] Documentation is updated in the same change.
-- [ ] The pull request is open from the template and current with its base, with both model lines filled.
-- [ ] No scratch files or background commands are left behind.
