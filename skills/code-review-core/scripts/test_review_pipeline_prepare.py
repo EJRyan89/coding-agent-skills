@@ -778,7 +778,7 @@ LOCAL_SNAPSHOT = [
     g("cat-file", "-e", "<head>^{commit}"),
     g("remote", "get-url", "origin"),
     g("rev-parse", "--verify", "<head>^{commit}"),
-    g("archive", "--format=tar", "--output=<root>/tmp/code-review-source-*/source.tar", "<head>"),
+    g("ls-tree", "-r", "-z", "-l", "--full-tree", "<head>"),
 ]
 SNAPSHOT_FILES = ["source/source-snapshot.json", *(f"source/{path}" for path in SOURCE_HASHES)]
 

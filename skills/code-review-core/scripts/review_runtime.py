@@ -12,15 +12,18 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import Callable, Iterable, Sequence
+import threading
+from collections import Counter
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import closing, suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from github_client import CommandResult, GitHubClient, GitHubError
+from github_client import CommandResult, GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
 
@@ -32,6 +35,7 @@ MAX_SOURCE_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
 BINARY_PROBE_BYTES = 8000
 SNAPSHOT_WRITE_WORKERS = 8
+GIT_EXIT_SECONDS = 60  # how long a stopped `git cat-file` gets to exit before it is killed
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
 SNAPSHOT_EXCLUSION_REASONS = {
     "agent-instruction",
@@ -42,6 +46,7 @@ SNAPSHOT_EXCLUSION_REASONS = {
     "non-regular",
 }
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
+GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 RUNTIME_CAPABILITIES = {
     "claude-code": {"agent-delegation", "read-diff", "write-result"},
     "codex": {"agent-delegation", "read-diff", "write-result"},
@@ -87,6 +92,10 @@ class RuntimeContractError(ValueError):
 
 
 Runner = Callable[[Sequence[str]], CommandResult]
+# Reads blobs by id from a checkout's object store, yielding each one's exact bytes in the order asked.
+BlobReader = Callable[[Path, Sequence[str]], Iterable[bytes]]
+# A snapshot path with its content bytes when the snapshot keeps it, or the reason it leaves the path out.
+SnapshotMember = tuple[str, bytes | str]
 
 
 def subprocess_runner(arguments: Sequence[str]) -> CommandResult:
@@ -726,70 +735,187 @@ def _require_snapshot_file_set(root: Path, expected_files: set[str]) -> None:
         raise RuntimeContractError(f"Source snapshot file set mismatch; missing={missing}, extra={extra}")
 
 
-def _snapshot_members(
-    source: tarfile.TarFile, *, strip_components: int, changed_paths: frozenset[str]
-) -> Iterable[tuple[str, bytes | str]]:
-    """Each archive file as (path, content bytes) when the snapshot keeps it, or (path, reason) when not.
+def _entry_exclusion(name: str, kind: str, size: int, changed_paths: frozenset[str]) -> tuple[str, str | None]:
+    """A head path's name in the manifest, and why the snapshot leaves it out, or None when its bytes are to be read.
 
-    A symbolic link, and any other entry that is not a regular file or a directory, is excluded without being read,
-    written, or followed; reviewers see a link only as diff text. Raises for an entry that fails the whole
-    snapshot: the reserved manifest path, or two paths a case-insensitive filesystem would merge. The count and
-    size limits are the caller's to apply.
+    `kind` is "file", "symbolic-link", or "non-regular". A name that is not UTF-8 is an unsafe path, named with one
+    U+FFFD per undecodable byte, the form the GitHub client gives it in the diff, so a changed file with such a name
+    is a coverage gap and every other pull request is unaffected. A symbolic link, and any other entry that is not a
+    regular file, is excluded without being read, written, or followed; reviewers see a link only as diff text.
+    Raises for the reserved manifest path.
     """
+    if has_undecodable(name):
+        return replace_undecodable(name)[0], "unsafe-path"
+    if any(WINDOWS_UNSAFE.search(part) for part in PurePosixPath(name).parts):
+        return name, "unsafe-path"
+    relative = _safe_relative_path(name, "source snapshot member")
+    if relative == SOURCE_SNAPSHOT_MANIFEST:
+        raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
+    if kind != "file":
+        return relative, kind
+    if _is_agent_instruction_path(relative):
+        return relative, "agent-instruction"
+    limit = MAX_CHANGED_FILE_BYTES if relative in changed_paths else MAX_SOURCE_FILE_BYTES
+    if size > limit:
+        return relative, "file-size-limit"
+    return relative, None
+
+
+def _content_exclusion(relative: str, content: bytes, written: dict[str, str]) -> str | None:
+    """The binary exclusion for a file with a NUL byte near its start, else None once `written` records the file.
+
+    Raises for two kept paths a case-insensitive filesystem would merge.
+    """
+    if b"\0" in content[:BINARY_PROBE_BYTES]:
+        return "binary"
+    key = "/".join(part.rstrip(". ").casefold() for part in PurePosixPath(relative).parts)
+    if key in written:
+        raise RuntimeContractError(
+            f"Source paths collide on a case-insensitive filesystem: {written[key]} and {relative}"
+        )
+    written[key] = relative
+    return None
+
+
+def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
+    """Feed `git cat-file --batch` its requests, then close its input so it exits once it has answered them.
+
+    A broken pipe means the reader stopped and ended git; the reader reports why, so the error is not repeated here.
+    """
+    with suppress(OSError), stdin:
+        for blob in blobs:
+            stdin.write(f"{blob}\n".encode("ascii"))
+
+
+def _read_batch_blob(stdout: IO[bytes], blob: str) -> bytes:
+    """One `git cat-file --batch` answer: a `<id> blob <size>` line, exactly that many bytes, and a newline."""
+    header = stdout.readline()
+    fields = header.split()
+    if len(fields) == 2 and fields[1] == b"missing":
+        raise RuntimeContractError(f"Blob {blob} is missing from the checkout's object store")
+    if len(fields) != 3 or fields[0] != blob.encode("ascii") or fields[1] != b"blob" or not fields[2].isdigit():
+        raise RuntimeContractError(f"git cat-file answered {blob} unexpectedly: {header[:200]!r}")
+    size = int(fields[2])
+    content = stdout.read(size)
+    if len(content) != size or stdout.read(1) != b"\n":
+        raise RuntimeContractError(f"git cat-file cut blob {blob} short")
+    return content
+
+
+def git_blob_reader(checkout: Path, blobs: Sequence[str]) -> Generator[bytes, None, None]:
+    """The exact bytes of each blob, in order, streamed from one `git cat-file --batch`.
+
+    cat-file applies no attribute, filter, or line-ending conversion. The ids are written from a thread, so a large
+    answer never waits on a full input pipe. Stopping early closes git's output, so its next write fails and it
+    exits by itself; it is killed only if it has not exited a minute later. A killed process can hold its working
+    directory, the checkout, for a moment after it is reported gone, which made removing the checkout fail.
+    """
+    for blob in blobs:
+        if not GIT_OBJECT_ID.fullmatch(blob):
+            raise RuntimeContractError(f"Not a git object id: {blob!r}")
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            ["git", "-C", str(checkout), "cat-file", "--batch"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errors,
+        )
+        if process.stdin is None or process.stdout is None:
+            raise RuntimeContractError("git cat-file started without its pipes")
+        stdout = process.stdout
+        writer = threading.Thread(target=_write_object_ids, args=(process.stdin, blobs), daemon=True)
+        writer.start()
+        try:
+            for blob in blobs:
+                yield _read_batch_blob(stdout, blob)
+            if stdout.read(1):
+                raise RuntimeContractError("git cat-file printed more than it was asked for")
+            if process.wait() != 0:
+                errors.seek(0)
+                detail = errors.read().decode("utf-8", "replace").strip() or "git cat-file failed"
+                raise RuntimeContractError(detail)
+        finally:
+            stdout.close()
+            try:
+                process.wait(timeout=GIT_EXIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            writer.join()  # git is gone, so a write it was blocked on has failed
+
+
+def _commit_members(
+    checkout: Path, commit: str, runner: Runner, blob_reader: BlobReader, changed_paths: frozenset[str]
+) -> Generator[SnapshotMember, None, None]:
+    """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
+
+    The paths come from `git ls-tree` and the bytes from the object store, never from `git archive` or a working
+    tree, so no .gitattributes entry (export-ignore, export-subst, eol, a filter) and no line-ending setting can leave
+    a file out or change a byte. A submodule has no blob here and is skipped. The count and size limits are the
+    caller's to apply.
+    """
+    # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
+    listing = _run_git(checkout, runner, "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
+    pending: list[tuple[str, str, int]] = []
+    for record in listing.split("\0"):
+        if not record:
+            continue
+        fields, separator, name = record.partition("\t")
+        parts = fields.split()
+        if not separator or len(parts) != 4:
+            raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
+        mode, kind, blob, size = parts
+        if kind == "commit":
+            continue
+        if kind != "blob" or not GIT_OBJECT_ID.fullmatch(blob) or not size.isdigit():
+            raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
+        entry = "symbolic-link" if mode == "120000" else "file" if mode.startswith("100") else "non-regular"
+        relative, reason = _entry_exclusion(name, entry, int(size), changed_paths)
+        if reason is None:
+            pending.append((relative, blob, int(size)))
+        else:
+            yield relative, reason
     written: dict[str, str] = {}
-    for member in source:
-        if member.isdir():
-            continue
-        parts = PurePosixPath(member.name).parts[strip_components:]
-        if not parts:
-            continue
-        name = PurePosixPath(*parts).as_posix()
-        if any(WINDOWS_UNSAFE.search(part) for part in parts):
-            yield name, "unsafe-path"
-            continue
-        relative = _safe_relative_path(name, "source snapshot member")
-        if relative == SOURCE_SNAPSHOT_MANIFEST:
-            raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
-        if member.issym():
-            yield relative, "symbolic-link"
-            continue
-        if not member.isfile():  # a hard link, FIFO, or device entry
-            yield relative, "non-regular"
-            continue
-        if _is_agent_instruction_path(relative):
-            yield relative, "agent-instruction"
-            continue
-        limit = MAX_CHANGED_FILE_BYTES if relative in changed_paths else MAX_SOURCE_FILE_BYTES
-        if member.size > limit:
-            yield relative, "file-size-limit"
-            continue
-        extracted = source.extractfile(member)
-        if extracted is None:
-            raise RuntimeContractError(f"Cannot read source snapshot member: {relative}")
-        content = extracted.read()
-        if len(content) != member.size:
-            raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
-        if b"\0" in content[:BINARY_PROBE_BYTES]:
-            yield relative, "binary"
-            continue
-        key = "/".join(part.rstrip(". ").casefold() for part in PurePosixPath(relative).parts)
-        if key in written:
-            raise RuntimeContractError(
-                f"Source paths collide on a case-insensitive filesystem: {written[key]} and {relative}"
-            )
-        written[key] = relative
-        yield relative, content
+    blobs = iter(blob_reader(checkout, [blob for _, blob, _ in pending]))
+    try:
+        for relative, _, length in pending:
+            content = next(blobs, None)
+            if content is None:
+                raise RuntimeContractError("git cat-file returned fewer blobs than the commit's tree lists")
+            if len(content) != length:
+                raise RuntimeContractError(f"Source blob size changed: {relative}")
+            yield relative, _content_exclusion(relative, content, written) or content
+    finally:
+        close = getattr(blobs, "close", None)
+        if close is not None:  # a generator reader ends its git process
+            close()
+
+
+def _tarball_members(archive: Path, changed_paths: frozenset[str]) -> Generator[SnapshotMember, None, None]:
+    """Each entry of GitHub's tarball below its top folder, as (path, content bytes) when the snapshot keeps it or
+    (path, reason) when not. The count and size limits are the caller's to apply."""
+    written: dict[str, str] = {}
+    with tarfile.open(archive, mode="r:gz") as source:
+        for member in source:
+            parts = PurePosixPath(member.name).parts[1:]
+            if member.isdir() or not parts:
+                continue
+            kind = "file" if member.isfile() else "symbolic-link" if member.issym() else "non-regular"
+            relative, reason = _entry_exclusion(PurePosixPath(*parts).as_posix(), kind, member.size, changed_paths)
+            if reason is not None:
+                yield relative, reason
+                continue
+            extracted = source.extractfile(member)
+            if extracted is None:
+                raise RuntimeContractError(f"Cannot read source snapshot member: {relative}")
+            content = extracted.read()
+            if len(content) != member.size:
+                raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
+            yield relative, _content_exclusion(relative, content, written) or content
 
 
 def _populate_snapshot(
-    archive: Path,
-    destination: Path,
-    *,
-    repository: str,
-    commit: str,
-    mode: Literal["r:", "r:gz"],
-    strip_components: int,
-    changed_paths: frozenset[str],
+    members: Iterable[SnapshotMember], destination: Path, *, repository: str, commit: str
 ) -> dict[str, Any]:
     hashes: dict[str, str] = {}
     excluded: dict[str, str] = {}
@@ -798,10 +924,8 @@ def _populate_snapshot(
     pending: list[Future[int]] = []
     # Real-time antivirus scans each new file, which costs milliseconds of latency per file but little CPU, so
     # overlapping the writes hides most of it. Directories are created and checked once, before their files.
-    with tarfile.open(archive, mode=mode) as source, ThreadPoolExecutor(SNAPSHOT_WRITE_WORKERS) as pool:
-        for relative, content in _snapshot_members(
-            source, strip_components=strip_components, changed_paths=changed_paths
-        ):
+    with ThreadPoolExecutor(SNAPSHOT_WRITE_WORKERS) as pool:
+        for relative, content in members:
             if isinstance(content, str):
                 excluded[relative] = content
                 continue
@@ -847,10 +971,11 @@ def materialize_source_snapshot(
     *,
     runner: Runner = subprocess_runner,
     changed_paths: Iterable[str] = (),
+    blob_reader: BlobReader = git_blob_reader,
 ) -> dict[str, Any]:
     """Snapshot the exact commit from a local checkout's object store (no worktree or branch change)."""
     repository = validate_repository_identity(repository)
-    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+    if not GIT_OBJECT_ID.fullmatch(commit):
         raise RuntimeContractError("Source snapshot commit is invalid")
     verify_checkout_remote(checkout, repository, runner)
     resolved_commit = _run_git(checkout, runner, "rev-parse", "--verify", f"{commit}^{{commit}}").lower()
@@ -858,18 +983,9 @@ def materialize_source_snapshot(
         raise RuntimeContractError("Source snapshot commit did not resolve exactly")
     _prepare_destination(destination)
     try:
-        with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
-            archive = Path(temporary) / "source.tar"
-            _run_git(checkout, runner, "archive", "--format=tar", f"--output={archive}", commit)
-            return _populate_snapshot(
-                archive,
-                destination,
-                repository=repository,
-                commit=commit,
-                mode="r:",
-                strip_components=0,
-                changed_paths=frozenset(changed_paths),
-            )
+        members = _commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths))
+        with closing(members):
+            return _populate_snapshot(members, destination, repository=repository, commit=commit)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise
@@ -904,6 +1020,7 @@ def measure_source_snapshot(
     *,
     runner: Runner = subprocess_runner,
     changed_paths: Iterable[str] = (),
+    blob_reader: BlobReader = git_blob_reader,
 ) -> SnapshotSize:
     """Measure the snapshot materialize_source_snapshot would write for a commit, without writing it.
 
@@ -913,27 +1030,112 @@ def measure_source_snapshot(
     excluded: dict[str, int] = {}
     directories: dict[str, int] = {}
     files = 0
-    with tempfile.TemporaryDirectory(prefix="code-review-measure-") as temporary:
-        archive = Path(temporary) / "source.tar"
-        _run_git(checkout, runner, "archive", "--format=tar", f"--output={archive}", commit)
-        with tarfile.open(archive, mode="r:") as source:
-            for relative, content in _snapshot_members(
-                source, strip_components=0, changed_paths=frozenset(changed_paths)
-            ):
-                if isinstance(content, str):
-                    excluded[content] = excluded.get(content, 0) + 1
-                    continue
-                files += 1
-                top = relative.split("/", 1)[0] if "/" in relative else ""
-                directories[top] = directories.get(top, 0) + len(content)
+    with closing(_commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths))) as members:
+        for relative, content in members:
+            if isinstance(content, str):
+                excluded[content] = excluded.get(content, 0) + 1
+                continue
+            files += 1
+            top = relative.split("/", 1)[0] if "/" in relative else ""
+            directories[top] = directories.get(top, 0) + len(content)
     return SnapshotSize(files, sum(directories.values()), excluded, directories)
 
 
-def github_tarball_fetcher(repository: str, commit: str, target: Path, github: GitHubClient | None = None) -> None:
+def _git_blob_id(algorithm: str, size: int, chunks: Iterable[bytes]) -> str:
+    """The git object id of a blob of `size` bytes, hashed as git hashes it: a `blob <size>` header, NUL, content."""
+    digest = hashlib.new(algorithm)
+    digest.update(f"blob {size}\0".encode("ascii"))
+    total = 0
+    for chunk in chunks:
+        digest.update(chunk)
+        total += len(chunk)
+    if total != size:
+        raise RuntimeContractError("A tarball entry's size changed while it was read")
+    return digest.hexdigest()
+
+
+def _chunks(stream: IO[bytes]) -> Iterator[bytes]:
+    while chunk := stream.read(1024 * 1024):
+        yield chunk
+
+
+def _listed_blobs(tree: Any) -> Counter[tuple[str, str, str]]:
+    """Each blob GitHub's trees API lists, as (path, kind, id); folders and submodules have none."""
+    if not isinstance(tree, dict) or not isinstance(tree.get("tree"), list):
+        raise RuntimeContractError("the tree listing is malformed")
+    if tree.get("truncated") is not False:
+        raise RuntimeContractError("GitHub truncated the tree listing")
+    blobs: Counter[tuple[str, str, str]] = Counter()
+    for entry in tree["tree"]:
+        if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree", "commit"}:
+            raise RuntimeContractError("the tree listing is malformed")
+        if entry["type"] != "blob":
+            continue
+        path, mode, blob = entry.get("path"), entry.get("mode"), entry.get("sha")
+        if not isinstance(path, str) or not path or not isinstance(mode, str) or not isinstance(blob, str):
+            raise RuntimeContractError("the tree listing is malformed")
+        if not GIT_OBJECT_ID.fullmatch(blob):
+            raise RuntimeContractError("the tree listing is malformed")
+        blobs[(path, "symbolic-link" if mode == "120000" else "file", blob)] += 1
+    return blobs
+
+
+def _tarball_blobs(archive: Path, algorithm: str) -> Counter[tuple[str, str, str]]:
+    """Each entry of GitHub's tarball below its top folder as (path, kind, git object id), a name that is not UTF-8
+    with one U+FFFD per undecodable byte, as GitHub's listing gives it. An entry a tree cannot hold has no id."""
+    blobs: Counter[tuple[str, str, str]] = Counter()
+    with tarfile.open(archive, mode="r:gz") as source:
+        for member in source:
+            parts = PurePosixPath(member.name).parts[1:]
+            if member.isdir() or not parts:
+                continue
+            name = replace_undecodable(PurePosixPath(*parts).as_posix())[0]
+            if member.issym():
+                target = member.linkname.encode("utf-8", "surrogateescape")
+                blobs[(name, "symbolic-link", _git_blob_id(algorithm, len(target), [target]))] += 1
+            elif member.isfile():
+                extracted = source.extractfile(member)
+                if extracted is None:
+                    raise RuntimeContractError(f"Cannot read tarball entry {json.dumps(name)}")
+                blobs[(name, "file", _git_blob_id(algorithm, member.size, _chunks(extracted)))] += 1
+            else:
+                blobs[(name, "non-regular", "")] += 1
+    return blobs
+
+
+def verify_github_tarball(archive: Path, tree: Any, *, repository: str, commit: str) -> None:
+    """Fail unless GitHub's tarball holds exactly the blobs of the commit's tree, as GitHub's trees API lists them.
+
+    GitHub builds the tarball with `git archive`, which honours the commit's own .gitattributes: export-ignore leaves
+    a file out, and export-subst and eol rewrite one. A tarball that is not the exact tree is refused, never
+    snapshotted, so reviewers never read bytes the commit does not hold or miss a file it does.
+    """
+    where = f"GitHub's tarball of {repository}@{commit[:12]}"
+    fix = "set checkout_path for this repository to snapshot it from git objects"
     try:
-        (github or GitHubClient()).download(["api", f"repos/{repository}/tarball/{commit}"], target)
+        expected = _listed_blobs(tree)
+        actual = _tarball_blobs(archive, "sha1" if len(commit) == 40 else "sha256")
+    except (RuntimeContractError, tarfile.TarError, EOFError, OSError) as exc:
+        raise RuntimeContractError(f"{where} cannot be checked: {exc}; {fix}") from exc
+    differing = sorted({path for path, _, _ in (expected - actual) + (actual - expected)})
+    if differing:
+        named = ", ".join(json.dumps(path) for path in differing[:5])
+        more = f" and {len(differing) - 5} more" if len(differing) > 5 else ""
+        raise RuntimeContractError(
+            f"{where} is not the commit's exact tree: {named}{more} differ. The repository's .gitattributes can leave "
+            f"a file out of an archive or rewrite it (export-ignore, export-subst, eol); {fix}"
+        )
+
+
+def github_tarball_fetcher(repository: str, commit: str, target: Path, github: GitHubClient | None = None) -> None:
+    """Download GitHub's tarball of the commit to `target`, checked against the commit's tree."""
+    client = github or GitHubClient()
+    try:
+        client.download(["api", f"repos/{repository}/tarball/{commit}"], target)
+        tree = client.json(["api", f"repos/{repository}/git/trees/{commit}?recursive=1"])
     except GitHubError as exc:
         raise RuntimeContractError(f"Cannot download {repository}@{commit}: {exc}") from exc
+    verify_github_tarball(target, tree, repository=repository, commit=commit)
 
 
 def materialize_source_snapshot_from_github(
@@ -944,24 +1146,21 @@ def materialize_source_snapshot_from_github(
     fetcher: Callable[[str, str, Path], None] = github_tarball_fetcher,
     changed_paths: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Snapshot the exact commit from GitHub's tarball, for repositories without a configured checkout."""
+    """Snapshot the exact commit from GitHub's tarball, for repositories without a configured checkout.
+
+    The fetcher is responsible for the tarball being the exact commit; `github_tarball_fetcher` checks it against
+    the commit's tree.
+    """
     repository = validate_repository_identity(repository)
-    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+    if not GIT_OBJECT_ID.fullmatch(commit):
         raise RuntimeContractError("Source snapshot commit is invalid")
     _prepare_destination(destination)
     try:
         with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
-            return _populate_snapshot(
-                archive,
-                destination,
-                repository=repository,
-                commit=commit,
-                mode="r:gz",
-                strip_components=1,
-                changed_paths=frozenset(changed_paths),
-            )
+            with closing(_tarball_members(archive, frozenset(changed_paths))) as members:
+                return _populate_snapshot(members, destination, repository=repository, commit=commit)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise

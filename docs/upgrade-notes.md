@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### A review without checkout_path fails when GitHub's tarball is not the commit's exact tree
+
+- Level: patch. A fix: the snapshot could leave out a changed file or hold bytes the commit does not hold.
+- Contract: none
+- User action: none, unless `prepare` prints `FAILED` saying GitHub's tarball is not the commit's exact tree. Then set `checkout_path` for that repository.
+- Pull request: #141
+
 ## v0.2.0
 
 ### init-ai-config is removed on update

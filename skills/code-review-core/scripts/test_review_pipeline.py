@@ -2630,8 +2630,8 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     """validate_reviewer, pinned: every line it prints, and the order in which it reads each pull request, makes sure
     its commits are local, and resolves the commit the reviewer comes from, all before it materializes anything."""
 
-    BASE_SNAPSHOT = "files=9 bytes=1218 limit=268435456 excluded=agent-instruction:3"
-    HEAD_SNAPSHOT = "files=9 bytes=1255 limit=268435456 excluded=agent-instruction:3"
+    BASE_SNAPSHOT = "files=9 bytes=1206 limit=268435456 excluded=agent-instruction:3"
+    HEAD_SNAPSHOT = "files=9 bytes=1241 limit=268435456 excluded=agent-instruction:3"
     GENERIC = "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"
 
     def setUp(self) -> None:
@@ -2775,7 +2775,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
                 self.reviewer_line(),
                 "FILES 3 found",
                 *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1),
-                *self.pull_lines(13, later, 3, "files=10 bytes=1262 limit=268435456 excluded=agent-instruction:3", 2),
+                *self.pull_lines(13, later, 3, "files=10 bytes=1247 limit=268435456 excluded=agent-instruction:3", 2),
                 "VALID",
             ],
             lines,
@@ -2867,7 +2867,7 @@ class SnapshotSizeTests(PipelineFixture):
 
     def setUp(self) -> None:
         super().setUp()
-        # git archive applies line-ending conversion, as the snapshot does; keep blob sizes and archive sizes equal.
+        # The snapshot holds exact blobs; with conversion off, the fixture's files commit unchanged as blobs too.
         git(self.checkout, "config", "core.autocrlf", "false")
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest())))
 
