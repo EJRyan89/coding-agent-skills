@@ -552,13 +552,7 @@ def prepare(
     config = load_config(config_path)
     repository, number = parse_pull_selector(selector)
     selector = f"{repository}#{number}"
-    if canary and (force or re_review):
-        raise PipelineError("A canary is an initial review and cannot be forced")
-    if re_review != (scope is not None) or scope not in (None, *RE_REVIEW_SCOPES):
-        raise PipelineError(f"A re-review, and only a re-review, takes a scope: {', '.join(RE_REVIEW_SCOPES)}")
-    entry = config["repositories"].get(repository)
-    if entry is None:
-        raise PipelineError(f"{repository} is not a configured repository")
+    entry = _configured_entry(config, repository, re_review=re_review, scope=scope, force=force, canary=canary)
     pull = validate_canary_pull(services.github.get_pull(repository, number), repository=repository, number=number)
     head = pull["headRefOid"]
     mode = "re-review" if re_review else "initial"
@@ -663,6 +657,21 @@ def prepare(
             shutil.rmtree(run, ignore_errors=True)
         raise
     return {"status": "ready", "run": run, **state}
+
+
+def _configured_entry(
+    config: dict[str, Any], repository: str, *, re_review: bool, scope: str | None, force: bool, canary: bool
+) -> dict[str, Any]:
+    """The repository's configuration entry, once the request's options fit together: a canary is an unforced initial
+    review, and a re-review, and only a re-review, names a known scope."""
+    if canary and (force or re_review):
+        raise PipelineError("A canary is an initial review and cannot be forced")
+    if re_review != (scope is not None) or scope not in (None, *RE_REVIEW_SCOPES):
+        raise PipelineError(f"A re-review, and only a re-review, takes a scope: {', '.join(RE_REVIEW_SCOPES)}")
+    entry = config["repositories"].get(repository)
+    if entry is None:
+        raise PipelineError(f"{repository} is not a configured repository")
+    return entry
 
 
 def _repository_reviewer(
