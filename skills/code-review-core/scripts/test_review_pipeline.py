@@ -3058,7 +3058,8 @@ class SnapshotSizeTests(PipelineFixture):
         # The base's root plus three such names, its tree built with git mktree, since Git for Windows refuses them
         # into the index.
         def plumbing(*arguments: str, data: bytes = b"") -> bytes:
-            command = ["git", "-C", str(self.checkout), *arguments]
+            identity = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+            command = ["git", "-C", str(self.checkout), *identity, *arguments]
             return subprocess.run(command, input=data, capture_output=True, check=True).stdout.strip()
 
         blob = plumbing("hash-object", "-w", "--stdin", data=b"print(1)\n")
