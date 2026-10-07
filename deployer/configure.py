@@ -7,8 +7,11 @@ from typing import TextIO
 
 from . import config, fsops, platform_support, source
 from .arguments import ParserExit, configure_parser
-from .errors import DeployError, debug_requested, print_error, print_traceback
+from .errors import Cancelled, DeployError, debug_requested, print_error, print_traceback
 from .paths import Paths, validate_managed_roots
+
+# Ctrl+C or the end of input at a prompt. The configuration is written atomically, so it is unchanged.
+CANCELLED = "Configuration cancelled; existing config was not changed."
 
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
@@ -50,10 +53,7 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         for key, description in config.PROMPTS.items():
             answer = _prompt(key, description, existing.get(key, ""), stdin)
             if answer is None:
-                print("", file=sys.stderr)
-                print("Configuration cancelled; existing config was not changed.", file=sys.stderr)
-                print("", file=sys.stderr)
-                return 1
+                raise Cancelled(CANCELLED)
             if key in config.DIRECTORY_VARIABLES:
                 answer = platform_support.normalize_path_input(answer)
             values[key] = answer
@@ -64,6 +64,9 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         fsops.write_private(config_file, content.encode("utf-8"))
     except ParserExit as exc:
         return exc.code
+    except KeyboardInterrupt:
+        print_error(Cancelled(CANCELLED), debug)
+        return 130
     except DeployError as exc:
         print_error(exc, debug)
         return exc.exit_code

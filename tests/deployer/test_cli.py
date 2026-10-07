@@ -155,7 +155,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.make_config()
         before = self.config_file().read_bytes()
         result = self.run_cli("configure", stdin=interrupting())
-        self.assertEqual(1, result.code, result.output)
+        self.assertEqual(130, result.code, result.output)
         self.assertIn("Ctrl+C cancels", result.output)
         self.assertIn("Configuration cancelled; existing config was not changed.", result.output)
         self.assertNotIn("Traceback", result.output)

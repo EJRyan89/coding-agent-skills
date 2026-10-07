@@ -83,7 +83,7 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
         return _verify(names, paths, dict(os.environ if environment is None else environment))
     except ParserExit as exc:
         return exc.code
-    except (DeployError, OSError) as exc:
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish verifying the adapters")
 
 

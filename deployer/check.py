@@ -82,7 +82,7 @@ def run(arguments: list[str], paths: Paths) -> int:
         skill_lines = _skill_lines(src, owned)
     except ParserExit as exc:
         return exc.code
-    except (DeployError, OSError) as exc:
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")
     print(f"Source: {source.label(src.source_id, src.name)}")

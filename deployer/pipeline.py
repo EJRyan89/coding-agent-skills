@@ -298,7 +298,7 @@ def run(
         src = source.discover(paths, source_id)
     except ParserExit as exc:
         return exc.code
-    except (DeployError, OSError) as exc:
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
     if options.dry_run:
@@ -306,7 +306,7 @@ def run(
             if _stop_for_pending_recovery(paths):
                 return 0
             return _deploy(paths, options, src, values, stdin, None)
-        except (DeployError, OSError) as exc:
+        except (DeployError, OSError, KeyboardInterrupt) as exc:
             return fail(exc, debug, "finish the dry run")
     try:
         if options.canary_home:
@@ -316,7 +316,7 @@ def run(
         else:
             source.reject_linked_worktree(paths)
         held = lock.acquire(paths, probe)
-    except (DeployError, OSError) as exc:
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     try:
         _reject_other_checkout(paths, source_id, options.take_over_source)

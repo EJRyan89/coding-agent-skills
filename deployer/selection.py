@@ -7,7 +7,7 @@ import sys
 from . import config, source, tools
 from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE
 from .context import Context, Selection
-from .errors import Cancelled, DeployError
+from .errors import CANCELLED, Cancelled, DeployError
 from .report import currently_chosen, plural, wrap
 
 
@@ -57,9 +57,11 @@ def select(context: Context) -> Selection | None:
         line = context.stdin.readline()
     except KeyboardInterrupt:
         print("")
-        raise Cancelled("Cancelled; nothing was changed.") from None
+        raise Cancelled(CANCELLED) from None
     if not line:
-        raise DeployError("ERROR: No selection was provided.")
+        # The end of input cancels like Ctrl+C: nobody is there to answer.
+        print("")
+        raise Cancelled(CANCELLED)
     answer = line.rstrip("\r\n")
     if answer == "all":
         selection = select_all(context, [])

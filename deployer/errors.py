@@ -8,6 +8,7 @@ import traceback
 DEBUG_VARIABLE = "DEPLOYER_DEBUG"
 DEBUG_HINT = "Rerun with --debug to see the traceback."
 CHECK_THE_PATH = "Check that the path exists and that you can read it, then retry."
+CANCELLED = "Cancelled; nothing was changed."
 
 RECOVERY_GUIDE = "docs/recovery.md"
 # The guide's sections that refusals point at; a test checks each is a heading of the guide.
@@ -70,10 +71,17 @@ def os_error(error: OSError, action: str, remedy: str = CHECK_THE_PATH) -> Deplo
     return converted
 
 
-def fail(error: DeployError | OSError, debug: bool, action: str) -> int:
-    """Print how a command ended before finishing, an OSError as its DeployError, and return the exit code."""
+def fail(error: DeployError | OSError | KeyboardInterrupt, debug: bool, action: str) -> int:
+    """Print how a command ended before finishing and return its exit code.
+
+    An OSError is reported as its DeployError, and Ctrl+C as a cancellation, exit 130.
+    """
     if isinstance(error, OSError):
         error = os_error(error, action)
+    elif isinstance(error, KeyboardInterrupt):
+        cancelled = Cancelled(CANCELLED)
+        cancelled.__cause__ = error
+        error = cancelled
     print_error(error, debug)
     return error.exit_code
 
