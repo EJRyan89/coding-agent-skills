@@ -6,7 +6,7 @@ allowed-tools: ["Bash(bash \"${CLAUDE_SKILL_DIR}/scripts/update.sh\" *)", "Power
 disable-model-invocation: true
 ---
 
-Pull the latest changes into the clone at `{{SOURCE_ROOT}}` and redeploy them. Run the update script once, without piping it, through the Bash tool when there is one (in PowerShell, `bash` can be WSL's rather than Git Bash), and report what it printed. When the user started the skill with `--cross-major`, pass it after the clone path; pass nothing else.
+Pull the latest changes into the clone at `{{SOURCE_ROOT}}` and redeploy them. `main` is the supported line and releases are checkpoints on it, so the update follows `main` and stops at a release that raises the major version. Run the update script once, without piping it, through the Bash tool when there is one (in PowerShell, `bash` can be WSL's rather than Git Bash), and report what it printed. When the user started the skill with `--cross-major`, pass it after the clone path; pass nothing else.
 
 ```bash
 bash "${CLAUDE_SKILL_DIR}/scripts/update.sh" "{{SOURCE_ROOT}}"

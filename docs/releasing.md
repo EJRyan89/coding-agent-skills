@@ -43,7 +43,7 @@ A change to a contract file, such as `MANIFEST_VERSION`, a `required_vars` list 
    ```
 
    `YourName` is the documented placeholder in test fixtures. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name, so the list never enters the repository. Any hit is a prompt to read the line, not a verdict; fix a real one through a pull request before tagging.
-4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` says which release is supported. Confirm both still describe the truth for this release.
+4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` names `main` as the supported line and releases as checkpoints. Confirm both still describe the truth for this release.
 5. **Secret scanning.** GitHub's secret scanning and push protection are on for the public repository; confirm they still are in the repository's security settings.
 
 ## Tagging
