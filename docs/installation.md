@@ -68,6 +68,8 @@ python deploy.py --all
 
 `configure` prompts for the root directory containing your local repositories; rerun it to change the value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value and Ctrl+C cancels without saving. Configured paths must be absolute drive-letter paths of directories that already exist. `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
 
+Every prompt, `configure`'s and the deployment's selection menu alike, goes to stderr, and results go to stdout, so a script that reads `deploy.py`'s output never receives a question.
+
 `--all` deploys every skill except opt-in ones, which only some users need, such as `dotnet-format` for C#; add one with `--include`, as in `python deploy.py --all --include dotnet-format`, or choose it from the menu. Once installed, an opt-in skill stays installed on later `--all` runs.
 
 Deployer configuration is stored under `~/.claude/deployer/config/`. Deployed authoritative skills and the ownership manifest are stored under `~/.claude/skills/`; generated thin runtime adapters for Codex and GitHub Copilot CLI are transactionally maintained under `~/.agents/skills/`. The code-review suite keeps its runtime-neutral configuration and state under `~/.coding-agent-skills/code-review/` by default. [Recovery](recovery.md#where-the-deployer-keeps-its-state) lists every path the deployer uses.

@@ -15,11 +15,12 @@ CANCELLED = "Configuration cancelled; existing config was not changed."
 
 
 def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | None:
-    print("")
-    print(f"{key}: {description}")
-    if current:
-        print(f"  Current: {current}")
+    """Ask for one value on stderr, which carries every prompt, so stdout holds only results."""
     sys.stdout.flush()
+    print("", file=sys.stderr)
+    print(f"{key}: {description}", file=sys.stderr)
+    if current:
+        print(f"  Current: {current}", file=sys.stderr)
     label = "New value (Enter keeps the current value, Ctrl+C cancels)" if current else "Value (Ctrl+C cancels)"
     print(f"  {label}: ", end="", file=sys.stderr, flush=True)
     try:
