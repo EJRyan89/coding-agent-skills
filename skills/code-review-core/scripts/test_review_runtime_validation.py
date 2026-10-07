@@ -1,6 +1,7 @@
-"""verify_source_snapshot, pinned: every snapshot it accepts, every fault it refuses with its exact error, and the order
-in which it detects faults. Each snapshot is written literally to a temporary directory, so a change to what a
-reviewer may be given shows up here."""
+"""verify_source_snapshot and validate_adapter_manifest, pinned: every input each accepts (and what it returns), every
+fault it refuses with its exact error, and the order in which it detects faults. Each snapshot is written literally to
+a temporary directory and each manifest is a literal, so a change to what a reviewer may be given, or to which reviewer
+files are trusted, shows up here."""
 
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_runtime
 from review_config import ConfigurationError
-from review_runtime import RuntimeContractError, verify_source_snapshot
+from review_runtime import RuntimeContractError, validate_adapter_manifest, verify_source_snapshot
 
 HEAD = "a" * 40
 APP = b"print('app')\n"
@@ -820,6 +821,528 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
         self.assert_refused(
             excluded(_snapshot()), RuntimeContractError, "Source snapshot exclusion is invalid: 'first.bin'"
         )
+
+
+# validate_adapter_manifest, pinned the same way, for an entrypoint manifest (schema 1) and a specialists manifest
+# (schema 2). The specialists' own fields belong to _validate_specialists; one of its errors shows where it runs.
+ManifestMutation = Callable[[Any], Any]
+Key = str | int
+MANIFEST_FIELDS = "Adapter manifest fields do not match the protocol"
+UNSUPPORTED = "Adapter manifest protocol version is unsupported"
+BAD_ID = "Adapter manifest id is invalid"
+BAD_SUPPORTS = "Adapter supports must contain unique supported modes"
+BAD_CAPABILITIES = "Adapter required_capabilities is invalid"
+TWICE = "Adapter declares a file more than once"
+RESERVED = "Adapter declares a reserved path"
+
+
+def _entrypoint_manifest() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "id": "team-review",
+        "protocol_version": 1,
+        "supports": ["initial", "re-review"],
+        "required_capabilities": ["read-diff"],
+        "entrypoint": "SKILL.md",
+        "resources": ["references/guide.md", "./references/style.md"],
+        "agent_profiles": ["agents/checker.md"],
+    }
+
+
+def _specialists_manifest() -> dict[str, Any]:
+    return {
+        "schema_version": 2,
+        "id": "team-specialists",
+        "protocol_version": 1,
+        "kind": "specialists",
+        "supports": ["initial"],
+        "required_capabilities": ["agent-delegation", "read-diff"],
+        "resources": ["shared/guide.md"],
+        "specialists": [
+            {
+                "id": "python-reviewer",
+                "category": " Python ",
+                "profile": "agents/python.md",
+                "include": [r"\.py$"],
+                "exclude": [],
+                "resources": ["shared/python.md"],
+                "when": "window",
+            }
+        ],
+        "conditions": {"window": {"script": "conditions/window.py"}},
+    }
+
+
+def _put(path: tuple[Key, ...], value: Any) -> ManifestMutation:
+    def apply(manifest: Any) -> Any:
+        target = manifest
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = copy.deepcopy(value)
+        return manifest
+
+    return apply
+
+
+def _drop(key: str) -> ManifestMutation:
+    def apply(manifest: Any) -> Any:
+        del manifest[key]
+        return manifest
+
+    return apply
+
+
+def _whole(value: Any) -> ManifestMutation:
+    return lambda _ignored: copy.deepcopy(value)
+
+
+def _both(*mutations: ManifestMutation) -> ManifestMutation:
+    def apply(manifest: Any) -> Any:
+        for mutation in mutations:
+            manifest = mutation(manifest)
+        return manifest
+
+    return apply
+
+
+def _as_is(manifest: Any) -> Any:
+    return manifest
+
+
+def _entrypoint_result(**changes: Any) -> dict[str, Any]:
+    """The base entrypoint manifest as validate_adapter_manifest returns it, with the given fields replaced."""
+    result = _entrypoint_manifest()
+    result["resources"] = ["references/guide.md", "references/style.md"]
+    result.update(changes)
+    return result
+
+
+def _specialists_result(**changes: Any) -> dict[str, Any]:
+    result = _specialists_manifest()
+    result["specialists"][0]["category"] = "Python"
+    result.update(changes)
+    return result
+
+
+# Manifests validate_adapter_manifest accepts: (name, build, mutation, the dict it returns).
+MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, dict[str, Any]]] = [
+    ("entrypoint", _entrypoint_manifest, _as_is, _entrypoint_result()),
+    (
+        "entrypoint paths are normalized",
+        _entrypoint_manifest,
+        _both(_put(("entrypoint",), "./SKILL.md"), _put(("agent_profiles",), ["agents//checker.md"])),
+        _entrypoint_result(agent_profiles=["agents/checker.md"]),
+    ),
+    (
+        "entrypoint with no resources, profiles, or capabilities",
+        _entrypoint_manifest,
+        _both(_put(("resources",), []), _put(("agent_profiles",), []), _put(("required_capabilities",), [])),
+        _entrypoint_result(resources=[], agent_profiles=[], required_capabilities=[]),
+    ),
+    (
+        "protocol version true, which equals 1",
+        _entrypoint_manifest,
+        _put(("protocol_version",), True),
+        _entrypoint_result(protocol_version=True),
+    ),
+    (
+        "an id of 64 characters",
+        _entrypoint_manifest,
+        _put(("id",), "a" + "-" * 63),
+        _entrypoint_result(id="a" + "-" * 63),
+    ),
+    (
+        "re-review only",
+        _entrypoint_manifest,
+        _put(("supports",), ["re-review"]),
+        _entrypoint_result(supports=["re-review"]),
+    ),
+    (
+        "an entrypoint resource named like the materialization record",
+        _entrypoint_manifest,
+        _put(("resources",), ["materialization.json"]),
+        _entrypoint_result(resources=["materialization.json"]),
+    ),
+    ("specialists", _specialists_manifest, _as_is, _specialists_result()),
+    (
+        "specialists that review uncovered files",
+        _specialists_manifest,
+        _put(("uncovered",), "review"),
+        _specialists_result(uncovered="review"),
+    ),
+    (
+        "specialists that ignore uncovered files",
+        _specialists_manifest,
+        _put(("uncovered",), "ignore"),
+        _specialists_result(uncovered="ignore"),
+    ),
+    (
+        "specialists resources are normalized",
+        _specialists_manifest,
+        _put(("resources",), ["./shared/guide.md"]),
+        _specialists_result(),
+    ),
+    (
+        "a profile that is also a resource",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "shared/guide.md"),
+        _specialists_result(
+            specialists=[{**_specialists_result()["specialists"][0], "profile": "shared/guide.md"}],
+        ),
+    ),
+]
+
+# Manifests validate_adapter_manifest refuses: (name, build, mutation, error, message).
+MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, type[Exception], str]] = [
+    ("a list", _entrypoint_manifest, _whole([]), RuntimeContractError, MANIFEST_FIELDS),
+    ("null", _entrypoint_manifest, _whole(None), RuntimeContractError, MANIFEST_FIELDS),
+    ("entrypoint without an id", _entrypoint_manifest, _drop("id"), RuntimeContractError, MANIFEST_FIELDS),
+    (
+        "entrypoint with an extra field",
+        _entrypoint_manifest,
+        _put(("extra",), 1),
+        RuntimeContractError,
+        MANIFEST_FIELDS,
+    ),
+    (
+        "entrypoint with uncovered",
+        _entrypoint_manifest,
+        _put(("uncovered",), "review"),
+        RuntimeContractError,
+        MANIFEST_FIELDS,
+    ),
+    (
+        "entrypoint with a kind",
+        _entrypoint_manifest,
+        _put(("kind",), "entrypoint"),
+        RuntimeContractError,
+        MANIFEST_FIELDS,
+    ),
+    ("specialists without a kind", _specialists_manifest, _drop("kind"), RuntimeContractError, MANIFEST_FIELDS),
+    (
+        "specialists with an entrypoint",
+        _specialists_manifest,
+        _put(("entrypoint",), "SKILL.md"),
+        RuntimeContractError,
+        MANIFEST_FIELDS,
+    ),
+    (
+        "specialists fields under schema 1",
+        _specialists_manifest,
+        _put(("schema_version",), 1),
+        RuntimeContractError,
+        MANIFEST_FIELDS,
+    ),
+    ("schema 3", _entrypoint_manifest, _put(("schema_version",), 3), RuntimeContractError, UNSUPPORTED),
+    ("schema as a string", _entrypoint_manifest, _put(("schema_version",), "1"), RuntimeContractError, UNSUPPORTED),
+    ("protocol 2", _entrypoint_manifest, _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
+    (
+        "specialists protocol 2",
+        _specialists_manifest,
+        _put(("protocol_version",), 2),
+        RuntimeContractError,
+        UNSUPPORTED,
+    ),
+    ("an id that is not a string", _entrypoint_manifest, _put(("id",), 5), RuntimeContractError, BAD_ID),
+    ("an empty id", _entrypoint_manifest, _put(("id",), ""), RuntimeContractError, BAD_ID),
+    ("an uppercase id", _entrypoint_manifest, _put(("id",), "Team"), RuntimeContractError, BAD_ID),
+    ("an id starting with a dash", _entrypoint_manifest, _put(("id",), "-team"), RuntimeContractError, BAD_ID),
+    ("an id of 65 characters", _entrypoint_manifest, _put(("id",), "a" * 65), RuntimeContractError, BAD_ID),
+    (
+        "supports that is a string",
+        _entrypoint_manifest,
+        _put(("supports",), "initial"),
+        RuntimeContractError,
+        BAD_SUPPORTS,
+    ),
+    ("empty supports", _entrypoint_manifest, _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
+    (
+        "an unknown mode",
+        _entrypoint_manifest,
+        _put(("supports",), ["initial", "full"]),
+        RuntimeContractError,
+        BAD_SUPPORTS,
+    ),
+    (
+        "a mode that is not a string",
+        _entrypoint_manifest,
+        _put(("supports",), [[]]),
+        RuntimeContractError,
+        BAD_SUPPORTS,
+    ),
+    (
+        "a mode listed twice",
+        _entrypoint_manifest,
+        _put(("supports",), ["initial", "initial"]),
+        RuntimeContractError,
+        BAD_SUPPORTS,
+    ),
+    (
+        "capabilities that are a string",
+        _entrypoint_manifest,
+        _put(("required_capabilities",), "read-diff"),
+        RuntimeContractError,
+        BAD_CAPABILITIES,
+    ),
+    (
+        "a capability listed twice",
+        _entrypoint_manifest,
+        _put(("required_capabilities",), ["read-diff", "read-diff"]),
+        RuntimeContractError,
+        BAD_CAPABILITIES,
+    ),
+    (
+        "a capability that is not a string",
+        _entrypoint_manifest,
+        _put(("required_capabilities",), [5]),
+        RuntimeContractError,
+        BAD_CAPABILITIES,
+    ),
+    (
+        "an empty capability",
+        _entrypoint_manifest,
+        _put(("required_capabilities",), [""]),
+        RuntimeContractError,
+        BAD_CAPABILITIES,
+    ),
+    (
+        "an entrypoint that is not a string",
+        _entrypoint_manifest,
+        _put(("entrypoint",), None),
+        RuntimeContractError,
+        "entrypoint must be a non-empty POSIX relative path",
+    ),
+    (
+        "an entrypoint that escapes",
+        _entrypoint_manifest,
+        _put(("entrypoint",), "../SKILL.md"),
+        RuntimeContractError,
+        "entrypoint is unsafe: '../SKILL.md'",
+    ),
+    (
+        "resources that are not an array",
+        _entrypoint_manifest,
+        _put(("resources",), "references/guide.md"),
+        RuntimeContractError,
+        "Adapter resources and agent_profiles must be arrays",
+    ),
+    (
+        "profiles that are not an array",
+        _entrypoint_manifest,
+        _put(("agent_profiles",), {}),
+        RuntimeContractError,
+        "Adapter resources and agent_profiles must be arrays",
+    ),
+    (
+        "an unsafe resource",
+        _entrypoint_manifest,
+        _put(("resources", 1), "C:/x.md"),
+        RuntimeContractError,
+        "resources[1] is unsafe: 'C:/x.md'",
+    ),
+    (
+        "a backslash profile",
+        _entrypoint_manifest,
+        _put(("agent_profiles", 0), "agents\\checker.md"),
+        RuntimeContractError,
+        "agent_profiles[0] must be a non-empty POSIX relative path",
+    ),
+    (
+        "a resource that is the entrypoint",
+        _entrypoint_manifest,
+        _put(("resources", 0), "./SKILL.md"),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a profile that is a resource",
+        _entrypoint_manifest,
+        _put(("agent_profiles", 0), "references/style.md"),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "another kind",
+        _specialists_manifest,
+        _put(("kind",), "entrypoint"),
+        RuntimeContractError,
+        "Adapter manifest kind is unsupported",
+    ),
+    (
+        "specialists without agent-delegation",
+        _specialists_manifest,
+        _put(("required_capabilities",), ["read-diff"]),
+        RuntimeContractError,
+        "Specialist reviewers must require agent-delegation",
+    ),
+    (
+        "an unknown uncovered policy",
+        _specialists_manifest,
+        _put(("uncovered",), "skip"),
+        RuntimeContractError,
+        "Adapter uncovered must be review or ignore",
+    ),
+    (
+        "a null uncovered policy",
+        _specialists_manifest,
+        _put(("uncovered",), None),
+        RuntimeContractError,
+        "Adapter uncovered must be review or ignore",
+    ),
+    (
+        "specialists resources that are not an array",
+        _specialists_manifest,
+        _put(("resources",), "shared/guide.md"),
+        RuntimeContractError,
+        "resources must be an array",
+    ),
+    (
+        "an unsafe specialists resource",
+        _specialists_manifest,
+        _put(("resources", 0), "/shared/guide.md"),
+        RuntimeContractError,
+        "resources[0] is unsafe: '/shared/guide.md'",
+    ),
+    (
+        "conditions that are not an object",
+        _specialists_manifest,
+        _put(("conditions",), []),
+        RuntimeContractError,
+        "Adapter conditions must be an object",
+    ),
+    (
+        "a resource listed twice",
+        _specialists_manifest,
+        _put(("resources",), ["shared/guide.md", "./shared/guide.md"]),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a reserved resource",
+        _specialists_manifest,
+        _put(("resources",), ["materialization.json"]),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved profile",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "materialization.json"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved specialist resource",
+        _specialists_manifest,
+        _put(("specialists", 0, "resources"), ["materialization.json"]),
+        RuntimeContractError,
+        RESERVED,
+    ),
+    (
+        "a reserved condition script",
+        _specialists_manifest,
+        _put(("conditions", "window", "script"), "materialization.json"),
+        RuntimeContractError,
+        RESERVED,
+    ),
+]
+
+ManifestStage = tuple[str, ManifestMutation, type[Exception], str]
+# One fault per check of each kind of manifest, in the order validate_adapter_manifest detects them.
+ENTRYPOINT_STAGES: list[ManifestStage] = [
+    ("shape", _put(("extra",), 1), RuntimeContractError, MANIFEST_FIELDS),
+    ("protocol", _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
+    ("id", _put(("id",), "Team"), RuntimeContractError, BAD_ID),
+    ("supports", _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
+    ("capabilities", _put(("required_capabilities",), [""]), RuntimeContractError, BAD_CAPABILITIES),
+    ("entrypoint", _put(("entrypoint",), "../SKILL.md"), RuntimeContractError, "entrypoint is unsafe: '../SKILL.md'"),
+    (
+        "arrays",
+        _put(("agent_profiles",), {}),
+        RuntimeContractError,
+        "Adapter resources and agent_profiles must be arrays",
+    ),
+    ("resources", _put(("resources", 0), "../x.md"), RuntimeContractError, "resources[0] is unsafe: '../x.md'"),
+    (
+        "profiles",
+        _put(("agent_profiles", 0), "../x.md"),
+        RuntimeContractError,
+        "agent_profiles[0] is unsafe: '../x.md'",
+    ),
+    ("duplicates", _put(("agent_profiles", 0), "SKILL.md"), RuntimeContractError, TWICE),
+]
+SPECIALISTS_STAGES: list[ManifestStage] = [
+    ("shape", _put(("extra",), 1), RuntimeContractError, MANIFEST_FIELDS),
+    ("protocol", _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
+    ("id", _put(("id",), "Team"), RuntimeContractError, BAD_ID),
+    ("supports", _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
+    (
+        "capabilities",
+        _put(("required_capabilities",), ["read-diff", "read-diff"]),
+        RuntimeContractError,
+        BAD_CAPABILITIES,
+    ),
+    ("kind", _put(("kind",), "entrypoint"), RuntimeContractError, "Adapter manifest kind is unsupported"),
+    (
+        "delegation",
+        _put(("required_capabilities",), ["read-diff"]),
+        RuntimeContractError,
+        "Specialist reviewers must require agent-delegation",
+    ),
+    ("uncovered", _put(("uncovered",), "skip"), RuntimeContractError, "Adapter uncovered must be review or ignore"),
+    ("resources", _put(("resources",), "x"), RuntimeContractError, "resources must be an array"),
+    ("specialists", _put(("conditions",), []), RuntimeContractError, "Adapter conditions must be an object"),
+    ("duplicates", _put(("resources",), ["a.md", "a.md"]), RuntimeContractError, TWICE),
+    ("reserved", _put(("specialists", 0, "profile"), "materialization.json"), RuntimeContractError, RESERVED),
+]
+
+
+class AdapterManifestValidationTests(unittest.TestCase):
+    def assert_refused(self, manifest: Any, error: type[Exception], message: str) -> None:
+        with self.assertRaises(Exception) as caught:
+            validate_adapter_manifest(manifest)
+        self.assertIs(error, type(caught.exception))
+        self.assertEqual(message, str(caught.exception))
+
+    def test_accepted_manifests_come_back_normalized_as_a_new_object(self) -> None:
+        for name, build, mutation, expected in MANIFEST_ACCEPTED:
+            with self.subTest(name):
+                manifest = mutation(build())
+                before = copy.deepcopy(manifest)
+                result = validate_adapter_manifest(manifest)
+                self.assertEqual(expected, result)
+                self.assertEqual(list(expected), list(result))
+                self.assertIsNot(manifest, result)
+                self.assertEqual(before, manifest)
+
+    def test_each_fault_is_refused_with_its_error(self) -> None:
+        for name, build, mutation, error, message in MANIFEST_REJECTED:
+            with self.subTest(name):
+                self.assert_refused(mutation(build()), error, message)
+
+    def test_each_stage_is_refused_alone(self) -> None:
+        for build, stages in ((_entrypoint_manifest, ENTRYPOINT_STAGES), (_specialists_manifest, SPECIALISTS_STAGES)):
+            for name, mutation, error, message in stages:
+                with self.subTest(f"{build.__name__}: {name}"):
+                    self.assert_refused(mutation(build()), error, message)
+
+    def test_faults_are_detected_in_order(self) -> None:
+        # With the fault of every check from k on present at once, check k's fault is the one reported.
+        for build, stages in ((_entrypoint_manifest, ENTRYPOINT_STAGES), (_specialists_manifest, SPECIALISTS_STAGES)):
+            for index, (name, _mutation, error, message) in enumerate(stages):
+                with self.subTest(f"{build.__name__}: {name}"):
+                    manifest = build()
+                    for _later, mutation, _error, _message in reversed(stages[index:]):
+                        manifest = mutation(manifest)
+                    self.assert_refused(manifest, error, message)
+
+    def test_a_capability_that_cannot_be_hashed_escapes_as_a_type_error(self) -> None:
+        # The duplicate check builds a set before the item check runs. Python words the error differently across
+        # versions, so only its class and the part every version shares are pinned.
+        with self.assertRaises(TypeError) as caught:
+            validate_adapter_manifest(_put(("required_capabilities",), [[]])(_entrypoint_manifest()))
+        self.assertIs(TypeError, type(caught.exception))
+        self.assertIn("unhashable type: 'list'", str(caught.exception))
 
 
 if __name__ == "__main__":
