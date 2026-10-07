@@ -29,6 +29,8 @@ A run that fails with an error or is stopped with Ctrl+C reconciles its own jour
 
 Either way, the staging directory is then deleted and the deployment you asked for continues. You do not need to do anything.
 
+A dry run changes nothing, so it recovers nothing either. While an interrupted run is waiting, `--dry-run` says `Pending recovery: the next deployment will recover run <run-id>` and stops before planning, because recovery changes what is installed and a preview made before it would be wrong; leave the `.deploying-bak` files where they are. Deploy to recover and continue. If it instead says a run `cannot be recovered automatically`, the next deployment would stop too; see [When recovery fails](#when-recovery-fails).
+
 ## When recovery fails
 
 Recovery stops instead of guessing when what it finds on disk does not match the journal: an item changed after the run installed it, a backup is missing, or an item and its `.deploying-bak` both exist. It then refuses to deploy, keeps the journal, and prints a `WARNING` line for each item it could not reconcile, followed by the run ID, whether that run was committed, and its staging directory. Other runs are still recovered.

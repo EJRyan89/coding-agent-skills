@@ -790,7 +790,89 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertFalse(self.lock_dir.exists())
 
 
+class DryRunRecoveryTests(RecoveryTestCase):
+    """A dry run after an interrupted deployment says what the next deployment will recover instead of planning."""
+
+    def interrupted(self, run_id: str) -> Path:
+        """An uncommitted run killed after it moved alpha aside and installed its replacement."""
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        return self.write_journal(run_id, backup_entry("alpha", original), install_entry("alpha", installed))
+
+    def test_a_dry_run_names_the_run_the_next_deployment_will_recover(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        journal_file = self.interrupted("20260101-000000-kill")
+        result = self.deploy_ok("--all", "--dry-run")
+        self.assertIn(
+            "\nPending recovery: the next deployment will recover run 20260101-000000-kill.\n"
+            "The dry run stops here: recovery changes what is installed, so a preview before it would be wrong.\n"
+            'See "Interrupted deployments" in docs/recovery.md.\n',
+            result.output,
+        )
+        self.assertNotIn("Resolve or remove the stale backup", result.output)
+        self.assertNotIn("DRY RUN", result.output)
+        self.assertTrue(journal_file.is_file())
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+        self.assertIn("installed by the interrupted run", self.skill_text("alpha"))
+        result = self.deploy_ok("--all")
+        self.assertIn("Recovering uncommitted run 20260101-000000-kill (rolling back)...", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+
+    def test_a_dry_run_says_when_the_next_deployment_cannot_recover_a_run(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.interrupted("20260101-000000-kill")
+        self.write(self.staging_run("20260101-000001-bad1") / "journal.jsonl", '{"op":"backup"\n')
+        result = self.deploy_fails("--all", "--dry-run", pattern="cannot be recovered automatically")
+        self.assertIn(
+            "Pending recovery: the next deployment will recover run 20260101-000000-kill.\n"
+            "ERROR: Run 20260101-000001-bad1 cannot be recovered automatically; the next deployment will stop until "
+            "it is reconciled by hand.\n"
+            "The dry run stops here: recovery changes what is installed, so a preview before it would be wrong.\n"
+            f"{SEE_RECOVERY_FAILED}\n",
+            result.output,
+        )
+
+    def test_staging_runs_with_nothing_to_recover_do_not_stop_a_dry_run(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.staging_run("20260101-000000-none")
+        self.write(self.staging_run("20260101-000001-empty") / "journal.jsonl", "")
+        result = self.deploy_ok("--all", "--dry-run")
+        self.assertIn("=== DRY RUN ===", result.output)
+        self.assertNotIn("Pending recovery", result.output)
+
+
 class MigrationTests(DeployerTestCase):
+    def old_source_with_agent(self, bundles: dict | None = None) -> None:
+        """Deploy alpha, its runtime adapter, and its agent from test/old, then make this source define them."""
+        self.make_source_json("test/old", bundles=bundles)
+        self.make_agent("reviewer")
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.make_source_json(bundles=bundles)
+        self.make_config()
+
+    def test_migration_transfers_runtime_adapters_and_agents(self) -> None:
+        self.old_source_with_agent()
+        result = self.deploy_ok("--migrate-from", "test/old")
+        # The adapter moves with its skill, so the report folds its line into the skill's, as every report does.
+        self.assertEqual(["alpha", "reviewer.md (agent)"], self.report_groups(result.output, "MIGRATED")["MIGRATED"])
+        self.assertIn("alpha", self.owned(manifest.ADAPTERS))
+        self.assertIn("reviewer.md", self.owned("agents"))
+        self.assertNotIn("test/old", self.manifest()["sources"])
+        deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")
+        self.assertEqual(["alpha", "reviewer.md (agent)"], deployed["UNCHANGED"])
+
+    def test_a_fully_migrated_source_that_requested_a_bundle_leaves_the_manifest(self) -> None:
+        self.old_source_with_agent(bundles={"pack": {"members": ["alpha"]}})
+        self.assertEqual(["pack"], self.manifest()["sources"]["test/old"]["requested_bundles"])
+        self.deploy_ok("--migrate-from", "test/old")
+        self.assertEqual(["test/skills"], list(self.manifest()["sources"]))
+        result = self.deploy_ok("--all")
+        self.assertIn("  pack (bundle)\n", result.output)
+
     def test_migration_transfers_the_skill_and_shared_intersection(self) -> None:
         self.make_source_json("new/source", shared_assets={"shared-doc.md": "owner"})
         alpha = self.make_skill("alpha", "Alpha content")

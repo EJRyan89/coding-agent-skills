@@ -1115,17 +1115,11 @@ def _migrate(context: Context, old: str) -> None:
         new_entry.setdefault(manifest.ADAPTERS, {})[name] = old_entry[manifest.ADAPTERS].pop(name)
     for name in agents:
         new_entry.setdefault("agents", {})[name] = old_entry["agents"].pop(name)
+    # A bundle request alone does not keep the old source: it names no item, and the new source counts a bundle whose
+    # members it owns as chosen.
     if not any(
         old_entry.get(key)
-        for key in (
-            "skills",
-            "shared",
-            manifest.ADAPTERS,
-            "agents",
-            "requested_bundles",
-            "requested_skills",
-            "selected_skills",
-        )
+        for key in ("skills", "shared", manifest.ADAPTERS, "agents", "requested_skills", "selected_skills")
     ):
         del data.sources[old]
     data.save()
@@ -1275,6 +1269,38 @@ def _print_selection(src: source.Source, selection: Selection, selected: list[st
 RECOVERY_FAILED = "When recovery fails"
 
 
+def _stop_for_pending_recovery(paths: Paths) -> bool:
+    """Say which interrupted runs the next deployment will reconcile, and stop a dry run when there are any.
+
+    Recovery changes what is installed, so a preview planned before it would describe the wrong tree, and its leftover
+    .deploying-bak files would read as stale backups to delete by hand.
+    """
+    pending = journal.pending_runs(paths)
+    if not pending:
+        return False
+    stuck = [run_id for run_id, recoverable in pending if not recoverable]
+    lines = [
+        *(
+            f"Pending recovery: the next deployment will recover run {run_id}."
+            for run_id, recoverable in pending
+            if recoverable
+        ),
+        *(
+            f"ERROR: Run {run_id} cannot be recovered automatically; the next deployment will stop until it is "
+            "reconciled by hand."
+            for run_id in stuck
+        ),
+        "The dry run stops here: recovery changes what is installed, so a preview before it would be wrong.",
+        see_recovery(RECOVERY_FAILED if stuck else "Interrupted deployments"),
+    ]
+    if stuck:
+        raise DeployError(*lines)
+    print("")
+    print(*lines, sep="\n")
+    print("")
+    return True
+
+
 def _reject_other_checkout(paths: Paths, source_id: str, take_over: bool) -> None:
     """Refuse a checkout other than the one the manifest records for this source, unless the user takes it over.
 
@@ -1340,6 +1366,8 @@ def run(
     _print_source(src, paths.home)
     if options.dry_run:
         try:
+            if _stop_for_pending_recovery(paths):
+                return 0
             return _deploy(paths, options, src, values, stdin, None)
         except DeployError as exc:
             print_error(exc)

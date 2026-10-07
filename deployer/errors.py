@@ -5,6 +5,7 @@ import sys
 RECOVERY_GUIDE = "docs/recovery.md"
 # The guide's sections that refusals point at; a test checks each is a heading of the guide.
 RECOVERY_SECTIONS = (
+    "Interrupted deployments",
     "When recovery fails",
     "Backups",
     "The deployment lock",

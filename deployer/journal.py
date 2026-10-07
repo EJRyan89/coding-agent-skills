@@ -434,6 +434,41 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     return True
 
 
+def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
+    """Each interrupted run the next deployment will reconcile, with whether it can do so without the user.
+
+    Changes nothing, for --dry-run. A run without journal entries is not listed, since recovery only deletes it.
+    """
+    if not paths.staging_root.is_dir():
+        return []
+    try:
+        run_dirs = sorted(path for path in paths.staging_root.iterdir() if path.is_dir())
+    except OSError as error:
+        raise DeployError(
+            f"ERROR: Cannot list the staging runs in {platform_support.normalize(paths.staging_root)}: "
+            f"{error.strerror or error}",
+            see_recovery("When recovery fails"),
+        ) from error
+    pending: list[tuple[str, bool]] = []
+    for run_dir in run_dirs:
+        if platform_support.is_link(run_dir) or platform_support.is_reparse_point(run_dir):
+            pending.append((run_dir.name, False))
+            continue
+        journal_file = run_dir / "journal.jsonl"
+        if not journal_file.is_file():
+            continue
+        try:
+            entries, malformed = _read_entries(journal_file, run_dir.name)
+        except OSError:
+            pending.append((run_dir.name, False))
+            continue
+        if malformed is not None:
+            pending.append((run_dir.name, False))
+        elif entries:
+            pending.append((run_dir.name, True))
+    return pending
+
+
 def recover_incomplete(paths: Paths) -> bool:
     """Reconcile every interrupted run; return False when any run needs manual inspection.
 

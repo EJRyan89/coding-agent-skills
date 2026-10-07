@@ -418,6 +418,7 @@ class RecoveryGuideTests(unittest.TestCase):
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(
             (
+                "Interrupted deployments",
                 "When recovery fails",
                 "Backups",
                 "The deployment lock",
