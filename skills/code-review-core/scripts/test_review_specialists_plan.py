@@ -28,7 +28,7 @@ CORE = Path(__file__).resolve().parents[1]
 REPOSITORY = "example/one"
 HEAD = "a" * 40
 BASE = "c" * 40
-TRUSTED = "b" * 40
+REVIEWER_COMMIT = "b" * 40
 NO_GUIDANCE = "none (this repository declares no reviewer guidance)"
 GENERIC_INSTRUCTIONS = "<core>/references/generic-reviewer.md"
 
@@ -524,7 +524,7 @@ def plan(
     changed: list[str],
     *,
     reviewer: str = "fixture-specialists",
-    source_commit: str | None = TRUSTED,
+    source_commit: str | None = REVIEWER_COMMIT,
     notes: Sequence[str] = (),
     uncovered: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -627,7 +627,7 @@ class PlanFixture(unittest.TestCase):
             "schema_version": 1,
             "adapter_id": value["id"],
             "entrypoint": None,
-            "source_commit": TRUSTED,
+            "source_commit": REVIEWER_COMMIT,
             "source_hashes": hashes,
             "manifest": value,
         }
