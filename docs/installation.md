@@ -64,7 +64,7 @@ python deploy.py --all --dry-run
 python deploy.py --all
 ```
 
-`check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
+`check` lists every tool the deployer and the skills need, with its version and which skills use it, and changes nothing. Its `Deployed commit` line names the commit the skills were last deployed from, with the nearest tag when Git can describe it, such as `v0.1.0-14-g71ad815 (<full hash>)`, or `unknown` before the first deployment that records one. `deploy.py` is the only script you run to deploy; run `python deploy.py --help` for every option.
 
 `configure` prompts for the root directory containing your local repositories; rerun it to change the value, or add `--reset` to start from an empty configuration. At any prompt, Enter keeps the current value and Ctrl+C cancels without saving. Configured paths must be absolute drive-letter paths of directories that already exist. `configure` accepts them as you would type or paste them, such as `C:\GitHub` or `"C:\GitHub\"`, and stores them with forward slashes, such as `C:/GitHub`.
 
