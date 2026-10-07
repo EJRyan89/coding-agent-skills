@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import git_client
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
-from github_client import CommandResult
+from github_client import MISSING_CLI, CommandResult, GitHubError
 
 REMOTE_URL = "https://github.com/owner/repo.git"
 # The repositories every Fixture test starts from, built once per process by setUpModule.
@@ -126,19 +126,23 @@ def plan_lines(plan: dict, path: Path) -> list[str]:
         ["WORKTREE", entry["path"], entry["branch"], entry["action"], entry["detail"]] for entry in plan["worktrees"]
     ]
     lines += [["FASTFORWARD", entry["branch"], entry["target"]] for entry in plan["fastforward"]]
+    lines += [
+        ["FF_SKIPPED", entry["branch"], entry["behind"], entry["reason"]] for entry in plan["fastforward_skipped"]
+    ]
     lines.append(["PLAN", str(path)])
     return ["\t".join(str(field) if str(field).strip() else "-" for field in line) for line in lines]
 
 
 class FakeGitHub:
-    """Stands in for gh: answers `auth status`, `pr list` from a table of pull requests per branch, and the
-    pull request commits query as `gh api --paginate --slurp` prints it, from `git rev-list --parents` lines."""
+    """Stands in for gh: answers the github.com access probe, `pr list` from a table of pull requests per branch, and
+    the pull request commits query as `gh api --paginate --slurp` prints it, from `git rev-list --parents` lines."""
 
     def __init__(self) -> None:
         self.pulls: dict[str, list[dict]] = {}
         self.commits: dict[int, str] = {}
         self.failing: set[str] = set()
         self.authenticated = True
+        self.access_failure: CommandResult | GitHubError | None = None  # what the access probe meets instead
         self.calls: list[list[str]] = []
 
     def __call__(self, command: Sequence[str]) -> CommandResult:
@@ -146,8 +150,14 @@ class FakeGitHub:
             raise AssertionError(command)
         arguments = list(command[1:])
         self.calls.append(arguments)
-        if arguments[:2] == ["auth", "status"]:
-            return CommandResult(0 if self.authenticated else 1, "", "")
+        if arguments == ["api", "--hostname", "github.com", "rate_limit"]:
+            if isinstance(self.access_failure, GitHubError):
+                raise self.access_failure
+            if self.access_failure is not None:
+                return self.access_failure
+            if not self.authenticated:
+                return CommandResult(4, "", "To get started with GitHub CLI, please run:  gh auth login\n")
+            return CommandResult(0, "{}", "")
         if arguments[0] == "api":
             if arguments[:3] != ["api", "--paginate", "--slurp"]:
                 raise AssertionError(arguments)
@@ -380,6 +390,29 @@ class DiscoverTests(Fixture):
         self.github.authenticated = False
         with self.assertRaisesRegex(rc.CleanupError, "^GitHub CLI not authenticated — run 'gh auth login'$"):
             self.discover()
+        self.assertEqual([["api", "--hostname", "github.com", "rate_limit"]], self.github.calls)
+
+    def test_the_reason_a_sweep_cannot_start_names_the_kind_of_failure(self) -> None:
+        not_signed_in = "^GitHub CLI not authenticated — run 'gh auth login'$"
+        for failure, message in (
+            (CommandResult(1, "", "gh: Bad credentials (HTTP 401)\n"), not_signed_in),
+            (GitHubError(MISSING_CLI, kind="prerequisite"), f"^GitHub CLI not installed — {re.escape(MISSING_CLI)}$"),
+            (
+                CommandResult(1, "", "error connecting to api.github.com\ncheck your internet connection\n"),
+                "^cannot reach github.com — error connecting to api.github.com check your internet connection$",
+            ),
+            (
+                GitHubError("GitHub CLI did not finish within 300 seconds", kind="timeout"),
+                "^github.com did not answer — GitHub CLI did not finish within 300 seconds$",
+            ),
+            (
+                CommandResult(1, "", "HTTP 502: Bad Gateway\n"),
+                r"^GitHub CLI could not reach github.com \(api\) — HTTP 502",
+            ),
+        ):
+            with self.subTest(failure=failure), self.assertRaisesRegex(rc.CleanupError, message):
+                self.github.access_failure = failure
+                self.discover()
 
 
 class SyncTests(Fixture):
@@ -418,6 +451,19 @@ class SyncTests(Fixture):
         self.assertEqual(topic, self.tip("topic"), "the checked-out branch must not take the default's commits")
         self.assertEqual(upstream, self.tip("main"))
         self.assertTrue((self.clone / "draft.txt").is_file())
+
+    def test_a_default_branch_checked_out_with_changes_is_not_fast_forwarded(self) -> None:
+        local = self.tip("main")
+        self.commit(self.other, "upstream work")
+        git(self.other, "push", "--quiet", "origin", "main")
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        finished, lines = self.sync(skip_checkout=True)
+        self.assertTrue(finished, lines)
+        self.assertEqual(
+            [["failed", f"worktree {self.clone.as_posix()} has 1 uncommitted change"]], facts(lines, "FF_DEFAULT")
+        )
+        self.assertEqual(local, self.tip("main"))
+        self.assertEqual(local, git(self.clone, "rev-parse", "HEAD"))
 
     def test_fetch_failure_stops_the_repository(self) -> None:
         git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
@@ -700,6 +746,74 @@ class PlanApplyTests(Fixture):
         self.assertEqual("", git(worktree, "status", "--porcelain"))
         self.assertEqual(local, self.tip("diverged"))
 
+    def test_a_branch_checked_out_in_a_worktree_with_changes_is_never_fast_forwarded(self) -> None:
+        linked = self.push_branch("feature")
+        worktree = self.area / "feature wt"
+        git(self.clone, "worktree", "add", "--quiet", str(worktree), "feature")
+        self.advance_remotely("feature")
+        (worktree / "notes.txt").write_text("unsaved\n", encoding="utf-8")
+        current = self.push_branch("topic")
+        git(self.clone, "switch", "--quiet", "topic")
+        self.advance_remotely("topic")
+        self.advance_remotely("topic")
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        finished, lines = self.sync(skip_checkout=True)
+        self.assertTrue(finished, lines)
+        _, planned = self.plan()
+        _, applied = self.apply()
+        self.assertEqual([], facts(planned, "FASTFORWARD"))
+        self.assertEqual(
+            [
+                ["feature", "1", f"worktree {worktree.as_posix()} has 1 uncommitted change"],
+                ["topic", "2", f"worktree {self.clone.as_posix()} has 1 uncommitted change"],
+            ],
+            facts(planned, "FF_SKIPPED"),
+        )
+        self.assertEqual([], facts(applied, "FF") + facts(applied, "PRESERVED"))
+        self.assertEqual((linked, linked), (self.tip("feature"), git(worktree, "rev-parse", "HEAD")))
+        self.assertEqual((current, current), (self.tip("topic"), git(self.clone, "rev-parse", "HEAD")))
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        self.assertIn("  Branches fast-forwarded: 0\n", summary)
+        self.assertIn(f"  Dirty worktrees skipped: 1 — {worktree.as_posix()} (feature, 1 changed)\n", summary)
+        self.assertIn(
+            f"  Fast-forward skipped:    2 — feature (behind 1; worktree {worktree.as_posix()} has 1 uncommitted "
+            f"change), topic (behind 2; worktree {self.clone.as_posix()} has 1 uncommitted change)",
+            summary,
+        )
+
+    def test_a_worktree_that_gains_changes_after_planning_is_not_fast_forwarded(self) -> None:
+        linked = self.push_branch("feature")
+        worktree = self.area / "feature wt"
+        git(self.clone, "worktree", "add", "--quiet", str(worktree), "feature")
+        target = self.advance_remotely("feature")
+        self.sync()
+        _, planned = self.plan()
+        self.assertEqual([["feature", target]], facts(planned, "FASTFORWARD"))
+        (worktree / "notes.txt").write_text("unsaved\n", encoding="utf-8")
+        _, applied = self.apply()
+        self.assertEqual(
+            [["feature", f"fast-forward failed: worktree {worktree.as_posix()} has 1 uncommitted change"]],
+            facts(applied, "PRESERVED"),
+        )
+        self.assertEqual(linked, git(worktree, "rev-parse", "HEAD"))
+
+    def test_a_gone_branch_is_judged_against_the_default_branch_when_head_is_elsewhere(self) -> None:
+        # git branch -d judges a branch whose upstream is gone against HEAD, which --skip-checkout leaves on a topic.
+        abandoned = self.finished_branch("abandoned", merged=False, state="CLOSED")
+        self.finished_branch("merged-elsewhere", state=None)
+        git(self.clone, "switch", "--quiet", "-c", "stacked", "abandoned")
+        self.commit(self.clone, "work stacked on the abandoned branch")
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        finished, lines = self.sync(skip_checkout=True)
+        self.assertTrue(finished, lines)
+        _, planned = self.plan()
+        _, applied = self.apply()
+        self.assertEqual("delete", self.branch_fact(planned, "abandoned")[4])
+        self.assertEqual([["merged-elsewhere"]], facts(applied, "DELETED"))
+        self.assertEqual([["abandoned", abandoned]], facts(applied, "UNMERGED"))
+        self.assertEqual(abandoned, self.tip("abandoned"), "HEAD holds it, but the default branch does not")
+        self.assertIsNone(self.tip("merged-elsewhere"), "the default branch holds it, although HEAD does not")
+
     def test_origin_that_is_not_on_github_leaves_branches_unverified(self) -> None:
         self.finished_branch("merged-gone")
         git(self.clone, "remote", "set-url", "origin", self.remote.as_posix())
@@ -919,6 +1033,47 @@ class SweepTests(Fixture):
         )
         self.assertEqual([300.0, 300.0], timeouts)
 
+    def test_a_branch_named_with_a_unicode_line_separator_is_planned_and_every_repository_reported(self) -> None:
+        self.make_clone("other repo")
+        name = "odd\u2028name"
+        git(self.clone, "branch", name, "main")
+        code, lines = self.sweep()
+        self.assertEqual(0, code, lines)
+        root = self.repos.as_posix()
+        self.assertEqual([[f"{root}/my repo", "cleaned"], [f"{root}/other repo", "quiet"]], facts(lines, "REPO"))
+        self.assertEqual([["odd name"]], facts(self.blocks(lines)["my repo"], "CONFIRM_LOCAL"))
+        self.assertTrue(all("\u2028" not in line for line in lines), "every fact stays on one line")
+        plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
+        self.assertEqual([name], [branch["name"] for branch in plan["branches"]])
+
+    def test_an_unexpected_failure_reports_that_repository_and_every_other_then_exits_1(self) -> None:
+        self.finished_branch("done")
+        self.make_clone("other repo")
+        build_plan = rc.build_plan
+
+        def failing(root: str, repos_root: str, services: rc.Services) -> dict[str, Any]:
+            if root.endswith("other repo"):
+                raise ValueError("not enough values to unpack (expected 4, got 1)")
+            return build_plan(root, repos_root, services)
+
+        with mock.patch.object(rc, "build_plan", failing):
+            code, lines = self.sweep()
+        self.assertEqual(1, code, lines)
+        root = self.repos.as_posix()
+        self.assertEqual([[f"{root}/my repo", "cleaned"], [f"{root}/other repo", "error"]], facts(lines, "REPO"))
+        blocks = self.blocks(lines)
+        self.assertEqual(
+            [["unexpected ValueError: not enough values to unpack (expected 4, got 1)"]],
+            facts(blocks["other repo"], "ERROR"),
+        )
+        self.assertIn(
+            "Branches deleted:        1 — done", "\n".join(fields[0] for fields in facts(blocks["my repo"], "SUMMARY"))
+        )
+        self.assertEqual(
+            [["2", "cleaned=1", "quiet=0", "dirty=0", "fetch-failed=0", "error=1", "git-failed=0"]],
+            facts(lines, "SWEPT"),
+        )
+
     def test_a_sweep_that_cannot_start_fails_with_one_line(self) -> None:
         self.github.authenticated = False
         code, lines = self.sweep()
@@ -973,7 +1128,7 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.repo.mkdir()
         git(self.repo, "init", "--quiet", "-b", "main")
         git(self.repo, "commit", "--quiet", "--allow-empty", "-m", "initial")
-        self.plan: dict[str, Any] = {"repo_root": str(self.repo), "events": []}
+        self.plan: dict[str, Any] = {"repo_root": str(self.repo), "default": {"name": "main"}, "events": []}
 
     def tip(self, branch: str) -> str | None:
         result = subprocess.run(

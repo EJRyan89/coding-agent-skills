@@ -50,13 +50,20 @@ GITHUB_REMOTE = re.compile(
     r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?",
     re.IGNORECASE,
 )
-CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
+# Control characters and the line separators str.splitlines also breaks on, so every fact stays on one line.
+CONTROL = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]+")
 SUMMARY_WIDTH = 25
 # Repositories a sweep cleans at once: fetches and gh queries are network-bound, and four stays clear of GitHub's
 # secondary rate limits.
 SWEEP_WORKERS = 4
 # The lines a sweep passes on: what the agent must act on or report. Everything else is in the summary.
 SWEEP_KINDS = {"DIRTY_MAIN", "FETCH_FAILED", "ERROR", "CONFIRM_LOCAL", "UNMERGED", "SUMMARY"}
+# Why the GitHub CLI cannot reach github.com, by GitHubError.kind; other kinds are named as they are.
+ACCESS_FAILURES = {
+    "prerequisite": "GitHub CLI not installed",
+    "network": "cannot reach github.com",
+    "timeout": "github.com did not answer",
+}
 
 
 class CleanupError(Exception):
@@ -170,6 +177,15 @@ def dirty_count(services: Services, directory: str | Path) -> int:
     return count
 
 
+def uncommitted(services: Services, path: str) -> str:
+    """Why a fast-forward must leave the worktree at `path` alone, or an empty string when it has no changes."""
+    try:
+        count = dirty_count(services, path)
+    except CleanupError as exc:
+        return str(exc)
+    return f"worktree {path} has {count} uncommitted change{'' if count == 1 else 's'}" if count else ""
+
+
 def name_with_owner(services: Services, root: str | Path) -> str | None:
     """owner/name of a github.com origin, from the configured URL or its insteadOf expansion."""
     for arguments in (("config", "--get", "remote.origin.url"), ("remote", "get-url", "origin")):
@@ -219,13 +235,20 @@ def pull_state(
 
 
 def fast_forward(services: Services, root: str, branch: str, old: str, new: str, worktree: str | None) -> str:
-    """Fast-forward only; returns an empty string on success, otherwise Git's reason."""
+    """Fast-forward only; returns an empty string on success, otherwise the reason.
+
+    Never in a worktree with changes: Git refuses only when a changed file conflicts, so the base would move under
+    someone's uncommitted work.
+    """
     if worktree is None:
         result = git(services, root, "update-ref", "-m", "repo-cleanup: fast-forward", f"refs/heads/{branch}", new, old)
     else:
         head = git(services, worktree, "symbolic-ref", "--quiet", "HEAD").stdout.strip()
         if head != f"refs/heads/{branch}":
             return "the worktree no longer has the branch checked out"
+        held = uncommitted(services, worktree)
+        if held:
+            return held
         result = git(services, worktree, "merge", "--ff-only", "--quiet", new)
     return "" if result.returncode == 0 else reason(result)
 
@@ -254,14 +277,20 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
             raise CleanupError(f"{repos_root} is not a directory")
         entries = sorted(root.iterdir(), key=lambda path: path.name.casefold())
         repositories = [path for path in entries if path.is_dir() and (path / ".git").is_dir()]
+    # Not `gh auth status`: it reports every failure but a timeout as an invalid token, and fails for any stale account
+    # on the host. The rate_limit endpoint costs no quota and answers for the account gh uses.
     try:
-        GitHubClient(services.gh).run(["auth", "status"])
-        authenticated = True
-    except (GitHubError, OSError):
-        authenticated = False
-    if not authenticated:
-        raise CleanupError("GitHub CLI not authenticated — run 'gh auth login'")
+        GitHubClient(services.gh).run(["api", "--hostname", "github.com", "rate_limit"])
+    except GitHubError as exc:
+        raise CleanupError(access_failure(exc)) from exc
     return [path.as_posix() for path in repositories]
+
+
+def access_failure(error: GitHubError) -> str:
+    if error.kind == "authentication":
+        return "GitHub CLI not authenticated — run 'gh auth login'"
+    label = ACCESS_FAILURES.get(error.kind, f"GitHub CLI could not reach github.com ({error.kind})")
+    return f"{label} — {one_line(error)}"
 
 
 # sync -----------------------------------------------------------------------------------------------------------
@@ -369,8 +398,7 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
     worktrees = [evaluate_worktree(services, tree) for tree in trees if not tree.main]
     linked = {entry["branch"]: entry for entry in worktrees if entry["branch"]}
     branches: list[dict[str, Any]] = []
-    fastforward: list[dict[str, Any]] = []
-    diverged: list[dict[str, Any]] = []
+    moves: dict[str, list[dict[str, Any]]] = {"fastforward": [], "fastforward_skipped": [], "diverged": []}
     listing = git_output(
         services,
         root,
@@ -378,7 +406,8 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
         "--format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:track)",
         "refs/heads/",
     )
-    for line in listing.splitlines():
+    # Newlines only: str.splitlines also breaks on characters a branch name may hold, such as U+2028.
+    for line in filter(None, listing.split("\n")):
         ref, sha, upstream, track = line.split("\0")
         name = ref[len("refs/heads/") :]
         if name == default:
@@ -407,16 +436,7 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
             }
         )
         if category == "tracking" and action == "keep":
-            target = resolve(services, root, upstream)
-            if target is None or target == sha:
-                continue
-            ahead, behind = ahead_behind(services, root, sha, target)
-            if behind and not ahead:
-                fastforward.append(
-                    {"branch": name, "sha": sha, "target": target, "worktree": tree.path if tree else None}
-                )
-            elif behind:
-                diverged.append({"branch": name, "ahead": ahead, "behind": behind})
+            follow_upstream(services, root, name, sha, upstream, tree, moves)
     for entry in worktrees:
         if entry["action"] == "candidate":
             entry["action"] = "keep"
@@ -428,11 +448,37 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
         "default": {"name": default, "status": default_status(services, root, default)},
         "branches": branches,
         "worktrees": worktrees,
-        "fastforward": fastforward,
-        "diverged": diverged,
+        **moves,
         "applied": False,
         "events": [],
     }
+
+
+def follow_upstream(
+    services: Services,
+    root: str,
+    name: str,
+    sha: str,
+    upstream: str,
+    tree: Worktree | None,
+    moves: dict[str, list[dict[str, Any]]],
+) -> None:
+    """Plan a kept branch behind its upstream: a fast-forward, a skip when its worktree has changes, or divergence."""
+    target = resolve(services, root, upstream)
+    if target is None or target == sha:
+        return
+    ahead, behind = ahead_behind(services, root, sha, target)
+    if ahead:
+        if behind:
+            moves["diverged"].append({"branch": name, "ahead": ahead, "behind": behind})
+        return
+    held = uncommitted(services, tree.path) if tree else ""
+    if held:
+        moves["fastforward_skipped"].append({"branch": name, "behind": behind, "reason": held})
+    else:
+        moves["fastforward"].append(
+            {"branch": name, "sha": sha, "target": target, "worktree": tree.path if tree else None}
+        )
 
 
 def default_status(services: Services, root: str, default: str) -> str:
@@ -493,13 +539,38 @@ def deleted(plan: dict[str, Any]) -> set[str]:
 # apply and confirmations ----------------------------------------------------------------------------------------
 
 
+def in_default(services: Services, plan: dict[str, Any], sha: str) -> bool:
+    """Whether the local or the fetched default branch contains `sha`."""
+    default = plan["default"]["name"]
+    return any(
+        git(services, plan["repo_root"], "merge-base", "--is-ancestor", sha, ref).returncode == 0
+        for ref in (f"refs/heads/{default}", f"refs/remotes/origin/{default}")
+    )
+
+
 def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> None:
-    """git branch -d after the tip check; a refusal on an unchanged branch means it is not fully merged."""
+    """Delete an unchanged branch the default branch contains, and hand any other to unmerged.
+
+    git branch -d judges a branch against its upstream, or against HEAD when that is gone or unset, and HEAD is not
+    the default branch after --skip-checkout or a failed switch. So the default branch decides, and -D deletes a
+    branch -d refused only because HEAD lacks it.
+    """
+    if not in_default(services, plan, sha):
+        unmerged(services, plan, name, sha, pr)
+        return
     result = git(services, plan["repo_root"], "branch", "-d", name)
     if result.returncode == 0:
         record(plan, "DELETED", name)
     elif branch_tip(services, plan["repo_root"], name) == sha:
-        unmerged(services, plan, name, sha, pr)
+        force_delete(services, plan, name)
+    else:
+        record(plan, "PRESERVED", name, "moved")
+
+
+def force_delete(services: Services, plan: dict[str, Any], name: str) -> None:
+    result = git(services, plan["repo_root"], "branch", "-D", name)
+    if result.returncode == 0:
+        record(plan, "DELETED", name)
     else:
         record(plan, "PRESERVED", name, reason(result))
 
@@ -513,11 +584,7 @@ def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: 
     if pr != "MERGED":
         record(plan, "UNMERGED", name, sha)
         return
-    result = git(services, plan["repo_root"], "branch", "-D", name)
-    if result.returncode == 0:
-        record(plan, "DELETED", name)
-    else:
-        record(plan, "PRESERVED", name, reason(result))
+    force_delete(services, plan, name)
 
 
 def unchanged(
@@ -576,18 +643,13 @@ def prune_empty_parents(removed: str, boundaries: list[str]) -> list[str]:
 
 
 def remove_worktree(services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str) -> bool:
-    """git worktree remove, which refuses a locked worktree or one with changes, then git branch -d."""
+    """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch."""
     removed = git(services, plan["repo_root"], "worktree", "remove", entry["path"])
     if removed.returncode != 0:
         record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
         return False
     record(plan, "REMOVED", entry["path"], entry["branch"])
-    if git(services, plan["repo_root"], "branch", "-d", entry["branch"]).returncode == 0:
-        record(plan, "DELETED", entry["branch"])
-    elif branch_tip(services, plan["repo_root"], entry["branch"]) == sha:
-        unmerged(services, plan, entry["branch"], sha, pr)
-    else:
-        record(plan, "PRESERVED", entry["branch"], "moved")
+    delete_merged(services, plan, entry["branch"], sha, pr)
     return True
 
 
@@ -659,14 +721,10 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
             if name not in eligible or name in deleted(plan):
                 record(plan, "PRESERVED", name, refusal)
             elif unchanged(services, plan, name, eligible[name], located, None):
-                if not force:
-                    delete_merged(services, plan, name, eligible[name], states[name])
-                    continue
-                result = git(services, plan["repo_root"], "branch", "-D", name)
-                if result.returncode == 0:
-                    record(plan, "DELETED", name)
+                if force:
+                    force_delete(services, plan, name)
                 else:
-                    record(plan, "PRESERVED", name, reason(result))
+                    delete_merged(services, plan, name, eligible[name], states[name])
     finally:
         save_plan(plan_path, plan)
     print_summary(plan)
@@ -707,6 +765,10 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         "Branches deleted": [fields[0] for fields in events(plan, "DELETED")],
         "Worktrees removed": [f"{path} ({branch})" for path, branch in events(plan, "REMOVED")],
         "Branches fast-forwarded": [fields[0] for fields in events(plan, "FF")],
+        "Fast-forward skipped": [
+            f"{entry['branch']} (behind {entry['behind']}; {entry['reason']})"
+            for entry in plan.get("fastforward_skipped", [])  # absent from a plan an earlier version wrote
+        ],
         "Diverged (manual)": [
             f"{name} (ahead {ahead}, behind {behind})" for name, ahead, behind in events(plan, "DIVERGED")
         ],
@@ -737,6 +799,7 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         f"  Protected release worktrees: {len(protected)} (preserved)",
     ]
     for label in (
+        "Fast-forward skipped",
         "Unmerged (kept)",
         "Local-only (kept)",
         "Preserved",
@@ -801,6 +864,9 @@ def sweep_repository(
     except GitError as exc:
         emit("ERROR", exc)
         return {**result, "state": "git-failed"}
+    except Exception as exc:  # a defect in one repository's run must not discard every other repository's report
+        emit("ERROR", f"unexpected {type(exc).__name__}: {exc}")
+        return {**result, "state": "error"}
     finally:
         _capture.lines = None
 
