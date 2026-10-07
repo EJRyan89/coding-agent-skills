@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -178,12 +179,27 @@ def atomic_write_json(
     atomic_write_text(path, content)
 
 
+# How long a lock directory may stay without an owner file before it is taken for one its creator never finished: a
+# holder writes the file at once, so only a process stopped between the two steps, or killed, leaves one that long.
+OWNER_GRACE_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class LockIdentity:
+    """Who a lock directory belongs to: its holder's token, or for a directory without an owner file, the directory
+    itself, as its device, file index, and modification time."""
+
+    token: str | None = None
+    unowned: tuple[int, int, int] | None = None
+
+
 class ResourceLock(AbstractContextManager["ResourceLock"]):
     """Short-lived mkdir lock with token-checked release and conservative recovery.
 
-    The owner file records the holder's PID and start time. An old lock is reclaimed only when its holder is
-    provably gone: not running, or its PID now names a process with a different start time. A live PID whose
-    identity cannot be checked keeps the lock, as the deployer's lock does.
+    The owner file records the holder's PID and start time. A lock is reclaimed, with a warning on stderr, when its
+    holder is provably gone (not running, or its PID now names a process with a different start time), or when it
+    has had no owner file for `owner_grace_seconds`. A live PID whose identity cannot be checked, and an owner file
+    that cannot be read, keep the lock, as the deployer's lock does.
     """
 
     def __init__(
@@ -191,13 +207,13 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         directory: Path,
         *,
         timeout_seconds: float = 10.0,
-        stale_after_seconds: float = 3600.0,
+        owner_grace_seconds: float = OWNER_GRACE_SECONDS,
         probe: Callable[[int], ProcessStatus] | None = None,
     ) -> None:
         self.directory = directory
         self.probe = probe or process_status
         self.timeout_seconds = timeout_seconds
-        self.stale_after_seconds = stale_after_seconds
+        self.owner_grace_seconds = owner_grace_seconds
         self.token = secrets.token_hex(16)
         self._held = False
 
@@ -215,6 +231,18 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         while True:
             try:
                 self.directory.mkdir()
+            except FileExistsError:
+                if self._reclaim_stale():
+                    continue
+                if time.monotonic() >= deadline:
+                    raise PersistenceError(
+                        f"Timed out waiting for lock {self.directory}; delete it if no review is running"
+                    ) from None
+                time.sleep(0.05)
+                continue
+            except OSError as exc:
+                raise PersistenceError(f"Cannot acquire lock {self.directory}: {exc}") from exc
+            try:
                 atomic_write_json(
                     self.owner_path,
                     {
@@ -224,45 +252,77 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
                         "start_time": start_time,
                     },
                 )
-                self._held = True
-                return self
-            except FileExistsError:
-                if self._reclaim_stale():
-                    continue
-                if time.monotonic() >= deadline:
-                    raise PersistenceError(f"Timed out waiting for lock {self.directory}") from None
-                time.sleep(0.05)
             except PersistenceError:
                 shutil.rmtree(self.directory, ignore_errors=True)
                 raise
-            except OSError as exc:
-                raise PersistenceError(f"Cannot acquire lock {self.directory}: {exc}") from exc
+            self._held = True
+            return self
+
+    @staticmethod
+    def _inspect(directory: Path) -> tuple[LockIdentity, dict[str, Any]] | None:
+        """Who a lock directory belongs to, with its owner file's content (empty without one), or None when that
+        cannot be read."""
+        owner_path = directory / "owner.json"
+        try:
+            if not owner_path.exists():
+                status = directory.stat()
+                return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns)), {}
+            owner = read_json(owner_path, maximum_bytes=64 * 1024)
+        except (PersistenceError, OSError):
+            return None
+        token = owner.get("token") if isinstance(owner, dict) else None
+        return (LockIdentity(token=token), owner) if isinstance(token, str) and token else None
+
+    def _stale(self) -> tuple[LockIdentity, str] | None:
+        """The identity of the lock directory and why it is stale, or None while it may still be held."""
+        inspected = self._inspect(self.directory)
+        if inspected is None:
+            return None
+        identity, owner = inspected
+        if identity.unowned is not None:
+            age = time.time() - identity.unowned[2] / 1e9
+            if age <= self.owner_grace_seconds:
+                return None
+            return identity, f"it has had no owner file for {int(age)} seconds"
+        pid = owner.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return None
+        recorded_start = owner.get("start_time")
+        if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
+            recorded_start = None
+        status = self.probe(pid)
+        if same_process(status, recorded_start) is not False:
+            return None
+        return identity, f"PID {pid} is not running" if not status.alive else f"PID {pid} now names another process"
 
     def _reclaim_stale(self) -> bool:
-        try:
-            owner = read_json(self.owner_path, maximum_bytes=64 * 1024)
-            pid = owner.get("pid")
-            created = owner.get("created_unix")
-            token = owner.get("token")
-            recorded_start = owner.get("start_time")
-            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
-                return False
-            if not isinstance(created, (int, float)):
-                return False
-            if not isinstance(token, str) or not token:
-                return False
-            if time.time() - float(created) <= self.stale_after_seconds:
-                return False
-            if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
-                recorded_start = None
-            if same_process(self.probe(pid), recorded_start) is not False:
-                return False
-            stale = self.directory.with_name(f"{self.directory.name}.stale.{secrets.token_hex(8)}")
-            self.directory.replace(stale)
-            shutil.rmtree(stale)
-            return True
-        except (PersistenceError, OSError, AttributeError):
+        """Move a stale lock aside and delete it, with a warning. False while the lock may still be held.
+
+        Moving the directory aside is the one atomic step, so the check that it held the lock judged stale comes
+        after it: a lock another process took in between is moved back.
+        """
+        judged = self._stale()
+        if judged is None:
             return False
+        identity, reason = judged
+        stale = self.directory.with_name(f"{self.directory.name}.stale.{secrets.token_hex(8)}")
+        try:
+            self.directory.rename(stale)
+        except OSError:
+            return False  # removed or reclaimed meanwhile; the next attempt looks again
+        moved = self._inspect(stale)
+        if moved is None or moved[0] != identity:
+            try:
+                stale.rename(self.directory)
+            except OSError as exc:
+                raise PersistenceError(
+                    f"A lock taken during a stale-lock reclaim was moved to {stale} and could not be moved back to "
+                    f"{self.directory}: {exc}; delete it once no review is running"
+                ) from exc
+            return False
+        print(f"WARNING: Reclaimed the stale lock {self.directory}: {reason}.", file=sys.stderr)
+        shutil.rmtree(stale, ignore_errors=True)
+        return True
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if not self._held:

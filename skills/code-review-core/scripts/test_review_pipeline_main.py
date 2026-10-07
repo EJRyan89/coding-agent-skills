@@ -764,7 +764,10 @@ class RunListTests(MainCase):
             ),
             self.run_main("finalize", "--run", "run a", "--run", "run b", "--run", "run c"),
         )
-        self.assertEqual([((Path("run a"),), {}), ((Path("run b"),), {}), ((Path("run c"),), {})], stub.calls)
+        self.assertEqual(
+            [((Path("run a"), SERVICES), {}), ((Path("run b"), SERVICES), {}), ((Path("run c"), SERVICES), {})],
+            stub.calls,
+        )
 
     def test_finalize_success_exits_0(self) -> None:
         self.stub(

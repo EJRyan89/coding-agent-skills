@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -48,6 +50,7 @@ from review_hosts import (
 from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json
 from review_operation import (
     ReviewOperationError,
+    archive_base,
     commit_adapter_result,
     latest_reviewed_heads,
     parse_pull_selector,
@@ -505,24 +508,90 @@ class StateAndLockTests(unittest.TestCase):
                     self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
                 self.assertFalse(path.exists())
 
-    def test_recent_lock_is_not_probed(self) -> None:
-        def probe(pid: int) -> ProcessStatus:
-            if pid != os.getpid():
-                raise AssertionError(f"probed PID {pid}")
-            return ProcessStatus(True, 1)
-
+    def test_recent_lock_of_live_owner_times_out_and_is_kept(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             path.mkdir()
-            atomic_write_json(
-                path / "owner.json",
-                {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1},
-            )
+            owner = {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1}
+            atomic_write_json(path / "owner.json", owner)
+            started = time.monotonic()
             with (
-                self.assertRaisesRegex(PersistenceError, "Timed out"),
-                ResourceLock(path, timeout_seconds=0.01, probe=probe),
+                self.assertRaisesRegex(
+                    PersistenceError, re.escape(f"Timed out waiting for lock {path}; delete it if no review is running")
+                ),
+                ResourceLock(path, timeout_seconds=0.2, probe=reporting(ProcessStatus(True, 1))),
             ):
                 pass
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertEqual(owner, read_json(path / "owner.json"))
+            self.assertEqual(["resource.lock"], [item.name for item in Path(temporary).iterdir()])
+
+    def test_recent_lock_of_dead_owner_is_reclaimed_with_a_warning(self) -> None:
+        # A dead holder blocked every review of the repository for an hour (#146).
+        cases = {
+            "dead": (ProcessStatus(False, None), "PID 4242 is not running"),
+            "pid reused": (ProcessStatus(True, 5678), "PID 4242 now names another process"),
+        }
+        for name, (status, reason) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "resource.lock"
+                path.mkdir()
+                atomic_write_json(
+                    path / "owner.json",
+                    {"pid": 4242, "token": "a" * 32, "created_unix": time.time(), "start_time": 1234},
+                )
+
+                def probe(pid: int, *, status: ProcessStatus = status) -> ProcessStatus:
+                    return ProcessStatus(True, 9999) if pid == os.getpid() else status
+
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5, probe=probe):
+                    self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
+                self.assertEqual(f"WARNING: Reclaimed the stale lock {path}: {reason}.\n", errors.getvalue())
+                self.assertEqual([], list(Path(temporary).iterdir()), "the stale lock is deleted")
+
+    def test_lock_without_owner_file_is_reclaimed_after_the_grace_period(self) -> None:
+        # A process killed between creating the lock and writing its owner left a lock nothing reclaimed (#146).
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            path.mkdir()
+            with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
+                pass
+            self.assertTrue(path.is_dir(), "a lock without an owner file is kept during the grace period")
+            old = time.time() - 61
+            os.utime(path, (old, old))
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
+                self.assertEqual(os.getpid(), read_json(path / "owner.json")["pid"])
+            self.assertRegex(
+                errors.getvalue(),
+                rf"^WARNING: Reclaimed the stale lock {re.escape(str(path))}: it has had no owner file for 6[01] "
+                r"seconds\.\n$",
+            )
+            self.assertEqual([], list(Path(temporary).iterdir()))
+
+    def test_reclaim_puts_back_a_lock_another_process_took_meanwhile(self) -> None:
+        # Moving the stale lock aside is the atomic step; a lock taken between the judgment and the move is not it.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            self._old_lock(path, {"pid": 4242, "start_time": 1234})
+            taken = {"pid": 5151, "token": "b" * 32, "created_unix": time.time(), "start_time": 1}
+
+            def probe(pid: int) -> ProcessStatus:
+                if pid == 4242:
+                    shutil.rmtree(path)  # another waiter reclaims the stale lock and takes it
+                    path.mkdir()
+                    atomic_write_json(path / "owner.json", taken)
+                    return ProcessStatus(False, None)
+                return ProcessStatus(True, 1)
+
+            with (
+                self.assertRaisesRegex(PersistenceError, "Timed out"),
+                ResourceLock(path, timeout_seconds=0.1, probe=probe),
+            ):
+                pass
+            self.assertEqual(taken, read_json(path / "owner.json"))
+            self.assertEqual(["resource.lock"], [item.name for item in Path(temporary).iterdir()])
 
     def test_lock_probes_identity_by_default_and_never_signals(self) -> None:
         probed: list[int] = []
@@ -2209,6 +2278,7 @@ class ReviewOperationTests(unittest.TestCase):
                     "source_commit": "c" * 40,
                     "source_hashes": {"SKILL.md": "d" * 64},
                 },
+                base=archive_base(None, []),
             )
             self.assertTrue(json_path.is_file())
             self.assertTrue(markdown_path.is_file())
@@ -2252,6 +2322,7 @@ class ReviewOperationTests(unittest.TestCase):
                     "source_commit": None,
                     "source_hashes": {},
                 },
+                "base": archive_base(None, []),
             }
             with self.assertRaises(PersistenceError):
                 commit_adapter_result(**arguments)

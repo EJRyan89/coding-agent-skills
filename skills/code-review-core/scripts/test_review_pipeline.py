@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,11 +24,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_pipeline as rp
 from github_client import CommandResult, subprocess_runner
-from review_archive import latest_record, pull_directory
+from review_archive import latest_record, list_versions, pull_directory
 from review_config import ConfigurationError, default_manifest_path, validate_config, write_config
 from review_flags import FlagError, add_flag
 from review_github import GitHubClient
 from review_hosts import ProcessResult
+from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
 from review_runtime import validate_adapter_manifest
 from review_state import load_state
@@ -1237,6 +1239,60 @@ class UnfinalizedTests(PipelineFixture):
             self.run_main("unfinalized", "--run", str(ready["run"])),
         )
 
+    def test_a_recorded_run_a_held_file_keeps_is_marked_recorded(self) -> None:
+        # Antivirus or the exiting Copilot CLI host holding a file left the folder, and unfinalized reported a
+        # recorded review as failed (#146).
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0], findings=[self.finding()])
+        run = ready["run"]
+        slept: list[float] = []
+        self.services.sleep = slept.append
+        with (run / "held.log").open("w", encoding="utf-8") as held:
+            held.write("still open")
+            code, out, err = self.run_main("finalize", "--run", str(run))
+            self.assertEqual((0, ""), (code, err))
+            directory = pull_directory(self.archive, REPOSITORY, 12)
+            note, recorded = out.splitlines()[-2:]
+            self.assertRegex(
+                note,
+                rf"^NOTE {re.escape(SELECTOR)} The recorded run {re.escape(str(run))} could not be removed \(.+\); "
+                r"it is marked recorded, so delete it later\.$",
+            )
+            self.assertTrue(recorded.startswith(f"RECORDED {SELECTOR} verdict="), recorded)
+            self.assertEqual(list(rp.RUN_REMOVAL_DELAYS), slept, "a bounded wait before giving up")
+            self.assertEqual(
+                {
+                    "selector": SELECTOR,
+                    "json": str(directory / "review.json"),
+                    "markdown": str(directory / "review.md"),
+                },
+                json.loads((run / rp.RECORDED_FILE).read_text(encoding="utf-8")),
+            )
+            self.assertEqual((0, "ALL_FINALIZED\n", ""), self.run_main("unfinalized", "--run", str(run)))
+            self.assertEqual(
+                (1, f"FAILED {run} {run} is already recorded\n", ""), self.run_main("finalize", "--run", str(run))
+            )
+            self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"], "recorded once")
+
+    def test_a_held_file_released_during_the_wait_lets_the_run_be_removed(self) -> None:
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0], findings=[self.finding()])
+        run = ready["run"]
+        held = (run / "held.log").open("w", encoding="utf-8")
+        self.addCleanup(held.close)
+        slept: list[float] = []
+
+        def release(seconds: float) -> None:
+            slept.append(seconds)
+            held.close()
+
+        self.services.sleep = release
+        code, out, err = self.run_main("finalize", "--run", str(run))
+        self.assertEqual((0, ""), (code, err))
+        self.assertNotIn("could not be removed", out)
+        self.assertEqual([rp.RUN_REMOVAL_DELAYS[0]], slept)
+        self.assertFalse(run.exists())
+
     def test_a_directory_that_is_not_a_prepared_run_fails(self) -> None:
         other = self.root / "not a run"
         other.mkdir()
@@ -1335,6 +1391,74 @@ class ReReviewTests(PipelineFixture):
         record = archived_record(self.archive, 12)
         self.assertEqual((2, "re-review"), (record["review"]["version"], record["review"]["mode"]))
         self.assertEqual("addressed", record["prior_dispositions"][0]["disposition"])
+
+    def test_finalize_fails_closed_when_another_version_was_recorded_after_prepare(self) -> None:
+        # Session A's dispositions, judged against version 1, were applied on top of session B's version 2 (#146).
+        self.record_initial_review()
+        self.push({"app/service.py": "def total(items):\n    return float(sum(items or []))\n"})
+        judged_against_v1 = self.prepare(re_review=True, scope="full")
+        concurrent = self.prepare(re_review=True, scope="full")
+        addressed = [{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}]
+        self.write_role_result(concurrent["roles"][0], dispositions=addressed)
+        rp.finalize(concurrent["run"])
+        directory = pull_directory(self.archive, REPOSITORY, 12)
+        archived = {path.name: path.read_bytes() for path in directory.iterdir()}
+        self.assertEqual([1, 2], list_versions(directory))
+
+        still_present = [{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Still an int."}]
+        self.write_role_result(judged_against_v1["roles"][0], dispositions=still_present)
+        run = judged_against_v1["run"]
+        code, out, err = self.run_main("finalize", "--run", str(run))
+        self.assertEqual(
+            (
+                1,
+                f"FAILED {run} The archive moved since prepare: the review was judged against version 1, and the "
+                "archive now holds version 2; nothing was recorded. Prepare the review again\n",
+                "",
+            ),
+            (code, out, err),
+        )
+        self.assertEqual(archived, {path.name: path.read_bytes() for path in directory.iterdir()}, "untouched")
+        self.assertEqual("closed", archived_record(self.archive, 12)["ledger"][0]["state"], "as version 2 left it")
+        self.assertEqual((1, f"UNFINALIZED {SELECTOR} {run}\n", ""), self.run_main("unfinalized", "--run", str(run)))
+
+    def test_finalize_fails_closed_when_the_run_or_the_ledger_does_not_match_the_archive(self) -> None:
+        self.record_initial_review()
+        self.push({"app/service.py": "def total(items):\n    return float(sum(items or []))\n"})
+        ready = self.prepare(re_review=True, scope="full")
+        self.write_role_result(
+            ready["roles"][0],
+            dispositions=[{"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Now returns a float."}],
+        )
+        run_file = ready["run"] / rp.RUN_FILE
+        prepared = json.loads(run_file.read_text(encoding="utf-8"))
+        cases = {
+            "prepared before the base was recorded": (
+                None,
+                "The run does not record the archive version it was prepared against; nothing was recorded. "
+                "Prepare the review again",
+            ),
+            "another ledger": (
+                {"version": 1, "ledger_sha256": "0" * 64},
+                "The ledger of version 1 changed since prepare; nothing was recorded. Prepare the review again",
+            ),
+            "no review then": (
+                {"version": None, "ledger_sha256": prepared["archive_base"]["ledger_sha256"]},
+                "The archive moved since prepare: the review was judged against no review, and the archive now "
+                "holds version 1; nothing was recorded. Prepare the review again",
+            ),
+        }
+        for name, (base, message) in cases.items():
+            with self.subTest(name):
+                changed = {key: value for key, value in prepared.items() if key != "archive_base"}
+                run_file.write_text(json.dumps(changed if base is None else {**changed, "archive_base": base}), "utf-8")
+                with self.assertRaises(ReviewOperationError) as raised:
+                    rp.finalize(ready["run"])
+                self.assertEqual(message, str(raised.exception))
+                self.assertEqual([1], list_versions(pull_directory(self.archive, REPOSITORY, 12)))
+        run_file.write_text(json.dumps(prepared), encoding="utf-8")
+        rp.finalize(ready["run"])
+        self.assertEqual(2, archived_record(self.archive, 12)["review"]["version"])
 
     def test_the_report_names_configured_models_and_marks_flagged_findings(self) -> None:
         self.record_initial_review()
