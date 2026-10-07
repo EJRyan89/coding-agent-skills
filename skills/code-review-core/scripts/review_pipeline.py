@@ -788,26 +788,7 @@ def validate_reviewer(
     """
     services = services or Services()
     config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
-    targets: list[tuple[str, dict[str, Any] | None]] = []
-    for number in pulls or []:
-        fetched = validate_canary_pull(
-            services.github.get_pull(repository, number), repository=repository, number=number
-        )
-        ensure_local_commit(checkout, fetched["headRefOid"], f"refs/pull/{number}/head", services.git)
-        ensure_local_commit(checkout, fetched["baseRefOid"], f"refs/heads/{fetched['baseRefName']}", services.git)
-        targets.append(
-            (
-                resolve_reviewer_commit(
-                    checkout,
-                    reviewer["trusted_ref"] or fetched["baseRefOid"],
-                    head_sha=fetched["headRefOid"],
-                    runner=services.git,
-                ),
-                fetched,
-            )
-        )
-    if not targets:
-        targets.append((_reviewer_commit(checkout, reviewer, ref, services), None))
+    targets = _validation_targets(repository, checkout, reviewer, pulls, ref, services)
     lines: list[str] = []
     checked: set[str] = set()
     with tempfile.TemporaryDirectory(prefix="code-review-validate-") as temporary:
@@ -893,6 +874,39 @@ def validate_reviewer(
                 )
     lines.append("VALID")
     return lines
+
+
+def _validation_targets(
+    repository: str,
+    checkout: Path,
+    reviewer: dict[str, Any],
+    pulls: list[int] | None,
+    ref: str | None,
+    services: Services,
+) -> list[tuple[str, dict[str, Any] | None]]:
+    """Each commit to read the reviewer from, with the pull request it validates against: for each pull request, its
+    trusted ref or base, once both of its commits are local; with none, --ref, the trusted ref, or origin's default."""
+    targets: list[tuple[str, dict[str, Any] | None]] = []
+    for number in pulls or []:
+        fetched = validate_canary_pull(
+            services.github.get_pull(repository, number), repository=repository, number=number
+        )
+        ensure_local_commit(checkout, fetched["headRefOid"], f"refs/pull/{number}/head", services.git)
+        ensure_local_commit(checkout, fetched["baseRefOid"], f"refs/heads/{fetched['baseRefName']}", services.git)
+        targets.append(
+            (
+                resolve_reviewer_commit(
+                    checkout,
+                    reviewer["trusted_ref"] or fetched["baseRefOid"],
+                    head_sha=fetched["headRefOid"],
+                    runner=services.git,
+                ),
+                fetched,
+            )
+        )
+    if not targets:
+        targets.append((_reviewer_commit(checkout, reviewer, ref, services), None))
+    return targets
 
 
 def load_run(run: Path) -> dict[str, Any]:
