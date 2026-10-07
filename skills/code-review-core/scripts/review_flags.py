@@ -47,6 +47,22 @@ def empty_store() -> dict[str, Any]:
 
 
 def validate_store(value: Any) -> dict[str, Any]:
+    _validate_store_envelope(value)
+    ids: set[str] = set()
+    for flag in value["flags"]:
+        _validate_flag_identity(flag, ids)
+        ids.add(flag["id"])
+        _validate_flag_target(flag)
+        _validate_flag_text(flag)
+        _validate_flag_resolution(flag)
+    allocated = [int(item["id"].removeprefix("RF-")) for item in value["flags"]]
+    if allocated and value["next_id"] <= max(allocated):
+        raise FlagError("Flag next_id must be greater than every allocated ID")
+    return value
+
+
+def _validate_store_envelope(value: Any) -> None:
+    """The store's own fields: its shape, schema version, next ID, and flag list."""
     if not isinstance(value, dict) or set(value) != {"schema_version", "next_id", "flags"}:
         raise FlagError("Flag store shape is invalid")
     if value["schema_version"] != SCHEMA_VERSION:
@@ -55,52 +71,59 @@ def validate_store(value: Any) -> dict[str, Any]:
         raise FlagError("Flag next_id is invalid")
     if not isinstance(value["flags"], list):
         raise FlagError("Flag list is invalid")
-    ids: set[str] = set()
-    for flag in value["flags"]:
-        if not isinstance(flag, dict) or set(flag) != FIELDS:
-            raise FlagError("Flag record shape is invalid")
-        if not isinstance(flag["id"], str) or flag["id"] in ids:
-            raise FlagError("Flag IDs must be unique strings")
-        if not re.fullmatch(r"RF-[0-9]{6}", flag["id"]):
-            raise FlagError("Flag ID format is invalid")
-        ids.add(flag["id"])
-        if flag["status"] not in {"open", "resolved"}:
-            raise FlagError("Flag status is invalid")
-        if flag["repository"] is not None:
-            validate_repository_identity(flag["repository"])
-        if flag["pull_number"] is not None and (
-            not isinstance(flag["pull_number"], int) or isinstance(flag["pull_number"], bool) or flag["pull_number"] < 1
+
+
+def _validate_flag_identity(flag: Any, ids: set[str]) -> None:
+    """A flag's shape, and an ID no earlier flag has, in the RF-NNNNNN format."""
+    if not isinstance(flag, dict) or set(flag) != FIELDS:
+        raise FlagError("Flag record shape is invalid")
+    if not isinstance(flag["id"], str) or flag["id"] in ids:
+        raise FlagError("Flag IDs must be unique strings")
+    if not re.fullmatch(r"RF-[0-9]{6}", flag["id"]):
+        raise FlagError("Flag ID format is invalid")
+
+
+def _validate_flag_target(flag: dict[str, Any]) -> None:
+    """A known status, and what the flag is about: an optional repository, pull request, and review version, the last
+    only with a pull request."""
+    if flag["status"] not in {"open", "resolved"}:
+        raise FlagError("Flag status is invalid")
+    if flag["repository"] is not None:
+        validate_repository_identity(flag["repository"])
+    if flag["pull_number"] is not None and (
+        not isinstance(flag["pull_number"], int) or isinstance(flag["pull_number"], bool) or flag["pull_number"] < 1
+    ):
+        raise FlagError("Flag pull number is invalid")
+    if flag["review_version"] is not None and (not _positive(flag["review_version"]) or flag["pull_number"] is None):
+        raise FlagError("Flag review version is invalid")
+
+
+def _validate_flag_text(flag: dict[str, Any]) -> None:
+    for field in ("created_at", "category", "body"):
+        if not isinstance(flag[field], str) or not flag[field].strip():
+            raise FlagError(f"Flag {field} is invalid")
+    try:
+        datetime.fromisoformat(flag["created_at"])
+    except ValueError as exc:
+        raise FlagError("Flag created_at is invalid") from exc
+
+
+def _validate_flag_resolution(flag: dict[str, Any]) -> None:
+    """An open flag has no resolution; a resolved one has a resolution and a time."""
+    if flag["status"] == "open":
+        if flag["resolved_at"] is not None or flag["resolution"] is not None:
+            raise FlagError("Open flag cannot contain resolution metadata")
+    else:
+        if (
+            not isinstance(flag["resolved_at"], str)
+            or not isinstance(flag["resolution"], str)
+            or not flag["resolution"].strip()
         ):
-            raise FlagError("Flag pull number is invalid")
-        if flag["review_version"] is not None and (
-            not _positive(flag["review_version"]) or flag["pull_number"] is None
-        ):
-            raise FlagError("Flag review version is invalid")
-        for field in ("created_at", "category", "body"):
-            if not isinstance(flag[field], str) or not flag[field].strip():
-                raise FlagError(f"Flag {field} is invalid")
+            raise FlagError("Resolved flag requires resolution metadata")
         try:
-            datetime.fromisoformat(flag["created_at"])
+            datetime.fromisoformat(flag["resolved_at"])
         except ValueError as exc:
-            raise FlagError("Flag created_at is invalid") from exc
-        if flag["status"] == "open":
-            if flag["resolved_at"] is not None or flag["resolution"] is not None:
-                raise FlagError("Open flag cannot contain resolution metadata")
-        else:
-            if (
-                not isinstance(flag["resolved_at"], str)
-                or not isinstance(flag["resolution"], str)
-                or not flag["resolution"].strip()
-            ):
-                raise FlagError("Resolved flag requires resolution metadata")
-            try:
-                datetime.fromisoformat(flag["resolved_at"])
-            except ValueError as exc:
-                raise FlagError("Flag resolved_at is invalid") from exc
-    allocated = [int(item["id"].removeprefix("RF-")) for item in value["flags"]]
-    if allocated and value["next_id"] <= max(allocated):
-        raise FlagError("Flag next_id must be greater than every allocated ID")
-    return value
+            raise FlagError("Flag resolved_at is invalid") from exc
 
 
 def _positive(value: Any) -> bool:

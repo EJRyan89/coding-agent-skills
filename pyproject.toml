@@ -50,11 +50,11 @@ select = [
 
 # #91's ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]
-max-complexity = 22
+max-complexity = 15
 
 # #91's ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
 [tool.ruff.lint.pylint]
-max-statements = 67
+max-statements = 50
 
 # Validation runs mypy once per root: deployer/, tools/, deploy.py, and tests/ together from the repository root, and
 # each skill's scripts/ directory from inside it. Default strictness; no module, suite, or import is exempt.

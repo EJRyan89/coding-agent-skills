@@ -1184,6 +1184,17 @@ class RefusalTests(PrepareFixture):
             scope="full",
         )
 
+    def test_the_selector_is_parsed_before_the_request_is_checked(self) -> None:
+        # canary=True alone is no fault; with force and an unrequested scope, both later checks have one.
+        self.assert_refused(
+            ReviewOperationError,
+            "Pull selector must be owner/repository#number",
+            selector="one",
+            canary=True,
+            force=True,
+            scope="full",
+        )
+
     def test_a_selector_is_reported_as_normalized(self) -> None:
         self.assert_refused(
             rp.PipelineError,

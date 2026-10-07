@@ -210,6 +210,17 @@ def declared_reviewer_files(manifest: dict[str, Any]) -> list[str]:
 
 
 def validate_adapter_manifest(value: Any) -> dict[str, Any]:
+    version = _manifest_version(value)
+    _validate_supports(value["supports"])
+    capabilities = value["required_capabilities"]
+    _validate_capabilities(capabilities)
+    if version == 2:
+        return _normalized_specialists_manifest(value, capabilities)
+    return _normalized_entrypoint_manifest(value)
+
+
+def _manifest_version(value: Any) -> Any:
+    """The schema version of a manifest whose fields match it and whose protocol version and id are valid."""
     if not isinstance(value, dict):
         raise RuntimeContractError("Adapter manifest fields do not match the protocol")
     version = value.get("schema_version")
@@ -221,7 +232,10 @@ def validate_adapter_manifest(value: Any) -> dict[str, Any]:
         raise RuntimeContractError("Adapter manifest protocol version is unsupported")
     if not isinstance(value["id"], str) or not SLUG.fullmatch(value["id"]):
         raise RuntimeContractError("Adapter manifest id is invalid")
-    supports = value["supports"]
+    return version
+
+
+def _validate_supports(supports: Any) -> None:
     if (
         not isinstance(supports, list)
         or not supports
@@ -229,33 +243,43 @@ def validate_adapter_manifest(value: Any) -> dict[str, Any]:
         or len(set(supports)) != len(supports)
     ):
         raise RuntimeContractError("Adapter supports must contain unique supported modes")
-    capabilities = value["required_capabilities"]
+
+
+def _validate_capabilities(capabilities: Any) -> None:
     if (
         not isinstance(capabilities, list)
         or len(set(capabilities)) != len(capabilities)
         or any(not isinstance(item, str) or not item for item in capabilities)
     ):
         raise RuntimeContractError("Adapter required_capabilities is invalid")
-    if version == 2:
-        if value["kind"] != "specialists":
-            raise RuntimeContractError("Adapter manifest kind is unsupported")
-        if "agent-delegation" not in capabilities:
-            raise RuntimeContractError("Specialist reviewers must require agent-delegation")
-        if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
-            raise RuntimeContractError("Adapter uncovered must be review or ignore")
-        normalized = dict(value)
-        normalized["resources"] = _path_list(value["resources"], "resources")
-        normalized.update(_validate_specialists(value))
-        declared = [*normalized["resources"]]
-        for specialist in normalized["specialists"]:
-            declared.extend([specialist["profile"], *specialist["resources"]])
-        declared.extend(condition["script"] for condition in normalized["conditions"].values())
-        if len(set(normalized["resources"])) != len(normalized["resources"]):
-            raise RuntimeContractError("Adapter declares a file more than once")
-        for path in declared:
-            if path == "materialization.json":
-                raise RuntimeContractError("Adapter declares a reserved path")
-        return normalized
+
+
+def _normalized_specialists_manifest(value: dict[str, Any], capabilities: list[str]) -> dict[str, Any]:
+    """A specialists manifest (schema 2) with its paths normalized, once its kind, capabilities, uncovered policy,
+    specialists, and declared files are valid."""
+    if value["kind"] != "specialists":
+        raise RuntimeContractError("Adapter manifest kind is unsupported")
+    if "agent-delegation" not in capabilities:
+        raise RuntimeContractError("Specialist reviewers must require agent-delegation")
+    if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
+        raise RuntimeContractError("Adapter uncovered must be review or ignore")
+    normalized = dict(value)
+    normalized["resources"] = _path_list(value["resources"], "resources")
+    normalized.update(_validate_specialists(value))
+    declared = [*normalized["resources"]]
+    for specialist in normalized["specialists"]:
+        declared.extend([specialist["profile"], *specialist["resources"]])
+    declared.extend(condition["script"] for condition in normalized["conditions"].values())
+    if len(set(normalized["resources"])) != len(normalized["resources"]):
+        raise RuntimeContractError("Adapter declares a file more than once")
+    for path in declared:
+        if path == "materialization.json":
+            raise RuntimeContractError("Adapter declares a reserved path")
+    return normalized
+
+
+def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
+    """An entrypoint manifest (schema 1) with its paths normalized, once each is safe and none is declared twice."""
     entrypoint = _safe_relative_path(value["entrypoint"], "entrypoint")
     resources = value["resources"]
     agents = value["agent_profiles"]
@@ -578,6 +602,18 @@ def verify_source_snapshot(
     """
     if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
         raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
+    metadata = _read_snapshot_metadata(root)
+    _require_snapshot_source(metadata, expected_repository, expected_commit)
+    hashes, excluded = _snapshot_maps(metadata)
+    expected_files = _verify_snapshot_files(root, hashes, contents=contents)
+    for relative, reason in excluded.items():
+        _validate_snapshot_exclusion(relative, reason, hashes)
+    _require_snapshot_file_set(root, expected_files)
+    return metadata
+
+
+def _read_snapshot_metadata(root: Path) -> Any:
+    """The snapshot's manifest, once it holds exactly the contract's fields at a supported schema version."""
     metadata_path = root / SOURCE_SNAPSHOT_MANIFEST
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
@@ -593,63 +629,94 @@ def verify_source_snapshot(
         raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
     if metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
+    return metadata
+
+
+def _require_snapshot_source(metadata: dict[str, Any], expected_repository: str, expected_commit: str) -> None:
+    """The snapshot is of the requested repository at the requested head."""
     repository = validate_repository_identity(metadata["repository"])
     if repository != validate_repository_identity(expected_repository):
         raise RuntimeContractError("Source snapshot repository does not match the request")
     commit = metadata["source_commit"]
     if commit != expected_commit or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
         raise RuntimeContractError("Source snapshot commit does not match the request head")
+
+
+def _snapshot_maps(metadata: dict[str, Any]) -> tuple[Any, Any]:
+    """The source hashes and the exclusions, once both are objects and the hashes are within the file-count limit."""
     hashes = metadata["source_hashes"]
     excluded = metadata["excluded_paths"]
     if not isinstance(hashes, dict) or not isinstance(excluded, dict):
         raise RuntimeContractError("Source snapshot hashes and exclusions must be objects")
     if len(hashes) > MAX_SOURCE_SNAPSHOT_FILES:
         raise RuntimeContractError("Source snapshot exceeds the file-count limit")
+    return hashes, excluded
+
+
+def _verify_snapshot_files(root: Path, hashes: dict[str, Any], *, contents: bool) -> set[str]:
+    """The paths the snapshot holds, its manifest included, once every listed file checks out and their total size
+    is within the limit. `contents` also compares each file's hash."""
     expected_files = {SOURCE_SNAPSHOT_MANIFEST}
     total_bytes = 0
     for relative, expected_hash in hashes.items():
-        normalized = _safe_relative_path(relative, "source_hashes path")
-        if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
-            raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
-        if _is_agent_instruction_path(relative):
-            raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
-        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-            raise RuntimeContractError(f"Source snapshot hash is invalid: {relative}")
-        target = root.joinpath(*PurePosixPath(relative).parts)
-        try:
-            _require_safe_snapshot_path(root, target)
-            size = target.stat().st_size
-        except FileNotFoundError as exc:
-            raise RuntimeContractError(f"Source snapshot file is missing: {relative}") from exc
-        if size > MAX_CHANGED_FILE_BYTES:
-            raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
+        target, size = _snapshot_file(root, relative, expected_hash)
         total_bytes += size
         if total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
             raise RuntimeContractError("Source snapshot exceeds the size limit")
         if contents and hashlib.sha256(target.read_bytes()).hexdigest() != expected_hash:
             raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
         expected_files.add(relative)
-    for relative, reason in excluded.items():
-        if reason == "unsafe-path":
-            # Recorded, never written: the name itself is what could not be represented safely.
-            if not isinstance(relative, str) or not relative or relative in hashes:
-                raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
-            continue
-        normalized = _safe_relative_path(relative, "excluded_paths path")
-        if (
-            normalized != relative
-            or relative in hashes
-            or relative == SOURCE_SNAPSHOT_MANIFEST
-            or not isinstance(reason, str)
-            or reason not in SNAPSHOT_EXCLUSION_REASONS
-        ):
+    return expected_files
+
+
+def _snapshot_file(root: Path, relative: str, expected_hash: Any) -> tuple[Path, int]:
+    """A listed file's path and size, once its name, its hash's format, its place under the root, and its size check
+    out."""
+    normalized = _safe_relative_path(relative, "source_hashes path")
+    if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
+        raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
+    if _is_agent_instruction_path(relative):
+        raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
+    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        raise RuntimeContractError(f"Source snapshot hash is invalid: {relative}")
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    try:
+        _require_safe_snapshot_path(root, target)
+        size = target.stat().st_size
+    except FileNotFoundError as exc:
+        raise RuntimeContractError(f"Source snapshot file is missing: {relative}") from exc
+    if size > MAX_CHANGED_FILE_BYTES:
+        raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
+    return target, size
+
+
+def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, Any]) -> None:
+    """One exclusion: an unsafe name the snapshot does not also hold, or a safe path it does not hold, excluded for a
+    known reason."""
+    if reason == "unsafe-path":
+        # Recorded, never written: the name itself is what could not be represented safely.
+        if not isinstance(relative, str) or not relative or relative in hashes:
             raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
+        return
+    normalized = _safe_relative_path(relative, "excluded_paths path")
+    if (
+        normalized != relative
+        or relative in hashes
+        or relative == SOURCE_SNAPSHOT_MANIFEST
+        or not isinstance(reason, str)
+        or reason not in SNAPSHOT_EXCLUSION_REASONS
+    ):
+        raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
+
+
+def _require_snapshot_file_set(root: Path, expected_files: set[str]) -> None:
+    """The snapshot holds exactly the files its manifest lists, none of them a reparse point or other non-regular
+    file."""
     actual_files = _snapshot_files(root)
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
         raise RuntimeContractError(f"Source snapshot file set mismatch; missing={missing}, extra={extra}")
-    return metadata
 
 
 def _snapshot_members(

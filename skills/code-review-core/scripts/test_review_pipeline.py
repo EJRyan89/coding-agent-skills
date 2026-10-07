@@ -2626,6 +2626,198 @@ class ReviewerSourceTests(PipelineFixture):
             self.prepare()
 
 
+class ValidateReviewerSequenceTests(PipelineFixture):
+    """validate_reviewer, pinned: every line it prints, and the order in which it reads each pull request, makes sure
+    its commits are local, and resolves the commit the reviewer comes from, all before it materializes anything."""
+
+    BASE_SNAPSHOT = "files=9 bytes=1218 limit=268435456 excluded=agent-instruction:3"
+    HEAD_SNAPSHOT = "files=9 bytes=1255 limit=268435456 excluded=agent-instruction:3"
+    GENERIC = "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.manifest = self.local_manifest()
+
+    def use(self, trusted_ref: str | None = None) -> None:
+        reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.manifest))
+        reviewer["trusted_ref"] = trusted_ref
+        self.configure(reviewer)
+
+    def validate(self, **options: Any) -> tuple[list[str], list[tuple[Any, ...]], list[str]]:
+        """The lines, the target calls in order, and the GitHub endpoints read in order."""
+        events: list[tuple[Any, ...]] = []
+        ensure, resolve, default = rp.ensure_local_commit, rp.resolve_reviewer_commit, rp._reviewer_commit
+
+        def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Any) -> None:
+            events.append(("ensure", commit, refspec))
+            ensure(checkout, commit, refspec, git)
+
+        def resolve_reviewer_commit(checkout: Path, trusted_ref: str, *, head_sha: str, runner: Any) -> str:
+            events.append(("resolve", trusted_ref, head_sha))
+            return resolve(checkout, trusted_ref, head_sha=head_sha, runner=runner)
+
+        def reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: rp.Services) -> str:
+            events.append(("default", ref))
+            return default(checkout, reviewer, ref, services)
+
+        with (
+            mock.patch.object(rp, "ensure_local_commit", ensure_local_commit),
+            mock.patch.object(rp, "resolve_reviewer_commit", resolve_reviewer_commit),
+            mock.patch.object(rp, "_reviewer_commit", reviewer_commit),
+        ):
+            lines = rp.validate_reviewer(REPOSITORY, config_path=self.config_path, services=self.services, **options)
+        return lines, events, [call[-1] for call in self.github.calls]
+
+    def reviewer_line(self) -> str:
+        return f"REVIEWER team-specialists specialists source=local-manifest {self.manifest} commit={self.base}"
+
+    def pull_lines(self, number: int, head: str, files: int, snapshot: str, routed: int) -> list[str]:
+        return [
+            f"PULL {REPOSITORY}#{number} base={self.base[:12]} head={head[:12]} files={files}",
+            f"SNAPSHOT {head[:12]} {snapshot}",
+            "CONDITION window open",
+            f"ROUTE python-reviewer files={routed}",
+            "UNCOVERED CLAUDE.md",
+            self.GENERIC,
+        ]
+
+    def test_a_ref_is_resolved_with_no_head(self) -> None:
+        self.use()
+        self.assertEqual(
+            (
+                [self.reviewer_line(), "FILES 3 found", f"SNAPSHOT {self.base[:12]} {self.BASE_SNAPSHOT}", "VALID"],
+                [("default", "main"), ("resolve", "main", "")],
+                [],
+            ),
+            self.validate(ref="main"),
+        )
+
+    def test_without_a_ref_the_trusted_ref_is_resolved(self) -> None:
+        self.use("refs/heads/main")
+        self.assertEqual(
+            (
+                [self.reviewer_line(), "FILES 3 found", f"SNAPSHOT {self.base[:12]} {self.BASE_SNAPSHOT}", "VALID"],
+                [("default", None), ("resolve", "refs/heads/main", "")],
+                [],
+            ),
+            self.validate(),
+        )
+
+    def test_without_a_ref_or_a_trusted_ref_origin_s_default_branch_must_resolve(self) -> None:
+        self.use()
+        with self.assertRaises(rp.PipelineError) as caught:
+            self.validate()
+        self.assertEqual(
+            f"Cannot resolve refs/remotes/origin/HEAD in {self.checkout}; pass --ref: fatal: Needed a single revision",
+            str(caught.exception),
+        )
+
+    def test_a_pull_request_reviewer_comes_from_its_base(self) -> None:
+        self.use()
+        self.assertEqual(
+            (
+                [
+                    self.reviewer_line(),
+                    "FILES 3 found",
+                    *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1),
+                    "VALID",
+                ],
+                [
+                    ("ensure", self.head, "refs/pull/12/head"),
+                    ("ensure", self.base, "refs/heads/main"),
+                    ("resolve", self.base, self.head),
+                ],
+                [f"repos/{REPOSITORY}/pulls/12", f"repos/{REPOSITORY}/pulls/12"],
+            ),
+            self.validate(pulls=[12]),
+        )
+
+    def test_a_ref_is_ignored_when_pull_requests_are_named(self) -> None:
+        self.use()
+        lines, events, _reads = self.validate(pulls=[12], ref="feature")
+        self.assertEqual(
+            [self.reviewer_line(), "FILES 3 found", *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1), "VALID"],
+            lines,
+        )
+        self.assertEqual(
+            [
+                ("ensure", self.head, "refs/pull/12/head"),
+                ("ensure", self.base, "refs/heads/main"),
+                ("resolve", self.base, self.head),
+            ],
+            events,
+        )
+
+    def test_a_trusted_ref_supplies_the_reviewer_of_a_pull_request(self) -> None:
+        self.use("refs/heads/main")
+        lines, events, reads = self.validate(pulls=[12])
+        self.assertEqual(
+            [self.reviewer_line(), "FILES 3 found", *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1), "VALID"],
+            lines,
+        )
+        self.assertEqual(
+            [
+                ("ensure", self.head, "refs/pull/12/head"),
+                ("ensure", self.base, "refs/heads/main"),
+                ("resolve", "refs/heads/main", self.head),
+            ],
+            events,
+        )
+        self.assertEqual([f"repos/{REPOSITORY}/pulls/12", f"repos/{REPOSITORY}/pulls/12"], reads)
+
+    def test_every_pull_request_is_resolved_before_any_is_validated(self) -> None:
+        later = self.commit({"app/other.py": "x = 1\n"})
+        self.github.pulls[13] = rest_pull(13, later, self.base)
+        self.use()
+        lines, events, reads = self.validate(pulls=[12, 13])
+        self.assertEqual(
+            [
+                self.reviewer_line(),
+                "FILES 3 found",
+                *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1),
+                *self.pull_lines(13, later, 3, "files=10 bytes=1262 limit=268435456 excluded=agent-instruction:3", 2),
+                "VALID",
+            ],
+            lines,
+            "one reviewer commit is reported once",
+        )
+        self.assertEqual(
+            [
+                ("ensure", self.head, "refs/pull/12/head"),
+                ("ensure", self.base, "refs/heads/main"),
+                ("resolve", self.base, self.head),
+                ("ensure", later, "refs/pull/13/head"),
+                ("ensure", self.base, "refs/heads/main"),
+                ("resolve", self.base, later),
+            ],
+            events,
+        )
+        self.assertEqual([f"repos/{REPOSITORY}/pulls/{number}" for number in (12, 13, 12, 13)], reads)
+
+    def test_an_entrypoint_reviewer_reports_its_files(self) -> None:
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        self.assertEqual(
+            (
+                [
+                    f"REVIEWER fixture-review entrypoint source=repository-manifest review/entrypoint.json "
+                    f"commit={self.base}",
+                    "FILES 2 found",
+                    f"PULL {REPOSITORY}#12 base={self.base[:12]} head={self.head[:12]} files=2",
+                    f"SNAPSHOT {self.head[:12]} {self.HEAD_SNAPSHOT}",
+                    "ENTRYPOINT fixture-review files=2",
+                    "VALID",
+                ],
+                [
+                    ("ensure", self.head, "refs/pull/12/head"),
+                    ("ensure", self.base, "refs/heads/main"),
+                    ("resolve", self.base, self.head),
+                ],
+                [f"repos/{REPOSITORY}/pulls/12", f"repos/{REPOSITORY}/pulls/12"],
+            ),
+            self.validate(pulls=[12]),
+        )
+
+
 class CanaryTests(PipelineFixture):
     def test_canary_never_touches_the_archive(self) -> None:
         ready = self.prepare(canary=True)
