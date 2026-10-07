@@ -6,6 +6,7 @@ per-item plan and its execution in plan.py, the reports in report.py, and --migr
 
 from __future__ import annotations
 
+import argparse
 import os
 import secrets
 import sys
@@ -15,7 +16,7 @@ from typing import TextIO
 
 from . import config, fsops, journal, lock, manifest, migrate, plan, platform_support, render, report, source
 from . import selection as selection_module
-from .arguments import ParserExit, deploy_parser
+from .arguments import USAGE_ERROR, parse_command
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import BY_LABEL, KINDS, SHARED, SKILL
@@ -26,8 +27,9 @@ from .report import DEPLOY_ACTIONS, DEPLOYED
 TAKE_OVER_SOURCE = "--take-over-source"
 
 
-def parse_arguments(arguments: list[str], source_id: str) -> Options:
-    options = Options(**vars(deploy_parser().parse_args(arguments)))
+def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
+    """The deployment's options, refused when they combine in a way only the source can rule out or that cannot run."""
+    options = Options(**{key: value for key, value in vars(namespace).items() if key != "command"})
     if options.include and not options.select_all:
         raise DeployError("ERROR: --include can only be used with --all")
     if options.migrate_from:
@@ -279,13 +281,29 @@ def run(
     probe: lock.ProcessProbe = platform_support.process_status,
     stdin: TextIO | None = None,
 ) -> int:
+    """Deploy with deploy.py's options, as `python deploy.py` with no subcommand does."""
+    namespace = parse_command(arguments)
+    if isinstance(namespace, int):
+        return namespace
+    if namespace.command is not None:
+        print_error(DeployError(f"ERROR: '{namespace.command}' is a command; run it with deploy.py itself."))
+        return USAGE_ERROR
+    return execute(namespace, paths, probe=probe, stdin=stdin)
+
+
+def execute(
+    namespace: argparse.Namespace,
+    paths: Paths,
+    *,
+    probe: lock.ProcessProbe = platform_support.process_status,
+    stdin: TextIO | None = None,
+) -> int:
     stdin = stdin if stdin is not None else sys.stdin
-    debug = debug_requested()
+    debug = debug_requested(namespace.debug)
     try:
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
-        options = parse_arguments(arguments, source_id)
-        debug = debug_requested(options.debug)
+        options = parse_arguments(namespace, source_id)
         if options.canary_home:
             paths = Paths(paths.source_dir, canary_home(options.canary_home))
         validate_managed_roots(paths)
@@ -296,8 +314,6 @@ def run(
             else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
         )
         src = source.discover(paths, source_id)
-    except ParserExit as exc:
-        return exc.code
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)

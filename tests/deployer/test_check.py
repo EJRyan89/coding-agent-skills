@@ -236,7 +236,7 @@ class CheckCommandTests(DeployerTestCase):
 
     def test_check_takes_no_arguments_besides_help(self) -> None:
         result = self.check(Machine(), "--all")
-        self.assertEqual(1, result.code)
+        self.assertEqual(2, result.code)
         self.assertIn(
             "ERROR: unrecognized arguments: --all\nRun 'python deploy.py check --help' for usage.", result.output
         )

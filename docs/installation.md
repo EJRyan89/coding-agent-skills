@@ -96,7 +96,7 @@ Forced replacements are retained under `~/.claude/skills/.backups/<run-id>/`.
 
 ### When a command fails
 
-Every `deploy.py` command exits 0 when it succeeds, 1 when it fails, and 130 when it is cancelled, by Ctrl+C or by the end of input at a prompt. It ends a failure with lines that say what failed, on which path, and what to do next, and prints no traceback. To see the traceback behind the message, add `--debug` to the command, or set the `DEPLOYER_DEBUG` environment variable to `1` for a run whose command line you do not control, such as the one `update-coding-agent-skills` starts. The traceback follows the message.
+Every `deploy.py` command exits 0 when it succeeds, 1 when it fails, 2 when its command line is wrong (it names the `--help` to read), and 130 when it is cancelled, by Ctrl+C or by the end of input at a prompt. `python deploy.py --help` lists the deployment options and the `configure`, `check`, and `verify` commands, and each command takes `--help` too. It ends a failure with lines that say what failed, on which path, and what to do next, and prints no traceback. To see the traceback behind the message, add `--debug` to the command, or set the `DEPLOYER_DEBUG` environment variable to `1` for a run whose command line you do not control, such as the one `update-coding-agent-skills` starts. The traceback follows the message.
 
 ## Updating
 

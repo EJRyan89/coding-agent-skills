@@ -56,19 +56,14 @@ class SingleEntryPointTests(DeployerTestCase):
 
     def test_help_describes_both_commands_and_exits_successfully(self) -> None:
         self.make_source_json()
-        usage = (
-            "usage: python deploy.py [--all [--include NAME]] [--dry-run]\n"
-            "                        [--force] [--force-item NAME] [--take-over-source]\n"
-            "       python deploy.py --migrate-from ID [--take-over-source]\n"
-            "       python deploy.py --canary-home DIR [--all [--include NAME]]\n"
-            "                        [--force] [--force-item NAME]\n"
-            "       python deploy.py configure [--reset]\n"
-            "       python deploy.py check\n"
-            "       python deploy.py verify\n"
-        )
         expected = {
             ("--help",): (
-                f"\n{usage}\n"  # noqa: S608 - argparse help text, not a query
+                "\n"
+                "usage: python deploy.py [-h] [--all] [--include NAME] [--dry-run] [--force]\n"
+                "                        [--force-item NAME] [--migrate-from ID]\n"
+                "                        [--take-over-source] [--canary-home DIR] [--debug]\n"
+                "                        COMMAND ...\n"
+                "\n"
                 "Render, validate, and deploy this repository's skills.\n"
                 "\n"
                 "options:\n"
@@ -84,13 +79,16 @@ class SingleEntryPointTests(DeployerTestCase):
                 "  --debug             print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
                 "\n"
                 "commands:\n"
-                "  configure           set the values skills need; see its --help\n"
-                "  check               list the tools needed and which are missing\n"
-                "  verify              check that Codex and Copilot CLI find the adapters\n"
+                "  COMMAND             run one of these instead of deploying\n"
+                "    configure         set the values skills need; see its --help\n"
+                "    check             list the tools needed and which are missing\n"
+                "    verify            check that Codex and Copilot CLI find the adapters\n"
                 "\n"
             ),
             ("configure", "--help"): (
-                f"\n{usage}\n"
+                "\n"
+                "usage: python deploy.py configure [-h] [--reset] [--debug]\n"
+                "\n"
                 "Set or change the configuration values skills need.\n"
                 "At each prompt, Enter keeps the current value and Ctrl+C cancels.\n"
                 "\n"
@@ -101,7 +99,9 @@ class SingleEntryPointTests(DeployerTestCase):
                 "\n"
             ),
             ("verify", "--help"): (
-                f"\n{usage}\n"
+                "\n"
+                "usage: python deploy.py verify [-h] [--debug]\n"
+                "\n"
                 "Check that Codex CLI and Copilot CLI, whichever are installed, find every\n"
                 "deployed runtime adapter under ~/.agents/skills, enabled and not shadowed\n"
                 "by another skill of the same name. No model is started; nothing is changed.\n"
@@ -132,7 +132,7 @@ class SingleEntryPointTests(DeployerTestCase):
         ):
             with self.subTest(arguments=arguments):
                 result = self.run_cli(*arguments)
-                self.assertEqual(1, result.code)
+                self.assertEqual(2, result.code)
                 self.assertIn(f"ERROR: unrecognized arguments: {arguments[-1]}\n{hint}", result.output)
 
     def test_missing_configuration_points_to_the_configure_command(self) -> None:

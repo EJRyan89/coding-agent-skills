@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 from typing import TextIO
 
 from . import config, fsops, platform_support, source
-from .arguments import ParserExit, configure_parser
+from .arguments import CONFIGURE_COMMAND, parse_command
 from .errors import Cancelled, DeployError, debug_requested, print_error, print_traceback
 from .paths import Paths, validate_managed_roots
 
@@ -34,11 +35,15 @@ def _prompt(key: str, description: str, current: str, stdin: TextIO) -> str | No
 
 
 def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
+    """`python deploy.py configure` with these arguments."""
+    namespace = parse_command([CONFIGURE_COMMAND, *arguments])
+    return namespace if isinstance(namespace, int) else execute(namespace, paths, stdin)
+
+
+def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = None) -> int:
     stdin = stdin if stdin is not None else sys.stdin
-    debug = debug_requested()
+    reset, debug = namespace.reset, debug_requested(namespace.debug)
     try:
-        options = configure_parser().parse_args(arguments)
-        reset, debug = options.reset, debug_requested(options.debug)
         platform_support.ensure_supported()
         validate_managed_roots(paths)
         source_id = source.load_source_id(paths)
@@ -63,8 +68,6 @@ def run(arguments: list[str], paths: Paths, stdin: TextIO | None = None) -> int:
         content = "\n".join(lines) + "\n"
         config.validate_directories(config.parse(content, source_id))
         fsops.write_private(config_file, content.encode("utf-8"))
-    except ParserExit as exc:
-        return exc.code
     except KeyboardInterrupt:
         print_error(Cancelled(CANCELLED), debug)
         return 130

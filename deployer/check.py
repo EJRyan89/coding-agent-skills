@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+
 from . import manifest, platform_support, source, tools
-from .arguments import ParserExit, check_parser
+from .arguments import CHECK_COMMAND, parse_command
 from .errors import DeployError, debug_requested, fail
 from .paths import Paths
 from .report import ReportLine, currently_chosen, print_report, warn_ignored_home
@@ -71,17 +73,20 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
 
 
 def run(arguments: list[str], paths: Paths) -> int:
-    debug = debug_requested()
+    """`python deploy.py check` with these arguments."""
+    namespace = parse_command([CHECK_COMMAND, *arguments])
+    return namespace if isinstance(namespace, int) else execute(namespace, paths)
+
+
+def execute(namespace: argparse.Namespace, paths: Paths) -> int:
+    debug = debug_requested(namespace.debug)
     try:
-        debug = debug_requested(check_parser().parse_args(arguments).debug)
         platform_support.ensure_supported()
         source_id = source.load_source_id(paths)
         src = source.discover(paths, source_id)
         owned = manifest.load(paths.manifest_file).ownership(source_id)
         deploy_lines = _deploy_lines()
         skill_lines = _skill_lines(src, owned)
-    except ParserExit as exc:
-        return exc.code
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the check")
     print("")

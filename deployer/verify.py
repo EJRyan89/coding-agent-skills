@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import tempfile
@@ -9,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import discovery, manifest, platform_support, tools
-from .arguments import ParserExit, verify_parser
+from .arguments import VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError
 from .errors import DeployError, debug_requested, fail
 from .paths import Paths
@@ -70,9 +71,14 @@ def runtime_lines(names: list[str], listing: Listing, adapters: Path) -> list[Re
 
 
 def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | None = None) -> int:
-    debug = debug_requested()
+    """`python deploy.py verify` with these arguments."""
+    namespace = parse_command([VERIFY_COMMAND, *arguments])
+    return namespace if isinstance(namespace, int) else execute(namespace, paths, environment)
+
+
+def execute(namespace: argparse.Namespace, paths: Paths, environment: Mapping[str, str] | None = None) -> int:
+    debug = debug_requested(namespace.debug)
     try:
-        debug = debug_requested(verify_parser().parse_args(arguments).debug)
         platform_support.ensure_supported()
         names = adapter_names(manifest.load(paths.manifest_file))
         if not names:
@@ -81,8 +87,6 @@ def run(arguments: list[str], paths: Paths, environment: Mapping[str, str] | Non
                 f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
             )
         return _verify(names, paths, dict(os.environ if environment is None else environment))
-    except ParserExit as exc:
-        return exc.code
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish verifying the adapters")
 
