@@ -43,21 +43,32 @@ WRITING_SUBCOMMANDS = {
     "add",
     "am",
     "apply",
+    "bisect",
     "checkout",
+    "checkout-index",
     "cherry-pick",
     "clean",
     "commit",
     "merge",
     "mv",
     "pull",
+    "read-tree",
     "rebase",
     "reset",
     "restore",
     "revert",
     "rm",
+    "sparse-checkout",
     "stash",
+    "submodule",
     "switch",
+    "symbolic-ref",
+    "update-index",
+    "update-ref",
 }
+# The only fast-forwards the hub takes: a subcommand's words besides FAST_FORWARD_OPTIONS must be one of these.
+FAST_FORWARD_TARGETS = {"merge": [["origin/main"]], "pull": [[], ["origin", "main"]]}
+FAST_FORWARD_OPTIONS = {"--ff-only", "-q", "--quiet", "-v", "--verbose", "--no-rebase"}
 # git's own options that take the next word as their value.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -89,13 +100,14 @@ class UsageError(Exception):
     pass
 
 
-def git(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+def git(cwd: Path, *arguments: str, environment: Mapping[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(cwd), *arguments],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=None if environment is None else dict(environment),
         check=False,
     )
 
@@ -373,6 +385,26 @@ def location_after(cwd: Path | None, named: bool, target: Word) -> Path | None:
     return moved(cwd, target)
 
 
+def mentions_alias(command: str, cwd: Path | None, environment: Mapping[str, str]) -> bool:
+    """Whether the text names an alias git defines where the command starts; true when they cannot be listed."""
+    if cwd is None:
+        return True
+    result = git(cwd, "config", "--name-only", "--get-regexp", r"^alias\.", environment=environment)
+    if result.returncode == 1:
+        return False
+    if result.returncode != 0:
+        return True
+    names = (line.partition(".")[2] for line in result.stdout.splitlines())
+    return any(re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", command, re.IGNORECASE) for name in names if name)
+
+
+def may_refuse(command: str, cwd: Path | None, environment: Mapping[str, str]) -> bool:
+    """Whether the text names git and, as a word, a refused subcommand or an alias: what pwsh is started to read."""
+    if not MENTIONS_GIT.search(command):
+        return False
+    return bool(MENTIONS_WRITING_SUBCOMMAND.search(command)) or mentions_alias(command, cwd, environment)
+
+
 @dataclass
 class Session:
     """A PowerShell session's location, its Push-Location stack, and whether git's own variables were set."""
@@ -385,11 +417,11 @@ class Session:
 def read_powershell(command: str, cwd: Path | None, reading: Reading, depth: int = 0) -> None:
     """Reads a PowerShell command with PowerShell's own parser, started only for text it could refuse.
 
-    Starting pwsh costs far more than the guard's git calls, so text that does not name git and a refused
-    subcommand never pays for it. A location belongs to the session, not to a script block's scope, so only a
-    child pwsh, which the reader brackets with push and pop, restores one.
+    Starting pwsh costs far more than the guard's git calls, so text that does not name git and either a refused
+    subcommand or one of git's aliases never pays for it. A location belongs to the session, not to a script
+    block's scope, so only a child pwsh, which the reader brackets with push and pop, restores one.
     """
-    if not (MENTIONS_GIT.search(command) and MENTIONS_WRITING_SUBCOMMAND.search(command)):
+    if not may_refuse(command, cwd, reading.environment):
         return
     events = powershell_events(command, reading)
     if events is None:
@@ -436,33 +468,91 @@ def read_command(tool: str, command: str, cwd: Path, environment: Mapping[str, s
     return reading
 
 
-def writes_checkout(call: GitCall) -> bool:
-    """Whether this git call would move HEAD or write the index or tree of the checkout it runs in."""
-    if call.subcommand not in WRITING_SUBCOMMANDS:
-        return False
-    if call.subcommand in {"checkout", "switch"}:
-        return [argument for argument in call.arguments if argument not in {"-q", "--quiet"}] != [MAIN]
-    if call.subcommand in {"merge", "pull"}:
-        return "--ff-only" not in call.arguments
-    if call.subcommand == "stash":
-        return not call.arguments or call.arguments[0] not in {"list", "show"}
-    if call.subcommand == "apply":
-        return "--check" not in call.arguments
-    return True
+def allowed_form(subcommand: str, arguments: list[str]) -> bool:
+    """Whether a refused subcommand is called in one of the forms that leave the hub on main and its tree alone."""
+    if subcommand in {"checkout", "switch"}:
+        return [argument for argument in arguments if argument not in {"-q", "--quiet"}] == [MAIN]
+    if subcommand == "stash":
+        return bool(arguments) and arguments[0] in {"list", "show"}
+    if subcommand == "apply":
+        return "--check" in arguments
+    if subcommand == "submodule":
+        return next((argument for argument in arguments if not argument.startswith("-")), None) != "update"
+    return False
 
 
-def denied(reading: Reading) -> bool:
-    """Whether any call would write a guarded hub; a writing call whose directory is unknown becomes a note."""
+def refusal(call: GitCall) -> str | None:
+    """Why this git call would move HEAD or write the index or tree of the checkout it runs in; None if it would not."""
+    subcommand, arguments = call.subcommand, call.arguments
+    if subcommand not in WRITING_SUBCOMMANDS or allowed_form(subcommand, arguments):
+        return None
+    if subcommand in {"merge", "pull"} and "--ff-only" in arguments:
+        target = [argument for argument in arguments if argument not in FAST_FORWARD_OPTIONS]
+        if target in FAST_FORWARD_TARGETS[subcommand]:
+            return None
+        shown = " ".join(target) or "its upstream"
+        return f"`git {subcommand} --ff-only` moves the hub only to origin/main, not to {shown}."
+    return f"`git {subcommand}` would move the hub's HEAD or write its index or tree."
+
+
+def alias_refusal(call: GitCall, hub: Path, environment: Mapping[str, str], depth: int) -> str | None:
+    """Why the alias a call names would write the hub; None when it is no alias, or one that would not.
+
+    git runs a builtin before an alias, so only a subcommand the guard does not judge itself is looked up. An
+    alias that cannot be read is refused, unlike a command whose text cannot be: it hides its subcommand.
+    """
+    result = git(hub, "config", "--get", f"alias.{call.subcommand}")
+    if result.returncode == 1:
+        return None
+    expansion = result.stdout.removesuffix("\n")
+    unreadable = f"The alias `git {call.subcommand}` could not be read"
+    if result.returncode != 0:
+        return f"{unreadable} ({result.stderr.strip()}), so it is refused."
+    if depth >= NESTING_LIMIT:
+        return f"{unreadable} (it nests more than {NESTING_LIMIT} deep), so it is refused."
+    reading = Reading(environment)
+    if expansion.startswith("!"):
+        # git runs a shell alias at the top of the checkout, with the call's arguments after it.
+        read_bash(" ".join([expansion[1:], *map(shlex.quote, call.arguments)]), hub, reading, depth + 1)
+    else:
+        try:
+            words = shlex.split(expansion)
+        except ValueError as exc:
+            return f"{unreadable} ({exc}), so it is refused."
+        record_git_call([*words, *call.arguments], call.directory, reading)
+    reason = denied(reading, depth + 1)
+    if reason is not None:
+        return f"`git {call.subcommand}` is an alias for `{expansion}`: {reason}"
+    if reading.notes:
+        return f"{unreadable} ({reading.notes[0]}), so it is refused."
+    return None
+
+
+def denied(reading: Reading, depth: int = 0) -> str | None:
+    """Why a call would write a guarded hub, or None; a refused call whose directory is unknown becomes a note.
+
+    A call that is not a refused subcommand may be an alias, which is looked up in the hub it runs in.
+    """
+    hubs: dict[Path, Path | None] = {}
     for call in reading.calls:
-        if not writes_checkout(call):
+        writing = call.subcommand in WRITING_SUBCOMMANDS
+        if writing and refusal(call) is None:
             continue
         if call.directory is None:
-            reading.notes.append(f"could not tell where `git {call.subcommand}` runs")
+            if writing:
+                reading.notes.append(f"could not tell where `git {call.subcommand}` runs")
             continue
-        checkout = checkout_of(call.directory)
-        if checkout is not None and checkout.is_hub and guard_enabled(checkout.hub):
-            return True
-    return False
+        if call.directory not in hubs:
+            checkout = checkout_of(call.directory)
+            guarded = checkout is not None and checkout.is_hub and guard_enabled(checkout.hub)
+            hubs[call.directory] = checkout.hub if checkout is not None and guarded else None
+        hub = hubs[call.directory]
+        if hub is None:
+            continue
+        reason = refusal(call) if writing else alias_refusal(call, hub, reading.environment, depth)
+        if reason is not None:
+            return reason
+    return None
 
 
 # ---------------------------------------------------------------------------------------------------------------
@@ -475,26 +565,28 @@ def guard(stream: str) -> int:
         tool = event.get("tool_name", "")
         tool_input = event.get("tool_input") or {}
         cwd = Path(platform_support.from_shell_path(event.get("cwd") or str(Path.cwd())))
-        refused = False
+        refused: str | None = None
         if tool in FILE_TOOLS:
             target = tool_input.get("file_path") or tool_input.get("notebook_path")
-            refused = isinstance(target, str) and hub_protected(resolve(target, cwd))
+            if isinstance(target, str) and hub_protected(resolve(target, cwd)):
+                refused = DENY_REASON
         elif tool in SHELL_READERS and isinstance(tool_input.get("command"), str):
             reading = read_command(tool, tool_input["command"], cwd, os.environ)
-            refused = denied(reading)
+            reason = denied(reading)
+            refused = None if reason is None else f"{reason} {DENY_REASON}"
             for note in reading.notes:
                 print(f"worktrees guard could not judge part of the command: {note}", file=sys.stderr)
     except Exception as exc:  # A broken guard must not block every tool; the regression suite pins its behavior.
         print(f"worktrees guard skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 0
-    if refused:
+    if refused is not None:
         print(
             json.dumps(
                 {
                     "hookSpecificOutput": {
                         "hookEventName": "PreToolUse",
                         "permissionDecision": "deny",
-                        "permissionDecisionReason": DENY_REASON,
+                        "permissionDecisionReason": refused,
                     }
                 }
             )

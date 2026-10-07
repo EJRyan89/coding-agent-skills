@@ -133,11 +133,13 @@ class WorktreesTestCase(unittest.TestCase):
         result = self.run_script(["guard"], cwd=self.root, stdin=stdin, environment=environment)
         self.assertEqual(0, result.returncode, result.stderr)
         self.stderr = result.stderr
+        self.reason = ""
         if not result.stdout.strip():
             return None
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual("PreToolUse", output["hookEventName"])
-        self.assertIn("tools/worktrees.py new", output["permissionDecisionReason"])
+        self.reason = output["permissionDecisionReason"]
+        self.assertIn("tools/worktrees.py new", self.reason)
         return output["permissionDecision"]
 
     def edit(self, path: Path | str, cwd: Path | None = None, tool: str = "Edit") -> str | None:
@@ -296,6 +298,15 @@ class CommandGuardTests(WorktreesTestCase):
             "git rebase main",
             "git clean -fd",
             "git apply change.patch",
+            "git update-ref refs/heads/main HEAD~1",
+            "git symbolic-ref HEAD refs/heads/feat/demo",
+            "git read-tree -u -m HEAD",
+            "git update-index --add README.md",
+            "git checkout-index -a -f",
+            "git bisect start",
+            "git sparse-checkout set docs",
+            "git submodule update --init",
+            "git submodule --quiet update",
             "echo ok && git commit -am message",
             "git status; git switch feat/demo",
             "GIT_EDITOR=true git rebase --continue",
@@ -314,7 +325,11 @@ class CommandGuardTests(WorktreesTestCase):
             "git diff",
             "git fetch origin",
             "git pull --ff-only",
+            "git pull --ff-only origin main",
+            "git pull -q --ff-only --no-rebase origin main",
             "git merge --ff-only origin/main",
+            "git merge --quiet --ff-only origin/main",
+            "git submodule status",
             "git switch main",
             "git checkout -q main",
             "git stash list",
@@ -330,6 +345,73 @@ class CommandGuardTests(WorktreesTestCase):
         ):
             with self.subTest(command=command):
                 self.assertIsNone(self.bash(command, self.hub))
+
+    def test_the_hub_fast_forwards_only_to_origin_main(self) -> None:
+        for command, target in (
+            ("git merge --ff-only feat/demo", "feat/demo"),
+            ("git merge --ff-only main", "main"),
+            ("git merge --ff-only", "its upstream"),
+            ("git merge --ff-only origin/main feat/demo", "origin/main feat/demo"),
+            ("git merge --ff-only --autostash origin/main", "--autostash origin/main"),
+            ("git pull --ff-only origin feat/demo", "origin feat/demo"),
+            ("git pull --ff-only upstream main", "upstream main"),
+            ("git pull --ff-only origin", "origin"),
+            ("git pull --ff-only --rebase origin main", "--rebase origin main"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn(f"only to origin/main, not to {target}.", self.reason)
+        self.assertIsNone(self.bash("git merge --ff-only feat/demo", self.tree))
+
+    def test_aliases_are_judged_by_what_they_run(self) -> None:
+        for name, expansion in (
+            ("co", "checkout"),
+            ("ff", "merge --ff-only"),
+            ("up", "-c core.quotepath=false pull --ff-only"),
+            ("sw", "!git switch"),
+            ("chain", "co"),
+            ("st", "status --short"),
+            ("hop", f'!cd "{self.tree}" && git commit -m x'),
+        ):
+            self.git(self.hub, "config", f"alias.{name}", expansion)
+        for command in (
+            "git co feat/demo",
+            "git CO feat/demo",
+            "git ff feat/demo",
+            "git up origin feat/demo",
+            "git sw feat/demo",
+            "git chain feat/demo",
+            f'cd "{self.tree}" && git -C "{self.hub}" co feat/demo',
+        ):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("is an alias", self.reason)
+        for command in (
+            "git co main",
+            "git ff origin/main",
+            "git up origin main",
+            "git sw main",
+            "git chain -q main",
+            "git st",
+            "git hop",
+            "git co feat/demo && git status",
+        ):
+            with self.subTest(command=command):
+                self.assertIsNone(self.bash(command, self.tree if "&&" in command else self.hub))
+        self.assertEqual("deny", self.powershell("git co feat/demo", self.hub))
+
+    def test_an_alias_that_cannot_be_read_is_refused(self) -> None:
+        for name, expansion in (
+            ("unbalanced", "checkout 'feat/demo"),
+            ("unsettled", "!GIT_DIR=.git git commit -m x"),
+            ("loop", "loop"),
+        ):
+            self.git(self.hub, "config", f"alias.{name}", expansion)
+        for command in ("git unbalanced", "git unsettled", "git loop"):
+            with self.subTest(command=command):
+                self.assertEqual("deny", self.bash(command, self.hub))
+                self.assertIn("could not be read", self.reason)
+        self.assertIsNone(self.bash("git unbalanced", self.tree))
 
     def test_worktree_sessions_may_commit_but_not_reach_into_the_hub(self) -> None:
         self.assertIsNone(self.bash("git commit -m x && git rebase main", self.tree))
@@ -485,13 +567,18 @@ class CommandReadingTests(WorktreesTestCase):
         self.assertEqual(1, len(self.notes))
         self.assertIn("PowerShell would not parse the command, so none of it runs", self.notes[0])
 
-    def test_pwsh_starts_only_for_text_naming_git_and_a_refused_subcommand(self) -> None:
+    def test_pwsh_starts_only_for_text_naming_git_and_a_refused_subcommand_or_an_alias(self) -> None:
         # A PATH that names no existing directory: an empty or missing one would let Windows find pwsh anyway.
         unavailable = {**self.environment, "PATH": str(self.root / "no-such-directory")}
         self.assertEqual([], self.read("git status; git log --oneline; Get-ChildItem", environment=unavailable))
         self.assertEqual([], self.notes)
         self.assertEqual([], self.read("git commit -m x", environment=unavailable))
         self.assertEqual(["could not find pwsh to read a PowerShell command"], self.notes)
+        self.git(self.hub, "config", "alias.co", "checkout")
+        self.assertEqual([], self.read("git co feat/demo", environment=unavailable))
+        self.assertEqual(["could not find pwsh to read a PowerShell command"], self.notes)
+        self.assertEqual([], self.read("git cooperate; git log", environment=unavailable))
+        self.assertEqual([], self.notes)
 
 
 class PowerShellGuardTests(WorktreesTestCase):
