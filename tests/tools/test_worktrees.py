@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from deployer import platform_support
 from tools import worktrees
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -221,6 +222,61 @@ class FileGuardTests(WorktreesTestCase):
                 self.enable(value)
                 self.assertIsNone(self.edit(self.hub / "README.md"))
                 self.assertIsNone(self.bash("git switch feat/demo", self.hub))
+
+
+class HookCommandTests(WorktreesTestCase):
+    """The hook command in the tracked .claude/settings.json, run in Git Bash as Claude Code runs it.
+
+    A `python` shim first on PATH records its arguments, so a test sees whether the command would start Python at
+    all, and with what, without depending on which Python the machine has.
+    """
+
+    def run_hook(self) -> tuple[int, list[str] | None]:
+        bash = platform_support.find_bash()
+        if bash is None:
+            raise AssertionError("Git Bash was not found; it is required for repository validation.")
+        settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+        [group] = settings["hooks"]["PreToolUse"]
+        [hook] = group["hooks"]
+        shims = self.root / "shims"
+        shims.mkdir(exist_ok=True)
+        record = self.root / "python-arguments.txt"
+        record.unlink(missing_ok=True)
+        (shims / "python").write_text('#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SHIM_RECORD"\n', encoding="utf-8")
+        environment = {
+            **self.environment,
+            "CLAUDE_PROJECT_DIR": str(self.hub),
+            "SHIM_RECORD": str(record),
+            "PATH": str(shims) + os.pathsep + self.environment["PATH"],
+        }
+        event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.hub)})
+        completed = subprocess.run(
+            [bash, "-c", hook["command"]],
+            cwd=self.hub,
+            input=event,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=environment,
+            check=False,
+        )
+        self.assertEqual("", completed.stderr)
+        arguments = record.read_text(encoding="utf-8").splitlines() if record.exists() else None
+        return completed.returncode, arguments
+
+    def test_a_clone_that_has_not_opted_in_starts_no_python(self) -> None:
+        for value in (None, "false", "0"):
+            with self.subTest(value=value):
+                self.enable(value)
+                self.assertEqual((0, None), self.run_hook())
+
+    def test_an_opted_in_clone_runs_the_guard_under_the_project_directory(self) -> None:
+        for value in ("true", "yes", "1"):
+            with self.subTest(value=value):
+                self.enable(value)
+                code, arguments = self.run_hook()
+                self.assertEqual(0, code)
+                self.assertEqual(["-B", f"{self.hub}/tools/worktrees.py", "guard"], arguments)
 
 
 class CommandGuardTests(WorktreesTestCase):

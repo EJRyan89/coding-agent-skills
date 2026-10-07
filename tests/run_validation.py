@@ -2288,6 +2288,11 @@ class RepositoryValidation(unittest.TestCase):
 
         self.assertEqual([], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")))
         self.assertEqual([], hub_guard_matcher_problems(settings("*")))
+        # The tracked command checks the opt-in before starting Python; the guard it runs is still the one matched.
+        gated = '[ "$(git config --type=bool --get coding-agent-skills.hubGuard)" = true ] || exit 0; ' + command
+        self.assertEqual(
+            [], hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell", gated))
+        )
         self.assertEqual(
             ["the hub guard's hook does not match the PowerShell tool"],
             hub_guard_matcher_problems(settings("Edit|Write|MultiEdit|NotebookEdit|Bash")),
