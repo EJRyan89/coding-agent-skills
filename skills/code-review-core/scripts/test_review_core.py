@@ -1879,6 +1879,18 @@ class RuntimeContractTests(unittest.TestCase):
                 )
                 self.assertEqual(unavailable, review_runtime.unavailable_sources(diff, metadata), changed)
                 self.assertEqual(verdict, calculate_verdict([], {}, unavailable), changed)
+            # git quotes the name with octal escapes, which the diff parser decodes with one U+FFFD for the whole
+            # truncated sequence, not one per byte; the two forms still match.
+            octal = "".join(f"{chr(92)}{byte:o}" for byte in bytes([0xE2, 0x82]))
+            quoted = f"src/bad{octal}.py"
+            diff.write_text(
+                f'diff --git "a/{quoted}" "b/{quoted}"\nindex 1111111..2222222 100644\n'
+                f'--- "a/{quoted}"\n+++ "b/{quoted}"\n@@ -1 +1 @@\n-old\n+new\n',
+                encoding="utf-8",
+            )
+            unavailable = review_runtime.unavailable_sources(diff, metadata)
+            self.assertEqual([f"src/bad{chr(0xFFFD)}.py"], unavailable)
+            self.assertEqual("INCOMPLETE", calculate_verdict([], {}, unavailable))
 
     def test_source_snapshot_excludes_links_and_writes_nothing_for_a_submodule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

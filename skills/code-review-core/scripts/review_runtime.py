@@ -1240,8 +1240,20 @@ def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
         changed = parse_unified_diff(read_diff(diff_path))
     except SpecialistError as exc:
         raise RuntimeContractError(f"Cannot read changed paths from the diff: {exc}") from exc
-    excluded = snapshot["excluded_paths"]
-    return sorted(path for path in changed if excluded.get(path) in COVERAGE_GAP_REASONS)
+    gaps = {
+        _undecodable_form(path) for path, reason in snapshot["excluded_paths"].items() if reason in COVERAGE_GAP_REASONS
+    }
+    return sorted(path for path in changed if _undecodable_form(path) in gaps)
+
+
+REPLACEMENT_RUN = re.compile(f"{chr(0xFFFD)}+")
+
+
+def _undecodable_form(path: str) -> str:
+    """The path with each run of U+FFFD as one, so the forms of one undecodable name match: the snapshot and the
+    GitHub client replace each byte that is not UTF-8, and the diff parser an octal-quoted name's whole invalid
+    sequence. Two names this merges can only make a review INCOMPLETE that would not be, never hide a gap."""
+    return REPLACEMENT_RUN.sub(chr(0xFFFD), path)
 
 
 def write_adapter_request(path: Path, request: dict[str, Any]) -> None:
