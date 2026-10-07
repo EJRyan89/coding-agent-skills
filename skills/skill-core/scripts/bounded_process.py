@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO
 
 # Seconds to wait for a killed command to be reported gone.
@@ -34,12 +35,14 @@ def non_interactive_environment() -> dict[str, str]:
     return {**os.environ, **NON_INTERACTIVE}
 
 
-def run_bounded(command: Sequence[str], timeout: float, *, stdout: IO[bytes] | None = None) -> Finished:
+def run_bounded(
+    command: Sequence[str], timeout: float, *, stdout: IO[bytes] | None = None, cwd: Path | None = None
+) -> Finished:
     """Run `command` without a shell or stdin and return its exit status and output.
 
-    With `stdout`, the command writes there and the result's stdout is empty. Raises OSError when the command cannot
-    start (FileNotFoundError when it does not exist), and subprocess.TimeoutExpired, after killing it, when it does
-    not finish within `timeout` seconds.
+    With `stdout`, the command writes there and the result's stdout is empty. With `cwd`, it runs in that directory.
+    Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
+    subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds.
     """
     with tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as output:
         process = subprocess.Popen(
@@ -48,6 +51,7 @@ def run_bounded(command: Sequence[str], timeout: float, *, stdout: IO[bytes] | N
             stdout=output if stdout is None else stdout,
             stderr=errors,
             env=non_interactive_environment(),
+            cwd=cwd,
         )
         try:
             returncode = process.wait(timeout=timeout)

@@ -49,7 +49,6 @@ import json
 import os
 import re
 import stat
-import subprocess
 import sys
 import tempfile
 import time
@@ -59,6 +58,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from git_client import GitClient, GitError
 from skill_roots import deployed_skill_roots
 
 INDEX_NAME = "MEMORY.md"
@@ -498,19 +498,19 @@ def encode_project(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
-def git_output(directory: Path, *arguments: str) -> str | None:
-    """The stripped output of a git command run in directory, or None when it fails or prints nothing."""
-    completed = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=False)
+def git_output(directory: Path, *arguments: str, git: GitClient | None = None) -> str | None:
+    """The stripped output of a git command run in directory, or None when it fails, cannot run, or prints nothing."""
+    try:
+        completed = (git or GitClient()).run(arguments, directory=directory)
+    except GitError:
+        return None
     output = completed.stdout.strip()
     return output if completed.returncode == 0 and output else None
 
 
 def main_worktree(repo: Path) -> Path | None:
     """Return the main worktree of the repository containing repo, which every worktree shares."""
-    try:
-        common = git_output(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    except OSError:
-        return None
+    common = git_output(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
     if common is None:
         return None
     path = Path(common)

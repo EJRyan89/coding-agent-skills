@@ -89,10 +89,12 @@ def _decode(data: bytes) -> str:
     return data.decode("utf-8", "surrogateescape")
 
 
-def _bounded(arguments: Sequence[str], timeout: float, stdout: IO[bytes] | None = None) -> Finished:
+def _bounded(
+    arguments: Sequence[str], timeout: float, stdout: IO[bytes] | None = None, cwd: Path | None = None
+) -> Finished:
     """Run gh through the bounded, non-interactive layer, classifying why it could not run or finish."""
     try:
-        return run_bounded(arguments, timeout, stdout=stdout)
+        return run_bounded(arguments, timeout, stdout=stdout, cwd=cwd)
     except FileNotFoundError as exc:
         raise GitHubError(MISSING_CLI, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:
@@ -101,9 +103,14 @@ def _bounded(arguments: Sequence[str], timeout: float, stdout: IO[bytes] | None 
         raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
 
 
-def subprocess_runner(arguments: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> CommandResult:
-    """Run a command; output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte."""
-    finished = _bounded(arguments, timeout)
+def subprocess_runner(
+    arguments: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS, cwd: Path | None = None
+) -> CommandResult:
+    """Run a command, in `cwd` when given, as gh commands that read the current repository need.
+
+    Output that is not UTF-8 is kept losslessly, one lone surrogate per undecodable byte.
+    """
+    finished = _bounded(arguments, timeout, cwd=cwd)
     return CommandResult(finished.returncode, _decode(finished.stdout), _decode(finished.stderr))
 
 

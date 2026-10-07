@@ -7,13 +7,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import skill_inventory
+from git_client import GitClient, GitError, GitResult
 
 SCRIPT = Path(__file__).resolve().parent / "skill_inventory.py"
 
@@ -204,6 +207,16 @@ class LocateTests(TemporaryTestCase):
         plain.mkdir()
         with mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.root)}):
             self.assertIsNone(skill_inventory.git_toplevel(plain))
+
+    def test_git_that_cannot_run_or_finish_gives_no_top_level(self) -> None:
+        commands: list[list[str]] = []
+
+        def stalled(command: Sequence[str], timeout: float) -> GitResult:
+            commands.append(list(command))
+            raise GitError("git did not finish within 300 seconds", kind="timeout")
+
+        self.assertIsNone(skill_inventory.git_toplevel(self.root, GitClient(stalled)))
+        self.assertEqual([["git", "-C", str(self.root), "rev-parse", "--show-toplevel"]], commands)
 
 
 class InventoryTests(TemporaryTestCase):

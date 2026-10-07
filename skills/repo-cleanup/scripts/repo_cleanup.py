@@ -15,11 +15,11 @@ or a last line FAILED <reason> when the command could not run at all. 2 is a usa
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import re
 import stat
-import subprocess
 import sys
 import tempfile
 import threading
@@ -30,8 +30,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import git_client
 import pr_status
 from console import use_utf8_output
+from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 from skill_roots import deployed_skill_roots
@@ -56,8 +58,6 @@ SWEEP_WORKERS = 4
 # The lines a sweep passes on: what the agent must act on or report. Everything else is in the summary.
 SWEEP_KINDS = {"DIRTY_MAIN", "FETCH_FAILED", "ERROR", "CONFIRM_LOCAL", "UNMERGED", "SUMMARY"}
 
-Runner = pr_status.Runner
-
 
 class CleanupError(Exception):
     """An expected problem with one repository: report it and skip the repository."""
@@ -71,7 +71,7 @@ class GitError(Exception):
 class Services:
     """External effects, replaceable in tests."""
 
-    git: Runner = pr_status.run_git
+    git: GitClient = dataclasses.field(default_factory=GitClient)
     gh: GhRunner = subprocess_runner
 
 
@@ -94,17 +94,17 @@ def emit(kind: str, *fields: Any) -> None:
         captured.append(line)  # a sweep worker: printed with its repository once every repository is done
 
 
-def reason(result: subprocess.CompletedProcess) -> str:
+def reason(result: GitResult) -> str:
     return one_line(result.stderr or result.stdout or "").strip() or f"exit status {result.returncode}"
 
 
 # Git ------------------------------------------------------------------------------------------------------------
 
 
-def git(services: Services, directory: str | Path, *arguments: str) -> subprocess.CompletedProcess:
+def git(services: Services, directory: str | Path, *arguments: str) -> GitResult:
     try:
-        return services.git(["-C", str(directory), "--no-optional-locks", *arguments])
-    except OSError as exc:
+        return services.git.run(["--no-optional-locks", *arguments], directory=directory)
+    except git_client.GitError as exc:
         raise GitError(f"could not run git: {exc}") from exc
 
 

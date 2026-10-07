@@ -8,13 +8,16 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import memory_audit
+from git_client import GitClient, GitError, GitResult
 
 
 def write(path: Path, text: str) -> Path:
@@ -579,6 +582,25 @@ class ResolveTests(unittest.TestCase):
                 self.assertEqual(str(self.derived()), result["memory_dir"])
                 self.assertTrue(result["exists"])
                 self.assertIn("main worktree", result["source"])
+
+    def test_git_that_cannot_run_or_finish_gives_no_answer(self) -> None:
+        commands: list[list[str]] = []
+
+        def answer(command: Sequence[str], timeout: float) -> GitResult:
+            commands.append(list(command))
+            if "--show-toplevel" in command:
+                return GitResult(0, "C:/repo\n", "")
+            raise GitError("git did not finish within 300 seconds", kind="timeout")
+
+        client = GitClient(answer)
+        self.assertEqual("C:/repo", memory_audit.git_output(self.repo, "rev-parse", "--show-toplevel", git=client))
+        self.assertIsNone(memory_audit.git_output(self.repo, "rev-parse", "--git-common-dir", git=client))
+        self.assertEqual(["git", "-C", str(self.repo), "rev-parse", "--show-toplevel"], commands[0])
+
+        def absent(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError("Git executable 'git' was not found", kind="prerequisite")
+
+        self.assertIsNone(memory_audit.git_output(self.repo, "rev-parse", "--show-toplevel", git=GitClient(absent)))
 
     def test_missing_derived_directory_lists_candidates(self) -> None:
         other = self.home / ".claude" / "projects" / "C--elsewhere" / "memory"

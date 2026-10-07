@@ -55,6 +55,13 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertEqual(bytes(range(256)), target.read_bytes())
         self.assertEqual(Finished(0, b"", b""), finished)
 
+    def test_the_command_may_run_in_another_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "a folder"
+            directory.mkdir()
+            finished = run_bounded([sys.executable, "-c", "import os; print(os.getcwd())"], 60, cwd=directory)
+            self.assertEqual(directory.resolve(), Path(finished.stdout.decode().strip()).resolve())
+
     def test_a_command_that_runs_too_long_is_killed_and_raises(self) -> None:
         started = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):
