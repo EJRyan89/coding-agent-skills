@@ -46,6 +46,14 @@ SNAPSHOT_EXCLUSION_REASONS = {
     "non-regular",
 }
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
+# Names Windows opens as a device rather than a file, alone or before any extension: `nul.txt` and `COM1.tar.gz` too.
+RESERVED_DEVICE_NAMES = frozenset(
+    {"con", "prn", "aux", "nul", "conin$", "conout$"}
+    | {f"{port}{digit}" for port in ("com", "lpt") for digit in "0123456789¹²³"}
+)
+MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
+MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
+LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
 GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 RUNTIME_CAPABILITIES = {
     "claude-code": {"agent-delegation", "read-diff", "write-result"},
@@ -114,6 +122,101 @@ def _safe_relative_path(value: Any, field: str) -> str:
     if path.is_absolute() or any(part in {"", ".", ".."} or WINDOWS_UNSAFE.search(part) for part in path.parts):
         raise RuntimeContractError(f"{field} is unsafe: {value!r}")
     return path.as_posix()
+
+
+@dataclass(frozen=True)
+class PathRoom:
+    """How long a path below a snapshot root may be, in UTF-16 code units: a file's, and the folder it is in."""
+
+    file: int
+    folder: int
+
+
+def path_room(destination: Path) -> PathRoom:
+    """The room a snapshot written at `destination` leaves each path below it, once the root and the separator after
+    it are counted against what this process can write."""
+    used = _utf16_units(str(destination.absolute())) + 1
+    file_limit, folder_limit = _path_limits()
+    return PathRoom(file_limit - used, folder_limit - used)
+
+
+def _path_limits() -> tuple[int, int]:
+    """The longest whole path, in UTF-16 code units, at which this process can write a file and create a folder.
+
+    Without long-path support, MAX_PATH holds a path and its terminating NUL, and CreateDirectory keeps 12 more of it
+    for an 8.3 file name. With it, an NT path holds 32,767 units counted with the volume's device name, such as
+    `\\Device\\HarddiskVolume3`, in place of the drive, so MAX_PATH of them are left for that name.
+    """
+    if _long_paths_enabled():
+        return LONG_PATH_UNITS - MAX_PATH, LONG_PATH_UNITS - MAX_PATH
+    return MAX_PATH - 1, MAX_PATH - 12 - 1
+
+
+def _long_paths_enabled() -> bool:
+    """Whether Windows lets this process use paths over MAX_PATH. The system setting and the interpreter's manifest
+    must both allow it, and ntdll answers for the two; without the answer the shorter limits hold."""
+    import ctypes
+
+    try:
+        query = ctypes.WinDLL("ntdll").RtlAreLongPathsEnabled
+    except (AttributeError, OSError):
+        return False
+    query.restype = ctypes.c_ubyte
+    return bool(query())
+
+
+def _utf16_units(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _segments(relative: str) -> list[str]:
+    return relative.split("/")
+
+
+# Every reason the snapshot cannot hold a head path as it is named, in the order they are checked. A path one applies
+# to is an `unsafe-path` exclusion: recorded, never written, and a coverage gap only for a pull request that changes it,
+# so every other file is still reviewed. The first rule comes first because its path has no UTF-16 length.
+UNSAFE_PATH_RULES: tuple[tuple[str, Callable[[str, PathRoom], bool]], ...] = (
+    (
+        "bytes that are not UTF-8: the path has no exact name to write, so it is recorded with U+FFFD for each byte",
+        lambda relative, room: has_undecodable(relative),
+    ),
+    (
+        'a reserved character (< > : " | ? *) or a control character in a segment: Windows refuses it in a name',
+        lambda relative, room: any(WINDOWS_UNSAFE.search(segment) for segment in _segments(relative)),
+    ),
+    (
+        "a backslash in a segment: Windows reads it as a folder separator, so the file would land in another folder",
+        lambda relative, room: "\\" in relative,
+    ),
+    (
+        "a segment ending in a dot or a space: Windows drops it, so the file would be written under another name",
+        lambda relative, room: any(segment.endswith((".", " ")) for segment in _segments(relative)),
+    ),
+    (
+        "a reserved device name as a segment, with or without an extension: Windows opens the device, not a file",
+        lambda relative, room: any(
+            segment.split(".", 1)[0].rstrip(" ").casefold() in RESERVED_DEVICE_NAMES for segment in _segments(relative)
+        ),
+    ),
+    (
+        f"a segment over {MAX_SEGMENT_UNITS} UTF-16 code units: no Windows file system holds a longer name",
+        lambda relative, room: any(_utf16_units(segment) > MAX_SEGMENT_UNITS for segment in _segments(relative)),
+    ),
+    (
+        "a path longer than the room the snapshot root leaves a file",
+        lambda relative, room: _utf16_units(relative) > room.file,
+    ),
+    (
+        "a folder longer than the room the snapshot root leaves a folder",
+        lambda relative, room: _utf16_units(relative.rpartition("/")[0]) > room.folder,
+    ),
+)
+
+
+def unsafe_path_reason(relative: str, room: PathRoom) -> str | None:
+    """Why the snapshot cannot hold this head path as named, from UNSAFE_PATH_RULES, or None when it can."""
+    return next((reason for reason, applies in UNSAFE_PATH_RULES if applies(relative, room)), None)
 
 
 def _path_list(value: Any, field: str) -> list[str]:
@@ -734,19 +837,23 @@ def _require_snapshot_file_set(root: Path, expected_files: set[str]) -> None:
         raise RuntimeContractError(f"Source snapshot file set mismatch; missing={missing}, extra={extra}")
 
 
-def _entry_exclusion(name: str, kind: str, size: int, changed_paths: frozenset[str]) -> tuple[str, str | None]:
+def _entry_exclusion(
+    name: str, kind: str, size: int, changed_paths: frozenset[str], room: PathRoom
+) -> tuple[str, str | None]:
     """A head path's name in the manifest, and why the snapshot leaves it out, or None when its bytes are to be read.
 
-    `kind` is "file", "symbolic-link", or "non-regular". A name that is not UTF-8 is an unsafe path, named with one
-    U+FFFD per undecodable byte, the form the GitHub client gives it in the diff, so a changed file with such a name
-    is a coverage gap and every other pull request is unaffected. A symbolic link, and any other entry that is not a
-    regular file, is excluded without being read, written, or followed; reviewers see a link only as diff text.
-    Raises for the reserved manifest path.
+    `kind` is "file", "symbolic-link", or "non-regular". A path one of UNSAFE_PATH_RULES applies to, in `room`, is an
+    unsafe path, so a changed file with such a name is a coverage gap and every other pull request is unaffected. A
+    name that is not UTF-8 is named with one U+FFFD per undecodable byte, the form the GitHub client gives it in the
+    diff. A symbolic link, and any other entry that is not a regular file, is excluded without being read, written,
+    or followed; reviewers see a link only as diff text. Raises for a name that would leave the snapshot or name its
+    root (an absolute path, or an empty, `.`, or `..` segment), which no tree git accepts holds, and for the reserved
+    manifest path.
     """
-    if has_undecodable(name):
+    if name.startswith("/") or any(segment in {"", ".", ".."} for segment in _segments(name)):
+        raise RuntimeContractError(f"source snapshot member is unsafe: {name!r}")
+    if unsafe_path_reason(name, room) is not None:
         return replace_undecodable(name)[0], "unsafe-path"
-    if any(WINDOWS_UNSAFE.search(part) for part in PurePosixPath(name).parts):
-        return name, "unsafe-path"
     relative = _safe_relative_path(name, "source snapshot member")
     if relative == SOURCE_SNAPSHOT_MANIFEST:
         raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
@@ -767,7 +874,7 @@ def _content_exclusion(relative: str, content: bytes, written: dict[str, str]) -
     """
     if b"\0" in content[:BINARY_PROBE_BYTES]:
         return "binary"
-    key = "/".join(part.rstrip(". ").casefold() for part in PurePosixPath(relative).parts)
+    key = relative.casefold()  # a name ending in a dot or a space, which Windows would also merge, is never kept
     if key in written:
         raise RuntimeContractError(
             f"Source paths collide on a case-insensitive filesystem: {written[key]} and {relative}"
@@ -833,7 +940,12 @@ def git_blob_reader(checkout: Path, blobs: Sequence[str]) -> Generator[bytes, No
 
 
 def _commit_members(
-    checkout: Path, commit: str, runner: Runner, blob_reader: BlobReader, changed_paths: frozenset[str]
+    checkout: Path,
+    commit: str,
+    runner: Runner,
+    blob_reader: BlobReader,
+    changed_paths: frozenset[str],
+    room: PathRoom,
 ) -> Generator[SnapshotMember, None, None]:
     """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
 
@@ -858,7 +970,7 @@ def _commit_members(
         if kind != "blob" or not GIT_OBJECT_ID.fullmatch(blob) or not size.isdigit():
             raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
         entry = "symbolic-link" if mode == "120000" else "file" if mode.startswith("100") else "non-regular"
-        relative, reason = _entry_exclusion(name, entry, int(size), changed_paths)
+        relative, reason = _entry_exclusion(name, entry, int(size), changed_paths, room)
         if reason is None:
             pending.append((relative, blob, int(size)))
         else:
@@ -879,7 +991,9 @@ def _commit_members(
             close()
 
 
-def _tarball_members(archive: Path, changed_paths: frozenset[str]) -> Generator[SnapshotMember, None, None]:
+def _tarball_members(
+    archive: Path, changed_paths: frozenset[str], room: PathRoom
+) -> Generator[SnapshotMember, None, None]:
     """Each entry of GitHub's tarball below its top folder, as (path, content bytes) when the snapshot keeps it or
     (path, reason) when not. The count and size limits are the caller's to apply."""
     written: dict[str, str] = {}
@@ -889,7 +1003,8 @@ def _tarball_members(archive: Path, changed_paths: frozenset[str]) -> Generator[
             if member.isdir() or not parts:
                 continue
             kind = "file" if member.isfile() else "symbolic-link" if member.issym() else "non-regular"
-            relative, reason = _entry_exclusion(PurePosixPath(*parts).as_posix(), kind, member.size, changed_paths)
+            name = PurePosixPath(*parts).as_posix()
+            relative, reason = _entry_exclusion(name, kind, member.size, changed_paths, room)
             if reason is not None:
                 yield relative, reason
                 continue
@@ -971,7 +1086,8 @@ def materialize_source_snapshot(
         raise RuntimeContractError("Source snapshot commit did not resolve exactly")
     _prepare_destination(destination)
     try:
-        members = _commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths))
+        room = path_room(destination)
+        members = _commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths), room)
         with closing(members):
             return _populate_snapshot(members, destination, repository=repository, commit=commit)
     except BaseException:
@@ -1006,19 +1122,21 @@ def measure_source_snapshot(
     checkout: Path,
     commit: str,
     *,
+    destination: Path,
     runner: Runner = subprocess_runner,
     changed_paths: Iterable[str] = (),
     blob_reader: BlobReader = git_blob_reader,
 ) -> SnapshotSize:
-    """Measure the snapshot materialize_source_snapshot would write for a commit, without writing it.
+    """Measure the snapshot materialize_source_snapshot would write for a commit at `destination`, without writing it.
 
-    It applies the same exclusions and fails on the same unrepresentable entries, but not on the count or size
-    limits, so a commit over them reports how far over it is.
+    It applies the same exclusions, the room `destination` leaves each path included, and fails on the same
+    unrepresentable entries, but not on the count or size limits, so a commit over them reports how far over it is.
     """
     excluded: dict[str, int] = {}
     directories: dict[str, int] = {}
     files = 0
-    with closing(_commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths))) as members:
+    room = path_room(destination)
+    with closing(_commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths), room)) as members:
         for relative, content in members:
             if isinstance(content, str):
                 excluded[content] = excluded.get(content, 0) + 1
@@ -1147,7 +1265,8 @@ def materialize_source_snapshot_from_github(
         with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
-            with closing(_tarball_members(archive, frozenset(changed_paths))) as members:
+            members = _tarball_members(archive, frozenset(changed_paths), path_room(destination))
+            with closing(members):
                 return _populate_snapshot(members, destination, repository=repository, commit=commit)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
