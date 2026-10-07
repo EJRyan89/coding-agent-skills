@@ -1,25 +1,35 @@
-"""PreToolUse hook for the code-review-reviewer subagent: keep a reviewer inside its review run.
+"""PreToolUse hook for the code-review-reviewer subagent: keep a reviewer inside its own role of its review run.
 
 A reviewer's prompt told it never to read the local checkout, and reviewers did anyway: they searched the live
 working copy and the whole workspace, which may hold another branch's code. This hook enforces the boundary the
 prompt describes. It reads the hook event as JSON on stdin and prints a deny decision for any call outside it:
 
-- Read, Grep, and Glob only under a review run folder (a `code-review-run-*` directory holding `run.json`: the
-  snapshot, the trusted reviewer files, and the work files) or this skill's `references` folder. Grep and Glob
-  must name that folder explicitly, because their default is the session's working directory.
-- Write and Edit only on a result file: `<run>/result.json` or `<run>/work/<role>.result.json`.
-- Bash only for the self-check command the prompt gives, exactly as the pipeline writes it.
+- First, one Read of a role's prompt file, which binds the reviewer to that role and its run: its claim. The task
+  names the prompt, and nothing else may be read before it, so no content from the pull request can choose the
+  role. Every other call is denied until then.
+- Read, Grep, and Glob only under the claimed review run folder (a `code-review-run-*` directory holding
+  `run.json`: the snapshot, the trusted reviewer files, and the work files) or this skill's `references` folder.
+  Grep and Glob must name that folder explicitly, because their default is the session's working directory.
+- Write and Edit only on the claimed role's result file, as the run's `run.json` names it.
+- Bash only for the claimed role's self-check command, exactly as the pipeline writes it.
 
-Other tools pass. Anything the hook cannot evaluate is denied: a reviewer reading the wrong code produces a
-plausible but wrong review, which is worse than a failed one that check reports and retries.
+Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
+event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
+reviewer can write. A retry is a fresh agent that claims the same role.
+
+Other tools pass. Anything the hook cannot evaluate is denied, a call without an agent ID included: a reviewer
+reading the wrong code, or writing another role's result, produces a plausible but wrong review, which is worse
+than a failed one that check reports and retries.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import sys
+import tempfile
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
@@ -40,6 +50,11 @@ SELF_CHECK = re.compile(
     rf'^python -B "(?P<script>{SAFE})" validate-result --run "(?P<run>{SAFE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
 )
 SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
+AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
+CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
+FIRST = "read the prompt file your task names first"
+
+Claim = tuple[Path, dict[str, str]]
 
 
 class Denied(Exception):
@@ -74,11 +89,80 @@ def run_root(path: Path) -> Path | None:
     return None
 
 
-def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
+def _roles(run: Path) -> list[dict[str, str]]:
+    """The roles a prepared run's `run.json` names, each with its ID, prompt file, and result file."""
+    try:
+        state = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise Denied(f"the review run {run} could not be read") from exc
+    roles = state.get("roles") if isinstance(state, dict) else None
+    fields = ("id", "prompt_file", "result_file")
+    if not isinstance(roles, list) or not all(
+        isinstance(role, dict) and all(isinstance(role.get(field), str) and role[field] for field in fields)
+        for role in roles
+    ):
+        raise Denied(f"the review run {run} could not be read")
+    return roles
+
+
+def _load_claim(agent: str) -> Claim | None:
+    """The run and role this agent claimed, or None when it has claimed none."""
+    try:
+        claim = json.loads((CLAIMS / f"{agent}.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise Denied("this reviewer's claim could not be read") from exc
+    if not isinstance(claim, dict) or not all(isinstance(claim.get(key), str) for key in ("run", "role")):
+        raise Denied("this reviewer's claim could not be read")
+    run = Path(claim["run"])
+    role = next((role for role in _roles(run) if role["id"] == claim["role"]), None)
+    if role is None:
+        raise Denied(f"the review run no longer has the role {claim['role']}")
+    return run, role
+
+
+def _prune_claims() -> None:
+    """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it."""
+    for path in CLAIMS.glob("*.json"):
+        with contextlib.suppress(OSError, ValueError, AttributeError):
+            run = json.loads(path.read_text(encoding="utf-8")).get("run")
+            if not isinstance(run, str) or not (Path(run) / RUN_FILE).is_file():
+                path.unlink()
+
+
+def _claim(agent: str, path: Path) -> None:
+    """Bind this agent to the role whose prompt it reads first. When two first calls race, whichever wrote its
+    claim first holds, and the other read is judged against that claim."""
+    run = run_root(path)
+    role = None if run is None else next((r for r in _roles(run) if _same(path, Path(r["prompt_file"]))), None)
+    if run is None or role is None:
+        raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
+    CLAIMS.mkdir(parents=True, exist_ok=True)
+    _prune_claims()
+    try:
+        handle = os.open(CLAIMS / f"{agent}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        claimed = _load_claim(agent)
+        if claimed is None:
+            raise Denied("this reviewer's claim could not be read") from None
+        _check_in_run("Read", path, claimed[0])
+        return
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps({"run": str(run), "role": role["id"]}))
+
+
+def _check_in_run(tool: str, path: Path, run: Path) -> None:
+    if _inside(path, REFERENCES):
+        return
+    root = run_root(path)
+    if root is None or not _same(root, run):
+        raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
+
+
+def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim | None) -> None:
     key = "file_path" if tool == "Read" else "path"
     path = _path(tool_input.get(key), cwd)
-    if run_root(path) is None and not _inside(path, REFERENCES):
-        raise Denied(f"{tool} may only look inside the review run folder; {path} is outside it")
     if tool == "Glob":
         pattern = tool_input.get("pattern")
         if (
@@ -88,19 +172,19 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path) -> None:
             or pattern.startswith("/")
         ):
             raise Denied("Glob patterns must be relative to the run folder path, without '..'")
+    if claim is None:
+        raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
+    _check_in_run(tool, path, claim[0])
 
 
-def _check_write(tool_input: dict[str, Any], cwd: Path) -> None:
+def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
     path = _path(tool_input.get("file_path"), cwd)
-    run = run_root(path)
-    allowed = run is not None and (
-        _same(path, run / "result.json") or (_same(path.parent, run / "work") and path.name.endswith(".result.json"))
-    )
-    if not allowed:
-        raise Denied(f"write only the result file the prompt names; {path} is not one")
+    result = claim[1]["result_file"]
+    if not _same(path, _path(result, cwd)):
+        raise Denied(f"write only your own result file, {result}; {path} is not it")
 
 
-def _check_bash(tool_input: dict[str, Any], cwd: Path) -> None:
+def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
     command = tool_input.get("command")
     match = SELF_CHECK.match(command.strip()) if isinstance(command, str) else None
     if match is None or not _same(_path(match.group("script"), cwd), PIPELINE):
@@ -109,6 +193,22 @@ def _check_bash(tool_input: dict[str, Any], cwd: Path) -> None:
     root = run_root(run)
     if root is None or not _same(root, run):
         raise Denied("the self-check must name the review run folder")
+    if not _same(run, claim[0]) or match.group("role") != claim[1]["id"]:
+        raise Denied("the self-check must name your own role and review run")
+
+
+def _check(tool: str, tool_input: dict[str, Any], cwd: Path, agent: str) -> None:
+    claim = _load_claim(agent)
+    if claim is None and tool == "Read":
+        _claim(agent, _path(tool_input.get("file_path"), cwd))
+    elif tool in READ_TOOLS:
+        _check_read(tool, tool_input, cwd, claim)
+    elif claim is None:
+        raise Denied(FIRST)
+    elif tool in WRITE_TOOLS:
+        _check_write(tool_input, cwd, claim)
+    else:
+        _check_bash(tool_input, cwd, claim)
 
 
 def decide(event: dict[str, Any]) -> str | None:
@@ -120,13 +220,10 @@ def decide(event: dict[str, Any]) -> str | None:
     try:
         if not isinstance(tool_input, dict):
             raise Denied("the tool input could not be read")
-        cwd = Path(event.get("cwd") or Path.cwd())
-        if tool in READ_TOOLS:
-            _check_read(tool, tool_input, cwd)
-        elif tool in WRITE_TOOLS:
-            _check_write(tool_input, cwd)
-        else:
-            _check_bash(tool_input, cwd)
+        agent = event.get("agent_id")
+        if not isinstance(agent, str) or not AGENT_ID.fullmatch(agent):
+            raise Denied("the hook event carries no agent ID, so the guard cannot tell which reviewer is calling")
+        _check(tool, tool_input, Path(event.get("cwd") or Path.cwd()), agent)
     except Denied as exc:
         return f"Code-review reviewer boundary: {exc}."
     return None
