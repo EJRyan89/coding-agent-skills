@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -158,9 +159,32 @@ class LayoutTests(unittest.TestCase):
     def test_pinned_sections_link_the_configuration_and_are_collapsed(self) -> None:
         pinned = item(number=4)
         content, _ = run([pinned], overrides={"owner/repo#4": "on hold"}, config_path="D:/AgentData/config.json")
+        # A line starting with <summary> opens a CommonMark HTML block, so the summary is HTML, not Markdown.
         self.assertIn(
-            "### On Hold (1)\n\n<details>\n<summary>Manually managed — edit `dashboard.status_overrides` in "
-            "[the code-review configuration](vscode://file/D:/AgentData/config.json)",
+            "### On Hold (1)\n\n<details>\n<summary>Manually managed — edit <code>dashboard.status_overrides</code> "
+            'in <a href="vscode://file/D:/AgentData/config.json">the code-review configuration</a> to add or remove '
+            "entries.</summary>\n",
+            content,
+        )
+
+    def test_the_configuration_link_is_url_quoted_and_html_escaped(self) -> None:
+        pinned = item(number=4)
+        content, _ = run(
+            [pinned], overrides={"owner/repo#4": "on hold"}, config_path="D:\\Agent Data\\R&D <x>\\config.json"
+        )
+        self.assertIn(
+            '<a href="vscode://file/D:/Agent%20Data/R%26D%20%3Cx%3E/config.json">the code-review configuration</a>',
+            content,
+        )
+        summary = next(line for line in content.splitlines() if "status_overrides" in line)
+        self.assertNotIn("&", summary.replace("%26", ""))
+        self.assertNotIn("`", summary)
+
+    def test_without_a_configuration_path_the_pinned_summary_names_it_without_a_link(self) -> None:
+        content, _ = run([item(number=4)], overrides={"owner/repo#4": "on hold"})
+        self.assertIn(
+            "<summary>Manually managed — edit <code>dashboard.status_overrides</code> in the code-review "
+            "configuration to add or remove entries.</summary>",
             content,
         )
 
@@ -508,6 +532,102 @@ class TrackerTests(unittest.TestCase):
             source.write_text(json.dumps([item()]), encoding="utf-8")
             with self.assertRaisesRegex(TrackerError, "marker pair"):
                 update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+
+    def test_markers_are_checked_before_github_is_asked(self) -> None:
+        detector = RecordingDetector()
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(Path(temporary), b"No markers\n")
+            with self.assertRaisesRegex(TrackerError, "marker pair"):
+                update_dashboard(source, dashboard, "reviewer", detector=detector)
+            self.assertEqual([], detector.calls)
+            self.assertEqual(b"No markers\n", dashboard.read_bytes())
+
+
+class RecordingDetector(FakeDetector):
+    """Records each comparison and runs an action during the first, as a user saving the dashboard mid-run would."""
+
+    def __init__(self, during: Callable[[], object] | None = None) -> None:
+        super().__init__()
+        self.calls: list[int] = []
+        self.during = during
+
+    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+        if not self.calls and self.during is not None:
+            self.during()
+        self.calls.append(number)
+        return super().detect(repository, number, base_ref, since_sha, head_sha)
+
+
+def dashboard_files(root: Path, dashboard_bytes: bytes) -> tuple[Path, Path]:
+    source = root / "input.json"
+    dashboard = root / "dashboard.md"
+    source.write_text(json.dumps([item()]), encoding="utf-8")
+    dashboard.write_bytes(dashboard_bytes)
+    return source, dashboard
+
+
+def outside(document: bytes) -> tuple[bytes, bytes]:
+    """The bytes before the start marker and after the end marker."""
+    start = document.index(START_MARKER.encode())
+    end = document.index(END_MARKER.encode()) + len(END_MARKER)
+    return document[:start], document[end:]
+
+
+class DashboardWriteTests(unittest.TestCase):
+    """The dashboard is the user's file: only the owned section changes, as it is on disk when it is written."""
+
+    def test_an_edit_saved_while_github_is_asked_survives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(
+                Path(temporary), f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode()
+            )
+            edited = f"Before, edited\n{START_MARKER}\nold\n{END_MARKER}\nAfter\nA new note\n".encode()
+            detector = RecordingDetector(lambda: dashboard.write_bytes(edited))
+            update_dashboard(source, dashboard, "reviewer", detector=detector)
+            self.assertNotEqual([], detector.calls)
+            written = dashboard.read_bytes()
+            self.assertEqual(outside(edited), outside(written))
+            self.assertIn(b"### To Review (1)", written)
+            self.assertNotIn(b"\nold\n", written)
+
+    def test_markers_removed_while_github_is_asked_fail_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(Path(temporary), f"{START_MARKER}\n{END_MARKER}\n".encode())
+            detector = RecordingDetector(lambda: dashboard.write_bytes(b"Rewritten\n"))
+            with self.assertRaisesRegex(TrackerError, "marker pair"):
+                update_dashboard(source, dashboard, "reviewer", detector=detector)
+            self.assertEqual(b"Rewritten\n", dashboard.read_bytes())
+
+    def test_a_crlf_dashboard_keeps_crlf_and_every_byte_outside_the_owned_section(self) -> None:
+        original = f"﻿Before\r\n\r\n{START_MARKER}\r\nold\r\n{END_MARKER}\r\nAfter — café\r\n".encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            source, dashboard = dashboard_files(Path(temporary), original)
+            update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+            written = dashboard.read_bytes()
+        self.assertEqual(outside(original), outside(written))
+        start, end = written.index(START_MARKER.encode()), written.index(END_MARKER.encode())
+        owned = written[start:end]
+        self.assertIn(b"### To Review (1)\r\n\r\n<details open>\r\n", owned)
+        self.assertEqual(owned.count(b"\n"), owned.count(b"\r\n"))
+
+    def test_an_lf_dashboard_stays_lf_and_mixed_endings_follow_the_dominant_one(self) -> None:
+        for name, before, expected in (
+            ("lf", "One\nTwo\n", b"\n"),
+            ("mostly lf", "One\r\nTwo\nThree\n", b"\n"),
+            ("mostly crlf", "One\r\nTwo\r\nThree\r\nFour\n", b"\r\n"),
+        ):
+            original = f"{before}{START_MARKER}\n{END_MARKER}".encode()
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                source, dashboard = dashboard_files(Path(temporary), original)
+                update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+                written = dashboard.read_bytes()
+                self.assertEqual(outside(original), outside(written))
+                owned = written[written.index(START_MARKER.encode()) : written.index(END_MARKER.encode())]
+                self.assertIn(START_MARKER.encode() + expected + expected, owned)
+                if expected == b"\n":
+                    self.assertNotIn(b"\r", owned)
+                else:
+                    self.assertEqual(owned.count(b"\n"), owned.count(b"\r\n"))
 
 
 def refusal(value: object) -> tuple[str, str]:
