@@ -259,51 +259,87 @@ def check_table(heading: str, rows: dict[str, Row], found: list[Instance]) -> li
     """Where a table and its fixtures disagree, as one message each; empty when they agree."""
     if not found:
         return [f"{heading}: no fixture has this object"]
-    problems: list[str] = []
     judged = [item for item in found if item.fixture.accepts is not None]
+    problems = _field_problems(heading, rows, found, judged)
+    for name, row in rows.items():
+        present = [item for item in found if name in item.object]
+        if not present:
+            continue
+        problems += _row_problems(f"{heading}: {name}", name, row, found, judged, present)
+    return problems
+
+
+def _field_problems(heading: str, rows: dict[str, Row], found: list[Instance], judged: list[Instance]) -> list[str]:
+    """Fields with no row, rows with no field, and fixtures that accept a field no row names."""
+    problems: list[str] = []
     seen = set().union(*(item.object for item in found))
     problems += [f"{heading}: {name} occurs in a fixture but has no row" for name in sorted(seen - set(rows))]
     problems += [f"{heading}: {name} occurs in no fixture" for name in sorted(set(rows) - seen)]
     for item in judged:
         if item.accepts(_set(UNDOCUMENTED_FIELD, "x")):
             problems.append(f"{heading}: an unlisted field is accepted in {item.fixture.name}")
-    for name, row in rows.items():
-        present = [item for item in found if name in item.object]
-        if not present:
+    return problems
+
+
+def _row_problems(
+    label: str, name: str, row: Row, found: list[Instance], judged: list[Instance], present: list[Instance]
+) -> list[str]:
+    """Where one row disagrees with the values fixtures have and the changes their validators accept."""
+    values = [item.object[name] for item in present]
+    problems = _value_problems(label, row, values)
+    problems += _required(label, name, row, found, judged)
+    removable = [item for item in judged if name in item.object]
+    if row.types is not None:
+        problems += _type_probe_problems(label, name, row.types, values, removable)
+    if row.values is not None:
+        problems += _listed_probe_problems(label, name, row.values, values, removable)
+    return problems
+
+
+def _value_problems(label: str, row: Row, values: list[Any]) -> list[str]:
+    """Each fixture value of an undocumented type, then each value the row does not list."""
+    problems: list[str] = []
+    if row.types is not None:
+        problems += [
+            f"{label} has the undocumented type {json_type(value)}"
+            for value in values
+            if not has_type(row.types, value)
+        ]
+    if row.values is not None:
+        problems += [
+            f"{label} has the unlisted value {value!r}"
+            for value in values
+            if value not in row.values and not (value is None and "null" in (row.types or ()))
+        ]
+    return problems
+
+
+def _type_probe_problems(
+    label: str, name: str, types: frozenset[str], values: list[Any], removable: list[Instance]
+) -> list[str]:
+    """Undocumented types a validator accepts, then documented types no fixture has and no validator accepts."""
+    problems: list[str] = []
+    for kind, probe in _wrong_probes(types):
+        accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
+        problems += [f"{label} accepts {kind}, which is not documented, in {fixture}" for fixture in accepted]
+    for kind in sorted(types):
+        if any(json_type(value) == kind or (kind, json_type(value)) == ("number", "integer") for value in values):
             continue
-        label = f"{heading}: {name}"
-        values = [item.object[name] for item in present]
-        if row.types is not None:
-            problems += [
-                f"{label} has the undocumented type {json_type(value)}"
-                for value in values
-                if not has_type(row.types, value)
-            ]
-        if row.values is not None:
-            problems += [
-                f"{label} has the unlisted value {value!r}"
-                for value in values
-                if value not in row.values and not (value is None and "null" in (row.types or ()))
-            ]
-        problems += _required(label, name, row, found, judged)
-        removable = [item for item in judged if name in item.object]
-        if row.types is not None:
-            for kind, probe in _wrong_probes(row.types):
-                accepted = [item.fixture.name for item in removable if item.accepts(_set(name, probe))]
-                problems += [f"{label} accepts {kind}, which is not documented, in {fixture}" for fixture in accepted]
-            for kind in sorted(row.types):
-                if any(
-                    json_type(value) == kind or (kind, json_type(value)) == ("number", "integer") for value in values
-                ):
-                    continue
-                if not any(item.accepts(_set(name, EXAMPLES[kind])) for item in removable):
-                    problems.append(f"{label} documents {kind}, which no fixture has or accepts")
-        if row.values is not None:
-            for value in row.values:
-                if value not in values and not any(item.accepts(_set(name, value)) for item in removable):
-                    problems.append(f"{label} lists {value!r}, which no fixture has or accepts")
-            accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
-            problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
+        if not any(item.accepts(_set(name, EXAMPLES[kind])) for item in removable):
+            problems.append(f"{label} documents {kind}, which no fixture has or accepts")
+    return problems
+
+
+def _listed_probe_problems(
+    label: str, name: str, listed: tuple[Any, ...], values: list[Any], removable: list[Instance]
+) -> list[str]:
+    """Listed values no fixture has and no validator accepts, then validators that accept an unlisted value."""
+    problems: list[str] = []
+    for value in listed:
+        if value not in values and not any(item.accepts(_set(name, value)) for item in removable):
+            problems.append(f"{label} lists {value!r}, which no fixture has or accepts")
+    accepted = [item.fixture.name for item in removable if item.accepts(_set(name, UNDOCUMENTED_VALUE))]
+    problems += [f"{label} accepts an unlisted value in {fixture}" for fixture in accepted]
     return problems
 
 
