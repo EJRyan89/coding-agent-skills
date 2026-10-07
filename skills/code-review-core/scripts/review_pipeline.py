@@ -46,6 +46,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from git_client import GitClient, GitError, GitResult, Runner, subprocess_runner
 from review_archive import ArchiveError, archive_head, pull_records
 from review_config import (
     ConfigurationError,
@@ -99,7 +100,6 @@ from review_reviewers import inspect_configured_skill, manifest_location, reposi
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
     RUNTIME_CAPABILITIES,
-    Runner,
     RuntimeContractError,
     build_adapter_request,
     github_tarball_fetcher,
@@ -110,7 +110,6 @@ from review_runtime import (
     negotiate_capabilities,
     resolve_reviewer_commit,
     resolve_runtime,
-    subprocess_runner,
     verify_checkout_remote,
     write_adapter_request,
 )
@@ -211,8 +210,19 @@ class Services:
     copilot_executable: str | None = None
 
 
+def _git(checkout: Path, git: Runner, *arguments: str) -> GitResult:
+    """Run git in the checkout through skill-core's client, with no prompt and a time limit.
+
+    A fetch from a private remote with an expired credential fails instead of waiting on a credential prompt.
+    """
+    try:
+        return GitClient(git).run(arguments, directory=checkout)
+    except GitError as exc:
+        raise PipelineError(f"git {arguments[0]} failed in {checkout}: {exc}") from exc
+
+
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
-    return git(["git", "-C", str(checkout), "cat-file", "-e", f"{commit}^{{commit}}"]).returncode == 0
+    return _git(checkout, git, "cat-file", "-e", f"{commit}^{{commit}}").returncode == 0
 
 
 _FETCH_LOCKS: dict[str, threading.Lock] = {}
@@ -233,7 +243,7 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
     with _fetch_lock(checkout):
         if _has_commit(checkout, commit, git):  # another pull request's fetch may have brought it
             return
-        result = git(["git", "-C", str(checkout), "fetch", "--no-tags", "--quiet", "origin", refspec])
+        result = _git(checkout, git, "fetch", "--no-tags", "--quiet", "origin", refspec)
     if result.returncode != 0:
         raise PipelineError(f"Cannot fetch {refspec}: {result.stderr.strip() or 'git fetch failed'}")
     if not _has_commit(checkout, commit, git):

@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_pipeline as rp
+from git_client import GitResult, subprocess_runner
 from github_client import CommandResult
 from review_archive import commit_record, pull_directory
 from review_config import ConfigurationError, write_config
@@ -37,7 +38,7 @@ from review_flags import add_flag
 from review_github import GitHubClient
 from review_operation import ReviewOperationError
 from review_records import build_record, validate_adapter_result
-from review_runtime import RuntimeContractError, subprocess_runner
+from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -294,13 +295,13 @@ class RecordingGit:
     def __init__(self, normalize: Callable[[Any], Any]) -> None:
         self.normalize = normalize
         self.calls: list[tuple[str, ...]] = []
-        self.answers: dict[tuple[str, ...], list[CommandResult]] = {}
+        self.answers: dict[tuple[str, ...], list[GitResult]] = {}
 
-    def __call__(self, arguments: Sequence[str]) -> CommandResult:
+    def __call__(self, arguments: Sequence[str], timeout: float) -> GitResult:
         normalized = tuple(self.normalize(list(arguments)))
         self.calls.append(normalized)
         answers = self.answers.get(normalized[3:])
-        return answers.pop(0) if answers else subprocess_runner(arguments)
+        return answers.pop(0) if answers else subprocess_runner(arguments, timeout)
 
 
 class RecordingTarball:
@@ -824,8 +825,8 @@ def run_files(*names: str, roles: tuple[str, ...] = ("generic-review",), reviewe
     )
 
 
-def failed(stdout: str = "", stderr: str = "") -> CommandResult:
-    return CommandResult(1, stdout, stderr)
+def failed(stdout: str = "", stderr: str = "") -> GitResult:
+    return GitResult(1, stdout, stderr)
 
 
 def generic_role(run: str = "<root>/run") -> dict[str, Any]:
@@ -1371,7 +1372,7 @@ class LocalCommitTests(PrepareFixture):
     FETCH_HEAD = ("fetch", "--no-tags", "--quiet", "origin", "refs/pull/12/head")
 
     def test_a_missing_head_is_fetched_once_and_checked_again(self) -> None:
-        self.git.answers = {self.HEAD_PRESENT: [failed(), failed()], self.FETCH_HEAD: [CommandResult(0, "", "")]}
+        self.git.answers = {self.HEAD_PRESENT: [failed(), failed()], self.FETCH_HEAD: [GitResult(0, "", "")]}
         self.prepare()
         self.assertEqual(
             [
@@ -1396,7 +1397,7 @@ class LocalCommitTests(PrepareFixture):
     def test_a_head_still_missing_after_the_fetch(self) -> None:
         self.git.answers = {
             self.HEAD_PRESENT: [failed(), failed(), failed()],
-            self.FETCH_HEAD: [CommandResult(0, "", "")],
+            self.FETCH_HEAD: [GitResult(0, "", "")],
         }
         self.assertEqual(
             (rp.PipelineError, "Commit <head> is not available after fetching refs/pull/12/head", ""), self.refused()
@@ -1404,9 +1405,7 @@ class LocalCommitTests(PrepareFixture):
         self.assertEqual(["diff.patch"], self.files())
 
     def test_a_checkout_of_another_repository_is_refused(self) -> None:
-        self.git.answers = {
-            ("remote", "get-url", "origin"): [CommandResult(0, "https://github.com/other/repo.git\n", "")]
-        }
+        self.git.answers = {("remote", "get-url", "origin"): [GitResult(0, "https://github.com/other/repo.git\n", "")]}
         self.assertEqual(
             (RuntimeContractError, "Checkout origin mismatch: expected example/one, found other/repo", ""),
             self.refused(),
@@ -1846,7 +1845,7 @@ class RepositoryReviewerTests(PrepareFixture):
         self.configure(self.repository("review/specialists.json"))
         base = ("cat-file", "-e", "<base>^{commit}")
         fetch = ("fetch", "--no-tags", "--quiet", "origin", "refs/heads/main")
-        self.git.answers = {base: [failed(), failed()], fetch: [CommandResult(0, "", "")]}
+        self.git.answers = {base: [failed(), failed()], fetch: [GitResult(0, "", "")]}
         self.prepare()
         self.assertEqual(
             [g(*base), g(*base), g(*fetch), g(*base), *SPECIALIST_GIT[1:]], self.git.calls[len(LOCAL_SNAPSHOT) :]

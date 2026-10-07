@@ -10,7 +10,9 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from git_client import GitResult
 from review_reviewers import (
     entrypoint_manifest,
     frontmatter_value,
@@ -20,7 +22,7 @@ from review_reviewers import (
     repository_files,
     resolve_reviewer,
 )
-from review_runtime import CommandResult, RuntimeContractError
+from review_runtime import RuntimeContractError
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -37,7 +39,7 @@ def inspect(text: str, skill: str = ".claude/agents/review.md"):
 class FakeGit:
     """Answers the git commands the reviewer resolution runs, from an in-memory tree at COMMIT.
 
-    A bytes value is a file that is not UTF-8: it is decoded with surrogateescape, as `subprocess_runner` decodes
+    A bytes value is a file that is not UTF-8: it is decoded with surrogateescape, as skill-core's git runner decodes
     what git prints, so each undecodable byte survives as a lone surrogate.
     """
 
@@ -46,24 +48,24 @@ class FakeGit:
         self.modes = modes or {}
         self.calls: list[list[str]] = []
 
-    def __call__(self, arguments: Sequence[str]) -> CommandResult:
+    def __call__(self, arguments: Sequence[str], timeout: float) -> GitResult:
         arguments = list(arguments)
         self.calls.append(arguments)
         if arguments[:3] != ["git", "-C", str(CHECKOUT)]:
-            return CommandResult(128, "", f"fatal: unexpected {arguments}")
+            return GitResult(128, "", f"fatal: unexpected {arguments}")
         command = arguments[3:]
         if command == ["ls-tree", "-r", "--name-only", "-z", COMMIT]:
-            return CommandResult(0, "".join(f"{path}\0" for path in sorted(self.files)), "")
+            return GitResult(0, "".join(f"{path}\0" for path in sorted(self.files)), "")
         if command[:3] == ["ls-tree", COMMIT, "--"] and len(command) == 4:
             path = command[3]
             if path not in self.files:
-                return CommandResult(0, "", "")
-            return CommandResult(0, f"{self.modes.get(path, '100644')} blob {'b' * 40}\t{path}\n", "")
+                return GitResult(0, "", "")
+            return GitResult(0, f"{self.modes.get(path, '100644')} blob {'b' * 40}\t{path}\n", "")
         if command[0] == "show" and command[1].startswith(f"{COMMIT}:"):
             content = self.files[command[1].split(":", 1)[1]]
             text = content.decode("utf-8", "surrogateescape") if isinstance(content, bytes) else content
-            return CommandResult(0, text, "")
-        return CommandResult(128, "", f"fatal: unexpected {command}")
+            return GitResult(0, text, "")
+        return GitResult(128, "", f"fatal: unexpected {command}")
 
 
 class InspectionTests(unittest.TestCase):
@@ -389,10 +391,10 @@ class RepositoryTests(unittest.TestCase):
             repository_files,
             CHECKOUT,
             COMMIT,
-            lambda arguments: CommandResult(128, "", "fatal: not a tree object\n"),
+            lambda arguments, timeout: GitResult(128, "", "fatal: not a tree object\n"),
         )
         self.raises(
-            "git command failed", repository_files, CHECKOUT, COMMIT, lambda arguments: CommandResult(1, "", "")
+            "git command failed", repository_files, CHECKOUT, COMMIT, lambda arguments, timeout: GitResult(1, "", "")
         )
 
     def test_a_path_that_is_not_utf8_is_left_out_of_the_listing(self) -> None:

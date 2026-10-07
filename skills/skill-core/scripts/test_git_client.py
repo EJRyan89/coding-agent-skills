@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -139,6 +140,68 @@ class SubprocessRunnerTests(unittest.TestCase):
             ):
                 GitClient().output(["rev-parse", "--show-toplevel"], directory=directory)
         self.assertEqual("not_repository", context.exception.kind)
+
+
+class StreamTests(unittest.TestCase):
+    def test_cat_file_batch_answers_with_the_exact_bytes(self) -> None:
+        content = b"caf\xe9\r\nno newline at the end"
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / "a repository"
+            client = GitClient(timeout=60)
+            client.output(["init", "--quiet", str(repository)])
+            source = repository / "file.bin"
+            source.write_bytes(content)
+            object_id = client.output(
+                ["hash-object", "-w", "--no-filters", "--", "file.bin"], directory=repository
+            ).strip()
+            with client.stream(["cat-file", "--batch"], directory=repository) as stream:
+                stream.stdin.write(f"{object_id}\n".encode("ascii"))
+                stream.stdin.close()
+                self.assertEqual(f"{object_id} blob {len(content)}\n".encode("ascii"), stream.readline())
+                self.assertEqual(content, stream.read(len(content)))
+                self.assertEqual(b"\n", stream.read(1))
+                self.assertEqual(b"", stream.read(1))
+                self.assertEqual(0, stream.wait())
+                self.assertEqual("", stream.stderr())
+
+    def test_a_read_that_gets_no_output_is_a_timeout(self) -> None:
+        program = "import time; time.sleep(60)"
+        with (
+            bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5, exit_wait=0.5) as running,
+            self.assertRaises(GitError) as context,
+        ):
+            git_client.GitStream(running).readline()
+        self.assertEqual("timeout", context.exception.kind)
+        self.assertIn("gave no output for 0.5 seconds", str(context.exception))
+
+    def test_missing_git_or_git_that_cannot_start_is_classified(self) -> None:
+        for error, kind in ((FileNotFoundError("git"), "prerequisite"), (PermissionError("denied"), "execution")):
+            with (
+                self.subTest(kind=kind),
+                mock.patch.object(git_client, "streaming", side_effect=error),
+                self.assertRaises(GitError) as context,
+                GitClient().stream(["cat-file", "--batch"]),
+            ):
+                pass
+            self.assertEqual(kind, context.exception.kind)
+
+    def test_the_idle_timeout_is_the_clients_unless_the_stream_names_its_own(self) -> None:
+        bounds: list[float] = []
+
+        @contextlib.contextmanager
+        def recording(command: Sequence[str], *, idle_timeout: float) -> Iterator[bounded_process.Streaming]:
+            bounds.append(idle_timeout)
+            self.assertEqual(["git", "-C", "here", "cat-file", "--batch"], list(command))
+            with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=idle_timeout) as running:
+                running.stdin.close()
+                yield running
+
+        with mock.patch.object(git_client, "streaming", recording):
+            with GitClient(timeout=20).stream(["cat-file", "--batch"], directory="here"):
+                pass
+            with GitClient(timeout=20).stream(["cat-file", "--batch"], directory="here", idle_timeout=5):
+                pass
+        self.assertEqual([20, 5], bounds)
 
 
 if __name__ == "__main__":

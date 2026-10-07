@@ -88,5 +88,72 @@ class BoundedProcessTests(unittest.TestCase):
         )
 
 
+# Answers each request line on stdin with "<line> answered" and the environment's prompt switches, then exits.
+ANSWERING_PROGRAM = (
+    "import os, sys\n"
+    "switches = f\"{os.environ.get('GIT_TERMINAL_PROMPT')} {os.environ.get('GCM_INTERACTIVE')}\"\n"
+    "for line in sys.stdin.buffer:\n"
+    "    sys.stdout.buffer.write(line.strip() + b' answered ' + switches.encode() + bytes([10]))\n"
+    "    sys.stdout.flush()\n"
+    "sys.stderr.write('done')\n"
+    "sys.exit(3)\n"
+)
+
+
+class StreamingTests(unittest.TestCase):
+    def test_requests_go_in_and_answers_come_out_with_prompts_off(self) -> None:
+        with bounded_process.streaming([sys.executable, "-c", ANSWERING_PROGRAM], idle_timeout=60) as running:
+            running.stdin.write(b"first\nsecond\n")
+            running.stdin.flush()
+            self.assertEqual(b"first answered 0 never\n", running.readline())
+            self.assertEqual(b"second", running.read(6))
+            self.assertEqual(b" answered 0 never\n", running.readline())
+            running.stdin.close()
+            self.assertEqual(b"", running.readline())
+            self.assertEqual(b"", running.read(1))
+            self.assertEqual(3, running.wait())
+            self.assertEqual(b"done", running.errors())
+
+    def test_output_that_keeps_arriving_never_times_out(self) -> None:
+        # Two seconds of output in all, but never half a second without a byte.
+        program = (
+            "import sys, time\n"
+            "for _ in range(40):\n"
+            "    sys.stdout.buffer.write(b'x' * 4096); sys.stdout.flush(); time.sleep(0.05)\n"
+        )
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5) as running:
+            self.assertEqual(b"x" * 4096 * 40, running.read(4096 * 40))
+            self.assertEqual(0, running.wait())
+
+    def test_a_read_that_waits_too_long_raises_even_while_a_child_holds_the_pipe(self) -> None:
+        # The command answers once, then stalls, and a child it started holds its stdout open, as the program Git for
+        # Windows' git.exe launches does. Killing the command would not end the read; the idle bound does.
+        child = "import time; time.sleep(30)"
+        program = (
+            f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
+            "print('ready'); sys.stdout.flush(); time.sleep(60)\n"
+        )
+        started = time.monotonic()
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5, exit_wait=0.5) as running:
+            self.assertEqual(b"ready\n", running.readline().replace(b"\r", b""))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                running.readline()
+        self.assertLess(time.monotonic() - started, 25)
+
+    def test_leaving_early_lets_a_command_still_writing_exit_by_itself(self) -> None:
+        program = "import sys\nfor _ in range(64):\n    sys.stdout.buffer.write(b'y' * (1024 * 1024))\n"
+        started = time.monotonic()
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=60, exit_wait=30) as running:
+            self.assertEqual(b"y" * 1024, running.read(1024))
+        self.assertLess(time.monotonic() - started, 20)  # well inside exit_wait: it ended without being killed
+
+    def test_a_missing_command_raises_file_not_found(self) -> None:
+        with (
+            self.assertRaises(FileNotFoundError),
+            bounded_process.streaming(["coding-agent-skills-no-such"], idle_timeout=1),
+        ):
+            pass
+
+
 if __name__ == "__main__":
     unittest.main()

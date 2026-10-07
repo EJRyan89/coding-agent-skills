@@ -27,17 +27,16 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import frontmatter
+from git_client import Runner, subprocess_runner
 from review_config import default_manifest_path
 from review_runtime import (
     ADAPTER_PROTOCOL_VERSION,
-    Runner,
     RuntimeContractError,
     _read_git_file,
     _run_git,
     has_undecodable,
     load_manifest_from_commit,
     load_manifest_from_file,
-    subprocess_runner,
     validate_adapter_manifest,
 )
 
