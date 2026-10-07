@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import cli, config, pipeline, source
+from deployer import cli, config, names, pipeline, source
 from deployer.errors import DeployError
 from deployer.paths import Paths
 
@@ -384,6 +384,35 @@ class SharedAssetValidationTests(DeployerTestCase):
         self.make_config()
         self.deploy_fails("--all", pattern="shared asset name '../escape.md' contains path separator")
 
+    def test_names_the_deployer_reserves_for_its_own_files_are_rejected(self) -> None:
+        for asset, reason in (
+            ("alpha.deploying-bak", "ends in '.deploying-bak'"),
+            ("Alpha.Deploying-Bak", "ends in '.deploying-bak'"),
+            ("notes.tmp.md", "contains '.tmp.'"),
+            ("Notes.TMP.md", "contains '.tmp.'"),
+        ):
+            with self.subTest(asset=asset):
+                self.make_source_json(shared_assets={asset: "owner"})
+                self.make_shared_asset(asset, "Shared")
+                self.make_skill("alpha", "Test", shared_deps=[asset])
+                self.make_config()
+                self.deploy_fails(
+                    "--all",
+                    pattern=re.escape(
+                        f"ERROR: shared asset name '{asset}' {reason}, which the deployer reserves for its own files"
+                    ),
+                )
+                self.assertFalse(self.manifest_file.exists())
+                (self.source / "skills" / asset).unlink()
+
+    def test_every_reader_of_item_names_refuses_a_reserved_name(self) -> None:
+        for name in ("alpha.deploying-bak", "ALPHA.DEPLOYING-BAK", "a.tmp.1", "agent.TMP.md"):
+            with self.subTest(name=name):
+                self.assertIn("reserves for its own files", names.safe_name_problem(name, "item") or "")
+        for name in ("alpha", "notes.md", "deploying-bak.md", "tmp.md", "alpha.deploying-bak.md"):
+            with self.subTest(name=name):
+                self.assertIsNone(names.safe_name_problem(name, "item"))
+
     def write_shared_assets(self, value: object) -> None:
         self.make_source_json()
         document = json.loads((self.source / "source.json").read_text(encoding="utf-8"))
@@ -563,6 +592,38 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         self.assertIn("Moved ownership from 'test/old' to 'test/skills'.", result.output)
         self.assertIn("beta", self.owned("skills"))
         self.assertEqual(forward(clone), self.recorded_source_dir())
+
+    def test_take_over_source_with_nothing_to_migrate_still_records_the_checkout(self) -> None:
+        self.make_source_json("test/old")
+        self.make_skill("beta", "Beta")
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.remove_skill("beta")
+        clone = self.deployed_clone()
+        manifest = self.manifest_file.read_bytes()
+        self.assert_refused_unchanged(clone, "--migrate-from", "test/old")
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        result = self.deploy_from(clone, "--migrate-from", "test/old", "--take-over-source")
+        self.assertIn("No intersecting ownership entries to migrate from 'test/old'.", result.output)
+        self.assertIn(f"Recorded this checkout, {forward(clone)}, as the source of 'test/skills'.", result.output)
+        self.assertEqual(forward(clone), self.recorded_source_dir())
+        self.assertIn("beta", self.owned("skills", "test/old"))
+        self.assertEqual(["alpha"], list(self.owned("skills")))
+        self.assertNotIn("Taking over", self.deploy_from(clone, "--all").output)
+        self.assertIn("Alpha from the second clone", self.skill_text("alpha"))
+
+    def test_nothing_to_migrate_from_the_recorded_checkout_changes_nothing(self) -> None:
+        self.make_source_json("test/old")
+        self.make_skill("beta", "Beta")
+        self.make_config("test/old")
+        self.deploy_from(self.snapshot_source("old"), "--all")
+        self.remove_skill("beta")
+        self.deployed_clone()
+        manifest = self.manifest_file.read_bytes()
+        result = self.deploy_ok("--migrate-from", "test/old", "--take-over-source")
+        self.assertIn("No intersecting ownership entries to migrate from 'test/old'.", result.output)
+        self.assertNotIn("Recorded this checkout", result.output)
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
 
     def test_a_linked_worktree_is_refused_even_with_take_over_source(self) -> None:
         linked = self.make_linked_worktree()

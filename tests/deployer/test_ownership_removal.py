@@ -7,7 +7,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from harness import DeployerTestCase, forward
+from harness import SOURCE_ID, DeployerTestCase, forward
 
 from deployer import fsops, hashing
 from deployer.errors import DeployError
@@ -594,6 +594,108 @@ class CrossSourceOwnershipTests(DeployerTestCase):
         self.assertIn("Must survive failed deploy", self.skill_text("obsolete"))
         self.assertFalse((self.skills_dir / "obsolete.deploying-bak").exists())
         self.assertIn("obsolete", self.owned("skills", "test/source-b"))
+
+
+class CaseVariantOwnershipTests(DeployerTestCase):
+    """Names the file system treats as one, such as Guide.md and guide.md on Windows, are one item for ownership."""
+
+    GUIDE = "# Guide shared by both sources"
+
+    def guide_source(self, source_id: str, asset: str, name: str) -> None:
+        self.make_source_json(source_id, shared_assets={asset: "owner"})
+        self.make_shared_asset(asset, self.GUIDE)
+        self.make_skill(name, f"Skill {name}", shared_deps=[asset])
+        self.make_config(source_id)
+
+    def deployed_owner(self) -> bytes:
+        """Source A deploys Guide.md; the fixture source becomes source B, which declares guide.md with its bytes."""
+        self.guide_source("test/source-a", "Guide.md", "alpha")
+        source_a = self.snapshot_source("source-a")
+        self.deploy_from(source_a, "--all")
+        (self.source / "skills" / "Guide.md").unlink()
+        self.remove_skill("alpha")
+        self.guide_source("test/source-b", "guide.md", "beta")
+        return (self.skills_dir / "Guide.md").read_bytes()
+
+    def assert_owner_untouched(self, content: bytes) -> None:
+        names = [path.name for path in self.skills_dir.iterdir()]
+        self.assertIn("Guide.md", names)
+        self.assertNotIn("guide.md", names)
+        self.assertEqual(content, (self.skills_dir / "Guide.md").read_bytes())
+        self.assertIn("Guide.md", self.owned("shared", "test/source-a"))
+
+    def test_a_case_variant_of_another_sources_shared_asset_is_refused(self) -> None:
+        content = self.deployed_owner()
+        refusal = (
+            "ERROR: Shared asset 'guide.md' collides with shared asset 'Guide.md' owned by source 'test/source-a'.\n"
+            "The file system treats 'guide.md' and 'Guide.md' as one name. Rename it in one source, or stop deploying "
+            "'Guide.md' from 'test/source-a'.\n"
+            'See "Ownership held by another source" in docs/recovery.md.\n'
+        )
+        self.assertIn(refusal, self.deploy_fails("--all", "--dry-run", pattern="collides").output)
+        self.assertIn(refusal, self.deploy_fails("--all", pattern="collides").output)
+        self.assert_owner_untouched(content)
+        self.assertNotIn("test/source-b", self.manifest()["sources"])
+        self.assertFalse((self.skills_dir / "beta").exists())
+
+    def test_a_case_variant_another_source_also_owns_is_released_not_removed(self) -> None:
+        content = self.deployed_owner()
+        # A manifest written before case variants were refused, in which source B adopted A's file as guide.md.
+        data = self.manifest()
+        data["sources"]["test/source-b"] = {
+            "skills": {},
+            "shared": {"guide.md": {"hash": hashing.hash_path(self.skills_dir / "Guide.md"), "role": "owner"}},
+        }
+        self.write_manifest(data)
+        self.deploy_fails("--all", pattern="Shared asset 'guide.md' collides with shared asset 'Guide.md'")
+        result = self.deploy_ok(stdin="none\n")
+        self.assertIn(
+            "guide.md (shared asset, the same file as 'Guide.md', owned by source 'test/source-a')",
+            self.report_groups(result.output, "DEPLOYED")["DROPPED OWNERSHIP"],
+        )
+        self.assertNotIn("guide.md", self.owned("shared", "test/source-b"))
+        self.assert_owner_untouched(content)
+
+    def test_a_case_variant_of_an_item_the_same_source_owns_is_refused(self) -> None:
+        self.guide_source(SOURCE_ID, "Guide.md", "alpha")
+        self.deploy_ok("--all")
+        content = (self.skills_dir / "Guide.md").read_bytes()
+        (self.source / "skills" / "Guide.md").unlink()
+        self.guide_source(SOURCE_ID, "guide.md", "alpha")
+        result = self.deploy_fails(
+            "--all", pattern="collides with shared asset 'Guide.md' owned by source 'test/skills'"
+        )
+        self.assertIn(
+            "Keep the name 'Guide.md', or deploy once without it so that it is removed, then deploy 'guide.md'.",
+            result.output,
+        )
+        self.assertEqual(content, (self.skills_dir / "Guide.md").read_bytes())
+        self.assertEqual(["Guide.md"], list(self.owned("shared")))
+
+    def test_a_case_variant_of_another_sources_skill_is_refused(self) -> None:
+        self.make_source_json("test/source-a")
+        self.make_skill("alpha", "Source A skill")
+        self.make_config("test/source-a")
+        source_a = self.snapshot_source("source-a")
+        self.deploy_from(source_a, "--all")
+        self.remove_skill("alpha")
+        self.guide_source("test/source-b", "Alpha", "beta")
+        self.deploy_fails(
+            "--all", pattern="ERROR: Shared asset 'Alpha' collides with skill 'alpha' owned by source 'test/source-a'"
+        )
+        self.assertIn("Source A skill", self.skill_text("alpha"))
+        self.assertNotIn("test/source-b", self.manifest()["sources"])
+
+    def test_a_source_cannot_declare_two_names_for_one_file(self) -> None:
+        self.make_source_json(shared_assets={"Alpha": "owner"})
+        self.make_skill("alpha", "Alpha", shared_deps=["Alpha"])
+        self.make_config()
+        self.deploy_fails("--all", pattern="ERROR: Shared asset 'Alpha' collides with skill 'alpha'")
+        self.make_source_json(shared_assets={"Guide.md": "owner", "guide.md": "owner"})
+        self.make_shared_asset("guide.md", self.GUIDE)
+        self.make_skill("alpha", "Alpha", shared_deps=["Guide.md", "guide.md"])
+        self.deploy_fails("--all", pattern="ERROR: Shared asset 'guide.md' collides with shared asset 'Guide.md'")
+        self.assertFalse(self.manifest_file.exists())
 
 
 if __name__ == "__main__":

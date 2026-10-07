@@ -118,6 +118,15 @@ def same_directory(first: Path, second: Path) -> bool:
     return os.path.normcase(os.path.realpath(first)) == os.path.normcase(os.path.realpath(second))
 
 
+def name_key(name: str) -> str:
+    """The form in which the file system compares a name: two item names with one key are one file or directory.
+
+    NTFS compares names without regard to case, so Windows folds case. A case-sensitive file system returns the name
+    unchanged.
+    """
+    return name.casefold()
+
+
 def is_absolute(value: str) -> bool:
     return bool(WINDOWS_ABSOLUTE.match(value))
 

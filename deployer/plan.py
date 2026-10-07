@@ -14,7 +14,7 @@ from . import fsops, hashing, journal, platform_support, render
 from .arguments import PROG
 from .context import Context
 from .errors import DeployError, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, MODIFIED, SHARED, SHARED_ASSET, SKILL, ItemKind
+from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, KINDS, MODIFIED, SHARED, SHARED_ASSET, SKILL, ItemKind
 from .names import require_safe_name
 from .paths import Paths
 from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL, ReportLine, print_report
@@ -31,7 +31,8 @@ class PlanEntry:
     """What this run does to one item: the dry run prints it, and the deployment carries out exactly that.
 
     state is what the run found at the destination: absent, wrong type, unmodified (it matches the manifest), modified,
-    unmanaged and identical, unmanaged and differs, or still needed (a retained shared asset, left unread).
+    unmanaged and identical, unmanaged and differs, still needed (a retained shared asset, left unread), or owned by
+    another source (an item the file system treats as another source's, left unread).
     """
 
     name: str
@@ -111,8 +112,28 @@ def _plan_selected(
     return found("unmanaged and differs", "SKIP", kind.unmanaged_reason, diff)
 
 
+def _claims(context: Context, kind: ItemKind, name: str) -> list[tuple[ItemKind, str, str]]:
+    """Every owned item the file system treats as this one: same root, same name key. Each as (kind, name, owner)."""
+    key = platform_support.name_key(name)
+    return [
+        (other, existing, owner)
+        for other in KINDS
+        if other.root == kind.root
+        for existing, owner in sorted(context.manifest.owners_of(other).items())
+        if platform_support.name_key(existing) == key
+    ]
+
+
 def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: str) -> PlanEntry:
-    """Plan an owned item this run no longer installs: removed when unmodified, otherwise left for the user."""
+    """Plan an owned item this run no longer installs: removed when unmodified, otherwise left for the user.
+
+    An item another source also owns under a name the file system treats as the same, which a manifest written before
+    such names were refused can hold, is that source's file too, so this source only gives up its ownership.
+    """
+    for _, existing, owner in _claims(context, kind, name):
+        if owner != context.source_id:
+            reason = f"the same file as '{existing}', owned by source '{owner}'"
+            return PlanEntry(name, kind.label, "owned by another source", "DROP", reason)
     destination = journal.root_directory(context.paths, kind.root) / name
     if kind.has_expected_type(destination):
         existing = hashing.hash_path(destination)
@@ -215,14 +236,26 @@ def validate_shared_assets(context: Context, selected: list[str]) -> dict[str, s
 
 
 def _declared_assets(src: Source) -> dict[str, str]:
-    """source.json's shared assets and their roles, once every name is safe and none is also a skill's."""
+    """source.json's shared assets and their roles, once every name is safe and none names a skill's file or another's.
+
+    Names are compared as the file system compares them, so Guide.md and guide.md are one file on Windows.
+    """
     assets: dict[str, str] = {}
     for asset, role in src.shared_assets.items():
         require_safe_name(asset, "shared asset name")
         assets[asset] = role
+    taken = {platform_support.name_key(name): ("skill", name) for name in sorted(src.skills)}
     for asset in sorted(assets):
         if asset in src.skills:
             raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")
+        key = platform_support.name_key(asset)
+        if key in taken:
+            noun, existing = taken[key]
+            raise DeployError(
+                f"ERROR: Shared asset '{asset}' collides with {noun} '{existing}'.",
+                f"The file system treats '{asset}' and '{existing}' as one name. Rename one of them.",
+            )
+        taken[key] = ("shared asset", asset)
     return assets
 
 
@@ -301,7 +334,7 @@ def _ensure_transient_available(item: str, base: Path) -> None:
 def check_ownership(
     context: Context, selected: list[str], adapters: list[str], staged_shared: list[str], agents: list[str]
 ) -> None:
-    data, owned, source_id, paths = context.manifest, context.owned, context.source_id, context.paths
+    owned, source_id, paths = context.owned, context.source_id, context.paths
     ownership = see_recovery("Ownership held by another source")
 
     def transfer(subject: str, owner: str) -> DeployError:
@@ -311,25 +344,39 @@ def check_ownership(
             ownership,
         )
 
-    def collision(subject: str, kind: str, owner: str) -> DeployError:
+    def collision(subject: str, name: str, other: ItemKind, existing: str, owner: str) -> DeployError:
+        if existing == name:
+            return DeployError(
+                f"ERROR: {subject} collides with a {other.noun} owned by source '{owner}'.",
+                "One name cannot be deployed as two kinds. "
+                f"Rename it in one source, or stop deploying it from '{owner}'.",
+                ownership,
+            )
+        if owner == source_id:
+            remedy = (
+                f"Keep the name '{existing}', or deploy once without it so that it is removed, then deploy '{name}'."
+            )
+        else:
+            remedy = f"Rename it in one source, or stop deploying '{existing}' from '{owner}'."
         return DeployError(
-            f"ERROR: {subject} collides with {kind} owned by source '{owner}'.",
-            f"One name cannot be deployed as two kinds. Rename it in one source, or stop deploying it from '{owner}'.",
+            f"ERROR: {subject} collides with {other.noun} '{existing}' owned by source '{owner}'.",
+            f"The file system treats '{name}' and '{existing}' as one name. {remedy}",
             ownership,
         )
 
     wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
-    # Skills and shared assets share one root, so a name owned as one cannot be deployed as the other.
-    shares_root = {SKILL: SHARED, SHARED: SKILL}
+    # An owned item under the same root whose name the file system treats as this one's is the same file: another
+    # source's copy of this very item is a transfer, and anything else is a collision, such as a skill and a shared
+    # asset of one name, or Guide.md and guide.md on Windows.
     for kind, names in wanted.items():
         base = journal.root_directory(paths, kind.root)
         for name in names:
-            owner = data.owners_of(kind).get(name)
-            if owner is not None and owner != source_id:
-                raise transfer(f"{kind.title} '{name}'", owner)
-            other = shares_root.get(kind)
-            if other is not None and name in data.owners_of(other):
-                raise collision(f"{kind.title} '{name}'", f"a {other.noun}", data.owners_of(other)[name])
+            subject = f"{kind.title} '{name}'"
+            for other, existing, owner in _claims(context, kind, name):
+                if other is not kind or existing != name:
+                    raise collision(subject, name, other, existing, owner)
+                if owner != source_id:
+                    raise transfer(subject, owner)
             _ensure_transient_available(name, base)
         for name in sorted(owned.of(kind)):
             if name not in names:
