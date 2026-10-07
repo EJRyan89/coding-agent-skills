@@ -14,7 +14,20 @@ import time
 from pathlib import Path
 from typing import TextIO
 
-from . import config, fsops, journal, lock, manifest, migrate, plan, platform_support, render, report, source
+from . import (
+    config,
+    fsops,
+    journal,
+    lock,
+    manifest,
+    migrate,
+    plan,
+    platform_support,
+    render,
+    report,
+    source,
+    source_commit,
+)
 from . import selection as selection_module
 from .arguments import USAGE_ERROR, parse_command
 from .context import Context, Options
@@ -90,9 +103,11 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str) ->
                 details["role"] = "owner"
             recorded[kind.key][entry.name] = details
     data.data["last_run_id"] = run_id
+    commit = source_commit.head_commit(context.paths.source_dir)
     # An entry written before selected_skills was dropped loses it here: nothing reads it (#23).
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
+        **({"source_commit": commit} if commit is not None else {}),
         "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "requested_bundles": list(context.selection.bundles),
         "requested_skills": list(context.selection.skills),

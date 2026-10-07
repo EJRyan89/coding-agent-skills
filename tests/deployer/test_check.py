@@ -9,7 +9,7 @@ import sys
 import unittest
 from unittest import mock
 
-from harness import REPOSITORY_ROOT, DeployerTestCase, Result, forward
+from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 
 from deployer import cli, platform_support, tools
 
@@ -21,6 +21,8 @@ INSTALLED = {
     "codex": ("C:/tools/codex.exe", "codex-cli 0.160.0\n"),
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
 }
+GIT = "C:/tools/git.exe"
+COMMIT = "71ad8150c0ffee5eed0123456789abcdef012345"
 
 
 def set_tools(test: DeployerTestCase, name: str, names: list[str], key: str = "tools") -> None:
@@ -34,8 +36,16 @@ class Machine:
     """Fake tool locations and version output for one simulated machine."""
 
     def __init__(
-        self, missing: tuple[str, ...] = (), versions: dict[str, str] | None = None, powershell: str = "7.6.6"
+        self,
+        missing: tuple[str, ...] = (),
+        versions: dict[str, str] | None = None,
+        powershell: str = "7.6.6",
+        describe: str | None = None,
     ) -> None:
+        # describe is what git describe prints for the deployed commit; None makes it fail, as for an unknown commit.
+        self.git = None if "git" in missing else GIT
+        self.describe = describe
+        self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
         self.versions = {path: output for path, output in self.installed.values()}
         for name, output in (versions or {}).items():
@@ -49,7 +59,7 @@ class Machine:
         stack.enter_context(
             mock.patch(
                 "deployer.platform_support.find_executable",
-                side_effect=lambda name: self.installed[name][0] if name in self.installed else None,
+                side_effect=lambda name: self.git if name == "git" else self.installed.get(name, (None,))[0],
             )
         )
         stack.enter_context(mock.patch("deployer.platform_support.find_bash", return_value=self.bash))
@@ -57,13 +67,19 @@ class Machine:
         stack.enter_context(
             mock.patch(
                 "deployer.platform_support.run_tool",
-                side_effect=lambda arguments, environment=None: platform_support.ToolResult(
-                    0, self.versions[arguments[0]]
-                ),
+                side_effect=lambda arguments, environment=None: self.run_tool(arguments),
             )
         )
         stack.enter_context(mock.patch("deployer.tools.python_version", return_value=(3, 12, 1)))
         return stack
+
+    def run_tool(self, arguments: list[str]) -> platform_support.ToolResult:
+        if arguments[0] != GIT:
+            return platform_support.ToolResult(0, self.versions[arguments[0]])
+        self.git_calls.append(arguments)
+        if self.describe is None:
+            return platform_support.ToolResult(128, "fatal: No names found, cannot describe anything.\n")
+        return platform_support.ToolResult(0, f"{self.describe}\n")
 
 
 class CheckCommandTests(DeployerTestCase):
@@ -91,6 +107,7 @@ class CheckCommandTests(DeployerTestCase):
         self.assertEqual(
             "\n"
             "Source: Test Skills (test/skills)\n"
+            "Deployed commit: unknown\n"
             f"Home: {forward(self.home)}\n"
             "\n"
             "=== CHECK ===\n"
@@ -233,6 +250,46 @@ class CheckCommandTests(DeployerTestCase):
         set_tools(self, "formatter", [])
         output = self.check(Machine(missing=("dotnet-format",))).output
         self.assertNotIn("dotnet-format", output)
+
+    def record_commit(self, commit: str = COMMIT) -> None:
+        self.make_config()
+        with Machine().patches():
+            self.deploy_ok("--all")
+        data = self.manifest()
+        data["sources"][SOURCE_ID]["source_commit"] = commit
+        self.write_manifest(data)
+        (self.source / ".git").mkdir()
+
+    def deployed_line(self, output: str) -> str:
+        return next(line for line in output.splitlines() if line.startswith("Deployed commit:"))
+
+    def test_the_deployed_commit_is_described_from_the_source_checkout(self) -> None:
+        self.record_commit()
+        machine = Machine(describe="v0.1.0-14-g71ad815")
+        result = self.check(machine)
+        self.assertEqual(0, result.code, result.output)
+        self.assertEqual(f"Deployed commit: v0.1.0-14-g71ad815 ({COMMIT})", self.deployed_line(result.output))
+        self.assertEqual([[GIT, "-C", str(self.source), "describe", "--tags", "--always", COMMIT]], machine.git_calls)
+
+    def test_the_deployed_commit_is_the_full_hash_when_git_cannot_describe_it(self) -> None:
+        self.record_commit()
+        self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(self.check(Machine()).output))
+        self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(self.check(Machine(missing=("git",))).output))
+
+    def test_the_deployed_commit_is_the_full_hash_when_the_source_is_no_git_checkout(self) -> None:
+        self.record_commit()
+        (self.source / ".git").rmdir()
+        machine = Machine(describe="v0.1.0")
+        self.assertEqual(f"Deployed commit: {COMMIT}", self.deployed_line(self.check(machine).output))
+        self.assertEqual([], machine.git_calls)
+
+    def test_the_deployed_commit_is_unknown_when_none_is_recorded(self) -> None:
+        self.make_config()
+        with Machine().patches():
+            self.deploy_ok("--all")
+        machine = Machine(describe="v0.1.0")
+        self.assertEqual("Deployed commit: unknown", self.deployed_line(self.check(machine).output))
+        self.assertEqual([], machine.git_calls)
 
     def test_check_takes_no_arguments_besides_help(self) -> None:
         result = self.check(Machine(), "--all")

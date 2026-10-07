@@ -23,5 +23,6 @@ assignees: ''
 
 ## Commit and environment
 
-<!-- The source commit (git rev-parse --short HEAD), and the versions that matter: Python, PowerShell, Git for
-     Windows, ShellCheck, gh, and the agent runtime (Claude Code, Codex, or Copilot CLI). -->
+<!-- The output of python deploy.py check, run in the clone the skills were deployed from: it names the deployed
+     commit and the versions of Python, PowerShell, ShellCheck, gh, Codex, and Copilot CLI. Add the version
+     of the agent runtime the problem showed in (Claude Code, Codex, or Copilot CLI) and of Git for Windows. -->
