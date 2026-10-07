@@ -54,7 +54,7 @@ max-complexity = 22
 
 # #91's ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
 [tool.ruff.lint.pylint]
-max-statements = 87
+max-statements = 67
 
 # Validation runs mypy once per root: deployer/, tools/, deploy.py, and tests/ together from the repository root, and
 # each skill's scripts/ directory from inside it. Default strictness; no module, suite, or import is exempt.
