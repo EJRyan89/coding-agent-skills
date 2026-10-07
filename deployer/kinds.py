@@ -1,0 +1,57 @@
+"""The four kinds of item a source deploys, described once for the manifest, the plan, the reports, and migration."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+from .render import ADAPTER_STAGING, AGENT_STAGING
+
+# Runtime adapters are recorded under "wrappers", their name before they were called adapters. Renaming the key
+# would need a manifest version and a migration, so it stays.
+ADAPTERS = "wrappers"
+
+ADAPTER = "runtime adapter"
+SHARED_ASSET = "shared asset"
+AGENT = "agent"
+
+MODIFIED = "modified since last deploy"
+DIFFERS = "unmanaged and differs"
+DIFFERS_FROM_SKILL = "unmanaged and differs from the rendered skill"
+
+
+@dataclass(frozen=True)
+class ItemKind:
+    """Where one kind of item is recorded and deployed, how messages name it, and the reasons the plan gives."""
+
+    key: str  # the manifest's key for this kind's ownership entries
+    label: str  # how a report line names the kind; empty for skills, which reports name bare
+    noun: str  # one item, as a count or a sentence names it
+    title: str  # one item, as an error names it: "Skill 'alpha'"
+    root: str  # the journal's name for the managed root
+    staging: str  # the kind's directory under the run's staging directory
+    directory: bool
+    removal_reason: str
+    unmanaged_reason: str
+
+    @property
+    def type_name(self) -> str:
+        return "a directory" if self.directory else "a file"
+
+    def has_expected_type(self, path: Path) -> bool:
+        return path.is_dir() if self.directory else path.is_file()
+
+
+SKILL = ItemKind(
+    "skills", "", "skill", "Skill", "claude", "", True, "deselected or absent from source", DIFFERS_FROM_SKILL
+)
+SHARED = ItemKind("shared", SHARED_ASSET, SHARED_ASSET, "Shared asset", "claude", "", False, "obsolete", DIFFERS)
+ADAPTER_KIND = ItemKind(
+    ADAPTERS, ADAPTER, ADAPTER, "Runtime adapter", "agents", ADAPTER_STAGING, True, "obsolete", DIFFERS
+)
+AGENT_KIND = ItemKind(
+    "agents", AGENT, AGENT, "Agent", "claude-agents", AGENT_STAGING, False, "no selected skill needs it", DIFFERS
+)
+# In the manifest's order, which is also the order every pass over the kinds checks, writes, and reports them in.
+KINDS = (SKILL, SHARED, ADAPTER_KIND, AGENT_KIND)
+BY_LABEL = {kind.label: kind for kind in KINDS}

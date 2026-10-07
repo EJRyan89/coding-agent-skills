@@ -10,6 +10,7 @@ from typing import Any
 from . import fsops
 from .errors import DeployError
 from .hashing import HASH_PATTERN
+from .kinds import ADAPTERS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
 from .source import SOURCE_ID_PATTERN, is_valid_name
 
@@ -17,33 +18,66 @@ MANIFEST_VERSION = 7
 # Version 7 adds agent ownership. A version 6 manifest is read as having no agents and saved as version 7, which a
 # version 6 deployer refuses, so it never rewrites a source entry and drops the agents this version owns.
 OLDEST_READABLE_VERSION = 6
-# Runtime adapters are recorded under "wrappers", their name before they were called adapters. Renaming the key
-# would need a manifest version and a migration, so it stays.
-ADAPTERS = "wrappers"
-OWNED_KINDS = ("skills", "shared", ADAPTERS, "agents")
+OWNED_KINDS = tuple(kind.key for kind in KINDS)
+
+
+def _by_kind() -> dict[str, dict[str, str]]:
+    return {kind.key: {} for kind in KINDS}
 
 
 @dataclass
 class Ownership:
-    skills: dict[str, str] = field(default_factory=dict)
+    hashes: dict[str, dict[str, str]] = field(default_factory=_by_kind)  # kind key -> item name -> hash
     skill_shared_deps: dict[str, list[str]] = field(default_factory=dict)
-    shared: dict[str, str] = field(default_factory=dict)
     shared_roles: dict[str, str] = field(default_factory=dict)
-    adapters: dict[str, str] = field(default_factory=dict)
-    agents: dict[str, str] = field(default_factory=dict)
     requested_skills: set[str] = field(default_factory=set)
     requested_bundles: set[str] = field(default_factory=set)
     selected_skills: list[str] = field(default_factory=list)
+
+    def of(self, kind: ItemKind) -> dict[str, str]:
+        return self.hashes[kind.key]
+
+    @property
+    def skills(self) -> dict[str, str]:
+        return self.hashes["skills"]
+
+    @property
+    def shared(self) -> dict[str, str]:
+        return self.hashes["shared"]
+
+    @property
+    def adapters(self) -> dict[str, str]:
+        return self.hashes[ADAPTERS]
+
+    @property
+    def agents(self) -> dict[str, str]:
+        return self.hashes["agents"]
 
 
 @dataclass
 class Manifest:
     path: Path
     data: dict[str, Any]
-    skill_owners: dict[str, str] = field(default_factory=dict)
-    shared_owners: dict[str, str] = field(default_factory=dict)
-    adapter_owners: dict[str, str] = field(default_factory=dict)
-    agent_owners: dict[str, str] = field(default_factory=dict)
+    owners: dict[str, dict[str, str]] = field(default_factory=_by_kind)  # kind key -> item name -> source ID
+
+    def owners_of(self, kind: ItemKind) -> dict[str, str]:
+        return self.owners[kind.key]
+
+    @property
+    def skill_owners(self) -> dict[str, str]:
+        return self.owners["skills"]
+
+    @property
+    def shared_owners(self) -> dict[str, str]:
+        return self.owners["shared"]
+
+    @property
+    def adapter_owners(self) -> dict[str, str]:
+        return self.owners[ADAPTERS]
+
+    @property
+    def agent_owners(self) -> dict[str, str]:
+        return self.owners["agents"]
 
     @property
     def sources(self) -> dict[str, Any]:
@@ -56,16 +90,14 @@ class Manifest:
     def ownership(self, source_id: str) -> Ownership:
         entry = self.source(source_id) or {}
         owned = Ownership()
-        for name, value in (entry.get("skills") or {}).items():
-            owned.skills[name] = _hash_of(value)
-            owned.skill_shared_deps[name] = list(value.get("shared_deps", [])) if isinstance(value, dict) else []
-        for name, value in (entry.get("shared") or {}).items():
-            owned.shared[name] = _hash_of(value)
-            owned.shared_roles[name] = value.get("role", "owner") if isinstance(value, dict) else "owner"
-        for name, value in (entry.get(ADAPTERS) or {}).items():
-            owned.adapters[name] = _hash_of(value)
-        for name, value in (entry.get("agents") or {}).items():
-            owned.agents[name] = _hash_of(value)
+        for kind in KINDS:
+            for name, value in (entry.get(kind.key) or {}).items():
+                owned.of(kind)[name] = _hash_of(value)
+                details = value if isinstance(value, dict) else {}
+                if kind is SKILL:
+                    owned.skill_shared_deps[name] = list(details.get("shared_deps", []))
+                elif kind is SHARED:
+                    owned.shared_roles[name] = details.get("role", "owner")
         owned.requested_skills = set(entry.get("requested_skills", []))
         owned.requested_bundles = set(entry.get("requested_bundles", []))
         owned.selected_skills = list(entry.get("selected_skills", []))
@@ -162,10 +194,8 @@ def load(path: Path) -> Manifest:
         )
     _validate(data, path)
     manifest = Manifest(path, data)
-    _record_owners(data, "skills", "Skill", manifest.skill_owners)
-    _record_owners(data, "shared", "Shared asset", manifest.shared_owners)
-    _record_owners(data, ADAPTERS, "Runtime adapter", manifest.adapter_owners)
-    _record_owners(data, "agents", "Agent", manifest.agent_owners)
+    for kind in KINDS:
+        _record_owners(data, kind.key, kind.title, manifest.owners_of(kind))
     for name in sorted(manifest.skill_owners):
         if name in manifest.shared_owners:
             raise DeployError(

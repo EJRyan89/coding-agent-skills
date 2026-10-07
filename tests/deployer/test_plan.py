@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import DeployerTestCase
 
-from deployer import hashing, manifest, pipeline
+from deployer import hashing, manifest, plan, report
 
 
 @dataclass(frozen=True)
@@ -280,21 +280,21 @@ class PlanTests(DeployerTestCase):
         path = self.path(kind)
         return hashing.hash_path(path) if os.path.lexists(path) else None
 
-    def planned_run(self, row: Row, *extra: str) -> tuple[list[pipeline.PlanEntry], str]:
-        captured: list[list[pipeline.PlanEntry]] = []
-        real = pipeline._plan
+    def planned_run(self, row: Row, *extra: str) -> tuple[list[plan.PlanEntry], str]:
+        captured: list[list[plan.PlanEntry]] = []
+        real = plan.build
 
-        def spy(*arguments: Any, **keywords: Any) -> list[pipeline.PlanEntry]:
+        def spy(*arguments: Any, **keywords: Any) -> list[plan.PlanEntry]:
             entries = real(*arguments, **keywords)
             captured.append(entries)
             return entries
 
-        with mock.patch.object(pipeline, "_plan", side_effect=spy):
+        with mock.patch.object(plan, "build", side_effect=spy):
             output = self.deploy_ok(*row.arguments, *extra, stdin=row.stdin).output
         self.assertEqual(1, len(captured), output)
         return captured[0], output
 
-    def entry(self, entries: list[pipeline.PlanEntry], kind: Kind) -> pipeline.PlanEntry:
+    def entry(self, entries: list[plan.PlanEntry], kind: Kind) -> plan.PlanEntry:
         matches = [entry for entry in entries if entry.name == kind.name and entry.kind == kind.label]
         self.assertEqual(1, len(matches), entries)
         return matches[0]
@@ -308,7 +308,7 @@ class PlanTests(DeployerTestCase):
         else:
             self.assertFalse(any(line in group for group in groups.values()), output)
 
-    def assert_filesystem(self, kind: Kind, entry: pipeline.PlanEntry, before: str | None, owned: Any) -> None:
+    def assert_filesystem(self, kind: Kind, entry: plan.PlanEntry, before: str | None, owned: Any) -> None:
         path = self.path(kind)
         if entry.action in INSTALLS:
             self.assertEqual(entry.staged, hashing.hash_path(path))
@@ -330,7 +330,7 @@ class PlanTests(DeployerTestCase):
         self.arrange(kind, row.state)
         dry_entries, dry_output = self.planned_run(row, "--dry-run")
         planned = self.entry(dry_entries, kind)
-        self.assertEqual((row.dry, row.apply), pipeline.ACTION_LABELS[planned.action])
+        self.assertEqual((row.dry, row.apply), report.ACTION_LABELS[planned.action])
         self.assertEqual(row.reason, planned.reason)
         self.assert_reported(dry_output, "DRY RUN", row.dry, kind, row)
         before, owned = self.fingerprint(kind), self.owned_entry(kind)
@@ -376,7 +376,7 @@ class PlanTests(DeployerTestCase):
                 "DROP": ("DROP OWNERSHIP", "DROPPED OWNERSHIP"),
                 "KEEP": ("KEEP", "KEPT"),
             },
-            pipeline.ACTION_LABELS,
+            report.ACTION_LABELS,
         )
 
 

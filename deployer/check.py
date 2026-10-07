@@ -6,7 +6,7 @@ from . import manifest, platform_support, source, tools
 from .arguments import ParserExit, check_parser
 from .errors import DeployError, print_error
 from .paths import Paths
-from .pipeline import ReportLine, currently_chosen, print_report, warn_ignored_home
+from .report import ReportLine, currently_chosen, print_report, warn_ignored_home
 
 CHECK_ACTIONS = ("MISSING", "OUTDATED", "FOUND", "OPTIONAL")
 NEEDED_TO_DEPLOY = "needed to deploy"

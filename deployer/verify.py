@@ -13,7 +13,7 @@ from .arguments import ParserExit, verify_parser
 from .discovery import Listed, Listing, ListingError
 from .errors import DeployError, print_error
 from .paths import Paths
-from .pipeline import ReportLine, print_report
+from .report import ReportLine, print_report
 
 # Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
 FSOPS_ALLOWED = {
