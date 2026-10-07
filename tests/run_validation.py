@@ -515,17 +515,8 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 def skill_path_problems(root: Path) -> list[str]:
     """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
     skills = {path.parent.name for path in (root / "skills").glob("**/SKILL.md")}
-    documents: list[tuple[Path, set[str] | None, Path | None]] = [
-        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
-    ]
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        skill = metadata.stem
-        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
-            if (skill_directory / "SKILL.md").is_file():
-                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
     problems: list[str] = []
-    for path, dependencies, directory in documents:
+    for path, dependencies, directory in _path_documents(root):
         name = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         holders = fence_holders(lines)
@@ -536,27 +527,59 @@ def skill_path_problems(root: Path) -> list[str]:
             in_fence = holder is not None
             in_shell_fence = holder is not None and holder.language.casefold() in SHELL_FENCES
             if path.name == "SKILL.md" and directory is not None and not in_fence:
-                for span in PROSE_CODE_SPAN.findall(line):
-                    if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT:
-                        problems.append(
-                            f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
-                        )
-            for match in INSTALL_PATH.finditer(line):
-                if match.group(1) in skills:
-                    problems.append(
-                        f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}"
-                    )
-            if in_shell_fence and BARE_SCRIPT_PATH.search(line):
-                problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
-            if dependencies is None and HOME_VARIABLE.search(line):
-                problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
-            for match in SIBLING_PATH.finditer(line):
-                if dependencies is not None and match.group(1) not in dependencies:
-                    problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
-            for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
-                named = match.group(1).rstrip(".")  # a path may end a sentence
-                if directory is not None and not (directory / named).exists():
-                    problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
+                problems += _prose_path_problems(name, number, line)
+            problems += _line_path_problems(name, number, line, in_shell_fence, skills, dependencies, directory)
+    return problems
+
+
+def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None]]:
+    """Each agent, then each skill's Markdown with the skills it declares and its directory, a grouped one included."""
+    documents: list[tuple[Path, set[str] | None, Path | None]] = [
+        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
+    ]
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        skill = metadata.stem
+        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
+            if (skill_directory / "SKILL.md").is_file():
+                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
+    return documents
+
+
+def _prose_path_problems(name: str, number: int, line: str) -> list[str]:
+    """Code spans in SKILL.md prose that name the skill's own scripts/ or references/ by a relative path."""
+    return [
+        f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
+        for span in PROSE_CODE_SPAN.findall(line)
+        if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT
+    ]
+
+
+def _line_path_problems(
+    name: str,
+    number: int,
+    line: str,
+    in_shell_fence: bool,
+    skills: set[str],
+    dependencies: set[str] | None,
+    directory: Path | None,
+) -> list[str]:
+    """Install paths, bare script runs, $HOME in agents, undeclared siblings, and missing files, in that order."""
+    problems: list[str] = []
+    for match in INSTALL_PATH.finditer(line):
+        if match.group(1) in skills:
+            problems.append(f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}")
+    if in_shell_fence and BARE_SCRIPT_PATH.search(line):
+        problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
+    if dependencies is None and HOME_VARIABLE.search(line):
+        problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
+    for match in SIBLING_PATH.finditer(line):
+        if dependencies is not None and match.group(1) not in dependencies:
+            problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
+    for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
+        named = match.group(1).rstrip(".")  # a path may end a sentence
+        if directory is not None and not (directory / named).exists():
+            problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
     return problems
 
 
