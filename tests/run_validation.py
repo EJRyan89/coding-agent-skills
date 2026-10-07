@@ -515,17 +515,8 @@ AGENTS_DOC = '"Subagent definitions" in docs/adding-a-skill.md'
 def skill_path_problems(root: Path) -> list[str]:
     """Report skills and agents that reach a skill's files other than through ${CLAUDE_SKILL_DIR}."""
     skills = {path.parent.name for path in (root / "skills").glob("**/SKILL.md")}
-    documents: list[tuple[Path, set[str] | None, Path | None]] = [
-        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
-    ]
-    for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        skill = metadata.stem
-        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
-            if (skill_directory / "SKILL.md").is_file():
-                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
     problems: list[str] = []
-    for path, dependencies, directory in documents:
+    for path, dependencies, directory in _path_documents(root):
         name = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
         holders = fence_holders(lines)
@@ -536,27 +527,59 @@ def skill_path_problems(root: Path) -> list[str]:
             in_fence = holder is not None
             in_shell_fence = holder is not None and holder.language.casefold() in SHELL_FENCES
             if path.name == "SKILL.md" and directory is not None and not in_fence:
-                for span in PROSE_CODE_SPAN.findall(line):
-                    if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT:
-                        problems.append(
-                            f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
-                        )
-            for match in INSTALL_PATH.finditer(line):
-                if match.group(1) in skills:
-                    problems.append(
-                        f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}"
-                    )
-            if in_shell_fence and BARE_SCRIPT_PATH.search(line):
-                problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
-            if dependencies is None and HOME_VARIABLE.search(line):
-                problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
-            for match in SIBLING_PATH.finditer(line):
-                if dependencies is not None and match.group(1) not in dependencies:
-                    problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
-            for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
-                named = match.group(1).rstrip(".")  # a path may end a sentence
-                if directory is not None and not (directory / named).exists():
-                    problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
+                problems += _prose_path_problems(name, number, line)
+            problems += _line_path_problems(name, number, line, in_shell_fence, skills, dependencies, directory)
+    return problems
+
+
+def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None]]:
+    """Each agent, then each skill's Markdown with the skills it declares and its directory, a grouped one included."""
+    documents: list[tuple[Path, set[str] | None, Path | None]] = [
+        (path, None, None) for path in sorted((root / "agents").glob("*.md"))
+    ]
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        skill = metadata.stem
+        declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
+        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
+            if (skill_directory / "SKILL.md").is_file():
+                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
+    return documents
+
+
+def _prose_path_problems(name: str, number: int, line: str) -> list[str]:
+    """Code spans in SKILL.md prose that name the skill's own scripts/ or references/ by a relative path."""
+    return [
+        f"{name}:{number} names `{span}` by a bare relative path; see {SKILL_PATHS_DOC}"
+        for span in PROSE_CODE_SPAN.findall(line)
+        if BARE_OWN_PATH.search(span) and (name, span) not in BARE_OWN_PATH_EXEMPT
+    ]
+
+
+def _line_path_problems(
+    name: str,
+    number: int,
+    line: str,
+    in_shell_fence: bool,
+    skills: set[str],
+    dependencies: set[str] | None,
+    directory: Path | None,
+) -> list[str]:
+    """Install paths, bare script runs, $HOME in agents, undeclared siblings, and missing files, in that order."""
+    problems: list[str] = []
+    for match in INSTALL_PATH.finditer(line):
+        if match.group(1) in skills:
+            problems.append(f"{name}:{number} names skill {match.group(1)} by its install path; see {SKILL_PATHS_DOC}")
+    if in_shell_fence and BARE_SCRIPT_PATH.search(line):
+        problems.append(f"{name}:{number} runs a script by a bare relative path; see {SKILL_PATHS_DOC}")
+    if dependencies is None and HOME_VARIABLE.search(line):
+        problems.append(f"{name}:{number} finds a file through $HOME; see {AGENTS_DOC}")
+    for match in SIBLING_PATH.finditer(line):
+        if dependencies is not None and match.group(1) not in dependencies:
+            problems.append(f"{name}:{number} reaches ../{match.group(1)} without declaring it in skill_deps")
+    for match in SKILL_DIR_FILE.finditer(line) if directory is not None else ():
+        named = match.group(1).rstrip(".")  # a path may end a sentence
+        if directory is not None and not (directory / named).exists():
+            problems.append(f"{name}:{number} names ${{CLAUDE_SKILL_DIR}}/{named}, which does not exist")
     return problems
 
 
@@ -916,7 +939,26 @@ def _platform_scanned_files(root: Path) -> list[Path]:
 
 def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[int, str]]:
     """The platform tokens a module's code names, as (line, token), ignoring comments, docstrings, and test cases."""
-    docstrings = {
+    docstrings = _docstring_ids(tree)
+    command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
+    found: list[tuple[int, str]] = []
+
+    def visit(node: ast.AST) -> None:
+        if _is_test_case(node):
+            return  # A test names what it tests, and its fixtures name tokens on purpose.
+        if _assigns_table(node, skipped_tables):
+            return
+        found.extend(_platform_node_names(node, docstrings, command))
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
+def _docstring_ids(tree: ast.Module) -> set[int]:
+    """The id of each docstring's node: the module's, and each class's and function's."""
+    return {
         id(node.body[0].value)
         for node in ast.walk(tree)
         if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
@@ -925,55 +967,72 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
         and isinstance(node.body[0].value, ast.Constant)
         and isinstance(node.body[0].value.value, str)
     }
-    command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
-    found: list[tuple[int, str]] = []
 
-    def module_token(line: int, module: str) -> bool:
-        top = module.split(".")[0]
-        if top in PLATFORM_TOKENS["module"]:
-            found.append((line, top))
+
+def _is_test_case(node: ast.AST) -> bool:
+    return isinstance(node, ast.ClassDef) and any(
+        (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
+        for base in node.bases
+    )
+
+
+def _assigns_table(node: ast.AST, skipped_tables: set[str]) -> bool:
+    """Whether node assigns one of skipped_tables, by name, with or without an annotation."""
+    if isinstance(node, (ast.Assign, ast.AnnAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if any(isinstance(target, ast.Name) and target.id in skipped_tables for target in targets):
             return True
-        return False
+    return False
 
-    def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.ClassDef) and any(
-            (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
-            for base in node.bases
-        ):
-            return  # A test names what it tests, and its fixtures name tokens on purpose.
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id in skipped_tables for target in targets):
-                return
-        if isinstance(node, ast.Attribute):
-            qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
-            if qualified in PLATFORM_TOKENS["qualified"]:
-                found.append((node.lineno, qualified))
-            elif node.attr in PLATFORM_TOKENS["attribute"]:
-                found.append((node.lineno, node.attr))
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                module_token(node.lineno, alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if not module_token(node.lineno, module):
-                for alias in node.names:
-                    qualified = f"{module}.{alias.name}"
-                    if qualified in PLATFORM_TOKENS["qualified"]:
-                        found.append((node.lineno, qualified))
-                    elif alias.name in PLATFORM_TOKENS["attribute"]:
-                        found.append((node.lineno, alias.name))
-        elif isinstance(node, ast.keyword) and node.arg in PLATFORM_TOKENS["keyword"]:
-            found.append((node.lineno, node.arg))
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
-            # Equality catches an environment lookup or entry, never prose that mentions the variable.
-            if node.value in PLATFORM_TOKENS["variable"]:
-                found.append((node.lineno, node.value))
-            found.extend((node.lineno, name) for name in sorted(set(command.findall(node.value))))
-        for child in ast.iter_child_nodes(node):
-            visit(child)
 
-    visit(tree)
+def _platform_node_names(node: ast.AST, docstrings: set[int], command: re.Pattern[str]) -> list[tuple[int, str]]:
+    """The platform tokens node itself names, without its children's."""
+    if isinstance(node, ast.Attribute):
+        return _platform_attribute_names(node)
+    if isinstance(node, ast.Import):
+        return [found for alias in node.names for found in _platform_module_name(node.lineno, alias.name)]
+    if isinstance(node, ast.ImportFrom):
+        return _platform_import_from_names(node)
+    if isinstance(node, ast.keyword) and node.arg in PLATFORM_TOKENS["keyword"]:
+        return [(node.lineno, node.arg)]
+    if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
+        return _platform_string_names(node.lineno, node.value, command)
+    return []
+
+
+def _platform_module_name(line: int, module: str) -> list[tuple[int, str]]:
+    top = module.split(".")[0]
+    return [(line, top)] if top in PLATFORM_TOKENS["module"] else []
+
+
+def _platform_attribute_names(node: ast.Attribute) -> list[tuple[int, str]]:
+    qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
+    if qualified in PLATFORM_TOKENS["qualified"]:
+        return [(node.lineno, qualified)]
+    if node.attr in PLATFORM_TOKENS["attribute"]:
+        return [(node.lineno, node.attr)]
+    return []
+
+
+def _platform_import_from_names(node: ast.ImportFrom) -> list[tuple[int, str]]:
+    """The module's token, or else each imported name that is a token."""
+    module = node.module or ""
+    found = _platform_module_name(node.lineno, module)
+    if found:
+        return found
+    for alias in node.names:
+        qualified = f"{module}.{alias.name}"
+        if qualified in PLATFORM_TOKENS["qualified"]:
+            found.append((node.lineno, qualified))
+        elif alias.name in PLATFORM_TOKENS["attribute"]:
+            found.append((node.lineno, alias.name))
+    return found
+
+
+def _platform_string_names(line: int, value: str, command: re.Pattern[str]) -> list[tuple[int, str]]:
+    # Equality catches an environment lookup or entry, never prose that mentions the variable.
+    found = [(line, value)] if value in PLATFORM_TOKENS["variable"] else []
+    found.extend((line, name) for name in sorted(set(command.findall(value))))
     return found
 
 
@@ -2796,6 +2855,91 @@ class RepositoryValidation(unittest.TestCase):
                 [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(root)],
             )
 
+    def test_platform_names_lists_each_token_a_module_names_in_visit_order(self) -> None:
+        """_platform_names on its own, before platform_code_problems drops duplicates and sorts: every node kind, the
+        skipped tables, docstrings, and test cases."""
+        source = (
+            '"""Module docstring: sys.platform, LOCALAPPDATA, cygpath."""\n'  # 1
+            "import os, ctypes.wintypes\n"  # 2
+            "import msvcrt as m\n"  # 3
+            "from winreg import HKEY\n"  # 4
+            "from os import name, chmod, path\n"  # 5
+            "from sys import platform\n"  # 6
+            "from . import helper\n"  # 7
+            "from ctypes import windll, chmod\n"  # 8
+            "\n"  # 9
+            'PLATFORM_ALLOWED = {"cygpath": "a reason"}\n'  # 10
+            'TABLE: dict = {"USERPROFILE": "cygpath"}\n'  # 11
+            'holder.TABLE = "USERPROFILE"\n'  # 12
+            'OTHER, TABLE2 = "APPDATA", "cygpath"\n'  # 13
+            "\n"  # 14
+            "\n"  # 15
+            "class Plain(Base):\n"  # 16
+            '    """Class docstring: os.name, USERPROFILE."""\n'  # 17
+            "\n"  # 18
+            "    def method(self):\n"  # 19
+            '        """USERPROFILE"""\n'  # 20
+            "        return sys.platform, os.name, os.startfile, os.sep\n"  # 21
+            "\n"  # 22
+            "\n"  # 23
+            "async def run():\n"  # 24
+            '    """cygpath"""\n'  # 25
+            '    subprocess.run(["cygpath", "-w"], creationflags=1, text=True)\n'  # 26
+            "    p.chmod(1), st.st_file_attributes, x.y.fchmod, os.lchmod, os.environ\n"  # 27
+            '    "cygpath -u and cygpath -w, not cygpaths"\n'  # 28
+            '    ("LOCALAPPDATA", "ProgramFiles", "localappdata", "%USERPROFILE%", "cygpathx")\n'  # 29
+            '    "APPDATA"\n'  # 30
+            "\n"  # 31
+            "\n"  # 32
+            "class Tests(unittest.TestCase):\n"  # 33
+            "    def test(self):\n"  # 34
+            '        return sys.platform, "USERPROFILE"\n'  # 35
+            "\n"  # 36
+            "\n"  # 37
+            "class MoreTests(TestCase):\n"  # 38
+            "    value = os.name\n"  # 39
+            "\n"  # 40
+            "\n"  # 41
+            "class Generic(Base[int]):\n"  # 42
+            '    value = "cygpath"\n'  # 43
+        )
+        common_head = [
+            (2, "ctypes"),
+            (3, "msvcrt"),
+            (4, "winreg"),
+            (5, "os.name"),
+            (5, "chmod"),
+            (6, "sys.platform"),
+            (8, "ctypes"),
+        ]
+        common_tail = [
+            (12, "USERPROFILE"),
+            (13, "APPDATA"),
+            (13, "cygpath"),
+            (21, "sys.platform"),
+            (21, "os.name"),
+            (21, "os.startfile"),
+            (26, "cygpath"),
+            (26, "creationflags"),
+            (27, "chmod"),
+            (27, "st_file_attributes"),
+            (27, "fchmod"),
+            (27, "lchmod"),
+            (28, "cygpath"),
+            (29, "LOCALAPPDATA"),
+            (29, "ProgramFiles"),
+            (30, "APPDATA"),
+            (43, "cygpath"),
+        ]
+        self.assertEqual(
+            [*common_head, *common_tail],
+            _platform_names(ast.parse(source), {"PLATFORM_ALLOWED", "TABLE"}),
+        )
+        self.assertEqual(
+            [*common_head, (10, "cygpath"), (11, "USERPROFILE"), (11, "cygpath"), *common_tail],
+            _platform_names(ast.parse(source), set()),
+        )
+
     def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -3129,6 +3273,68 @@ class RepositoryValidation(unittest.TestCase):
                     f"skills/beta/SKILL.md:3 runs a script by a bare relative path; see {doc}",
                     f"skills/beta/SKILL.md:4 runs a script by a bare relative path; see {doc}",
                     "skills/beta/SKILL.md:5 reaches ../core without declaring it in skill_deps",
+                ],
+                skill_path_problems(root),
+            )
+
+    def test_skill_path_policy_reads_each_document_once_and_each_check_only_where_it_applies(self) -> None:
+        """Which documents skill_path_problems reads (every agent, grouped skills, nested files, never a directory
+        without SKILL.md), and where each check is off: fence openers, non-shell fences, prose, agents, skills."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def write(relative_path: str, text: str) -> None:
+                (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
+                (root / relative_path).write_text(text, encoding="utf-8")
+
+            for skill, metadata in {
+                "alpha": {"skill_deps": ["core"]},
+                "analyze-skill-cost": {},
+                "core": {},
+                "hollow": {},
+                "inner": {"skill_deps": ["core"]},
+            }.items():
+                write(f"deploy-meta/{skill}.json", json.dumps(metadata))
+            write(
+                "skills/alpha/SKILL.md",
+                "Names `scripts/`, which only analyze-skill-cost may.\n"  # 1
+                "Then run scripts/run.py yourself.\n"  # 2
+                "Read {{HOME}}/.claude/skills/unknown/x and {{HOME}}/.claude/skills/inner/y.\n"  # 3
+                'Use "$HOME/x" freely.\n'  # 4
+                "See ${CLAUDE_SKILL_DIR}/references/ and ${CLAUDE_SKILL_DIR}/references/deep/notes.md.\n"  # 5
+                "```bash ${CLAUDE_SKILL_DIR}/../undeclared/x\n"  # 6
+                "sh scripts/x.sh\n"  # 7
+                "```\n"  # 8
+                "```python\n"  # 9
+                "subprocess.run(['python', 'scripts/x.py'])\n"  # 10
+                "```\n"  # 11
+                "```Shell\n"  # 12
+                "bash ./scripts/y.sh\n"  # 13
+                "```\n",  # 14
+            )
+            write(
+                "skills/alpha/references/deep/notes.md",
+                "Reach ${CLAUDE_SKILL_DIR}/../stranger/x.md, as `scripts/z.py` says.\n",
+            )
+            write("skills/analyze-skill-cost/SKILL.md", "Recommend `scripts/`.\n")
+            write("skills/core/SKILL.md", "# core\n")
+            write("skills/hollow/notes.md", "Read {{HOME}}/.claude/skills/core/x.\n")
+            write("skills/group/inner/SKILL.md", "Read `scripts/run.py`.\n")
+            write("agents/a.md", "Run ${CLAUDE_SKILL_DIR}/../core/x and ${CLAUDE_SKILL_DIR}/gone.md.\n")
+            write("agents/b.md", 'command: "$HOME/x"\n')
+            doc = '"Paths to a skill\'s own files" in docs/adding-a-skill.md'
+            agents_doc = '"Subagent definitions" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"agents/b.md:1 finds a file through $HOME; see {agents_doc}",
+                    "skills/alpha/references/deep/notes.md:1 reaches ../stranger without declaring it in skill_deps",
+                    "skills/alpha/references/deep/notes.md:1 names ${CLAUDE_SKILL_DIR}/../stranger/x.md, "
+                    "which does not exist",
+                    f"skills/alpha/SKILL.md:1 names `scripts/` by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:3 names skill inner by its install path; see {doc}",
+                    f"skills/alpha/SKILL.md:7 runs a script by a bare relative path; see {doc}",
+                    f"skills/alpha/SKILL.md:13 runs a script by a bare relative path; see {doc}",
+                    f"skills/group/inner/SKILL.md:1 names `scripts/run.py` by a bare relative path; see {doc}",
                 ],
                 skill_path_problems(root),
             )

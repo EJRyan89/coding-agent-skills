@@ -174,47 +174,68 @@ def validate_items(value: Any) -> list[dict[str, Any]]:
     seen: set[str] = set()
     normalized: list[dict[str, Any]] = []
     for item in value:
-        if not isinstance(item, dict) or not REQUIRED_FIELDS <= set(item) <= REQUIRED_FIELDS | OPTIONAL_FIELDS:
-            raise TrackerError("Tracker item fields do not match the contract")
-        item = {"reviewed_incomplete": False, "author_name": None, "review_decision": None, "ai_review": None, **item}
+        item = _with_defaults(item)
         _validate_presentation(item)
-        if not isinstance(item["reviewed_incomplete"], bool):
-            raise TrackerError("Tracker item reviewed_incomplete must be Boolean")
-        if item["reviewed_incomplete"] and item["reviewed_head_sha"] is None:
-            raise TrackerError("Tracker item reviewed_incomplete requires reviewed_head_sha")
-        repository = validate_repository_identity(item["repository"])
-        number = item["number"]
-        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
-            raise TrackerError("Tracker pull number must be positive")
-        key = f"{repository}#{number}"
-        if key in seen:
-            raise TrackerError(f"Duplicate tracker item: {key}")
-        seen.add(key)
-        for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at"):
-            if not isinstance(item[field], str) or not item[field]:
-                raise TrackerError(f"Tracker item {key}.{field} is required")
-        for field in ("requested_reviewers", "participants"):
-            if not isinstance(item[field], list) or any(
-                not isinstance(login, str) or not login for login in item[field]
-            ):
-                raise TrackerError(f"Tracker item {key}.{field} must be a string array")
-        if not isinstance(item["draft"], bool):
-            raise TrackerError(f"Tracker item {key}.draft must be Boolean")
-        for field in ("reviewed_head_sha", "user_review_sha"):
-            sha = item[field]
-            if sha is not None and (not isinstance(sha, str) or not sha):
-                raise TrackerError(f"Tracker item {key}.{field} is invalid")
-        review_state = item["user_review_state"]
-        if review_state not in USER_REVIEW_STATES:
-            raise TrackerError(f"Tracker item {key}.user_review_state is invalid")
-        if review_state is None and item["user_review_sha"] is not None:
-            raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
-        if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
-            raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
+        _validate_incomplete(item)
+        repository, key = _item_key(item, seen)
+        _validate_fields(item, key)
+        _validate_review_state(item, key)
         replacement = dict(item)
         replacement["repository"] = repository
         normalized.append(replacement)
     return normalized
+
+
+def _with_defaults(item: Any) -> dict[str, Any]:
+    """The item with its optional fields defaulted ahead of its own, once its fields match the contract."""
+    if not isinstance(item, dict) or not REQUIRED_FIELDS <= set(item) <= REQUIRED_FIELDS | OPTIONAL_FIELDS:
+        raise TrackerError("Tracker item fields do not match the contract")
+    return {"reviewed_incomplete": False, "author_name": None, "review_decision": None, "ai_review": None, **item}
+
+
+def _validate_incomplete(item: dict[str, Any]) -> None:
+    if not isinstance(item["reviewed_incomplete"], bool):
+        raise TrackerError("Tracker item reviewed_incomplete must be Boolean")
+    if item["reviewed_incomplete"] and item["reviewed_head_sha"] is None:
+        raise TrackerError("Tracker item reviewed_incomplete requires reviewed_head_sha")
+
+
+def _item_key(item: dict[str, Any], seen: set[str]) -> tuple[str, str]:
+    """The item's normalized repository and its owner/name#number key, which it adds to seen once it is new."""
+    repository = validate_repository_identity(item["repository"])
+    number = item["number"]
+    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+        raise TrackerError("Tracker pull number must be positive")
+    key = f"{repository}#{number}"
+    if key in seen:
+        raise TrackerError(f"Duplicate tracker item: {key}")
+    seen.add(key)
+    return repository, key
+
+
+def _validate_fields(item: dict[str, Any], key: str) -> None:
+    for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at"):
+        if not isinstance(item[field], str) or not item[field]:
+            raise TrackerError(f"Tracker item {key}.{field} is required")
+    for field in ("requested_reviewers", "participants"):
+        if not isinstance(item[field], list) or any(not isinstance(login, str) or not login for login in item[field]):
+            raise TrackerError(f"Tracker item {key}.{field} must be a string array")
+    if not isinstance(item["draft"], bool):
+        raise TrackerError(f"Tracker item {key}.draft must be Boolean")
+    for field in ("reviewed_head_sha", "user_review_sha"):
+        sha = item[field]
+        if sha is not None and (not isinstance(sha, str) or not sha):
+            raise TrackerError(f"Tracker item {key}.{field} is invalid")
+
+
+def _validate_review_state(item: dict[str, Any], key: str) -> None:
+    review_state = item["user_review_state"]
+    if review_state not in USER_REVIEW_STATES:
+        raise TrackerError(f"Tracker item {key}.user_review_state is invalid")
+    if review_state is None and item["user_review_sha"] is not None:
+        raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
+    if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
+        raise TrackerError(f"Tracker item {key}.user_review_sha is required for {review_state}")
 
 
 def _escape(value: str) -> str:

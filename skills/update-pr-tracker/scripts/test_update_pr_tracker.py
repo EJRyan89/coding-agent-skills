@@ -14,6 +14,7 @@ from pr_change import CHANGED, UNCHANGED, UNKNOWN
 from update_pr_tracker import (
     END_MARKER,
     START_MARKER,
+    ConfigurationError,
     TrackerError,
     evaluate,
     review_candidates,
@@ -507,6 +508,216 @@ class TrackerTests(unittest.TestCase):
             source.write_text(json.dumps([item()]), encoding="utf-8")
             with self.assertRaisesRegex(TrackerError, "marker pair"):
                 update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+
+
+def refusal(value: object) -> tuple[str, str]:
+    """The class and message validate_items refuses a value with."""
+    try:
+        validate_items(value)
+    except (TrackerError, ConfigurationError) as exc:
+        return type(exc).__name__, str(exc)
+    raise AssertionError(f"validate_items accepted {value!r}")
+
+
+class ValidateItemsSequenceTests(unittest.TestCase):
+    """validate_items called directly: what it returns, and each refusal's class and exact message, in check order."""
+
+    def test_an_input_that_is_not_an_array_is_refused(self) -> None:
+        for value in ({"repository": "owner/repo"}, "[]", None):
+            with self.subTest(value=value):
+                self.assertEqual(("TrackerError", "Tracker input must be an array"), refusal(value))
+
+    def test_an_empty_array_is_accepted(self) -> None:
+        self.assertEqual([], validate_items([]))
+
+    def test_an_item_whose_fields_do_not_match_the_contract_is_refused(self) -> None:
+        missing = item()
+        del missing["user_review_sha"]
+        for value in ("owner/repo#1", ["owner/repo", 1], missing, item() | {"labels": []}):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    ("TrackerError", "Tracker item fields do not match the contract"), refusal([item(number=2), value])
+                )
+
+    def test_an_accepted_item_gains_its_defaults_first_and_a_lowercase_repository(self) -> None:
+        source = item("Owner/Repo", 7)
+        original = copy.deepcopy(source)
+        [result] = validate_items([source])
+        self.assertEqual(original, source)
+        self.assertEqual(
+            [
+                "reviewed_incomplete",
+                "author_name",
+                "review_decision",
+                "ai_review",
+                "repository",
+                "number",
+                "url",
+                "title",
+                "author",
+                "requested_reviewers",
+                "participants",
+                "draft",
+                "base_ref",
+                "head_sha",
+                "updated_at",
+                "reviewed_head_sha",
+                "user_review_state",
+                "user_review_sha",
+            ],
+            list(result),
+        )
+        self.assertEqual(
+            {
+                "reviewed_incomplete": False,
+                "author_name": None,
+                "review_decision": None,
+                "ai_review": None,
+                **original,
+                "repository": "owner/repo",
+            },
+            result,
+        )
+
+    def test_given_optional_fields_keep_their_values_and_their_place(self) -> None:
+        source = {
+            "ai_review": ai("APPROVED"),
+            **item(number=3),
+            "author_name": "Someone Else",
+            "reviewed_incomplete": True,
+            "review_decision": "APPROVED",
+        }
+        [result] = validate_items([source])
+        self.assertEqual(source, result)
+        self.assertEqual(
+            ["reviewed_incomplete", "author_name", "review_decision", "ai_review", *list(item())], list(result)
+        )
+
+    def test_items_keep_their_order(self) -> None:
+        values = [item(number=3), item("other/repo", 1), item(number=1)]
+        self.assertEqual(
+            ["owner/repo#3", "other/repo#1", "owner/repo#1"],
+            [f"{value['repository']}#{value['number']}" for value in validate_items(values)],
+        )
+
+    def test_each_field_refusal_has_its_exact_message(self) -> None:
+        key = "Tracker item owner/repo#1"
+        cases: list[tuple[str, object, tuple[str, str]]] = [
+            ("author_name", " ", ("TrackerError", f"{key}.author_name must be null or a non-empty string")),
+            ("reviewed_incomplete", 1, ("TrackerError", "Tracker item reviewed_incomplete must be Boolean")),
+            ("repository", "owner", ("ConfigurationError", "Invalid repository identity: 'owner'")),
+            ("repository", None, ("ConfigurationError", "Invalid repository identity: None")),
+            ("number", "1", ("TrackerError", "Tracker pull number must be positive")),
+            ("number", True, ("TrackerError", "Tracker pull number must be positive")),
+            ("number", 0, ("TrackerError", "Tracker pull number must be positive")),
+            ("number", 1.0, ("TrackerError", "Tracker pull number must be positive")),
+            *(
+                (field, value, ("TrackerError", f"{key}.{field} is required"))
+                for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at")
+                for value in ("", None, 5)
+            ),
+            *(
+                (field, value, ("TrackerError", f"{key}.{field} must be a string array"))
+                for field in ("requested_reviewers", "participants")
+                for value in ("reviewer", None, [""], ["reviewer", 5], ("reviewer",))
+            ),
+            ("draft", "false", ("TrackerError", f"{key}.draft must be Boolean")),
+            ("draft", 0, ("TrackerError", f"{key}.draft must be Boolean")),
+            ("reviewed_head_sha", "", ("TrackerError", f"{key}.reviewed_head_sha is invalid")),
+            ("reviewed_head_sha", 5, ("TrackerError", f"{key}.reviewed_head_sha is invalid")),
+            ("user_review_sha", "", ("TrackerError", f"{key}.user_review_sha is invalid")),
+            ("user_review_sha", 5, ("TrackerError", f"{key}.user_review_sha is invalid")),
+            ("user_review_state", "PENDING", ("TrackerError", f"{key}.user_review_state is invalid")),
+            ("user_review_state", "approved", ("TrackerError", f"{key}.user_review_state is invalid")),
+            ("user_review_sha", USER_REVIEWED, ("TrackerError", f"{key}.user_review_sha requires a review state")),
+            *(
+                ("user_review_state", state, ("TrackerError", f"{key}.user_review_sha is required for {state}"))
+                for state in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED")
+            ),
+        ]
+        for field, value, expected in cases:
+            bad = item()
+            bad[field] = value
+            with self.subTest(field=field, value=value):
+                self.assertEqual(expected, refusal([item(number=2), bad]))
+
+    def test_reviewed_incomplete_needs_a_reviewed_commit(self) -> None:
+        self.assertEqual(
+            ("TrackerError", "Tracker item reviewed_incomplete requires reviewed_head_sha"),
+            refusal([item() | {"reviewed_incomplete": True, "reviewed_head_sha": None}]),
+        )
+        [result] = validate_items([item() | {"reviewed_incomplete": False, "reviewed_head_sha": None}])
+        self.assertIsNone(result["reviewed_head_sha"])
+
+    def test_review_states_that_need_no_commit_are_accepted(self) -> None:
+        for state, sha in ((None, None), ("DISMISSED", None), ("DISMISSED", USER_REVIEWED)):
+            with self.subTest(state=state, sha=sha):
+                [result] = validate_items([item() | {"user_review_state": state, "user_review_sha": sha}])
+                self.assertEqual((state, sha), (result["user_review_state"], result["user_review_sha"]))
+        for state in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED"):
+            with self.subTest(state=state):
+                [result] = validate_items([item() | {"user_review_state": state, "user_review_sha": USER_REVIEWED}])
+                self.assertEqual(state, result["user_review_state"])
+
+    def test_a_duplicate_is_named_by_its_normalized_identity(self) -> None:
+        self.assertEqual(
+            ("TrackerError", "Duplicate tracker item: owner/repo#4"),
+            refusal([item(number=4), item("other/repo", 4), item("OWNER/Repo", 4)]),
+        )
+
+    def test_a_refused_item_is_refused_before_a_later_duplicate_is_seen(self) -> None:
+        self.assertEqual(
+            ("TrackerError", "Tracker item owner/repo#5.title is required"),
+            refusal([item(number=4), item(number=5) | {"title": ""}, item(number=4)]),
+        )
+
+    def test_refusals_come_in_check_order(self) -> None:
+        """An item wrong in every way is refused for one fault at a time, each repaired before the next is reported."""
+        stages: list[tuple[str, object, object]] = [
+            ("author_name", "", None),
+            ("reviewed_incomplete", "yes", False),
+            ("repository", "Owner", "Owner/Repo"),
+            ("number", -1, 1),
+            ("url", "", "https://github.com/owner/repo/pull/1"),
+            ("title", None, "Title"),
+            ("author", 1, "someone"),
+            ("base_ref", "", "main"),
+            ("head_sha", "", HEAD),
+            ("updated_at", "", "2026-01-02T00:00:00Z"),
+            ("requested_reviewers", "x", []),
+            ("participants", [1], []),
+            ("draft", None, True),
+            ("reviewed_head_sha", "", AI_REVIEWED),
+            ("user_review_sha", "", None),
+            ("user_review_state", "PENDING", None),
+        ]
+        bad = item() | {field: wrong for field, wrong, _ in stages}
+        seen: list[str] = []
+        for field, _, repaired in stages:
+            seen.append(refusal([bad])[1])
+            bad[field] = repaired
+        self.assertEqual(1, len(validate_items([bad])))
+        self.assertEqual(
+            [
+                "Tracker item Owner#-1.author_name must be null or a non-empty string",
+                "Tracker item reviewed_incomplete must be Boolean",
+                "Invalid repository identity: 'Owner'",
+                "Tracker pull number must be positive",
+                "Tracker item owner/repo#1.url is required",
+                "Tracker item owner/repo#1.title is required",
+                "Tracker item owner/repo#1.author is required",
+                "Tracker item owner/repo#1.base_ref is required",
+                "Tracker item owner/repo#1.head_sha is required",
+                "Tracker item owner/repo#1.updated_at is required",
+                "Tracker item owner/repo#1.requested_reviewers must be a string array",
+                "Tracker item owner/repo#1.participants must be a string array",
+                "Tracker item owner/repo#1.draft must be Boolean",
+                "Tracker item owner/repo#1.reviewed_head_sha is invalid",
+                "Tracker item owner/repo#1.user_review_sha is invalid",
+                "Tracker item owner/repo#1.user_review_state is invalid",
+            ],
+            seen,
+        )
 
 
 if __name__ == "__main__":

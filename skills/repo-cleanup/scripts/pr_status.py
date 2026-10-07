@@ -181,11 +181,34 @@ def classify(
     UNMATCHED: same-repository pull requests exist, but none describes the branch's current work.
     NONE: no same-repository pull request uses this head name.
     """
+    _check_identities(repository, head_sha, upstream_sha)
+    pulls = _list_pulls(repository, branch, runner)
+    if any(pull["state"] == "OPEN" for pull in pulls):
+        return "OPEN"
+    same_repository, matched = _matched_states(pulls, repository.casefold(), head_sha, upstream_sha)
+    if "MERGED" in matched:
+        return "MERGED"
+    if (
+        in_base is not None
+        and upstream_sha in (None, head_sha)
+        and _merged_after_update(pulls, repository, head_sha, runner, in_base)
+    ):
+        return "MERGED"
+    if "CLOSED" in matched:
+        return "CLOSED"
+    return "UNMATCHED" if same_repository else "NONE"
+
+
+def _check_identities(repository: str, head_sha: str, upstream_sha: str | None) -> None:
     if not REPOSITORY_PATTERN.fullmatch(repository):
         raise QueryError(f"repository must be owner/name, got {repository!r}")
     for label, sha in (("head", head_sha), ("upstream", upstream_sha)):
         if sha is not None and not SHA_PATTERN.fullmatch(sha):
             raise QueryError(f"{label} SHA must be a full lowercase commit SHA, got {sha!r}")
+
+
+def _list_pulls(repository: str, branch: str, runner: GhRunner) -> list[dict[str, Any]]:
+    """Every pull request with this head name, each with a known state, failing closed on any query problem."""
     arguments = ["pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--json", FIELDS]
     result = _gh(runner, [*arguments, "--limit", str(LIMIT)], "gh pr list failed")
     try:
@@ -200,9 +223,13 @@ def classify(
         state = pull.get("state") if isinstance(pull, dict) else None
         if state not in ("OPEN", "MERGED", "CLOSED"):
             raise QueryError(f"gh pr list returned an unexpected pull request state: {state!r}")
-    if any(pull["state"] == "OPEN" for pull in pulls):
-        return "OPEN"
-    expected = repository.casefold()
+    return pulls
+
+
+def _matched_states(
+    pulls: list[dict[str, Any]], expected: str, head_sha: str, upstream_sha: str | None
+) -> tuple[bool, set[str]]:
+    """Whether any pull request is from this repository, and the states of those at exactly the branch's tip."""
     same_repository = False
     matched: set[str] = set()
     for pull in pulls:
@@ -212,19 +239,22 @@ def classify(
         same_repository = True
         if pull.get("headRefOid") == head_sha and upstream_sha in (None, head_sha):
             matched.add(state)
-    if "MERGED" in matched:
-        return "MERGED"
-    if in_base is not None and upstream_sha in (None, head_sha):
-        for pull in pulls:
-            number, pull_head = pull.get("number"), pull.get("headRefOid")
-            if (
-                pull["state"] == "MERGED"
-                and _head_repository(pull) == expected
-                and isinstance(number, int)
-                and isinstance(pull_head, str)
-                and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), in_base)
-            ):
-                return "MERGED"
-    if "CLOSED" in matched:
-        return "CLOSED"
-    return "UNMATCHED" if same_repository else "NONE"
+    return same_repository, matched
+
+
+def _merged_after_update(
+    pulls: list[dict[str, Any]], repository: str, head_sha: str, runner: GhRunner, in_base: InBase
+) -> bool:
+    """Whether a merged same-repository pull request only merged the base after the tip, read in listing order."""
+    expected = repository.casefold()
+    for pull in pulls:
+        number, pull_head = pull.get("number"), pull.get("headRefOid")
+        if (
+            pull["state"] == "MERGED"
+            and _head_repository(pull) == expected
+            and isinstance(number, int)
+            and isinstance(pull_head, str)
+            and only_base_merged_after(head_sha, pull_head, pull_commits(repository, number, runner), in_base)
+        ):
+            return True
+    return False

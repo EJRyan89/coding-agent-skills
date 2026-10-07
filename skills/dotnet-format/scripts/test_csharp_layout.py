@@ -76,6 +76,93 @@ class LexerTests(unittest.TestCase):
         self.assertEqual([(1, "open")], [(event.line, event.kind) for event in layout.Lexer(text).lex().events])
 
 
+# Where Lexer.code stopped, its line, its events as (kind, line, name), and its continuation lines.
+Lexed = tuple[int, int, list[tuple[str, int, str]], list[int]]
+
+
+def lexed(text: str, hole: int = 0) -> Lexed:
+    """Lexer.code run directly from the start of text: where it stopped, its line, its events, its continuations."""
+    lexer = layout.Lexer(text)
+    lexer.code(hole=hole)
+    events = [(event.kind, event.line, event.name) for event in lexer.scan.events]
+    return lexer.i, lexer.line, events, sorted(lexer.scan.continuation)
+
+
+class CodeTests(unittest.TestCase):
+    """Lexer.code called directly, for each arm, with where it stops and every event and continuation it records."""
+
+    def test_code_outside_a_hole_records_braces_and_directives_to_the_end(self) -> None:
+        cases: tuple[tuple[str, Lexed], ...] = (
+            ("{}", (2, 0, [("open", 0, ""), ("close", 0, "")], [])),
+            ("#region A", (9, 0, [("directive", 0, "region")], [])),
+            ("#", (1, 0, [("directive", 0, "")], [])),
+            (" \t\f\v#if X\n}", (11, 1, [("directive", 0, "if"), ("close", 1, "")], [])),
+            ("x #region A", (11, 0, [], [])),
+            ("{ #endregion", (12, 0, [("open", 0, "")], [])),
+            ("x\n  #endregion", (14, 1, [("directive", 1, "endregion")], [])),
+            ("x\r\n#region\r#endregion\n", (22, 3, [("directive", 1, "region"), ("directive", 2, "endregion")], [])),
+            ("// { #region\n{", (14, 1, [("open", 1, "")], [])),
+            ("/* {\n#region */ }", (17, 1, [("close", 1, "")], [1])),
+            ("/* {", (4, 0, [], [])),
+            ("'{' '}' '\\'' { ", (15, 0, [("open", 0, "")], [])),
+            ('"{" @"}" { ', (11, 0, [("open", 0, "")], [])),
+            ("([{)]}", (6, 0, [("open", 0, ""), ("close", 0, "")], [])),
+            (")) :: : {", (9, 0, [("open", 0, "")], [])),
+            ("a::b }", (6, 0, [("close", 0, "")], [])),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(expected, lexed(text))
+
+    def test_a_directive_counts_only_at_the_start_of_a_line(self) -> None:
+        lexer = layout.Lexer("x\n#region")
+        lexer.i = 1
+        lexer.code(hole=0)
+        self.assertEqual([("directive", 1, "region")], [(e.kind, e.line, e.name) for e in lexer.scan.events])
+        lexer = layout.Lexer("x#region")
+        lexer.i = 1
+        lexer.code(hole=0)
+        self.assertEqual([], lexer.scan.events)
+
+    def test_a_hole_returns_after_its_closing_braces(self) -> None:
+        cases: tuple[tuple[str, int, Lexed], ...] = (
+            ("} rest {", 1, (1, 0, [], [])),
+            ("x}}}", 2, (3, 0, [], [])),
+            ("x}", 3, (2, 0, [], [])),
+            ("{a}}{", 1, (4, 0, [], [])),
+            ("{{a}}}", 1, (6, 0, [], [])),
+            ("abc", 1, (3, 0, [], [])),
+            ("a\n#region\nb}", 1, (12, 2, [], [1, 2])),
+            ("#region }", 1, (9, 0, [], [])),
+            ("/* } */ '}' \"}\" } x", 1, (17, 0, [], [])),
+        )
+        for text, hole, expected in cases:
+            with self.subTest(text=text, hole=hole):
+                self.assertEqual(expected, lexed(text, hole))
+
+    def test_a_colon_at_a_holes_top_level_starts_its_format_clause(self) -> None:
+        cases: tuple[tuple[str, int, Lexed], ...] = (
+            ("x:N2} rest", 1, (5, 0, [], [])),
+            ("x:{a}} rest", 1, (5, 0, [], [])),
+            ("x:a\nb}}} rest", 2, (7, 1, [], [1])),
+            # Inside parentheses or brackets a colon is code, so a brace in a string after it does not end the hole.
+            ('(b ? x : "}")} rest', 1, (14, 0, [], [])),
+            ('[b ? x : "}"]} rest', 1, (14, 0, [], [])),
+            # Once they close, a colon starts the format clause again.
+            ('(a):"}"} rest', 1, (6, 0, [], [])),
+            ('[a]:"}"} rest', 1, (6, 0, [], [])),
+            # A closing parenthesis or bracket with none open leaves the count at zero.
+            ('):"}"} rest', 1, (4, 0, [], [])),
+            (']]:"}"} rest', 1, (5, 0, [], [])),
+            ("{a:b}} rest", 1, (6, 0, [], [])),
+            ("a::b{c}} rest", 1, (8, 0, [], [])),
+            ("a ? b : c} rest", 1, (10, 0, [], [])),
+        )
+        for text, hole, expected in cases:
+            with self.subTest(text=text, hole=hole):
+                self.assertEqual(expected, lexed(text, hole))
+
+
 class RuleTests(unittest.TestCase):
     def test_endregion_must_close_in_the_scope_its_region_opened(self) -> None:
         text = source(

@@ -292,6 +292,171 @@ class UpdatedPullRequestTests(unittest.TestCase):
                 classify("owner/repo", "topic", TIP, runner=run, in_base=in_main)
 
 
+LIST_CALL = [
+    "pr",
+    "list",
+    "--repo",
+    "owner/repo",
+    "--head",
+    "topic",
+    "--state",
+    "all",
+    "--json",
+    "number,state,headRefOid,headRepository,headRepositoryOwner",
+    "--limit",
+    "1000",
+]
+
+
+def commits_call(number: int) -> list[str]:
+    return ["api", "--paginate", "--slurp", f"repos/owner/repo/pulls/{number}/commits?per_page=100"]
+
+
+class ClassifySequenceTests(unittest.TestCase):
+    """classify called directly: each outcome with the exact gh calls it made, and each refusal's exact message."""
+
+    def outcome(
+        self,
+        *pulls: dict,
+        upstream: str | None = None,
+        in_base: Callable[[str], bool] | None = None,
+        commits: dict[int, str] | None = None,
+    ) -> tuple[str, list[list[str]]]:
+        answers = commits or {}
+
+        def answer(arguments: list[str]) -> subprocess.CompletedProcess:
+            if arguments[0] == "api":
+                number = int(arguments[3].split("/")[4])
+                return subprocess.CompletedProcess(["gh", *arguments], 0, answers[number], "")
+            return subprocess.CompletedProcess(["gh", *arguments], 0, listing(*pulls), "")
+
+        run = Recorder(answer)
+        return classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_base), run.calls
+
+    def refusal(
+        self, run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None
+    ) -> str:
+        with self.assertRaises(QueryError) as caught:
+            classify(repository, "topic", head, upstream, runner=run, in_base=in_main)
+        return str(caught.exception)
+
+    def test_identities_are_refused_in_order_before_any_query(self) -> None:
+        cases = (
+            ({"repository": "owner"}, "repository must be owner/name, got 'owner'"),
+            ({"repository": "owner/repo/extra"}, "repository must be owner/name, got 'owner/repo/extra'"),
+            ({"repository": "owner", "head": "x"}, "repository must be owner/name, got 'owner'"),
+            ({"head": TIP.upper()}, f"head SHA must be a full lowercase commit SHA, got '{TIP.upper()}'"),
+            ({"head": "a" * 39}, f"head SHA must be a full lowercase commit SHA, got '{'a' * 39}'"),
+            ({"head": "x", "upstream": "y"}, "head SHA must be a full lowercase commit SHA, got 'x'"),
+            ({"upstream": "abc"}, "upstream SHA must be a full lowercase commit SHA, got 'abc'"),
+            ({"upstream": ""}, "upstream SHA must be a full lowercase commit SHA, got ''"),
+        )
+        for arguments, message in cases:
+            run = responder(listing())
+            with self.subTest(arguments=arguments):
+                self.assertEqual(message, self.refusal(run, **arguments))
+                self.assertEqual([], run.calls)
+
+    def test_listing_problems_are_refused_with_their_exact_message(self) -> None:
+        cases = (
+            (responder("", 1, "HTTP 502: Bad"), "gh pr list failed (1): HTTP 502: Bad"),
+            (responder("nope"), "gh pr list returned invalid JSON: Expecting value: line 1 column 1 (char 0)"),
+            (responder("{}"), "gh pr list did not return a list"),
+            (responder('"OPEN"'), "gh pr list did not return a list"),
+            (
+                responder(listing(*([pull("CLOSED", OLD)] * 1000))),
+                "branch matches 1000 or more pull requests; the result may be incomplete",
+            ),
+            (responder(json.dumps(["a pull"])), "gh pr list returned an unexpected pull request state: None"),
+            (responder(listing({"number": 1})), "gh pr list returned an unexpected pull request state: None"),
+            (responder(listing(pull("DRAFT"))), "gh pr list returned an unexpected pull request state: 'DRAFT'"),
+            (
+                responder(listing(pull("OPEN"), pull("open"))),
+                "gh pr list returned an unexpected pull request state: 'open'",
+            ),
+        )
+        for run, message in cases:
+            with self.subTest(message=message):
+                self.assertEqual(message, self.refusal(run))
+                self.assertEqual([LIST_CALL], run.calls)
+
+    def test_a_gh_that_cannot_start_is_refused(self) -> None:
+        def missing(command: Sequence[str]) -> CommandResult:
+            raise OSError("no gh")
+
+        with self.assertRaises(QueryError) as caught:
+            classify("owner/repo", "topic", TIP, runner=missing)
+        self.assertEqual("could not run gh: no gh", str(caught.exception))
+
+    def test_one_fewer_than_the_limit_is_classified(self) -> None:
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(*([pull("CLOSED", OLD)] * 999)))
+
+    def test_each_outcome_with_its_calls(self) -> None:
+        cases: tuple[tuple[str, tuple[dict, ...], dict], ...] = (
+            ("NONE", (), {}),
+            ("NONE", (pull("MERGED", owner="fork"), pull("CLOSED", name="other")), {}),
+            ("NONE", (dict(pull("MERGED"), headRepository=None), dict(pull("MERGED"), headRepositoryOwner={})), {}),
+            ("OPEN", (pull("MERGED"), pull("OPEN", OLD, owner="fork")), {}),
+            ("OPEN", (pull("OPEN"),), {"upstream": OLD}),
+            ("MERGED", (pull("MERGED"),), {}),
+            ("MERGED", (pull("MERGED", owner="OWNER", name="Repo"),), {}),
+            ("MERGED", (pull("MERGED"),), {"upstream": TIP}),
+            ("UNMATCHED", (pull("MERGED"),), {"upstream": OLD}),
+            ("UNMATCHED", (pull("CLOSED"),), {"upstream": OLD}),
+            ("MERGED", (pull("CLOSED"), pull("MERGED")), {}),
+            ("MERGED", (pull("MERGED"), pull("CLOSED")), {}),
+            ("CLOSED", (pull("CLOSED"), pull("MERGED", OLD)), {}),
+            ("CLOSED", (pull("CLOSED"), pull("MERGED", owner="fork")), {}),
+            ("UNMATCHED", (pull("MERGED", OLD), pull("MERGED", owner="fork")), {}),
+            ("UNMATCHED", (dict(pull("MERGED"), headRefOid=None),), {}),
+        )
+        for expected, pulls, arguments in cases:
+            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
+                self.assertEqual((expected, [LIST_CALL]), self.outcome(*pulls, **arguments))
+
+    def test_the_repository_matches_its_pull_requests_whatever_its_case(self) -> None:
+        run = responder(listing(pull("MERGED")))
+        self.assertEqual("MERGED", classify("Owner/Repo", "topic", TIP, runner=run))
+        self.assertEqual("Owner/Repo", run.calls[0][3])
+
+    def test_a_merged_pull_request_updated_after_the_tip_is_queried_only_when_it_qualifies(self) -> None:
+        updated = dict(pull("MERGED", UPDATE), number=7)
+        cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]]], ...] = (
+            ("MERGED", (updated,), {}, [LIST_CALL, commits_call(7)]),
+            ("MERGED", (updated,), {"upstream": TIP}, [LIST_CALL, commits_call(7)]),
+            ("UNMATCHED", (updated,), {"upstream": OLD}, [LIST_CALL]),
+            ("UNMATCHED", (updated,), {"in_base": None}, [LIST_CALL]),
+            ("UNMATCHED", (dict(updated, state="CLOSED"),), {}, [LIST_CALL]),
+            ("NONE", (dict(pull("MERGED", UPDATE, owner="fork"), number=7),), {}, [LIST_CALL]),
+            ("UNMATCHED", (dict(updated, number="7"),), {}, [LIST_CALL]),
+            ("UNMATCHED", (dict(updated, number=None),), {}, [LIST_CALL]),
+            # An exact match is MERGED before any pull request's commits are read.
+            ("MERGED", (updated, pull("MERGED")), {}, [LIST_CALL]),
+            # A proof from the commits comes before an exact CLOSED match.
+            ("MERGED", (pull("CLOSED"), updated), {}, [LIST_CALL, commits_call(7)]),
+        )
+        for expected, pulls, arguments, calls in cases:
+            options = {"in_base": in_main, "commits": {7: UPDATED}, **arguments}
+            with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
+                self.assertEqual((expected, calls), self.outcome(*pulls, **options))
+
+    def test_merged_pull_requests_are_queried_in_order_until_one_proves_the_merge(self) -> None:
+        unrelated = history((WORK, BASE))
+        first, second, third = (dict(pull("MERGED", UPDATE), number=number) for number in (4, 5, 6))
+        self.assertEqual(
+            ("MERGED", [LIST_CALL, commits_call(4), commits_call(5)]),
+            self.outcome(first, second, third, in_base=in_main, commits={4: unrelated, 5: UPDATED, 6: UPDATED}),
+        )
+        self.assertEqual(
+            ("CLOSED", [LIST_CALL, commits_call(4)]),
+            self.outcome(first, pull("CLOSED"), in_base=in_main, commits={4: unrelated}),
+        )
+        self.assertEqual(
+            ("UNMATCHED", [LIST_CALL, commits_call(4), commits_call(5)]),
+            self.outcome(first, second, in_base=in_main, commits={4: unrelated, 5: unrelated}),
+        )
+
+
 class GitFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="pr-status.")

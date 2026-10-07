@@ -76,6 +76,15 @@ class Scan:
     continuation: set[int] = field(default_factory=set)  # lines that begin inside a string or comment
 
 
+@dataclass
+class CodeState:
+    """One Lexer.code call's state, which an interpolation hole lexed inside it keeps apart."""
+
+    hole: int  # the hole's closing brace count, or 0 outside a hole
+    depth: int = 0  # braces opened inside the hole
+    nesting: int = 0  # parentheses and brackets, for the format clause of a hole
+
+
 class Lexer:
     """Find code braces and preprocessor directives, skipping comments, strings, and character literals.
 
@@ -119,8 +128,7 @@ class Lexer:
 
     def code(self, hole: int) -> None:
         """Lex code; inside an interpolation hole (hole = closing brace count) return after the hole closes."""
-        depth = 0
-        nesting = 0  # parentheses and brackets, for the format clause of a hole
+        state = CodeState(hole)
         line_start = hole == 0 and self.i == 0
         while self.i < len(self.text):
             char = self.peek()
@@ -135,43 +143,58 @@ class Lexer:
                 self.directive()
                 continue
             line_start = False
-            if char == "/" and self.peek(1) == "/":
-                while self.i < len(self.text) and not self.at_newline():
-                    self.i += 1
-            elif char == "/" and self.peek(1) == "*":
-                self.block_comment()
-            elif char == "'":
-                self.character()
-            elif self.string_start():
-                continue
-            elif char in "([":
-                nesting += 1
-                self.i += 1
-            elif char in ")]":
-                nesting = max(0, nesting - 1)
-                self.i += 1
-            elif char == "{":
-                if hole:
-                    depth += 1
-                else:
-                    self.scan.events.append(Event("open", self.line))
-                self.i += 1
-            elif char == "}":
-                if hole and depth == 0:
-                    self.i += min(hole, self.run_length("}"))
-                    return
-                if hole:
-                    depth -= 1
-                else:
-                    self.scan.events.append(Event("close", self.line))
-                self.i += 1
-            elif char == ":" and hole and depth == 0 and nesting == 0 and self.peek(1) != ":":
-                self.format_clause(hole)
+            if self.token(char, state):
                 return
-            elif char == ":" and self.peek(1) == ":":
-                self.i += 2
+
+    def token(self, char: str, state: CodeState) -> bool:
+        """Lex the token at char, past any line break, blank, or directive; return whether it closed the hole."""
+        if char == "/" and self.peek(1) == "/":
+            self.line_comment()
+        elif char == "/" and self.peek(1) == "*":
+            self.block_comment()
+        elif char == "'":
+            self.character()
+        elif self.string_start():
+            pass
+        elif char in "([":
+            state.nesting += 1
+            self.i += 1
+        elif char in ")]":
+            state.nesting = max(0, state.nesting - 1)
+            self.i += 1
+        elif char in "{}":
+            return self.brace(char, state)
+        elif char == ":" and state.hole and state.depth == 0 and state.nesting == 0 and self.peek(1) != ":":
+            self.format_clause(state.hole)
+            return True
+        elif char == ":" and self.peek(1) == ":":
+            self.i += 2
+        else:
+            self.i += 1
+        return False
+
+    def brace(self, char: str, state: CodeState) -> bool:
+        """Lex a brace: an event in code, a level in a hole, or the hole's closing run; return whether it closed it."""
+        if char == "{":
+            if state.hole:
+                state.depth += 1
             else:
-                self.i += 1
+                self.scan.events.append(Event("open", self.line))
+            self.i += 1
+            return False
+        if state.hole and state.depth == 0:
+            self.i += min(state.hole, self.run_length("}"))
+            return True
+        if state.hole:
+            state.depth -= 1
+        else:
+            self.scan.events.append(Event("close", self.line))
+        self.i += 1
+        return False
+
+    def line_comment(self) -> None:
+        while self.i < len(self.text) and not self.at_newline():
+            self.i += 1
 
     def directive(self) -> None:
         start = self.i
