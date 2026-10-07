@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### flag-review-finding refuses a finding the archive does not have and lists a pull request's findings
+
+- Level: minor. An addition and a refusal, carried in the pre-1.0 minor: the new `findings` subcommand prints `FINDING` lines; `add` now fails on a finding ID that is not of the form `F001` or that the named review does not have, which it used to save as a flag that never linked; and a flag store whose `finding_id` is not a string or null fails to load instead of crashing later. `review-insights` counts a finding and its repeats once and reports an outcome only when a later review judged it, so a regenerated report can show smaller counts.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none, unless a hand-edited flag store holds a `finding_id` that is neither a string nor null. Then every command that reads it prints `FAILED Flag finding ID is invalid`; set that value to null or the finding ID.
+- Pull request: #165
+
 ### A review without checkout_path fails when GitHub's tarball is not the commit's exact tree
 
 - Level: patch. A fix: the snapshot could leave out a changed file or hold bytes the commit does not hold.

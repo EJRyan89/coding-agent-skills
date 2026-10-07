@@ -135,7 +135,7 @@ The Roslynator rules need the `.editorconfig` settings the skill proposes and th
 Add, list, or resolve a structured code-review improvement flag. Use it when the user says a review finding was wrong, noisy, or missed something and wants that recorded.
 
 ```text
-/flag-review-finding add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | resolve ID RESOLUTION
+/flag-review-finding add CATEGORY BODY [--repository owner/repo --pull N [--review-version V --finding ID]] | list | findings --repository owner/repo --pull N | resolve ID RESOLUTION
 ```
 
 Started by you or the agent. Installed with the `code-review-operations` bundle.
@@ -143,13 +143,15 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 
 The first word chooses what to do:
 
-- `add CATEGORY BODY` records a flag. `CATEGORY` is a short label of your choosing and `BODY` is the rationale; quote either when it has spaces. To tie the flag to a review finding, add `--repository owner/repo --pull N`, then `--review-version V --finding ID`. Both come from the finding's label in the review report: `v2 F003` is `--review-version 2 --finding F003`. A re-review report shows a finding carried from an earlier review under that review's label, so the report's **Mode** row is not the version to use. Finding IDs restart at `F001` in every review, so `--finding` needs `--review-version`. Only a flag that names a finding can be resolved by `review-insights`. A flag on a finding doesn't close it or change the verdict: the next re-review of that pull request gives the flag's category and rationale to the reviewer, which weighs it and marks the finding `superseded`, citing the flag, when the flag holds. "Finding ledger" in [code-review-operations.md](code-review-operations.md#finding-ledger) has the details.
+- `add CATEGORY BODY` records a flag. `CATEGORY` is a short label of your choosing and `BODY` is the rationale; quote either when it has spaces. To tie the flag to a review finding, add `--repository owner/repo --pull N`, then `--review-version V --finding ID`. Both come from the finding's label in the review report: `v2 F003` is `--review-version 2 --finding F003`. A re-review report shows a finding carried from an earlier review under that review's label, so the report's **Mode** row is not the version to use. Finding IDs restart at `F001` in every review, so `--finding` needs `--review-version`. The flag is refused unless `--finding` has that form and that review of the pull request is in the configured archive with that finding, because a flag on a finding that does not exist would never reach a reviewer. Only a flag that names a finding can be resolved by `review-insights`. A flag on a finding doesn't close it or change the verdict: the next re-review of that pull request gives the flag's category and rationale to the reviewer, which weighs it and marks the finding `superseded`, citing the flag, when the flag holds. "Finding ledger" in [code-review-operations.md](code-review-operations.md#finding-ledger) has the details.
 - `list` shows the open flags.
+- `findings --repository owner/repo --pull N` shows the pull request's open and unverified findings, each under the label its review report shows, so the agent can find the one you mean without reading the report.
 - `resolve ID RESOLUTION` closes the flag `ID`, such as `RF-000004`, with a non-empty explanation.
 
 ```text
 /flag-review-finding add noise "Asked for a null check the caller already guarantees" --repository octo-org/widgets --pull 42 --review-version 2 --finding F003
 /flag-review-finding list
+/flag-review-finding findings --repository octo-org/widgets --pull 42
 /flag-review-finding resolve RF-000004 "The reviewer prompt now checks the caller's contract"
 ```
 

@@ -121,6 +121,17 @@ def archived_record(archive: Path, pull_number: int) -> dict[str, Any]:
     return record
 
 
+def strip_artifacts(archive: Path, case: str) -> None:
+    """Make the archived first review's `artifacts` null, or remove it."""
+    json_path = pull_directory(archive, REPOSITORY, 12) / "review.json"
+    stored = json.loads(json_path.read_text(encoding="utf-8"))
+    if case == "null":
+        stored["artifacts"] = None
+    else:
+        del stored["artifacts"]
+    json_path.write_text(json.dumps(stored), encoding="utf-8")
+
+
 def git(path: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(path), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", *arguments],
@@ -1535,6 +1546,17 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual(
             "RF-000001 holds: every caller converts the total to float.", record["prior_dispositions"][0]["rationale"]
         )
+
+    def test_a_re_review_is_not_prepared_from_a_record_without_artifact_hashes(self) -> None:
+        self.record_initial_review()
+        self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
+        for case in ("null", "missing"):
+            with self.subTest(case=case):
+                strip_artifacts(self.archive, case)
+                self.assertEqual(
+                    (1, f"FAILED {SELECTOR} Review record has no artifact hashes\n", ""),
+                    self.run_main("prepare", "--re-review", SELECTOR, "--scope", "full"),
+                )
 
     def test_a_re_review_is_not_prepared_from_a_malformed_flag_store(self) -> None:
         self.record_initial_review()
@@ -3184,6 +3206,18 @@ class BatchTests(PipelineFixture):
         rp.finalize(ready["run"])
         self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("2026-03-10", load_state(self.state_path)["repositories"][REPOSITORY]["merged_since"])
+
+    def test_enumerate_reports_a_record_without_artifact_hashes(self) -> None:
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        for case in ("null", "missing"):
+            with self.subTest(case=case):
+                strip_artifacts(self.archive, case)
+                code, out, err = self.run_main("enumerate", "--output", str(self.root / "batch.json"))
+                self.assertEqual((0, ""), (code, err))
+                self.assertIn("REPOSITORY_FAILED example/one Review record has no artifact hashes\n", out)
 
     def test_enumerate_writes_its_batch_under_a_new_temporary_directory_by_default(self) -> None:
         self.github.listing = [rest_pull(12, self.head, self.base)]

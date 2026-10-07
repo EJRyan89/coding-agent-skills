@@ -8,13 +8,46 @@ import tempfile
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+
+import review_fixture
+from review_config import write_config
+
 SCRIPT = Path(__file__).with_name("flag_review_finding.py")
 
 
 class FlagCliTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
-        self.store = str(Path(self._temporary.name) / "flags.json")
+        root = Path(self._temporary.name) / "root with spaces"
+        self.store = str(root / "flags.json")
+        self.archive = root / "archive"
+        self.config = str(root / "config.json")
+        reviewer = {
+            "reviewer": {
+                "id": "generic",
+                "protocol_version": 1,
+                "trusted_ref": None,
+                "scope": "generic",
+                "manifest_path": None,
+            },
+            "checkout_path": None,
+        }
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": ["example/one"]},
+                "repositories": {"example/one": reviewer},
+                "operation_repository_sets": {},
+                "archive_root": str(self.archive),
+                "local_mirror_root": None,
+                "summary_root": str(root / "summary"),
+                "dashboard_file": str(root / "dashboard.md"),
+                "github_login": "reviewer",
+            },
+            Path(self.config),
+        )
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
@@ -29,13 +62,11 @@ class FlagCliTests(unittest.TestCase):
         )
 
     def store_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        return self.run_cli("--store", self.store, *arguments)
+        return self.run_cli("--store", self.store, "--config", self.config, *arguments)
 
-    def assert_result(self, result: subprocess.CompletedProcess[str], code: int, stdout: str) -> None:
-        self.assertEqual((code, stdout, ""), (result.returncode, result.stdout, result.stderr))
-
-    def test_add_list_and_resolve(self) -> None:
-        created = self.store_cli(
+    def flag_finding(self, version: str, finding: str) -> subprocess.CompletedProcess[str]:
+        """Add a flag on a finding of example/one#12."""
+        return self.store_cli(
             "add",
             "guideline",
             "Clarify boundary",
@@ -44,15 +75,21 @@ class FlagCliTests(unittest.TestCase):
             "--pull",
             "12",
             "--review-version",
-            "2",
+            version,
             "--finding",
-            "F001",
+            finding,
         )
-        self.assert_result(created, 0, "ADDED RF-000001\n")
+
+    def assert_result(self, result: subprocess.CompletedProcess[str], code: int, stdout: str) -> None:
+        self.assertEqual((code, stdout, ""), (result.returncode, result.stdout, result.stderr))
+
+    def test_add_list_and_resolve(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        self.assert_result(self.flag_finding("3", "F002"), 0, "ADDED RF-000001\n")
         stored = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
-        self.assertEqual((2, "F001"), (stored["review_version"], stored["finding_id"]))
+        self.assertEqual((3, "F002"), (stored["review_version"], stored["finding_id"]))
         self.assert_result(
-            self.store_cli("list"), 0, "FLAG RF-000001 guideline example/one#12 v2 F001 Clarify boundary\nCOUNT 1\n"
+            self.store_cli("list"), 0, "FLAG RF-000001 guideline example/one#12 v3 F002 Clarify boundary\nCOUNT 1\n"
         )
         self.assert_result(self.store_cli("resolve", "RF-000001", "Accepted"), 0, "RESOLVED RF-000001\n")
         self.assert_result(self.store_cli("list"), 0, "COUNT 0\n")
@@ -135,6 +172,52 @@ class FlagCliTests(unittest.TestCase):
         )
         self.assertFalse(Path(self.store).exists())
 
+    def test_a_finding_that_is_not_a_finding_id_fails_before_the_archive_is_read(self) -> None:
+        # No review is archived, so a refusal that names the form was decided before the archive was read.
+        for finding in ("v2 F002", "f2", "garbage", "F01", ""):
+            with self.subTest(finding=finding):
+                self.assert_result(
+                    self.flag_finding("2", finding),
+                    1,
+                    f"FAILED Finding ID {finding!r} is not a finding ID such as F001; a report label such as "
+                    "v2 F003 names review version 2 and finding F003\n",
+                )
+        self.assertFalse(Path(self.store).exists())
+
+    def test_a_finding_the_archive_lacks_fails(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        for version, finding, reason in (
+            ("2", "F001", "Review v2 of example/one#12 has no finding F001"),
+            ("3", "F009", "Review v3 of example/one#12 has no finding F009"),
+            ("4", "F001", "example/one#12 has no review v4 in the archive"),
+        ):
+            with self.subTest(version=version, finding=finding):
+                self.assert_result(self.flag_finding(version, finding), 1, f"FAILED {reason}\n")
+        self.assertFalse(Path(self.store).exists())
+
+    def test_a_flag_on_a_finding_of_an_unreviewed_pull_request_fails(self) -> None:
+        self.assert_result(self.flag_finding("1", "F001"), 1, "FAILED example/one#12 has no review v1 in the archive\n")
+
+    def test_findings_lists_the_open_findings_of_a_pull_request_by_report_label(self) -> None:
+        # v1 F001 is open and was repeated as v3 F001, so it is shown where it was last reported; v1 F002 was
+        # addressed in v2; v3 F002 is new.
+        review_fixture.commit_fixture(self.archive)
+        self.assert_result(
+            self.store_cli("findings", "--repository", "example/one", "--pull", "12"),
+            0,
+            "FINDING v1 F001 MUST_FIX src/lock.py:14 Lock leaks on the timeout path\n"
+            "FINDING v3 F002 SUGGESTION src/retry.py:5 Name the retry limit\n"
+            "COUNT 2\n",
+        )
+        self.assert_result(self.flag_finding("1", "F001"), 0, "ADDED RF-000001\n")
+
+    def test_findings_of_an_unreviewed_pull_request_fail(self) -> None:
+        self.assert_result(
+            self.store_cli("findings", "--repository", "example/one", "--pull", "12"),
+            1,
+            "FAILED example/one#12 has no review in the archive\n",
+        )
+
     def test_invalid_repository_fails(self) -> None:
         result = self.store_cli("add", "guideline", "Body", "--repository", "short-name")
         self.assert_result(result, 1, "FAILED Invalid repository identity: 'short-name'\n")
@@ -149,8 +232,22 @@ class FlagCliTests(unittest.TestCase):
         self.assertEqual((1, ""), (result.returncode, result.stderr))
         self.assertRegex(result.stdout, r"\AFAILED \S[^\n]*\n\Z")
 
+    def test_a_store_whose_finding_id_is_a_list_fails(self) -> None:
+        self.store_cli("add", "guideline", "Body")
+        store = json.loads(Path(self.store).read_text(encoding="utf-8"))
+        store["flags"][0].update(repository="example/one", pull_number=12, review_version=1, finding_id=["F001"])
+        Path(self.store).write_text(json.dumps(store), encoding="utf-8")
+        for arguments in (["list"], ["resolve", "RF-000001", "Done"], ["add", "guideline", "Body"]):
+            with self.subTest(arguments=arguments):
+                self.assert_result(self.store_cli(*arguments), 1, "FAILED Flag finding ID is invalid\n")
+
     def test_usage_errors_exit_2(self) -> None:
-        for arguments in (["add", "guideline"], ["add", "guideline", "Body", "--pull", "twelve"], ["remove"]):
+        for arguments in (
+            ["add", "guideline"],
+            ["add", "guideline", "Body", "--pull", "twelve"],
+            ["remove"],
+            ["findings", "--repository", "example/one"],
+        ):
             with self.subTest(arguments=arguments):
                 result = self.store_cli(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))

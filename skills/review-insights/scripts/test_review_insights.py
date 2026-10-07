@@ -16,10 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 import review_insights as ri
-from review_archive import commit_record
+from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
-from review_records import build_record, validate_adapter_result
+from review_records import build_record, carried_findings, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -414,6 +414,130 @@ class ReportTests(InsightFixture):
             "| --- | --- | --- | --- | --- | --- |\n| security | claude-opus-5-5 | 2 | 0 | 1 | 1 |\n",
             json_path.with_suffix(".md").read_text(encoding="utf-8"),
         )
+
+    def commit_repeats(self, *, judged_after: bool) -> None:
+        """owner/repo#7 in range: v1 raises a Correctness and a Style finding; v2 and v3 each judge the Correctness
+        one still present and repeat it, v2 repeating it as v2 F001 and v3 (a repeat of a repeat) as v3 F001; v3 also
+        judges the Style one addressed. With `judged_after`, v4, after the range, judges the Correctness one
+        addressed."""
+        security = [reviewer("security", "claude-opus-5-5")]
+        repeat = ("Correctness", "src/repeat.cs", "v1:F001")
+        reviews: list[tuple[str, list[tuple[str, str, str | None]], list[tuple[str, str]]]] = [
+            ("2026-01-10", [("Correctness", "src/a.cs", None), ("Style", "src/b.cs", None)], []),
+            ("2026-01-12", [repeat], [("v1:F001", "still_present"), ("v1:F002", "still_present")]),
+            ("2026-01-14", [repeat], [("v1:F001", "still_present"), ("v1:F002", "addressed")]),
+        ]
+        if judged_after:
+            reviews.append(("2026-02-10", [], [("v1:F001", "addressed")]))
+        for version, (day, findings, dispositions) in enumerate(reviews, start=1):
+            head = f"{version:x}" * 40
+            prior = carried_findings(pull_records(self.archive, "owner/repo", 7))
+            result = validate_adapter_result(
+                {
+                    "protocol_version": 1,
+                    "repository": "owner/repo",
+                    "pull_number": 7,
+                    "head_sha": head,
+                    "summary": "Fixture",
+                    "reviewer": "fixture",
+                    "status": "complete",
+                    "usage": None,
+                    "findings": [
+                        {
+                            "candidate_key": f"k{index}",
+                            "severity": "SHOULD_FIX",
+                            "category": category,
+                            "path": path,
+                            "line": 3,
+                            "body": "Fix this.",
+                            "evidence": "Evidence.",
+                            "source": "security",
+                            **({"repeats": repeats} if repeats else {}),
+                        }
+                        for index, (category, path, repeats) in enumerate(findings)
+                    ],
+                    "prior_dispositions": [
+                        {"finding_id": identifier, "disposition": value, "rationale": "Checked."}
+                        for identifier, value in dispositions
+                    ],
+                },
+                expected_repository="owner/repo",
+                expected_number=7,
+                expected_head_sha=head,
+                prior_ids=[item["id"] for item in prior],
+                prior_severities={item["id"]: item["severity"] for item in prior},
+            )
+            request = {
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "pull_url": "https://github.com/owner/repo/pull/7",
+                "title": "Fixture",
+                "base_ref": "main",
+                "base_sha": "a" * 40,
+                "head_sha": head,
+                "mode": "initial" if version == 1 else "re-review",
+                "reviewers": security,
+                "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            }
+            built = build_record(
+                request,
+                result,
+                version=version,
+                policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+                reviewed_at=f"{day}T12:00:00+00:00",
+                prior_ledger=current_ledger(self.archive, "owner/repo", 7),
+            )
+            commit_record(
+                self.archive, "owner/repo", 7, built, expected_latest_version=None if version == 1 else version - 1
+            )
+
+    def test_a_finding_and_its_repeats_count_once_and_a_flag_on_any_of_them_links_it(self) -> None:
+        self.commit_repeats(judged_after=True)
+        original = self.flag("noise")  # v1 F001
+        on_repeat = self.flag("noise", version=3)  # v3 F001, the repeat of a repeat
+        json_path, lines = self.report(reviewers=True)
+        self.assertEqual(
+            [
+                f"RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags={original},{on_repeat}",
+                "REVIEWER REC-001 security model=claude-opus-5-5 findings=1 flagged=1 addressed=1 still_present=0",
+                "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
+                "REVIEWER REC-002 security model=claude-opus-5-5 findings=1 flagged=0 addressed=1 still_present=0",
+            ],
+            lines,
+        )
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual((3, 2), (report["record_count"], report["finding_count"]))
+        self.assertEqual({"SHOULD_FIX": 2}, report["severity_counts"])
+
+    def test_a_finding_no_later_review_judged_has_no_outcome(self) -> None:
+        # v3 judged the Correctness finding still present in the review that repeated it, so no later review has.
+        self.commit_repeats(judged_after=False)
+        _, lines = self.report(reviewers=True)
+        self.assertEqual(
+            [
+                "RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags=none",
+                "REVIEWER REC-001 security model=claude-opus-5-5 findings=1 flagged=0 addressed=0 still_present=0",
+                "RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none",
+                "REVIEWER REC-002 security model=claude-opus-5-5 findings=1 flagged=0 addressed=1 still_present=0",
+            ],
+            lines,
+        )
+
+    def test_a_record_without_artifact_hashes_fails(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        json_path = self.archive / "owner" / "repo" / "pulls" / "7" / "review.json"
+        for case in ("null", "missing"):
+            with self.subTest(case=case):
+                stored = json.loads(json_path.read_text(encoding="utf-8"))
+                if case == "null":
+                    stored["artifacts"] = None
+                else:
+                    stored.pop("artifacts", None)
+                json_path.write_text(json.dumps(stored), encoding="utf-8")
+                self.assertFailed(
+                    self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                    "Review record has no artifact hashes",
+                )
 
     def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
         # Windows pipes default to a legacy code page; RECOMMENDATION quotes a reviewer's category as written.

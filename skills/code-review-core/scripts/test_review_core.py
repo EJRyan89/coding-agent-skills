@@ -64,6 +64,7 @@ from review_records import (
     RecordError,
     build_record,
     calculate_verdict,
+    record_artifacts,
     render_markdown,
     valid_analyzer,
     valid_title,
@@ -1029,6 +1030,36 @@ class RecordTests(unittest.TestCase):
             markdown_path.write_text(markdown_path.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(RecordError, "Markdown hash mismatch"):
                 validate_record_pair(json_path, markdown_path)
+
+    def test_a_record_pair_without_artifact_hashes_is_refused(self) -> None:
+        # The contract reads a null `artifacts` as absent, and an archived pair without them cannot be verified.
+        record = build_record(
+            valid_request(),
+            validate_adapter_result(
+                valid_adapter_result(),
+                expected_repository="example/one",
+                expected_number=12,
+                expected_head_sha="b" * 40,
+            ),
+            version=1,
+            policy={"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+            reviewed_at="2026-01-01T00:00:00+00:00",
+        )
+        self.assertIsNone(record_artifacts(record))
+        for case in ("null", "missing"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                json_path = Path(temporary) / "review.json"
+                markdown_path = Path(temporary) / "review.md"
+                persisted = write_record_pair(json_path, markdown_path, record)
+                self.assertEqual(persisted["artifacts"], record_artifacts(persisted))
+                stored = json.loads(json_path.read_text(encoding="utf-8"))
+                if case == "null":
+                    stored["artifacts"] = None
+                else:
+                    del stored["artifacts"]
+                json_path.write_text(json.dumps(stored), encoding="utf-8")
+                with self.assertRaisesRegex(RecordError, "^Review record has no artifact hashes$"):
+                    validate_record_pair(json_path, markdown_path)
 
     def test_markdown_groups_findings_by_severity_in_the_legacy_layout(self) -> None:
         request = valid_request()

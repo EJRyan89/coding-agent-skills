@@ -13,16 +13,19 @@ use (known), or a pattern no rule covers yet (custom-candidate). Analyzer recomm
 because enforcing a rule the repository already has is the cheapest way to stop a recurring finding. A finding with
 analyzer coverage belongs to its category recommendation and to its analyzer recommendation.
 
+A finding is counted once across the reviews that carry it, by its ledger entry: a finding a review linked as a
+repeat counts with the finding it repeats, from the earliest review in range that carries either.
+
 A flag is linked to a recommendation when the flag is open, names a repository, pull request, review version,
-and finding, and that analyzed review has that finding among the recommendation's findings. Finding IDs
-restart in every review, so a flag is never matched against another review's finding. Links are computed when
-the report is written, so `decide` resolves exactly the flags it listed.
+and finding, and that finding, or the finding it repeats or one that repeats it, is among the recommendation's
+findings. Finding IDs restart in every review, so a flag is never matched against another review's finding. Links
+are computed when the report is written, so `decide` resolves exactly the flags it listed.
 
 Each recommendation also counts its findings by the reviewer that raised them and the model that reviewer ran on,
 read from the review record: a finding raised by several reviewers counts for each, and a reviewer whose record
-names no model counts under `unknown`. Beside the flags, each count says how many of those findings the pull
-request's latest re-review judged addressed and how many still present, read from its finding ledger whatever the
-range, so acceptance shows without anyone flagging.
+names no model counts under `unknown`. Beside the flags, each count says how many of those findings a later review
+judged addressed and how many still present, read from the pull request's finding ledger whatever the range, so
+acceptance shows without anyone flagging.
 """
 
 from __future__ import annotations
@@ -76,7 +79,7 @@ EVIDENCE_RENDERED = 10
 
 ReviewKey = tuple[str, int, int]
 FindingKey = tuple[str, int, int, str]
-Pair = tuple[dict[str, Any], dict[str, Any]]  # (record, finding)
+Pair = tuple[dict[str, Any], dict[str, Any], FindingKey]  # (record, finding, its ledger entry)
 
 
 class InsightError(ValueError):
@@ -84,6 +87,18 @@ class InsightError(ValueError):
 
 
 EXPECTED_ERRORS = (InsightError, ConfigurationError, FlagError, PersistenceError, OSError)
+
+
+@dataclass
+class Ledgers:
+    """Each finding's ledger entry, keyed like a finding by the version and ID where the entry first appeared, and
+    each entry's outcome (see read_ledgers). A finding with no entry is its own."""
+
+    entries: dict[FindingKey, FindingKey]
+    outcomes: dict[FindingKey, str]
+
+    def entry(self, key: FindingKey) -> FindingKey:
+        return self.entries.get(key, key)
 
 
 @dataclass
@@ -136,21 +151,15 @@ def _finding_key(record: dict[str, Any], finding: dict[str, Any]) -> FindingKey:
     return (*_review_key(record), finding["id"])
 
 
-def flags_by_finding(
-    records: list[tuple[Path, dict[str, Any]]], flags: list[dict[str, Any]]
-) -> dict[FindingKey, list[str]]:
-    """Open flag IDs by the analyzed finding each names, following each flag to the review version it names."""
-    reviews = {_review_key(record): record for _, record in records}
+def flags_by_entry(flags: list[dict[str, Any]], ledgers: Ledgers) -> dict[FindingKey, list[str]]:
+    """Open flag IDs by the ledger entry of the finding each names, in the review version it names."""
     linked: dict[FindingKey, list[str]] = {}
     for flag in flags:
-        key = (flag["repository"], flag["pull_number"], flag["review_version"], flag["finding_id"])
-        if flag["status"] != "open" or None in key:
+        named = (flag["repository"], flag["pull_number"], flag["review_version"], flag["finding_id"])
+        if flag["status"] != "open" or None in named:
             continue
-        review = (flag["repository"].lower(), flag["pull_number"], flag["review_version"])
-        record = reviews.get(review)
-        for finding in record["findings"] if record else []:
-            if finding["id"] == flag["finding_id"]:
-                linked.setdefault((*review, finding["id"]), []).append(flag["id"])
+        key = (flag["repository"].lower(), flag["pull_number"], flag["review_version"], flag["finding_id"])
+        linked.setdefault(ledgers.entry(key), []).append(flag["id"])
     return linked
 
 
@@ -169,31 +178,37 @@ def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str
     return named or [(part, UNKNOWN_MODEL) for part in parts]
 
 
-def finding_outcomes(archive_root: Path, records: list[tuple[Path, dict[str, Any]]]) -> dict[FindingKey, str]:
-    """The latest disposition of each analyzed finding's ledger entry, read from every review of its pull request,
-    in range or not. A finding is judged in the ledger that ends its chain: the last review before the next
-    initial review, which starts a new ledger. A finding no later review judged has no outcome."""
-    outcomes: dict[FindingKey, str] = {}
+def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]]) -> Ledgers:
+    """The ledger entry of every finding of each analyzed pull request, and each entry's outcome, read from every
+    review of it, in range or not. An entry is read from the ledger that ends its chain: the last review before the
+    next initial review, which starts a new ledger. Its outcome is the latest disposition a review made after the
+    last review that raised or repeated it; an entry no later review judged has none."""
+    ledgers = Ledgers({}, {})
     pulls = sorted({(record["repository"].lower(), record["pull_request"]["number"]) for _, record in records})
     for repository, number in pulls:
         try:
             history = pull_records(archive_root, repository, number)
         except (KeyError, ValueError, OSError, RecordError) as exc:
             raise InsightError(f"Invalid review history for {repository}#{number}: {exc}") from exc
-        ledgers = ledger_history(history)
-        starts = sorted(record["review"]["version"] for record in history if record["review"]["mode"] == "initial")
-        for record in history:
-            version = record["review"]["version"]
-            end = max(v for v in ledgers if v >= version and not any(version < s <= v for s in starts))
-            for entry in ledgers[end]:
-                if not entry["dispositions"]:
-                    continue
-                for occurrence in ({"version": entry["version"], "id": entry["id"]}, *entry["repeats"]):
-                    if occurrence["version"] == version:
-                        outcomes[(repository, number, version, occurrence["id"])] = entry["dispositions"][-1][
-                            "disposition"
-                        ]
-    return outcomes
+        by_version = ledger_history(history)
+        versions = sorted(by_version)
+        initial = {record["review"]["version"] for record in history if record["review"]["mode"] == "initial"}
+        ends = [
+            version
+            for version, after in zip(versions, [*versions[1:], None], strict=True)
+            if after is None or after in initial
+        ]
+        for end in ends:
+            for entry in by_version[end]:
+                key = (repository, number, entry["version"], entry["id"])
+                raised = [{"version": entry["version"], "id": entry["id"]}, *entry["repeats"]]
+                for occurrence in raised:
+                    ledgers.entries[(repository, number, occurrence["version"], occurrence["id"])] = key
+                last_raised = max(occurrence["version"] for occurrence in raised)
+                later = [item for item in entry["dispositions"] if item["version"] > last_raised]
+                if later:
+                    ledgers.outcomes[key] = later[-1]["disposition"]
+    return ledgers
 
 
 def reviewer_breakdown(
@@ -205,8 +220,7 @@ def reviewer_breakdown(
     counts: Counter[tuple[str, str]] = Counter()
     flagged_counts: Counter[tuple[str, str]] = Counter()
     outcome_counts: dict[str, Counter[tuple[str, str]]] = {outcome: Counter() for outcome in OUTCOMES}
-    for record, finding in pairs:
-        key = _finding_key(record, finding)
+    for record, finding, key in pairs:
         outcome = outcomes.get(key)
         for pair in raised_by(record, finding):
             counts[pair] += 1
@@ -280,26 +294,33 @@ def analyze(
     *,
     flags: list[dict[str, Any]] | None = None,
     previous: dict[tuple[str, ...], dict[str, Any]] | None = None,
-    outcomes: dict[FindingKey, str] | None = None,
+    ledgers: Ledgers | None = None,
 ) -> dict[str, Any]:
     """Recommendations by category, then by analyzer rule; a subject already in `previous` keeps its decision and
-    history. `outcomes` holds each finding's latest disposition (see finding_outcomes)."""
+    history. `ledgers` gives each finding's ledger entry, so a finding and its repeats count once, from the earliest
+    review in range that carries one, and each entry's outcome (see read_ledgers)."""
+    ledgers = ledgers or Ledgers({}, {})
     category_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
     groups: dict[tuple[str, ...], list[Pair]] = {}
     spellings: dict[tuple[str, ...], dict[str, str]] = {}
-    for _, record in records:
+    counted: set[FindingKey] = set()
+    for _, record in sorted(records, key=lambda item: _review_key(item[1])):
         for finding in record["findings"]:
+            entry = ledgers.entry(_finding_key(record, finding))
+            if entry in counted:
+                continue
+            counted.add(entry)
             category_counts[finding["category"]] += 1
             severity_counts[finding["severity"]] += 1
-            groups.setdefault(("category", finding["category"]), []).append((record, finding))
+            groups.setdefault(("category", finding["category"]), []).append((record, finding, entry))
             analyzer = finding.get("analyzer")
             if analyzer is not None and valid_analyzer(analyzer):
-                # The first spelling in record order names the rule, so a report reads the same when regenerated.
+                # The first spelling in review order names the rule, so a report reads the same when regenerated.
                 key = subject_key({"kind": "analyzer", **analyzer})
-                groups.setdefault(key, []).append((record, finding))
+                groups.setdefault(key, []).append((record, finding, entry))
                 spellings.setdefault(key, analyzer)
-    linked = flags_by_finding(records, flags or [])
+    linked = flags_by_entry(flags or [], ledgers)
     flagged = set(linked)
     earlier = previous or {}
     # A subject keeps the ID it had when the report was regenerated, so an ID the user was shown never comes to
@@ -321,13 +342,13 @@ def analyze(
         if not isinstance(identifier, str) or not REC_ID.fullmatch(identifier):
             identifier = f"REC-{next_number:03d}"
             next_number += 1
-        links = sorted({flag for record, finding in pairs for flag in linked.get(_finding_key(record, finding), [])})
+        links = sorted({flag for _, _, entry in pairs for flag in linked.get(entry, [])})
         common = {
             "finding_count": len(pairs),
             "decision": prior.get("decision", "deferred"),
             "decision_history": list(prior.get("decision_history", [])),
             "linked_flags": links,
-            "reviewers": reviewer_breakdown(pairs, flagged, outcomes or {}),
+            "reviewers": reviewer_breakdown(pairs, flagged, ledgers.outcomes),
         }
         if key[0] == "category":
             category = key[1]
@@ -343,7 +364,7 @@ def analyze(
             )
             continue
         analyzer = spellings[key]
-        repositories = sorted({record["repository"].lower() for record, _ in pairs})
+        repositories = sorted({record["repository"].lower() for record, _, _ in pairs})
         recommendations.append(
             {
                 "id": identifier,
@@ -356,7 +377,7 @@ def analyze(
                     analyzer["coverage"], analyzer["tool"], analyzer["rule"], repositories
                 ),
                 **common,
-                "evidence": [_evidence(record, finding) for record, finding in pairs],
+                "evidence": [_evidence(record, finding) for record, finding, _ in pairs],
             }
         )
     return {
@@ -591,7 +612,7 @@ def create_report(
         "repositories": sorted(validate_repository_identity(value) for value in repositories),
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
-        **analyze(records, flags=flags, previous=previous, outcomes=finding_outcomes(archive_root, records)),
+        **analyze(records, flags=flags, previous=previous, ledgers=read_ledgers(archive_root, records)),
         "records": [
             {
                 "path": str(path),

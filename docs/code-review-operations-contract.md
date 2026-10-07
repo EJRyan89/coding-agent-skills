@@ -10,7 +10,7 @@ This is the behavior the four public skills of the `code-review-operations` bund
 | `review-prs --re-review` | Re-review a previously reviewed pull request; require a changed head unless forced; compare every prior finding; create the next review version without overwriting history; never post to GitHub. | Versioned JSON/Markdown review pair. |
 | `update-pr-tracker` | Track pull requests authored by, assigned to, or involving the configured user; place each in a counted section from the user's own GitHub review state; treat an update as unchanged only when every file the pull request changes is identical in content and file mode to what was reviewed, and uncertain responses to requested changes as awaiting response; omit approved pull requests unchanged since approval; remove a row on the user's direct assessment without acting on GitHub; show missing/current/stale AI review status independently of section; optionally offer to generate missing or stale reviews; preserve user-authored dashboard content. | One marker-owned dashboard section. |
 | `review-insights` | Filter reviews by explicit inclusive dates; aggregate severity/category themes; count findings later judged addressed or still present per reviewer, model, and category; record an accept/reject/defer decision per recommendation; retain reproducible evidence. | Versioned summary JSON plus Markdown projection. |
-| `flag-review-finding` | Add, list, and resolve review-improvement observations with stable IDs and optional PR/finding association. | Locked structured flag store. |
+| `flag-review-finding` | Add, list, and resolve review-improvement observations with stable IDs and optional PR/finding association; refuse a finding the archive does not have; list a pull request's open findings under their report labels. | Locked structured flag store. |
 
 Repository targeting is always one or more full `owner/repo` identities or a named configured set. Pagination must complete per repository. Authentication, rate limits, malformed responses, and unexpected API failures fail closed.
 
@@ -473,7 +473,7 @@ The flag store shared by `flag-review-finding` and `review-insights`, validated 
 | `repository` | string or null | yes | The `owner/repo` it is about, or null. |
 | `pull_number` | integer or null | yes | The pull request it is about, or null. |
 | `review_version` | integer or null | yes | The review version its finding is in, which needs `pull_number`; or null. |
-| `finding_id` | any | yes | The finding it names in that review version, as written by `flag-review-finding`, or null. Its form is not checked when read. |
+| `finding_id` | string or null | yes | The finding it names in that review version, or null. `flag-review-finding add` writes only a finding ID that review has; its form is not checked when read, so an older flag's ID loads and links to nothing. |
 | `category` | string | yes | Its category. Not blank. |
 | `body` | string | yes | The observation. Not blank. |
 | `resolution` | string or null | yes | How it was resolved; null while open. |
