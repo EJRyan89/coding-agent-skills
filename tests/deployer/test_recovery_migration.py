@@ -240,7 +240,7 @@ class RecoveryTests(RecoveryTestCase):
     def test_malformed_journal_blocks_deployment_and_is_retained(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         journal = self.staging_run("20260101-000000-bad1") / "journal.jsonl"
-        self.write(journal, '{"op":"backup","item":"alpha","from":"skills/alpha","to":"skills/alpha.deploying-bak"')
+        self.write(journal, '{"op":"backup","item":"alpha","from":"skills/alpha","to":"skills/alpha.deploying-bak"\n')
         self.deploy_fails("--all", pattern="Malformed journal entry in run 20260101-000000-bad1")
         self.assertTrue(journal.is_file())
 
@@ -790,6 +790,190 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertIn("Updated alpha", self.skill_text("alpha"))
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
         self.assertFalse(self.lock_dir.exists())
+
+
+class UnkeptBackupTests(RecoveryTestCase):
+    """A backup the run does not keep is deleted only while it matches the hash the plan recorded; otherwise kept."""
+
+    RUN = "20260101-000000-unkp"
+    EDIT = "edited during the deployment\n"
+
+    def edited_before_its_move(self, item: str) -> mock._patch:
+        """Edit an item after the plan read its hash and just before the move that makes it a transient backup."""
+        real_move = fsops.move
+
+        def move(source: Path, destination: Path) -> None:
+            if destination == self.skills_dir / f"{item}.deploying-bak":
+                self.write(source / "SKILL.md", self.EDIT)
+            real_move(source, destination)
+
+        return mock.patch("deployer.fsops.move", side_effect=move)
+
+    def assert_kept(self, output: str, item: str, run_id: str) -> None:
+        self.assert_lines(
+            output,
+            f"WARNING: {item} changed after this deployment planned it, so its previous copy was kept at "
+            f".backups/{run_id}/{item} instead of being deleted.",
+            "BACKED UP (1):",
+            f"  {item}: .backups/{run_id}/{item}",
+        )
+        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / run_id / item / "SKILL.md").read_text())
+        self.assertFalse((self.skills_dir / f"{item}.deploying-bak").exists())
+
+    def test_an_update_keeps_a_copy_edited_between_the_plan_and_the_move(self) -> None:
+        self.deployed(("alpha", "Original alpha"))
+        self.make_skill("alpha", "Updated alpha")
+        with self.edited_before_its_move("alpha"):
+            result = self.deploy_ok("--all")
+        self.assert_kept(result.output, "alpha", self.manifest()["last_run_id"])
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def test_a_removal_keeps_a_copy_edited_between_the_plan_and_the_move(self) -> None:
+        self.deployed(("alpha", "Alpha content"), ("obsolete", "Original obsolete"))
+        self.remove_skill("obsolete")
+        with self.edited_before_its_move("obsolete"):
+            result = self.deploy_ok("--all")
+        self.assert_kept(result.output, "obsolete", self.manifest()["last_run_id"])
+        self.assertFalse((self.skills_dir / "obsolete").exists())
+        self.assertNotIn("obsolete", self.owned("skills"))
+
+    def test_an_unchanged_copy_is_deleted(self) -> None:
+        self.deployed(("alpha", "Original alpha"))
+        self.make_skill("alpha", "Updated alpha")
+        result = self.deploy_ok("--all")
+        self.assertNotIn("BACKED UP", result.output)
+        self.assertNotIn("WARNING", result.output)
+        self.assertFalse((self.skills_dir / ".backups").exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_a_run_killed_while_keeping_an_edited_copy_keeps_it_on_recovery(self) -> None:
+        self.deployed(("alpha", "Original alpha"))
+        self.make_skill("alpha", "Updated alpha")
+        with (
+            self.edited_before_its_move("alpha"),
+            self.killed_while_journaling("preserve", "alpha"),
+            self.assertRaises(SystemExit),
+        ):
+            self.deploy("--all")
+        run_id = self.manifest()["last_run_id"]
+        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
+        self.assert_lines(
+            result.output,
+            f"Recovering committed run {run_id} (completing finalization)...",
+            f"  WARNING: alpha changed after run {run_id} planned it, so its previous copy is kept at "
+            f".backups/{run_id}/alpha instead of being deleted.",
+            f"  Preserved backup: alpha -> .backups/{run_id}/alpha",
+            "  Recovery complete.",
+        )
+        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / run_id / "alpha" / "SKILL.md").read_text())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def committed_with_unkept_backup(self, changed: bool) -> Path:
+        """A committed run interrupted before it deleted the backup of an item it updated, edited if changed."""
+        self.deployed(("alpha", "Alpha content"))
+        transient = self.skills_dir / "alpha.deploying-bak"
+        self.write(transient / "SKILL.md", "previous alpha\n")
+        backup_hash = hashing.hash_path(transient)
+        if changed:
+            self.write(transient / "SKILL.md", self.EDIT)
+        self.commit(self.RUN)
+        return self.write_journal(
+            self.RUN,
+            backup_entry("alpha", backup_hash),
+            install_entry("alpha", hashing.hash_path(self.skills_dir / "alpha")),
+        )
+
+    def test_committed_recovery_deletes_an_unchanged_backup(self) -> None:
+        self.committed_with_unkept_backup(changed=False)
+        result = self.deploy_ok("--all")
+        self.assert_lines(result.output, f"Recovering committed run {self.RUN} (completing finalization)...")
+        self.assertNotIn("Preserved backup", result.output)
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertFalse((self.skills_dir / ".backups").exists())
+
+    def test_committed_recovery_keeps_a_changed_backup(self) -> None:
+        self.committed_with_unkept_backup(changed=True)
+        result = self.deploy_ok("--all")
+        self.assert_lines(
+            result.output,
+            f"  WARNING: alpha changed after run {self.RUN} planned it, so its previous copy is kept at "
+            f".backups/{self.RUN}/alpha instead of being deleted.",
+            f"  Preserved backup: alpha -> .backups/{self.RUN}/alpha",
+            "  Recovery complete.",
+        )
+        self.assertEqual(self.EDIT, (self.skills_dir / ".backups" / self.RUN / "alpha" / "SKILL.md").read_text())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_a_changed_backup_whose_permanent_destination_exists_stops_completion(self) -> None:
+        journal_file = self.committed_with_unkept_backup(changed=True)
+        destination = self.skills_dir / ".backups" / self.RUN / "alpha"
+        self.write(destination / "SKILL.md", "already there\n")
+        result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_lines(result.output, "  WARNING: Both transient and permanent backups exist for alpha")
+        self.assertTrue(journal_file.is_file())
+        self.assertEqual(self.EDIT, (self.skills_dir / "alpha.deploying-bak" / "SKILL.md").read_text())
+        self.assertEqual("already there\n", (destination / "SKILL.md").read_text())
+
+
+class TornJournalTests(RecoveryTestCase):
+    """A last journal line with no newline was cut off before its change began, so recovery drops it."""
+
+    def staging_runs(self) -> list[Path]:
+        return sorted((self.home / ".claude" / "deployer" / "staging").iterdir())
+
+    def test_a_run_killed_while_journaling_an_install_is_rolled_back(self) -> None:
+        self.deployed(("alpha", "Original alpha"))
+        self.make_skill("alpha", "Updated alpha")
+        with self.killed_while_journaling("install", "alpha"), self.assertRaises(SystemExit):
+            self.deploy("--all")
+        [run] = self.staging_runs()
+        text = (run / "journal.jsonl").read_text(encoding="utf-8")
+        torn = text.split("\n")[-1]
+        self.assertTrue(torn.startswith('{"op":"install"'), text)
+        self.assertTrue((self.skills_dir / "alpha.deploying-bak").is_dir())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        preview = self.deploy_ok("--all", "--dry-run")
+        self.assertIn(f"Pending recovery: the next deployment will recover run {run.name}.", preview.output)
+        result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
+        self.assert_lines(
+            result.output,
+            f"  WARNING: Dropped the unterminated last line of run {run.name}'s journal; the run stopped while "
+            f"writing it, before the change it records: {torn}",
+            f"Recovering uncommitted run {run.name} (rolling back)...",
+            "  Recovery complete.",
+        )
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertFalse(run.exists())
+
+    def test_a_journal_holding_only_a_torn_line_is_removed(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.make_skill("alpha", "Updated alpha")
+        with self.killed_while_journaling("backup", "alpha"), self.assertRaises(SystemExit):
+            self.deploy("--all")
+        [run] = self.staging_runs()
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        result = self.deploy_ok("--all", probe=lambda pid: platform_support.ProcessStatus(False, None))
+        self.assertIn(f"Dropped the unterminated last line of run {run.name}'s journal", result.output)
+        self.assertFalse(run.exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+    def test_a_torn_line_before_the_last_still_stops_recovery(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        run_id = "20260101-000000-torn"
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        torn = '{"op":"install","item":"alpha"'
+        journal_file = self.staging_run(run_id) / "journal.jsonl"
+        self.write(journal_file, journal_line(backup_entry("alpha", original)) + torn + "\n" + torn)
+        preview = self.deploy_fails("--all", "--dry-run", pattern="cannot be recovered automatically")
+        self.assertIn(f"ERROR: Run {run_id} cannot be recovered automatically", preview.output)
+        result = self.deploy_fails("--all", pattern="Recovery failed")
+        self.assert_lines(result.output, f"  ERROR: Malformed journal entry in run {run_id}: {torn}")
+        self.assertNotIn("Dropped the unterminated", result.output)
+        self.assertTrue(journal_file.is_file())
+        self.assertIn("Alpha content", self.skill_text("alpha"))
 
 
 class DryRunRecoveryTests(RecoveryTestCase):

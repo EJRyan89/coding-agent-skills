@@ -216,14 +216,29 @@ def _verify_install(paths: Paths, entry: dict[str, Any]) -> bool:
     return True
 
 
+def backup_unchanged(paths: Paths, entry: dict[str, Any]) -> bool:
+    """Whether a backup entry's transient backup is gone or still matches the hash the plan recorded for it.
+
+    Only then may a backup the run does not keep be deleted: one that differs was changed after the plan read it, such
+    as by an edit just before the move, and is kept as a modified item would have been.
+    """
+    return _hash_existing(_item_path(paths, entry, ".deploying-bak")) in (None, entry["backup_hash"])
+
+
 def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
-    """Delete a transient backup the committed run did not keep, or move a kept one to permanent storage."""
+    """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
     root = entry.get("root", "claude")
     item = entry["item"]
     transient = _item_path(paths, entry, ".deploying-bak")
+    kept_at = f".backups/{run_id}/{item}"
     if not entry["retain"]:
-        fsops.remove(transient)
-        return True
+        if backup_unchanged(paths, entry):
+            fsops.remove(transient)
+            return True
+        _warn(
+            f"{item} changed after run {run_id} planned it, so its previous copy is kept at {kept_at} "
+            "instead of being deleted."
+        )
     try:
         destination = prepare_backup_destination(paths, run_id, item, root)
     except DeployError as exc:
@@ -233,15 +248,16 @@ def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
         if os.path.lexists(destination):
             _warn(f"Both transient and permanent backups exist for {item}")
             return False
-        if _hash_existing(transient) != entry["backup_hash"]:
+        if entry["retain"] and _hash_existing(transient) != entry["backup_hash"]:
             _warn(f"Backup hash mismatch for {item}")
             return False
         fsops.move(transient, destination)
-        print(f"  Preserved backup: {item} -> {entry['backup_dest']}")
+        print(f"  Preserved backup: {item} -> {kept_at}")
         return True
+    # Only a kept backup gets here: one the run did not keep and that is gone returned above.
     if os.path.lexists(destination):
         if _hash_existing(destination) != entry["backup_hash"]:
-            _warn(f"Permanent backup hash mismatch for {item} at {entry['backup_dest']}")
+            _warn(f"Permanent backup hash mismatch for {item} at {kept_at}")
             return False
         return True
     _warn(f"Cannot find backup for {item}")
@@ -370,10 +386,26 @@ def _committed_run_id(paths: Paths) -> str | None:
         return None
 
 
-def _read_entries(journal_file: Path, run_id: str) -> tuple[list[dict[str, Any]], str | None]:
-    """A journal's entries up to its first malformed line, and that line, or None when every line is valid."""
+@dataclass
+class Entries:
+    """A journal as recovery reads it.
+
+    entries are the valid lines up to the first malformed one, which is malformed (None when every line is valid).
+    torn is a last line with no newline, set aside when every line before it is valid. Journal.write appends each
+    entry in full, newline included, before the change it records, so a line without its newline was cut off by the
+    interruption before that change began, and dropping it loses nothing. Anywhere else, a bad line stops recovery.
+    """
+
+    entries: list[dict[str, Any]]
+    malformed: str | None = None
+    torn: str | None = None
+
+
+def _read_entries(journal_file: Path, run_id: str) -> Entries:
+    lines = journal_file.read_text(encoding="utf-8", errors="replace").split("\n")
+    torn = lines.pop()  # the text after the last newline, empty when the journal ends with one
     entries: list[dict[str, Any]] = []
-    for line in journal_file.read_text(encoding="utf-8", errors="replace").split("\n"):
+    for line in lines:
         if not line:
             continue
         try:
@@ -381,9 +413,9 @@ def _read_entries(journal_file: Path, run_id: str) -> tuple[list[dict[str, Any]]
         except json.JSONDecodeError:
             entry = None
         if not valid_entry(entry, run_id):
-            return entries, line
+            return Entries(entries, malformed=line)
         entries.append(entry)
-    return entries, None
+    return Entries(entries, torn=torn or None)
 
 
 def _recover_run(paths: Paths, run_dir: Path) -> bool:
@@ -404,7 +436,13 @@ def _recover_run(paths: Paths, run_dir: Path) -> bool:
     if committed is None:
         print("  ERROR: Cannot read manifest during recovery.", file=sys.stderr)
         return False
-    entries, malformed = _read_entries(journal_file, run_id)
+    read = _read_entries(journal_file, run_id)
+    entries, malformed = read.entries, read.malformed
+    if read.torn is not None:
+        _warn(
+            f"Dropped the unterminated last line of run {run_id}'s journal; the run stopped while writing it, "
+            f"before the change it records: {read.torn}"
+        )
     if malformed is not None:
         print(f"  ERROR: Malformed journal entry in run {run_id}: {malformed}", file=sys.stderr)
         print(
@@ -458,13 +496,13 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
         if not journal_file.is_file():
             continue
         try:
-            entries, malformed = _read_entries(journal_file, run_dir.name)
+            read = _read_entries(journal_file, run_dir.name)
         except OSError:
             pending.append((run_dir.name, False))
             continue
-        if malformed is not None:
+        if read.malformed is not None:
             pending.append((run_dir.name, False))
-        elif entries:
+        elif read.entries:
             pending.append((run_dir.name, True))
     return pending
 
