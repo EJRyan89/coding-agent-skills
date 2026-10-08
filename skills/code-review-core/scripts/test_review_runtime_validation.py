@@ -967,6 +967,13 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
     ),
     ("specialists", _specialists_manifest, _as_is, _specialists_result()),
     (
+        # agent-delegation is a dispatch requirement, negotiated when a review starts, not a manifest rule.
+        "specialists without agent-delegation, which may also run inline",
+        _specialists_manifest,
+        _put(("required_capabilities",), ["read-diff"]),
+        _specialists_result(required_capabilities=["read-diff"]),
+    ),
+    (
         "specialists that review uncovered files",
         _specialists_manifest,
         _put(("uncovered",), "review"),
@@ -1206,13 +1213,6 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "Adapter manifest kind is unsupported",
     ),
     (
-        "specialists without agent-delegation",
-        _specialists_manifest,
-        _put(("required_capabilities",), ["read-diff"]),
-        RuntimeContractError,
-        "Specialist reviewers must require agent-delegation",
-    ),
-    (
         "an unknown uncovered policy",
         _specialists_manifest,
         _put(("uncovered",), "skip"),
@@ -1335,12 +1335,6 @@ SPECIALISTS_STAGES: list[ManifestStage] = [
         BAD_CAPABILITIES,
     ),
     ("kind", _put(("kind",), "entrypoint"), RuntimeContractError, "Adapter manifest kind is unsupported"),
-    (
-        "delegation",
-        _put(("required_capabilities",), ["read-diff"]),
-        RuntimeContractError,
-        "Specialist reviewers must require agent-delegation",
-    ),
     ("uncovered", _put(("uncovered",), "skip"), RuntimeContractError, "Adapter uncovered must be review or ignore"),
     ("resources", _put(("resources",), "x"), RuntimeContractError, "resources must be an array"),
     ("specialists", _put(("conditions",), []), RuntimeContractError, "Adapter conditions must be an object"),

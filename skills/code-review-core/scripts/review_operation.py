@@ -133,6 +133,7 @@ def request_to_record_input(
     patches: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
     uncovered_files: list[str] | None = None,
+    dispatch: str | None = None,
 ) -> dict[str, Any]:
     pull = request.get("pull_request")
     if not isinstance(pull, dict):
@@ -141,6 +142,7 @@ def request_to_record_input(
         "reviewers": reviewers or [],
         "patches": patches,
         "scope": scope,
+        "dispatch": dispatch,
         "github_comments": list(request.get("github_comments") or []),
         "head_ref": pull.get("head_ref"),
         "repository": request["repository"],
@@ -228,6 +230,7 @@ def commit_adapter_result(
     uncovered_files: list[str] | None = None,
     model_names: dict[str, str] | None = None,
     flags: list[dict[str, Any]] | None = None,
+    dispatch: str | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     request = read_json(request_path)
     result_value = read_json(result_path)
@@ -250,7 +253,13 @@ def commit_adapter_result(
     check_archive_base(base, current, ledger)
     version = 1 if current is None else current + 1
     record_input = request_to_record_input(
-        request, adapter, reviewers, patches=patches, scope=scope, uncovered_files=uncovered_files
+        request,
+        adapter,
+        reviewers,
+        patches=patches,
+        scope=scope,
+        uncovered_files=uncovered_files,
+        dispatch=dispatch,
     )
     # A re-review judges and extends the archive's latest ledger; an initial review starts a fresh one.
     prior_ledger = ledger if request["mode"] == "re-review" else []

@@ -849,6 +849,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "config_path": "<root>/config.json",
         "host": None,
         "runtime": "claude-code",
+        "dispatch": "subagents",
         "kind": "generic",
         "request_path": f"{run}/request.json",
         "reviewer_root": None,
@@ -1305,16 +1306,21 @@ class FailureCleanupTests(PrepareFixture):
     """A failure after the run directory exists: prepare removes a directory it created and leaves a given one."""
 
     def assert_fails(
-        self, error: type[BaseException], message: str, left: list[str], reads: list[tuple[Any, ...]]
+        self,
+        error: type[BaseException],
+        message: str,
+        left: list[str],
+        reads: list[tuple[Any, ...]],
+        **options: Any,
     ) -> None:
-        self.assertEqual((error, message, ""), self.refused())
+        self.assertEqual((error, message, ""), self.refused(**options))
         self.assertEqual(left, self.files())
         self.assertTrue(self.run_dir.is_dir())
         self.assertEqual(reads, self.github.calls)
         self.github.calls.clear()
         self.github.pulls = self.pulls
         self.git.calls.clear()
-        self.assertEqual((error, message, ""), self.refused(run_directory=None))
+        self.assertEqual((error, message, ""), self.refused(run_directory=None, **options))
         self.assertEqual([], list(self.temporary.iterdir()), "the directory prepare created is removed")
 
     def test_a_push_while_preparing_fails_before_the_diff_is_written(self) -> None:
@@ -1354,14 +1360,15 @@ class FailureCleanupTests(PrepareFixture):
             READS[:3],
         )
 
-    def test_a_generic_reviewer_needs_agent_delegation(self) -> None:
+    def test_a_specialists_manifest_that_needs_agent_delegation_cannot_run_inline(self) -> None:
+        self.configure(self.repository("review/specialists.json"))
         self.pulls = list(self.github.pulls)
-        self.runtime = "copilot-cli"
         self.assert_fails(
             RuntimeContractError,
-            "Runtime copilot-cli lacks required capabilities: agent-delegation",
+            "Inline review lacks required capabilities: agent-delegation",
             ["diff.patch", *sorted(SNAPSHOT_FILES)],
             READS,
+            inline=True,
         )
 
 
@@ -1922,7 +1929,15 @@ class RepositoryReviewerTests(PrepareFixture):
         self.configure(self.repository("review/entrypoint.json"))
         self.runtime = "copilot-cli"
         result, _ = self.prepare(host="copilot-cli")
-        self.assertEqual(("copilot-cli", "entrypoint"), (result["runtime"], result["kind"]))
+        self.assertEqual(
+            ("copilot-cli", "entrypoint", "copilot-host"), (result["runtime"], result["kind"], result["dispatch"])
+        )
+
+    def test_the_generic_reviewer_runs_inline_where_the_runtime_cannot_delegate(self) -> None:
+        self.runtime = "copilot-cli"
+        result, _ = self.prepare(host="copilot-cli")
+        self.assertEqual(("copilot-cli", "generic", "inline"), (result["runtime"], result["kind"], result["dispatch"]))
+        self.assertEqual({}, result["dispatched_at"], "next-role hands out and times each inline role")
 
 
 class NoteOrderTests(PrepareFixture):

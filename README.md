@@ -79,7 +79,7 @@ Using the skills:
 | [Installation](docs/installation.md) | Requirements, install commands, deploying, updating, and uninstalling |
 | [Code-review operations](docs/code-review-operations.md) | Configuring and running the code-review bundle |
 | [Codex support](docs/codex-support.md) | Discovery and the Windows settings Codex CLI needs |
-| [Copilot support](docs/copilot-support.md) | Discovery precedence, headless sessions, and the bounded review host |
+| [Copilot support](docs/copilot-support.md) | Discovery precedence, headless sessions, inline reviews, and the bounded review host |
 | [Recovery](docs/recovery.md) | Interrupted deployments, backups, locks, and ownership conflicts |
 
 Working on this repository:

@@ -79,6 +79,7 @@ from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
     build_adapter_request,
+    choose_dispatch,
     load_manifest_from_commit,
     materialize_reviewer,
     materialize_source_snapshot,
@@ -1636,6 +1637,48 @@ class RuntimeContractTests(unittest.TestCase):
             negotiate_capabilities("copilot-cli", ["agent-delegation"])
         with self.assertRaisesRegex(RuntimeContractError, "Unknown runtime"):
             negotiate_capabilities("unknown", [])
+
+    def test_an_inline_review_offers_only_reading_the_diff_and_writing_the_result(self) -> None:
+        # Literal capability names: what an inline reviewer can do is part of the manifest contract.
+        self.assertEqual(
+            {"read-diff", "write-result"}, negotiate_capabilities("claude-code", ["read-diff"], dispatch="inline")
+        )
+        self.assertEqual(
+            {"read-diff", "write-result"}, negotiate_capabilities("copilot-cli", ["write-result"], dispatch="inline")
+        )
+        cases = (
+            ("claude-code", ["agent-delegation"], "Inline review lacks required capabilities: agent-delegation"),
+            ("codex", ["agent-delegation", "read-diff"], "Inline review lacks required capabilities: agent-delegation"),
+            # The runtime's own lack is named first, as it is for every other dispatch.
+            ("copilot-cli", ["agent-delegation"], "Runtime copilot-cli lacks required capabilities: agent-delegation"),
+            (
+                "copilot-cli",
+                ["isolated-added-root"],
+                "Inline review lacks required capabilities: isolated-added-root",
+            ),
+        )
+        for runtime, required, message in cases:
+            with self.subTest(runtime=runtime, required=required):
+                with self.assertRaises(RuntimeContractError) as caught:
+                    negotiate_capabilities(runtime, required, dispatch="inline")
+                self.assertEqual(message, str(caught.exception))
+
+    def test_dispatch_is_inline_when_asked_or_when_the_runtime_cannot_delegate(self) -> None:
+        cases = (
+            ("claude-code", "generic", False, "subagents"),
+            ("claude-code", "specialists", False, "subagents"),
+            ("claude-code", "entrypoint", False, "subagents"),
+            ("codex", "specialists", False, "subagents"),
+            ("copilot-cli", "entrypoint", False, "copilot-host"),
+            ("copilot-cli", "generic", False, "inline"),
+            ("copilot-cli", "specialists", False, "inline"),
+            ("claude-code", "generic", True, "inline"),
+            ("codex", "entrypoint", True, "inline"),
+            ("copilot-cli", "entrypoint", True, "inline"),
+        )
+        for runtime, kind, inline, dispatch in cases:
+            with self.subTest(runtime=runtime, kind=kind, inline=inline):
+                self.assertEqual(dispatch, choose_dispatch(runtime, kind, inline=inline))
 
     def test_runtime_auto_detection_uses_priority_and_winget_fallback(self) -> None:
         with mock.patch(

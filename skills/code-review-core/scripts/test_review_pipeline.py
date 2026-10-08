@@ -2104,10 +2104,259 @@ class RepositoryReviewerTests(PipelineFixture):
                 self.assertEqual([], list(self.temporary.iterdir()))
                 self.commit_base_bytes({relative: original + b"\n"})
 
-    def test_generic_reviewer_needs_agent_delegation(self) -> None:
-        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
-        with self.assertRaisesRegex(Exception, "agent-delegation"):
-            self.prepare()
+    def test_an_entrypoint_that_starts_agents_cannot_be_forced_inline(self) -> None:
+        # Literal reasons: an entrypoint that starts agents, or needs the isolated host, cannot run in the session.
+        for manifest, reason in (
+            ("review/entrypoint.json", "Inline review lacks required capabilities: agent-delegation"),
+            ("review/copilot.json", "Runtime claude-code lacks required capabilities: isolated-added-root"),
+        ):
+            with self.subTest(manifest=manifest):
+                self.configure(self.repository_reviewer(manifest))
+                code, out, err = self.run_main("prepare", "--inline", "--pull", SELECTOR)
+                self.assertEqual((1, f"FAILED {SELECTOR} {reason}\n", ""), (code, out, err))
+                self.assertEqual([], list(self.temporary.iterdir()))
+
+
+def record_shape(record: dict[str, Any]) -> dict[str, Any]:
+    """The fields a record has, at every level a reviewer path fills, without their values."""
+    review = record["review"]
+    return {
+        "record": sorted(record),
+        "review": sorted(review),
+        "adapter": sorted(review["adapter"]),
+        "reviewers": [(reviewer["id"], sorted(reviewer)) for reviewer in review["reviewers"]],
+        "findings": [sorted(finding) for finding in record["findings"]],
+    }
+
+
+INLINE_ONLY = "is reviewed inline; work its roles with next-role"
+
+
+class InlineReviewTests(PipelineFixture):
+    """The orchestrating session works each role itself, one at a time, where it cannot start subagents."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.clock = FakeClock()
+        self.services.clock = self.clock
+        self.use_manifest(delegation=False)
+        self.services.resolve_runtime = lambda configured, host: host or "claude-code"
+
+    def use_manifest(self, *, delegation: bool, **settings: Any) -> None:
+        """Specialists kept outside the repository: python-reviewer for the source, generic-review for the rest."""
+        capabilities = ["read-diff", "write-result"]
+        if delegation:
+            capabilities.insert(0, "agent-delegation")
+        manifest = self.local_manifest(required_capabilities=capabilities, **settings)
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+
+    def prepare_lines(self, *options: str) -> tuple[int, list[str]]:
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR, *options)
+        self.assertEqual("", err)
+        return code, out.splitlines()
+
+    def prepare_inline(self, *options: str) -> Path:
+        code, lines = self.prepare_lines("--host", "copilot-cli", *options)
+        self.assertEqual(0, code, lines)
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        self.assertEqual(f"INLINE {run}", lines[-1])
+        self.assertEqual([], [line for line in lines if line.startswith(("ROLE ", "MODEL ", "HOST "))])
+        return run
+
+    def next_role(self, run: Path) -> tuple[int, str]:
+        code, out, err = self.run_main("next-role", "--run", str(run))
+        self.assertEqual("", err)
+        return code, out
+
+    @staticmethod
+    def role(run: Path, identity: str) -> dict[str, Any]:
+        return next(role for role in rp.load_run(run)["roles"] if role["id"] == identity)
+
+    def work_inline(self, run: Path) -> list[str]:
+        """Work every role as the orchestrating session does: ask next-role, write that role's result, repeat."""
+        worked: list[str] = []
+        while True:
+            code, out = self.next_role(run)
+            self.assertEqual(0, code, out)
+            if out == f"INLINE_DONE {SELECTOR}\n":
+                return worked
+            identity, prompt = out.removeprefix(f"INLINE_ROLE {SELECTOR} ").rstrip("\n").split(" ", 1)
+            role = self.role(run, identity)
+            self.assertEqual(role["prompt_file"], prompt)
+            self.write_role_result(role, findings=[self.finding()] if identity == "python-reviewer" else [])
+            worked.append(identity)
+
+    def test_a_specialists_review_completes_inline_and_records_the_subagent_path_s_shape(self) -> None:
+        run = self.prepare_inline()
+        self.assertEqual("inline", rp.load_run(run)["dispatch"])
+        self.assertEqual(["python-reviewer", "generic-review"], self.work_inline(run))
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        code, out, err = self.run_main("finalize", "--run", str(run))
+        self.assertEqual(0, code, out + err)
+        self.assertIn(f"RECORDED {SELECTOR} verdict=APPROVED findings=1", out)
+        inline = archived_record(self.archive, 12)
+        self.assertEqual("inline", inline["review"]["dispatch"])
+        report = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
+        self.assertIn("| **Dispatch** | inline |", report)
+
+        # The same review dispatched to subagents, recorded in another archive, has the same fields.
+        self.archive = self.root / "subagent archive"
+        self.use_manifest(delegation=True)
+        code, lines = self.prepare_lines("--host", "claude-code")
+        self.assertEqual(0, code, lines)
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        roles = rp.load_run(run)["roles"]
+        self.assertEqual([f"ROLE {role['id']} {role['prompt_file']}" for role in roles], lines[-2:])
+        for role in roles:
+            self.write_role_result(role, findings=[self.finding()] if role["id"] == "python-reviewer" else [])
+        self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+        subagents = archived_record(self.archive, 12)
+        self.assertEqual("subagents", subagents["review"]["dispatch"])
+        self.assertEqual(record_shape(subagents), record_shape(inline))
+
+    def test_manifests_with_and_without_agent_delegation_run_as_the_dispatch_allows(self) -> None:
+        cases = (
+            # (lists agent-delegation, host, further options, the dispatch or the failure)
+            (True, "claude-code", (), "subagents"),
+            (True, "codex", (), "subagents"),
+            (True, "copilot-cli", (), "FAILED Runtime copilot-cli lacks required capabilities: agent-delegation"),
+            (True, "claude-code", ("--inline",), "FAILED Inline review lacks required capabilities: agent-delegation"),
+            (False, "claude-code", (), "subagents"),
+            (False, "codex", (), "subagents"),
+            (False, "copilot-cli", (), "inline"),
+            (False, "claude-code", ("--inline",), "inline"),
+        )
+        for delegation, host, options, expected in cases:
+            with self.subTest(delegation=delegation, host=host, options=options):
+                self.use_manifest(delegation=delegation)
+                code, lines = self.prepare_lines("--host", host, *options)
+                if expected.startswith("FAILED "):
+                    self.assertEqual((1, [f"FAILED {SELECTOR} {expected.removeprefix('FAILED ')}"]), (code, lines))
+                    self.assertEqual([], list(self.temporary.iterdir()))
+                    continue
+                self.assertEqual(0, code, lines)
+                run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+                self.assertEqual(expected, rp.load_run(run)["dispatch"])
+                self.assertEqual(expected == "inline", lines[-1] == f"INLINE {run}")
+                shutil.rmtree(run)
+
+    def test_the_generic_reviewer_runs_inline_on_copilot_cli_or_when_asked(self) -> None:
+        for host, options in (("copilot-cli", ()), ("claude-code", ("--inline",))):
+            with self.subTest(host=host):
+                self.archive = self.root / f"archive {host}"
+                self.configure()
+                code, lines = self.prepare_lines("--host", host, *options)
+                self.assertEqual(0, code, lines)
+                run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+                self.assertEqual([f"RUN {SELECTOR} {run}", f"INLINE {run}"], lines)
+                self.assertEqual(["generic-review"], self.work_inline(run))
+                self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+                self.assertEqual("inline", archived_record(self.archive, 12)["review"]["dispatch"])
+
+    def test_next_role_hands_out_one_role_at_a_time_and_times_each_from_then(self) -> None:
+        run = self.prepare_inline()
+        self.assertEqual({}, rp.load_run(run)["dispatched_at"], "prepare hands out no role")
+        prompt = self.role(run, "python-reviewer")["prompt_file"]
+        self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {prompt}\n"), self.next_role(run))
+        self.clock.sleep(30)
+        # Asked again before the role has a result, it hands out the same role and keeps its clock.
+        self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {prompt}\n"), self.next_role(run))
+        self.assertEqual({"python-reviewer": 10_000.0}, rp.load_run(run)["dispatched_at"])
+        self.write_role_result(self.role(run, "python-reviewer"))
+        prompt = self.role(run, "generic-review")["prompt_file"]
+        self.assertEqual((0, f"INLINE_ROLE {SELECTOR} generic-review {prompt}\n"), self.next_role(run))
+        state = rp.load_run(run)
+        self.assertEqual({"python-reviewer": 10_000.0, "generic-review": 10_030.0}, state["dispatched_at"])
+        self.assertEqual(["python-reviewer"], sorted(state["seal"]["results"]), "the finished role is sealed")
+        self.write_role_result(self.role(run, "generic-review"))
+        self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
+        self.assertEqual(["generic-review", "python-reviewer"], sorted(rp.load_run(run)["seal"]["results"]))
+
+    def test_a_later_role_that_rewrites_an_earlier_result_fails_the_pull_request(self) -> None:
+        run = self.prepare_inline()
+        self.next_role(run)
+        earlier = self.role(run, "python-reviewer")
+        self.write_role_result(earlier, findings=[self.finding()])
+        self.next_role(run)
+        # Hostile content in the generic reviewer's files talks it into dropping the specialist's finding.
+        self.write_role_result(earlier)
+        self.write_role_result(self.role(run, "generic-review"))
+        changed = Path(earlier["result_file"]).relative_to(run).as_posix()
+        reason = f"{SELECTOR}: run files changed during the inline review: {changed}"
+        self.assertEqual((1, f"FAILED {reason}\n"), self.next_role(run))
+        self.assertEqual((1, f"FAILED {run} {reason}\n", ""), self.run_main("check", "--run", str(run)))
+        self.assertEqual((1, f"FAILED {run} {reason}\n", ""), self.run_main("finalize", "--run", str(run)))
+        self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
+        self.assertTrue(Path(earlier["result_file"]).is_file(), "check sets nothing aside")
+
+    def test_check_sets_aside_an_invalid_inline_result_and_next_role_hands_it_out_again(self) -> None:
+        run = self.prepare_inline()
+        self.next_role(run)
+        invalid = self.role(run, "python-reviewer")
+        Path(invalid["result_file"]).write_text("{}", encoding="utf-8")
+        self.next_role(run)
+        self.write_role_result(self.role(run, "generic-review"))
+        self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
+        code, out, _ = self.run_main("check", "--run", str(run))
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} python-reviewer {invalid['prompt_file']} "), out)
+        self.assertNotIn("python-reviewer", rp.load_run(run)["seal"]["results"], "a set-aside result is unsealed")
+        self.assertEqual((0, f"INLINE_ROLE {SELECTOR} python-reviewer {invalid['prompt_file']}\n"), self.next_role(run))
+        self.write_role_result(invalid)
+        self.assertEqual((0, f"INLINE_DONE {SELECTOR}\n"), self.next_role(run))
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+        reviewers = archived_record(self.archive, 12)["review"]["reviewers"]
+        self.assertEqual({"python-reviewer": 1, "generic-review": 0}, {r["id"]: r["retries"] for r in reviewers})
+
+    def test_a_role_s_model_is_named_in_a_note_since_an_inline_review_cannot_switch_models(self) -> None:
+        specialist = {
+            "id": "python-reviewer",
+            "category": "Python",
+            "profile": ".claude/agents/python-reviewer.md",
+            "include": [r"\.py$"],
+            "exclude": [],
+            "resources": [],
+            "when": None,
+            "model": "opus",
+        }
+        self.use_manifest(delegation=False, specialists=[specialist])
+        code, lines = self.prepare_lines("--host", "copilot-cli")
+        self.assertEqual(0, code, lines)
+        self.assertIn(
+            f"NOTE {SELECTOR} python-reviewer asks for model opus; an inline review works every role on this "
+            "session's model",
+            lines,
+        )
+        self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
+
+    def test_only_next_role_works_an_inline_run(self) -> None:
+        run = self.prepare_inline()
+        for command, reason in (
+            (("workflow", "--run", str(run)), f"{SELECTOR} {INLINE_ONLY}"),
+            (("wait-reviewers", "--run", str(run), "--timeout", "1"), f"{run} {SELECTOR} {INLINE_ONLY}"),
+            (("dispatch", "--run", str(run)), f"{SELECTOR} {INLINE_ONLY}"),
+            (("wait", "--run", str(run), "--timeout", "1"), f"{SELECTOR} {INLINE_ONLY}"),
+        ):
+            with self.subTest(command=command[0]):
+                self.assertEqual((1, f"FAILED {reason}\n", ""), self.run_main(*command))
+        self.use_manifest(delegation=True)
+        code, lines = self.prepare_lines("--host", "claude-code")
+        self.assertEqual(0, code, lines)
+        subagent_run = lines[0].removeprefix(f"RUN {SELECTOR} ")
+        self.assertEqual(
+            (1, f"FAILED {SELECTOR} is not reviewed inline; dispatch its roles as prepare printed them\n"),
+            self.next_role(Path(subagent_run)),
+        )
+
+    def test_a_run_prepared_before_dispatch_was_recorded_reads_as_it_was_dispatched(self) -> None:
+        for runtime, kind, dispatch in (
+            ("claude-code", "specialists", "subagents"),
+            ("codex", "generic", "subagents"),
+            ("copilot-cli", "entrypoint", "copilot-host"),
+        ):
+            with self.subTest(runtime=runtime, kind=kind):
+                self.assertEqual(dispatch, rp.run_dispatch({"runtime": runtime, "kind": kind}))
 
 
 class FakeClock:

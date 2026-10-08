@@ -113,7 +113,6 @@ class ManifestTests(unittest.TestCase):
     def test_invalid_manifests_fail_closed(self) -> None:
         cases = {
             "kind": manifest(kind="entrypoint"),
-            "agent-delegation": manifest(required_capabilities=["read-diff"]),
             "undeclared condition": manifest(conditions={}),
             "regular expression": manifest(specialists=[{**manifest()["specialists"][0], "include": ["("]}]),
             "non-empty": manifest(specialists=[{**manifest()["specialists"][0], "include": []}]),

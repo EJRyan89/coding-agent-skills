@@ -4,6 +4,8 @@
                temporary directory)
     prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
+    next-role  hand the orchestrating session the next role of an inline run to work itself, once the run's
+               sealed files are unchanged
     wait       wait a bounded time for that host: its result, its failure, or how long it has run
     workflow   write a Claude Code Workflow script that starts every role of several runs at once
     wait-reviewers  wait a bounded time for the Workflow's reviewers: which roles are ready, running, or overdue
@@ -103,6 +105,7 @@ from review_runtime import (
     RUNTIME_CAPABILITIES,
     RuntimeContractError,
     build_adapter_request,
+    choose_dispatch,
     github_tarball_fetcher,
     materialize_reviewer,
     materialize_source_snapshot,
@@ -415,22 +418,26 @@ def _materialize_reviewer(
     pull: dict[str, Any],
     mode: str,
     runtime: str,
+    inline: bool,
     run: Path,
     config_path: Path,
     repository: str,
     services: Services,
     notes: list[str],
-) -> tuple[str, dict[str, Any], Path | None, str | None]:
-    """The reviewer's kind, the adapter the record names, the root its trusted files were materialized under, and
-    its entrypoint. The suite's generic reviewer has no root and no entrypoint, and neither has a specialists
-    manifest."""
+) -> tuple[str, dict[str, Any], Path | None, str | None, str]:
+    """The reviewer's kind, the adapter the record names, the root its trusted files were materialized under, its
+    entrypoint, and how its roles are dispatched. The suite's generic reviewer has no root and no entrypoint, and
+    neither has a specialists manifest."""
     if reviewer["scope"] == "generic":
-        negotiate_capabilities(runtime, ["agent-delegation"])
+        dispatch = choose_dispatch(runtime, "generic", inline=inline)
+        # The suite's own role needs agent delegation only when a subagent works it.
+        negotiate_capabilities(runtime, ["agent-delegation"] if dispatch == "subagents" else [], dispatch=dispatch)
         return (
             "generic",
             {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
             None,
             None,
+            dispatch,
         )
     if checkout is None:  # validate_config requires a checkout for a repository reviewer
         raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
@@ -455,7 +462,10 @@ def _materialize_reviewer(
         )
     if mode not in manifest["supports"]:
         raise PipelineError(f"Reviewer {manifest['id']} does not support {mode} reviews")
-    negotiate_capabilities(runtime, manifest["required_capabilities"])
+    kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
+    dispatch = choose_dispatch(runtime, kind, inline=inline)
+    # A specialists manifest that lists agent-delegation keeps its specialists off an inline review.
+    negotiate_capabilities(runtime, manifest["required_capabilities"], dispatch=dispatch)
     reviewer_root = run / "reviewer"
     hashes = materialize_reviewer(
         checkout,
@@ -466,14 +476,13 @@ def _materialize_reviewer(
         guideline_commit=pull["baseRefOid"],
         local_root=resolved.local_root,
     )
-    kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
     adapter = {
         "name": manifest["id"],
         "scope": "repository",
         "source_commit": reviewer_commit,
         "source_hashes": hashes,
     }
-    return kind, adapter, reviewer_root, manifest["entrypoint"] if kind == "entrypoint" else None
+    return kind, adapter, reviewer_root, manifest["entrypoint"] if kind == "entrypoint" else None, dispatch
 
 
 def _write_request(
@@ -564,6 +573,20 @@ def _write_roles(
     return roles, plan["uncovered_files"]
 
 
+def _write_run(run: Path, state: dict[str, Any]) -> None:
+    """Write a prepared run's run.json. An inline run first notes each model its roles cannot switch to, and seals
+    every file prepare wrote."""
+    if state["dispatch"] == "inline":
+        # The orchestrating session works every role on its own model; no subagent can be started on another.
+        state["notes"].extend(
+            f"{role['id']} asks for model {role['model']}; an inline review works every role on this session's model"
+            for role in state["roles"]
+            if role.get("model")
+        )
+        state["seal"] = {"files": sealed_files(run, state), "results": {}}
+    atomic_write_json(run / RUN_FILE, state)
+
+
 def prepare(
     selector: str,
     *,
@@ -572,6 +595,7 @@ def prepare(
     force: bool = False,
     canary: bool = False,
     host: str | None = None,
+    inline: bool = False,
     config_path: Path | None = None,
     run_directory: Path | None = None,
     services: Services | None = None,
@@ -579,7 +603,8 @@ def prepare(
     """Everything before semantic review. Returns a skip, or a ready run whose roles need reviewers.
 
     A re-review names its `scope` (`auto`, `full`, or `incremental`); nothing picks one for it. `host` is the
-    runtime the orchestrating session says it runs in, which decides an `auto` runtime.
+    runtime the orchestrating session says it runs in, which decides an `auto` runtime. `inline` has the orchestrating
+    session work every role itself, as it does wherever the runtime cannot start subagents.
     """
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
@@ -624,12 +649,13 @@ def prepare(
         parsed, changed, unsafe, patches, comments = _fetch_diff(repository, number, pull, diff_path, services, notes)
         source = run / "source"
         links = _snapshot(checkout, repository, number, head, source, parsed, changed, services, notes)
-        kind, adapter, reviewer_root, entrypoint = _materialize_reviewer(
+        kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             reviewer,
             checkout=checkout,
             pull=pull,
             mode=mode,
             runtime=runtime,
+            inline=inline,
             run=run,
             config_path=config_path,
             repository=repository,
@@ -678,6 +704,7 @@ def prepare(
             "config_path": str(config_path),
             "host": host,
             "runtime": runtime,
+            "dispatch": dispatch,
             "kind": kind,
             "request_path": str(request_path),
             "reviewer_root": str(reviewer_root) if reviewer_root else None,
@@ -685,14 +712,15 @@ def prepare(
             "adapter": adapter,
             "roles": roles,
             "attempts": {role["id"]: 0 for role in roles},
-            "dispatched_at": {role["id"]: time.time() for role in roles},
+            # An inline role is handed out, and timed, by next-role, one at a time.
+            "dispatched_at": {} if dispatch == "inline" else {role["id"]: time.time() for role in roles},
             "notes": notes,
             "patches": patches,
             "scope": scope_record,
             "uncovered_files": uncovered_files,
             "archive_base": base,
         }
-        atomic_write_json(run / RUN_FILE, state)
+        _write_run(run, state)
     except BaseException:
         if created:
             shutil.rmtree(run, ignore_errors=True)
@@ -1014,8 +1042,86 @@ def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
     return seconds
 
 
+def run_dispatch(state: dict[str, Any]) -> str:
+    """How a run's roles are worked. A run prepared before the dispatch was recorded was dispatched as its runtime
+    and reviewer kind decided then: a Copilot CLI entrypoint on its host, everything else as subagents."""
+    if "dispatch" in state:
+        return str(state["dispatch"])
+    return "copilot-host" if state["runtime"] == "copilot-cli" and state["kind"] == "entrypoint" else "subagents"
+
+
 def _is_copilot_host_run(state: dict[str, Any]) -> bool:
-    return state["runtime"] == "copilot-cli" and state["kind"] == "entrypoint"
+    return run_dispatch(state) == "copilot-host"
+
+
+def _inline_only(state: dict[str, Any]) -> PipelineError:
+    return PipelineError(f"{state['selector']} is reviewed inline; work its roles with next-role")
+
+
+def sealed_files(run: Path, state: dict[str, Any]) -> dict[str, str]:
+    """The SHA-256 of each file of an inline run its reviewers must not change, by path relative to the run.
+
+    That is every file prepare wrote but run.json, which the pipeline itself updates; the source snapshot, which its
+    own manifest hashes and which is too large to hash again before every role; and the reviewers' results, which
+    next-role seals one by one as it moves past them.
+    """
+    results = {Path(role["result_file"]) for role in state["roles"]} | {Path(state["result_path"])}
+    skipped = {(result.parent, result.name) for result in results}
+    rejected = {(result.parent, f"{result.name}.rejected-") for result in results}
+    digests = {}
+    for path in sorted(run.rglob("*")):
+        relative = path.relative_to(run)
+        if relative.parts[0] in {"source", RUN_FILE, RECORDED_FILE} or not path.is_file():
+            continue
+        if (path.parent, path.name) in skipped or any(
+            path.parent == parent and path.name.startswith(prefix) for parent, prefix in rejected
+        ):
+            continue
+        digests[relative.as_posix()] = _sha256(path)
+    return digests
+
+
+def verify_seal(run: Path, state: dict[str, Any]) -> None:
+    """Fail an inline run if a file it sealed changed or went missing.
+
+    An inline reviewer is the orchestrating session, which no hook confines to its role, so this is what keeps a later
+    role from rewriting an earlier role's result, the request's coverage or prior findings, the plan, or the next
+    role's instructions: the pull request fails with nothing recorded rather than being retried.
+    """
+    seal = state["seal"]
+    results = {role["id"]: Path(role["result_file"]) for role in state["roles"]}
+    expected = [(run.joinpath(*relative.split("/")), digest) for relative, digest in seal["files"].items()]
+    expected.extend((results[identity], digest) for identity, digest in seal["results"].items())
+    changed = [
+        path.relative_to(run).as_posix() for path, digest in expected if not path.is_file() or _sha256(path) != digest
+    ]
+    if changed:
+        raise PipelineError(f"{state['selector']}: run files changed during the inline review: {', '.join(changed)}")
+
+
+def next_role(run: Path, services: Services) -> tuple[str, dict[str, Any] | None]:
+    """An inline run's selector and the next role its orchestrating session works, or None once every role has a
+    result.
+
+    The run's sealed files must be unchanged. Every result written so far is sealed before the next role is handed
+    out, so the roles after it cannot change it. A role is timed from its first hand-out, so a rerun counts toward it.
+    """
+    run = run.resolve()
+    state = load_run(run)
+    if run_dispatch(state) != "inline":
+        raise PipelineError(f"{state['selector']} is not reviewed inline; dispatch its roles as prepare printed them")
+    verify_seal(run, state)
+    following = None
+    for role in state["roles"]:
+        result = Path(role["result_file"])
+        if result.is_file():
+            state["seal"]["results"].setdefault(role["id"], _sha256(result))
+        elif following is None:
+            following = role
+    if following is not None:
+        state["dispatched_at"].setdefault(following["id"], services.clock())
+    atomic_write_json(run / RUN_FILE, state)
+    return state["selector"], following
 
 
 def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
@@ -1026,6 +1132,8 @@ def check_run(run: Path, services: Services | None = None) -> dict[str, Any]:
     """
     run = run.resolve()
     state = load_run(run)
+    if run_dispatch(state) == "inline":
+        verify_seal(run, state)
     if not _is_copilot_host_run(state):
         return _check_roles(run, state)
     services = services or Services()
@@ -1047,11 +1155,16 @@ def _check_roles(run: Path, state: dict[str, Any]) -> dict[str, Any]:
     errors = role_errors(run, state)
     retry: list[dict[str, Any]] = []
     failed: dict[str, str] = {}
+    seal = state.get("seal")  # an inline run's
     for role in state["roles"]:
         identity = role["id"]
-        if identity not in errors:
-            continue
         result = Path(role["result_file"])
+        if identity not in errors:
+            if seal is not None:
+                seal["results"].setdefault(identity, _sha256(result))
+            continue
+        if seal is not None:
+            seal["results"].pop(identity, None)  # set aside, so next-role hands the role out again
         if result.exists():
             result.replace(result.with_name(f"{result.name}.rejected-{state['attempts'][identity] + 1}"))
         if state["attempts"][identity] < MAX_RETRIES:
@@ -1114,6 +1227,8 @@ def workflow_script(runs: list[Path]) -> tuple[Path, str, int]:
     count = 0
     states = [(run.resolve(), load_run(run.resolve())) for run in runs]
     for _, state in states:
+        if run_dispatch(state) == "inline":
+            raise _inline_only(state)
         if state["runtime"] == "copilot-cli":
             raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; dispatch it instead")
     for run, state in states:
@@ -1152,6 +1267,8 @@ def _copilot_run(run: Path) -> tuple[Path, dict[str, Any], str]:
     """A Copilot CLI host run, its state, and its one reviewer, whose name every host failure carries."""
     run = run.resolve()
     state = load_run(run)
+    if run_dispatch(state) == "inline":
+        raise _inline_only(state)
     if not _is_copilot_host_run(state):
         raise PipelineError("dispatch runs only a Copilot CLI entrypoint reviewer; delegate the ROLE prompts instead")
     return run, state, state["roles"][0]["id"]
@@ -1284,6 +1401,8 @@ def wait_for_reviewers(
         try:
             resolved = run.resolve()
             state = load_run(resolved)
+            if run_dispatch(state) == "inline":
+                raise _inline_only(state)
             if _is_copilot_host_run(state):
                 raise PipelineError(f"{state['selector']} runs on the Copilot CLI host; wait for it with wait")
             loaded.append((resolved, state))
@@ -1400,6 +1519,8 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     if (run / RECORDED_FILE).is_file():
         raise PipelineError(f"{run} is already recorded")
     state = load_run(run)
+    if run_dispatch(state) == "inline":
+        verify_seal(run, state)
     errors = role_errors(run, state)
     if errors:
         raise PipelineError("Reviewer results are invalid: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
@@ -1453,6 +1574,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         uncovered_files=state.get("uncovered_files"),  # absent from runs prepared before they were recorded
         model_names=config["model_names"],
         flags=load_store(default_flags_path())["flags"],
+        dispatch=run_dispatch(state),
     )
     notes = list(state["notes"])
     left = remove_recorded_run(
@@ -1568,8 +1690,11 @@ def _print_ready(result: dict[str, Any]) -> None:
     print(f"RUN {result['selector']} {result['run']}")
     for note in result["notes"]:
         print(f"NOTE {result['selector']} {note}")
-    if result["runtime"] == "copilot-cli":
+    if result["dispatch"] == "copilot-host":
         print(f"HOST copilot-cli {result['run']}")
+        return
+    if result["dispatch"] == "inline":
+        print(f"INLINE {result['run']}")
         return
     for role in result["roles"]:
         print(f"ROLE {role['id']} {role['prompt_file']}")
@@ -1623,7 +1748,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=sorted(RUNTIME_CAPABILITIES),
         help="the runtime this session runs in; decides an auto runtime before PATH does",
     )
+    prepare_parser.add_argument(
+        "--inline", action="store_true", help="have this session work every reviewer role itself, one at a time"
+    )
     commands.add_parser("dispatch").add_argument("--run", required=True, type=Path)
+    commands.add_parser("next-role").add_argument("--run", required=True, type=Path)
     wait_parser = commands.add_parser("wait")
     wait_parser.add_argument("--run", required=True, type=Path)
     wait_parser.add_argument(
@@ -1732,6 +1861,7 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
             force=args.force,
             canary=args.canary,
             host=args.host,
+            inline=args.inline,
             config_path=args.config,
             services=services,
         ),
@@ -1746,10 +1876,18 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
         if result["status"] == "skip":
             print(f"SKIP {result['selector']} {result['reason']}")
         else:
-            # This call's other pull requests may have taken longer; its reviewers all start from here.
-            mark_dispatched(result["run"])
+            # This call's other pull requests may have taken longer; its reviewers all start from here. An inline
+            # role starts when next-role hands it out.
+            if result["dispatch"] != "inline":
+                mark_dispatched(result["run"])
             _print_ready(result)
     return 1 if failed else 0
+
+
+def _run_next_role(args: argparse.Namespace, services: Services | None) -> int:
+    selector, role = next_role(args.run, services or Services())
+    print(f"INLINE_ROLE {selector} {role['id']} {role['prompt_file']}" if role else f"INLINE_DONE {selector}")
+    return 0
 
 
 def _run_validate_result(args: argparse.Namespace, services: Services | None) -> int:
@@ -1878,6 +2016,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace, Services | None], int]] = {
     "enumerate": _run_enumerate,
     "prepare": _run_prepare,
     "dispatch": _run_dispatch,
+    "next-role": _run_next_role,
     "wait": _run_wait,
     "host": _run_host,
     "workflow": _run_workflow,

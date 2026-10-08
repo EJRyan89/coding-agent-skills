@@ -60,6 +60,9 @@ RUNTIME_CAPABILITIES = {
     "codex": {"agent-delegation", "read-diff", "write-result"},
     "copilot-cli": {"isolated-added-root", "read-diff", "write-result"},
 }
+# An inline reviewer is the orchestrating session: it reads the run and writes its result, and it starts no agent
+# and has no isolated host, so a manifest that needs either cannot run inline.
+INLINE_CAPABILITIES = frozenset({"read-diff", "write-result"})
 MANIFEST_KEYS = {
     "schema_version",
     "id",
@@ -311,10 +314,9 @@ def declared_reviewer_files(manifest: dict[str, Any]) -> list[str]:
 def validate_adapter_manifest(value: Any) -> dict[str, Any]:
     version = _manifest_version(value)
     _validate_supports(value["supports"])
-    capabilities = value["required_capabilities"]
-    _validate_capabilities(capabilities)
+    _validate_capabilities(value["required_capabilities"])
     if version == 2:
-        return _normalized_specialists_manifest(value, capabilities)
+        return _normalized_specialists_manifest(value)
     return _normalized_entrypoint_manifest(value)
 
 
@@ -353,13 +355,12 @@ def _validate_capabilities(capabilities: Any) -> None:
         raise RuntimeContractError("Adapter required_capabilities is invalid")
 
 
-def _normalized_specialists_manifest(value: dict[str, Any], capabilities: list[str]) -> dict[str, Any]:
-    """A specialists manifest (schema 2) with its paths normalized, once its kind, capabilities, uncovered policy,
-    specialists, and declared files are valid."""
+def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
+    """A specialists manifest (schema 2) with its paths normalized, once its kind, uncovered policy, specialists, and
+    declared files are valid. Whether it lists agent-delegation is negotiated when a review starts: listing it keeps
+    its specialists off an inline review."""
     if value["kind"] != "specialists":
         raise RuntimeContractError("Adapter manifest kind is unsupported")
-    if "agent-delegation" not in capabilities:
-        raise RuntimeContractError("Specialist reviewers must require agent-delegation")
     if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
         raise RuntimeContractError("Adapter uncovered must be review or ignore")
     normalized = dict(value)
@@ -403,14 +404,37 @@ def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def negotiate_capabilities(runtime: str, required: Iterable[str]) -> set[str]:
+def negotiate_capabilities(runtime: str, required: Iterable[str], *, dispatch: str = "subagents") -> set[str]:
+    """The capabilities a review dispatched this way on this runtime offers, once it offers every required one.
+
+    An inline review offers only what its runtime and INLINE_CAPABILITIES both do. The runtime's own lack is named
+    first, so a runtime that cannot delegate says so whichever way its review is dispatched.
+    """
     available = RUNTIME_CAPABILITIES.get(runtime)
     if available is None:
         raise RuntimeContractError(f"Unknown runtime host: {runtime}")
-    missing = sorted(set(required) - available)
+    wanted = set(required)
+    missing = sorted(wanted - available)
     if missing:
         raise RuntimeContractError(f"Runtime {runtime} lacks required capabilities: {', '.join(missing)}")
-    return available
+    if dispatch != "inline":
+        return available
+    missing = sorted(wanted - INLINE_CAPABILITIES)
+    if missing:
+        raise RuntimeContractError(f"Inline review lacks required capabilities: {', '.join(missing)}")
+    return available & INLINE_CAPABILITIES
+
+
+def choose_dispatch(runtime: str, kind: str, *, inline: bool = False) -> str:
+    """How a run's roles are worked: inline when asked, or when the runtime cannot start the subagents the suite's
+    own roles need; a Copilot CLI entrypoint reviewer on its bounded host; otherwise as subagents."""
+    if inline:
+        return "inline"
+    if runtime == "copilot-cli" and kind == "entrypoint":
+        return "copilot-host"
+    if "agent-delegation" not in RUNTIME_CAPABILITIES[runtime]:
+        return "inline"
+    return "subagents"
 
 
 def resolve_runtime(configured: str, host: str | None = None) -> str:

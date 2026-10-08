@@ -15,6 +15,9 @@ from review_config import validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
 
 RECORD_SCHEMA_VERSION = 1
+# How a review's reviewer roles were worked, as its record's `review.dispatch` says: as native subagents (or by a Claude
+# Code Workflow), by the bounded Copilot CLI host, or inline by the orchestrating session itself, one role at a time.
+DISPATCH_MODES = ("subagents", "copilot-host", "inline")
 ADAPTER_PROTOCOL_VERSION = 1
 SEVERITIES = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
 DISPOSITIONS = {
@@ -606,6 +609,8 @@ def build_record(
         record["review"]["patches"] = copy.deepcopy(request["patches"])
     if request.get("scope"):
         record["review"]["scope"] = copy.deepcopy(request["scope"])
+    if request.get("dispatch"):
+        record["review"]["dispatch"] = request["dispatch"]
     if adapter_result.get("comment_dispositions"):
         record["github_comments"] = [
             {key: comment[key] for key in COMMENT_FIELDS} for comment in request.get("github_comments", [])
@@ -1012,9 +1017,11 @@ def _validate_coverage(review: dict[str, Any]) -> None:
 def _validate_review(review: dict[str, Any]) -> None:
     """The review's own metadata, up to its adapter."""
     review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
-    # Records written before patches or scopes were recorded omit them.
-    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope"}:
+    # Records written before patches, scopes, or dispatch modes were recorded omit them.
+    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope", "dispatch"}:
         raise RecordError("Review metadata fields are malformed")
+    if "dispatch" in review and not _one_of(review["dispatch"], set(DISPATCH_MODES)):
+        raise RecordError("Review dispatch is invalid")
     if "reviewers" in review:
         _validate_reviewers(review["reviewers"])
     if "patches" in review:
@@ -1477,6 +1484,7 @@ def render_markdown(
             "| | |",
             "|---|---|",
             f"| **Mode** | {review['mode']} v{review['version']} |",
+            *([f"| **Dispatch** | {review['dispatch']} |"] if "dispatch" in review else []),
             f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
             f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
             # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.

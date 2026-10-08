@@ -501,6 +501,27 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('wait_reviewers_parser = commands.add_parser("wait-reviewers")', source)
         self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
 
+    def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
+        # Copilot CLI cannot start subagents, so the orchestrating session works each role itself (#3).
+        skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
+        body = skill.split("---", 2)[2]
+        self.assertIn("Add `--inline` when this session cannot start subagents", body)
+        self.assertIn("or one `INLINE <run directory>` line.", body)
+        self.assertIn(
+            "run the pipeline's `next-role --run <run directory>` command, and for "
+            "`INLINE_ROLE <selector> <id> <prompt file>` read that prompt file",
+            body,
+        )
+        self.assertIn("until it prints `INLINE_DONE <selector>`", body)
+        self.assertIn("you are its reviewer without the reviewer agent's guard", body)
+        self.assertIn("If any run printed `HOST copilot-cli` or `INLINE`, use the groups instead.", body)
+        pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertIn("--inline", declared_options(pipeline, "prepare_parser"))
+        source = pipeline.read_text(encoding="utf-8")
+        self.assertIn('commands.add_parser("next-role")', source)
+        for line in ("f\"INLINE {result['run']}\"", 'f"INLINE_ROLE {selector} ', 'f"INLINE_DONE {selector}"'):
+            self.assertIn(line, source)
+
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host (#45).
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")

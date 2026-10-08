@@ -6,7 +6,7 @@ This repository currently supports:
 
 - personal skill discovery in GitHub Copilot CLI through generated `~/.agents/skills/<name>/SKILL.md` adapters;
 - zero-AI verification of the effective discovered skill path with `python deploy.py verify`; and
-- a bounded, noninteractive Copilot CLI host for the code-review protocol.
+- code reviews with `review-prs`: the generic reviewer and specialists run inline in the session, and a repository entrypoint reviewer runs on a bounded, noninteractive Copilot CLI host.
 
 Repository instructions, IDE surfaces, the cloud coding agent, and GitHub code review require repository-specific configuration. They are not enabled merely by deploying these personal skills. Configure the surfaces a repository needs by hand, then check them with `audit-ai-config`.
 
@@ -36,9 +36,15 @@ A headless session cannot start a user-only skill, such as `update-coding-agent-
 
 The [runtime canary](../tools/runtime_canary.py) reaches Copilot only through `copilot -p`, so for a user-only skill it prints `RUNTIME copilot <skill> UNSUPPORTED` and runs no model. After a Copilot CLI upgrade, run a user-only skill headless by hand; once `-p` starts it, remove `USER_ONLY_UNSUPPORTED` from the canary.
 
+## Inline code reviews
+
+Copilot CLI cannot start subagents, so a review whose reviewer is the suite's generic reviewer or a specialists manifest runs inline: `prepare` prints `INLINE <run directory>`, and the session works each reviewer role itself, one at a time, as `next-role` hands it out, writing each result file through the same result contract and self-check a subagent uses. `check` and `finalize` validate the results exactly as they do for subagents, and the record's `review.dispatch` is `inline`. A specialists manifest that lists `agent-delegation` in `required_capabilities` asks for subagents only, so it fails on Copilot CLI as before; drop it from the list to let its specialists run inline.
+
+An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the session, with that session's tools, permissions, and context. `next-role`, `check`, and `finalize` fail the pull request if a role changes another run file, such as an earlier role's result or the request, and the core still validates every result and computes the verdict. Run inline reviews from a directory outside the repository's checkout, in a session allowed nothing beyond what the pipeline's commands need; the [threat model](code-review-operations-contract.md#threat-model) lists what remains.
+
 ## Bounded code-review host
 
-The code-review host requires GitHub Copilot CLI 1.0.88 or newer. It:
+The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer. It:
 
 - runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values;
 - disables custom instructions, built-in MCP servers, remote delegation, interactive questions, shell, URL, and memory tools;
