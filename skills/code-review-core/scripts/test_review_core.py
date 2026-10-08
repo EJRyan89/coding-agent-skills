@@ -1968,7 +1968,9 @@ class RuntimeContractTests(unittest.TestCase):
             self.assertEqual(["ok.py"], [path.name for path in (snapshot / "src").iterdir()])
             verify_source_snapshot(snapshot, expected_repository="example/one", expected_commit=head)
             # validate-reviewer measures with the same rules, so it reports the exclusion rather than failing.
-            measured = review_runtime.measure_source_snapshot(checkout, head, changed_paths=[name])
+            measured = review_runtime.measure_source_snapshot(
+                checkout, head, destination=snapshot, changed_paths=[name]
+            )
             self.assertEqual((1, 3, {"unsafe-path": 1}), (measured.files, measured.bytes, measured.excluded))
             diff = root / "diff.patch"
             for changed, unavailable, verdict in ((name, [name], "INCOMPLETE"), ("src/ok.py", [], "APPROVED")):

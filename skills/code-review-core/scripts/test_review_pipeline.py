@@ -3054,6 +3054,33 @@ class SnapshotSizeTests(PipelineFixture):
         )
         self.assertEqual("VALID", lines[-1])
 
+    def test_validate_reviewer_counts_names_windows_cannot_hold_as_unsafe_paths(self) -> None:
+        # The base's root plus three such names, its tree built with git mktree, since Git for Windows refuses them
+        # into the index.
+        def plumbing(*arguments: str, data: bytes = b"") -> bytes:
+            identity = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"]
+            command = ["git", "-C", str(self.checkout), *identity, *arguments]
+            return subprocess.run(command, input=data, capture_output=True, check=True).stdout.strip()
+
+        blob = plumbing("hash-object", "-w", "--stdin", data=b"print(1)\n")
+        added = b"".join(b"100644 blob " + blob + b"\t" + name + b"\0" for name in (b"trailing.", b"CON", b"a\\b.py"))
+        tree = plumbing("mktree", "-z", data=plumbing("ls-tree", "-z", self.base) + added).decode("ascii")
+        commit = plumbing("commit-tree", tree, "-p", self.base, "-m", "unsafe names").decode("ascii")
+        plumbing("update-ref", "refs/heads/unsafe", commit)
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "unsafe")
+        self.assertEqual(0, code, err)
+        files, size = self.kept(self.base)
+        self.assertIn(
+            f"SNAPSHOT {commit[:12]} files={files} bytes={size} limit=268435456 "
+            "excluded=agent-instruction:3,unsafe-path:3",
+            out.splitlines(),
+        )
+
+    def test_validate_reviewer_measures_at_a_path_as_long_as_the_source_folder_of_prepares_run(self) -> None:
+        run = Path(tempfile.mkdtemp(prefix="code-review-run-")).resolve()
+        self.addCleanup(run.rmdir)
+        self.assertEqual(len(str(run / "source")), len(str(rp.run_source_example())))
+
     def test_a_snapshot_over_the_size_limit_fails_naming_the_largest_directories(self) -> None:
         # 3 MiB of text under app/: over a 2 MiB limit, though each file is under the 1 MiB per-file limit.
         self.commit({f"app/data{index}.txt": "x" * (1024 * 1024 - 1) for index in range(3)})
@@ -3081,8 +3108,8 @@ class SnapshotSizeTests(PipelineFixture):
         )
         changed = ["big/changed.txt"]
         with mock.patch("review_runtime.MAX_SOURCE_FILE_BYTES", 2000):
-            size = rp.measure_source_snapshot(self.checkout, head, changed_paths=changed)
             snapshot = self.root / "snapshot"
+            size = rp.measure_source_snapshot(self.checkout, head, destination=snapshot, changed_paths=changed)
             metadata = rp.materialize_source_snapshot(self.checkout, REPOSITORY, head, snapshot, changed_paths=changed)
         written = [snapshot.joinpath(*relative.split("/")).stat().st_size for relative in metadata["source_hashes"]]
         self.assertEqual((len(written), sum(written)), (size.files, size.bytes))

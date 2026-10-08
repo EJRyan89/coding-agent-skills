@@ -69,7 +69,9 @@ def _unquote(value: str) -> str:
 
 
 def _strip_prefix(value: str) -> str | None:
-    value = _unquote(value.strip())
+    """The path a `---` or `+++` line names. Git ends an unquoted name that holds a space with a tab, so a name that
+    ends in a space keeps it, and the snapshot's exclusion of that name matches the diff's."""
+    value = _unquote(value.removesuffix("\t"))
     if value == "/dev/null":
         return None
     if value.startswith(("a/", "b/")):

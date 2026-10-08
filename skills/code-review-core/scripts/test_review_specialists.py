@@ -607,6 +607,16 @@ class UnsafeDiffPathTests(unittest.TestCase):
         text = _new_file('"b/a\\tb.py"') + _new_file('"b/c\\177d.py"') + SAFE_FILE
         self.assertEqual((["src/A.cs"], ["a\tb.py", "c\x7fd.py"]), _keys(rs.split_unified_diff(text)))
 
+    def test_a_name_ending_in_a_space_keeps_it_and_loses_only_the_tab_git_ends_it_with(self) -> None:
+        # Git ends an unquoted header name that holds a space with a tab, as `git diff` printed these.
+        added = "diff --git a/space  b/space \nnew file mode 100644\n--- /dev/null\n+++ b/space \t\n@@ -0,0 +1 @@\n+y\n"
+        removed = (
+            "diff --git a/a b.py b/a b.py\ndeleted file mode 100644\n--- a/a b.py\t\n+++ /dev/null\n@@ -1 +0,0 @@\n-y\n"
+        )
+        self.assertEqual(
+            (["space ", "a b.py", "src/A.cs"], []), _keys(rs.split_unified_diff(added + removed + SAFE_FILE))
+        )
+
     def test_every_rejected_path_is_excluded_once_in_diff_order(self) -> None:
         text = (
             _new_file("b/../evil.py")

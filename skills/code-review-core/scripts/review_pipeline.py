@@ -57,6 +57,7 @@ from review_config import (
 )
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
+from review_guard import RUN_PREFIX
 from review_hosts import (
     HostSuperseded,
     claim_holds,
@@ -614,7 +615,7 @@ def prepare(
         )
     runtime = services.resolve_runtime(config["runtime"], host)
     created = run_directory is None
-    run = (Path(tempfile.mkdtemp(prefix="code-review-run-")) if run_directory is None else run_directory).resolve()
+    run = (Path(tempfile.mkdtemp(prefix=RUN_PREFIX)) if run_directory is None else run_directory).resolve()
     if run.exists() and any(run.iterdir()):
         raise PipelineError(f"Run directory must be empty: {run}")
     try:
@@ -777,9 +778,17 @@ def _unmatched_patterns(manifest: dict[str, Any], files: set[str]) -> list[str]:
     return unmatched
 
 
+def run_source_example() -> Path:
+    """A path as long as the source folder of a run prepare creates, which tempfile names with RUN_PREFIX and eight
+    random characters, so a measurement leaves each path the room prepare's snapshot will."""
+    return Path(tempfile.gettempdir()).resolve() / f"{RUN_PREFIX}{'x' * 8}" / "source"
+
+
 def _snapshot_line(checkout: Path, commit: str, changed: list[str], services: Services) -> str:
     """The source snapshot prepare would write for this commit, or the reason prepare would refuse it."""
-    size = measure_source_snapshot(checkout, commit, runner=services.git, changed_paths=changed)
+    size = measure_source_snapshot(
+        checkout, commit, destination=run_source_example(), runner=services.git, changed_paths=changed
+    )
     error = size.limit_error()
     if error:
         raise PipelineError(f"The source snapshot of {commit[:12]} cannot be prepared: {error}")
