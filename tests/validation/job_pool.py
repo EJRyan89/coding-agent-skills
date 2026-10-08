@@ -1,4 +1,5 @@
-"""The job pool: a job, the process it runs, the pool that runs every job, and the step summary."""
+"""The job pool: a job, the process it runs, the pool that runs every job beside the policy checks, and the step
+summary."""
 
 from __future__ import annotations
 
@@ -12,12 +13,18 @@ from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from validation_support import REPOSITORY_ROOT
 
 from deployer import tools
 
 COMMAND_TIMEOUT_SECONDS = 20 * 60
+
+# Held for each line or block written while the pool runs, so a suite's line never lands inside the policy report.
+OUTPUT_LOCK = threading.Lock()
+# What the foreground work beside the pool returns.
+T = TypeVar("T")
 
 
 # Bash and PowerShell suites cannot be split, so they start before any shard.
@@ -91,11 +98,16 @@ def run_process(arguments: list[str], environment: dict[str, str] | None = None,
             )
 
 
-def worker_count() -> int:
-    configured = os.environ.get("VALIDATION_JOBS")
+# The most workers a run starts unless VALIDATION_JOBS says otherwise. Most jobs wait on Git and other processes, so
+# on a 24-CPU machine 24 workers took a full run from a median of 105 s at 16 to 96 s (2026-10-08, three runs each).
+MAXIMUM_WORKERS = 24
+
+
+def worker_count(environment: Mapping[str, str] = os.environ, cpus: int | None = None) -> int:
+    configured = environment.get("VALIDATION_JOBS")
     if configured:
         return max(1, int(configured))
-    return max(1, min(16, os.cpu_count() or 1))
+    return max(1, min(MAXIMUM_WORKERS, cpus or os.cpu_count() or 1))
 
 
 @dataclass(frozen=True)
@@ -122,7 +134,6 @@ def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[Failure]:
     such as an OSError, reports its traceback, so one broken job never stops the pool or the summary.
     """
     failures: list[Failure] = []
-    lock = threading.Lock()
 
     def attempt(job: Job) -> None:
         started = time.perf_counter()
@@ -133,7 +144,7 @@ def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[Failure]:
             error = Failure(job, str(exc))
         except (Exception, SystemExit) as exc:  # Any other exception, a job's sys.exit included, fails only the job.
             error = Failure(job, "".join(traceback.format_exception(exc)), raised=True)
-        with lock:
+        with OUTPUT_LOCK:
             if error is not None:
                 failures.append(error)
             if verbose or error is not None:
@@ -142,3 +153,14 @@ def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[Failure]:
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(attempt, sorted(jobs, key=lambda job: -job.weight)))
     return sorted(failures, key=lambda failure: failure.job.label)
+
+
+def run_beside(foreground: Callable[[], T], jobs: list[Job], verbose: bool, workers: int) -> tuple[T, list[Failure]]:
+    """Start the pool on its own thread, run `foreground` in this one while the pool works, and return both results.
+
+    The pool is always waited for: an exception from `foreground` propagates only once every job has finished.
+    """
+    with ThreadPoolExecutor(max_workers=1) as background:
+        pool = background.submit(run_jobs, jobs, verbose, workers)
+        result = foreground()
+        return result, pool.result()
