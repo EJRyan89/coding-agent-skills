@@ -7,7 +7,6 @@ import functools
 import io
 import os
 import re
-import tempfile
 import tokenize
 import tomllib
 import unittest
@@ -15,12 +14,18 @@ from pathlib import Path
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
-from validation_support import REPOSITORY_ROOT, relative, repository_files, scripts_put_on_path, skill_directories
+from validation_support import (
+    REPOSITORY_ROOT,
+    relative,
+    repository_files,
+    scripts_put_on_path,
+    skill_script_directories,
+)
 
 from deployer import platform_support
 
 # Every Python file under these is checked with `ruff format --check` and `ruff check`; none is excluded.
-FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", "deploy.py")
+FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py")
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
@@ -93,6 +98,7 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
     if not isinstance(configured, list):
         return ["pyproject.toml: [tool.mypy] mypy_path must be a list"]
     expected: dict[str, str] = {}
+    skill_scripts = set(skill_script_directories(root))
     for path in sorted(files):
         if path.suffix != ".py":
             continue
@@ -102,8 +108,7 @@ def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/skills/{name}/scripts", f"{relative_path.as_posix()} puts on sys.path"
             )
-        in_skill_scripts = len(relative_path.parts) == 4 and relative_path.parts[::2] == ("skills", "scripts")
-        if len(relative_path.parts) > 1 and not in_skill_scripts and imports_a_sibling(path, source):
+        if len(relative_path.parts) > 1 and path.parent not in skill_scripts and imports_a_sibling(path, source):
             expected.setdefault(
                 f"$MYPY_CONFIG_FILE_DIR/{relative_path.parent.as_posix()}",
                 f"{relative_path.as_posix()} imports a module from by its bare name",
@@ -161,9 +166,9 @@ def mypy_type_check(cwd: Path, targets: list[str], configuration: Path) -> None:
         ) from exc
 
 
-def type_check_skill_roots() -> list[Path]:
-    """The scripts directory of each skill that holds a Python module or regression suite."""
-    return [skill / "scripts" for skill in skill_directories() if any((skill / "scripts").glob("*.py"))]
+def type_check_skill_roots(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """The scripts directory of each shipped or repository skill that holds a Python module or regression suite."""
+    return [scripts for scripts in skill_script_directories(root) if any(scripts.glob("*.py"))]
 
 
 def type_check_jobs() -> list[Job]:
@@ -224,40 +229,6 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_mypy_path_names_each_scripts_directory_put_on_sys_path(self) -> None:
         self.assertEqual([], mypy_path_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "skills" / "user" / "scripts").mkdir(parents=True)
-            sibling = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
-            (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling, encoding="utf-8")
-            # A regression suite is type-checked too, so the directories it puts on sys.path count.
-            suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\nimport user\n'
-            (root / "skills" / "user" / "scripts" / "test_user.py").write_text(suite, encoding="utf-8")
-            # Text that only names the call is not one.
-            (root / "skills" / "user" / "scripts" / "notes.py").write_text(f"TEXT = {sibling!r}\n", encoding="utf-8")
-            # A suite outside a skill's scripts/ that imports a module beside it by its bare name needs its directory.
-            (root / "tests" / "suites").mkdir(parents=True)
-            (root / "tests" / "suites" / "helper.py").write_text("import os\n", encoding="utf-8")
-            (root / "tests" / "suites" / "test_a.py").write_text("import helper\nimport json\n", encoding="utf-8")
-            (root / "tests" / "suites" / "test_b.py").write_text("from helper import x\n", encoding="utf-8")
-            # A package import from the repository root is not a sibling import.
-            (root / "tests" / "other").mkdir()
-            (root / "tests" / "other" / "test_c.py").write_text("from tools import x\nimport os\n", encoding="utf-8")
-            (root / "pyproject.toml").write_text(
-                '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/skills/stale/scripts"]\n', encoding="utf-8"
-            )
-            self.assertEqual(
-                [
-                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/core/scripts, which "
-                    "skills/user/scripts/user.py puts on sys.path",
-                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/suite-only/scripts, "
-                    "which skills/user/scripts/test_user.py puts on sys.path",
-                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/tests/suites, which "
-                    "tests/suites/test_a.py imports a module from by its bare name",
-                    "pyproject.toml: [tool.mypy] mypy_path names $MYPY_CONFIG_FILE_DIR/skills/stale/scripts, which "
-                    "no module puts on sys.path",
-                ],
-                mypy_path_problems(root, sorted(root.rglob("*"))),
-            )
 
     def test_repository_has_no_type_ignore_without_a_reason(self) -> None:
         self.assertEqual([], type_ignore_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

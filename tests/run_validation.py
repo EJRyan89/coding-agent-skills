@@ -203,8 +203,8 @@ def main(argv: list[str] | None = None) -> int:
     workers = worker_count()
     print(f"Running {len(jobs)} suite jobs on {workers} workers.", flush=True)
     failures = run_jobs(jobs, arguments.verbose, workers)
-    for job, error in failures:
-        print(f"\n{'=' * 70}\nFAILED {job.label}\n{'-' * 70}\n{error}", flush=True)
+    for failure in failures:
+        print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", flush=True)
     passed = policy_result.wasSuccessful() and not failures
     seconds = time.perf_counter() - started
     print(
@@ -212,11 +212,12 @@ def main(argv: list[str] | None = None) -> int:
         + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed).")
     )
     failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
-    failed += [job.label for job, _ in failures]
-    append_step_summary(
-        os.environ,
-        step_summary(tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed),
+    failed += [failure.job.label for failure in failures]
+    tracebacks = {failure.job.label: failure.report for failure in failures if failure.raised}
+    summary = step_summary(
+        tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed, tracebacks
     )
+    append_step_summary(os.environ, summary)
     return 0 if passed else 1
 
 

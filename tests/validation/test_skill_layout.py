@@ -25,10 +25,74 @@ from skill_layout import (
     output_placeholder_problems,
     script_dependency_problems,
     script_language_problems,
+    script_layout_problems,
     skill_path_problems,
+    skill_tree_problems,
     unsupported_script_problems,
 )
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
+
+
+class SkillTreeFixtures(unittest.TestCase):
+    def test_an_executable_outside_a_skills_scripts_fails_in_every_kind_of_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "",
+                    "skills/alpha/scripts/run.py": "",
+                    "skills/alpha/scripts/nested/run.sh": "",
+                    "skills/alpha/tool.py": "",
+                    "skills/alpha/references/notes.md": "",
+                    "skills/group/inner/SKILL.md": "",
+                    "skills/group/inner/helper.ps1": "",
+                    ".claude/skills/local/SKILL.md": "",
+                    ".claude/skills/local/run.sh": "",
+                    ".claude/skills/local/scripts/run.sh": "",
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/alpha/tool.py is an executable file outside its skill's scripts/; move it to "
+                    "skills/alpha/scripts/",
+                    "skills/group/inner/helper.ps1 is an executable file outside its skill's scripts/; move it to "
+                    "skills/group/inner/scripts/",
+                    ".claude/skills/local/run.sh is an executable file outside its skill's scripts/; move it to "
+                    ".claude/skills/local/scripts/",
+                ],
+                script_layout_problems(root),
+            )
+
+    def test_every_directory_under_skills_is_a_skill_or_a_category_of_skills(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "",
+                    "skills/alpha/scripts/run.py": "",
+                    "skills/shared.md": "",
+                    "skills/group/inner/SKILL.md": "",
+                    "skills/group/other/SKILL.md": "",
+                    "skills/mixed/inner/SKILL.md": "",
+                    "skills/mixed/stray/notes.md": "",
+                    "skills/nested/SKILL.md": "",
+                    "skills/nested/child/SKILL.md": "",
+                    "skills/deep/a/b/SKILL.md": "",
+                    "skills/empty/notes.md": "",
+                },
+            )
+            self.assertEqual(
+                [
+                    "skills/deep/a holds no SKILL.md, but skills/deep is a category, so it must be a skill",
+                    "skills/empty holds no SKILL.md, so it is neither a skill nor a category of skills",
+                    "skills/mixed/stray holds no SKILL.md, but skills/mixed is a category, so it must be a skill",
+                    "skills/nested/child/SKILL.md is a skill inside the skill skills/nested",
+                    "skills/deep/a/b/SKILL.md is deeper than skills/<category>/<name>",
+                ],
+                skill_tree_problems(root),
+            )
 
 
 class SkillLayoutFixtures(unittest.TestCase):

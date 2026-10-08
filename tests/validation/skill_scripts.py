@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
-from validation_support import REPOSITORY_ROOT, SHELL_FENCES, is_test_script
+from validation_support import REPOSITORY_ROOT, SHELL_FENCES, is_test_script, skill_script_directories
 
 from deployer import render
 
@@ -405,7 +405,7 @@ CODEQL_SECRET_NAME = re.compile(r"secret|(?<!un)(?<!un_)(?<!is)(?<!is_)trusted",
 def secret_named_function_problems(root: Path) -> list[str]:
     """Report each function in shipped or deployer code whose name CodeQL reads as returning a secret."""
     files = [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
-    files += (root / "skills").glob("*/scripts/**/*.py")
+    files += [path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")]
     problems: list[str] = []
     for path in sorted(
         (path for path in files if path.is_file() and not is_test_script(path)), key=lambda p: p.as_posix()
@@ -425,7 +425,7 @@ def script_contract_problems(root: Path) -> list[str]:
     or an exit code other than 0, 1, and 2. A module that must speak another protocol says why in
     EXIT_CONTRACT_EXEMPT."""
     problems: list[str] = []
-    for path in sorted((root / "skills").glob("*/scripts/*")):
+    for path in sorted(path for scripts in skill_script_directories(root) for path in scripts.glob("*")):
         if not path.is_file() or is_test_script(path):
             continue
         name = path.relative_to(root).as_posix()
@@ -481,7 +481,7 @@ def client_command_problems(root: Path) -> list[str]:
     a command a script starts itself has none of that, so a sweep can wait forever on a credential prompt.
     """
     problems: list[str] = []
-    for path in sorted((root / "skills").glob("*/scripts/**/*.py")):
+    for path in sorted(path for scripts in skill_script_directories(root) for path in scripts.rglob("*.py")):
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue

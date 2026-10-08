@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -21,12 +22,48 @@ from shell_targets import (
     markdown_shell_targets,
     powershell_targets,
     script_analyzer_check,
+    shell_script_targets,
     shell_token_problems,
 )
 from toolchain import PREREQUISITES, find_psscriptanalyzer, missing_prerequisites, outdated_prerequisites
-from validation_support import REPOSITORY_ROOT
+from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
 from deployer import platform_support
+
+
+class SkillScriptTargetFixtures(unittest.TestCase):
+    FILES: ClassVar[dict[str, str]] = {
+        "skills/alpha/SKILL.md": "",
+        "skills/alpha/scripts/run.sh": "",
+        "skills/group/inner/SKILL.md": "",
+        "skills/group/inner/scripts/tool.bash": "",
+        ".claude/skills/local/SKILL.md": "",
+        ".claude/skills/local/scripts/local.sh": "",
+        ".claude/skills/local/scripts/local.ps1": "",
+        # Shell outside a repository skill's scripts/ is not a skill script; tools/ and tests/ hold no skill.
+        ".claude/hooks/hook.sh": "",
+        "tools/run.sh": "",
+    }
+
+    def test_shellcheck_reads_every_shipped_and_repository_skill_script(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, self.FILES)
+            self.assertEqual(
+                [
+                    ".claude/skills/local/scripts/local.sh",
+                    "skills/alpha/scripts/run.sh",
+                    "skills/group/inner/scripts/tool.bash",
+                ],
+                [path.relative_to(root).as_posix() for path in shell_script_targets(root)],
+            )
+
+    def test_psscriptanalyzer_reads_a_repository_skills_powershell(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {**self.FILES, ".claude/hooks/hook.ps1": ""})
+            targets = powershell_targets(root, sorted(path for path in root.rglob("*") if path.is_file()))
+        self.assertEqual([".claude/skills/local/scripts/local.ps1"], [target.name for target in targets])
 
 
 class ShellTargetsFixtures(unittest.TestCase):

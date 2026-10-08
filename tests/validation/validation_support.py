@@ -115,8 +115,27 @@ def relative(path: Path) -> str:
     return path.relative_to(REPOSITORY_ROOT).as_posix()
 
 
-def skill_directories() -> list[Path]:
-    return sorted((path for path in SKILLS_ROOT.iterdir() if path.is_dir()), key=lambda p: p.name.casefold())
+def skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """Each shipped skill's directory, found as deployer/source.py finds it: skills/<name> or skills/<category>/<name>,
+    holding SKILL.md. skill_tree_problems reports any other directory under skills/."""
+    skills = root / "skills"
+    found = (path.parent for path in skills.rglob("SKILL.md") if len(path.relative_to(skills).parts) in (2, 3))
+    return sorted(found, key=lambda path: path.relative_to(skills).as_posix().casefold())
+
+
+def repository_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """Each repository skill's directory under .claude/skills, which validation holds as it holds a shipped skill."""
+    return sorted((path.parent for path in (root / REPOSITORY_SKILLS).glob("*/SKILL.md")), key=lambda path: path.name)
+
+
+def all_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """Every shipped and repository skill's directory: validation finds, lays out, lints, and types their scripts/."""
+    return [*skill_directories(root), *repository_skill_directories(root)]
+
+
+def skill_script_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """The scripts/ directory of every shipped and repository skill that has one."""
+    return [skill / "scripts" for skill in all_skill_directories(root) if (skill / "scripts").is_dir()]
 
 
 def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:

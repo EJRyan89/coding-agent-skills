@@ -28,13 +28,13 @@ Validation and CI take two Python packages from PyPI, pinned in `requirements-de
 python -m pip install -r requirements-dev.txt
 ```
 
-`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. The line length is 120. `tests/run_validation.py` runs `ruff format --check` and `ruff check` on `deployer/`, `tools/`, `tests/`, `skills/`, and `deploy.py`, excluding none. The format check names every file it would change; run `python -m ruff format` on those files to fix it. The lint check names every finding of the rule sets `pyproject.toml` selects; fix each one. Validation also runs mypy, with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each skill's `scripts/` directory, and names every error, regression suites included.
+`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. The line length is 120. `tests/run_validation.py` runs `ruff format --check` and `ruff check` on `deployer/`, `tools/`, `tests/`, `skills/`, `.claude/skills/`, and `deploy.py`, excluding none. The format check names every file it would change; run `python -m ruff format` on those files to fix it. The lint check names every finding of the rule sets `pyproject.toml` selects; fix each one. Validation also runs mypy, with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each skill's `scripts/` directory, and names every error, regression suites included.
 
 Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first.
 
 ### After a Dependabot pull request for ruff
 
-A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the five roots and commit the result on its own, and fix anything `ruff check` newly names in a commit of its own. Run the complete validation before merging.
+A ruff bump raises the floor with it. In the same pull request, set `VALIDATION_FLOORS` in `tests/validation/toolchain.py`, the row above, and the pin `test_ci_exercises_each_floor` checks to the new version, then run `python -m ruff format` on the six roots and commit the result on its own, and fix anything `ruff check` newly names in a commit of its own. Run the complete validation before merging.
 
 ### After a Dependabot pull request for mypy
 

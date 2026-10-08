@@ -24,6 +24,13 @@ from skill_scripts import (
 )
 
 
+def mark_skills(root: Path) -> Path:
+    """Give each skills/<name> folder with a scripts/ directory the SKILL.md that makes it a skill, and return root."""
+    for scripts in (root / "skills").glob("*/scripts"):
+        (scripts.parent / "SKILL.md").write_text(f"# {scripts.parent.name}\n", encoding="utf-8")
+    return root
+
+
 class SkillScriptsFixtures(unittest.TestCase):
     def test_script_contract_policy_detects_each_breach_and_honors_a_stated_exemption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -70,7 +77,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skills/alpha/scripts/tool.sh:2 exits 3; scripts exit only 0, 1, or 2; see {doc}",
                     "skills/alpha/scripts/vague.py: EXIT_CONTRACT_EXEMPT must be a non-empty string saying why",
                 ],
-                script_contract_problems(root),
+                script_contract_problems(mark_skills(root)),
             )
 
     def test_secret_named_function_policy_flags_trusted_but_not_untrusted_or_tests(self) -> None:
@@ -93,7 +100,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skills/example/scripts/runtime.py:1: function resolve_trusted_commit",
                     "skills/example/scripts/runtime.py:6: function _trusted_files",
                 ],
-                [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(root)],
+                [problem.split(" is named", 1)[0] for problem in secret_named_function_problems(mark_skills(root))],
             )
 
     def test_shell_command_extraction_ignores_keywords_patterns_and_functions(self) -> None:
@@ -146,7 +153,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skills/alpha/scripts/tool.py:4 runs git itself; {git}; see {doc}",
                     f"skills/alpha/scripts/tool.py:5 runs gh itself; {gh}; see {doc}",
                 ],
-                client_command_problems(root),
+                client_command_problems(mark_skills(root)),
             )
 
     def test_gh_filter_policy_detects_jq_template_and_json_query_flags(self) -> None:

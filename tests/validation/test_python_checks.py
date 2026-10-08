@@ -15,10 +15,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import python_checks
-import validation_support
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
+    mypy_path_problems,
     mypy_type_check,
     noqa_without_reason,
     ruff_format_check,
@@ -27,7 +27,7 @@ from python_checks import (
     type_ignore_without_reason,
 )
 from toolchain import PREREQUISITES, find_mypy, missing_prerequisites
-from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative
+from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, write_fixture_tree
 
 from deployer import platform_support
 
@@ -49,7 +49,7 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertIn("python -m ruff format", message)
 
     def test_format_check_covers_every_python_root(self) -> None:
-        self.assertEqual(("deployer", "tools", "tests", "skills", "deploy.py"), FORMAT_ROOTS)
+        self.assertEqual(("deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py"), FORMAT_ROOTS)
         self.assertIn("static format check (ruff format --check)", [job.name for job in all_jobs()])
 
     def test_lint_check_names_an_unused_import(self) -> None:
@@ -72,7 +72,9 @@ class PythonChecksFixtures(unittest.TestCase):
         self.assertIn("static lint check (ruff check)", jobs)
         with mock.patch.object(python_checks, "ruff_lint_check") as lint:
             jobs["static lint check (ruff check)"].run()
-        lint.assert_called_once_with(REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", "deploy.py"])
+        lint.assert_called_once_with(
+            REPOSITORY_ROOT, ["deployer", "tools", "tests", "skills", ".claude/skills", "deploy.py"]
+        )
 
     def test_missing_mypy_is_reported_with_the_install_command(self) -> None:
         self.assertIn(("mypy", "mypy", find_mypy), PREREQUISITES)
@@ -130,18 +132,35 @@ class PythonChecksFixtures(unittest.TestCase):
                     jobs[name].run()
                     check.assert_called_once_with(root, ["."], configuration)
 
-    def test_type_check_roots_include_a_skill_whose_scripts_are_all_suites(self) -> None:
+    def test_type_check_roots_are_the_scripts_of_every_shipped_and_repository_skill(self) -> None:
+        files = {
+            "skills/module/SKILL.md": "",
+            "skills/module/scripts/run.py": "",
+            "skills/suites/SKILL.md": "",
+            "skills/suites/scripts/test_run.py": "",
+            "skills/shell/SKILL.md": "",
+            "skills/shell/scripts/test_run.sh": "",
+            # A category holds skills, as deployer/source.py reads skills/<category>/<name>.
+            "skills/group/inner/SKILL.md": "",
+            "skills/group/inner/scripts/run.py": "",
+            # A repository skill's scripts are checked like a shipped skill's.
+            ".claude/skills/local/SKILL.md": "",
+            ".claude/skills/local/scripts/run.py": "",
+            # A folder without SKILL.md is no skill.
+            "skills/loose/scripts/run.py": "",
+        }
         with tempfile.TemporaryDirectory() as temporary:
-            skills = Path(temporary)
-            for name, files in {"module": ["run.py"], "suites": ["test_run.py"], "shell": ["test_run.sh"]}.items():
-                (skills / name / "scripts").mkdir(parents=True)
-                for file in files:
-                    (skills / name / "scripts" / file).write_text("", encoding="utf-8")
-            (skills / "none").mkdir()
-            with mock.patch.object(validation_support, "SKILLS_ROOT", skills):
-                self.assertEqual(
-                    [skills / "module" / "scripts", skills / "suites" / "scripts"], type_check_skill_roots()
-                )
+            root = Path(temporary)
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                [
+                    root / "skills/group/inner/scripts",
+                    root / "skills/module/scripts",
+                    root / "skills/suites/scripts",
+                    root / ".claude/skills/local/scripts",
+                ],
+                type_check_skill_roots(root),
+            )
 
     def test_type_ignore_scan_requires_codes_and_a_reason(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -200,6 +219,43 @@ class PythonChecksFixtures(unittest.TestCase):
         ):
             ruff_lint_check(REPOSITORY_ROOT, ["deploy.py"])
         self.assertIn("ruff was not found: python -m pip install -r requirements-dev.txt", str(raised.exception))
+
+    def test_mypy_path_policy_names_each_missing_and_stale_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "skills" / "user" / "scripts").mkdir(parents=True)
+            (root / "skills" / "user" / "SKILL.md").write_text("# user\n", encoding="utf-8")
+            sibling = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
+            (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling, encoding="utf-8")
+            # A regression suite is type-checked too, so the directories it puts on sys.path count.
+            suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\nimport user\n'
+            (root / "skills" / "user" / "scripts" / "test_user.py").write_text(suite, encoding="utf-8")
+            # Text that only names the call is not one.
+            (root / "skills" / "user" / "scripts" / "notes.py").write_text(f"TEXT = {sibling!r}\n", encoding="utf-8")
+            # A suite outside a skill's scripts/ that imports a module beside it by its bare name needs its directory.
+            (root / "tests" / "suites").mkdir(parents=True)
+            (root / "tests" / "suites" / "helper.py").write_text("import os\n", encoding="utf-8")
+            (root / "tests" / "suites" / "test_a.py").write_text("import helper\nimport json\n", encoding="utf-8")
+            (root / "tests" / "suites" / "test_b.py").write_text("from helper import x\n", encoding="utf-8")
+            # A package import from the repository root is not a sibling import.
+            (root / "tests" / "other").mkdir()
+            (root / "tests" / "other" / "test_c.py").write_text("from tools import x\nimport os\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text(
+                '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/skills/stale/scripts"]\n', encoding="utf-8"
+            )
+            self.assertEqual(
+                [
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/core/scripts, which "
+                    "skills/user/scripts/user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/suite-only/scripts, "
+                    "which skills/user/scripts/test_user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/tests/suites, which "
+                    "tests/suites/test_a.py imports a module from by its bare name",
+                    "pyproject.toml: [tool.mypy] mypy_path names $MYPY_CONFIG_FILE_DIR/skills/stale/scripts, which "
+                    "no module puts on sys.path",
+                ],
+                mypy_path_problems(root, sorted(root.rglob("*"))),
+            )
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -31,8 +32,9 @@ def step_summary(
     jobs: int,
     seconds: float,
     failed: list[str],
+    tracebacks: Mapping[str, str] | None = None,
 ) -> str:
-    """The Markdown GitHub Actions shows on the run's summary page."""
+    """The Markdown GitHub Actions shows on the run's summary page, with the traceback of each job that raised."""
     found = [f"Python {tools.format_version(python)}"] + [
         f"{label} {tools.format_version(version) if version else 'unknown'}" for label, version in versions.items()
     ]
@@ -43,8 +45,12 @@ def step_summary(
         f"- {', '.join(found)}",
         f"- {mode}",
         f"- {policies} policy checks and {jobs} suite jobs in {seconds:.0f}s: {result}",
-        *(f"- Failed: `{label}`" for label in failed),
     ]
+    for label in failed:
+        lines.append(f"- Failed: `{label}`")
+        traceback = (tracebacks or {}).get(label)
+        if traceback:
+            lines += ["", "  ```text", *(f"  {line}" for line in traceback.rstrip("\n").split("\n")), "  ```", ""]
     return "\n".join(lines) + "\n"
 
 
@@ -100,24 +106,39 @@ class Job:
     run: Callable[[], None]
 
 
-def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[tuple[Job, AssertionError]]:
-    """Run every job in one pool, heaviest first, and return the failures in label order."""
-    failures: list[tuple[Job, AssertionError]] = []
+@dataclass(frozen=True)
+class Failure:
+    """A job that failed: a check's message, or the traceback of anything else it raised."""
+
+    job: Job
+    report: str
+    raised: bool = False
+
+
+def run_jobs(jobs: list[Job], verbose: bool, workers: int) -> list[Failure]:
+    """Run every job in one pool, heaviest first, and return the failures in label order.
+
+    A job fails by raising: an AssertionError is a check that failed and reports its message, and any other exception,
+    such as an OSError, reports its traceback, so one broken job never stops the pool or the summary.
+    """
+    failures: list[Failure] = []
     lock = threading.Lock()
 
     def attempt(job: Job) -> None:
         started = time.perf_counter()
+        error: Failure | None = None
         try:
             job.run()
-            error = None
         except AssertionError as exc:
-            error = exc
+            error = Failure(job, str(exc))
+        except (Exception, SystemExit) as exc:  # Any other exception, a job's sys.exit included, fails only the job.
+            error = Failure(job, "".join(traceback.format_exception(exc)), raised=True)
         with lock:
             if error is not None:
-                failures.append((job, error))
+                failures.append(error)
             if verbose or error is not None:
                 print(f"{'FAIL' if error else 'ok'} {time.perf_counter() - started:6.1f}s {job.label}", flush=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(attempt, sorted(jobs, key=lambda job: -job.weight)))
-    return sorted(failures, key=lambda failure: failure[0].label)
+    return sorted(failures, key=lambda failure: failure.job.label)

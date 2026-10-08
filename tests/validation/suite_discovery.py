@@ -26,7 +26,7 @@ from validation_support import (
     is_test_script,
     relative,
     repository_files,
-    skill_directories,
+    skill_script_directories,
 )
 
 SHARD_RUNNER = REPOSITORY_ROOT / "tests" / "run_shard.py"
@@ -37,10 +37,10 @@ MAXIMUM_SHARDS = 8
 TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
 
 
-def _needs_a_test(name: str) -> bool:
-    """Whether a repository path is a module under skills/*/scripts/, deployer/, or tools/ that a test must name."""
+def _needs_a_test(name: str, scripts: list[str]) -> bool:
+    """Whether a repository path is a module under a skill's scripts/, deployer/, or tools/ that a test must import."""
     parts = name.split("/")
-    in_scope = parts[0] in {"deployer", "tools"} or (len(parts) > 3 and parts[0] == "skills" and parts[2] == "scripts")
+    in_scope = parts[0] in {"deployer", "tools"} or any(name.startswith(f"{directory}/") for directory in scripts)
     return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
 
 
@@ -91,10 +91,11 @@ def untested_module_problems(root: Path) -> list[str]:
         if fnmatch.fnmatchcase(path.name, "test_*.py"):
             imported |= imported_modules(path.read_text(encoding="utf-8"))
     by_path = {name.removeprefix("*") for name in imported if name.startswith("*")}
+    scripts = [directory.relative_to(root).as_posix() for directory in skill_script_directories(root)]
     problems: list[str] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
-        if not _needs_a_test(name):
+        if not _needs_a_test(name, scripts):
             continue
         loaded = any(f"/{name.removesuffix('.py')}".endswith(f"/{stem}") for stem in by_path)
         if _import_name(name) not in imported and not loaded:
@@ -124,13 +125,13 @@ def run_test_script(path: Path) -> None:
         raise AssertionError(f"Unsupported skill test type '{path.suffix}': {target}")
 
 
-def regression_suites() -> list[Path]:
-    """Every regression suite: the test scripts under tests/ and under each skill's scripts/."""
-    roots = [REPOSITORY_ROOT / "tests", *(skill / "scripts" for skill in skill_directories())]
+def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
+    """Every regression suite: the test scripts under tests/ and under each shipped or repository skill's scripts/."""
+    roots = [root / "tests", *skill_script_directories(root)]
     found = (
-        path for root in roots if root.is_dir() for path in root.rglob("*") if path.is_file() and is_test_script(path)
+        path for top in roots if top.is_dir() for path in top.rglob("*") if path.is_file() and is_test_script(path)
     )
-    return sorted(found, key=lambda path: relative(path).casefold())
+    return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
 
 def shard_count(suite: Path) -> int:
@@ -168,22 +169,24 @@ def suite_jobs(suites: list[Path]) -> list[Job]:
     return jobs
 
 
+def unsuited_script_problems(root: Path) -> list[str]:
+    """Report a shipped or repository skill whose scripts/ holds executable files but no regression suite."""
+    problems: list[str] = []
+    for scripts in skill_script_directories(root):
+        files = sorted(path for path in scripts.rglob("*") if path.is_file())
+        if any(is_executable_script(path) and not is_test_script(path) for path in files) and not any(
+            is_test_script(path) for path in files
+        ):
+            problems.append(
+                f"{scripts.relative_to(root).as_posix()} holds scripts but no regression suite; add a test_*, test-*, "
+                "*_test, *-test, or *.test.* Python, Bash, or PowerShell script beside them"
+            )
+    return problems
+
+
 class SuiteDiscoveryPolicies(unittest.TestCase):
     def test_scripted_skills_have_regression_suites(self) -> None:
-        for skill in skill_directories():
-            scripts = skill / "scripts"
-            if not scripts.is_dir():
-                continue
-            files = sorted(path for path in scripts.rglob("*") if path.is_file())
-            if not any(is_executable_script(path) and not is_test_script(path) for path in files):
-                continue
-            with self.subTest(skill=skill.name):
-                self.assertTrue(
-                    any(is_test_script(path) for path in files),
-                    f"Skill '{skill.name}' contains scripts but has no executable test "
-                    "suite. Add a test_*, test-*, *_test, *-test, or *.test.* Python, "
-                    "Bash, or PowerShell script under the skill's scripts/ directory.",
-                )
+        self.assertEqual([], unsuited_script_problems(REPOSITORY_ROOT))
 
     def test_every_regression_suite_is_found(self) -> None:
         suites = {relative(path) for path in regression_suites()}

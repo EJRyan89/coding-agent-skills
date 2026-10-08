@@ -20,12 +20,12 @@ from validation_support import (
     TEMPLATE_TOKEN,
     UNSUPPORTED_SCRIPT_EXTENSIONS,
     _fence_body_line,
+    all_skill_directories,
     fence_holders,
     is_executable_script,
     is_test_script,
     relative,
     scripts_put_on_path,
-    skill_directories,
 )
 
 from deployer import render
@@ -363,18 +363,57 @@ def script_language_problems(root: Path, standard_commands: set[str]) -> list[st
     return found
 
 
+def script_layout_problems(root: Path) -> list[str]:
+    """Report each executable file of a shipped or repository skill outside the skill's scripts/ directory."""
+    problems: list[str] = []
+    for skill in all_skill_directories(root):
+        for path in sorted(skill.rglob("*")):
+            inside = path.relative_to(skill).as_posix()
+            if path.is_file() and is_executable_script(path) and not inside.startswith("scripts/"):
+                problems.append(
+                    f"{path.relative_to(root).as_posix()} is an executable file outside its skill's scripts/; move it "
+                    f"to {skill.relative_to(root).as_posix()}/scripts/"
+                )
+    return problems
+
+
+def skill_tree_problems(root: Path) -> list[str]:
+    """Report a directory under skills/ that deployer/source.py would not read as a skill or a category of skills.
+
+    A skill is skills/<name> or skills/<category>/<name> holding SKILL.md, so a directory that is neither, or a
+    SKILL.md deeper than that, is a folder whose files and suites nothing would find.
+    """
+    skills = root / "skills"
+    problems: list[str] = []
+    for directory in sorted(path for path in skills.iterdir() if path.is_dir()) if skills.is_dir() else []:
+        name = directory.relative_to(root).as_posix()
+        members = sorted(path for path in directory.iterdir() if path.is_dir())
+        if (directory / "SKILL.md").is_file():
+            problems += [
+                f"{member.relative_to(root).as_posix()}/SKILL.md is a skill inside the skill {name}"
+                for member in members
+                if (member / "SKILL.md").is_file()
+            ]
+            continue
+        if not members:
+            problems.append(f"{name} holds no SKILL.md, so it is neither a skill nor a category of skills")
+        problems += [
+            f"{member.relative_to(root).as_posix()} holds no SKILL.md, but {name} is a category, so it must be a skill"
+            for member in members
+            if not (member / "SKILL.md").is_file()
+        ]
+    for skill_md in sorted(skills.rglob("SKILL.md")) if skills.is_dir() else []:
+        if len(skill_md.relative_to(skills).parts) > 3:
+            problems.append(f"{skill_md.relative_to(root).as_posix()} is deeper than skills/<category>/<name>")
+    return problems
+
+
 class SkillLayoutPolicies(unittest.TestCase):
     def test_skill_scripts_use_standard_layout(self) -> None:
-        for skill in skill_directories():
-            for path in skill.rglob("*"):
-                if not path.is_file() or not is_executable_script(path):
-                    continue
-                inside = path.relative_to(skill).as_posix()
-                self.assertTrue(
-                    inside.startswith("scripts/"),
-                    f"Skill '{skill.name}' contains executable file '{inside}' outside "
-                    "scripts/. Move executable artifacts to skills/<name>/scripts/.",
-                )
+        self.assertEqual([], script_layout_problems(REPOSITORY_ROOT))
+
+    def test_every_directory_under_skills_is_a_skill_or_a_category_of_skills(self) -> None:
+        self.assertEqual([], skill_tree_problems(REPOSITORY_ROOT))
 
     def test_skill_markdown_does_not_embed_programs(self) -> None:
         self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT))
