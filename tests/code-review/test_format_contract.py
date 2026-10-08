@@ -507,6 +507,7 @@ def record_fixtures() -> list[dict[str, Any]]:
                 },
             ],
             patches={"src/file.cs": {"sha256": "c" * 64, "lines": 12}},
+            dispatch="inline",
         ),
         _result(
             [
@@ -552,6 +553,7 @@ def record_fixtures() -> list[dict[str, Any]]:
                 "lines_changed": 4,
                 "lines_total": 40,
             },
+            dispatch="copilot-host",
         ),
         _result(
             [_finding("g", "SUGGESTION", 70), _finding("h", "MUST_FIX", 80, repeats="v1:F001")],
@@ -719,6 +721,8 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
     }
     plain = copy.deepcopy(specialists)
     del plain["uncovered"]
+    # Without agent-delegation, its specialists may also run inline.
+    plain["required_capabilities"] = ["read-diff", "write-result"]
     return entrypoint, [specialists, plain]
 
 

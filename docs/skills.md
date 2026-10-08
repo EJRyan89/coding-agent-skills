@@ -253,6 +253,8 @@ It runs in one of three modes, chosen by its arguments:
 
 `--scope` sets how much every `--re-review` in the run reviews again: `full` reviews the whole pull request; `incremental` reviews in full only the files whose changes differ from the last review, and only records dispositions for the earlier findings in the rest; `auto` chooses between them from how much changed. Without it, the skill asks once; it never picks one itself.
 
+Each reviewer role runs as a subagent. Where the session cannot start one (Copilot CLI, or a review started from inside a subagent), or when you ask for an inline review, the session works each role itself, one at a time; [Inline reviews](code-review-operations.md#inline-reviews) says what that costs in isolation.
+
 `--force` reviews heads that already have a review. The skill never posts to GitHub, and keeps its working files, such as a batch's list of pull requests, in new temporary directories, never in a skill directory. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
 
 ```text

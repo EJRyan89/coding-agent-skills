@@ -113,6 +113,7 @@ def _full_record() -> dict[str, Any]:
                 "lines_changed": 3,
                 "lines_total": 10,
             },
+            "dispatch": "inline",
         }
     )
     record["review"]["adapter"].update(
@@ -210,6 +211,10 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ("every optional part", _full_record, _chain()),
     ("SHA-256 commit hashes", _record, _chain(_set((*PULL, "base_sha"), SHA256), _set((*PULL, "head_sha"), SHA256))),
     ("head_ref", _record, _set((*PULL, "head_ref"), "fix/zero")),
+    # How the reviewers were worked; literal values, since a record keeps them.
+    ("dispatched as subagents", _record, _set((*REVIEW, "dispatch"), "subagents")),
+    ("dispatched to the Copilot CLI host", _record, _set((*REVIEW, "dispatch"), "copilot-host")),
+    ("worked inline", _record, _set((*REVIEW, "dispatch"), "inline")),
     ("coverage without uncovered files", _record, _set((*REVIEW, "coverage"), {"unavailable_sources": []})),
     (
         "INCOMPLETE with unavailable sources",
@@ -361,6 +366,10 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ("version string", _set((*REVIEW, "version"), "1"), R, "Review version is invalid"),
     ("mode unknown", _set((*REVIEW, "mode"), "second"), R, "Review mode is invalid"),
     ("scope on an initial review", _set((*REVIEW, "scope"), {}), R, "Only a re-review has a scope"),
+    ("dispatch unknown", _set((*REVIEW, "dispatch"), "workflow"), R, "Review dispatch is invalid"),
+    ("dispatch in another case", _set((*REVIEW, "dispatch"), "Inline"), R, "Review dispatch is invalid"),
+    ("dispatch not a string", _set((*REVIEW, "dispatch"), ["inline"]), R, "Review dispatch is invalid"),
+    ("dispatch null", _set((*REVIEW, "dispatch"), None), R, "Review dispatch is invalid"),
     ("reviewed_at not a string", _set((*REVIEW, "reviewed_at"), 1), R, "Review timestamp is invalid"),
     ("reviewed_at unparsable", _set((*REVIEW, "reviewed_at"), "yesterday"), R, "Review timestamp is invalid"),
     *_blank_and_non_string((*REVIEW, "summary"), "Review summary is invalid"),
@@ -549,6 +558,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ("base_sha", _set((*PULL, "base_sha"), ""), R, f"pull_request.base_sha {SHA_RULE}"),
     ("head_sha", _set((*PULL, "head_sha"), ""), R, f"pull_request.head_sha {SHA_RULE}"),
     ("review fields", _set((*REVIEW, "extra"), 1), R, "Review metadata fields are malformed"),
+    ("dispatch", _set((*REVIEW, "dispatch"), "workflow"), R, "Review dispatch is invalid"),
     ("reviewers", _set((*REVIEW, "reviewers"), []), R, "Review reviewers must be a non-empty array"),
     ("patches", _set((*REVIEW, "patches"), {}), R, "Review patches must be a non-empty object"),
     ("verdict", _set((*REVIEW, "verdict"), "MAYBE"), R, "Review verdict is invalid"),

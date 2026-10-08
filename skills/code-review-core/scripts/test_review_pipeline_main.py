@@ -265,13 +265,14 @@ class EnumerateTests(MainCase):
         )
 
 
-def ready(selector: str, run: str, runtime: str = "claude-code") -> dict[str, Any]:
+def ready(selector: str, run: str, runtime: str = "claude-code", dispatch: str | None = None) -> dict[str, Any]:
     return {
         "status": "ready",
         "selector": selector,
         "run": Path(run),
         "notes": ["first note", "second note"],
         "runtime": runtime,
+        "dispatch": dispatch or ("copilot-host" if runtime == "copilot-cli" else "subagents"),
         "roles": [
             {"id": "generic-review", "prompt_file": "generic.md", "model": "opus"},
             {"id": "security", "prompt_file": "security.md"},
@@ -288,6 +289,7 @@ def prepare_call(
     force: bool = False,
     canary: bool = False,
     host: str | None = None,
+    inline: bool = False,
     config_path: Path | None = None,
 ) -> Call:
     return (
@@ -298,6 +300,7 @@ def prepare_call(
             "force": force,
             "canary": canary,
             "host": host,
+            "inline": inline,
             "config_path": config_path,
             "services": SERVICES,
         },
@@ -362,6 +365,27 @@ class PrepareTests(MainCase):
             sorted(prepare.calls, key=lambda call: call[0][0]),
         )
         self.assertEqual([((Path("run three"),), {}), ((Path("run seven"),), {})], dispatched.calls)
+
+    def test_an_inline_run_prints_its_directory_and_starts_no_clock(self) -> None:
+        prepare = self.stub(
+            "prepare",
+            effect=by_first_argument({"example/app#3": ready("example/app#3", "run three", dispatch="inline")}),
+        )
+        dispatched = self.stub("mark_dispatched")
+        result = self.run_main("--config", CONFIG, "prepare", "--pull", "example/app#3", "--inline")
+        self.assertEqual(
+            (
+                0,
+                "RUN example/app#3 run three\n"
+                "NOTE example/app#3 first note\n"
+                "NOTE example/app#3 second note\n"
+                "INLINE run three\n",
+                "",
+            ),
+            result,
+        )
+        self.assertEqual([prepare_call("example/app#3", inline=True, config_path=Path(CONFIG))], prepare.calls)
+        self.assertEqual([], dispatched.calls, "next-role starts each inline role's clock")
 
     def test_canary_is_passed_through(self) -> None:
         prepare = self.stub("prepare", effect=by_first_argument({"example/app#3": ready("example/app#3", "run three")}))
