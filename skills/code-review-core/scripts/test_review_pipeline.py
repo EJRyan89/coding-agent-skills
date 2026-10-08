@@ -270,7 +270,8 @@ def write_files(checkout: Path, files: dict[str, str]) -> None:
 def build_checkout(checkout: Path) -> tuple[str, str]:
     """The fixture repository: a base commit on main and one commit on feature. Returns (base, head)."""
     checkout.mkdir(parents=True)
-    git(checkout, "init", "-b", "main")
+    # An empty template leaves out the sample hooks, a third of a new repository's files and nothing Git runs.
+    git(checkout, "init", "--template=", "-b", "main")
     git(checkout, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
     write_files(checkout, BASE_FILES)
     git(checkout, "add", ".")
@@ -285,6 +286,7 @@ def build_checkout(checkout: Path) -> tuple[str, str]:
 
 # Building the repository starts nine git processes, a third of a typical test's time on Windows, so each process
 # builds it once and every test gets its own copy. The checkout holds no absolute path, so a copy is equivalent.
+# Its objects are packed, so a copy writes and removes one pack instead of a folder and file per object.
 _TEMPLATE_DIRECTORY = tempfile.TemporaryDirectory(prefix="review-pipeline-template-")
 _TEMPLATE: tuple[str, str] | None = None
 _TEMPLATE_LOCK = threading.Lock()
@@ -297,6 +299,7 @@ def copy_checkout(destination: Path) -> tuple[str, str]:
     with _TEMPLATE_LOCK:
         if _TEMPLATE is None:
             _TEMPLATE = build_checkout(source)
+            git(source, "repack", "-a", "-d", "-q")
     shutil.copytree(source, destination, symlinks=True)
     return _TEMPLATE
 

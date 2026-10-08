@@ -1,9 +1,11 @@
-"""Run one shard of a unittest suite: python -B tests/run_shard.py <suite> <index> <count>.
+"""Run one shard of a unittest suite: python -B tests/run_shard.py <suite> <index> <count> [<Class.test>=<seconds> ...].
 
 tests/run_validation.py splits large suites into shards, each its own process, so one long suite does not set the
-length of the whole run. A shard runs the suite's tests whose position, in test-ID order, is <index> modulo <count>,
-so the shards of a suite run each of its tests exactly once. Module and class fixtures run in every shard that has
-one of their tests.
+length of the whole run. Every shard deals the suite's tests out the same way: heaviest first, each onto the shard
+with the least so far and the lowest index on a tie, where a test weighs its recorded seconds or else one. With
+nothing recorded that is round-robin in test-ID order. So the shards of a suite run each of its tests exactly once,
+and a recorded test runs on a shard of its own. Module and class fixtures run in every shard that has one of their
+tests.
 
 It imports nothing from the repository and puts the suite's own directory first on sys.path, as `python <suite>`
 does, so a suite that passes as shards also passes on its own.
@@ -15,6 +17,7 @@ import importlib.util
 import re
 import sys
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -26,9 +29,35 @@ def flatten(suite: unittest.TestSuite):
             yield item
 
 
+def deal(names: list[str], count: int, seconds: Mapping[str, float]) -> dict[str, int]:
+    """Each test's shard: heaviest first onto the shard with the least so far, the lowest index on a tie."""
+    loads = [0.0] * count
+    shards: dict[str, int] = {}
+    for name in sorted(names, key=lambda name: (-seconds.get(name, 1), name)):
+        shard = min(range(count), key=lambda candidate: (loads[candidate], candidate))
+        shards[name] = shard
+        loads[shard] += seconds.get(name, 1)
+    return shards
+
+
+def recorded_seconds(arguments: list[str]) -> dict[str, float] | None:
+    """The <Class.test>=<seconds> arguments, or None when one is malformed."""
+    seconds: dict[str, float] = {}
+    for argument in arguments:
+        test, separator, value = argument.partition("=")
+        try:
+            seconds[test] = float(value)
+        except ValueError:
+            return None
+        if not separator or seconds[test] <= 0:
+            return None
+    return seconds
+
+
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
-        print("usage: run_shard.py <suite> <index> <count>", file=sys.stderr)
+    seconds = recorded_seconds(argv[3:])
+    if len(argv) < 3 or seconds is None:
+        print("usage: run_shard.py <suite> <index> <count> [<Class.test>=<seconds> ...]", file=sys.stderr)
         return 2
     path = Path(argv[0]).resolve()
     index, count = int(argv[1]), int(argv[2])
@@ -45,8 +74,14 @@ def main(argv: list[str]) -> int:
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    tests = sorted(flatten(unittest.defaultTestLoader.loadTestsFromModule(module)), key=lambda test: test.id())
-    selected = [test for position, test in enumerate(tests) if position % count == index]
+    loaded = flatten(unittest.defaultTestLoader.loadTestsFromModule(module))
+    tests = {".".join(test.id().split(".")[-2:]): test for test in loaded}
+    unknown = sorted(set(seconds) - set(tests))
+    if unknown:
+        print(f"{path.name} defines no test {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    shards = deal(list(tests), count, seconds)
+    selected = [tests[name] for name in sorted(tests) if shards[name] == index]
     result = unittest.TextTestRunner(stream=sys.stderr, verbosity=1).run(unittest.TestSuite(selected))
     return 0 if result.wasSuccessful() else 1
 

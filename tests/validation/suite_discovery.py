@@ -10,6 +10,7 @@ import functools
 import re
 import sys
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
@@ -31,9 +32,22 @@ from validation_support import (
 
 SHARD_RUNNER = REPOSITORY_ROOT / "tests" / "run_shard.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
-# suite further, at the cost of one more process start and suite import each.
+# suite further, at the cost of one more process start and suite import each. A recorded test counts as its seconds.
 TESTS_PER_SHARD = 6
 MAXIMUM_SHARDS = 8
+# The seconds a test takes run alone, recorded for a test that costs many times a typical one, by suite and then by
+# Class.test; any other test counts as one. The suite gets shards for its total, and run_shard.py packs the heaviest
+# test first onto the lightest shard, so a recorded test runs on a shard of its own instead of lengthening a shared
+# one. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run alone.
+RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
+    "skills/code-review-core/scripts/test_adversarial_inputs.py": {
+        # Writes and reads back a path at this machine's limit, which with long paths enabled is 32,507 units.
+        (
+            "PathLengthTests.test_a_path_at_this_machines_limit_is_written_and_one_unit_longer_is_an_unsafe_path_"
+            "exclusion"
+        ): 13,
+    },
+}
 TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
 
 
@@ -134,39 +148,81 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 
 
-def shard_count(suite: Path) -> int:
+def suite_cost(suite: Path, recorded: Mapping[str, float]) -> float:
+    """A Python suite's cost in typical tests: one for each test, or its recorded seconds."""
+    tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
+    return tests + sum(seconds - 1 for seconds in recorded.values())
+
+
+def shard_count(suite: Path, recorded: Mapping[str, float] | None = None) -> int:
     if suite.suffix.casefold() != ".py":
         return 1
-    tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
-    return max(1, min(MAXIMUM_SHARDS, tests // TESTS_PER_SHARD))
+    return max(1, min(MAXIMUM_SHARDS, int(suite_cost(suite, recorded or {})) // TESTS_PER_SHARD))
 
 
-def run_shard(suite: Path, index: int, count: int) -> None:
-    run_process([sys.executable, "-B", relative(SHARD_RUNNER), relative(suite), str(index), str(count)])
+def run_shard(suite: Path, index: int, count: int, recorded: Mapping[str, float]) -> None:
+    costs = [f"{test}={seconds}" for test, seconds in sorted(recorded.items())]
+    run_process([sys.executable, "-B", relative(SHARD_RUNNER), relative(suite), str(index), str(count), *costs])
 
 
-def suite_jobs(suites: list[Path]) -> list[Job]:
+def suite_jobs(
+    suites: list[Path],
+    recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS,
+    root: Path = REPOSITORY_ROOT,
+) -> list[Job]:
     jobs = []
     for suite in suites:
-        label = relative(suite)
-        count = shard_count(suite)
+        label = suite.relative_to(root).as_posix()
         if suite.suffix.casefold() != ".py":
             jobs.append(Job(label, label, UNSPLIT_SUITE_WEIGHT, functools.partial(run_test_script, suite)))
             continue
-        tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
+        seconds = recorded.get(label, {})
+        count = shard_count(suite, seconds)
+        cost = suite_cost(suite, seconds)
         if count == 1:
-            jobs.append(Job(label, label, tests, functools.partial(run_test_script, suite)))
+            jobs.append(Job(label, label, cost, functools.partial(run_test_script, suite)))
             continue
         for index in range(count):
             jobs.append(
                 Job(
                     f"{label} [shard {index + 1}/{count}]",
                     label,
-                    tests / count,
-                    functools.partial(run_shard, suite, index, count),
+                    cost / count,
+                    functools.partial(run_shard, suite, index, count, seconds),
                 )
             )
     return jobs
+
+
+def _defined_tests(source: str) -> set[str]:
+    """Each Class.test the source defines directly in a class body."""
+    return {
+        f"{node.name}.{item.name}"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ClassDef)
+        for item in node.body
+        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def recorded_cost_problems(
+    root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
+) -> list[str]:
+    """Report a recorded test cost that names no Python regression suite, a test the suite does not define, or a cost
+    no heavier than a typical test."""
+    problems: list[str] = []
+    for name, tests in recorded.items():
+        path = root / name
+        if not (path.is_file() and is_test_script(path) and path.suffix == ".py"):
+            problems.append(f"{name} records test costs but is not a regression suite")
+            continue
+        defined = _defined_tests(path.read_text(encoding="utf-8"))
+        for test, seconds in tests.items():
+            if test not in defined:
+                problems.append(f"{name} records {test}, which it does not define")
+            elif seconds <= 1:
+                problems.append(f"{name} records {test} at {seconds} seconds; record only tests that cost more than 1")
+    return problems
 
 
 def unsuited_script_problems(root: Path) -> list[str]:
@@ -211,6 +267,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
+
+    def test_recorded_test_costs_name_tests_that_exist(self) -> None:
+        self.assertEqual([], recorded_cost_problems(REPOSITORY_ROOT))
 
     def test_every_module_is_named_by_a_test(self) -> None:
         self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
