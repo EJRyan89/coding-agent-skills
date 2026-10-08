@@ -14,7 +14,14 @@ from pathlib import Path
 
 from job_pool import run_process
 from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
-from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, TEMPLATE_TOKEN, is_shell_script, relative, repository_files
+from validation_support import (
+    REPOSITORY_ROOT,
+    TEMPLATE_TOKEN,
+    is_shell_script,
+    relative,
+    repository_files,
+    repository_skill_directories,
+)
 
 from deployer import platform_support, render, tools
 
@@ -218,11 +225,16 @@ def run_git_bash(command: str) -> None:
     )
 
 
+def shell_script_targets(root: Path) -> list[Path]:
+    """Every Bash script under skills/, and under each repository skill's scripts/."""
+    scripts = [path for path in (root / "skills").rglob("*") if path.is_file() and is_shell_script(path)]
+    for skill in repository_skill_directories(root):
+        scripts += [path for path in (skill / "scripts").rglob("*") if path.is_file() and is_shell_script(path)]
+    return sorted(scripts, key=lambda path: path.relative_to(root).as_posix().casefold())
+
+
 def static_shell_check() -> None:
-    scripts = sorted(
-        (path for path in SKILLS_ROOT.rglob("*") if path.is_file() and is_shell_script(path)),
-        key=lambda p: relative(p).casefold(),
-    )
+    scripts = shell_script_targets(REPOSITORY_ROOT)
     if not scripts:
         raise AssertionError("No shell scripts were found to validate.")
     checks = " && ".join(f"bash -n {shell_quote(relative(path))}" for path in scripts)
@@ -231,7 +243,7 @@ def static_shell_check() -> None:
 
 
 # PSScriptAnalyzer reads every .ps1 under these roots, and every PowerShell fence in Markdown outside tests/.
-SCRIPT_ANALYZER_ROOTS = ("tools", "tests", "skills")
+SCRIPT_ANALYZER_ROOTS = ("tools", "tests", "skills", ".claude/skills")
 # Reads the targets from the JSON file PSSA_TARGETS names and prints one JSON array of Warning and Error findings.
 SCRIPT_ANALYZER_RUN = (
     "$ErrorActionPreference = 'Stop'; "
@@ -265,7 +277,7 @@ def powershell_targets(root: Path, files: list[Path]) -> list[PowerShellTarget]:
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         suffix = path.suffix.casefold()
-        if suffix == ".ps1" and name.split("/")[0] in SCRIPT_ANALYZER_ROOTS:
+        if suffix == ".ps1" and name.startswith(tuple(f"{top}/" for top in SCRIPT_ANALYZER_ROOTS)):
             targets.append(PowerShellTarget(name, 1, path, None))
         elif suffix == ".md" and not name.startswith("tests/"):
             targets += [

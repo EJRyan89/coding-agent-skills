@@ -28,7 +28,7 @@ Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older vers
 pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
 ```
 
-Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, and `skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command. It also runs ShellCheck on every Bash fence in Markdown outside `skills/` and `tests/`; write a placeholder there quoted, as in `'<file>'`, so the fence still parses.
+Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, `skills/`, and `.claude/skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command. It also runs ShellCheck on every Bash fence in Markdown outside `skills/` and `tests/`; write a placeholder there quoted, as in `'<file>'`, so the fence still parses.
 
 [Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
 

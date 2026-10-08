@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from collections.abc import Mapping
 from pathlib import Path
+from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -19,8 +20,10 @@ from suite_discovery import (
     MAXIMUM_SHARDS,
     SHARD_RUNNER,
     TESTS_PER_SHARD,
+    regression_suites,
     shard_count,
     suite_discovery_documentation_problems,
+    unsuited_script_problems,
     untested_module_problems,
 )
 from validation_support import TEST_NAME_PATTERNS, is_test_script, write_fixture_tree
@@ -142,6 +145,56 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 self.assertFalse(is_test_script(Path(name)))
 
 
+class SkillSuiteFixtures(unittest.TestCase):
+    FILES: ClassVar[dict[str, str]] = {
+        "tests/test_top.py": "",
+        "tests/deployer/harness.py": "",
+        "skills/alpha/SKILL.md": "",
+        "skills/alpha/scripts/run.py": "",
+        "skills/alpha/scripts/test_run.py": "",
+        # deployer/source.py reads skills/<category>/<name>, so a category's skills are found.
+        "skills/group/inner/SKILL.md": "",
+        "skills/group/inner/scripts/tool.sh": "",
+        "skills/group/inner/scripts/test-tool.sh": "",
+        # A repository skill's suites run as a shipped skill's do.
+        ".claude/skills/local/SKILL.md": "",
+        ".claude/skills/local/scripts/local.ps1": "",
+        ".claude/skills/local/scripts/local.test.ps1": "",
+        # A folder without SKILL.md is no skill, so nothing in it is found.
+        "skills/loose/scripts/test_loose.py": "",
+    }
+
+    def test_suites_are_found_under_tests_and_every_shipped_and_repository_skill(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, self.FILES)
+            self.assertEqual(
+                [
+                    ".claude/skills/local/scripts/local.test.ps1",
+                    "skills/alpha/scripts/test_run.py",
+                    "skills/group/inner/scripts/test-tool.sh",
+                    "tests/test_top.py",
+                ],
+                [path.relative_to(root).as_posix() for path in regression_suites(root)],
+            )
+
+    def test_a_skill_with_scripts_and_no_suite_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suites = {"skills/group/inner/scripts/test-tool.sh", ".claude/skills/local/scripts/local.test.ps1"}
+            files = {name: text for name, text in self.FILES.items() if name not in suites}
+            # Scripts that are not executable need no suite.
+            write_fixture_tree(root, {**files, "skills/data/SKILL.md": "", "skills/data/scripts/notes.txt": ""})
+            advice = "add a test_*, test-*, *_test, *-test, or *.test.* Python, Bash, or PowerShell script beside them"
+            self.assertEqual(
+                [
+                    f"skills/group/inner/scripts holds scripts but no regression suite; {advice}",
+                    f".claude/skills/local/scripts holds scripts but no regression suite; {advice}",
+                ],
+                unsuited_script_problems(root),
+            )
+
+
 class TestedModulePolicy(unittest.TestCase):
     def problems(self, files: Mapping[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as temporary:
@@ -154,9 +207,11 @@ class TestedModulePolicy(unittest.TestCase):
         missing = "is imported by no test_*.py; add a test that imports it"
         self.assertEqual(
             [
+                f".claude/skills/local/scripts/local_tool.py {missing}",
                 f"deployer/lonely.py {missing}",
                 f"deployer/mentioned.py {missing}",
                 f"deployer/run.py {missing}",
+                f"skills/group/inner/scripts/grouped.py {missing}",
                 f"skills/s/scripts/quoted.py {missing}",
                 f"tools/tool.py {missing}",
             ],
@@ -168,8 +223,14 @@ class TestedModulePolicy(unittest.TestCase):
                     },
                     "tools/tool.py": "",
                     "tools/by_path.py": "",
+                    "skills/s/SKILL.md": "",
                     "skills/s/scripts/helper.py": "",
                     "skills/s/scripts/quoted.py": "",
+                    # A skill in a category, and a repository skill, need a test as a shipped skill does.
+                    "skills/group/inner/SKILL.md": "",
+                    "skills/group/inner/scripts/grouped.py": "",
+                    ".claude/skills/local/SKILL.md": "",
+                    ".claude/skills/local/scripts/local_tool.py": "",
                     "skills/s/notes.py": "",
                     "tests/support.py": "",
                     "skills/s/scripts/test_s.py": "import helper\n\nTEXT = 'import quoted'\n",
