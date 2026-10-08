@@ -18,7 +18,14 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. An addition: every `deploy-meta` file declares `runtime_support` (`full`, `partial`, or `none` for Claude Code, Codex, and Copilot CLI), `docs/skills.md` prints it as "Runtime support", and the runtime canary prints `NOT_ATTEMPTED` and `MATRIX` lines and exits 1 when a run disagrees with it. The deployer now refuses a source whose `runtime_support` is malformed; a source without one deploys as before.
 - Contract: none
 - User action: none. Before relying on a skill from Codex or Copilot CLI, check its row: the code reviews and the user-only skills run there in part.
-- Pull request: #153
+- Pull request: #184
+
+### review-prs runs canaries of local fixtures, as initial reviews and re-reviews
+
+- Level: minor. Additions: `review-prs --canary --fixture DIR [--re-review --prior RECORD]` and the pipeline's `prepare --canary --fixture DIR [--re-review --prior RECORD]`, whose failure prints `FAILED <directory> <reason>`; the fixture's `pull.json` format; and the `fixture` field of `run.json`. A canary's `finalize` no longer reads the flag store, as a canary was documented never to.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none.
+- Pull request: #179
 
 ### Reviews run inline where subagents cannot start, and specialists manifests no longer need agent-delegation
 

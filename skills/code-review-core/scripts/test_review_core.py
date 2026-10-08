@@ -596,6 +596,121 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual(taken, read_json(path / "owner.json"))
             self.assertEqual(["resource.lock"], [item.name for item in Path(temporary).iterdir()])
 
+    def test_release_succeeds_while_a_waiter_reads_the_owner_file(self) -> None:
+        # A waiter reading the owner file made the holder's release fail, and the lock outlived both sessions (#172).
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                lock = ResourceLock(path)
+                lock.__enter__()
+                with review_io.open_shared(path / "owner.json") as reader:
+                    lock.__exit__(None, None, None)
+                    self.assertFalse(path.exists(), "the lock is released while the owner file is open")
+                    self.assertEqual(lock.token, json.loads(reader.read())["token"])
+                with (
+                    mock.patch.object(review_io.time, "sleep", side_effect=AssertionError("waited")),
+                    ResourceLock(path),
+                ):
+                    pass
+            self.assertEqual("", errors.getvalue())
+            self.assertEqual([], list(Path(temporary).iterdir()))
+
+    def test_release_that_cannot_remove_the_lock_warns_and_a_later_lock_reclaims_it(self) -> None:
+        # The holder's work is done; a lock left behind by a process outside the protocol is stale once it exits.
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                lock = ResourceLock(path)
+                lock.__enter__()
+                with (path / "owner.json").open("rb"):  # open() denies deletion while the file is open
+                    lock.__exit__(None, None, None)
+            self.assertRegex(
+                errors.getvalue(),
+                rf"^WARNING: Could not remove the lock {re.escape(str(path))}: .+\. A later review reclaims it once "
+                r"this process has exited\.\n$",
+            )
+            self.assertTrue((path / "owner.json").is_file(), "the lock is left behind")
+            lock.__exit__(None, None, None)  # released once: nothing more to do
+
+            def probe(pid: int) -> ProcessStatus:
+                return ProcessStatus(False, None) if pid == os.getpid() else ProcessStatus(True, 1)
+
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5, probe=probe):
+                pass
+            self.assertEqual(
+                f"WARNING: Reclaimed the stale lock {path}: PID {os.getpid()} is not running.\n", errors.getvalue()
+            )
+            self.assertEqual([], list(Path(temporary).iterdir()))
+
+    def test_release_still_refuses_a_lock_another_session_took(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            lock = ResourceLock(path)
+            lock.__enter__()
+            atomic_write_json(path / "owner.json", {"pid": os.getpid(), "token": "b" * 32})
+            with self.assertRaisesRegex(PersistenceError, "Lock ownership changed before release"):
+                lock.__exit__(None, None, None)
+            self.assertEqual("b" * 32, read_json(path / "owner.json")["token"])
+
+    def test_waiter_takes_a_lock_whose_owner_file_vanishes_while_it_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "resource.lock"
+            path.mkdir()
+            atomic_write_json(path / "owner.json", {"pid": 4242, "token": "a" * 32, "start_time": 1})
+            opened: list[Path] = []
+
+            def release_first(owner: Path) -> object:
+                opened.append(owner)
+                shutil.rmtree(path)  # the holder releases the lock between the waiter's stat and its read
+                raise FileNotFoundError(2, "gone", str(owner))
+
+            lock = ResourceLock(path, timeout_seconds=0.5, probe=reporting(ProcessStatus(True, 1)))
+            errors = io.StringIO()
+            with (
+                mock.patch.object(review_io, "open_shared", side_effect=release_first),
+                mock.patch.object(review_io.time, "sleep", side_effect=AssertionError("waited")),
+                contextlib.redirect_stderr(errors),
+                lock,
+            ):
+                self.assertEqual(lock.token, read_json(path / "owner.json")["token"])
+            self.assertEqual([path / "owner.json"], opened)
+            self.assertEqual("", errors.getvalue(), "a released lock is taken, not reclaimed")
+            self.assertEqual([], list(Path(temporary).iterdir()))
+
+    def test_torn_owner_file_is_kept_within_the_grace_period_and_reclaimed_after_it(self) -> None:
+        cases = {
+            "truncated": b'{"pid": 4242, "tok',
+            "empty": b"",
+            "not an object": b'["a"]',
+            "no token": b'{"pid": 4242}',
+            "empty token": b'{"pid": 4242, "token": ""}',
+            "not UTF-8": b'{"token": "\xff"}',
+            "oversized": b'{"token": "' + b"a" * (64 * 1024) + b'"}',
+        }
+        for name, content in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "resource.lock"
+                path.mkdir()
+                owner = path / "owner.json"
+                owner.write_bytes(content)
+                with self.assertRaisesRegex(PersistenceError, "Timed out"), ResourceLock(path, timeout_seconds=0.1):
+                    pass
+                self.assertEqual(content, owner.read_bytes(), "a torn owner file is kept during the grace period")
+                old = time.time() - 61
+                os.utime(owner, (old, old))
+                errors = io.StringIO()
+                with contextlib.redirect_stderr(errors), ResourceLock(path, timeout_seconds=0.5):
+                    self.assertEqual(os.getpid(), read_json(owner)["pid"])
+                self.assertRegex(
+                    errors.getvalue(),
+                    rf"^WARNING: Reclaimed the stale lock {re.escape(str(path))}: its owner file has not been a "
+                    r"valid owner record for 6[01] seconds\.\n$",
+                )
+                self.assertEqual([], list(Path(temporary).iterdir()))
+
     def test_lock_probes_identity_by_default_and_never_signals(self) -> None:
         probed: list[int] = []
 

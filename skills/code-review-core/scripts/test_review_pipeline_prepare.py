@@ -846,6 +846,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "selector": SELECTOR,
         "mode": "initial",
         "canary": False,
+        "fixture": None,
         "config_path": "<root>/config.json",
         "host": None,
         "runtime": "claude-code",

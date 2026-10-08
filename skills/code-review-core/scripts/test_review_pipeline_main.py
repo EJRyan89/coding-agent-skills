@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_pipeline as rp
 from review_archive import ArchiveError
+from review_canary import FixtureError
 from review_config import ConfigurationError
 from review_flags import FlagError
 from review_github import GitHubError
@@ -46,6 +47,7 @@ EXPECTED = (
     PersistenceError,
     StateError,
     FlagError,
+    FixtureError,
     OSError,
     UnicodeError,
 )
@@ -56,6 +58,7 @@ STUBBED = (
     "working_path",
     "enumerate_batch",
     "prepare",
+    "prepare_fixture",
     "mark_dispatched",
     "validate_result",
     "workflow_script",
@@ -394,6 +397,50 @@ class PrepareTests(MainCase):
         self.assertEqual(0, code)
         self.assertEqual([prepare_call("example/app#3", canary=True)], prepare.calls)
 
+    def test_a_fixture_canary_is_passed_through_and_prints_as_a_pull_request_does(self) -> None:
+        prepare = self.stub("prepare_fixture", effect=lambda *_, **__: ready("example/app#3", "run three"))
+        dispatched = self.stub("mark_dispatched")
+        cases = {
+            "initial": ([], None),
+            "re-review": (["--re-review", "--prior", "prior record.json"], Path("prior record.json")),
+        }
+        for name, (extra, prior) in cases.items():
+            with self.subTest(name):
+                prepare.calls.clear()
+                dispatched.calls.clear()
+                arguments = ["prepare", "--host", "claude-code", "--canary", "--fixture", "fixture dir", *extra]
+                result = self.run_main("--config", CONFIG, *arguments)
+                self.assertEqual(
+                    (
+                        0,
+                        "RUN example/app#3 run three\n"
+                        "NOTE example/app#3 first note\n"
+                        "NOTE example/app#3 second note\n"
+                        "ROLE generic-review generic.md\n"
+                        "MODEL example/app#3 generic-review opus\n"
+                        "ROLE security security.md\n"
+                        "ROLE style style.md\n",
+                        "",
+                    ),
+                    result,
+                )
+                expected = {
+                    "prior": prior,
+                    "host": "claude-code",
+                    "inline": False,
+                    "config_path": Path(CONFIG),
+                    "services": SERVICES,
+                }
+                self.assertEqual([((Path("fixture dir"),), expected)], prepare.calls)
+                self.assertEqual([((Path("run three"),), {})], dispatched.calls)
+
+    def test_a_failed_fixture_canary_is_one_line_naming_its_directory(self) -> None:
+        self.stub("prepare_fixture", effect=raising(FixtureError("pull.json number must be a positive integer")))
+        self.assertEqual(
+            (1, "FAILED fixture dir pull.json number must be a positive integer\n", ""),
+            self.run_main("prepare", "--canary", "--fixture", "fixture dir"),
+        )
+
     def test_failures_are_reported_per_pull_request_in_order(self) -> None:
         self.stub(
             "prepare",
@@ -547,6 +594,27 @@ class PrepareTests(MainCase):
                 "example/app#2 is named more than once",
                 ["prepare", "--pull", "example/app#1", "--pull", "example/app#2", "--pull", "example/app#2"],
             ),
+        ]
+        for message, arguments in cases:
+            with self.subTest(arguments=arguments):
+                self.assert_usage(message, *arguments)
+
+    def test_fixture_usage_errors(self) -> None:
+        only = "--fixture takes --canary, and a bare --re-review with --prior, and no other selector"
+        paired = "--prior takes one bare --re-review, and a bare --re-review takes --prior"
+        elsewhere = "--prior and a bare --re-review are taken only with --fixture"
+        fixture = ["prepare", "--fixture", "fixture"]
+        cases = [
+            (only, fixture),
+            (only, [*fixture, "--canary", "--pull", "example/app#1"]),
+            (only, [*fixture, "--canary", "--re-review", "example/app#1", "--prior", "prior.json"]),
+            (only, [*fixture, "--canary", "--re-review", "--prior", "prior.json", "--scope", "full"]),
+            (only, [*fixture, "--canary", "--force"]),
+            (paired, [*fixture, "--canary", "--re-review"]),
+            (paired, [*fixture, "--canary", "--prior", "prior.json"]),
+            (paired, [*fixture, "--canary", "--re-review", "--re-review", "--prior", "prior.json"]),
+            (elsewhere, ["prepare", "--canary", "--pull", "example/app#1", "--prior", "prior.json"]),
+            (elsewhere, ["prepare", "--re-review", "--scope", "full"]),
         ]
         for message, arguments in cases:
             with self.subTest(arguments=arguments):

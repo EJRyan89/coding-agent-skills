@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "repository": "example/inventory",
+  "number": 1,
+  "title": "Search and ship stock, and pad shelf labels",
+  "base_ref": "main",
+  "head_ref": "search-and-ship",
+  "threads": []
+}

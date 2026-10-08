@@ -566,16 +566,24 @@ class CrossSkillContractTests(unittest.TestCase):
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --pull "<owner/repo#number>"', body)
+        # A fixture canary passes the skill's own arguments through, the fixture directory after --fixture.
+        self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --fixture "<directory>"', body)
+        self.assertIn('adding `--re-review --prior "<record>"` when given', body)
         pipeline_lines = [line for line in body.splitlines() if "review_pipeline.py" in line and "--canary" in line]
-        self.assertTrue(pipeline_lines)
+        self.assertEqual(2, len(pipeline_lines))
         for line in pipeline_lines:
             with self.subTest(line=line):
-                self.assertRegex(line, r"--canary --pull ")
+                self.assertRegex(line, r"--canary --(pull|fixture) ")
         self.assertIsNone(
             re.search(r"`[^`\n]*--canary \"?<?owner[^`\n]*`", body.replace("`--canary owner/repo#number`", ""))
         )
-        pipeline = (REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py").read_text(encoding="utf-8")
-        self.assertIn('prepare_parser.add_argument("--canary", action="store_true")', pipeline)
+        script = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
+        self.assertIn(
+            'prepare_parser.add_argument("--canary", action="store_true")', script.read_text(encoding="utf-8")
+        )
+        options = declared_options(script, "prepare_parser")
+        self.assertLessEqual({"--fixture", "--prior", "--re-review"}, set(options))
+        self.assertEqual(("'?'", "''"), (options["--re-review"].get("nargs"), options["--re-review"].get("const")))
 
     def test_a_re_review_scope_is_asked_for_and_never_assumed(self) -> None:
         # A full or incremental pass is the user's call: the tracker asks once per run, a direct call asks itself.

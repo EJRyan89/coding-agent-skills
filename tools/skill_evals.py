@@ -3,10 +3,12 @@
 Usage:
   python -B tools/skill_evals.py SKILL --records DIR [--scenario NAME ...] [--model NAME ...]
 
-A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships. It holds the change as
-two trees, base/ and head/, and a scenario.json:
+A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships. It is a code-review
+fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews in place of a pull request: the
+change as two trees, base/ and head/, and the pull request in pull.json (see review_canary.py in code-review-core). A
+re-review scenario's run adds `--re-review --prior <scenario>/<prior>`. Beside them is a scenario.json:
 
-  {"skill": "<skill>", "mode": "initial" | "re-review", "title": "<pull request title>", "body": "<its body>",
+  {"skill": "<skill>", "mode": "initial" | "re-review",
    "prior": "<prior record file in the scenario>"  (re-review only),
    "expectations": [<expectation>, ...]}
 
@@ -65,7 +67,7 @@ SEVERITIES = ("SUGGESTION", "SHOULD_FIX", "MUST_FIX")
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = ("addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify")
 MODES = ("initial", "re-review")
-SCENARIO_FIELDS = frozenset({"skill", "mode", "title", "body", "expectations"})
+SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 ENTRY = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 
 Record = Mapping[str, Any]
@@ -92,8 +94,6 @@ class Scenario:
     name: str
     directory: Path
     mode: str
-    title: str
-    body: str
     prior: Path | None
     expectations: tuple[Expectation, ...]
 
@@ -296,11 +296,11 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
             raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
         if spec["skill"] != skill:
             raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
-        if any(not isinstance(spec[name], str) or not spec[name].strip() for name in ("title", "body")):
-            raise ScenarioError("title and body must be text")
         for tree in ("base", "head"):
             if not (directory / tree).is_dir():
                 raise ScenarioError(f"has no {tree}/ tree")
+        if not (directory / "pull.json").is_file():
+            raise ScenarioError("has no pull.json")
         prior = None
         if mode == "re-review":
             prior = directory / _path(spec["prior"])
@@ -311,7 +311,16 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
         expectations = tuple(expectation(item, mode) for item in spec["expectations"])
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
-    return Scenario(skill, directory.name, directory, mode, spec["title"], spec["body"], prior, expectations)
+    return Scenario(skill, directory.name, directory, mode, prior, expectations)
+
+
+def prepare_arguments(scenario: Scenario) -> list[str]:
+    """The arguments that prepare a run of the scenario, which `review_pipeline.py prepare` and review-prs both take:
+    a fixture canary, and for a re-review its prior record."""
+    arguments = ["--canary", "--fixture", str(scenario.directory)]
+    if scenario.prior is not None:
+        arguments += ["--re-review", "--prior", str(scenario.prior)]
+    return arguments
 
 
 def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_ROOT) -> list[Scenario]:
