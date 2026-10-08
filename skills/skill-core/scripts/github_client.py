@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -228,7 +229,8 @@ class GitHubClient:
     """Runs gh, classifies its failures, and waits out rate limits with one bounded backoff policy.
 
     Every gh command reads no stdin, shows no prompt, and fails as a `timeout` when it runs longer than `timeout`
-    seconds; that bound is the default runners', so an injected runner keeps its own.
+    seconds; that bound is the default runners', so an injected runner keeps its own. `call_count` counts the gh
+    commands run, retries included, from every thread that shares the client.
     """
 
     def __init__(
@@ -247,6 +249,8 @@ class GitHubClient:
         self.clock = clock or time.time
         self.backoff = backoff
         self.downloader = downloader or partial(subprocess_downloader, timeout=timeout)
+        self.call_count = 0
+        self._counting = threading.Lock()
 
     def request(
         self,
@@ -314,6 +318,8 @@ class GitHubClient:
         for attempt in range(attempts):
             if pacer is not None:
                 pacer.before()
+            with self._counting:
+                self.call_count += 1
             result, response = self._decoded(execute(command), headers)
             error: GitHubError | None = None
             try:

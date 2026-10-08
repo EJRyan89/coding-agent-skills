@@ -76,6 +76,11 @@ class GitHubClient:
     ) -> None:
         self.github = github_client.GitHubClient(runner, sleeper=sleeper, clock=clock)
 
+    @property
+    def call_count(self) -> int:
+        """The gh commands this client has run, retries included."""
+        return self.github.call_count
+
     def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
         arguments = ["api"]
         if paginate:

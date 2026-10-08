@@ -141,17 +141,14 @@ def tracker_item(
         raise CollectionError(f"{repository}#{node.get('number')} {exc}") from exc
     except (KeyError, TypeError, IndexError, AttributeError) as exc:
         raise CollectionError(f"{repository} pull-request data has an unexpected shape") from exc
-    reviewed = reviewed_head(archive_root, repository, number)
+    # Each record is read and validated once, here; the reviewed head and the ledger both come from this list.
+    records = pull_records(archive_root, repository, number)
+    reviewed = reviewed_head(archive_root, repository, number, records=records)
     item["reviewed_head_sha"] = reviewed["head_sha"] if reviewed else None
     item["reviewed_incomplete"] = bool(reviewed and reviewed["incomplete"])
     item["ai_review"] = {key: reviewed[key] for key in ("verdict", "counts", "ledger", "report")} if reviewed else None
     # A legacy review has no records to read a ledger from, so its row shows only its counts.
     if reviewed and reviewed["source"] == "record":
-        records = [
-            record
-            for record in pull_records(archive_root, repository, number)
-            if record["review"]["version"] <= reviewed["version"]
-        ]
         ledger = ledger_history(records)[reviewed["version"]]
         opened = {ledger_id(entry["version"], entry["id"]) for entry in ledger if entry["state"] == "open"}
         item["ai_review"]["flagged"] = len(opened & set(flagged_entries(ledger, flags, repository, number)))
@@ -287,6 +284,7 @@ def update(
 
 
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
+    services = services or Services()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, help="defaults to CODE_REVIEW_CONFIG or the standard config path")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -325,8 +323,10 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
                 return 1
             print(f"INPUT {output}")
             return 0
+        calls = services.github.call_count
         dashboard, rows = update(args.input, removals=args.remove, config_path=args.config, services=services)
         print(f"UPDATED {dashboard} rows={len(rows)}")
+        print(f"GITHUB_CALLS {services.github.call_count - calls}")
         if args.candidates:
             for candidate in review_candidates(rows):
                 print(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}")

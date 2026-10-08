@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import contextlib
 import copy
 import json
 import re
 import sys
 import tempfile
+import threading
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_change import CHANGED, UNCHANGED, UNKNOWN
+from github_client import CommandResult
+from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector
+from review_github import GitHubClient
 from update_pr_tracker import (
     END_MARKER,
+    SECTION_TO_REVIEW,
     START_MARKER,
     ConfigurationError,
     TrackerError,
@@ -36,6 +42,9 @@ class FakeDetector:
         if since_sha == head_sha:
             return UNCHANGED
         return self.results.get((number, since_sha), CHANGED)
+
+    def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
+        pass
 
 
 def item(repository: str = "owner/repo", number: int = 1) -> dict:
@@ -571,6 +580,122 @@ def outside(document: bytes) -> tuple[bytes, bytes]:
     start = document.index(START_MARKER.encode())
     end = document.index(END_MARKER.encode()) + len(END_MARKER)
     return document[:start], document[end:]
+
+
+class ReadAheadDetector(FakeDetector):
+    """Records the order of read-aheads and detections, so a test can see each detection was read ahead first."""
+
+    def __init__(self, results: dict[tuple[int, str], str] | None = None) -> None:
+        super().__init__(results)
+        self.events: list[tuple[str, tuple[str, str, str, str]]] = []
+
+    def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
+        self.events.extend(("prefetch", query) for query in queries)
+        self.events.append(("round", ("", "", "", "")))
+
+    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+        self.events.append(("detect", (repository, base_ref, since_sha, head_sha)))
+        return super().detect(repository, number, base_ref, since_sha, head_sha)
+
+
+def commit(number: int) -> str:
+    return f"{number:040x}"
+
+
+class GitHubRunner:
+    """Answers the change detector's gh api calls: every commit's comparison lists a.py at its own blob, so each
+    comparison decides without a tree. Each call waits until four are running at once, and the endpoints in
+    `rate_limited` fail once with a rate limit first."""
+
+    def __init__(self, rate_limited: set[str] | None = None) -> None:
+        self.barrier = threading.Barrier(4, timeout=10)
+        self.lock = threading.Lock()
+        self.calls: list[str] = []
+        self.running = 0
+        self.peak = 0
+        self.rate_limited = set(rate_limited or ())
+
+    def __call__(self, arguments: Sequence[str]) -> CommandResult:
+        endpoint = arguments[-1]
+        with self.lock:
+            self.calls.append(endpoint)
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+            limited = endpoint in self.rate_limited
+            self.rate_limited.discard(endpoint)
+        try:
+            # The last calls of a round are fewer than four; they go on once the barrier gives up on the rest.
+            with contextlib.suppress(threading.BrokenBarrierError):
+                self.barrier.wait(timeout=0.5)
+            if limited:
+                return CommandResult(1, "", "HTTP 429: API rate limit exceeded")
+            files = [{"filename": "a.py", "status": "modified", "sha": endpoint.rsplit("...", 1)[1]}]
+            return CommandResult(0, json.dumps({"status": "ahead", "files": files}), "")
+        finally:
+            with self.lock:
+                self.running -= 1
+
+
+class ReadAheadTests(unittest.TestCase):
+    def items(self, count: int) -> list[dict]:
+        """Pull requests reviewed by the user and by the AI at earlier commits, each pair of commits its own."""
+        items = []
+        for number in range(1, count + 1):
+            value = reviewed(number, "COMMENTED")
+            value["head_sha"] = commit(3 * number)
+            value["user_review_sha"] = commit(3 * number + 1)
+            value["reviewed_head_sha"] = commit(3 * number + 2)
+            items.append(value)
+        return validate_items(items)
+
+    def test_every_detection_is_read_ahead_in_two_rounds(self) -> None:
+        approved = reviewed(1, "APPROVED")
+        commented = reviewed(2, "COMMENTED")
+        pinned = reviewed(3, "COMMENTED")
+        mine = reviewed(4, "COMMENTED")
+        mine["author"] = "reviewer"
+        detector = ReadAheadDetector({(1, USER_REVIEWED): UNCHANGED})
+        evaluate(
+            validate_items([approved, commented, pinned, mine]),
+            "reviewer",
+            detector,
+            overrides={"owner/repo#3": "on hold"},
+        )
+        user, ai_review = (("owner/repo", "main", sha, HEAD) for sha in (USER_REVIEWED, AI_REVIEWED))
+        self.assertEqual(
+            [
+                ("prefetch", user),  # approved#1
+                ("prefetch", user),  # commented#2; pinned#3 and mine#4 need no user comparison
+                ("round", ("", "", "", "")),
+                ("detect", user),
+                ("detect", user),
+                ("prefetch", ai_review),  # commented#2, pinned#3, mine#4; approved#1 is unchanged and left out
+                ("prefetch", ai_review),
+                ("prefetch", ai_review),
+                ("round", ("", "", "", "")),
+                ("detect", ai_review),
+                ("detect", ai_review),
+                ("detect", ai_review),
+            ],
+            detector.events,
+        )
+
+    def test_the_change_detector_reads_four_comparisons_at_a_time_and_each_once(self) -> None:
+        runner = GitHubRunner()
+        rows = evaluate(self.items(6), "reviewer", ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None)))
+        self.assertEqual(4, runner.peak)
+        self.assertEqual(18, len(runner.calls), "three commits per pull request, each compared once, no trees")
+        self.assertEqual(18, len(set(runner.calls)))
+        self.assertEqual({(SECTION_TO_REVIEW, "stale")}, {(row.section, row.ai_review) for row in rows})
+
+    def test_the_shared_backoff_retries_a_rate_limit_among_concurrent_comparisons(self) -> None:
+        limited = {f"repos/owner/repo/compare/main...{commit(sha)}" for sha in (4, 8)}
+        runner = GitHubRunner(limited)
+        waits: list[float] = []
+        rows = evaluate(self.items(6), "reviewer", ChangeDetector(GitHubClient(runner, sleeper=waits.append)))
+        self.assertEqual([5.0, 5.0], waits)
+        self.assertEqual(20, len(runner.calls), "eighteen comparisons and two retries")
+        self.assertEqual(6, len(rows))
 
 
 class DashboardWriteTests(unittest.TestCase):
