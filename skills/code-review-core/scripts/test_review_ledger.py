@@ -704,13 +704,46 @@ class LedgerReportTests(unittest.TestCase):
     def test_configured_model_names_replace_identifiers_in_the_reviewers_table(self) -> None:
         review_fixture.commit_fixture(self.archive, model_names={review_fixture.MODEL_ARN: "Fixture Opus"})
         report = fixture_report(self.archive, 3)
-        self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s |\n", report)
-        self.assertIn("| `style` | Style | claude-sonnet-5-5 | 1 | 1 | 0 | 12s |\n", report, "unmapped stays as is")
+        self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s | - |\n", report)
+        self.assertIn("| `style` | Style | claude-sonnet-5-5 | 1 | 1 | 0 | 12s | - |\n", report, "unmapped stays as is")
         self.assertIn(
             "| **Reviewer models** | Fixture Opus: `arn:aws:bedrock:us-east-1:111122223333:"
             "application-inference-profile/fixture` |\n",
             report,
         )
+
+    def test_the_snapshot_line_and_the_files_read_column(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        review = copy.deepcopy(third)
+        review["review"]["snapshot"] = {
+            "source": "tarball",
+            "files": 12_700,
+            "bytes": 213_909_504,
+            "seconds": {"fetch": 6.0, "materialize": 33.2, "prompts": 0.4},
+        }
+        generic, style = review["review"]["reviewers"]
+        generic.update(files_read=14, bytes_read=52_000)
+        style.update(files_read=None, bytes_read=None)
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn(
+            "| **Snapshot** | tarball: 12,700 files, 204.0 MiB; fetch 6.0s, materialize 33.2s, prompts 0.4s |\n",
+            report,
+        )
+        self.assertIn("| Retries | Time | Files read |\n", report)
+        self.assertIn(" | 0 | 40s | 14 (50.8 KiB) |\n", report)
+        self.assertIn(" | 0 | 12s | unknown |\n", report)
+        generic.update(files_read=0, bytes_read=0)
+        report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertIn(" | 0 | 40s | 0 (0 B) |\n", report)
+
+    def test_an_earlier_record_without_snapshot_or_reads_reads_as_absent(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        self.assertNotIn("snapshot", third["review"])
+        self.assertTrue(all("files_read" not in reviewer for reviewer in third["review"]["reviewers"]))
+        self.assertIs(third, validate_record(third))
+        report = render_markdown(third, record_payload_hash="0" * 64, prior_records=[first, second])
+        self.assertNotIn("**Snapshot**", report)
+        self.assertIn(" | 0 | 40s | - |\n", report)
 
     def test_without_model_names_the_reviewers_table_shows_the_identifier(self) -> None:
         review_fixture.commit_fixture(self.archive)

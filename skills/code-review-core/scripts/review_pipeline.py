@@ -61,7 +61,7 @@ from review_config import (
 )
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
-from review_guard import RUN_PREFIX
+from review_guard import RUN_PREFIX, read_log
 from review_hosts import (
     HostSuperseded,
     claim_holds,
@@ -106,6 +106,7 @@ from review_records import (
     carried_findings,
     describe_scope,
     ledger_history,
+    snapshot_seconds,
     validate_adapter_result,
     validate_record,
 )
@@ -124,6 +125,7 @@ from review_runtime import (
     negotiate_capabilities,
     resolve_reviewer_commit,
     resolve_runtime,
+    snapshot_bytes,
     verify_checkout_remote,
     write_adapter_request,
 )
@@ -221,6 +223,8 @@ class Services:
     probe: Callable[[int], ProcessStatus] = process_status
     clock: Callable[[], float] = time.time
     sleep: Callable[[float], None] = time.sleep
+    # The clock prepare times its phases with: fetching the head, materializing the snapshot, and writing prompts.
+    timer: Callable[[], float] = time.monotonic
     copilot_runner: CopilotRunner = copilot_subprocess_runner
     copilot_executable: str | None = None
 
@@ -411,23 +415,41 @@ def _snapshot(
     changed: list[str],
     services: Services,
     notes: list[str],
-) -> dict[str, tuple[int, str] | None]:
+) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any]]:
     """Snapshot the head at `source`, from the checkout or else GitHub's tarball. Returns the symbolic links the
-    snapshot leaves out that the pull request changes, each one noted."""
+    snapshot leaves out that the pull request changes, each one noted, and the snapshot's statistics: its source,
+    files, and bytes, and the seconds spent fetching the head and materializing it."""
+    fetched = 0.0
+    started = services.timer()
     if checkout is not None:
         verify_checkout_remote(checkout, repository, services.git)
         ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
+        fetched = services.timer() - started
         snapshot = materialize_source_snapshot(
             checkout, repository, head, source, runner=services.git, changed_paths=changed
         )
     else:
+
+        def fetcher(repository: str, commit: str, target: Path) -> None:
+            nonlocal fetched
+            began = services.timer()
+            services.fetch_tarball(repository, commit, target)
+            fetched += services.timer() - began
+
         snapshot = materialize_source_snapshot_from_github(
-            repository, head, source, fetcher=services.fetch_tarball, changed_paths=changed
+            repository, head, source, fetcher=fetcher, changed_paths=changed
         )
+    materialized = services.timer() - started - fetched
     # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
     links = symbolic_links(parsed, snapshot["excluded_paths"])
     notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
-    return links
+    stats = {
+        "source": "tarball" if checkout is None else "checkout",
+        "files": len(snapshot["source_hashes"]),
+        "bytes": snapshot_bytes(source, snapshot),
+        "seconds": {"fetch": fetched, "materialize": materialized},
+    }
+    return links, stats
 
 
 def _materialize_reviewer(
@@ -803,7 +825,7 @@ def _prepare_run(
         parsed, changed, unsafe, patches, comments = review.read_diff(diff_path)
         source = run / "source"
         head = pull["headRefOid"]
-        links = _snapshot(review.source, repository, number, head, source, parsed, changed, services, notes)
+        links, snapshot = _snapshot(review.source, repository, number, head, source, parsed, changed, services, notes)
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
             checkout=checkout,
@@ -825,6 +847,7 @@ def _prepare_run(
             )
             notes.append(f"Scope {describe_scope(scope_record)}.")
         request_path = run / "request.json"
+        writing = services.timer()
         _write_request(
             request_path,
             mode=review.mode,
@@ -857,6 +880,7 @@ def _prepare_run(
             review_files=review_files,
             notes=notes,
         )
+        snapshot["seconds"] = snapshot_seconds({**snapshot["seconds"], "prompts": services.timer() - writing})
         state = {
             "schema_version": RUN_SCHEMA_VERSION,
             "selector": review.selector,
@@ -877,6 +901,9 @@ def _prepare_run(
             "attempts": {role["id"]: 0 for role in roles},
             # An inline role is handed out, and timed, by next-role, one at a time.
             "dispatched_at": {} if dispatch == "inline" else {role["id"]: time.time() for role in roles},
+            "snapshot": snapshot,
+            # Each role's distinct snapshot files read and their bytes, as check reduces the guard's read log.
+            "reads": {},
             "notes": notes,
             "patches": patches,
             "scope": scope_record,
@@ -1192,6 +1219,34 @@ def mark_dispatched(run: Path) -> None:
     atomic_write_json(run / RUN_FILE, state)
 
 
+def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
+    """Reduce each named role's read log, which the reviewer guard writes, to the distinct snapshot files it names and
+    their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
+    step. Returns whether any log was counted. A role without a log had no guard and stays uncounted, and a run
+    prepared before reads were counted has no `reads` and counts nothing."""
+    if "reads" not in state:
+        return False
+    source = run / "source"
+    counted = False
+    for role in roles:
+        log = read_log(run, role)
+        if not log.is_file():
+            continue
+        sizes: dict[str, int] = {}
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            with contextlib.suppress(ValueError):
+                relative = json.loads(line)
+                target = source.joinpath(relative) if isinstance(relative, str) else source
+                key = os.path.normcase(os.path.normpath(target))
+                if key not in sizes and _inside(target, source) and target.is_file():
+                    sizes[key] = target.stat().st_size
+        total = state["reads"].get(role, {"files": 0, "bytes": 0})
+        state["reads"][role] = {"files": total["files"] + len(sizes), "bytes": total["bytes"] + sum(sizes.values())}
+        log.unlink()
+        counted = True
+    return counted
+
+
 def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
     """Whole seconds from each role's dispatch to the last write of its result; untimed roles are left out."""
     seconds = {}
@@ -1319,6 +1374,8 @@ def _check_roles(run: Path, state: dict[str, Any]) -> dict[str, Any]:
     retry: list[dict[str, Any]] = []
     failed: dict[str, str] = {}
     seal = state.get("seal")  # an inline run's
+    # An accepted role's reads are counted now; a role set aside keeps its log, which its rerun adds to.
+    count_reads(run, state, [role["id"] for role in state["roles"] if role["id"] not in errors])
     for role in state["roles"]:
         identity = role["id"]
         result = Path(role["result_file"])
@@ -1620,10 +1677,13 @@ def reviewer_summaries(
     single: bool,
     seconds: dict[str, int] | None = None,
     models: dict[str, str] | None = None,
+    reads: dict[str, dict[str, int]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Which reviewers ran, the files each covered, the findings it raised, how often it was rerun, and its time.
+    """Which reviewers ran, the files each covered, the findings it raised, how often it was rerun, its time, and the
+    snapshot files it read.
 
-    A finding merged from several specialists counts for each of them.
+    A finding merged from several specialists counts for each of them. With `reads`, a reviewer it does not count, as
+    no guard held it, reads null for both counts: unknown, not zero.
     """
     summaries = []
     for role in roles:
@@ -1644,6 +1704,10 @@ def reviewer_summaries(
             summaries[-1]["seconds"] = seconds[role["id"]]
         if models and role["id"] in models:
             summaries[-1]["model"] = models[role["id"]]
+        if reads is not None:
+            counted = reads.get(role["id"])
+            summaries[-1]["files_read"] = None if counted is None else counted["files"]
+            summaries[-1]["bytes_read"] = None if counted is None else counted["bytes"]
     return summaries
 
 
@@ -1688,6 +1752,8 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     if errors:
         raise PipelineError("Reviewer results are invalid: " + "; ".join(f"{k}: {v}" for k, v in errors.items()))
     seconds = reviewer_seconds(state)
+    if count_reads(run, state, [role["id"] for role in state["roles"]]):  # any log check did not reach
+        atomic_write_json(run / RUN_FILE, state)
     request_path = Path(state["request_path"])
     result_path = Path(state["result_path"])
     if state["kind"] != "entrypoint":
@@ -1717,6 +1783,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         single=state["kind"] == "entrypoint",
         seconds=seconds,
         models=models,
+        reads=state.get("reads"),  # absent from runs prepared before reads were counted
     )
     config = load_config(Path(state["config_path"]))
     canary_root = Path(tempfile.mkdtemp(prefix="code-review-canary-")).resolve() if state["canary"] else None
@@ -1750,6 +1817,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         model_names=config["model_names"],
         flags=[] if canary_root else load_store(default_flags_path())["flags"],  # a canary reads no flag store
         dispatch=run_dispatch(state),
+        snapshot=state.get("snapshot"),  # absent from runs prepared before snapshots were measured
     )
     notes = list(state["notes"])
     left = remove_recorded_run(
@@ -1767,8 +1835,32 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         "findings": len(record["findings"]),
         "canary_root": canary_root,
         "hashes": {json_path: _sha256(json_path), markdown_path: _sha256(markdown_path)} if canary_root else {},
+        "stats": stats_lines(record["review"]) if canary_root else [],
         "notes": notes,
     }
+
+
+def _count_or_unknown(value: int | None) -> str:
+    return "unknown" if value is None else str(value)
+
+
+def stats_lines(review: dict[str, Any]) -> list[str]:
+    """A canary's snapshot and read counts, as finalize prints them after `STATS <selector> `: the numbers its record
+    holds, and none for a field the record leaves out."""
+    lines = []
+    snapshot = review.get("snapshot")
+    if snapshot is not None:
+        seconds = " ".join(f"{phase}={value:.1f}s" for phase, value in snapshot["seconds"].items())
+        lines.append(
+            f"snapshot source={snapshot['source']} files={snapshot['files']} bytes={snapshot['bytes']} {seconds}"
+        )
+    for reviewer in review.get("reviewers", []):
+        if "files_read" in reviewer:
+            lines.append(
+                f"reviewer {reviewer['id']} files_read={_count_or_unknown(reviewer['files_read'])} "
+                f"bytes_read={_count_or_unknown(reviewer['bytes_read'])}"
+            )
+    return lines
 
 
 def enumerate_batch(
@@ -2212,6 +2304,8 @@ def _run_finalize(args: argparse.Namespace, services: Services | None) -> int:
             print(f"CANARY {result['selector']} {result['canary_root']}")
             for path, digest in result["hashes"].items():
                 print(f"SHA256 {digest} {path}")
+            for line in result["stats"]:
+                print(f"STATS {result['selector']} {line}")
         print(
             f"RECORDED {result['selector']} verdict={result['verdict']} findings={result['findings']} "
             f"{result['markdown']}"

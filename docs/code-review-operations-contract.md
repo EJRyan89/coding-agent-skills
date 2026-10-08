@@ -340,6 +340,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `patches` | object | no | Keyed by changed file path; each value is that file's [patch fingerprint](#patch-fingerprint-recordreviewpatchespath), so the next re-review can tell which files changed since. Not empty; absent from older records. |
 | `scope` | object | no | A re-review's scope. Only a re-review has one; absent from older records. |
 | `dispatch` | string | no | One of `subagents`, `copilot-host`, or `inline`. How the reviewers were worked: as subagents (or by a Claude Code Workflow), by the bounded Copilot CLI host, or inline by the orchestrating session. Absent from older records. |
+| `snapshot` | object | no | The [source snapshot](#source-snapshot-measured-recordreviewsnapshot) the reviewers read: where it came from, how large it was, and how long `prepare` took around it. Absent from older records. |
 
 #### Review coverage (`record.review.coverage`)
 
@@ -360,6 +361,25 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `dispositions_only` | boolean | yes | Whether it only gave dispositions, because none of its files changed. |
 | `model` | string | no | The model it reported running on: one trimmed line of at most 200 characters. Absent for a repository entrypoint reviewer and from older records. |
 | `seconds` | integer | no | Whole seconds from handing it the role to its accepted result, reruns included; absent when not timed. |
+| `files_read` | integer or null | with `bytes_read` | How many distinct files of the source snapshot it opened, with Read or a Grep of one file, as the reviewer guard logged them, reruns included. Null when no guard counted its reads (an inline, Copilot CLI host, Codex, or general-purpose fallback reviewer), which means unknown, not zero. Absent from older records. |
+| `bytes_read` | integer or null | with `files_read` | Those files' total size in bytes, each counted whole whatever part of it was read; null together with `files_read`. |
+
+#### Source snapshot measured (`record.review.snapshot`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `source` | string | yes | One of `checkout` or `tarball`. Where the snapshot came from: the configured checkout's git objects (a fixture canary's throwaway repository counts as a checkout), or GitHub's tarball. |
+| `files` | integer | yes | How many files it held, its own manifest left out. Not negative, as for each count here. |
+| `bytes` | integer | yes | Their total size in bytes. |
+| `seconds` | object | yes | How long each [phase](#snapshot-phase-seconds-recordreviewsnapshotseconds) of `prepare` took. |
+
+#### Snapshot phase seconds (`record.review.snapshot.seconds`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `fetch` | number | yes | Fetching the head: checking the checkout's remote and fetching the pull request's head when the commit is not local, or downloading GitHub's tarball and checking it against the commit's tree. Seconds to a tenth, not negative, as for each value here. |
+| `materialize` | number | yes | Writing the snapshot and hashing each file, from the checkout's objects or the tarball. |
+| `prompts` | number | yes | Writing the request and every role's prompt and work files. |
 
 #### Patch fingerprint (`record.review.patches.<path>`)
 

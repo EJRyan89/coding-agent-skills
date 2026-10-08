@@ -48,9 +48,16 @@ LEDGER_STATES = {
 }
 COMMENT_FIELDS = ("id", "author", "path", "line", "outdated", "body", "url")
 REVIEWER_FIELDS = frozenset({"id", "category", "files", "findings", "retries", "dispositions_only"})
-# Records written before reviewer timing or model reporting existed, or by a reviewer that does not report
-# them (a repository entrypoint reviewer has no model field in its protocol), omit them.
-OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model"})
+# Records written before reviewer timing, model reporting, or read counts existed, or by a reviewer that does not
+# report them (a repository entrypoint reviewer has no model field in its protocol), omit them. The read counts are
+# null together when no guard counted the reviewer's reads: an inline, Copilot CLI host, or unguarded reviewer.
+OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "files_read", "bytes_read"})
+READ_COUNT_FIELDS = ("files_read", "bytes_read")
+# Where a review's source snapshot came from, how large it was, and how long each step of prepare around it took:
+# fetching the head, materializing the snapshot, and writing the request and every role's prompt.
+SNAPSHOT_SOURCES = ("checkout", "tarball")
+SNAPSHOT_FIELDS = frozenset({"source", "files", "bytes", "seconds"})
+SNAPSHOT_PHASES = ("fetch", "materialize", "prompts")
 TITLE_MAXIMUM_LENGTH = 120
 TITLE_RULE = f"must be a single non-blank line of at most {TITLE_MAXIMUM_LENGTH} characters"
 MODEL_MAXIMUM_LENGTH = 200
@@ -611,6 +618,8 @@ def build_record(
         record["review"]["scope"] = copy.deepcopy(request["scope"])
     if request.get("dispatch"):
         record["review"]["dispatch"] = request["dispatch"]
+    if request.get("snapshot"):
+        record["review"]["snapshot"] = copy.deepcopy(request["snapshot"])
     if adapter_result.get("comment_dispositions"):
         record["github_comments"] = [
             {key: comment[key] for key in COMMENT_FIELDS} for comment in request.get("github_comments", [])
@@ -621,6 +630,41 @@ def build_record(
 
 def _count(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _seconds(value: Any) -> bool:
+    """A non-negative, finite number of seconds, whole or not."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value < float("inf")
+
+
+def _size(count: int) -> str:
+    """A byte count as `512 B`, `3.4 KiB`, or `204.0 MiB`."""
+    if count < 1024:
+        return f"{count} B"
+    if count < 1024 * 1024:
+        return f"{count / 1024:.1f} KiB"
+    return f"{count / 2**20:.1f} MiB"
+
+
+def _files_read(reviewer: dict[str, Any]) -> str:
+    """A reviewer's distinct snapshot files read and their size, `unknown` when no guard counted them, or `-` in a
+    record written before reads were counted."""
+    if "files_read" not in reviewer:
+        return "-"
+    if reviewer["files_read"] is None:
+        return "unknown"
+    return f"{reviewer['files_read']} ({_size(reviewer['bytes_read'])})"
+
+
+def snapshot_seconds(seconds: dict[str, float]) -> dict[str, float]:
+    """Each phase's seconds as a review records them: to a tenth of a second, and never below zero."""
+    return {phase: round(max(seconds[phase], 0.0), 1) for phase in SNAPSHOT_PHASES}
+
+
+def describe_snapshot(snapshot: dict[str, Any]) -> str:
+    """A review's source snapshot in one line: its source, size, and the seconds of each phase of prepare."""
+    seconds = ", ".join(f"{phase} {snapshot['seconds'][phase]:.1f}s" for phase in SNAPSHOT_PHASES)
+    return f"{snapshot['source']}: {snapshot['files']:,} files, {_size(snapshot['bytes'])}; {seconds}"
 
 
 def _duration(seconds: int | None) -> str:
@@ -675,6 +719,39 @@ def _validate_reviewers(reviewers: Any) -> None:
             raise RecordError(f"Review reviewer {reviewer['id']}.seconds must be a non-negative integer")
         if "model" in reviewer and not valid_model(reviewer["model"]):
             raise RecordError(f"Review reviewer {reviewer['id']}.model {MODEL_RULE}")
+        _validate_read_counts(reviewer)
+
+
+def _validate_read_counts(reviewer: dict[str, Any]) -> None:
+    """A reviewer's read counts: both absent, both null (not counted), or both non-negative integers."""
+    present = [field for field in READ_COUNT_FIELDS if field in reviewer]
+    if not present:
+        return
+    values = [reviewer.get(field) for field in READ_COUNT_FIELDS]
+    if len(present) != len(READ_COUNT_FIELDS) or not (
+        all(value is None for value in values) or all(_count(value) for value in values)
+    ):
+        raise RecordError(
+            f"Review reviewer {reviewer['id']} files_read and bytes_read must both be non-negative integers "
+            "or both null"
+        )
+
+
+def _validate_snapshot(snapshot: Any) -> None:
+    """The source snapshot's origin, file count, byte total, and the seconds of each phase of prepare."""
+    if not isinstance(snapshot, dict) or set(snapshot) != SNAPSHOT_FIELDS:
+        raise RecordError("Review snapshot fields are malformed")
+    if not _one_of(snapshot["source"], set(SNAPSHOT_SOURCES)):
+        raise RecordError("Review snapshot source is invalid")
+    if not _count(snapshot["files"]) or not _count(snapshot["bytes"]):
+        raise RecordError("Review snapshot files and bytes must be non-negative integers")
+    seconds = snapshot["seconds"]
+    if (
+        not isinstance(seconds, dict)
+        or set(seconds) != set(SNAPSHOT_PHASES)
+        or not all(_seconds(value) for value in seconds.values())
+    ):
+        raise RecordError(f"Review snapshot seconds must give {', '.join(SNAPSHOT_PHASES)} as non-negative numbers")
 
 
 def _safe_relative(path: Any) -> bool:
@@ -1017,11 +1094,14 @@ def _validate_coverage(review: dict[str, Any]) -> None:
 def _validate_review(review: dict[str, Any]) -> None:
     """The review's own metadata, up to its adapter."""
     review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
-    # Records written before patches, scopes, or dispatch modes were recorded omit them.
-    if not review_fields <= set(review) <= review_fields | {"coverage", "reviewers", "patches", "scope", "dispatch"}:
+    # Records written before patches, scopes, dispatch modes, or snapshots were recorded omit them.
+    optional = {"coverage", "reviewers", "patches", "scope", "dispatch", "snapshot"}
+    if not review_fields <= set(review) <= review_fields | optional:
         raise RecordError("Review metadata fields are malformed")
     if "dispatch" in review and not _one_of(review["dispatch"], set(DISPATCH_MODES)):
         raise RecordError("Review dispatch is invalid")
+    if "snapshot" in review:
+        _validate_snapshot(review["snapshot"])
     if "reviewers" in review:
         _validate_reviewers(review["reviewers"])
     if "patches" in review:
@@ -1459,8 +1539,8 @@ def render_markdown(
             [
                 "## Reviewers",
                 "",
-                "| Reviewer | Focus | Model | Files | Findings | Retries | Time |",
-                "|----------|-------|-------|-------|----------|---------|------|",
+                "| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read |",
+                "|----------|-------|-------|-------|----------|---------|------|------------|",
             ]
         )
         for reviewer in review["reviewers"]:
@@ -1471,7 +1551,8 @@ def render_markdown(
             lines.append(
                 f"| {_cell(_code(reviewer['id']))} | {_cell(focus)} | {_cell(names.get(model, model))} "
                 f"| {reviewer['files']} "
-                f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} |"
+                f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} "
+                f"| {_files_read(reviewer)} |"
             )
         lines.append("")
     lines.extend(
@@ -1485,6 +1566,7 @@ def render_markdown(
             "|---|---|",
             f"| **Mode** | {review['mode']} v{review['version']} |",
             *([f"| **Dispatch** | {review['dispatch']} |"] if "dispatch" in review else []),
+            *([f"| **Snapshot** | {describe_snapshot(review['snapshot'])} |"] if "snapshot" in review else []),
             f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
             f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
             # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.

@@ -497,6 +497,8 @@ def record_fixtures() -> list[dict[str, Any]]:
                     "dispositions_only": False,
                     "model": "claude-opus-5-5",
                     "seconds": 95,
+                    "files_read": 4,
+                    "bytes_read": 2048,
                 },
                 {
                     "id": "database-review",
@@ -505,10 +507,18 @@ def record_fixtures() -> list[dict[str, Any]]:
                     "findings": 0,
                     "retries": 1,
                     "dispositions_only": True,
+                    "files_read": None,
+                    "bytes_read": None,
                 },
             ],
             patches={"src/file.cs": {"sha256": "c" * 64, "lines": 12}},
             dispatch="inline",
+            snapshot={
+                "source": "checkout",
+                "files": 120,
+                "bytes": 409_600,
+                "seconds": {"fetch": 0.5, "materialize": 2, "prompts": 0.1},
+            },
         ),
         _result(
             [
@@ -555,6 +565,12 @@ def record_fixtures() -> list[dict[str, Any]]:
                 "lines_total": 40,
             },
             dispatch="copilot-host",
+            snapshot={
+                "source": "tarball",
+                "files": 3,
+                "bytes": 96,
+                "seconds": {"fetch": 1, "materialize": 0, "prompts": 0},
+            },
         ),
         _result(
             [_finding("g", "SUGGESTION", 70), _finding("h", "MUST_FIX", 80, repeats="v1:F001")],
