@@ -26,13 +26,14 @@ import unittest
 from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_guard as guard
+import review_io
 import review_pipeline as rp
 import review_runtime
 from git_client import GitResult, subprocess_runner
@@ -761,6 +762,36 @@ class ConcurrentReviewTests(AdversarialFixture):
         self.write_results(second)
         start = threading.Barrier(2)
         outcomes: dict[str, BaseException | None] = {}
+        # Force the interleaving that left the lock behind (#172): the session holding the pull request's lock waits
+        # until the other is reading its owner file, and that read stays open until the lock is released.
+        reading, released = threading.Event(), threading.Event()
+        held: list[Path] = []
+        open_shared, enter, exit_ = (
+            review_io.open_shared,
+            review_io.ResourceLock.__enter__,
+            review_io.ResourceLock.__exit__,
+        )
+
+        def enter_until_read(lock: review_io.ResourceLock) -> review_io.ResourceLock:
+            entered = enter(lock)
+            if lock.directory.parent.name == ".locks":
+                reading.wait(30)
+            return entered
+
+        def read_until_released(path: Path) -> IO[bytes]:
+            released.clear()
+            stream = open_shared(path)
+            if not reading.is_set():
+                held.append(path)
+                reading.set()
+                released.wait(30)
+            return stream
+
+        def exit_and_signal(lock: review_io.ResourceLock, *details: Any) -> None:
+            try:
+                exit_(lock, *details)
+            finally:
+                released.set()
 
         def finalize(name: str, ready: dict[str, Any]) -> None:
             start.wait()
@@ -771,13 +802,21 @@ class ConcurrentReviewTests(AdversarialFixture):
                 outcomes[name] = exc
 
         threads = [threading.Thread(target=finalize, args=item) for item in (("first", first), ("second", second))]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(60)
+        with (
+            mock.patch.object(review_io.ResourceLock, "__enter__", enter_until_read),
+            mock.patch.object(review_io.ResourceLock, "__exit__", exit_and_signal),
+            mock.patch.object(review_io, "open_shared", read_until_released),
+        ):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60)
         self.assertEqual(2, len(outcomes), "both sessions ended")
+        self.assertEqual(1, len(held), "the lock was released while the waiting session read its owner file")
         failed = [name for name, error in outcomes.items() if error is not None]
         self.assertEqual(1, len(failed), outcomes)
+        self.assertRegex(str(outcomes[failed[0]]), "^Review version changed concurrently", "it took the lock")
+        self.assertEqual([], list((self.archive / ".locks").iterdir()), "no lock is left behind")
         self.assertEqual([1], list_versions(pull_directory(self.archive, REPOSITORY, NUMBER)))
         loser = (first if failed == ["first"] else second)["run"]
         code, out, err = self.main("unfinalized", "--run", str(loser))
