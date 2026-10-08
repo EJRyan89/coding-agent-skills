@@ -1,0 +1,126 @@
+"""Fixture tests for tests/validation/job_selection.py.
+
+Each policy fails on a violating input and passes on a conforming one.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from job_selection import MARKDOWN_SHELL_JOB, POWERSHELL_JOB, changed_paths, documentation_jobs, suites_naming
+from validation_support import REPOSITORY_ROOT
+
+
+class JobSelectionFixtures(unittest.TestCase):
+    def test_suites_that_name_a_changed_document_still_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            by_path, by_name, unrelated = root / "test_path.py", root / "test_name.py", root / "test_other.py"
+            by_path.write_text("SOURCE = 'docs/skills.md'\n", encoding="utf-8")
+            by_name.write_text("open('README.md')\n", encoding="utf-8")
+            unrelated.write_text("pass\n", encoding="utf-8")
+            self.assertEqual(
+                [by_path, by_name], suites_naming(["docs/skills.md", "README.md"], [by_path, by_name, unrelated])
+            )
+            self.assertEqual([], suites_naming(["docs/other.md"], [by_path, by_name, unrelated]))
+
+    def test_changed_files_include_commits_uncommitted_untracked_and_both_sides_of_a_rename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository with spaces"
+            root.mkdir()
+            environment = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": str(Path(temporary) / "empty"),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_AUTHOR_NAME": "Test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
+            (Path(temporary) / "empty").write_text("", encoding="utf-8")
+
+            def git(*arguments: str) -> None:
+                subprocess.run(["git", "-C", str(root), *arguments], env=environment, check=True, capture_output=True)
+
+            for name in ("skills/a/tool.py", "docs/kept.md", "docs/edited.md"):
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(f"{name}\n", encoding="utf-8")
+            git("init", "-q", "-b", "main")
+            git("add", ".")
+            git("commit", "-q", "-m", "base")
+            git("switch", "-q", "-c", "work")
+            git("mv", "skills/a/tool.py", "docs/tool.md")
+            git("commit", "-q", "-m", "move")
+            (root / "docs" / "edited.md").write_text("changed\n", encoding="utf-8")
+            (root / "docs" / "new.md").write_text("new\n", encoding="utf-8")
+            with mock.patch.dict(os.environ, environment):
+                self.assertEqual(
+                    ["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"], changed_paths(root, "main")
+                )
+                self.assertIsNone(changed_paths(root, "no-such-base"))
+                self.assertIsNone(changed_paths(Path(temporary), "main"))
+
+    @staticmethod
+    def documentation_failures(files: dict[str, str], changed: list[str]) -> dict[str, str]:
+        """Run the jobs a documentation-only change to `changed` selects in a fixture repository; failures by label."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "repository with spaces"
+            for name, text in files.items():
+                (root / name).parent.mkdir(parents=True, exist_ok=True)
+                (root / name).write_text(text, encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(root)], check=True, capture_output=True)
+            failures: dict[str, str] = {}
+            for job in documentation_jobs(root, changed, []):
+                try:
+                    job.run()
+                except AssertionError as error:
+                    failures[job.label] = str(error)
+            return failures
+
+    def test_a_documentation_only_change_with_a_violating_powershell_fence_fails(self) -> None:
+        unused = "function Get-Answer {\n    $unused = 1\n    'answer'\n}\n"
+        failures = self.documentation_failures(
+            {"docs/install.md": f"# Install\n\n```powershell\n{unused}```\n\n```bash\necho ready\n```\n"},
+            ["docs/install.md"],
+        )
+        self.assertEqual([POWERSHELL_JOB], list(failures))
+        # The fence opens on line 3, so the fragment's second line is the file's fifth.
+        self.assertIn("docs/install.md:5: PSUseDeclaredVarsMoreThanAssignments (Warning)", failures[POWERSHELL_JOB])
+
+    def test_a_documentation_only_change_with_a_violating_bash_fence_fails(self) -> None:
+        failures = self.documentation_failures(
+            {"README.md": "# Read me\n\n```powershell\nGet-Date\n```\n\nThen:\n\n```bash\ncd 'some folder'\nls\n```\n"},
+            ["README.md"],
+        )
+        self.assertEqual([MARKDOWN_SHELL_JOB], list(failures))
+        self.assertIn("README.md:10:1: warning:", failures[MARKDOWN_SHELL_JOB])
+        self.assertIn("[SC2164]", failures[MARKDOWN_SHELL_JOB])
+        self.assertIn("never suppress", failures[MARKDOWN_SHELL_JOB])
+
+    def test_a_documentation_only_change_runs_the_fence_checks_only_when_markdown_changed(self) -> None:
+        def labels(paths: list[str], suites: list[Path]) -> list[str]:
+            # By name, so a suite split into shards appears once.
+            return list(dict.fromkeys(job.name for job in documentation_jobs(REPOSITORY_ROOT, paths, suites)))
+
+        # This suite reads docs/releasing.md, so a change to it still runs the suite.
+        naming = REPOSITORY_ROOT / "tests" / "tools" / "test_branch_protection.py"
+        # No Markdown changed, so no fence can have changed; the Python, type, and skill-script checks never run,
+        # since a documentation-only change cannot reach Python or skills/.
+        self.assertEqual([], labels([".github/ISSUE_TEMPLATE/config.yml"], [naming]))
+        self.assertEqual(
+            [POWERSHELL_JOB, MARKDOWN_SHELL_JOB, "tests/tools/test_branch_protection.py"],
+            labels(["docs/releasing.md", ".github/ISSUE_TEMPLATE/config.yml"], [naming]),
+        )
+        self.assertEqual([POWERSHELL_JOB, MARKDOWN_SHELL_JOB], labels(["docs/GUIDE.MD"], [naming]))
+
+
+if __name__ == "__main__":
+    unittest.main()

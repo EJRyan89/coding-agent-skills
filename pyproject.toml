@@ -63,17 +63,20 @@ python_version = "3.11"
 # The deployer and the skills support Windows only, so mypy checks them as Windows sees them on any host. Revisit
 # when deployer/platform_support.py gains another platform.
 platform = "win32"
-# tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths.
+# tests/ imports tools/skill_reference.py both as tools.skill_reference and by path; module names follow the paths, and
+# a module in a mypy_path directory below is named by its bare name, as the code that puts it on sys.path imports it.
 explicit_package_bases = true
 # Each skills/<name>/scripts directory a module or suite puts on sys.path: the code-review-core and skill-core scripts
 # their skill_deps dependents import, skill-core's also imported by the deployer, tools/, and tests, the
 # analyze-skill-cost inventory tools/new_skill.py and the validation runner import, and the update-pr-tracker scripts a
-# code-review-core suite imports. Then tests/deployer, whose suites import harness from beside them. Their imports then
-# resolve as they do at run time. Validation keeps this list equal to those directories.
+# code-review-core suite imports. Then tests/deployer, whose suites import harness from beside them, and tests/validation,
+# whose policy modules and their suites import one another by bare name, as tests/run_validation.py does. Their imports
+# then resolve as they do at run time. Validation keeps this list equal to those directories.
 mypy_path = [
     "$MYPY_CONFIG_FILE_DIR/skills/analyze-skill-cost/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/code-review-core/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/skill-core/scripts",
     "$MYPY_CONFIG_FILE_DIR/skills/update-pr-tracker/scripts",
     "$MYPY_CONFIG_FILE_DIR/tests/deployer",
+    "$MYPY_CONFIG_FILE_DIR/tests/validation",
 ]
