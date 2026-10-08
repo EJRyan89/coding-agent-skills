@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -17,7 +18,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import github_client
+import review_github
 import review_operation
+import review_pipeline
 import review_runtime
 from github_client import CommandResult, GitHubError
 from review_config import (
@@ -505,11 +508,173 @@ class ReviewedHeadTests(unittest.TestCase):
         )
         self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 6))
 
-    def test_missing_watermark_starts_today(self) -> None:
-        today = date(2026, 10, 1)
+    def test_a_repository_has_no_watermark_until_one_is_recorded(self) -> None:
         state = {"schema_version": 1, "repositories": {"owner/repo": {"merged_since": "2026-09-26"}}}
-        self.assertEqual(date(2026, 9, 26), review_operation.repository_watermark(state, "owner/repo", today))
-        self.assertEqual(today, review_operation.repository_watermark(state, "owner/new", today))
+        self.assertEqual(date(2026, 9, 26), review_operation.recorded_watermark(state, "owner/repo"))
+        self.assertIsNone(review_operation.recorded_watermark(state, "owner/new"))
+
+
+class EnumerateBatchTests(unittest.TestCase):
+    """`enumerate` against a gh runner that serves the listings a repository's history answers."""
+
+    REPOSITORY = "owner/repo"
+    TODAY = date(2026, 3, 10)
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.archive = self.root / "archive"
+        self.state_path = self.root / "state" / "state.json"
+        patcher = mock.patch.dict(os.environ, {"CODE_REVIEW_STATE": str(self.state_path)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.config = self.root / "config.json"
+        generic = {
+            "id": "generic",
+            "protocol_version": 1,
+            "trusted_ref": None,
+            "scope": "generic",
+            "manifest_path": None,
+        }
+        self.config.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "default_repository_set": "all",
+                    "repository_sets": {"all": [self.REPOSITORY]},
+                    "repositories": {self.REPOSITORY: {"reviewer": generic, "checkout_path": None}},
+                    "archive_root": str(self.archive),
+                    "local_mirror_root": None,
+                    "summary_root": str(self.root / "summaries"),
+                    "dashboard_file": str(self.root / "dashboard.md"),
+                    "github_login": "reviewer",
+                    "runtime": "claude-code",
+                    "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+                    "dashboard": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.pulls: list[dict[str, Any]] = []
+        self.endpoints: list[str] = []
+        self.open_listing: list[dict[str, Any]] | None = None  # what the open listing serves, when it differs
+
+    def pull(
+        self, number: int, *, merged: str | None = None, updated: str | None = None, is_open: bool = False
+    ) -> None:
+        self.pulls.append(
+            {
+                "number": number,
+                "title": f"Change {number}",
+                "html_url": f"https://github.com/{self.REPOSITORY}/pull/{number}",
+                "state": "open" if is_open else "closed",
+                "draft": False,
+                "merged_at": merged,
+                "updated_at": updated or merged or "2026-01-01T00:00:00Z",
+                "base": {"ref": "main", "sha": "a" * 40},
+                "head": {"ref": f"feature-{number}", "sha": f"{number:040d}"},
+            }
+        )
+
+    def review(self, number: int) -> None:
+        """A migrated legacy review of the pull request's current head, which counts as reviewed."""
+        directory = self.archive / "owner" / "repo" / "pulls" / str(number)
+        directory.mkdir(parents=True)
+        index = {
+            "schema_version": 1,
+            "kind": "legacy-review-index",
+            "repository": self.REPOSITORY,
+            "pull_number": number,
+            "reviewed_at": "2026-01-01T00:00:00+00:00",
+            "reviewed_head_sha": f"{number:040d}",
+            "verdict": "APPROVED",
+            "source_sha256": "0" * 64,
+            "source_path": "C:/legacy/review.md",
+            "source_file_sha256": "0" * 64,
+        }
+        (directory / "legacy-review.json").write_text(json.dumps(index), encoding="utf-8")
+
+    def runner(self, arguments: Sequence[str]) -> CommandResult:
+        endpoint = arguments[-1]
+        self.endpoints.append(endpoint)
+        query = dict(part.split("=", 1) for part in endpoint.split("?", 1)[1].split("&"))
+        selected = [pull for pull in self.pulls if query["state"] in {"all", pull["state"]}]
+        if query["state"] == "open" and self.open_listing is not None:
+            selected = self.open_listing
+        if "--paginate" in arguments:
+            pages = [selected[start : start + 100] for start in range(0, max(len(selected), 1), 100)]
+            return CommandResult(0, json.dumps(pages), "")
+        selected = sorted(selected, key=lambda pull: pull["updated_at"], reverse=True)
+        start = (int(query["page"]) - 1) * 100
+        return CommandResult(0, json.dumps(selected[start : start + 100]), "")
+
+    def enumerate(self, *, force: bool = False) -> dict[str, Any]:
+        services = review_pipeline.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
+        self.endpoints.clear()
+        batch = review_pipeline.enumerate_batch(
+            self.root / "batch.json", force=force, config_path=self.config, services=services
+        )
+        entry: dict[str, Any] = batch["repositories"][self.REPOSITORY]
+        return entry
+
+    def watermark(self, value: str) -> None:
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        state = {"schema_version": 1, "repositories": {self.REPOSITORY: {"merged_since": value}}}
+        self.state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def test_first_run_lists_the_whole_history_once_then_advance_records_a_watermark(self) -> None:
+        for number in range(1, 151):
+            self.pull(number, merged="2025-06-01T00:00:00Z")
+        self.pull(151, is_open=True, updated="2026-03-09T00:00:00Z")
+        entry = self.enumerate()
+        self.assertEqual(["repos/owner/repo/pulls?state=all&per_page=100"], self.endpoints)
+        self.assertEqual({"scan": "full", "pages": 2, "pulls": 151, "read": 1}, entry["listing"])
+        self.assertEqual([151], [pull["number"] for pull in entry["eligible"]])
+
+        review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config)
+        entry = self.enumerate()
+        self.assertEqual(
+            [
+                "repos/owner/repo/pulls?state=open&per_page=100",
+                "repos/owner/repo/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
+            ],
+            self.endpoints,
+        )
+        self.assertEqual({"scan": "watermark", "pages": 2, "pulls": 101, "read": 1}, entry["listing"])
+        self.assertEqual(self.TODAY.isoformat(), entry["previous_watermark"])
+
+    def test_a_watermark_run_reads_the_archive_only_for_open_pulls_and_those_merged_since(self) -> None:
+        self.watermark("2026-03-01")
+        for number in range(1, 251):  # history merged before the watermark, every pull reviewed
+            self.pull(number, merged="2025-01-01T00:00:00Z")
+            self.review(number)
+        self.pull(251, merged="2026-02-20T00:00:00Z", updated="2026-03-08T00:00:00Z")  # commented on after merging
+        self.pull(252, merged="2026-03-01T09:00:00Z")  # merged on the watermark day
+        self.pull(253, merged="2026-03-05T09:00:00Z")
+        self.review(253)
+        self.pull(254, is_open=True, updated="2026-03-09T00:00:00Z")
+        entry = self.enumerate()
+        # One open page and one closed page, which ends behind the watermark: the history before it is never read.
+        self.assertEqual(2, len(self.endpoints))
+        self.assertEqual({"scan": "watermark", "pages": 2, "pulls": 101, "read": 3}, entry["listing"])
+        self.assertEqual([252, 254], [pull["number"] for pull in entry["eligible"]])
+
+    def test_a_pull_merged_between_the_listings_is_kept_once_as_merged(self) -> None:
+        self.watermark("2026-03-01")
+        self.pull(7, merged="2026-03-09T00:00:00Z")
+        self.open_listing = [dict(self.pulls[0], state="open", merged_at=None)]
+        entry = self.enumerate()
+        self.assertEqual([("MERGED", 7)], [(pull["state"], pull["number"]) for pull in entry["eligible"]])
+        self.assertEqual(1, entry["listing"]["pulls"])
+
+    def test_force_reads_no_review(self) -> None:
+        self.watermark("2026-03-01")
+        self.pull(1, is_open=True)
+        self.review(1)
+        entry = self.enumerate(force=True)
+        self.assertEqual(0, entry["listing"]["read"])
+        self.assertEqual([1], [pull["number"] for pull in entry["eligible"]])
 
 
 class CoverageTests(unittest.TestCase):

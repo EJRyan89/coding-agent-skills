@@ -1446,10 +1446,116 @@ class GitHubTests(unittest.TestCase):
                 "",
             )
 
-        pulls = GitHubClient(runner).list_pulls("example/one", state="open")
-        self.assertEqual([1, 2], [item["number"] for item in pulls])
+        listing = GitHubClient(runner).list_pulls("example/one", state="open")
+        self.assertEqual([1, 2], [item["number"] for item in listing.pulls])
+        self.assertEqual(2, listing.pages)
         self.assertIn("--paginate", calls[0])
         self.assertIn("--slurp", calls[0])
+
+    @staticmethod
+    def _closed_page(numbers: range | list[int], updated: str, *, merged: str | None = None) -> list[dict]:
+        pulls = []
+        for number in numbers:
+            value = GitHubTests._api_pull(number, state="closed", merged_at=merged or updated)
+            value["updated_at"] = updated
+            pulls.append(value)
+        return pulls
+
+    def _walk(self, pages: dict[int, Any], since: date) -> tuple[review_github.PullListing, list[list[str]]]:
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(list(arguments))
+            page = int(arguments[-1].rsplit("&page=", 1)[1])
+            return CommandResult(0, json.dumps(pages.get(page, [])), "")
+
+        return GitHubClient(runner).list_closed_pulls_since("example/one", since), calls
+
+    def test_closed_walk_stops_at_the_first_page_behind_the_watermark(self) -> None:
+        pages = {
+            1: self._closed_page(range(300, 200, -1), "2026-03-09T10:00:00Z"),
+            2: self._closed_page(range(200, 100, -1), "2026-02-27T10:00:00Z"),
+            3: self._closed_page(range(100, 0, -1), "2026-01-01T10:00:00Z"),
+        }
+        listing, calls = self._walk(pages, date(2026, 3, 1))
+        # Page 2 ends before the watermark, so page 3 is never read; page 1 is read again after a walk of two pages.
+        self.assertEqual(
+            [
+                "repos/example/one/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
+                "repos/example/one/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=2",
+                "repos/example/one/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=1",
+            ],
+            [call[-1] for call in calls],
+        )
+        self.assertTrue(all("--paginate" not in call for call in calls))
+        self.assertEqual(3, listing.pages)
+        self.assertEqual(list(range(300, 100, -1)), [pull["number"] for pull in listing.pulls])
+
+    def test_closed_walk_reads_one_page_when_it_reaches_the_watermark_or_the_end(self) -> None:
+        cases: dict[str, dict[int, Any]] = {
+            "behind the watermark": {1: self._closed_page(range(100, 0, -1), "2026-02-01T10:00:00Z")},
+            "short page": {1: self._closed_page(range(5, 0, -1), "2026-03-05T10:00:00Z")},
+            "no closed pull": {1: []},
+        }
+        for name, pages in cases.items():
+            with self.subTest(name):
+                listing, calls = self._walk(pages, date(2026, 3, 1))
+                self.assertEqual(1, len(calls))
+                self.assertEqual(1, listing.pages)
+
+    def test_closed_walk_keeps_a_page_that_ends_on_the_watermark_day(self) -> None:
+        pages = {
+            1: self._closed_page(range(200, 100, -1), "2026-03-01T00:00:00Z"),
+            2: self._closed_page(range(100, 98, -1), "2026-02-28T23:59:59Z"),
+        }
+        listing, calls = self._walk(pages, date(2026, 3, 1))
+        self.assertEqual(["page=1", "page=2", "page=1"], [call[-1].rsplit("&", 1)[1] for call in calls])
+        self.assertEqual(102, len(listing.pulls))
+
+    def test_closed_walk_finds_a_pull_updated_onto_a_page_it_already_read(self) -> None:
+        # #50 is merged while page 1 is being read, so it moves from page 2 to the top of page 1, and page 1's last
+        # pull shifts onto page 2: the second page repeats it, and the reread of page 1 finds #50.
+        first = self._closed_page(range(300, 200, -1), "2026-03-09T10:00:00Z")
+        moved = self._closed_page([50], "2026-03-10T10:00:00Z")
+        reads = {1: 0}
+        calls: list[str] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(arguments[-1])
+            page = int(arguments[-1].rsplit("&page=", 1)[1])
+            if page == 1:
+                reads[1] += 1
+                return CommandResult(0, json.dumps(first if reads[1] == 1 else moved + first[:99]), "")
+            shifted = first[99:] + self._closed_page(range(200, 101, -1), "2026-02-27T10:00:00Z")
+            return CommandResult(0, json.dumps(shifted if page == 2 else []), "")
+
+        listing = GitHubClient(runner).list_closed_pulls_since("example/one", date(2026, 3, 1))
+        numbers = [pull["number"] for pull in listing.pulls]
+        self.assertEqual(len(numbers), len(set(numbers)))
+        self.assertIn(50, numbers)
+        self.assertEqual(3, listing.pages)
+
+    def test_closed_walk_drops_closed_unmerged_pulls_but_pages_past_them(self) -> None:
+        page = self._closed_page(range(200, 100, -1), "2026-03-05T10:00:00Z")
+        for value in page[:50]:
+            value["merged_at"] = None
+        listing, calls = self._walk({1: page}, date(2026, 3, 1))
+        self.assertEqual(3, len(calls))  # a full page that reaches the watermark is followed by page 2
+        self.assertEqual(list(range(150, 100, -1)), [pull["number"] for pull in listing.pulls])
+        self.assertTrue(all(pull["state"] == "MERGED" for pull in listing.pulls))
+
+    def test_closed_walk_fails_on_a_page_it_cannot_read(self) -> None:
+        for name, page in {
+            "not a list": {"message": "unexpected"},
+            "no update time": [
+                {k: v for k, v in p.items() if k != "updated_at"}
+                for p in self._closed_page(range(100, 0, -1), "2026-03-05T10:00:00Z")
+            ],
+            "bad update time": self._closed_page(range(100, 0, -1), "yesterday"),
+        }.items():
+            with self.subTest(name), self.assertRaises(GitHubError) as context:
+                self._walk({1: page}, date(2026, 3, 1))
+            self.assertEqual("malformed", context.exception.kind)
 
     @staticmethod
     def _graphql_page(numbers: list[int], cursor: str | None) -> str:
@@ -2372,9 +2478,43 @@ class ReviewOperationTests(unittest.TestCase):
         selected = select_eligible_pulls(
             pulls,
             merged_since=date(2026, 1, 1),
-            reviewed_heads={1: "c" * 40},
+            reviewed_heads=lambda numbers: {1: "c" * 40},
         )
         self.assertEqual([3], [item["number"] for item in selected])
+
+    def test_selection_reads_the_archive_only_for_pulls_past_the_state_and_watermark_filters(self) -> None:
+        draft = self._pull(4)
+        draft["isDraft"] = True
+        pulls = [
+            self._pull(5, "MERGED", "2026-01-01T00:00:00Z"),  # merged on the watermark day
+            self._pull(1),
+            draft,
+            # Merged before the watermark: a later comment or label lists it again, but it stays out.
+            self._pull(2, "MERGED", "2025-12-31T23:59:59Z"),
+            self._pull(3, "MERGED", "2026-01-03T00:00:00Z"),
+        ]
+        looked_up: list[list[int]] = []
+
+        def heads(numbers: list[int]) -> dict[int, str]:
+            looked_up.append(list(numbers))
+            return {5: pulls[0]["headRefOid"]}
+
+        selected = select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads)
+        self.assertEqual([[1, 3, 5]], looked_up)
+        self.assertEqual([1, 3], [item["number"] for item in selected])
+
+        looked_up.clear()
+        forced = select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads, force=True)
+        self.assertEqual([], looked_up)
+        self.assertEqual([1, 3, 5], [item["number"] for item in forced])
+
+    def test_selection_refuses_duplicate_and_malformed_pulls_before_reading_the_archive(self) -> None:
+        def heads(numbers: list[int]) -> dict[int, str]:
+            raise AssertionError("the archive is read only after every pull is validated")
+
+        for pulls in ([self._pull(1), self._pull(1)], [self._pull(1), {"number": 2}]):
+            with self.subTest(pulls=pulls), self.assertRaises(ReviewOperationError):
+                select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads)
 
     def test_watermark_retains_unreviewed_and_incomplete_work(self) -> None:
         merged = [

@@ -186,9 +186,17 @@ class ReviewerCommandTests(MainCase):
 class EnumerateTests(MainCase):
     BATCH: ClassVar[dict[str, Any]] = {
         "repositories": {
-            "example/app": {"complete": True, "eligible": [{"number": 3}, {"number": 5}]},
-            "example/lib": {"complete": False, "error": "gh failed", "eligible": [{"number": 7}]},
-            "example/web": {"complete": True, "eligible": []},
+            "example/app": {
+                "complete": True,
+                "eligible": [{"number": 3}, {"number": 5}],
+                "listing": {"scan": "watermark", "pages": 2, "pulls": 130, "read": 40},
+            },
+            "example/lib": {"complete": False, "error": "gh failed", "eligible": [{"number": 7}], "listing": None},
+            "example/web": {
+                "complete": True,
+                "eligible": [],
+                "listing": {"scan": "full", "pages": 20, "pulls": 1803, "read": 30},
+            },
         }
     }
 
@@ -210,10 +218,12 @@ class EnumerateTests(MainCase):
         self.assertEqual(
             (
                 0,
+                "LISTED example/app scan=watermark pages=2 pulls=130 read=40 candidates=2\n"
                 "PULL example/app#3\n"
                 "PULL example/app#5\n"
                 "REPOSITORY_FAILED example/lib gh failed\n"
                 "PULL example/lib#7\n"
+                "LISTED example/web scan=full pages=20 pulls=1803 read=30 candidates=0\n"
                 "BATCH batch.json\n",
                 "",
             ),

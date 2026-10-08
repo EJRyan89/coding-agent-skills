@@ -20,6 +20,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - JSON is the machine source of truth. Markdown is a hash-linked projection.
 - Review versions are allocated under a per-PR lock and never overwrite history.
 - Merged-pull watermarks are independent per repository. Incomplete enumeration or a failed eligible merge cannot advance that repository past the missing work.
+- A merged pull request is eligible when it merged on or after its repository's watermark date, judged by its merge time alone: one merged before the watermark stays out however recently it was updated (commented on, labeled, or edited) after merging. Because merging updates a pull request, every one merged on or after the watermark was last updated on or after it, so enumeration may stop listing closed pull requests, read from the most recently updated, at the first page whose last pull request was updated before the watermark. A repository without a watermark lists its whole history once.
 - Configuration, mutable state, flags, and review versions use separate short-lived locks; network and semantic review work occurs outside those locks.
 
 ## Reviewer behavior

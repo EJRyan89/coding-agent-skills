@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,23 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import github_client
 from github_client import Clock, GitHubError, Runner, Sleeper, subprocess_runner
 from review_config import validate_repository_identity
+
+PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
+
+
+@dataclass(frozen=True)
+class PullListing:
+    """The pull requests a listing found and the number of pages it read."""
+
+    pulls: list[dict[str, Any]]
+    pages: int
+
+
+def _updated_date(value: Any) -> date:
+    try:
+        return date.fromisoformat(value["updated_at"][:10])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GitHubError("Pull response has no valid update time", kind="malformed") from exc
 
 
 def _normalize_pull(value: Any) -> dict[str, Any] | None:
@@ -202,15 +221,50 @@ class GitHubClient:
                 raise GitHubError("Review thread has an unexpected shape", kind="malformed") from exc
         return comments
 
-    def list_pulls(self, repository: str, *, state: str) -> list[dict[str, Any]]:
+    def list_pulls(self, repository: str, *, state: str) -> PullListing:
+        """Every pull request in `state`, through every page; closed pull requests that were not merged are dropped."""
         repository = validate_repository_identity(repository)
         if state not in {"open", "closed", "all"}:
             raise GitHubError(f"Invalid pull state: {state}", kind="input")
-        pages = self.api_json(f"repos/{repository}/pulls?state={state}&per_page=100", paginate=True)
+        pages = self.api_json(f"repos/{repository}/pulls?state={state}&per_page={PULL_PAGE_SIZE}", paginate=True)
         if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
             raise GitHubError("Paginated pull response has an unexpected shape", kind="malformed")
         pulls = [_normalize_pull(pull) for page in pages for pull in page]
-        return [pull for pull in pulls if pull is not None]
+        return PullListing([pull for pull in pulls if pull is not None], len(pages))
+
+    def list_closed_pulls_since(self, repository: str, since: date) -> PullListing:
+        """The merged pull requests updated on or after `since`, most recently updated first, and possibly some older.
+
+        Pages are read sorted by update time until one ends with a pull request updated before `since`, or is short.
+        Merging updates a pull request, so every one merged on or after `since` is on a page read. A walk of several
+        pages reads the first page again at the end, because a pull request updated during the walk moves to it, and
+        a pull request seen twice is kept once, as first seen.
+        """
+        repository = validate_repository_identity(repository)
+        endpoint = f"repos/{repository}/pulls?state=closed&sort=updated&direction=desc&per_page={PULL_PAGE_SIZE}"
+        raw: list[Any] = []
+        pages = 0
+        while True:
+            pages += 1
+            page = self._closed_page(endpoint, pages)
+            raw.extend(page)
+            if len(page) < PULL_PAGE_SIZE or _updated_date(page[-1]) < since:
+                break
+        if pages > 1:
+            raw.extend(self._closed_page(endpoint, 1))
+            pages += 1
+        pulls: dict[int, dict[str, Any]] = {}
+        for value in raw:
+            pull = _normalize_pull(value)
+            if pull is not None:
+                pulls.setdefault(pull["number"], pull)
+        return PullListing(list(pulls.values()), pages)
+
+    def _closed_page(self, endpoint: str, page: int) -> list[Any]:
+        values = self.api_json(f"{endpoint}&page={page}")
+        if not isinstance(values, list):
+            raise GitHubError("Pull page has an unexpected shape", kind="malformed")
+        return values
 
     def get_pull(self, repository: str, number: int) -> dict[str, Any]:
         repository = validate_repository_identity(repository)

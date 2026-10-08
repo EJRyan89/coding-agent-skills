@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
@@ -78,10 +78,16 @@ def select_eligible_pulls(
     pulls: Iterable[dict[str, Any]],
     *,
     merged_since: date,
-    reviewed_heads: dict[int, str],
+    reviewed_heads: Callable[[list[int]], dict[int, str]],
     force: bool = False,
 ) -> list[dict[str, Any]]:
-    eligible = []
+    """The non-draft open pull requests and those merged on or after `merged_since` whose head is not yet reviewed.
+
+    A merged pull request is judged by its merge date alone, so one merged earlier and updated since stays out.
+    `reviewed_heads` reads the archive, so it is asked only about the pull requests the state, draft, and watermark
+    filters keep, after every pull is validated, and not at all under `force`.
+    """
+    window = []
     seen: set[int] = set()
     for raw in pulls:
         pull = validate_pull(raw)
@@ -91,17 +97,21 @@ def select_eligible_pulls(
         seen.add(number)
         if pull["isDraft"]:
             continue
-        if pull["state"] == "MERGED":
-            try:
-                merged_date = date.fromisoformat(pull["mergedAt"][:10])
-            except (TypeError, ValueError) as exc:
-                raise ReviewOperationError(f"Pull {number} has invalid mergedAt") from exc
-            if merged_date < merged_since:
-                continue
-        if not force and reviewed_heads.get(number) == pull["headRefOid"]:
+        if pull["state"] == "MERGED" and merged_date(pull) < merged_since:
             continue
-        eligible.append(pull)
-    return sorted(eligible, key=lambda pull: pull["number"])
+        window.append(pull)
+    window.sort(key=lambda pull: pull["number"])
+    if force:
+        return window
+    heads = reviewed_heads([pull["number"] for pull in window])
+    return [pull for pull in window if heads.get(pull["number"]) != pull["headRefOid"]]
+
+
+def merged_date(pull: dict[str, Any]) -> date:
+    try:
+        return date.fromisoformat(pull["mergedAt"][:10])
+    except (TypeError, ValueError) as exc:
+        raise ReviewOperationError(f"Pull {pull['number']} has invalid mergedAt") from exc
 
 
 def safe_watermark(
@@ -430,9 +440,8 @@ def latest_reviewed_heads(archive_root: Path, repository: str, numbers: Iterable
     return heads
 
 
-def repository_watermark(state: dict[str, Any], repository: str, today: date) -> date:
-    """A repository's merged-pull watermark; a repository without one starts today, so a first batch
-    run reviews only open pull requests instead of every merged pull request in its history."""
+def recorded_watermark(state: dict[str, Any], repository: str) -> date | None:
+    """A repository's recorded merged-pull watermark, or None before its first batch run advances one."""
     entry = state.get("repositories", {}).get(validate_repository_identity(repository), {})
     value = entry.get("merged_since")
-    return date.fromisoformat(value[:10]) if isinstance(value, str) else today
+    return date.fromisoformat(value[:10]) if isinstance(value, str) else None
