@@ -20,7 +20,7 @@ from review_archive import (
 )
 from review_config import validate_repository_identity
 from review_io import read_json
-from review_records import build_record, ledger_summary, payload_hash, validate_adapter_result
+from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
 
 
 class ReviewOperationError(ValueError):
@@ -368,20 +368,30 @@ def legacy_counts(report: Path) -> dict[str, int] | None:
     return counts
 
 
-def reviewed_head(archive_root: Path, repository: str, number: int) -> dict[str, Any] | None:
+def reviewed_head(
+    archive_root: Path, repository: str, number: int, *, records: list[dict[str, Any]] | None = None
+) -> dict[str, Any] | None:
     """The latest reviewed head: a validated review record, else a migrated legacy review.
 
     Also reports the review's verdict, finding counts, ledger summary, and report path for dashboards. A record
     written before ledgers is summarized from the ledger its pull request's records compute. A legacy review's
     findings were never converted, so its summary counts its report's findings as open and cannot say how many
-    were addressed (None); it is None when the report is unreadable.
+    were addressed (None); it is None when the report is unreadable. A caller that already holds the pull request's
+    validated records, oldest first as `pull_records` returns them, passes them as `records` so none is read again.
     """
     directory = pull_directory(archive_root, repository, number)
-    record = latest_record(archive_root, repository, number)
+    record = records[-1] if records else None
+    if records is None:
+        record = latest_record(archive_root, repository, number)
     if record is not None:
         review = record["review"]
         coverage = review.get("coverage") or {}
-        ledger = record["ledger"] if "ledger" in record else current_ledger(archive_root, repository, number)
+        if "ledger" in record:
+            ledger = record["ledger"]
+        elif records is None:
+            ledger = current_ledger(archive_root, repository, number)
+        else:
+            ledger = ledger_history(records)[review["version"]]
         _, markdown = record_paths(directory, review["version"])
         return {
             "head_sha": record["pull_request"]["head_sha"],

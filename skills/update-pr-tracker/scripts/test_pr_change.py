@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
 import sys
+import threading
 import unittest
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from github_client import CommandResult
 from pr_change import (
     CHANGED,
     COMPARE_FILE_LIMIT,
@@ -150,19 +154,176 @@ class ChangeDetectorTests(unittest.TestCase):
                 )
 
     def test_requests_are_url_quoted_and_cached(self) -> None:
-        client = FakeClient({REVIEWED: comparison(changed("a.py", "1")), HEAD: comparison(changed("a.py", "2"))})
+        files = comparison(changed("a.py", "1"))
+        client = FakeClient({REVIEWED: files, HEAD: files})
         detector = ChangeDetector(client)
         for _ in range(2):
             detector.detect("owner/repo", 7, "release/1.0 rc#", REVIEWED, HEAD)
         self.assertEqual(
             [
                 f"repos/owner/repo/compare/release/1.0%20rc%23...{REVIEWED}",
-                f"repos/owner/repo/git/trees/{REVIEWED}?recursive=1",
                 f"repos/owner/repo/compare/release/1.0%20rc%23...{HEAD}",
+                f"repos/owner/repo/git/trees/{REVIEWED}?recursive=1",
                 f"repos/owner/repo/git/trees/{HEAD}?recursive=1",
             ],
             client.calls,
         )
+
+
+def full_detect(before: object, after: object, before_tree: object, after_tree: object) -> str:
+    """The decision from both commits' complete fingerprints, comparison and tree alike, as detection made it before
+    it learned to skip the trees."""
+    fingerprints = [
+        contribution_fingerprint(before, tree_modes(before_tree)),
+        contribution_fingerprint(after, tree_modes(after_tree)),
+    ]
+    if None in fingerprints or not any(fingerprints):
+        return UNKNOWN
+    return UNCHANGED if fingerprints[0] == fingerprints[1] else CHANGED
+
+
+class TreeShortcutTests(unittest.TestCase):
+    """The trees are read only when the two comparisons list the same files, so the decision is the full one."""
+
+    @staticmethod
+    def trees_read(client: FakeClient) -> int:
+        return sum("/git/trees/" in call for call in client.calls)
+
+    def test_differing_files_decide_without_the_trees_and_match_the_full_fingerprints(self) -> None:
+        base = changed("src/app.py", "blob1")
+        cases = {
+            "content": comparison(changed("src/app.py", "blob2")),
+            "added file": comparison(base, changed("src/new.py", "x", "added")),
+            "status": comparison(changed("src/app.py", "blob1", "added")),
+            "rename": comparison(changed("src/app.py", "blob1", "renamed", previous_filename="src/old.py")),
+            "removed": comparison(changed("src/app.py", "blob1", "removed")),
+            "nothing left": comparison(),
+        }
+        before = comparison(base)
+        for name, after in cases.items():
+            for modes in ({}, {"src/app.py": "100755", "src/new.py": "120000"}):
+                with self.subTest(case=name, modes=modes):
+                    trees = {REVIEWED: tree(before), HEAD: tree(after, modes)}
+                    client = FakeClient({REVIEWED: before, HEAD: after}, trees)
+                    shortcut = ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD)
+                    self.assertEqual(full_detect(before, after, trees[REVIEWED], trees[HEAD]), shortcut)
+                    self.assertEqual(CHANGED, shortcut)
+                    self.assertEqual(0, self.trees_read(client), "differing files need no tree")
+
+    def test_matching_files_read_both_trees_so_a_mode_change_is_still_seen(self) -> None:
+        files = comparison(changed("tool.sh", "blob1"), changed("gone.py", "blob2", "removed"))
+        for after_mode, expected in (("100644", UNCHANGED), ("100755", CHANGED), ("120000", CHANGED)):
+            with self.subTest(mode=after_mode):
+                trees = {REVIEWED: tree(files), HEAD: tree(files, {"tool.sh": after_mode})}
+                client = FakeClient({REVIEWED: files, HEAD: files}, trees)
+                result = ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD)
+                self.assertEqual(full_detect(files, files, trees[REVIEWED], trees[HEAD]), result)
+                self.assertEqual(expected, result)
+                self.assertEqual(2, self.trees_read(client))
+
+    def test_files_that_were_all_removed_need_no_tree(self) -> None:
+        files = comparison(changed("old.py", "blob1", "removed"))
+        client = FakeClient({REVIEWED: files, HEAD: files})
+        self.assertEqual(UNCHANGED, ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD))
+        self.assertEqual(0, self.trees_read(client))
+
+    def test_differing_files_are_a_change_even_where_a_tree_was_unreadable(self) -> None:
+        """The one decision the shortcut makes that the full fingerprints could not: the comparisons already prove
+        the change, so a tree that is truncated or gone no longer makes it unknown."""
+        before, after = comparison(changed("a.py", "1")), comparison(changed("a.py", "2"))
+        trees = {REVIEWED: tree(before), HEAD: tree(after, truncated=True)}
+        client = FakeClient({REVIEWED: before, HEAD: after}, trees)
+        self.assertEqual(UNKNOWN, full_detect(before, after, trees[REVIEWED], trees[HEAD]))
+        self.assertEqual(CHANGED, ChangeDetector(client).detect("owner/repo", 7, "main", REVIEWED, HEAD))
+        self.assertEqual(0, self.trees_read(client))
+
+
+def sha(number: int) -> str:
+    return f"{number:040x}"
+
+
+class ConcurrentRunner:
+    """Answers gh api calls for commits sha(0), sha(1), and so on: each even commit changes a.py to its own blob,
+    and each odd one matches the commit before it, so that pair needs its trees. A call waits until `parties` calls
+    are running at once, so a detector that reads one call at a time fails on a broken barrier."""
+
+    def __init__(self, parties: int, rate_limited: set[str] | None = None) -> None:
+        self.barrier = threading.Barrier(parties, timeout=10)
+        self.lock = threading.Lock()
+        self.calls: list[str] = []
+        self.running = 0
+        self.peak = 0
+        self.rate_limited = set(rate_limited or ())
+
+    def __call__(self, arguments: Sequence[str]) -> CommandResult:
+        endpoint = arguments[-1]
+        with self.lock:
+            self.calls.append(endpoint)
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+            limited = endpoint in self.rate_limited
+            self.rate_limited.discard(endpoint)
+        try:
+            self.barrier.wait()
+            if limited:
+                return CommandResult(1, "", "HTTP 429: API rate limit exceeded")
+            if "/git/trees/" in endpoint:
+                return CommandResult(0, json.dumps(tree(comparison(changed("a.py", "blob")))), "")
+            number = int(endpoint.rsplit("...", 1)[1], 16)
+            return CommandResult(0, json.dumps(comparison(changed("a.py", f"blob{number - number % 2}"))), "")
+        finally:
+            with self.lock:
+                self.running -= 1
+
+
+# Four pairs whose files match, so each reads both comparisons and both trees.
+QUERIES = [("owner/repo", "main", sha(2 * n), sha(2 * n + 1)) for n in range(4)]
+
+
+class PrefetchTests(unittest.TestCase):
+    def test_prefetch_reads_four_at_a_time_and_detect_needs_no_further_call(self) -> None:
+        runner = ConcurrentRunner(4)
+        detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
+        detector.prefetch([*QUERIES, *QUERIES, ("owner/repo", "main", sha(9), sha(9))])
+        self.assertEqual(4, runner.peak, "four calls ran together, and never more")
+        self.assertEqual(8, sum("/compare/" in call for call in runner.calls), "each commit is compared once")
+        self.assertEqual(8, sum("/git/trees/" in call for call in runner.calls), "matching pairs read their trees")
+        read = len(runner.calls)
+        for repository, base, since, head in QUERIES:
+            self.assertEqual(UNCHANGED, detector.detect(repository, 1, base, since, head))
+        self.assertEqual(CHANGED, detector.detect("owner/repo", 1, "main", sha(0), sha(2)))
+        self.assertEqual(read, len(runner.calls), "everything detect needed was prefetched")
+
+    def test_differing_pairs_prefetch_no_tree(self) -> None:
+        runner = ConcurrentRunner(1)
+        detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
+        detector.prefetch([("owner/repo", "main", sha(2 * n), sha(2 * n + 2)) for n in range(4)])
+        self.assertEqual(5, len(runner.calls))
+        self.assertFalse(any("/git/trees/" in call for call in runner.calls))
+
+    def test_the_shared_backoff_waits_out_a_rate_limit_hit_by_concurrent_calls(self) -> None:
+        limited = {f"repos/owner/repo/compare/main...{sha(1)}", f"repos/owner/repo/git/trees/{sha(4)}?recursive=1"}
+        runner = ConcurrentRunner(1, limited)
+        waits: list[float] = []
+        detector = ChangeDetector(GitHubClient(runner, sleeper=waits.append))
+        detector.prefetch(QUERIES)
+        self.assertEqual([5.0, 5.0], waits, "each limited call waits the policy's first backoff once")
+        self.assertEqual(18, len(runner.calls), "sixteen reads and two retries")
+        self.assertEqual(
+            [UNCHANGED] * 4,
+            [detector.detect(repository, 1, base, since, head) for repository, base, since, head in QUERIES],
+        )
+
+    def test_a_run_level_failure_in_a_concurrent_call_stops_the_prefetch(self) -> None:
+        class Client(FakeClient):
+            def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
+                if endpoint.endswith(sha(3)):
+                    raise GitHubError("gave up", kind="rate_limit")
+                return super().api_json(endpoint)
+
+        client = Client({sha(n): comparison(changed("a.py", str(n))) for n in range(8)})
+        with self.assertRaises(GitHubError):
+            ChangeDetector(client).prefetch(QUERIES)
 
 
 class AncestryTests(unittest.TestCase):
