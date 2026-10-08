@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. An addition: `tracker_pipeline.py update` prints `GITHUB_CALLS <n>` after `UPDATED`. It now compares commits four at a time and reads a commit's file tree only when the two comparisons list the same files, so a pull request whose files differ is a change even where GitHub cannot list the repository's tree in full, which was unknown before.
 - Contract: none
 - User action: none.
-- Pull request: #210
+- Pull request: #215
 
 ### Review records measure the source snapshot and what each reviewer read
 
