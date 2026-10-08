@@ -30,6 +30,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_pipeline as rp
+import review_runtime
+import review_specialists
 from git_client import GitResult, subprocess_runner
 from github_client import CommandResult
 from review_archive import commit_record, pull_directory
@@ -458,6 +460,22 @@ class PrepareFixture(unittest.TestCase):
             return step(*arguments, **options)
 
         return timed
+
+    def verifications(self) -> list[tuple[str, bool]]:
+        """Each snapshot verification one prepare makes, as the normalized root and whether it re-read contents."""
+        calls: list[tuple[str, bool]] = []
+        verify = review_runtime.verify_source_snapshot
+
+        def recorded(root: Path, **arguments: Any) -> dict[str, Any]:
+            calls.append((self.normalize(root), arguments.get("contents", True)))
+            return verify(root, **arguments)
+
+        with (
+            mock.patch.object(review_runtime, "verify_source_snapshot", recorded),
+            mock.patch.object(review_specialists, "verify_source_snapshot", recorded),
+        ):
+            self.prepare()
+        return calls
 
     def refused(self, selector: str = SELECTOR, **options: Any) -> tuple[type[BaseException], str, str]:
         """The class and normalized message prepare raises, and what it printed."""
@@ -1041,6 +1059,11 @@ class InitialReviewTests(PrepareFixture):
         held = [path for path in held if path.name != "source-snapshot.json"]
         self.assertEqual((11, 1780), (len(held), sum(path.stat().st_size for path in held)))
 
+    def test_the_snapshot_is_verified_once_from_its_structure(self) -> None:
+        # Materializing it verifies it; the request and the plan take that manifest instead of walking it again.
+        self.assertEqual([("<root>/run/source", False)], self.verifications())
+        self.assertEqual(request(), self.json_file("request.json"))
+
     def test_a_run_directory_prepare_creates(self) -> None:
         result, _ = self.prepare(run_directory=None)
         [created] = [entry.name for entry in self.temporary.iterdir()]
@@ -1175,6 +1198,9 @@ class SnapshotFromGitHubTests(PrepareFixture):
             plan_prompt(GENERIC_INTRO, "generic-review", changed, [], trusted=NO_GUIDANCE, links=True, checkout=False),
             self.text_file("work/generic-review.prompt.md"),
         )
+
+    def test_a_tarball_snapshot_is_verified_once_from_its_structure(self) -> None:
+        self.assertEqual([("<root>/run/source", False)], self.verifications())
 
     def test_a_tarball_snapshot_times_the_download_apart_from_materializing_it(self) -> None:
         self.services.fetch_tarball = self.taking(4.0, self.tarball)
@@ -1830,6 +1856,13 @@ class RepositoryReviewerTests(PrepareFixture):
         )
         self.assertEqual(READS, self.github.calls)
         self.assertEqual([*LOCAL_SNAPSHOT, *SPECIALIST_GIT], self.git.calls)
+
+    def test_a_repository_reviewer_s_snapshot_is_verified_once_from_its_structure(self) -> None:
+        for manifest in ("review/specialists.json", "review/entrypoint.json"):
+            with self.subTest(manifest):
+                shutil.rmtree(self.run_dir, ignore_errors=True)
+                self.configure(self.repository(manifest))
+                self.assertEqual([("<root>/run/source", False)], self.verifications())
 
     def test_an_entrypoint_manifest(self) -> None:
         self.configure(self.repository("review/entrypoint.json"))

@@ -788,14 +788,27 @@ class RefusalTests(PlanFixture):
         )
         self.assertEqual([("snapshot", "True")], self.effects)
 
-    def test_a_tampered_snapshot_file_is_refused_unless_contents_are_not_verified(self) -> None:
+    def test_a_tampered_snapshot_file_is_refused_unless_the_caller_gives_the_manifest_it_verified(self) -> None:
+        manifest = json.loads((self.root / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
         (self.root / "source" / "README.md").write_text("Title\n\nOld\n", encoding="utf-8")
         self.assertEqual((rs.SpecialistError, "Source snapshot hash mismatch: README.md"), self.refused(None))
         self.assertFalse(self.work.exists())
         self.effects.clear()
-        result = self.build(None, verify_contents=False)
+        result = self.build(None, snapshot=manifest)
         self.assertEqual(["generic-review"], [value["id"] for value in result["roles"]])
-        self.assertEqual(("snapshot", "False"), self.effects[0])
+        self.assertNotIn(("snapshot", "True"), self.effects, "a manifest the caller verified is not verified again")
+
+    def test_a_given_manifest_of_another_head_or_repository_is_refused_before_any_work(self) -> None:
+        manifest = json.loads((self.root / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
+        for field, value, message in (
+            ("source_commit", "d" * 40, "Source snapshot commit does not match the request head"),
+            ("repository", "example/other", "Source snapshot repository does not match the request"),
+        ):
+            with self.subTest(field):
+                self.effects.clear()
+                self.assertEqual((rs.SpecialistError, message), self.refused(None, snapshot={**manifest, field: value}))
+                self.assertEqual([], self.effects)
+                self.assertFalse(self.work.exists())
 
     def test_a_work_directory_that_is_not_empty_is_refused_and_left_alone(self) -> None:
         self.work.mkdir()
