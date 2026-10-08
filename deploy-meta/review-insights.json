@@ -2,5 +2,5 @@
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["code-review-core", "skill-core"],
-    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
+    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": {"level": "partial", "needs": ["agent-delegation"], "reason": "The synthesis runs inline in the session instead of a subagent, so its whole input loads into the session's context."}}
 }
