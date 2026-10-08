@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
 
@@ -720,11 +720,14 @@ def _is_agent_instruction_path(relative: str) -> bool:
     return False
 
 
-def _is_reparse_point(path: Path) -> bool:
-    metadata = os.lstat(path)
+def _is_reparse_point(path: Path, metadata: os.stat_result | None = None) -> bool:
+    """Whether `path` is a symbolic link, a junction, or any other reparse point, judged from its own metadata, never
+    its target's: `metadata` when a directory listing already holds it, else one `lstat`."""
+    if metadata is None:
+        metadata = os.lstat(path)
     attributes = getattr(metadata, "st_file_attributes", 0)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
-    return path.is_symlink() or bool(attributes & reparse_flag)
+    return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse_flag)
 
 
 def _require_safe_snapshot_path(root: Path, target: Path) -> None:
@@ -743,20 +746,106 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
         raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
 
 
+@dataclass
+class _SnapshotTree:
+    """What one walk of a snapshot found: each regular file with its size, the entries it refused to enter or count
+    (a reparse point, a folder that resolves outside the root, anything else that is neither a folder nor a regular
+    file), and a fault for each refused entry, in the order the walk met them."""
+
+    root: Path
+    files: dict[str, int] = field(default_factory=dict)
+    reparse: set[str] = field(default_factory=set)
+    escaping: set[str] = field(default_factory=set)
+    irregular: set[str] = field(default_factory=set)
+    faults: list[str] = field(default_factory=list)
+
+    def size(self, relative: str) -> int:
+        """A listed file's size, or the reason it is not a regular file inside the root: the first folder above it, or
+        the file itself, that is a reparse point or escapes, else that it is not a regular file, else missing.
+
+        Only a listed file the walk did not count reaches the disk again: the file and each folder above it are
+        checked for a reparse point the walk could not see, such as one made after it, before it is called missing.
+        """
+        size = self.files.get(relative)
+        if size is not None:
+            return size
+        target = self.root.joinpath(*PurePosixPath(relative).parts)
+        segments = relative.split("/")
+        for depth in range(1, len(segments) + 1):
+            above = "/".join(segments[:depth])
+            if above in self.reparse:
+                raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
+            if above in self.escaping:
+                raise RuntimeContractError(f"Source snapshot path escapes its root: {target}")
+        current = target
+        while current != self.root and current.parent != current:
+            with suppress(OSError):  # a path that cannot be read is no reparse point found; it is missing below
+                if _is_reparse_point(current):
+                    raise RuntimeContractError(f"Source snapshot path contains a reparse point: {target}")
+            current = current.parent
+        if relative in self.irregular:
+            raise RuntimeContractError(f"Source snapshot contains a non-regular file: {target}")
+        raise RuntimeContractError(f"Source snapshot file is missing: {relative}")
+
+    def require_clean(self) -> None:
+        """The walk met nothing it refused."""
+        if self.faults:
+            raise RuntimeContractError(self.faults[0])
+
+
+def _walk_snapshot(root: Path) -> _SnapshotTree:
+    """Walk the snapshot once, folder by folder, classifying each entry from its directory listing.
+
+    The root is resolved once. Each folder below it is entered only once its listing entry shows no reparse point and
+    it resolves inside the root, so the cost is a listing and a resolve per folder, never a call per file or per
+    ancestor of a file. A folder that cannot be listed fails the walk.
+    """
+    tree = _SnapshotTree(root)
+    resolved_root = root.resolve(strict=True)
+    pending: list[tuple[Path, str]] = [(root, "")]
+    while pending:
+        folder, prefix = pending.pop()
+        try:
+            if prefix and not folder.resolve(strict=True).is_relative_to(resolved_root):
+                tree.escaping.add(prefix.removesuffix("/"))
+                tree.faults.append(f"Source snapshot path escapes its root: {folder}")
+                continue
+            with os.scandir(folder) as listing:
+                entries = [(entry.name, entry.is_dir(), entry.stat(follow_symlinks=False)) for entry in listing]
+        except OSError as exc:
+            raise RuntimeContractError(f"Source snapshot folder cannot be read: {folder}: {exc}") from exc
+        subfolders: list[tuple[Path, str]] = []
+        for name, is_folder, metadata in entries:
+            if not is_folder:
+                continue
+            child, relative = folder / name, prefix + name
+            if _is_reparse_point(child, metadata):
+                tree.reparse.add(relative)
+                tree.faults.append(f"Source snapshot contains a reparse-point directory: {child}")
+            else:
+                subfolders.append((child, relative + "/"))
+        for name, is_folder, metadata in entries:
+            if is_folder:
+                continue
+            child, relative = folder / name, prefix + name
+            if _is_reparse_point(child, metadata):
+                tree.reparse.add(relative)
+            elif stat.S_ISREG(metadata.st_mode):
+                tree.files[relative] = metadata.st_size
+                continue
+            else:
+                tree.irregular.add(relative)
+            tree.faults.append(f"Source snapshot contains a non-regular file: {child}")
+        pending.extend(reversed(subfolders))  # depth first, in listing order
+    return tree
+
+
 def _snapshot_files(root: Path) -> set[str]:
-    files: set[str] = set()
-    for current, directories, names in os.walk(root, followlinks=False):
-        current_path = Path(current)
-        for directory in directories:
-            child = current_path / directory
-            if _is_reparse_point(child):
-                raise RuntimeContractError(f"Source snapshot contains a reparse-point directory: {child}")
-        for name in names:
-            child = current_path / name
-            if _is_reparse_point(child) or not child.is_file():
-                raise RuntimeContractError(f"Source snapshot contains a non-regular file: {child}")
-            files.add(child.relative_to(root).as_posix())
-    return files
+    """The regular files under `root`, once no entry is a reparse point, escapes it, or is neither a folder nor a
+    regular file."""
+    tree = _walk_snapshot(root)
+    tree.require_clean()
+    return set(tree.files)
 
 
 def verify_source_snapshot(
@@ -769,19 +858,25 @@ def verify_source_snapshot(
     """Verify a snapshot against its manifest and return the manifest.
 
     The structure is always checked: the manifest, the exact file set, sizes against the limits, and that no
-    path is a reparse point or escapes the root. `contents=False` skips re-reading and re-hashing every file,
-    for a step that runs in the same process as the write with nothing untrusted in between. Under real-time
-    antivirus each file read costs milliseconds, so a full pass over a large repository takes minutes.
+    path is a reparse point or escapes the root. One walk of the snapshot supplies all of it (see
+    `_walk_snapshot`); each listed file is then looked up in what the walk found, and anything the walk refused
+    that no listed file explains fails after the manifest's own checks. `contents=False` skips re-reading and
+    re-hashing every file, for a step that runs in the same process as the write with nothing untrusted in
+    between. Under real-time antivirus each file read costs milliseconds, so a full pass over a large repository
+    takes minutes, and it walks the snapshot again after the reads to check the file set against what is there then.
     """
     if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
         raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
     metadata = _read_snapshot_metadata(root)
-    _require_snapshot_source(metadata, expected_repository, expected_commit)
+    require_snapshot_source(metadata, expected_repository, expected_commit)
     hashes, excluded = _snapshot_maps(metadata)
-    expected_files = _verify_snapshot_files(root, hashes, contents=contents)
+    tree = _walk_snapshot(root)
+    expected_files = _verify_snapshot_files(tree, hashes, contents=contents)
     for relative, reason in excluded.items():
         _validate_snapshot_exclusion(relative, reason, hashes)
-    _require_snapshot_file_set(root, expected_files)
+    if contents:  # the reads took time, so the file set is checked against a walk made after them
+        tree = _walk_snapshot(root)
+    _require_snapshot_file_set(tree, expected_files)
     return metadata
 
 
@@ -805,7 +900,7 @@ def _read_snapshot_metadata(root: Path) -> Any:
     return metadata
 
 
-def _require_snapshot_source(metadata: dict[str, Any], expected_repository: str, expected_commit: str) -> None:
+def require_snapshot_source(metadata: dict[str, Any], expected_repository: str, expected_commit: str) -> None:
     """The snapshot is of the requested repository at the requested head."""
     repository = validate_repository_identity(metadata["repository"])
     if repository != validate_repository_identity(expected_repository):
@@ -826,13 +921,13 @@ def _snapshot_maps(metadata: dict[str, Any]) -> tuple[Any, Any]:
     return hashes, excluded
 
 
-def _verify_snapshot_files(root: Path, hashes: dict[str, Any], *, contents: bool) -> set[str]:
+def _verify_snapshot_files(tree: _SnapshotTree, hashes: dict[str, Any], *, contents: bool) -> set[str]:
     """The paths the snapshot holds, its manifest included, once every listed file checks out and their total size
     is within the limit. `contents` also compares each file's hash."""
     expected_files = {SOURCE_SNAPSHOT_MANIFEST}
     total_bytes = 0
     for relative, expected_hash in hashes.items():
-        target, size = _snapshot_file(root, relative, expected_hash)
+        target, size = _snapshot_file(tree, relative, expected_hash)
         total_bytes += size
         if total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
             raise RuntimeContractError("Source snapshot exceeds the size limit")
@@ -842,7 +937,7 @@ def _verify_snapshot_files(root: Path, hashes: dict[str, Any], *, contents: bool
     return expected_files
 
 
-def _snapshot_file(root: Path, relative: str, expected_hash: Any) -> tuple[Path, int]:
+def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tuple[Path, int]:
     """A listed file's path and size, once its name, its hash's format, its place under the root, and its size check
     out."""
     normalized = _safe_relative_path(relative, "source_hashes path")
@@ -852,12 +947,8 @@ def _snapshot_file(root: Path, relative: str, expected_hash: Any) -> tuple[Path,
         raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
     if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
         raise RuntimeContractError(f"Source snapshot hash is invalid: {relative}")
-    target = root.joinpath(*PurePosixPath(relative).parts)
-    try:
-        _require_safe_snapshot_path(root, target)
-        size = target.stat().st_size
-    except FileNotFoundError as exc:
-        raise RuntimeContractError(f"Source snapshot file is missing: {relative}") from exc
+    target = tree.root.joinpath(*PurePosixPath(relative).parts)
+    size = tree.size(relative)
     if size > MAX_CHANGED_FILE_BYTES:
         raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
     return target, size
@@ -882,10 +973,11 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
 
 
-def _require_snapshot_file_set(root: Path, expected_files: set[str]) -> None:
+def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str]) -> None:
     """The snapshot holds exactly the files its manifest lists, none of them a reparse point or other non-regular
     file."""
-    actual_files = _snapshot_files(root)
+    tree.require_clean()
+    actual_files = set(tree.files)
     if actual_files != expected_files:
         missing = sorted(expected_files - actual_files)
         extra = sorted(actual_files - expected_files)
@@ -1348,25 +1440,27 @@ def build_adapter_request(
     prior_findings: list[dict[str, Any]] | None = None,
     github_comments: list[dict[str, Any]] | None = None,
     head_ref: str | None = None,
-    verify_contents: bool = True,
+    snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """`verify_contents=False` is for a caller that materialized the snapshot itself, moments earlier."""
+    """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
+    materialization verified, which is only checked to name this request's repository and head. Without it the
+    snapshot is verified here, contents included."""
     if mode not in {"initial", "re-review"}:
         raise RuntimeContractError("Review request mode is invalid")
     repository = validate_repository_identity(repository)
     if not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1:
         raise RuntimeContractError("Pull number must be positive")
-    for value, field in ((base_sha, "base_sha"), (head_sha, "head_sha")):
+    for value, name in ((base_sha, "base_sha"), (head_sha, "head_sha")):
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
-            raise RuntimeContractError(f"{field} is invalid")
+            raise RuntimeContractError(f"{name} is invalid")
     if not diff_path.is_absolute() or not diff_path.is_file():
         raise RuntimeContractError("diff_path must name an existing absolute file")
-    snapshot = verify_source_snapshot(
-        source_snapshot_root,
-        expected_repository=repository,
-        expected_commit=head_sha,
-        contents=verify_contents,
-    )
+    if snapshot is None:
+        snapshot = verify_source_snapshot(
+            source_snapshot_root, expected_repository=repository, expected_commit=head_sha, contents=True
+        )
+    else:
+        require_snapshot_source(snapshot, repository, head_sha)
     return {
         "protocol_version": ADAPTER_PROTOCOL_VERSION,
         "mode": mode,

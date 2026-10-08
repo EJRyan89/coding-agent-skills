@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -755,8 +757,8 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
         marked = {root if name == "." else root.joinpath(*name.split("/")) for name in snapshot.reparse}
         original = review_runtime._is_reparse_point
 
-        def is_reparse_point(path: Path) -> bool:
-            return path in marked or original(path)
+        def is_reparse_point(path: Path, metadata: os.stat_result | None = None) -> bool:
+            return path in marked or original(path, metadata)
 
         patches: dict[str, Any] = {"_is_reparse_point": is_reparse_point, **snapshot.limits}
         with mock.patch.multiple(review_runtime, **patches):
@@ -823,6 +825,106 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
         self.assert_refused(
             excluded(_snapshot()), RuntimeContractError, "Source snapshot exclusion is invalid: 'first.bin'"
         )
+
+
+def _junction(link: Path, target: Path) -> None:
+    """A directory junction, a reparse point any Windows user can make, where a symbolic link needs a privilege."""
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
+
+
+class SnapshotLinkTests(unittest.TestCase):
+    """Real junctions made below a snapshot's root after it was written, as anything that can write to the run could
+    make them. A junction's target holds the listed file's exact bytes, so only the walk can tell it apart."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="snapshot-links-")
+        self.addCleanup(temporary.cleanup)
+        self.temporary = Path(temporary.name).resolve()
+        self.root = self.temporary / "source"
+        self.outside = self.temporary / "outside"
+        self.outside.mkdir()
+        (self.outside / "app.py").write_bytes(APP)
+        self.write(_snapshot())
+
+    def write(self, snapshot: Snapshot) -> None:
+        for relative, content in snapshot.files.items():
+            target = self.root.joinpath(*relative.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        (self.root / "source-snapshot.json").write_text(json.dumps(snapshot.metadata), encoding="utf-8")
+
+    def verify(self, contents: bool) -> dict[str, Any]:
+        return verify_source_snapshot(
+            self.root, expected_repository="owner/repo", expected_commit=HEAD, contents=contents
+        )
+
+    def assert_refused(self, message: str, *, contents: tuple[bool, ...] = (True, False)) -> None:
+        for each in contents:
+            with self.subTest(contents=each), self.assertRaises(RuntimeContractError) as caught:
+                self.verify(each)
+            self.assertEqual(message, str(caught.exception))
+
+    def link_src_outside(self) -> None:
+        """src/ becomes a junction to a folder outside the root that holds an identical src/app.py."""
+        shutil.rmtree(self.root / "src")
+        _junction(self.root / "src", self.outside)
+        self.assertEqual(APP, (self.root / "src" / "app.py").read_bytes())
+
+    def test_the_snapshot_without_links_verifies(self) -> None:
+        for contents in (True, False):
+            self.assertEqual(_snapshot().metadata, self.verify(contents))
+
+    def test_a_junction_folder_made_below_the_root_is_refused_and_not_entered(self) -> None:
+        _junction(self.root / "linked", self.outside)
+        self.assert_refused(f"Source snapshot contains a reparse-point directory: {self.root / 'linked'}")
+
+    def test_a_listed_file_whose_folder_is_a_junction_is_refused_though_its_bytes_match(self) -> None:
+        self.link_src_outside()
+        self.assert_refused(f"Source snapshot path contains a reparse point: {self.root / 'src' / 'app.py'}")
+
+    def test_a_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
+        # The escape check stands on its own: with the reparse check blinded, resolving each folder still refuses it.
+        self.link_src_outside()
+        with mock.patch.object(review_runtime, "_is_reparse_point", lambda path, metadata=None: False):
+            self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'src' / 'app.py'}")
+
+    def test_an_unlisted_folder_that_resolves_outside_the_root_is_refused_when_no_reparse_point_is_seen(self) -> None:
+        _junction(self.root / "linked", self.outside)
+        with mock.patch.object(review_runtime, "_is_reparse_point", lambda path, metadata=None: False):
+            self.assert_refused(f"Source snapshot path escapes its root: {self.root / 'linked'}")
+
+    def test_a_listed_path_the_walk_never_visited_is_missing(self) -> None:
+        snapshot = _entry("source_hashes", "ghost/deep/file.txt", _sha(b"x"))(_snapshot())
+        self.write(snapshot)
+        self.assert_refused("Source snapshot file is missing: ghost/deep/file.txt")
+
+    def test_a_listed_file_whose_folder_became_a_junction_after_the_walk_is_refused(self) -> None:
+        # A reparse point the walk could not see, because it was made after the walk, is found before "missing".
+        walk = review_runtime._walk_snapshot
+
+        def walk_then_link(root: Path) -> Any:
+            tree = walk(root)
+            tree.files.pop("src/app.py")  # as if the walk had listed src/ an instant before it was replaced
+            self.link_src_outside()
+            return tree
+
+        with mock.patch.object(review_runtime, "_walk_snapshot", walk_then_link):
+            self.assert_refused(
+                f"Source snapshot path contains a reparse point: {self.root / 'src' / 'app.py'}", contents=(False,)
+            )
+
+    def test_a_full_verification_walks_again_after_reading_the_contents(self) -> None:
+        verify_files = review_runtime._verify_snapshot_files
+
+        def read_then_link(*arguments: Any, **options: Any) -> Any:
+            files = verify_files(*arguments, **options)
+            self.link_src_outside()
+            return files
+
+        with mock.patch.object(review_runtime, "_verify_snapshot_files", read_then_link):
+            self.assert_refused(
+                f"Source snapshot contains a reparse-point directory: {self.root / 'src'}", contents=(True,)
+            )
 
 
 # validate_adapter_manifest, pinned the same way, for an entrypoint manifest (schema 1) and a specialists manifest
