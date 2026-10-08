@@ -737,6 +737,128 @@ class SymbolicLinkPromptTests(unittest.TestCase):
         self.assertIn(json.dumps([prior], indent=2) + "\n\nOpen review comments", unflagged)
 
 
+class FindingCategoryTests(unittest.TestCase):
+    CATEGORIES: ClassVar[list[str]] = ["Correctness", "Style"]
+
+    def role(self, root: Path, identity: str, findings: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
+        result_file = root / f"{identity}.json"
+        result_file.write_text(
+            json.dumps({"model": "fixture-model", "summary": "s", "findings": findings, "prior_dispositions": []}),
+            encoding="utf-8",
+        )
+        return {
+            "id": identity,
+            "category": f"{identity} label",
+            "files": ["Sources/Q.cs"],
+            "result_file": str(result_file),
+            "prior_ids": [],
+            "dispositions_only": False,
+            **extra,
+        }
+
+    def finding(self, **fields: Any) -> dict[str, Any]:
+        base = {"path": "Sources/Q.cs", "line": 134, "severity": "SHOULD_FIX", "title": "Headline", "body": "Fix it."}
+        return {**base, **fields}
+
+    def test_the_prompt_asks_for_a_category_only_when_the_manifest_declares_them(self) -> None:
+        request = {"repository": "example/one", "mode": "initial", "source_snapshot": {"root": "C:/source"}}
+        role = {
+            "id": rs.GENERIC_SPECIALIST,
+            "instructions": "generic.md",
+            "files": ["app/service.py"],
+            "dispositions_only": False,
+            "result_file": "C:/work/result.json",
+        }
+        plain = rs.render_prompt(role, request=request, work=Path("C:/work"), trusted_root=None, prior=[])
+        categorized = rs.render_prompt(
+            {**role, "finding_categories": self.CATEGORIES},
+            request=request,
+            work=Path("C:/work"),
+            trusted_root=None,
+            prior=[],
+        )
+        with_fallback = rs.render_prompt(
+            {**role, "finding_categories": self.CATEGORIES, "fallback_finding_category": "Style"},
+            request=request,
+            work=Path("C:/work"),
+            trusted_root=None,
+            prior=[],
+        )
+        self.assertIn("never the reviewer that raised it. Use `Style` only when no other category fits.", with_fallback)
+        self.assertNotIn("only when no other category fits", categorized)
+        self.assertNotIn('"category"', plain)
+        self.assertNotIn("Give every finding a `category`", plain)
+        self.assertIn(
+            'characters>",\n      "category": "<one of the finding categories below>",\n      "body"', categorized
+        )
+        self.assertIn(
+            "Give every finding a `category`: exactly one of `Correctness`, `Style`. It names the kind of problem the "
+            "finding is, never the reviewer that raised it.",
+            categorized,
+        )
+        self.assertEqual(
+            plain,
+            categorized.replace(rs._category_contract(self.CATEGORIES)[0], "").replace(
+                rs._category_contract(self.CATEGORIES)[1], ""
+            ),
+        )
+
+    def test_a_finding_must_name_one_of_the_declared_categories(self) -> None:
+        added = {"Sources/Q.cs": {"134": "x"}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, finding in (
+                ("no category", self.finding()),
+                ("an undeclared category", self.finding(category="Security")),
+                ("a category that is not text", self.finding(category=3)),
+            ):
+                with self.subTest(name):
+                    role = self.role(root, "csharp-review", [finding], finding_categories=self.CATEGORIES)
+                    with self.assertRaisesRegex(
+                        rs.SpecialistError, "csharp-review: finding 0 category must be one of: Correctness, Style"
+                    ):
+                        rs.load_role_result(role, added)
+            accepted = self.role(
+                root, "csharp-review", [self.finding(category=" style ")], finding_categories=self.CATEGORIES
+            )
+            self.assertEqual(1, len(rs.load_role_result(accepted, added)["findings"]))
+            undeclared = self.role(root, "csharp-review", [self.finding(category="Anything")])
+            self.assertEqual(1, len(rs.load_role_result(undeclared, added)["findings"]), "without them, unchecked")
+
+    def test_findings_keep_their_own_category_through_a_merge(self) -> None:
+        request = {"repository": "example/one", "pull_number": 7, "pull_request": {"head_sha": "b" * 40}}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            roles = [
+                self.role(
+                    root,
+                    "qualifier-review",
+                    [
+                        self.finding(body=QUALIFIER_134, category="correctness"),
+                        self.finding(line=135, category="style"),
+                    ],
+                    finding_categories=self.CATEGORIES,
+                ),
+                self.role(
+                    root,
+                    "csharp-review",
+                    [self.finding(severity="MUST_FIX", body=CSHARP_134, category="Style")],
+                    finding_categories=self.CATEGORIES,
+                ),
+            ]
+            plan = {"reviewer": "fixture", "added_lines": {"Sources/Q.cs": {"134": "x", "135": "y"}}, "roles": roles}
+            result = rs.assemble(plan, request)
+            uncategorized = rs.assemble(
+                {**plan, "roles": [self.role(root, "csharp-review", [self.finding(category="Style")])]}, request
+            )
+        # The merged finding keeps the more severe wording's category, spelled as the manifest spells it.
+        self.assertEqual(
+            [("qualifier-review + csharp-review", "Style"), ("qualifier-review", "Style")],
+            [(item["source"], item["category"]) for item in result["findings"]],
+        )
+        self.assertEqual(["csharp-review label"], [item["category"] for item in uncategorized["findings"]])
+
+
 class DedupeTests(unittest.TestCase):
     def test_same_issue_rules(self) -> None:
         self.assertTrue(rs.same_issue(located(QUALIFIER_134, "qualifier-review"), located(CSHARP_134, "csharp-review")))
