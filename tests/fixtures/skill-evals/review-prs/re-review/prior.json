@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "repository": "example/inventory",
+  "pull_request": {
+    "number": 1,
+    "url": "https://github.com/example/inventory/pull/1",
+    "title": "Search and ship stock, and pad shelf labels",
+    "base_ref": "main",
+    "base_sha": "1111111111111111111111111111111111111111",
+    "head_sha": "2222222222222222222222222222222222222222",
+    "head_ref": "search-and-ship"
+  },
+  "review": {
+    "version": 1,
+    "mode": "initial",
+    "reviewed_at": "2026-10-07T12:00:00Z",
+    "summary": "Search builds its query from the prefix, Ship can lose a concurrent update, and its shortage error reports the wrong number.",
+    "verdict": "CHANGES_REQUESTED",
+    "counts": {"MUST_FIX": 1, "SHOULD_FIX": 1, "SUGGESTION": 1},
+    "adapter": {
+      "name": "generic",
+      "protocol_version": 1,
+      "scope": "generic",
+      "source_commit": null,
+      "source_hashes": {},
+      "reviewer": "generic",
+      "status": "complete",
+      "usage": null
+    }
+  },
+  "findings": [
+    {
+      "id": "F001",
+      "candidate_key": "search-injection",
+      "severity": "MUST_FIX",
+      "category": "Security",
+      "path": "store.go",
+      "line": 45,
+      "title": "Search concatenates the prefix into its SQL",
+      "body": "The prefix is pasted into the LIKE pattern, so a prefix holding a quote rewrites the query. Pass it as a parameter.",
+      "evidence": "store.go:45 builds \"... LIKE '\" + prefix + \"%' ...\" and runs it with Query.",
+      "source": "generic"
+    },
+    {
+      "id": "F002",
+      "candidate_key": "ship-message",
+      "severity": "SUGGESTION",
+      "category": "Correctness",
+      "path": "store.go",
+      "line": 71,
+      "title": "Shortage error reports the requested quantity as the stock",
+      "body": "The error says only <quantity> are in stock, but quantity is what was asked for; available is what is in stock.",
+      "evidence": "store.go:71 formats \"only %d in stock\" with quantity.",
+      "source": "generic"
+    },
+    {
+      "id": "F003",
+      "candidate_key": "ship-lost-update",
+      "severity": "SHOULD_FIX",
+      "category": "Concurrency",
+      "path": "store.go",
+      "line": 73,
+      "title": "Ship overwrites the stock with a value read earlier",
+      "body": "Ship reads the quantity, then sets it to that value minus the shipment, so a Receive or Ship between the two is lost. Decrement in the UPDATE itself, guarded by the quantity.",
+      "evidence": "store.go:66 reads available; store.go:73 sets quantity = available - quantity.",
+      "source": "generic"
+    }
+  ],
+  "prior_dispositions": [],
+  "ledger": [
+    {"version": 1, "id": "F001", "severity": "MUST_FIX", "category": "Security", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
+    {"version": 1, "id": "F002", "severity": "SUGGESTION", "category": "Correctness", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []},
+    {"version": 1, "id": "F003", "severity": "SHOULD_FIX", "category": "Concurrency", "state": "open", "judged_in": 1, "dispositions": [], "repeats": []}
+  ]
+}
