@@ -59,8 +59,8 @@ def git(directory: Path, *arguments: str, data: bytes = b"") -> bytes:
     return result.stdout
 
 
-def git_text(directory: Path, *arguments: str) -> str:
-    return git(directory, *arguments).decode("utf-8").strip()
+def git_text(directory: Path, *arguments: str, data: bytes = b"") -> str:
+    return git(directory, *arguments, data=data).decode("utf-8").strip()
 
 
 def init(directory: Path) -> None:
@@ -70,17 +70,26 @@ def init(directory: Path) -> None:
 
 
 def write_commit(repository: Path, entries: Entries, parents: Sequence[str] = ()) -> str:
-    """A commit holding exactly `entries`, written with plumbing. core.protectNTFS is off for the index only, so a
-    name Windows cannot write can still be committed, as it can from any other system."""
-    git(repository, "read-tree", "--empty")
-    records = b""
-    for path, (mode, content) in entries.items():
-        blob = git(repository, "hash-object", "-w", "--stdin", data=content).strip()
-        records += mode.encode("ascii") + b" " + blob + b"\t" + path + b"\0"
-    git(repository, "-c", "core.protectNTFS=false", "update-index", "-z", "--index-info", data=records)
-    tree = git_text(repository, "-c", "core.protectNTFS=false", "write-tree")
+    """A commit holding exactly `entries`, its trees built with `git mktree`, which takes any name, so a path Windows
+    cannot write is committed as it can be from any other system; Git for Windows refuses one into the index."""
+    tree = write_tree(repository, {tuple(path.split(b"/")): entry for path, entry in entries.items()})
     parent_arguments = [argument for parent in parents for argument in ("-p", parent)]
     return git_text(repository, *IDENTITY, "commit-tree", tree, *parent_arguments, "-m", "fixture")
+
+
+def write_tree(repository: Path, entries: dict[tuple[bytes, ...], tuple[str, bytes]]) -> str:
+    """The tree holding `entries`, each its path's segments -> (mode, content), its folders written first."""
+    records = b""
+    folders: dict[bytes, dict[tuple[bytes, ...], tuple[str, bytes]]] = {}
+    for segments, (mode, content) in entries.items():
+        if len(segments) > 1:
+            folders.setdefault(segments[0], {})[segments[1:]] = (mode, content)
+            continue
+        blob = git(repository, "hash-object", "-w", "--stdin", data=content).strip()
+        records += mode.encode("ascii") + b" blob " + blob + b"\t" + segments[0] + b"\0"
+    for name, children in folders.items():
+        records += b"040000 tree " + write_tree(repository, children).encode("ascii") + b"\t" + name + b"\0"
+    return git_text(repository, "mktree", "-z", data=records)
 
 
 def files(entries: dict[str, bytes]) -> Entries:
@@ -269,35 +278,172 @@ class DiffTextTests(AdversarialFixture):
         self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
 
 
+# One head path per rule of UNSAFE_PATH_RULES, by its index, the path-length rules in a room of 100 units for a file
+# and 88 for a folder, and names just inside the rules, which the snapshot keeps.
+UNSAFE_NAMES = {
+    "app/bad\udce2\udc82.py": 0,
+    "app/a:b.py": 1,
+    "app/what?.py": 1,
+    "app/pipe|.py": 1,
+    "app/lt<.py": 1,
+    "app/gt>.py": 1,
+    'app/quote".py': 1,
+    "app/star*.py": 1,
+    "app/bell\x07.py": 1,
+    "app\\nested.py": 2,
+    "app/trailing.": 3,
+    "app/space ": 3,
+    "folder./inner.py": 3,
+    "app/CON": 4,
+    "app/nul.txt": 4,
+    "app/Com1.tar.gz": 4,
+    "app/lpt9": 4,
+    "app/COM¹.py": 4,
+    "app/aux .txt": 4,
+    "app/conin$": 4,
+    "prn/inner.py": 4,
+    "app/" + "n" * 256: 5,
+    "app/" + "\U0001f600" * 128: 5,
+    "app/" + "p" * 97: 6,
+    "app/" + "f" * 85 + "/x.py": 7,
+}
+KEPT_NAMES = [
+    "app/console.py",
+    "app/com10.py",
+    "app/con-fig.py",
+    "app/.hidden",
+    "app/lead .py",
+    "app/" + "p" * 96,
+    "app/" + "f" * 84 + "/x.py",
+]
+
+
 class FileNameTests(AdversarialFixture):
-    def test_reserved_names_are_unsafe_path_exclusions_and_colliding_names_fail_the_snapshot(self) -> None:
-        reserved = ["app/a:b.py", "app/what?.py", "app/pipe|.py"]
-        self.pull_request({**BASE, **files({path: b"print(1)\n" for path in reserved})})
+    def test_each_rule_names_why_windows_cannot_hold_a_path_and_names_just_inside_are_kept(self) -> None:
+        room = review_runtime.PathRoom(file=100, folder=88)
+        reasons = [reason for reason, _ in review_runtime.UNSAFE_PATH_RULES]
+        for name, rule in UNSAFE_NAMES.items():
+            with self.subTest(name=name):
+                self.assertEqual(reasons[rule], review_runtime.unsafe_path_reason(name, room))
+        self.assertEqual(set(range(len(reasons))), set(UNSAFE_NAMES.values()), "every rule is exercised")
+        for name in KEPT_NAMES:
+            with self.subTest(name=name):
+                self.assertIsNone(review_runtime.unsafe_path_reason(name, room))
+        segment = reasons[5]
+        ample = review_runtime.PathRoom(file=10_000, folder=10_000)
+        for name, reason in (
+            ("n" * 255, None),
+            ("n" * 256, segment),
+            ("\U0001f600" * 127 + "n", None),  # 255 UTF-16 code units in 128 characters
+            ("\U0001f600" * 128, segment),
+        ):
+            with self.subTest(units=len(name.encode("utf-16-le")) // 2):
+                self.assertEqual(reason, review_runtime.unsafe_path_reason(f"app/{name}/x.py", ample))
+
+    def test_names_windows_cannot_hold_are_unsafe_path_exclusions_and_a_coverage_gap_only_where_changed(self) -> None:
+        unsafe = [
+            "app/a:b.py",
+            "app/what?.py",
+            "app/pipe|.py",
+            "app\\nested.py",
+            "app/trailing.",
+            "app/space ",
+            "folder./inner.py",
+            "app/CON",
+            "app/nul.txt",
+            "app/Com1.tar.gz",
+            "app/COM¹.py",
+            "prn/inner.py",
+            "app/" + "n" * 256,
+        ]
+        kept = ["app/console.py", "app/com10.py", "app/con-fig.py"]
+        tree = {**BASE, **files({path: b"print(1)\n" for path in [*unsafe, *kept]})}
+
+        # A pull request that changes none of them is reviewed in full; the snapshot still records each.
+        self.pull_request({**tree, **files({"app/service.py": b"def total(items):\n    return 0\n"})}, base=tree)
         ready = self.prepare()
         snapshot = json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
-        self.assertEqual(dict.fromkeys(reserved, "unsafe-path"), snapshot["excluded_paths"])
-        self.assertEqual(sorted(reserved), self.request(ready)["coverage"]["unavailable_sources"])
+        self.assertEqual(dict.fromkeys(unsafe, "unsafe-path"), snapshot["excluded_paths"])
+        self.assertEqual(sorted(["app/service.py", *kept]), sorted(snapshot["source_hashes"]))
+        self.assertEqual([], self.request(ready)["coverage"]["unavailable_sources"])
+        self.assertEqual("APPROVED", self.recorded_verdict(ready))
+
+        # A pull request that adds them has each as an unavailable source, so it is INCOMPLETE, never FAILED.
+        self.archive = self.root / "second archive"
+        self.configure()
+        self.pull_request(tree)
+        ready = self.prepare()
+        snapshot = json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(dict.fromkeys(unsafe, "unsafe-path"), snapshot["excluded_paths"])
+        self.assertEqual(sorted(unsafe), self.request(ready)["coverage"]["unavailable_sources"])
         self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
 
-        # Two names a case-insensitive file system would merge, so one would overwrite the other unseen, and a
-        # backslash, which Windows reads as a folder separator.
-        for name, refused, message in (
-            ("colliding", {"app/Service.py": b"one\n", "app/service.py": b"two\n"}, "collide"),
-            ("backslash", {"app\\nested.py": b"one\n"}, "POSIX relative path"),
-        ):
-            commit = write_commit(self.checkout, files(refused))
-            destination = self.root / name
-            with self.subTest(name), self.assertRaisesRegex(review_runtime.RuntimeContractError, message) as raised:
-                materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination)
-            self.assertIsInstance(raised.exception, rp.EXPECTED_ERRORS, "prepare prints it as one FAILED line")
-            self.assertFalse(destination.exists())
+        # validate-reviewer measures with the same rules, so it counts them rather than failing.
+        measured = review_runtime.measure_source_snapshot(
+            self.checkout, self.github.head, destination=self.root / "measured"
+        )
+        self.assertEqual({"unsafe-path": len(unsafe)}, measured.excluded)
+        self.assertEqual(len(snapshot["source_hashes"]), measured.files)
+
+    def test_names_a_case_insensitive_file_system_would_merge_fail_the_snapshot(self) -> None:
+        # One would overwrite the other unseen.
+        commit = write_commit(self.checkout, files({"app/Service.py": b"one\n", "app/service.py": b"two\n"}))
+        destination = self.root / "colliding"
+        with self.assertRaisesRegex(review_runtime.RuntimeContractError, "collide") as raised:
+            materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination)
+        self.assertIsInstance(raised.exception, rp.EXPECTED_ERRORS, "prepare prints it as one FAILED line")
+        self.assertFalse(destination.exists())
+
+
+def path_of(units: int, *, folder: int = 0) -> str:
+    """A relative path of exactly `units` ASCII characters, its last segments 200 long and its first what is left, so
+    its folder fits wherever the path does; with `folder`, the path of a file named `x.py` in a folder whose path is
+    exactly that long."""
+    if folder:
+        return f"{path_of(folder)}/x.py"
+    count = (units - 1) // 201  # each segment after the first takes a separator and 200 characters
+    return "/".join(["f" * (units - 201 * count), *["d" * 200] * count])
 
 
 class PathLengthTests(AdversarialFixture):
-    def test_a_name_segment_no_file_system_can_hold_fails_prepare_without_a_traceback(self) -> None:
-        # Git stores any length; NTFS, ext4, and APFS all stop a segment at 255.
-        self.pull_request({**BASE, b"app/" + b"n" * 256 + b".py": ("100644", b"print(1)\n")})
-        self.assert_prepare_fails(r"\[Errno \d+\] [^\n]+")  # the operating system's own refusal, as one line
+    def test_the_limits_are_windows_path_limits_with_and_without_long_paths(self) -> None:
+        for enabled, limits in ((False, (259, 247)), (True, (32_507, 32_507))):
+            with self.subTest(long_paths=enabled), mock.patch.object(review_runtime, "_long_paths_enabled") as query:
+                query.return_value = enabled
+                self.assertEqual(limits, review_runtime._path_limits())
+                destination = self.root / "snapshot"
+                used = len(str(destination)) + 1
+                expected = review_runtime.PathRoom(limits[0] - used, limits[1] - used)
+                self.assertEqual(expected, review_runtime.path_room(destination))
+
+    def test_paths_at_the_room_the_root_leaves_are_kept_and_one_unit_longer_are_unsafe_path_exclusions(self) -> None:
+        # Without long paths: 259 units for a file's whole path and 247 for a folder's, the root's included.
+        destination = self.root / "legacy"
+        used = len(str(destination)) + 1
+        kept = [path_of(259 - used), path_of(0, folder=247 - used)]
+        excluded = [path_of(260 - used), path_of(0, folder=248 - used)]
+        commit = write_commit(self.checkout, files({path: b"print(1)\n" for path in [*kept, *excluded]}))
+        with mock.patch.object(review_runtime, "_long_paths_enabled", return_value=False):
+            metadata = materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination)
+            measured = review_runtime.measure_source_snapshot(self.checkout, commit, destination=destination)
+        self.assertEqual(sorted(kept), sorted(metadata["source_hashes"]))
+        self.assertEqual(dict.fromkeys(excluded, "unsafe-path"), metadata["excluded_paths"])
+        self.assertEqual([259, 252], [len(str(destination.joinpath(*path.split("/")))) for path in kept])
+        self.assertEqual((2, {"unsafe-path": 2}), (measured.files, measured.excluded))
+
+    def test_a_path_at_this_machines_limit_is_written_and_one_unit_longer_is_an_unsafe_path_exclusion(self) -> None:
+        # Whichever limit this process has, long paths or not, a path exactly at it is written and read back.
+        destination = self.root / "machine"
+        room = review_runtime.path_room(destination)
+        at_limit, over = path_of(room.file), path_of(room.file + 1)
+        self.pull_request({**BASE, **files({at_limit: b"print(1)\n", over: b"print(2)\n"})})
+        commit = self.github.head
+        metadata = materialize_source_snapshot(self.checkout, REPOSITORY, commit, destination, changed_paths=[over])
+        self.assertEqual({over: "unsafe-path"}, metadata["excluded_paths"])
+        self.assertEqual(b"print(1)\n", destination.joinpath(*at_limit.split("/")).read_bytes())
+        diff = self.root / "diff.patch"
+        diff.write_text(self.github.get_pull_diff(REPOSITORY, NUMBER)[0], encoding="utf-8")
+        self.assertEqual([over], review_runtime.unavailable_sources(diff, metadata))
 
 
 class BlobContentTests(AdversarialFixture):
