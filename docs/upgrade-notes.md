@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. An addition: the optional top-level `finding_categories` in a specialists manifest, and `fallback_finding_category`, the one of them reviewers use when no other fits. With it, every reviewer gives each finding a `category` from the list, `check` refuses a finding without one, and records keep it; without it, nothing changes. An earlier release refuses a manifest that sets it.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: none. To group findings by kind in records and in `review-insights`, add `finding_categories` to the manifest; reviews before then keep their reviewer-named categories.
-- Pull request: #188
+- Pull request: #189
 
 ### Each skill declares which runtimes run it, and the runtime canary checks the declaration
 
