@@ -19,7 +19,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 
 ## Supported platforms and runtimes
 
-Version 0.2.0 supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, the deployer stops before changing anything.
+Version 0.3.0 supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, the deployer stops before changing anything.
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 
@@ -27,9 +27,9 @@ Install the runtimes you use. None of them is needed to deploy, so you can use t
 |---|---|---|---|
 | Claude Code | 2.1.291 | 2.1.289 | `/<skill>` |
 | Codex CLI | 0.160.0 | 0.160.0 | `$<skill>` |
-| GitHub Copilot CLI | 1.0.92 | 1.0.91 | `/<skill>` |
+| GitHub Copilot CLI | 1.0.93 | 1.0.91 | `/<skill>` |
 
-The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs. The fresh runner is the manual [`deployable` workflow](.github/workflows/deployable.yml), last passed on 2026-10-07: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. See [Releasing](docs/releasing.md#before-tagging).
+The maintainer's machines ran the [runtime canary](tools/runtime_canary.py) and real skill and review runs. The fresh runner is the manual [`deployable` workflow](.github/workflows/deployable.yml), last passed on 2026-10-08: on a clean GitHub-hosted Windows runner it installs the prerequisites and each CLI, deploys, checks that Codex and Copilot find every skill, uninstalls, and deploys again. Claude Code reads the deployed files directly and cannot list its skills without a session, so for it the runner checks the installed version and that every deployed skill and agent is in place. It starts no model, so it does not show a skill running; that stays a manual check through the canary. See [Releasing](docs/releasing.md#before-tagging).
 
 ## Quick start
 
