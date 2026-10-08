@@ -143,6 +143,14 @@ Metadata may also declare same-source skill dependencies and selection visibilit
 
 `selectable` defaults to `true`. Set it to `false` only for an internal support skill that is reachable from a selectable skill. Dependencies must exist in this source and form an acyclic graph. The deployer expands the complete transitive dependency closure before rendering or mutation.
 
+Every skill declares `runtime_support`, which runtimes run it, one value per runtime (`claude-code`, `codex`, and `copilot-cli`): `"full"`, or an object whose `level` is `partial` or `none`, whose `needs` names the capabilities the runtime lacks for it, and whose `reason` says in one line what the user loses:
+
+```json
+"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
+```
+
+The capabilities, and which runtimes offer them, are catalogued in `deployer/runtime_support.py`: `agent-delegation` (starting a subagent; Claude Code and Codex), `workflow` (Claude Code's Workflow tool), and `user-only-start` (starting a user-only skill from a headless session as well as an interactive one; Claude Code and Codex). The value follows from what the skill needs, and validation derives that from its frontmatter: an `Agent` grant in `allowed-tools` needs `agent-delegation`, a `Workflow` grant needs `workflow`, `disable-model-invocation: true` needs `user-only-start`, and a skill another skill's `SKILL.md` says to invoke passes on what it does, though not how it starts. A runtime that offers every need is `full`; one that lacks any is `partial` or `none` and names exactly what it lacks. A hidden skill is `none` on every runtime, with the reason that no runtime starts it. The deployer refuses a malformed declaration, an unknown runtime or capability, and a `partial` or `none` without a reason. `tools/new_skill.py` writes the value that follows from the options it is given, with a default reason for each partial to sharpen. `tools/skill_reference.py` prints the declarations as "Runtime support" in `docs/skills.md`, and the runtime canary compares each run with them.
+
 Every metadata file has one layout, the one `tools/new_skill.py` writes: one key per line, indented four spaces, with each value on its key's line. Repository validation fails on any other layout.
 
 ### Commands skills may run

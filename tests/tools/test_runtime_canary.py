@@ -21,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import discovery, platform_support
+from deployer import discovery, platform_support, runtime_support
 from tools import runtime_canary
 from tools.runtime_canary import Completed
 
@@ -126,7 +126,9 @@ class RuntimeCanaryTestCase(unittest.TestCase):
 
     def make_source(self, user_only: bool = False) -> Path:
         """A source whose alpha runs its own scripts/tool.py, whose beta runs alpha's, declared in skill_deps, and
-        whose gamma runs its own scripts/tool.sh with Bash."""
+        whose gamma runs its own scripts/tool.sh with Bash. Each declares the runtime support its frontmatter implies.
+        """
+        support = runtime_support.declaration({"user-only-start"} if user_only else set())
         source = self.root / "source"
         (source / "deploy-meta").mkdir(parents=True)
         (source / "source.json").write_text(json.dumps({"id": "test/shipped"}), encoding="utf-8")
@@ -143,7 +145,9 @@ class RuntimeCanaryTestCase(unittest.TestCase):
                 f'---\nname: {name}\ndescription: "Skill {name}"\nallowed-tools: {allowed}\n{flags}---\n\n'
                 f'Run `{command} "{script}"`.\n'.encode()
             )
-            (source / "deploy-meta" / f"{name}.json").write_text(json.dumps(metadata), encoding="utf-8")
+            (source / "deploy-meta" / f"{name}.json").write_text(
+                json.dumps({**metadata, "runtime_support": support}), encoding="utf-8"
+            )
             if command == "bash":
                 (source / "skills" / name / "scripts" / "tool.sh").write_bytes(
                     b"#!/usr/bin/env bash\nprintf 'tool %s\\n' \"$*\"\nexit 3\n"
@@ -178,8 +182,11 @@ class RuntimeCanaryTestCase(unittest.TestCase):
                 timeout=60,
                 **options,
             )
-        self.assertEqual(0, code, output.getvalue())
-        return output.getvalue().splitlines()
+        lines = output.getvalue().splitlines()
+        # A deployment that stops exits 1 too, but it prints no MATRIX line, so it fails here.
+        disagrees = any(line.startswith("MATRIX ") and " DISAGREES " in line for line in lines)
+        self.assertEqual(1 if disagrees else 0, code, output.getvalue())
+        return lines
 
     def skill_dir(self, name: str = FIXTURE) -> str:
         return forward(self.home / ".claude" / "skills" / name)
@@ -691,6 +698,12 @@ class CopilotUserOnlyTests(RuntimeCanaryTestCase):
         self.assertEqual([f"/{FIXTURE} {runtime_canary.INSTRUCTION}"], prompts)
         # Codex can start a user-only skill by name, so it still runs it.
         self.assertTrue([line for line in lines if line.startswith("RUNTIME codex alpha FAILED ")])
+        # The declared partial reached its limit on Copilot; on Codex, where it is full, the failed run disagrees.
+        self.assertIn("MATRIX copilot alpha AGREES partial", lines)
+        self.assertIn(
+            'MATRIX codex alpha DISAGREES full "full expects RAN, but the run was FAILED"',
+            lines,
+        )
         # The section the line points at exists.
         self.assertIn(
             "\n## Headless sessions\n", (REPOSITORY_ROOT / "docs" / "copilot-support.md").read_text(encoding="utf-8")
@@ -703,6 +716,119 @@ class CopilotUserOnlyTests(RuntimeCanaryTestCase):
         adapter.write_text("no frontmatter\n", encoding="utf-8")
         self.assertFalse(runtime_canary.user_only(self.home, "broken"))
         self.assertEqual("", runtime_canary.unsupported("copilot", "broken", self.home))
+
+
+class MatrixTests(RuntimeCanaryTestCase):
+    def test_each_outcome_is_compared_with_what_full_partial_and_none_expect(self) -> None:
+        full = runtime_support.Support("full")
+        headless = runtime_support.Support("partial", ("user-only-start",), "Start it interactively.")
+        inline = runtime_support.Support("partial", ("agent-delegation", "workflow"), "Reviews run inline.")
+        none = runtime_support.Support("none", (), "Not on Codex.")
+        declared = {
+            "plain": {"claude-code": full, "codex": full, "copilot-cli": full},
+            "user-only": {"claude-code": full, "codex": full, "copilot-cli": headless},
+            "reviews": {"claude-code": full, "codex": none, "copilot-cli": inline},
+            "undeclared": None,
+        }
+        lines = [
+            'RUNTIME claude plain RAN "s" "c" KEPT "k"',
+            'TRANSCRIPT claude plain "t"',
+            'RUNTIME codex plain FAILED "never ran a script from the skill" KEPT "k"',
+            'RUNTIME copilot plain BLOCKED "policy" KEPT "k"',
+            'RUNTIME copilot user-only UNSUPPORTED "copilot -p cannot start a user-only skill"',
+            'RUNTIME codex user-only RAN "s" "c" KEPT "k"',
+            'RUNTIME copilot reviews RAN "s" "c" KEPT "k"',
+            'RUNTIME codex reviews NOT_ATTEMPTED "Not on Codex."',
+            "DISCOVERED copilot reviews",
+            'RUNTIME claude undeclared RAN "s" "c" KEPT "k"',
+        ]
+        self.assertEqual(
+            [
+                "MATRIX claude plain AGREES full",
+                'MATRIX codex plain DISAGREES full "full expects RAN, but the run was FAILED"',
+                'MATRIX copilot plain DISAGREES full "full expects RAN, but the run was BLOCKED"',
+                "MATRIX copilot user-only AGREES partial",
+                "MATRIX codex user-only AGREES full",
+                "MATRIX copilot reviews AGREES partial",
+                "MATRIX codex reviews AGREES none",
+                'MATRIX claude undeclared DISAGREES undeclared "it declares no runtime_support"',
+            ],
+            runtime_canary.compare(lines, declared),
+        )
+        # A partial that ran past a limit the canary can see, or stopped short of one it cannot, says more or less
+        # than the run showed.
+        self.assertEqual(
+            [
+                'MATRIX copilot user-only DISAGREES partial "partial expects UNSUPPORTED, but the run was RAN"',
+                'MATRIX copilot reviews DISAGREES partial "partial expects RAN, but the run was FAILED"',
+            ],
+            runtime_canary.compare(
+                [
+                    'RUNTIME copilot user-only RAN "s" "c" KEPT "k"',
+                    'RUNTIME copilot reviews FAILED "never ran a script from the skill" KEPT "k"',
+                ],
+                declared,
+            ),
+        )
+
+    def test_a_runtime_a_skill_declares_none_for_is_never_started_for_it(self) -> None:
+        source = self.make_source()
+        metadata = source / "deploy-meta" / "gamma.json"
+        document = json.loads(metadata.read_text(encoding="utf-8"))
+        document["runtime_support"]["codex"] = {"level": "none", "reason": "No Bash on this runtime."}
+        metadata.write_text(json.dumps(document), encoding="utf-8")
+        runner = FakeRuntimes()
+        runner.actions["codex"] = run_python(f"{self.skill_dir()}/scripts/canary_probe.py", "--help")
+
+        lines = self.canary(runner, ["gamma"], sources=[runtime_canary.FIXTURE_SOURCE, source])
+
+        self.assertIn('RUNTIME codex gamma NOT_ATTEMPTED "No Bash on this runtime."', lines)
+        self.assertEqual(
+            [f"MATRIX codex {FIXTURE} AGREES full", "MATRIX codex gamma AGREES none"],
+            [line for line in lines if line.startswith("MATRIX ")],
+        )
+        prompts = [arguments[-1] for kind, arguments, _, _ in runner.calls if kind == "run"]
+        self.assertEqual([f"${FIXTURE} {runtime_canary.INSTRUCTION}"], prompts)
+
+    def test_a_full_skill_that_does_not_run_fails_the_canary(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = runtime_canary.canary(
+                [],
+                ["codex"],
+                self.home,
+                sources=[runtime_canary.FIXTURE_SOURCE],
+                runner=FakeRuntimes(),
+                talk=FakeRuntimes().talk,
+                which=lambda name: forward(self.root / "bin" / name),
+                base_environment=dict(os.environ),
+                timeout=60,
+            )
+        self.assertEqual(1, code)
+        self.assertIn(
+            f'MATRIX codex {FIXTURE} DISAGREES full "full expects RAN, but the run was FAILED"',
+            output.getvalue().splitlines(),
+        )
+
+    def test_every_shipped_skill_and_the_fixture_declare_what_the_canary_compares(self) -> None:
+        declared = runtime_canary.declarations([REPOSITORY_ROOT, runtime_canary.FIXTURE_SOURCE])
+        self.assertEqual([], sorted(name for name, support in declared.items() if support is None))
+        self.assertEqual(set(runtime_canary.DECLARED_RUNTIME.values()), set(runtime_support.RUNTIMES))
+        # Pinned against literal outcomes, not read back from the declarations.
+        self.assertEqual(
+            {"claude": "RAN", "codex": "RAN", "copilot": "UNSUPPORTED"},
+            {
+                runtime: runtime_canary.expected((declared["repo-cleanup"] or {})[name])
+                for runtime, name in runtime_canary.DECLARED_RUNTIME.items()
+            },
+        )
+        self.assertEqual(
+            {"claude": "RAN", "codex": "RAN", "copilot": "RAN"},
+            {
+                runtime: runtime_canary.expected((declared["review-prs"] or {})[name])
+                for runtime, name in runtime_canary.DECLARED_RUNTIME.items()
+            },
+        )
 
 
 class DiscoveryAndSkipTests(RuntimeCanaryTestCase):

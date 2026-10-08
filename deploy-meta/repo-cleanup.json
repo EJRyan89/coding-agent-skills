@@ -2,5 +2,6 @@
     "required_vars": ["REPOS_ROOT"],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["skill-core"],
-    "tools": ["gh"]
+    "tools": ["gh"],
+    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": {"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start it; start it from an interactive session."}}
 }

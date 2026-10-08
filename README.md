@@ -15,13 +15,13 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
 | [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-tracker`](docs/skills.md#update-pr-tracker), [`review-insights`](docs/skills.md#review-insights), and [`flag-review-finding`](docs/skills.md#flag-review-finding). |
 
-[Skills](docs/skills.md) explains how to start each skill, its arguments with examples, and what it needs installed.
+[Skills](docs/skills.md) explains how to start each skill, its arguments with examples, and what it needs installed. Most skills run fully on Claude Code, Codex CLI, and GitHub Copilot CLI; [Runtime support](docs/skills.md#runtime-support) lists the exceptions and what each one loses: the code reviews on Codex and Copilot, and user-only skills in a headless Copilot session.
 
 ## Supported platforms and runtimes
 
 Version 0.2.0 supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, the deployer stops before changing anything.
 
-Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code.
+Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 
 | Runtime | Maintainer's machines | Fresh Windows runner | Start a skill with |
 |---|---|---|---|

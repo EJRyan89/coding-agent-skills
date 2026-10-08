@@ -4,7 +4,8 @@ Usage:
   python tools/skill_reference.py           report every stale or missing part; exit 1 if there is one
   python tools/skill_reference.py --write   regenerate the generated blocks and add a section for each new skill
 
-docs/skills.md holds a generated summary table and one section per selectable skill, headed `` ## `<name>` ``.
+docs/skills.md holds a generated summary table, a generated runtime support table, and one section per selectable
+skill, headed `` ## `<name>` ``.
 Each section starts with a generated block, built from the skill's SKILL.md frontmatter and deploy-meta, and
 continues with hand-written prose that explains its arguments. --write rewrites only the generated blocks and
 adds missing sections; it never changes the prose or removes a section. Skill sections end the file.
@@ -23,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 import frontmatter
 
+from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.config import CONFIGURED_VARIABLES
 from deployer.errors import DeployError
@@ -34,6 +36,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 REFERENCE = Path("docs") / "skills.md"
 README = Path("README.md")
 SUMMARY = "summary"
+RUNTIME_SUPPORT = "runtime-support"
 SECTION_HEADING = re.compile(r"^## `([^`]+)`$")
 TOKEN = re.compile(r"\{\{([A-Z_]+)\}\}")
 # Frontmatter keys this tool reads; the shared reader never parses the others.
@@ -60,6 +63,7 @@ class Entry:
     bundle: str | None
     opt_in: bool
     needs: list[str]
+    support: dict[str, runtime_support.Support] | None = None
 
 
 def begin_marker(block: str) -> str:
@@ -124,6 +128,7 @@ def entries(source: deploy_source.Source) -> list[Entry]:
                 bundle=bundle,
                 opt_in=deploy_source.is_opt_in(source, bundle or name),
                 needs=_needs(source, name),
+                support=skill.runtime_support,
             )
         )
     return result
@@ -166,6 +171,29 @@ def summary_block(skills: list[Entry]) -> str:
         ),
     ]
     return "\n".join(rows)
+
+
+def runtime_support_block(skills: list[Entry]) -> str:
+    """One row per skill and one column per runtime, then each partial or none with what it lacks and why."""
+    runtimes = runtime_support.RUNTIMES
+    titles = " | ".join(runtime_support.RUNTIME_TITLES[runtime] for runtime in runtimes)
+    rows = [f"| Skill | {titles} |", "|---" * (len(runtimes) + 1) + "|"]
+    notes = []
+    for entry in skills:
+        link = f"[`{entry.name}`](#{entry.name})"
+        if entry.support is None:
+            rows.append(f"| {link} |" + " Not declared |" * len(runtimes))
+            continue
+        rows.append(
+            f"| {link} | " + " | ".join(entry.support[runtime].level.capitalize() for runtime in runtimes) + " |"
+        )
+        for runtime in runtimes:
+            support = entry.support[runtime]
+            if support.level != runtime_support.FULL:
+                lacks = f", lacking {_join([f'`{need}`' for need in support.needs])}" if support.needs else ""
+                title = runtime_support.RUNTIME_TITLES[runtime]
+                notes.append(f"- `{entry.name}` on {title}: {support.level}{lacks}. {support.reason}")
+    return "\n".join([*rows, *(["", *notes] if notes else [])])
 
 
 def section_block(entry: Entry) -> str:
@@ -218,11 +246,13 @@ def _prose(section: Section) -> str:
 def regenerate(document: str, skills: list[Entry]) -> str:
     """The document with every generated block current and a section for every skill."""
     preamble, sections = _split(document)
-    summary = _replace_block(preamble, SUMMARY, summary_block(skills))
-    if summary is None:
-        raise ReferenceError(
-            f"{REFERENCE.as_posix()}: no summary block; add {begin_marker(SUMMARY)} and {end_marker(SUMMARY)}"
-        )
+    for block, content in ((SUMMARY, summary_block(skills)), (RUNTIME_SUPPORT, runtime_support_block(skills))):
+        replaced = _replace_block(preamble, block, content)
+        if replaced is None:
+            raise ReferenceError(
+                f"{REFERENCE.as_posix()}: no {block} block; add {begin_marker(block)} and {end_marker(block)}"
+            )
+        preamble = replaced
     known = {section.name for section in sections}
     for entry in skills:
         if entry.name not in known:
@@ -230,7 +260,7 @@ def regenerate(document: str, skills: list[Entry]) -> str:
     by_name = {entry.name: entry for entry in skills}
     # Sections for unknown skills keep their text and sort last, where problems() reports them.
     ordered = sorted(sections, key=lambda section: (section.name not in by_name, section.name))
-    parts = [summary.rstrip("\n")]
+    parts = [preamble.rstrip("\n")]
     for section in ordered:
         known_entry = by_name.get(section.name)
         body = section.body
@@ -264,13 +294,19 @@ def readme_problems(readme: str, roots: list[str], skills: list[str]) -> list[st
         for row in rows
         if row not in roots
     ]
-    for anchor in re.findall(rf"\({re.escape(REFERENCE.as_posix())}#([^)]+)\)", section):
-        if anchor not in skills:
+    anchors = re.findall(rf"\({re.escape(REFERENCE.as_posix())}#([^)]+)\)", section)
+    for anchor in anchors:
+        if anchor not in skills and anchor != RUNTIME_SUPPORT:
             problems.append(
                 f"{README.as_posix()}: 'Included skills' links {REFERENCE.as_posix()}#{anchor}, which has no section"
             )
     if f"({REFERENCE.as_posix()})" not in section:
         problems.append(f"{README.as_posix()}: 'Included skills' does not link {REFERENCE.as_posix()}")
+    if RUNTIME_SUPPORT not in anchors:
+        problems.append(
+            f"{README.as_posix()}: 'Included skills' does not link {REFERENCE.as_posix()}#{RUNTIME_SUPPORT}, "
+            "which says which runtimes run each skill"
+        )
     return problems
 
 

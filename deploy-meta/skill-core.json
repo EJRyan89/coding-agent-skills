@@ -2,5 +2,6 @@
     "required_vars": [],
     "shared_deps": [],
     "selectable": false,
-    "optional_tools": ["gh"]
+    "optional_tools": ["gh"],
+    "runtime_support": {"claude-code": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}, "codex": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}, "copilot-cli": {"level": "none", "needs": [], "reason": "A hidden dependency no runtime starts; the skills that declare it state their own support."}}
 }

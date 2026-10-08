@@ -11,7 +11,7 @@ from typing import Any
 
 import frontmatter
 
-from . import platform_support
+from . import platform_support, runtime_support
 from .config import CONFIGURED_VARIABLES, DERIVED_VARIABLES
 from .errors import DeployError, os_error
 from .paths import Paths
@@ -40,6 +40,8 @@ class Skill:
     opt_in: bool = False
     agent_deps: list[str] = field(default_factory=list)
     optional_tools: list[str] = field(default_factory=list)
+    # Each runtime's support, when the metadata declares runtime_support; repository validation requires it.
+    runtime_support: dict[str, runtime_support.Support] | None = None
 
 
 @dataclass
@@ -125,8 +127,8 @@ NAME_RULES = (
 XML_TAG_REMEDY = 'Remove the tag, or write it without angle brackets; see "Files" in docs/adding-a-skill.md.'
 METADATA_SHAPE = (
     "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, optional_tools, and agent_deps, "
-    "where present, are lists of strings, and whose selectable and opt_in, where present, are true or false. "
-    "docs/adding-a-skill.md describes each key."
+    "where present, are lists of strings, whose selectable and opt_in, where present, are true or false, and "
+    "whose runtime_support, where present, declares each runtime. docs/adding-a-skill.md describes each key."
 )
 
 
@@ -281,7 +283,17 @@ def _load_skill(paths: Paths, name: str, directories: dict[str, Path]) -> Skill:
         opt_in,
         agents,
         sorted(set(optional_tools)),
+        _runtime_support(name, metadata),
     )
+
+
+def _runtime_support(name: str, metadata: dict[str, Any]) -> dict[str, runtime_support.Support] | None:
+    if "runtime_support" not in metadata:
+        return None
+    try:
+        return runtime_support.parse(metadata["runtime_support"])
+    except runtime_support.RuntimeSupportError as exc:
+        raise DeployError(f"ERROR: deploy-meta/{name}.json: {exc}", runtime_support.SHAPE) from exc
 
 
 def _load_bundles(document: dict[str, Any], source: Source) -> None:

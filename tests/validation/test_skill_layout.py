@@ -23,6 +23,7 @@ from skill_layout import (
     fixture_source_problems,
     metadata_format_problems,
     output_placeholder_problems,
+    runtime_support_problems,
     script_dependency_problems,
     script_language_problems,
     script_layout_problems,
@@ -414,6 +415,74 @@ class SkillLayoutFixtures(unittest.TestCase):
                     f"deploy-meta/two-space.json is not in the canonical metadata format; see {doc}",
                 ],
                 metadata_format_problems(root),
+            )
+
+    def test_runtime_support_policy_holds_each_declaration_to_what_the_skill_needs(self) -> None:
+        full = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
+        user_only = {"level": "partial", "needs": ["user-only-start"], "reason": "Start it interactively."}
+        hidden = {"level": "none", "reason": "Nothing starts it."}
+        delegating = '---\nname: {0}\ndescription: d\nallowed-tools: ["Agent", "Workflow"]\n---\n'
+        metadata = {
+            "plain": {"runtime_support": full},
+            "undeclared": {},
+            "malformed": {"runtime_support": {**full, "codex": {"level": "partial", "needs": ["telepathy"]}}},
+            "user-only": {"runtime_support": {**full, "copilot-cli": user_only}},
+            "user-only-claimed-full": {"runtime_support": full},
+            "delegates": {
+                "runtime_support": {
+                    "claude-code": "full",
+                    "codex": {"level": "partial", "needs": ["workflow"], "reason": "No effort."},
+                    "copilot-cli": {"level": "partial", "needs": ["agent-delegation"], "reason": "Inline."},
+                }
+            },
+            "over-claims": {"runtime_support": {**full, "codex": hidden}},
+            "hidden": {
+                "selectable": False,
+                "runtime_support": {"claude-code": hidden, "codex": hidden, "copilot-cli": hidden},
+            },
+            "hidden-full": {"selectable": False, "runtime_support": full},
+            # It invokes delegates, so the step that does inherits what delegates needs, though not its start.
+            "invoker": {"runtime_support": full},
+        }
+        user_only_md = "---\nname: {0}\ndescription: d\ndisable-model-invocation: true\n---\n"
+        plain_md = "---\nname: {0}\ndescription: d\n---\n"
+        invoker_md = plain_md + "Then invoke `delegates` once.\n"
+        bodies = {
+            "user-only": user_only_md,
+            "user-only-claimed-full": user_only_md,
+            "delegates": delegating,
+            "invoker": invoker_md,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    **{f"deploy-meta/{name}.json": json.dumps(value) for name, value in metadata.items()},
+                    **{f"skills/{name}/SKILL.md": bodies.get(name, plain_md).format(name) for name in metadata},
+                },
+            )
+            doc = '"Metadata" in docs/adding-a-skill.md'
+            hidden_rule = "but a hidden skill is none on every runtime"
+            self.assertEqual(
+                [
+                    "deploy-meta/delegates.json declares copilot-cli needs agent-delegation, "
+                    f"but copilot-cli lacks agent-delegation, workflow; see {doc}",
+                    f"deploy-meta/hidden-full.json declares claude-code full, {hidden_rule}",
+                    f"deploy-meta/hidden-full.json declares codex full, {hidden_rule}",
+                    f"deploy-meta/hidden-full.json declares copilot-cli full, {hidden_rule}",
+                    "deploy-meta/invoker.json declares codex full, but codex lacks workflow, so it is partial or none; "
+                    f"see {doc}",
+                    "deploy-meta/invoker.json declares copilot-cli full, but copilot-cli lacks agent-delegation, "
+                    f"workflow, so it is partial or none; see {doc}",
+                    f"deploy-meta/malformed.json: codex needs unknown capability 'telepathy'; see {doc}",
+                    "deploy-meta/over-claims.json declares codex none, but codex offers everything the skill needs, "
+                    f"so it is full; see {doc}",
+                    f"deploy-meta/undeclared.json declares no runtime_support; see {doc}",
+                    "deploy-meta/user-only-claimed-full.json declares copilot-cli full, but copilot-cli lacks "
+                    f"user-only-start, so it is partial or none; see {doc}",
+                ],
+                runtime_support_problems(root),
             )
 
     def test_deploy_variable_policy_detects_unused_and_undeclared_variables(self) -> None:

@@ -42,6 +42,33 @@ When a required argument is missing, a skill asks for it rather than guessing.
 
 The summary and the first block of each section below are generated from each skill's `SKILL.md` frontmatter and `deploy-meta/<name>.json`. Change those, then run `python tools/skill_reference.py --write`; validation fails while this file is stale. The explanation after each generated block is written by hand.
 
+## Runtime support
+
+Which runtimes run each skill. **Full** means every step runs there as it does in Claude Code. **Partial** means the skill runs but loses what the note under the table names, because the runtime lacks a capability the skill uses: `agent-delegation` (starting a subagent), `workflow` (Claude Code's Workflow tool), or `user-only-start` (starting a user-only skill from a headless `copilot -p` session as well as an interactive one). **None** means the runtime does not run it. Each skill declares its support in `deploy-meta/<name>.json`; validation holds the declaration to the capabilities its frontmatter shows it uses, and the [runtime canary](../tools/runtime_canary.py) fails when a runtime ran a skill otherwise than the table says.
+
+<!-- generated:runtime-support -->
+| Skill | Claude Code | Codex CLI | Copilot CLI |
+|---|---|---|---|
+| [`analyze-skill-cost`](#analyze-skill-cost) | Full | Full | Full |
+| [`audit-ai-config`](#audit-ai-config) | Full | Full | Full |
+| [`curate-agent-memory`](#curate-agent-memory) | Full | Full | Full |
+| [`dotnet-format`](#dotnet-format) | Full | Full | Full |
+| [`flag-review-finding`](#flag-review-finding) | Full | Full | Full |
+| [`github-activity-report`](#github-activity-report) | Full | Full | Full |
+| [`repo-cleanup`](#repo-cleanup) | Full | Full | Partial |
+| [`review-insights`](#review-insights) | Full | Full | Full |
+| [`review-prs`](#review-prs) | Full | Partial | Partial |
+| [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
+| [`update-pr-tracker`](#update-pr-tracker) | Full | Partial | Partial |
+
+- `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
+- `review-prs` on Codex CLI: partial, lacking `workflow`. Reviewers start as native subagents, so a reviewer effort setting has no effect.
+- `review-prs` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The generic reviewer and delegation-free specialists run inline; a specialists manifest that keeps agent-delegation fails.
+- `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
+- `update-pr-tracker` on Codex CLI: partial, lacking `workflow`. The reviews it starts run through review-prs, which loses reviewer effort settings here.
+- `update-pr-tracker` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline and fails a specialists manifest that keeps agent-delegation.
+<!-- /generated:runtime-support -->
+
 ## `analyze-skill-cost`
 
 <!-- generated:analyze-skill-cost -->
@@ -207,6 +234,8 @@ The commands enforce these rules, whatever the agent is asked:
 - An unexpected failure in one repository is reported as that repository's `ERROR`, and the sweep still reports every other repository.
 - When a repository's fetch fails, nothing after the fetch runs for it. Earlier steps may already have switched its checkout, and a multi-remote fetch may have updated some remote-tracking refs before failing.
 
+In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code and Codex.
+
 ```text
 /repo-cleanup
 /repo-cleanup widgets
@@ -256,6 +285,8 @@ It runs in one of four modes, chosen by its arguments:
 
 Each reviewer role runs as a subagent. Where the session cannot start one (Copilot CLI, or a review started from inside a subagent), or when you ask for an inline review, the session works each role itself, one at a time; [Inline reviews](code-review-operations.md#inline-reviews) says what that costs in isolation.
 
+It runs fully only in Claude Code. In Codex, reviewers start as native subagents rather than through the Workflow tool, so a reviewer `effort` setting, in the configuration or a specialists manifest, has no effect. In Copilot CLI, the generic reviewer and the specialists of a manifest that leaves `agent-delegation` out of `required_capabilities` run inline, and a repository entrypoint reviewer runs on the bounded Copilot host; a specialists manifest that lists `agent-delegation` fails there.
+
 `--force` reviews heads that already have a review. The skill never posts to GitHub, and keeps its working files, such as a batch's list of pull requests, in new temporary directories, never in a skill directory. [Code-review operations](code-review-operations.md) covers the configuration and the records it writes.
 
 ```text
@@ -283,6 +314,8 @@ Without arguments it also stops, reporting `MAJOR_UPDATE <current>..<target>`, w
 
 - `--cross-major`: apply an update across such a release boundary. The output names the crossing as `CROSSED <current>..<target>`.
 
+In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code and Codex.
+
 ```text
 /update-coding-agent-skills --cross-major
 ```
@@ -304,6 +337,8 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 - `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub.
 
 Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
+
+The reviews it offers run through `review-prs`, so in Codex and Copilot CLI they have the limits that skill's section states. The dashboard itself works the same in every runtime.
 
 Each row's Findings cell first shows the work that remains, then the progress. The remaining work is the latest AI review's open findings by severity, including those carried from earlier reviews, and how many of them you have flagged with `flag-review-finding`, for example `1M 1S open (1 flagged)` or `none open`. A legend line above the first section spells out the letters: `M` must fix, `H` should fix, `S` suggestion. The progress is what moved since your own last review of that pull request, for example `· 1 new, 1 addressed since your review`, or `· unchanged since your review`. "New" counts findings first raised after the AI review of the commit you reviewed and still open; "addressed" counts findings raised by then that a later review found fixed. Before you have reviewed, or when GitHub can't place your review's commit, it counts every finding the reviews found fixed instead, such as `1H 3S open · 2 addressed`, and shows the open findings alone when none has been fixed yet. A review recorded before the finding ledger reads the same way, and a migrated legacy review shows only its open findings, because it can't say what was addressed. The AI Review link opens the latest report, whose file name carries the review version, and which lists every open finding in full.
 

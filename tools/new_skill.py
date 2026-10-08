@@ -27,6 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.tools import SKILL_TOOLS
 from tools import skill_reference
@@ -87,12 +88,17 @@ def metadata_text(document: dict[str, object]) -> str:
     return "{\n" + ",\n".join(lines) + "\n}\n"
 
 
-def metadata(tools: list[str], opt_in: bool) -> str:
+def metadata(tools: list[str], opt_in: bool, user_only: bool = False, allowed: list[str] | None = None) -> str:
     document: dict[str, object] = {"required_vars": [], "shared_deps": ["runtime-compatibility.md"]}
     if tools:
         document["tools"] = tools
     if opt_in:
         document["opt_in"] = True
+    # The support that follows from what the frontmatter shows the skill needs, as validation derives it, with each
+    # partial's default reason for the author to sharpen.
+    document["runtime_support"] = runtime_support.declaration(
+        runtime_support.frontmatter_needs(allowed or [], user_only)
+    )
     return metadata_text(document)
 
 
@@ -151,7 +157,7 @@ def scaffold(
         encoding="utf-8",
         newline="\n",
     )
-    meta.write_text(metadata(tools, opt_in), encoding="utf-8", newline="\n")
+    meta.write_text(metadata(tools, opt_in, user_only, allowed), encoding="utf-8", newline="\n")
     skill_reference.write(root)
     return skill_reference.problems(root)
 

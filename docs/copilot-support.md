@@ -6,7 +6,9 @@ This repository currently supports:
 
 - personal skill discovery in GitHub Copilot CLI through generated `~/.agents/skills/<name>/SKILL.md` adapters;
 - zero-AI verification of the effective discovered skill path with `python deploy.py verify`; and
-- code reviews with `review-prs`: the generic reviewer and specialists run inline in the session, and a repository entrypoint reviewer runs on a bounded, noninteractive Copilot CLI host.
+- code reviews with `review-prs`: the generic reviewer and specialists run inline in the session, and a repository entrypoint reviewer runs on a bounded, noninteractive Copilot CLI host. A specialists manifest that keeps `agent-delegation` in `required_capabilities` fails here.
+
+[Runtime support](skills.md#runtime-support) lists, skill by skill, what runs fully in Copilot CLI and what runs in part: the code reviews, and user-only skills, which a headless session cannot start.
 
 Repository instructions, IDE surfaces, the cloud coding agent, and GitHub code review require repository-specific configuration. They are not enabled merely by deploying these personal skills. Configure the surfaces a repository needs by hand, then check them with `audit-ai-config`.
 
