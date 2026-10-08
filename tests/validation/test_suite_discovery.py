@@ -150,24 +150,40 @@ class TestedModulePolicy(unittest.TestCase):
             write_fixture_tree(root, files)
             return untested_module_problems(root)
 
-    def test_a_module_no_test_names_fails_and_is_named(self) -> None:
+    def test_a_module_no_test_imports_fails_however_often_it_is_named(self) -> None:
+        missing = "is imported by no test_*.py; add a test that imports it"
         self.assertEqual(
-            ["deployer/unreached.py is named by no test_*.py; add a test that imports or runs it"],
+            [
+                f"deployer/lonely.py {missing}",
+                f"deployer/mentioned.py {missing}",
+                f"deployer/run.py {missing}",
+                f"skills/s/scripts/quoted.py {missing}",
+                f"tools/tool.py {missing}",
+            ],
             self.problems(
                 {
-                    "deployer/imported.py": "",
-                    "deployer/through_cli.py": "",
-                    "deployer/unreached.py": "",
-                    "deployer/lonely.py": "",
+                    **{
+                        f"deployer/{name}.py": ""
+                        for name in ("imported", "dotted", "member", "named", "lonely", "mentioned", "run")
+                    },
                     "tools/tool.py": "",
+                    "tools/by_path.py": "",
                     "skills/s/scripts/helper.py": "",
+                    "skills/s/scripts/quoted.py": "",
                     "skills/s/notes.py": "",
                     "tests/support.py": "",
-                    "skills/s/scripts/test_s.py": "import helper\n",
+                    "skills/s/scripts/test_s.py": "import helper\n\nTEXT = 'import quoted'\n",
+                    # A test named after a module, a mention, and a run of it by path are not imports.
                     "tests/deployer/test_lonely.py": "pass\n",
-                    "tests/deployer/test_suite.py": "from deployer import imported\n\n"
-                    "# Runs tools/tool.py and reaches deployer.through_cli.\n"
-                    "UNREACHED_NAMES = 'unreached_by_prefix'\n",
+                    "tests/deployer/test_suite.py": "import subprocess\n\n"
+                    "from deployer import imported\n"
+                    "import deployer.dotted\n"
+                    "from deployer.member import thing\n"
+                    "# Runs tools/tool.py and reaches deployer.mentioned.\n"
+                    "subprocess.run(['python', 'deployer/run.py'])\n",
+                    "tests/tools/test_tools.py": "import importlib\nimport importlib.util\n\n"
+                    "importlib.import_module('deployer.named')\n"
+                    "SPEC = importlib.util.spec_from_file_location('by_path', ROOT / 'tools' / 'by_path.py')\n",
                 }
             ),
         )

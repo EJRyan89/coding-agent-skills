@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import unittest
@@ -15,8 +16,9 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import cli, discovery, platform_support
+from deployer import cli, discovery, platform_support, verify
 from deployer.discovery import Listed, ListingError
+from deployer.report import ReportLine
 
 EXECUTABLES = {"codex": "C:/tools/codex.cmd", "copilot": "C:/tools/copilot.exe"}
 VERSIONS = {"codex": "codex-cli 0.160.0\n", "copilot": "GitHub Copilot CLI 1.0.92.\n"}
@@ -70,6 +72,26 @@ class Runtimes:
         if isinstance(answer, Exception):
             raise answer
         return answer
+
+
+class AdapterLineTests(unittest.TestCase):
+    def test_an_adapter_is_found_only_as_the_one_enabled_copy_of_its_name_in_its_own_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            ours, other = Path(temporary) / "ours", Path(temporary) / "other"
+            ours.mkdir()
+            other.mkdir()
+            mine, theirs = forward(ours), forward(other)
+            for copies, expected in (
+                ([Listed(mine, True)], ReportLine("alpha", "FOUND")),
+                ([Listed(mine, True), Listed(theirs, False)], ReportLine("alpha", "FOUND")),
+                ([Listed(mine, False)], ReportLine("alpha", "DISABLED", "turned off in the runtime's settings")),
+                ([Listed(theirs, True)], ReportLine("alpha", "SHADOWED", f"also {theirs}")),
+                ([Listed(mine, True), Listed(theirs, True)], ReportLine("alpha", "SHADOWED", f"also {theirs}")),
+                ([Listed(theirs, False)], ReportLine("alpha", "NOT FOUND")),
+                ([], ReportLine("alpha", "NOT FOUND")),
+            ):
+                with self.subTest(copies=copies):
+                    self.assertEqual(expected, verify.adapter_line("alpha", copies, ours))
 
 
 class ParsingTests(unittest.TestCase):

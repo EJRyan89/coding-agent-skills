@@ -96,21 +96,45 @@ class ShellTargetsFixtures(unittest.TestCase):
             write(
                 "tests/deployer/test_rendering.py",
                 "class Fixtures:\n"
+                # Renders each Bash token, runs it with Git Bash, and compares the output with the spaced value.
                 "    def test_quoted_executes_with_spaces(self):\n"
                 '        self.make_skill("alpha", "```bash\\nprintf \\"{{QUOTED}}\\"\\n```")\n'
-                "        platform_support.run_tool([platform_support.find_bash(), 'run.sh'])\n"
+                '        self.write("run.sh", "{{SINGLE}} {{STILL_QUOTED}} {{UNQUOTED}} {{SCRIPT}}")\n'
+                '        repos = self.root / "Repos With Spaces"\n'
+                "        self.make_config(repos_root=repos)\n"
+                "        bash = platform_support.find_bash()\n"
+                "        result = platform_support.run_tool([bash, 'run.sh'])\n"
+                "        self.assertEqual(forward(repos), result.output.strip())\n"
                 "\n"
-                "    def test_single_executes_with_spaces(self):\n"
-                '        self.make_skill("alpha", "{{SINGLE}} {{STILL_QUOTED}} {{UNQUOTED}} {{SCRIPT}}")\n'
-                "        platform_support.run_tool([platform_support.find_bash(), 'run.sh'])\n"
-                "\n"
+                # The name does not say with_spaces.
                 "    def test_powershell_executes(self):\n"
                 '        self.make_skill("alpha", "{{PS_ONLY}}")\n'
-                "        platform_support.run_tool([platform_support.find_pwsh(path), 'run.ps1'])\n"
+                '        repos = self.root / "Repos With Spaces"\n'
+                "        result = platform_support.run_tool([platform_support.find_pwsh(path), 'run.ps1'])\n"
+                "        self.assertEqual(repos, result.output)\n"
                 "\n"
+                # The token sits only in a comment.
+                "    def test_ps_only_in_a_comment_with_spaces(self):\n"
+                "        # Renders {{PS_ONLY}}.\n"
+                '        self.make_skill("alpha", "Write-Output \'x\'")\n'
+                '        repos = self.root / "Repos With Spaces"\n'
+                "        result = platform_support.run_tool([platform_support.find_pwsh(path), 'run.ps1'])\n"
+                "        self.assertEqual(repos, result.output)\n"
+                "\n"
+                # The output is compared with a value without a space.
+                "    def test_escaped_compared_with_a_plain_value_with_spaces(self):\n"
+                '        self.make_skill("alpha", "{{ESCAPED}} {{QUOTED}}")\n'
+                '        repos = self.root / "Repos With Spaces"\n'
+                "        pwsh = platform_support.find_pwsh(path)\n"
+                "        result = platform_support.run_tool([pwsh, 'run.ps1'])\n"
+                '        self.assertEqual("plain", result.output)\n'
+                "\n"
+                # PowerShell is found but nothing runs.
                 "    def test_quoted_renders_in_powershell_with_spaces(self):\n"
                 '        self.make_skill("alpha", "{{QUOTED}}")\n'
-                "        platform_support.find_pwsh(path)\n",
+                '        repos = self.root / "Repos With Spaces"\n'
+                "        platform_support.find_pwsh(path)\n"
+                "        self.assertEqual(repos, self.rendered())\n",
             )
             self.assertEqual(
                 [

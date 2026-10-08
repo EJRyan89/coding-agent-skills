@@ -12,7 +12,8 @@ from unittest import mock
 
 from harness import REPOSITORY_ROOT, DeployerTestCase, Result, forward
 
-from deployer import cli, platform_support
+from deployer import check, cli, configure, platform_support, verify
+from deployer.arguments import USAGE_ERROR, parse_command
 
 
 def interrupting() -> io.StringIO:
@@ -29,6 +30,24 @@ class SingleEntryPointTests(DeployerTestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             code = cli.main(list(arguments), self.paths, reader)
         return Result(code, captured.getvalue())
+
+    def test_each_command_module_parses_its_own_command_line_as_cli_routes_it(self) -> None:
+        namespace = parse_command(["check"])
+        self.assertEqual("check", getattr(namespace, "command", None))
+        for module, command in ((check, "check"), (configure, "configure"), (verify, "verify")):
+            with self.subTest(command=command):
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+                    code = module.run(["--bogus"], self.paths)
+                self.assertEqual(USAGE_ERROR, code)
+                self.assertIn(
+                    f"ERROR: unrecognized arguments: --bogus\nRun 'python deploy.py {command} --help' for usage.",
+                    captured.getvalue(),
+                )
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            self.assertEqual(USAGE_ERROR, parse_command(["--all", "check"]))
+        self.assertIn("ERROR: --all cannot be combined with the check command", captured.getvalue())
 
     def test_configure_command_writes_the_config(self) -> None:
         self.make_source_json()

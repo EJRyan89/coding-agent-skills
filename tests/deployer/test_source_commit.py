@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result
 
-from deployer import cli, manifest, platform_support
+from deployer import cli, manifest, platform_support, source_commit
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -65,6 +65,19 @@ class SourceCommitTests(DeployerTestCase):
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
             code = cli.main(["check"], self.paths)
         return Result(code, captured.getvalue())
+
+    def test_the_head_commit_is_read_and_described_from_a_checkout_and_not_from_another_folder(self) -> None:
+        self.assertIsNone(source_commit.head_commit(self.source))
+        self.assertEqual("unknown", source_commit.describe(self.source, None))
+        head = self.make_repository()
+        self.assertEqual(head, source_commit.head_commit(self.source))
+        self.assertEqual(f"{head[:7]} ({head})", source_commit.describe(self.source, head))
+        git(self.source, "tag", "v9.9.9")
+        self.assertEqual(f"v9.9.9 ({head})", source_commit.describe(self.source, head))
+        # Outside a checkout the recorded name is all there is, and git is never asked.
+        with mock.patch.object(platform_support, "run_tool") as run_tool:
+            self.assertEqual(head, source_commit.describe(self.root, head))
+        run_tool.assert_not_called()
 
     def test_a_deployment_from_a_git_checkout_records_its_full_head_commit(self) -> None:
         head = self.make_repository()

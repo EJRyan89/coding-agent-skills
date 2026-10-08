@@ -11,9 +11,37 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 import review_fixture
+from flag_review_finding import flag_line
 from review_config import write_config
 
 SCRIPT = Path(__file__).with_name("flag_review_finding.py")
+
+
+class FlagLineTests(unittest.TestCase):
+    def flag(self, **fields: object) -> dict[str, object]:
+        return {
+            "id": "flag-1",
+            "category": "false positive",
+            "repository": "example/one",
+            "pull_number": 12,
+            "review_version": 2,
+            "finding_id": "F1",
+            "body": "Too noisy.",
+            **fields,
+        }
+
+    def test_a_flag_is_one_line_naming_what_it_points_at(self) -> None:
+        self.assertEqual("FLAG flag-1 false positive example/one#12 v2 F1 Too noisy.", flag_line(self.flag()))
+        spread = self.flag(category="missed\nbug", review_version=None, finding_id=None, body="the\tbody\nspans  lines")
+        self.assertEqual("FLAG flag-1 missed bug example/one#12 the body spans lines", flag_line(spread))
+        unpointed = self.flag(repository=None, pull_number=None, review_version=None, finding_id=None)
+        self.assertEqual("FLAG flag-1 false positive - Too noisy.", flag_line(unpointed))
+
+    def test_a_long_body_is_cut_to_the_limit_with_an_ellipsis(self) -> None:
+        cut = flag_line(self.flag(body="word " * 100))
+        body = cut.split(" F1 ", 1)[1]
+        self.assertEqual(160, len(body))
+        self.assertTrue(body.endswith("word…"))
 
 
 class FlagCliTests(unittest.TestCase):
