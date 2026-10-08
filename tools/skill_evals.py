@@ -661,18 +661,26 @@ def run_all(
     timeout: float,
     jobs: int,
 ) -> dict[tuple[str, str], Run]:
-    """Every scenario on every model with a home, up to `jobs` at once, printing each transcript as its run ends."""
+    """Every scenario on every model with a home, up to `jobs` at once, printing each transcript as its run ends. One
+    job runs in this thread, in order."""
     runs: dict[tuple[str, str], Run] = {}
+    pairs = [(scenario, model, home) for scenario in scenarios for model, home in homes.items()]
+
+    def ended(scenario: Scenario, model: str, result: tuple[Run, Path]) -> None:
+        runs[(scenario.name, model)] = result[0]
+        print(f"TRANSCRIPT {scenario.name} {model} {quote(runtime_canary.forward(result[1]))}", flush=True)
+
+    if jobs == 1:
+        for scenario, model, home in pairs:
+            ended(scenario, model, run_scenario(scenario, model, home, executable, base, runner, timeout))
+        return runs
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {
-            pool.submit(run_scenario, scenario, model, home, executable, base, runner, timeout): (scenario.name, model)
-            for scenario in scenarios
-            for model, home in homes.items()
+            pool.submit(run_scenario, scenario, model, home, executable, base, runner, timeout): (scenario, model)
+            for scenario, model, home in pairs
         }
         for future in concurrent.futures.as_completed(pending):
-            run, transcript = future.result()
-            runs[pending[future]] = run
-            print(f"TRANSCRIPT {' '.join(pending[future])} {quote(runtime_canary.forward(transcript))}", flush=True)
+            ended(*pending[future], future.result())
     return runs
 
 

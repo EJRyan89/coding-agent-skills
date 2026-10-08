@@ -1018,7 +1018,9 @@ class EvaluateTests(unittest.TestCase):
         source = skill_evals.runtime_canary.source_id(skill_evals.REPOSITORY_ROOT)
         self.assertEqual([f"DEPLOYED {model} {source}" for model in skill_evals.MODELS], lines[1:4])
         self.assertEqual("RUNTIME claude 2.1.291", lines[4])
-        self.assertEqual(9, sum(1 for line in lines if line.startswith("TRANSCRIPT ")))
+        ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
+        scenarios = ["clean-change", "planted-defects", "re-review"]
+        self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals.MODELS], ended)
         self.assertIn("REVIEWER haiku claude-haiku-0-0", lines)
         self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
         self.assertIn("PASS review-prs re-review haiku ledger addressed=1 still_present=2", lines)
