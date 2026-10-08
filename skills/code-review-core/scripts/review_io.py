@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import IO, Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -104,6 +104,44 @@ def read_json(path: Path, *, maximum_bytes: int = 4 * 1024 * 1024) -> Any:
         raise PersistenceError(f"Cannot read valid JSON from {path}: {exc}") from exc
 
 
+def open_shared(path: Path) -> IO[bytes]:
+    """Open a file for reading through a handle that lets other processes delete or rename it meanwhile.
+
+    open() on Windows denies deletion while the file is open, so a lock's waiter reading its owner file that way
+    stops the holder from releasing the lock. Through this handle the holder's delete goes through, and the reader
+    still reads what it opened.
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    generic_read = 0x80000000
+    share_read_write_delete = 0x1 | 0x2 | 0x4
+    open_existing = 3
+    normal = 0x80
+    handle = kernel32.CreateFileW(str(path), generic_read, share_read_write_delete, None, open_existing, normal, None)
+    if handle is None or handle == wintypes.HANDLE(-1).value:
+        code = ctypes.get_last_error()
+        raise OSError(None, ctypes.FormatError(code), str(path), code)
+    try:
+        descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+    except OSError:
+        kernel32.CloseHandle(wintypes.HANDLE(handle))
+        raise
+    return os.fdopen(descriptor, "rb")
+
+
 def read_diff(path: Path) -> str:
     """A run's diff.patch, the one way every step reads it.
 
@@ -179,18 +217,25 @@ def atomic_write_json(
     atomic_write_text(path, content)
 
 
-# How long a lock directory may stay without an owner file before it is taken for one its creator never finished: a
-# holder writes the file at once, so only a process stopped between the two steps, or killed, leaves one that long.
+# How long a lock directory may stay without a valid owner file before it is taken for one its creator never
+# finished: a holder writes the file at once and atomically, so only a process stopped between the two steps, or
+# killed, or a file torn outside the lock's protocol, leaves one that long.
 OWNER_GRACE_SECONDS = 60.0
+OWNER_MAXIMUM_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
 class LockIdentity:
-    """Who a lock directory belongs to: its holder's token, or for a directory without an owner file, the directory
-    itself, as its device, file index, and modification time."""
+    """Who a lock directory belongs to: its holder's token, or for a directory without a valid owner file, the
+    directory itself, or the torn owner file, as its device, file index, and modification time."""
 
     token: str | None = None
     unowned: tuple[int, int, int] | None = None
+    torn: bool = False
+
+
+# What inspecting a lock finds when the lock was released while it looked: the directory or its owner file is gone.
+RELEASED = LockIdentity()
 
 
 class ResourceLock(AbstractContextManager["ResourceLock"]):
@@ -198,8 +243,10 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
 
     The owner file records the holder's PID and start time. A lock is reclaimed, with a warning on stderr, when its
     holder is provably gone (not running, or its PID now names a process with a different start time), or when it
-    has had no owner file for `owner_grace_seconds`. A live PID whose identity cannot be checked, and an owner file
-    that cannot be read, keep the lock, as the deployer's lock does.
+    has had no valid owner file (none, or one torn) for `owner_grace_seconds`. A live PID whose identity cannot be
+    checked, and an owner file that cannot be opened, keep the lock, as the deployer's lock does. A waiter reads the
+    owner file through open_shared, so it never stops the holder releasing the lock; a release that cannot remove
+    the lock all the same warns and returns, since the holder's work is done and the lock is stale once it exits.
     """
 
     def __init__(
@@ -260,30 +307,46 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
 
     @staticmethod
     def _inspect(directory: Path) -> tuple[LockIdentity, dict[str, Any]] | None:
-        """Who a lock directory belongs to, with its owner file's content (empty without one), or None when that
-        cannot be read."""
+        """Who a lock directory belongs to, with its owner file's content (empty without a valid one): RELEASED when
+        the directory or its owner file vanished while it looked, and None when that cannot be told."""
         owner_path = directory / "owner.json"
         try:
-            if not owner_path.exists():
+            status = owner_path.stat()
+        except FileNotFoundError:
+            try:
                 status = directory.stat()
-                return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns)), {}
-            owner = read_json(owner_path, maximum_bytes=64 * 1024)
-        except (PersistenceError, OSError):
+            except FileNotFoundError:
+                return RELEASED, {}
+            except OSError:
+                return None
+            return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns)), {}
+        except OSError:
             return None
+        try:
+            with open_shared(owner_path) as stream:
+                content = stream.read(OWNER_MAXIMUM_BYTES + 1)
+        except FileNotFoundError:
+            return RELEASED, {}
+        except OSError:
+            return None
+        try:
+            owner = json.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None
+        except (UnicodeError, json.JSONDecodeError):
+            owner = None
         token = owner.get("token") if isinstance(owner, dict) else None
-        return (LockIdentity(token=token), owner) if isinstance(token, str) and token else None
+        if isinstance(owner, dict) and isinstance(token, str) and token:
+            return LockIdentity(token=token), owner
+        return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns), torn=True), {}
 
-    def _stale(self) -> tuple[LockIdentity, str] | None:
-        """The identity of the lock directory and why it is stale, or None while it may still be held."""
-        inspected = self._inspect(self.directory)
-        if inspected is None:
-            return None
-        identity, owner = inspected
+    def _stale(self, identity: LockIdentity, owner: dict[str, Any]) -> str | None:
+        """Why the inspected lock is stale, or None while it may still be held."""
         if identity.unowned is not None:
             age = time.time() - identity.unowned[2] / 1e9
             if age <= self.owner_grace_seconds:
                 return None
-            return identity, f"it has had no owner file for {int(age)} seconds"
+            if identity.torn:
+                return f"its owner file has not been a valid owner record for {int(age)} seconds"
+            return f"it has had no owner file for {int(age)} seconds"
         pid = owner.get("pid")
         if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
             return None
@@ -293,18 +356,24 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         status = self.probe(pid)
         if same_process(status, recorded_start) is not False:
             return None
-        return identity, f"PID {pid} is not running" if not status.alive else f"PID {pid} now names another process"
+        return f"PID {pid} is not running" if not status.alive else f"PID {pid} now names another process"
 
     def _reclaim_stale(self) -> bool:
-        """Move a stale lock aside and delete it, with a warning. False while the lock may still be held.
+        """Whether the lock may be free now: released while it was inspected, or stale and moved aside and deleted
+        with a warning. False while the lock may still be held.
 
         Moving the directory aside is the one atomic step, so the check that it held the lock judged stale comes
         after it: a lock another process took in between is moved back.
         """
-        judged = self._stale()
-        if judged is None:
+        inspected = self._inspect(self.directory)
+        if inspected is None:
             return False
-        identity, reason = judged
+        identity, owner = inspected
+        if identity == RELEASED:
+            return True
+        reason = self._stale(identity, owner)
+        if reason is None:
+            return False
         stale = self.directory.with_name(f"{self.directory.name}.stale.{secrets.token_hex(8)}")
         try:
             self.directory.rename(stale)
@@ -327,12 +396,18 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if not self._held:
             return
+        owner = read_json(self.owner_path, maximum_bytes=OWNER_MAXIMUM_BYTES)
+        if not isinstance(owner, dict) or owner.get("token") != self.token or owner.get("pid") != os.getpid():
+            raise PersistenceError(f"Lock ownership changed before release: {self.directory}")
+        self._held = False
         try:
-            owner = read_json(self.owner_path, maximum_bytes=64 * 1024)
-            if owner.get("token") != self.token or owner.get("pid") != os.getpid():
-                raise PersistenceError(f"Lock ownership changed before release: {self.directory}")
             self.owner_path.unlink()
             self.directory.rmdir()
-            self._held = False
-        except OSError as release_error:
-            raise PersistenceError(f"Cannot safely release lock {self.directory}: {release_error}") from release_error
+        except OSError as exc:
+            # The holder's work is committed, so the lock is stale once this process exits, or once the grace period
+            # passes when only its owner file went.
+            print(
+                f"WARNING: Could not remove the lock {self.directory}: {exc.strerror or exc}. A later review "
+                "reclaims it once this process has exited.",
+                file=sys.stderr,
+            )
