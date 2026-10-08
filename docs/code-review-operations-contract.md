@@ -203,6 +203,8 @@ A repository reviewer's manifest, validated by `validate_adapter_manifest` in `r
 | `specialists` | array | yes | The specialists, at least one. |
 | `conditions` | object | yes | Keyed by condition name, a slug; each value is a [condition](#condition-specialists-manifestconditionscondition). May be empty. |
 | `uncovered` | string | no | One of `review` or `ignore`. What happens to changed files no specialist matches when some do: `review`, the default, gives them to the generic reviewer, and `ignore` leaves them unreviewed and lists them in the record. |
+| `finding_categories` | array | no | Distinct one-line names (matched without regard to case) of at most 60 characters, without backticks, quotes, or pipes; at least one. When given, every role names one per finding as its `category`, which the record keeps; without it, a finding's category is its specialist's `category`. |
+| `fallback_finding_category` | string | no | A name that `finding_categories` lists, such as Other: the category reviewers are told to use only when no other fits. A finding must still name a listed category. |
 
 #### Specialist (`specialists-manifest.specialists[]`)
 

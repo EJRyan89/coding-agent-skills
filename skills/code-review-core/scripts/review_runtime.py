@@ -86,7 +86,11 @@ SPECIALIST_MANIFEST_KEYS = {
 }
 # `uncovered` says what happens to changed files no specialist matches when others route: `review` (the default) gives
 # them to the generic reviewer, `ignore` leaves them unreviewed and lists them in the record.
-OPTIONAL_SPECIALIST_MANIFEST_KEYS = {"uncovered"}
+# `finding_categories` names the kinds of problem a finding may be, such as Style or Security; when a manifest gives
+# them, every specialist names one per finding instead of each finding taking its specialist's category.
+# `fallback_finding_category`, one of them, is the one a reviewer uses when no other fits, such as Other.
+OPTIONAL_SPECIALIST_MANIFEST_KEYS = {"uncovered", "finding_categories", "fallback_finding_category"}
+FINDING_CATEGORY_MAXIMUM_LENGTH = 60
 UNCOVERED_POLICIES = ("review", "ignore")
 SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources", "when"}
 # Optional per-specialist settings a manifest may give. `model` takes the aliases every way of starting a Claude
@@ -363,6 +367,12 @@ def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeContractError("Adapter manifest kind is unsupported")
     if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
         raise RuntimeContractError("Adapter uncovered must be review or ignore")
+    if "finding_categories" in value:
+        _validate_finding_categories(value["finding_categories"])
+    if "fallback_finding_category" in value and value["fallback_finding_category"] not in value.get(
+        "finding_categories", []
+    ):
+        raise RuntimeContractError("Adapter fallback_finding_category must be one of its finding_categories")
     normalized = dict(value)
     normalized["resources"] = _path_list(value["resources"], "resources")
     normalized.update(_validate_specialists(value))
@@ -374,6 +384,27 @@ def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeContractError("Adapter declares a file more than once")
     _refuse_reserved_paths(declared)
     return normalized
+
+
+def _validate_finding_categories(categories: Any) -> None:
+    """A non-empty list of distinct category names, each one line of plain text a prompt can list."""
+    if (
+        not isinstance(categories, list)
+        or not categories
+        or any(
+            not isinstance(item, str)
+            or item != item.strip()
+            or not item
+            or len(item) > FINDING_CATEGORY_MAXIMUM_LENGTH
+            or re.search(r'[\r\n`"|]', item)
+            for item in categories
+        )
+        or len({item.casefold() for item in categories if isinstance(item, str)}) != len(categories)
+    ):
+        raise RuntimeContractError(
+            "Adapter finding_categories must be a non-empty list of distinct one-line names of at most "
+            f"{FINDING_CATEGORY_MAXIMUM_LENGTH} characters, without backticks, quotes, or pipes"
+        )
 
 
 def _refuse_reserved_paths(declared: list[str]) -> None:

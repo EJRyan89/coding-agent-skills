@@ -719,9 +719,13 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         ],
         "conditions": {"compatibility-window-open": {"script": "tools/review/compatibility_window.py"}},
         "uncovered": "ignore",
+        "finding_categories": ["Correctness", "Security", "Style", "Other"],
+        "fallback_finding_category": "Other",
     }
     plain = copy.deepcopy(specialists)
     del plain["uncovered"]
+    del plain["finding_categories"]
+    del plain["fallback_finding_category"]
     # Without agent-delegation, its specialists may also run inline.
     plain["required_capabilities"] = ["read-diff", "write-result"]
     return entrypoint, [specialists, plain]

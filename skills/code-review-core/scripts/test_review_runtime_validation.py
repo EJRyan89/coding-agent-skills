@@ -986,6 +986,22 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_result(uncovered="ignore"),
     ),
     (
+        "specialists whose findings name issue-type categories",
+        _specialists_manifest,
+        _put(("finding_categories",), ["Correctness", "Test Coverage"]),
+        _specialists_result(finding_categories=["Correctness", "Test Coverage"]),
+    ),
+    (
+        "specialists with a category for findings no other fits",
+        _specialists_manifest,
+        lambda manifest: {
+            **manifest,
+            "finding_categories": ["Correctness", "Other"],
+            "fallback_finding_category": "Other",
+        },
+        _specialists_result(finding_categories=["Correctness", "Other"], fallback_finding_category="Other"),
+    ),
+    (
         "specialists resources are normalized",
         _specialists_manifest,
         _put(("resources",), ["./shared/guide.md"]),
@@ -1225,6 +1241,41 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("uncovered",), None),
         RuntimeContractError,
         "Adapter uncovered must be review or ignore",
+    ),
+    *(
+        (
+            f"finding categories that are {name}",
+            _specialists_manifest,
+            _put(("finding_categories",), categories),
+            RuntimeContractError,
+            "Adapter finding_categories must be a non-empty list of distinct one-line names of at most 60 characters, "
+            "without backticks, quotes, or pipes",
+        )
+        for name, categories in (
+            ("empty", []),
+            ("not a list", "Style"),
+            ("repeated without regard to case", ["Style", "style"]),
+            ("not text", ["Style", 3]),
+            ("blank", [" "]),
+            ("padded", [" Style"]),
+            ("on two lines", ["Style\nRisk"]),
+            ("quoted", ['Style "nits"']),
+            ("too long", ["x" * 61]),
+        )
+    ),
+    (
+        "a fallback category without finding categories",
+        _specialists_manifest,
+        _put(("fallback_finding_category",), "Other"),
+        RuntimeContractError,
+        "Adapter fallback_finding_category must be one of its finding_categories",
+    ),
+    (
+        "a fallback category that is not one of them",
+        _specialists_manifest,
+        lambda manifest: {**manifest, "finding_categories": ["Correctness"], "fallback_finding_category": "Other"},
+        RuntimeContractError,
+        "Adapter fallback_finding_category must be one of its finding_categories",
     ),
     (
         "specialists resources that are not an array",
