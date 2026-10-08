@@ -2,7 +2,8 @@
 
     enumerate  list the pull requests a batch run should review, to a batch file (by default in a new
                temporary directory)
-    prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts
+    prepare    fetch pull requests, snapshot each head, load its reviewer, write the request and prompts; or, as a
+               fixture canary, read one pull request from a local fixture directory and nothing from GitHub
     dispatch   start the Copilot CLI host for a prepared run, detached, and return (copilot-cli runtime only)
     next-role  hand the orchestrating session the next role of an inline run to work itself, once the run's
                sealed files are unchanged
@@ -49,7 +50,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import use_utf8_output
 from git_client import GitClient, GitError, GitResult, Runner, subprocess_runner
-from review_archive import ArchiveError, archive_head, pull_records
+from review_archive import ArchiveError, archive_head, commit_record, pull_records
+from review_canary import FixtureError, fixture_change, validate_prior_record
 from review_config import (
     ConfigurationError,
     default_config_path,
@@ -98,7 +100,15 @@ from review_operation import (
     validate_pull,
 )
 from review_process import ProcessStatus, process_status, start_detached
-from review_records import RE_REVIEW_SCOPES, RecordError, carried_findings, describe_scope, validate_adapter_result
+from review_records import (
+    RE_REVIEW_SCOPES,
+    RecordError,
+    carried_findings,
+    describe_scope,
+    ledger_history,
+    validate_adapter_result,
+    validate_record,
+)
 from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
@@ -191,6 +201,7 @@ EXPECTED_ERRORS = (
     PersistenceError,
     StateError,
     FlagError,
+    FixtureError,
     OSError,
     UnicodeError,  # a decoding fault the boundary did not absorb still ends as FAILED, never a traceback
 )
@@ -346,9 +357,8 @@ def _review_history(
 def _fetch_diff(
     repository: str, number: int, pull: dict[str, Any], diff_path: Path, services: Services, notes: list[str]
 ) -> tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
-    """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved. Returns the parsed diff, its
-    changed paths, the changed paths no reviewer can be given (each noted), their patch fingerprints, and the open
-    review comments."""
+    """Write the pull request's diff to `diff_path` once the pull is confirmed unmoved. Returns what `_write_diff`
+    returns and the open review comments."""
     selector = f"{repository}#{number}"
     head = pull["headRefOid"]
     diff, undecodable = services.github.get_pull_diff(repository, number)
@@ -360,6 +370,16 @@ def _fetch_diff(
             f"{selector} changed while it was being prepared (head {head[:12]} is now "
             f"{current['headRefOid'][:12]}); run prepare again"
         )
+    parsed, changed, unsafe, patches = _write_diff(selector, diff, undecodable, diff_path, notes)
+    comments = services.github.list_open_review_threads(repository, number)
+    return parsed, changed, unsafe, patches, comments
+
+
+def _write_diff(
+    selector: str, diff: str, undecodable: int, diff_path: Path, notes: list[str]
+) -> tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]]]:
+    """Write a pull request's diff to `diff_path`. Returns the parsed diff, its changed paths, the changed paths no
+    reviewer can be given (each noted), and their patch fingerprints."""
     atomic_write_text(diff_path, diff)
     if undecodable:
         notes.append(f"{undecodable} undecodable bytes replaced in the diff")
@@ -378,8 +398,7 @@ def _fetch_diff(
             f"cannot carry safely (a control character, a backslash, or an absolute, empty, '.', or '..' segment), "
             f"recorded as unavailable sources: {named}."
         )
-    comments = services.github.list_open_review_threads(repository, number)
-    return parsed, changed, unsafe, patches, comments
+    return parsed, changed, unsafe, patches
 
 
 def _snapshot(
@@ -587,6 +606,41 @@ def _write_run(run: Path, state: dict[str, Any]) -> None:
     atomic_write_json(run / RUN_FILE, state)
 
 
+@dataclass
+class _Review:
+    """What a run prepares to review, read from GitHub or from a fixture."""
+
+    selector: str
+    repository: str
+    number: int
+    pull: dict[str, Any]  # validated by validate_canary_pull
+    mode: str
+    previous: dict[str, Any] | None  # the record a re-review starts from
+    prior: list[dict[str, Any]]  # the findings it carries
+    base: dict[str, Any]  # the archive state finalize must still find
+    reviewer: dict[str, Any]
+    checkout: Path | None  # the configured checkout, which reviewers are kept out of
+    source: Path | None  # the repository the head is snapshotted from; None for GitHub's tarball
+    # Writes the diff to the path it is given; returns _write_diff's values and the open review comments.
+    read_diff: Callable[
+        [Path], tuple[dict[str, dict[str, Any]], list[str], list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]
+    ]
+    canary: bool
+    fixture: dict[str, Any] | None = None  # run.json's record of a fixture canary
+    prior_record: dict[str, Any] | None = None  # a fixture re-review's prior record, which finalize archives first
+
+
+# The reviewer of every fixture, which has no trusted commit a repository reviewer could be loaded from.
+GENERIC_REVIEWER = {
+    "id": "generic",
+    "protocol_version": 1,
+    "trusted_ref": None,
+    "scope": "generic",
+    "manifest_path": None,
+}
+FIXTURE_PRIOR_FILE = "prior.json"
+
+
 def prepare(
     selector: str,
     *,
@@ -630,9 +684,109 @@ def prepare(
         if history is None:
             return _skip(selector, f"head {head[:12]} is already reviewed")
         mode, previous, prior = history
-
-    reviewer = entry["reviewer"]
     checkout = Path(entry["checkout_path"]) if entry["checkout_path"] else None
+    review = _Review(
+        selector=selector,
+        repository=repository,
+        number=number,
+        pull=pull,
+        mode=mode,
+        previous=previous,
+        prior=prior,
+        base=base,
+        reviewer=entry["reviewer"],
+        checkout=checkout,
+        source=checkout,
+        read_diff=lambda diff_path: _fetch_diff(repository, number, pull, diff_path, services, notes),
+        canary=canary,
+    )
+    return _prepare_run(
+        review,
+        scope=scope,
+        host=host,
+        inline=inline,
+        config=config,
+        config_path=config_path,
+        run_directory=run_directory,
+        services=services,
+        notes=notes,
+    )
+
+
+def prepare_fixture(
+    directory: Path,
+    *,
+    prior: Path | None = None,
+    host: str | None = None,
+    inline: bool = False,
+    config_path: Path | None = None,
+    run_directory: Path | None = None,
+    services: Services | None = None,
+) -> dict[str, Any]:
+    """A canary of the pull request a fixture directory holds (see review_canary.py), reading nothing from GitHub.
+
+    With `prior`, a review record of the same pull request at an earlier head, it is a re-review that carries that
+    record's ledger and covers the full scope; finalize archives the prior record in the canary root first, so the
+    re-review is recorded as a real one is. The suite's generic reviewer reviews every fixture.
+    """
+    services = services or Services()
+    config_path = (config_path or default_config_path()).resolve()
+    config = load_config(config_path)
+    prior_value = None if prior is None else read_json(prior.resolve())
+    notes: list[str] = []
+    with fixture_change(directory, services.git) as change:
+        repository, number, pull = change.name, change.pull["number"], change.pull
+        selector = f"{repository}#{number}"
+        record = None
+        if prior_value is not None:
+            record = validate_prior_record(prior_value, repository=repository, number=number)
+        review = _Review(
+            selector=selector,
+            repository=repository,
+            number=number,
+            pull=validate_canary_pull(pull, repository=repository, number=number),
+            mode="initial" if record is None else "re-review",
+            previous=record,
+            prior=[] if record is None else carried_findings([record]),  # a fixture reads no flag store
+            base=archive_base(None, []) if record is None else archive_base(1, ledger_history([record])[1]),
+            reviewer=GENERIC_REVIEWER,
+            checkout=None,
+            source=change.repository,
+            read_diff=lambda diff_path: (
+                *_write_diff(selector, change.diff, change.undecodable, diff_path, notes),
+                change.comments,
+            ),
+            canary=True,
+            fixture={"directory": str(directory.resolve()), "prior": None if prior is None else str(prior.resolve())},
+            prior_record=record,
+        )
+        return _prepare_run(
+            review,
+            scope=None if record is None else "full",
+            host=host,
+            inline=inline,
+            config=config,
+            config_path=config_path,
+            run_directory=run_directory,
+            services=services,
+            notes=notes,
+        )
+
+
+def _prepare_run(
+    review: _Review,
+    *,
+    scope: str | None,
+    host: str | None,
+    inline: bool,
+    config: dict[str, Any],
+    config_path: Path,
+    run_directory: Path | None,
+    services: Services,
+    notes: list[str],
+) -> dict[str, Any]:
+    """Write the run of a review: its diff, snapshot, reviewer, request, prompts, and run.json."""
+    repository, number, pull, checkout = review.repository, review.number, review.pull, review.checkout
     if checkout is not None and _inside(Path.cwd(), checkout):
         notes.append(
             f"This session runs inside {checkout}, so its CLAUDE.md files and project memory load into every "
@@ -646,14 +800,15 @@ def prepare(
     try:
         run.mkdir(parents=True, exist_ok=True)
         diff_path = run / "diff.patch"
-        parsed, changed, unsafe, patches, comments = _fetch_diff(repository, number, pull, diff_path, services, notes)
+        parsed, changed, unsafe, patches, comments = review.read_diff(diff_path)
         source = run / "source"
-        links = _snapshot(checkout, repository, number, head, source, parsed, changed, services, notes)
+        head = pull["headRefOid"]
+        links = _snapshot(review.source, repository, number, head, source, parsed, changed, services, notes)
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
-            reviewer,
+            review.reviewer,
             checkout=checkout,
             pull=pull,
-            mode=mode,
+            mode=review.mode,
             runtime=runtime,
             inline=inline,
             run=run,
@@ -664,24 +819,30 @@ def prepare(
         )
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
-        if previous is not None and scope is not None:  # a re-review, which always names its scope
+        if review.previous is not None and scope is not None:  # a re-review, which always names its scope
             scope_record, review_files = choose_scope(
-                scope, previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
+                scope, review.previous, patches, thresholds=config["re_review_scope"], entrypoint=kind == "entrypoint"
             )
             notes.append(f"Scope {describe_scope(scope_record)}.")
         request_path = run / "request.json"
         _write_request(
             request_path,
-            mode=mode,
+            mode=review.mode,
             repository=repository,
             number=number,
             pull=pull,
             diff_path=diff_path,
             source=source,
-            prior=prior,
+            prior=review.prior,
             comments=comments,
             unsafe=unsafe,
         )
+        fixture = review.fixture
+        if fixture is not None:
+            fixture = {**fixture, "prior_record": None}
+            if review.prior_record is not None:
+                fixture["prior_record"] = str(run / FIXTURE_PRIOR_FILE)
+                atomic_write_json(run / FIXTURE_PRIOR_FILE, review.prior_record)
         result_path = run / "result.json"
         roles, uncovered_files = _write_roles(
             kind,
@@ -698,9 +859,11 @@ def prepare(
         )
         state = {
             "schema_version": RUN_SCHEMA_VERSION,
-            "selector": selector,
-            "mode": mode,
-            "canary": canary,
+            "selector": review.selector,
+            "mode": review.mode,
+            "canary": review.canary,
+            # A fixture canary's directory, the prior record it was given, and the run's copy of that record.
+            "fixture": fixture,
             "config_path": str(config_path),
             "host": host,
             "runtime": runtime,
@@ -718,7 +881,7 @@ def prepare(
             "patches": patches,
             "scope": scope_record,
             "uncovered_files": uncovered_files,
-            "archive_base": base,
+            "archive_base": review.base,
         }
         _write_run(run, state)
     except BaseException:
@@ -1557,6 +1720,18 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
     )
     config = load_config(Path(state["config_path"]))
     canary_root = Path(tempfile.mkdtemp(prefix="code-review-canary-")).resolve() if state["canary"] else None
+    prior_record = (state.get("fixture") or {}).get("prior_record")  # absent from runs prepared before fixtures
+    if canary_root is not None and prior_record:
+        # A fixture re-review's canary root first holds the review it starts from, as a real archive would.
+        prior = validate_record(read_json(Path(prior_record)))
+        commit_record(
+            canary_root,
+            prior["repository"],
+            prior["pull_request"]["number"],
+            prior,
+            expected_latest_version=None,
+            model_names=config["model_names"],
+        )
     json_path, markdown_path, record = commit_adapter_result(
         request_path=request_path,
         result_path=result_path,
@@ -1573,7 +1748,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         scope=state.get("scope"),
         uncovered_files=state.get("uncovered_files"),  # absent from runs prepared before they were recorded
         model_names=config["model_names"],
-        flags=load_store(default_flags_path())["flags"],
+        flags=[] if canary_root else load_store(default_flags_path())["flags"],  # a canary reads no flag store
         dispatch=run_dispatch(state),
     )
     notes = list(state["notes"])
@@ -1736,13 +1911,25 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pull", action="append", default=[], dest="pulls", help="owner/repo#number to review; repeatable"
     )
     prepare_parser.add_argument(
-        "--re-review", action="append", default=[], dest="re_reviews", help="owner/repo#number to re-review; repeatable"
+        "--re-review",
+        action="append",
+        nargs="?",
+        const="",
+        default=[],
+        dest="re_reviews",
+        help="owner/repo#number to re-review; repeatable. Bare, with --fixture: re-review the fixture against --prior",
     )
     prepare_parser.add_argument(
         "--scope", choices=RE_REVIEW_SCOPES, help="how much each --re-review covers; required with --re-review"
     )
     prepare_parser.add_argument("--force", action="store_true")
     prepare_parser.add_argument("--canary", action="store_true")
+    prepare_parser.add_argument(
+        "--fixture", type=Path, help="with --canary: a fixture directory to review in place of a pull request"
+    )
+    prepare_parser.add_argument(
+        "--prior", type=Path, help="with --fixture and --re-review: the review record the re-review starts from"
+    )
     prepare_parser.add_argument(
         "--host",
         choices=sorted(RUNTIME_CAPABILITIES),
@@ -1801,6 +1988,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _check_prepare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Refuse a prepare call argparse cannot judge alone, as a usage error that exits 2 before any work."""
+    if args.fixture is not None:
+        # A fixture is one canary, an initial review or, with its prior record, a full re-review.
+        if not args.canary or args.pulls or args.scope or args.force or any(args.re_reviews):
+            parser.error("--fixture takes --canary, and a bare --re-review with --prior, and no other selector")
+        if args.re_reviews not in ([], [""]) or bool(args.re_reviews) != (args.prior is not None):
+            parser.error("--prior takes one bare --re-review, and a bare --re-review takes --prior")
+        return
+    if args.prior is not None or "" in args.re_reviews:
+        parser.error("--prior and a bare --re-review are taken only with --fixture")
     selectors = [*args.pulls, *args.re_reviews]
     if not selectors:
         parser.error("prepare takes at least one --pull or --re-review")
@@ -1851,6 +2047,8 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
 
 
 def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
+    if args.fixture is not None:
+        return _run_prepare_fixture(args, services)
     failed = False
     items = [(selector, False) for selector in args.pulls] + [(selector, True) for selector in args.re_reviews]
     outcomes = map_in_order(
@@ -1882,6 +2080,25 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
                 mark_dispatched(result["run"])
             _print_ready(result)
     return 1 if failed else 0
+
+
+def _run_prepare_fixture(args: argparse.Namespace, services: Services | None) -> int:
+    try:
+        result = prepare_fixture(
+            args.fixture,
+            prior=args.prior,
+            host=args.host,
+            inline=args.inline,
+            config_path=args.config,
+            services=services,
+        )
+    except EXPECTED_ERRORS as exc:
+        print(f"FAILED {args.fixture} {exc}")
+        return 1
+    if result["dispatch"] != "inline":
+        mark_dispatched(result["run"])
+    _print_ready(result)
+    return 0
 
 
 def _run_next_role(args: argparse.Namespace, services: Services | None) -> int:

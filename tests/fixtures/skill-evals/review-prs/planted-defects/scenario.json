@@ -1,8 +1,6 @@
 {
   "skill": "review-prs",
   "mode": "initial",
-  "title": "Search and ship stock, and pad shelf labels",
-  "body": "Adds Store.Search and Store.Ship, and PaddedLabel for fixed-width label printers.",
   "expectations": [
     {"kind": "finding", "path": "store.go", "lines": [44, 45], "severity": "MUST_FIX"},
     {"kind": "finding", "path": "store.go", "lines": [66, 73], "severity": "SHOULD_FIX"},

@@ -6,16 +6,21 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
+import review_pipeline
+from review_config import write_config
+from review_github import GitHubClient
 from review_records import validate_record
 
 from tools import skill_evals
@@ -65,12 +70,13 @@ def write_scenario(root: Path, name: str, spec: dict[str, Any], skill: str = "de
     directory = root / skill / name
     for tree in ("base", "head"):
         (directory / tree).mkdir(parents=True, exist_ok=True)
+    (directory / "pull.json").write_text("{}", encoding="utf-8")  # read by prepare, which these tests never run
     (directory / "scenario.json").write_text(json.dumps(spec), encoding="utf-8")
     return directory
 
 
 def scenario_spec(*expectations: dict[str, Any], mode: str = "initial", **extra: Any) -> dict[str, Any]:
-    spec = {"skill": "demo", "mode": mode, "title": "A change", "body": "What it does.", **extra}
+    spec = {"skill": "demo", "mode": mode, **extra}
     spec["expectations"] = list(expectations) or [{"kind": "verdict", "verdict": "APPROVED"}]
     return spec
 
@@ -159,9 +165,11 @@ class LoaderTests(unittest.TestCase):
 
     def test_scenario_fields_are_exact(self) -> None:
         self.assertIn("must have exactly", self.load_error(scenario_spec(extra="x")))
+        # The pull request's title is pull.json's, which prepare reads.
+        self.assertIn("must have exactly", self.load_error(scenario_spec(title="A change")))
         spec = scenario_spec()
-        del spec["body"]
-        self.assertIn("must have exactly", self.load_error(spec))
+        del spec["mode"]
+        self.assertIn("mode must be one of", self.load_error(spec))
 
     def test_prior_belongs_to_a_re_review_and_must_exist(self) -> None:
         self.assertIn("must have exactly", self.load_error(scenario_spec(prior="prior.json")))
@@ -181,7 +189,6 @@ class LoaderTests(unittest.TestCase):
     def test_other_scenario_faults(self) -> None:
         self.assertIn("names skill", self.load_error({**scenario_spec(), "skill": "other"}))
         self.assertIn("mode must be one of", self.load_error(scenario_spec(mode="partial")))
-        self.assertIn("title and body must be text", self.load_error({**scenario_spec(), "title": " "}))
         self.assertIn("expectations must be a non-empty list", self.load_error({**scenario_spec(), "expectations": []}))
 
     def test_a_tree_is_required(self) -> None:
@@ -189,6 +196,23 @@ class LoaderTests(unittest.TestCase):
         (directory / "head").rmdir()
         with self.assertRaisesRegex(ScenarioError, "case: has no head/ tree"):
             skill_evals.load_scenarios("demo", root=self.root)
+
+    def test_pull_json_is_required(self) -> None:
+        directory = write_scenario(self.root, "case", scenario_spec())
+        (directory / "pull.json").unlink()
+        with self.assertRaisesRegex(ScenarioError, "case: has no pull.json"):
+            skill_evals.load_scenarios("demo", root=self.root)
+
+    def test_prepare_arguments_are_one_call_per_mode(self) -> None:
+        initial = write_scenario(self.root, "first", scenario_spec())
+        again = write_scenario(self.root, "again", scenario_spec(mode="re-review", prior="prior.json"))
+        (again / "prior.json").write_text("{}", encoding="utf-8")
+        loaded = {scenario.name: scenario for scenario in skill_evals.load_scenarios("demo", root=self.root)}
+        self.assertEqual(["--canary", "--fixture", str(initial)], skill_evals.prepare_arguments(loaded["first"]))
+        self.assertEqual(
+            ["--canary", "--fixture", str(again), "--re-review", "--prior", str(again / "prior.json")],
+            skill_evals.prepare_arguments(loaded["again"]),
+        )
 
     def test_unreadable_scenario_fails(self) -> None:
         directory = write_scenario(self.root, "case", scenario_spec())
@@ -575,6 +599,129 @@ class ReviewPrsScenarioTests(unittest.TestCase):
                 ideal = self.ideal(name)
                 outcomes = skill_evals.judge([scenario], ["opus"], constant(ideal))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
+
+
+class NoGitHub:
+    """A gh runner that fails the test on any call."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(self, arguments: Sequence[str]) -> Any:
+        self.calls.append(list(arguments))
+        raise AssertionError(f"a fixture canary called gh: {arguments}")
+
+
+def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
+    """A reviewer result that does what the scenario expects: each expected finding at the first of its lines, each
+    expected disposition, and each expected repeat as a finding linked to its entry."""
+    expectations = spec["expectations"]
+    found = [
+        {"path": item["path"], "line": item["lines"][0], "severity": item["severity"], "title": "Planted", "body": "x"}
+        for item in expectations
+        if item["kind"] == "finding"
+    ]
+    found += [
+        {
+            "path": item["path"],
+            "line": item["lines"][0],
+            "severity": "MUST_FIX",
+            "title": "Still there",
+            "body": "x",
+            "repeats": item["entry"],
+        }
+        for item in expectations
+        if item["kind"] == "repeats"
+    ]
+    dispositions = [
+        {"finding_id": item["entry"], "disposition": item["disposition"], "rationale": "Judged."}
+        for item in expectations
+        if item["kind"] == "disposition"
+    ]
+    return {"model": "stub", "summary": "Reviewed.", "findings": found, "prior_dispositions": dispositions}
+
+
+class FixtureCanaryRunTests(unittest.TestCase):
+    """Each shipped scenario runs through prepare_arguments' fixture canary, a stub reviewer, check, and finalize with
+    no gh call, and the record finalize writes is judged by the same code a model's run is."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "evals with spaces"
+        (self.root / "tmp").mkdir(parents=True)
+        for patcher in (
+            mock.patch.object(tempfile, "tempdir", str(self.root / "tmp")),
+            mock.patch.dict(
+                os.environ,
+                {
+                    "CODE_REVIEW_STATE": str(self.root / "state.json"),
+                    "CODE_REVIEW_FLAGS": str(self.root / "flags.json"),
+                },
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.config = self.root / "config.json"
+        generic = {
+            "id": "generic",
+            "protocol_version": 1,
+            "trusted_ref": None,
+            "scope": "generic",
+            "manifest_path": None,
+        }
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": ["example/unrelated"]},
+                "repositories": {"example/unrelated": {"reviewer": generic, "checkout_path": None}},
+                "archive_root": str(self.root / "archive"),
+                "local_mirror_root": None,
+                "summary_root": str(self.root / "summaries"),
+                "dashboard_file": str(self.root / "dashboard.md"),
+                "github_login": "reviewer",
+                "runtime": "claude-code",
+                "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+                "dashboard": {},
+            },
+            self.config,
+        )
+        self.github = NoGitHub()
+
+        def tarball(*_: Any) -> None:
+            raise AssertionError("a fixture canary fetched a tarball")
+
+        self.services = review_pipeline.Services(
+            github=GitHubClient(runner=self.github), fetch_tarball=tarball, resolve_runtime=lambda *_: "claude-code"
+        )
+
+    def pipeline(self, *arguments: str) -> list[str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = review_pipeline.main(["--config", str(self.config), *arguments], services=self.services)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(0, status, lines)
+        return lines
+
+    def test_every_scenario_runs_as_a_fixture_canary_and_its_record_passes_the_checker(self) -> None:
+        for scenario in skill_evals.load_scenarios("review-prs"):
+            with self.subTest(scenario=scenario.name):
+                prepared = self.pipeline("prepare", "--host", "claude-code", *skill_evals.prepare_arguments(scenario))
+                run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
+                spec = json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
+                for role in review_pipeline.load_run(run)["roles"]:
+                    Path(role["result_file"]).write_text(json.dumps(stub_result(spec)), encoding="utf-8")
+                self.assertEqual(["ALL_VALID example/inventory#1"], self.pipeline("check", "--run", str(run)))
+                finalized = self.pipeline("finalize", "--run", str(run))
+                written = next(
+                    line.split(" ", 2)[2] for line in finalized if line.startswith("SHA256 ") and line.endswith(".json")
+                )
+                written_record = json.loads(Path(written).read_text(encoding="utf-8"))
+                self.assertEqual(scenario.mode, written_record["review"]["mode"])
+                outcomes = skill_evals.judge([scenario], ["opus"], constant(written_record))
+                self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
+        self.assertEqual([], self.github.calls)
 
 
 if __name__ == "__main__":

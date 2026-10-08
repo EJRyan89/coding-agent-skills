@@ -1,8 +1,6 @@
 {
   "skill": "review-prs",
   "mode": "initial",
-  "title": "List stock shortfalls, and pad shelf labels",
-  "body": "Adds Shortfalls for the reorder list, and PaddedLabel for fixed-width label printers.",
   "expectations": [
     {"kind": "no_finding_above", "severity": "SUGGESTION"},
     {"kind": "verdict", "verdict": "APPROVED"}
