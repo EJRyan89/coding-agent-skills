@@ -27,6 +27,32 @@ PLATFORM_ALLOWANCE = "PLATFORM_ALLOWED"
 PLATFORM_POLICY_MODULE = "tests/validation/fsops_platform.py"
 
 
+def import_aliases(tree: ast.Module) -> dict[str, str]:
+    """What each name a module binds by import stands for, anywhere in it: `import shutil as sh` binds sh to shutil,
+    `from tempfile import TemporaryFile as T` binds T to tempfile.TemporaryFile, and `import os.path` binds os."""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                aliases[alias.asname or top] = alias.name if alias.asname else top
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return aliases
+
+
+def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
+    """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
+    after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        base = qualified_name(node.value, aliases)
+        return f"{base}.{node.attr}" if base else ""
+    return ""
+
+
 def _platform_scanned_files(root: Path) -> list[Path]:
     """The code that runs on a user's machine or runs validation, other than platform_support itself."""
     files = [root / "deploy.py", root / "tests" / "run_validation.py", root / "tests" / "run_shard.py"]
@@ -40,6 +66,7 @@ def _platform_scanned_files(root: Path) -> list[Path]:
 def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[int, str]]:
     """The platform tokens a module's code names, as (line, token), ignoring comments, docstrings, and test cases."""
     docstrings = _docstring_ids(tree)
+    aliases = import_aliases(tree)
     command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
     found: list[tuple[int, str]] = []
 
@@ -48,7 +75,7 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
             return  # A test names what it tests, and its fixtures name tokens on purpose.
         if _assigns_table(node, skipped_tables):
             return
-        found.extend(_platform_node_names(node, docstrings, command))
+        found.extend(_platform_node_names(node, docstrings, command, aliases))
         for child in ast.iter_child_nodes(node):
             visit(child)
 
@@ -85,10 +112,12 @@ def _assigns_table(node: ast.AST, skipped_tables: set[str]) -> bool:
     return False
 
 
-def _platform_node_names(node: ast.AST, docstrings: set[int], command: re.Pattern[str]) -> list[tuple[int, str]]:
+def _platform_node_names(
+    node: ast.AST, docstrings: set[int], command: re.Pattern[str], aliases: dict[str, str]
+) -> list[tuple[int, str]]:
     """The platform tokens node itself names, without its children's."""
     if isinstance(node, ast.Attribute):
-        return _platform_attribute_names(node)
+        return _platform_attribute_names(node, aliases)
     if isinstance(node, ast.Import):
         return [found for alias in node.names for found in _platform_module_name(node.lineno, alias.name)]
     if isinstance(node, ast.ImportFrom):
@@ -105,8 +134,8 @@ def _platform_module_name(line: int, module: str) -> list[tuple[int, str]]:
     return [(line, top)] if top in PLATFORM_TOKENS["module"] else []
 
 
-def _platform_attribute_names(node: ast.Attribute) -> list[tuple[int, str]]:
-    qualified = f"{node.value.id}.{node.attr}" if isinstance(node.value, ast.Name) else ""
+def _platform_attribute_names(node: ast.Attribute, aliases: dict[str, str]) -> list[tuple[int, str]]:
+    qualified = qualified_name(node, aliases)
     if qualified in PLATFORM_TOKENS["qualified"]:
         return [(node.lineno, qualified)]
     if node.attr in PLATFORM_TOKENS["attribute"]:
@@ -184,7 +213,8 @@ def platform_code_problems(root: Path) -> list[str]:
 # Calls that change the filesystem. CLAUDE.md routes every one the deployer makes through deployer/fsops.py, whose
 # functions tests replace to inject failures. A method named here is flagged on any object, since the policy cannot
 # tell a Path from another receiver; the names are chosen so that none is a common method of anything else. Path.replace
-# shares its name with str.replace, so _filesystem_writes tells them apart by their arguments instead.
+# shares its name with str.replace, so _filesystem_writes tells them apart by their arguments instead. A qualified name
+# is matched through the module's imports, so `import shutil as sh` and `from os import replace` hide no write.
 FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
     "method": frozenset(
         {
@@ -207,6 +237,8 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "os.rename",
             "os.replace",
             "os.chmod",
+            "os.chown",
+            "os.lchown",
             "os.mkdir",
             "os.makedirs",
             "os.rmdir",
@@ -214,22 +246,33 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "os.fdopen",
             "os.link",
             "os.symlink",
+            "os.truncate",
+            "os.utime",
             "shutil.rmtree",
             "shutil.move",
             "shutil.copy",
             "shutil.copy2",
             "shutil.copyfile",
+            "shutil.copymode",
+            "shutil.copystat",
             "shutil.copytree",
+            "shutil.chown",
             "tempfile.mkstemp",
             "tempfile.mkdtemp",
             "tempfile.TemporaryDirectory",
             "tempfile.NamedTemporaryFile",
+            "tempfile.TemporaryFile",
+            "tempfile.SpooledTemporaryFile",
         }
     ),
 }
 # A module sanctions a write beside the code it excuses, as a module-level FSOPS_ALLOWED = {token: reason}.
 FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
 WRITE_MODE_CHARACTERS = "wax+"
+# The functions that open a file by name with its mode second; a Path's open() takes the mode first.
+OPEN_FUNCTIONS = frozenset({"open", "builtins.open", "io.open", "codecs.open"})
+# The os.open flags that only read. Any other flag, a nonzero number, or flags the policy cannot read count as a write.
+READ_FLAGS = frozenset({"os.O_RDONLY", "os.O_BINARY", "os.O_TEXT", "os.O_NOINHERIT", "os.O_CLOEXEC", "os.O_NOFOLLOW"})
 
 
 def _writes_scanned_files(root: Path) -> list[Path]:
@@ -238,18 +281,64 @@ def _writes_scanned_files(root: Path) -> list[Path]:
     return [path for path in files if path.is_file() and path.relative_to(root).as_posix() != "deployer/fsops.py"]
 
 
-def _opens_for_writing(call: ast.Call, mode_position: int) -> bool:
-    """Whether open(), or a Path's open(), is given a mode that writes."""
-    mode = (
-        call.args[mode_position]
-        if len(call.args) > mode_position
-        else next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
-    )
-    return (
-        isinstance(mode, ast.Constant)
-        and isinstance(mode.value, str)
-        and any(character in mode.value for character in WRITE_MODE_CHARACTERS)
-    )
+def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
+    """The string constants each name is assigned anywhere in the module, or None for a name that is ever bound to
+    anything else: another value, a parameter, a loop or with target, or an augmented assignment."""
+    bindings: dict[str, set[str] | None] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+            constant = node.value.value if isinstance(node.value, ast.Constant) else None
+            for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                for name in (part for part in ast.walk(target) if isinstance(part, ast.Name)):
+                    known = bindings.get(name.id, set())
+                    if isinstance(target, ast.Name) and isinstance(constant, str) and known is not None:
+                        bindings[name.id] = known | {constant}
+                    else:
+                        bindings[name.id] = None
+        elif isinstance(node, ast.arg):
+            bindings[node.arg] = None
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr, ast.withitem)):
+            bound = node.optional_vars if isinstance(node, ast.withitem) else node.target
+            for part in ast.walk(bound) if bound is not None else ():
+                if isinstance(part, ast.Name):
+                    bindings[part.id] = None
+    return bindings
+
+
+def _mode_argument(call: ast.Call, position: int) -> ast.expr | None:
+    if len(call.args) > position:
+        return call.args[position]
+    return next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+
+
+def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None]) -> bool:
+    """Whether a mode may write. No mode reads, and a mode the policy cannot read, such as a parameter, writes."""
+    if mode is None:
+        return False
+    values: set[str] | None = None
+    if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+        values = {mode.value}
+    elif isinstance(mode, ast.Name):
+        values = bindings.get(mode.id)
+    return values is None or any(character in value for value in values for character in WRITE_MODE_CHARACTERS)
+
+
+def _os_open_writes(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether os.open is given flags that may write: any flag outside READ_FLAGS, a nonzero number, or flags held in
+    anything but os.O_* names joined by |."""
+    flags = call.args[1] if len(call.args) > 1 else next((k.value for k in call.keywords if k.arg == "flags"), None)
+    if flags is None:
+        return True
+    pending: list[ast.expr] = [flags]
+    while pending:
+        part = pending.pop()
+        if isinstance(part, ast.BinOp) and isinstance(part.op, ast.BitOr):
+            pending += [part.left, part.right]
+        elif isinstance(part, ast.Constant) and part.value == 0 and type(part.value) is int:
+            continue
+        elif qualified_name(part, aliases) not in READ_FLAGS:
+            return True
+    return False
 
 
 def _replaces_a_path(call: ast.Call) -> bool:
@@ -263,15 +352,31 @@ def _replaces_a_path(call: ast.Call) -> bool:
     )
 
 
+def _call_writes(call: ast.Call, aliases: dict[str, str], bindings: dict[str, set[str] | None]) -> str | None:
+    """The token naming the write a call makes, or None when it makes none."""
+    target = qualified_name(call.func, aliases)
+    if target in FILESYSTEM_WRITES["qualified"]:
+        return target
+    if target == "os.open":
+        return target if _os_open_writes(call, aliases) else None
+    if target in OPEN_FUNCTIONS:
+        return "open" if _writes_with_mode(_mode_argument(call, 1), bindings) else None
+    if isinstance(call.func, ast.Attribute):
+        if call.func.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(call):
+            return call.func.attr
+        if call.func.attr == "open" and _writes_with_mode(_mode_argument(call, 0), bindings):
+            return "open"
+    return None
+
+
 def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
     """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
+    aliases = import_aliases(tree)
+    bindings = _string_bindings(tree)
     found: list[tuple[int, str]] = []
 
     def visit(node: ast.AST) -> None:
-        if isinstance(node, ast.ClassDef) and any(
-            (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
-            for base in node.bases
-        ):
+        if _is_test_case(node):
             return
         if isinstance(node, ast.ImportFrom):
             found.extend(
@@ -279,18 +384,8 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
                 for alias in node.names
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
-        elif isinstance(node, ast.Call):
-            function = node.func
-            if isinstance(function, ast.Name) and function.id == "open" and _opens_for_writing(node, 1):
-                found.append((node.lineno, "open"))
-            elif isinstance(function, ast.Attribute):
-                qualified = f"{function.value.id}.{function.attr}" if isinstance(function.value, ast.Name) else ""
-                if qualified in FILESYSTEM_WRITES["qualified"]:
-                    found.append((node.lineno, qualified))
-                elif function.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(node):
-                    found.append((node.lineno, function.attr))
-                elif function.attr == "open" and _opens_for_writing(node, 0):
-                    found.append((node.lineno, "open"))
+        elif isinstance(node, ast.Call) and (token := _call_writes(node, aliases, bindings)):
+            found.append((node.lineno, token))
         for child in ast.iter_child_nodes(node):
             visit(child)
 

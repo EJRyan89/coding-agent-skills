@@ -29,6 +29,11 @@ DEFAULT_TIMEOUT = 120
 # How long a program may take to exit once its stdin closes, before it is killed.
 CLOSE_GRACE = 5
 CODEX_LIST_ID = 1
+# Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
+FSOPS_ALLOWED = {
+    "tempfile.TemporaryFile": "a runtime's stderr is captured in an unnamed file under the system temporary directory, "
+    "outside every managed root, which closing it deletes; it changes no deployed state",
+}
 
 
 @dataclass(frozen=True)

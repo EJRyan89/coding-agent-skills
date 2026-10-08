@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
+from validation_support import write_fixture_tree
 
 
 class FsopsPlatformFixtures(unittest.TestCase):
@@ -82,6 +83,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
                     f"deployer/writes.py:11 writes with os.makedirs{route}",
                     f"deployer/writes.py:12 writes with shutil.rmtree{route}",
                     f"deployer/writes.py:13 writes with tempfile.mkstemp{route}",
+                    f"deployer/writes.py:14 writes with os.replace{route}",
                     f"deployer/writes.py:15 writes with open{route}",
                     f"deployer/writes.py:16 writes with open{route}",
                     f"deployer/writes.py:17 writes with open{route}",
@@ -93,6 +95,103 @@ class FsopsPlatformFixtures(unittest.TestCase):
                     "deployer/unexplained.py: FSOPS_ALLOWED must map each token to the reason it is allowed",
                 ],
                 filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_resolves_imports_temporary_files_os_open_flags_and_held_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/aliased.py": "import shutil as sh\n"  # 1
+                    "import os as o\n"  # 2
+                    "import tempfile\n"  # 3
+                    "from tempfile import TemporaryFile as Scratch\n"  # 4
+                    "from os import unlink as remove_file\n"  # 5
+                    "\n"  # 6
+                    "\n"  # 7
+                    "def clean(path, kind, flags):\n"  # 8
+                    "    sh.rmtree(path)\n"  # 9
+                    "    o.replace(path, path)\n"  # 10
+                    "    remove_file(path)\n"  # 11
+                    "    tempfile.TemporaryFile()\n"  # 12
+                    "    tempfile.SpooledTemporaryFile()\n"  # 13
+                    "    Scratch()\n"  # 14
+                    "    o.utime(path)\n",  # 15
+                    "deployer/opened.py": "import io\n"  # 1
+                    "import os\n"  # 2
+                    "from os import O_CREAT, O_RDONLY\n"  # 3
+                    'APPEND = "a"\n'  # 4
+                    'READ = "rb"\n'  # 5
+                    'EITHER = "r"\n'  # 6
+                    'EITHER = "w"\n'  # 7
+                    "\n"  # 8
+                    "\n"  # 9
+                    "def opened(path, mode, flags):\n"  # 10
+                    "    os.open(path, os.O_WRONLY | os.O_TRUNC)\n"  # 11
+                    "    os.open(path, flags)\n"  # 12
+                    "    os.open(path, O_RDONLY | O_CREAT)\n"  # 13
+                    "    os.open(path, 0o1)\n"  # 14
+                    "    os.open(path, flags=os.O_RDWR)\n"  # 15
+                    "    open(path, mode)\n"  # 16
+                    "    open(path, APPEND)\n"  # 17
+                    "    io.open(path, mode=EITHER)\n"  # 18
+                    "    path.open(mode)\n"  # 19
+                    '    path.open(f"{mode}b")\n'  # 20
+                    "    os.open(path, os.O_RDONLY | os.O_BINARY)\n"  # 21
+                    "    os.open(path, O_RDONLY)\n"  # 22
+                    "    os.open(path, 0)\n"  # 23
+                    "    open(path, READ)\n"  # 24
+                    "    open(path)\n"  # 25
+                    '    path.open("r", encoding="utf-8")\n'  # 26
+                    "    shutil.which(path)\n",  # 27
+                    "deployer/allowed.py": 'FSOPS_ALLOWED = {"tempfile.TemporaryFile": "a throwaway capture"}\n'
+                    "from tempfile import TemporaryFile\n"
+                    "with TemporaryFile() as captured:\n"
+                    "    pass\n",
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/aliased.py:4 writes with tempfile.TemporaryFile{route}",
+                    f"deployer/aliased.py:5 writes with os.unlink{route}",
+                    f"deployer/aliased.py:9 writes with shutil.rmtree{route}",
+                    f"deployer/aliased.py:10 writes with os.replace{route}",
+                    f"deployer/aliased.py:11 writes with os.unlink{route}",
+                    f"deployer/aliased.py:12 writes with tempfile.TemporaryFile{route}",
+                    f"deployer/aliased.py:13 writes with tempfile.SpooledTemporaryFile{route}",
+                    f"deployer/aliased.py:14 writes with tempfile.TemporaryFile{route}",
+                    f"deployer/aliased.py:15 writes with os.utime{route}",
+                    f"deployer/opened.py:11 writes with os.open{route}",
+                    f"deployer/opened.py:12 writes with os.open{route}",
+                    f"deployer/opened.py:13 writes with os.open{route}",
+                    f"deployer/opened.py:14 writes with os.open{route}",
+                    f"deployer/opened.py:15 writes with os.open{route}",
+                    f"deployer/opened.py:16 writes with open{route}",
+                    f"deployer/opened.py:17 writes with open{route}",
+                    f"deployer/opened.py:18 writes with open{route}",
+                    f"deployer/opened.py:19 writes with open{route}",
+                    f"deployer/opened.py:20 writes with open{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_platform_policy_resolves_aliased_modules(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/aliased.py": "import sys as system\nimport os as o\n\n"
+                    "WINDOWS = system.platform == 'win32'\nNAME = o.name\nSEPARATOR = o.sep\n",
+                    "deployer/plain.py": "import sys\n\nVERSION = sys.version_info\n",
+                },
+            )
+            move = "; move it behind deployer/platform_support.py"
+            self.assertEqual(
+                [f"deployer/aliased.py:4 names sys.platform{move}", f"deployer/aliased.py:5 names os.name{move}"],
+                platform_code_problems(root),
             )
 
     def test_platform_names_lists_each_token_a_module_names_in_visit_order(self) -> None:

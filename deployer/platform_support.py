@@ -258,6 +258,11 @@ def current_process_id() -> int:
     return os.getpid()
 
 
+# Filesystem writes that tests/run_validation.py allows outside deployer/fsops.py, with the reason.
+FSOPS_ALLOWED = {
+    "tempfile.TemporaryFile": "run_tool captures a tool's output in an unnamed file under the system temporary "
+    "directory, outside every managed root, which closing it deletes; it changes no deployed state",
+}
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
 DUPLICATION_ALLOWED = {
     "process_status": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
