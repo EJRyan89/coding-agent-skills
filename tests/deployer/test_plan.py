@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import os
@@ -16,8 +17,8 @@ from unittest import mock
 
 from harness import DeployerTestCase
 
-from deployer import hashing, manifest, plan, report
-from deployer.context import Context, Options
+from deployer import hashing, manifest, migrate, plan, report, selection
+from deployer.context import Context, Options, Selection
 from deployer.errors import DeployError
 from deployer.paths import Paths
 from deployer.source import Skill, Source
@@ -549,6 +550,58 @@ class ValidateSharedAssetsTests(unittest.TestCase):
             f"{self.shown(self.paths.skills_src / 'o.md')}",
             self.refusal(context, ["alpha"]),
         )
+
+
+class ContextStepTests(unittest.TestCase):
+    """The selection and migration steps pipeline.py runs, called directly on a Context."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="context-steps.")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.paths = Paths(self.root / "source", self.root / "home")
+
+    def context(self, skills: dict[str, list[str]], config: dict[str, str] | None = None) -> Context:
+        src = Source(OWN_SOURCE)
+        for name, required in skills.items():
+            src.skills[name] = Skill(name, self.paths.skills_src / name, required, [], [], True)
+        data = manifest.Manifest(self.paths.manifest_file, {"sources": {}})
+        return Context(self.paths, Options(), src, config or {}, data, data.ownership(OWN_SOURCE), io.StringIO())
+
+    def test_a_selection_needing_unset_variables_names_each_one_and_the_skills_that_need_it(self) -> None:
+        context = self.context({"alpha": ["REPOS_ROOT"], "beta": ["REPOS_ROOT", "HOME"], "gamma": []})
+        with self.assertRaises(DeployError) as raised:
+            selection.require_variables(context, ["alpha", "beta", "gamma"])
+        self.assertEqual(
+            [
+                "ERROR: Selected skills require variables not set in config: REPOS_ROOT",
+                "Skills requiring these:",
+                "  alpha -> REPOS_ROOT",
+                "  beta -> REPOS_ROOT",
+                "Run 'python deploy.py configure' to set them.",
+            ],
+            list(raised.exception.lines),
+        )
+        # HOME is derived, never configured, and a set variable needs nothing.
+        selection.require_variables(self.context({"beta": ["REPOS_ROOT", "HOME"]}, {"REPOS_ROOT": "C:/r"}), ["beta"])
+
+    def test_selecting_nothing_says_what_will_be_removed(self) -> None:
+        context = self.context({"alpha": []})
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            selection.print_selection(context.source, Selection(deselect_all=True), [])
+        self.assertEqual(
+            "\nSelected nothing; unmodified items this source deployed will be removed.\n", printed.getvalue()
+        )
+
+    def test_migration_needs_a_manifest_that_records_the_old_source(self) -> None:
+        context = self.context({"alpha": []})
+        with self.assertRaisesRegex(DeployError, "Cannot migrate without an existing manifest"):
+            migrate.migrate(context, "old/source")
+        self.paths.manifest_file.parent.mkdir(parents=True)
+        context.manifest.save()
+        with self.assertRaisesRegex(DeployError, "Migration source 'old/source' is not present in the manifest"):
+            migrate.migrate(context, "old/source")
 
 
 if __name__ == "__main__":

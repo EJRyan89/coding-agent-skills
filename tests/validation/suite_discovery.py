@@ -4,6 +4,7 @@ every module is named by a test.
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import functools
 import re
@@ -43,24 +44,61 @@ def _needs_a_test(name: str) -> bool:
     return in_scope and name.endswith(".py") and parts[-1] != "__init__.py" and not is_test_script(Path(name))
 
 
-def untested_module_problems(root: Path) -> list[str]:
-    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py names.
+def _import_name(name: str) -> str:
+    """The name a test imports a module by: deployer.x and tools.x as packages, a skill's script by its bare name."""
+    parts = name.removesuffix(".py").split("/")
+    return ".".join(parts) if parts[0] in {"deployer", "tools"} else parts[-1]
 
-    A test names a module by importing, running, or mentioning it, or by being test_<module>.py. A package's
-    __init__.py needs no test.
+
+def imported_modules(source: str) -> set[str]:
+    """The modules a test imports: every `import a.b`, `from a import b`, and importlib.import_module("a.b"), as a.b
+    and each package above it, and every file spec_from_file_location loads, as `*` and the path it names without
+    .py, such as *tools/b for "tools/b.py" or *b for a path built from "b.py"."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
+        elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
+            function = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+            strings = [
+                part.value for part in ast.walk(node) if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            ]
+            if function == "import_module":
+                names = strings[:1]
+            elif function == "spec_from_file_location":
+                names = [f"*{value.removesuffix('.py')}" for value in strings if value.endswith(".py")]
+            else:
+                continue
+        else:
+            continue
+        for name in names:
+            parts = name.split(".")
+            found |= {".".join(parts[: count + 1]) for count in range(len(parts))}
+    return found
+
+
+def untested_module_problems(root: Path) -> list[str]:
+    """Report each module under skills/*/scripts/, deployer/, or tools/ that no test_*.py imports.
+
+    A test imports the module itself, by an import statement or through importlib; naming, mentioning, or running it
+    is not enough, and neither is a test file named after it. A package's __init__.py needs no test.
     """
     files = repository_files(root)
-    tests = [path for path in files if fnmatch.fnmatchcase(path.name, "test_*.py")]
-    texts = [path.read_text(encoding="utf-8") for path in tests]
-    test_names = {path.name for path in tests}
+    imported: set[str] = set()
+    for path in files:
+        if fnmatch.fnmatchcase(path.name, "test_*.py"):
+            imported |= imported_modules(path.read_text(encoding="utf-8"))
+    by_path = {name.removeprefix("*") for name in imported if name.startswith("*")}
     problems: list[str] = []
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
-        if not _needs_a_test(name) or f"test_{path.name}" in test_names:
+        if not _needs_a_test(name):
             continue
-        mention = re.compile(rf"\b{re.escape(path.stem)}\b")
-        if not any(mention.search(text) for text in texts):
-            problems.append(f"{name} is named by no test_*.py; add a test that imports or runs it")
+        loaded = any(f"/{name.removesuffix('.py')}".endswith(f"/{stem}") for stem in by_path)
+        if _import_name(name) not in imported and not loaded:
+            problems.append(f"{name} is imported by no test_*.py; add a test that imports it")
     return problems
 
 

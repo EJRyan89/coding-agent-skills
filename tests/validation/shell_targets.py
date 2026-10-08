@@ -20,8 +20,8 @@ from deployer import platform_support, render, tools
 
 SHELL_LABELS = {"shell": "Bash", "powershell": "PowerShell"}
 SHELL_ESCAPES = {"shell": "\\", "powershell": "`"}
-# A fixture executes a token in a context when it calls run_tool and one of these finders.
-SHELL_RUNNERS = {"shell": ("find_bash(",), "powershell": ("find_pwsh(", "find_powershell(")}
+# The finder whose result runs each context's rendered script, called as a function or a method.
+SHELL_FINDERS = {"find_bash": "shell", "find_pwsh": "powershell", "find_powershell": "powershell"}
 SHELL_WORD_BREAKS = " \t\n;|&()"
 
 
@@ -82,22 +82,87 @@ def _shell_tokens(text: str, context: str) -> list[tuple[int, str, bool]]:
     return found
 
 
+def _called(node: ast.AST) -> str:
+    """The name a call calls, as a function or a method, or "" for anything else."""
+    if not isinstance(node, ast.Call):
+        return ""
+    function = node.func
+    return (
+        function.attr if isinstance(function, ast.Attribute) else function.id if isinstance(function, ast.Name) else ""
+    )
+
+
+def _single_assignments(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, ast.expr]]:
+    return [
+        (node.targets[0].id, node.value)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+    ]
+
+
+def _spaced_value(value: ast.expr) -> bool:
+    """Whether an expression is built from a literal holding a space, other than a template that carries a token."""
+    return any(
+        isinstance(part, ast.Constant)
+        and isinstance(part.value, str)
+        and " " in part.value
+        and not TEMPLATE_TOKEN.search(part.value)
+        for part in ast.walk(value)
+    )
+
+
+def _runs(value: ast.expr, finders: dict[str, str]) -> str | None:
+    """The context whose finder starts a run_tool call, as its first argument's first item, or None."""
+    if _called(value) != "run_tool" or not isinstance(value, ast.Call) or not value.args:
+        return None
+    command = value.args[0]
+    first = command.elts[0] if isinstance(command, (ast.List, ast.Tuple)) and command.elts else None
+    if isinstance(first, ast.Name):
+        return finders.get(first.id)
+    return SHELL_FINDERS.get(_called(first)) if first is not None else None
+
+
+def _spaced_runs(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """The contexts in which a test runs a rendered result and asserts its output against a value with a space."""
+    assignments = _single_assignments(function)
+    finders = {name: SHELL_FINDERS[_called(value)] for name, value in assignments if _called(value) in SHELL_FINDERS}
+    spaced = {name for name, value in assignments if _spaced_value(value)}
+    runs = {name: context for name, value in assignments if (context := _runs(value, finders))}
+    contexts: set[str] = set()
+    for node in ast.walk(function):
+        if _called(node) in {"assertEqual", "assertIn"} and isinstance(node, ast.Call) and len(node.args) >= 2:
+            first, second = ({part.id for part in ast.walk(arg) if isinstance(part, ast.Name)} for arg in node.args[:2])
+            for ran, against in ((first, second), (second, first)):
+                if against & spaced:
+                    contexts |= {runs[name] for name in ran & set(runs)}
+    return contexts
+
+
+def _literal_tokens(function: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """The tokens a function's string literals carry, its docstring and comments aside."""
+    docstring = ast.get_docstring(function, clean=False)
+    return {
+        token
+        for node in ast.walk(function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value != docstring
+        for token in TEMPLATE_TOKEN.findall(node.value)
+    }
+
+
 def _executed_shell_tokens(root: Path) -> set[tuple[str, str]]:
-    """The (context, token) pairs a tests/deployer test with a spaced value renders and then executes."""
+    """The (context, token) pairs a tests/deployer test named *with_spaces* renders and executes with a spaced value.
+
+    The test function carries the token in a string literal, binds a value built from a literal with a space, runs
+    the rendered result with that context's finder through run_tool, and asserts the run's output against that value.
+    """
     executed: set[tuple[str, str]] = set()
     for path in sorted((root / "tests" / "deployer").glob("test_*.py")):
-        text = path.read_text(encoding="utf-8")
-        for node in ast.walk(ast.parse(text)):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             if not node.name.startswith("test_") or "with_spaces" not in node.name:
                 continue
-            source = ast.get_source_segment(text, node) or ""
-            if "run_tool(" not in source:
-                continue
-            for context, runners in SHELL_RUNNERS.items():
-                if any(runner in source for runner in runners):
-                    executed |= {(context, name) for name in TEMPLATE_TOKEN.findall(source)}
+            executed |= {(context, token) for context in _spaced_runs(node) for token in _literal_tokens(node)}
     return executed
 
 
