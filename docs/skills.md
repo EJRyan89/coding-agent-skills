@@ -244,7 +244,7 @@ In Copilot CLI, start it from an interactive session: a headless `copilot -p` se
 ## `review-insights`
 
 <!-- generated:review-insights -->
-Analyze structured code-review findings for an explicit date range and repository set. Use it when asked which review findings were accepted or rejected, or what reviews keep flagging.
+Analyze structured code-review findings and open flags for an explicit date range and repository set, and recommend guidance, reviewer, and analyzer changes. Use it when asked what reviews keep flagging, which findings were accepted or rejected, or what to change in review guidance.
 
 ```text
 /review-insights START_DATE END_DATE [owner/repo ... | --repository-set NAME]
@@ -254,9 +254,9 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 <!-- /generated:review-insights -->
 
 - `START_DATE END_DATE`: the inclusive range, as `YYYY-MM-DD`. Both are required; the skill never guesses a range.
-- `owner/repo ...` or `--repository-set NAME`: whose reviews to analyze. With neither, it uses the configured `review-insights` set. Repository sets are defined in the [code-review configuration](code-review-operations.md#configuration).
+- `owner/repo ...` or `--repository-set NAME`: whose reviews to analyze. With neither, started inside a configured repository's checkout or one of its worktrees, it asks whether to analyze that repository or the configured `review-insights` set; started anywhere else, it uses that set. Repository sets are defined in the [code-review configuration](code-review-operations.md#configuration).
 
-It then asks you to accept, reject, or defer each recommendation. Accepting one resolves the flags linked to it.
+It counts the findings by category and analyzer rule, then has one subagent read the findings, how later reviews judged them, and every open flag, and recommend specific changes: a rule to add, strengthen, or remove in a guidance file the repository's reviewer is built from, something reviewers should stop or start flagging, or an analyzer rule to enforce, adopt, or write. With a report for the period just before, it also compares the two. It then asks you to accept, reject, or defer each recommendation. Accepting one resolves the flags linked to it, including flags that name no finding.
 
 ```text
 /review-insights 2026-09-01 2026-09-30 --repository-set team
