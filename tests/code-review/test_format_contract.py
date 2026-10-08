@@ -35,6 +35,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
 import review_runtime
+from review_canary import validate_fixture_pull
 from review_config import validate_config
 from review_flags import validate_store
 from review_operation import legacy_index
@@ -778,6 +779,27 @@ LEGACY_INDEX = {
 }
 
 
+def fixture_pull_fixtures() -> list[dict[str, Any]]:
+    thread = {
+        "author": "reviewer",
+        "path": "app/service.py",
+        "line": 2,
+        "outdated": False,
+        "body": "Is this safe?",
+        "url": "https://example.invalid/c/1",
+    }
+    pull = {
+        "schema_version": 1,
+        "repository": "example/one",
+        "number": 12,
+        "title": "Total the items",
+        "base_ref": "main",
+        "head_ref": "totals",
+        "threads": [thread, {**thread, "line": None, "outdated": True}],
+    }
+    return [pull, {**pull, "threads": []}]
+
+
 def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
     def accepts(value: Any) -> bool:
         with tempfile.TemporaryDirectory(dir=scratch) as temporary:
@@ -932,6 +954,10 @@ class FormatContractTest(unittest.TestCase):
             ],
             "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
             "legacy-index": [Fixture("legacy index", LEGACY_INDEX, legacy_accepts(scratch))],
+            "fixture-pull": [
+                Fixture(f"fixture pull {index}", value, _judge(validate_fixture_pull))
+                for index, value in enumerate(fixture_pull_fixtures())
+            ],
             "adapter-result": adapter_fixtures(),
         }
 

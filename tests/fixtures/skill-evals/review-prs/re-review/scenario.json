@@ -2,8 +2,6 @@
   "skill": "review-prs",
   "mode": "re-review",
   "prior": "prior.json",
-  "title": "Search and ship stock, and pad shelf labels",
-  "body": "Adds Store.Search and Store.Ship, and PaddedLabel for fixed-width label printers. Ship now updates atomically.",
   "expectations": [
     {"kind": "disposition", "entry": "v1:F001", "disposition": "still_present"},
     {"kind": "disposition", "entry": "v1:F002", "disposition": "still_present"},

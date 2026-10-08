@@ -236,20 +236,21 @@ It then asks you to accept, reject, or defer each recommendation. Accepting one 
 ## `review-prs`
 
 <!-- generated:review-prs -->
-Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated initial-review canaries, and produce validated structured reports. Use it when asked to review or re-review pull requests.
+Review eligible pull requests in explicitly configured repositories, review or re-review explicit pull requests, or run isolated canaries of pull requests or local fixtures, and produce validated structured reports. Use it when asked to review or re-review pull requests.
 
 ```text
-/review-prs [owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ...
+/review-prs [owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ... | --canary --fixture DIR [--re-review --prior RECORD]
 ```
 
 Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh`.
 <!-- /generated:review-prs -->
 
-It runs in one of three modes, chosen by its arguments:
+It runs in one of four modes, chosen by its arguments:
 
 - **Batch**: `owner/repo ...`, `--repository-set NAME`, or nothing for the configured set. It reviews each repository's open, non-draft pull requests and those merged since its last batch, skipping heads already reviewed.
 - **Explicit**: `--pull owner/repo#number` for a first review and `--re-review owner/repo#number` for one whose head changed. Repeat either, or both, in one run, naming each pull request once. They cannot be combined with batch selectors. A re-review needs an earlier review, gives each of its findings a disposition, and records the next review version without overwriting the last.
 - **Canary**: `--canary owner/repo#number` runs a first review in isolation. It writes the result under a new temporary directory and reads or writes nothing configured. Repeat it to check a configuration change against several pull requests in one run, such as one of each kind a reviewer manifest routes differently; each gets its own temporary directory. It takes no other selector and no `--force`.
+- **Fixture canary**: `--canary --fixture DIR` runs a canary of a local fixture directory instead of a pull request, reading nothing from GitHub; skill evaluations use it. `--re-review --prior RECORD` re-reviews the fixture against an earlier review record of it, such as one a fixture canary wrote, and records the dispositions and ledger a real re-review would. It takes one fixture and nothing else. [Fixture canaries](code-review-operations.md#fixture-canaries) describes the directory.
 
 `--scope` sets how much every `--re-review` in the run reviews again: `full` reviews the whole pull request; `incremental` reviews in full only the files whose changes differ from the last review, and only records dispositions for the earlier findings in the rest; `auto` chooses between them from how much changed. Without it, the skill asks once; it never picks one itself.
 
@@ -261,6 +262,7 @@ Each reviewer role runs as a subagent. Where the session cannot start one (Copil
 /review-prs --repository-set team
 /review-prs --pull octo-org/widgets#42 --re-review octo-org/widgets#37 --scope auto
 /review-prs --canary octo-org/widgets#42 --canary octo-org/widgets#51
+/review-prs --canary --fixture tests/fixtures/skill-evals/review-prs/re-review --re-review --prior tests/fixtures/skill-evals/review-prs/re-review/prior.json
 ```
 
 ## `update-coding-agent-skills`
