@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -52,9 +53,11 @@ def record(
     version: int = 1,
     reviewed_at: str = "2026-01-15T12:00:00+00:00",
     reviewers: list[dict] | None = None,
+    adapter: dict | None = None,
 ) -> dict:
     """A record whose findings have these categories, each from source `fixture`, a (category, source) pair, or a
-    (category, source, analyzer) triple; a finding with analyzer coverage also has a headline."""
+    (category, source, analyzer) triple; a finding with analyzer coverage also has a headline. The adapter is the
+    generic reviewer unless one is given."""
     head = f"{version:x}" * 40
     request = {
         "repository": repository,
@@ -65,7 +68,7 @@ def record(
         "base_sha": "a" * 40,
         "head_sha": head,
         "mode": "initial",
-        "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+        "adapter": adapter or {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
     }
     if reviewers:
         request["reviewers"] = reviewers
@@ -208,13 +211,18 @@ class InsightFixture(unittest.TestCase):
         )
 
     def report(self, *arguments: str, reviewers: bool = False) -> tuple[Path, list[str]]:
-        """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set."""
+        """The report's path and its RECOMMENDATION lines, with their REVIEWER lines when `reviewers` is set. The
+        synthesis lines are left out; the synthesis tests read them."""
         code, out, err = self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31", *arguments)
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         json_path = Path(lines[0].removeprefix("REPORT "))
         self.assertEqual(f"MARKDOWN {json_path.with_suffix('.md')}", lines[1])
-        return json_path, [line for line in lines[2:] if reviewers or not line.startswith("REVIEWER ")]
+        return json_path, [
+            line
+            for line in lines[2:]
+            if not line.startswith("SYNTHESIS") and (reviewers or not line.startswith("REVIEWER "))
+        ]
 
 
 class ReportTests(InsightFixture):
@@ -240,7 +248,7 @@ class ReportTests(InsightFixture):
             lines,
         )
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(6, report["schema_version"])
+        self.assertEqual(7, report["schema_version"])
         self.assertEqual(3, report["record_count"], "the out-of-range review is excluded")
         self.assertEqual([], report["recommendations"][0]["decision_history"])
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
@@ -793,7 +801,7 @@ class DecideTests(InsightFixture):
         code, out, err = self.decide(json_path, "REC-001", "Style", "none", "accepted")
         self.assertEqual((0, "DECIDED REC-001 accepted\n"), (code, out), err)
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(6, report["schema_version"])
+        self.assertEqual(7, report["schema_version"])
         self.assertEqual([], report["recommendations"][0]["linked_flags"])
         self.assertEqual([], report["recommendations"][0]["reviewers"])
         self.assertEqual(1, len(report["recommendations"][0]["decision_history"]))
@@ -811,7 +819,7 @@ class DecideTests(InsightFixture):
         self.assertEqual([f"FLAG_RESOLVED {flag}", "DECIDED REC-001 accepted"], out.splitlines())
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (6, [], "category"),
+            (7, [], "category"),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"],
@@ -840,7 +848,7 @@ class DecideTests(InsightFixture):
         self.assertEqual(0, code, err)
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (6, None, None),
+            (7, None, None),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"][0]["addressed"],
@@ -895,7 +903,7 @@ class DecideTests(InsightFixture):
         self.assertEqual((0, f"DECIDED {recommendation} accepted\n"), (code, out), err)
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(6, upgraded["schema_version"])
+        self.assertEqual(7, upgraded["schema_version"])
         self.assertEqual([[], []], [item["linked_flags"] for item in upgraded["recommendations"]])
 
     def test_failures_leave_report_and_flags_unchanged(self) -> None:
@@ -958,10 +966,8 @@ class AnalyzerTests(InsightFixture):
                 "ANALYZER REC-004 coverage=known tool=Roslynator.Analyzers rule=RCS1001 findings=1 "
                 "repositories=owner/other decision=deferred flags=none",
                 "EXAMPLE REC-004 owner/other#3 v1 F001 Headline 0",
-                "ANALYZER REC-005 coverage=custom-candidate tool=Roslyn rule=unbounded-retry-loop findings=2 "
-                "repositories=owner/other,owner/repo decision=deferred flags=none",
-                "EXAMPLE REC-005 owner/other#3 v1 F002 Headline 1",
-                "EXAMPLE REC-005 owner/repo#7 v1 F001 Headline 0",
+                # Custom-candidate rules are one summary line, decided together; the Markdown lists each one.
+                "CUSTOM_CANDIDATES rules=1 findings=2 decision=deferred flags=none",
             ],
             lines,
         )
@@ -1010,6 +1016,41 @@ class AnalyzerTests(InsightFixture):
         self.assertIn("Findings:\n\n- owner/repo#7 v1 F002 Headline 1\n- owner/repo#7 v1 F003 Headline 2\n", markdown)
         self.assertLess(markdown.index("REC-003 — available"), markdown.index("REC-004 — known"))
         self.assertLess(markdown.index("REC-004 — known"), markdown.index("REC-005 — custom-candidate"))
+
+    def test_custom_candidates_are_decided_together_and_resolve_the_union_of_their_flags(self) -> None:
+        self.commit_covered()
+        self.commit("owner/repo", 9, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
+        first = self.flag("rule", finding="F001")
+        second = self.flag("rule", pull=9, finding="F001")
+        json_path, lines = self.report()
+        self.assertIn(f"CUSTOM_CANDIDATES rules=2 findings=3 decision=deferred flags={first},{second}", lines)
+        self.assertFailed(
+            self.run_main("decide-custom", "--report", str(json_path), "--flags", first, "accepted"),
+            f"now link flags {first},{second}, not {first}",
+        )
+        code, out, err = self.run_main(
+            "decide-custom", "--report", str(json_path), "--flags", f"{first},{second}", "accepted", "--note", "Batch"
+        )
+        self.assertEqual(
+            (
+                0,
+                [f"FLAG_RESOLVED {first}", f"FLAG_RESOLVED {second}", "DECIDED custom-candidates rules=2 accepted"],
+                "",
+            ),
+            (code, out.splitlines(), err),
+        )
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        custom = [item for item in report["recommendations"] if item.get("coverage") == "custom-candidate"]
+        self.assertEqual(
+            [("accepted", "Batch", [first]), ("accepted", "Batch", [second])],
+            [
+                (item["decision"], item["decision_history"][-1]["note"], item["decision_history"][-1]["resolved_flags"])
+                for item in custom
+            ],
+        )
+        others = [item for item in report["recommendations"] if item.get("coverage") != "custom-candidate"]
+        self.assertTrue(all(item["decision"] == "deferred" for item in others), "only custom-candidates are decided")
+        self.assertEqual("resolved", {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}[first])
 
     def test_analyzer_decisions_name_the_rule_and_survive_regeneration(self) -> None:
         self.commit_covered()
@@ -1083,6 +1124,49 @@ class AnalyzerTests(InsightFixture):
             json_path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ri.InsightError, message):
                 ri.load_report(json_path)
+
+
+class ScopeTests(InsightFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        self.checkouts = self.root / "checkouts"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repositories"]["owner/repo"]["checkout_path"] = str(self.checkouts / "repo")
+        config["repositories"]["owner/other"]["checkout_path"] = str(self.checkouts / "repo" / "vendor" / "other")
+        write_config(config, self.config_path)
+
+    def scope(self, cwd: Path, common: Path | None = None) -> list[str]:
+        self.services = dataclasses.replace(self.services, cwd=lambda: cwd, git_common_dir=lambda _: common)
+        code, out, err = self.run_main("scope")
+        self.assertEqual((0, ""), (code, err))
+        return out.splitlines()
+
+    def test_a_directory_inside_a_checkout_names_its_repository_and_the_set_of_just_it(self) -> None:
+        self.assertEqual(
+            ["CURRENT_REPOSITORY owner/repo set=primary", "DEFAULT_SET both owner/repo,owner/other"],
+            self.scope(self.checkouts / "repo" / "src"),
+        )
+
+    def test_the_innermost_of_nested_checkouts_wins_and_names_no_set_when_none_holds_it_alone(self) -> None:
+        self.assertEqual(
+            "CURRENT_REPOSITORY owner/other set=none", self.scope(self.checkouts / "repo" / "vendor" / "other")[0]
+        )
+
+    def test_a_worktree_names_the_repository_of_its_main_checkout(self) -> None:
+        worktree = self.root / "worktrees" / "repo" / "feature"
+        self.assertEqual(
+            "CURRENT_REPOSITORY owner/repo set=primary",
+            self.scope(worktree, common=self.checkouts / "repo" / ".git")[0],
+        )
+
+    def test_a_directory_in_no_checkout_names_none(self) -> None:
+        for name, cwd in (
+            ("elsewhere", self.root / "elsewhere"),
+            ("a sibling whose name starts the same", self.checkouts / "repository"),
+        ):
+            with self.subTest(name):
+                self.assertEqual("NO_CURRENT_REPOSITORY", self.scope(cwd)[0])
+        self.assertEqual("NO_CURRENT_REPOSITORY", self.scope(self.root, common=self.root / "bare.git")[0])
 
 
 if __name__ == "__main__":
