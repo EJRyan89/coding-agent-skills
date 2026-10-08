@@ -18,7 +18,14 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. An addition: `enumerate` prints `LISTED <repository> scan=<full|watermark> pages=<n> pulls=<n> read=<n> candidates=<n>` before each listed repository's `PULL` lines. A repository with a watermark now lists its open pull requests and its closed ones from the most recently updated back to the watermark, instead of its whole history, and only the pull requests that can still be selected are looked up in the archive. Which pull requests are selected does not change: a merged pull request is judged by its merge date, as the contract now states.
 - Contract: none
 - User action: none. A repository without a watermark lists its whole history once, as before, and `advance` then records one.
-- Pull request: #211
+- Pull request: #216
+
+### update-pr-tracker compares commits four at a time and prints how many GitHub calls it made
+
+- Level: minor. An addition: `tracker_pipeline.py update` prints `GITHUB_CALLS <n>` after `UPDATED`. It now compares commits four at a time and reads a commit's file tree only when the two comparisons list the same files, so a pull request whose files differ is a change even where GitHub cannot list the repository's tree in full, which was unknown before.
+- Contract: none
+- User action: none.
+- Pull request: #215
 
 ### Review records measure the source snapshot and what each reviewer read
 

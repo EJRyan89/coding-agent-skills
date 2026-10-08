@@ -6,6 +6,7 @@ import html
 import json
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -14,7 +15,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_change import CHANGED, UNCHANGED, ChangeDetector
+from pr_change import CHANGED, UNCHANGED, ChangeDetector, Query
 from review_config import (
     COMPUTED_DASHBOARD_STATES,
     ConfigurationError,
@@ -74,6 +75,11 @@ class TrackerError(ValueError):
 
 class Detector(Protocol):
     def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str: ...
+
+
+class BatchDetector(Detector, Protocol):
+    def prefetch(self, queries: Iterable[Query]) -> None:
+        """Read ahead, concurrently, what detecting each (repository, base_ref, since_sha, head_sha) query needs."""
 
 
 @dataclass(frozen=True)
@@ -302,6 +308,10 @@ def _changed_since(item: dict[str, Any], since_sha: str, detector: Detector) -> 
     return detector.detect(item["repository"], item["number"], item["base_ref"], since_sha, item["head_sha"])
 
 
+def _query(item: dict[str, Any], since_sha: str) -> Query:
+    return (item["repository"], item["base_ref"], since_sha, item["head_sha"])
+
+
 def _ai_review(item: dict[str, Any], detector: Detector) -> str:
     if item["reviewed_head_sha"] is None:
         return "missing"
@@ -312,14 +322,19 @@ def _ai_review(item: dict[str, Any], detector: Detector) -> str:
     return "incomplete" if item.get("reviewed_incomplete") else "current"
 
 
+def _compares_user_review(item: dict[str, Any], relationship: str) -> bool:
+    """Whether the item's section depends on a change since the user's own review."""
+    return relationship != "authored" and not item["draft"] and item["user_review_state"] in ACTIVE_REVIEW_STATES
+
+
 def _section(item: dict[str, Any], relationship: str, detector: Detector) -> str | None:
     if relationship == "authored":
         return SECTION_MINE
     if item["draft"]:
         return SECTION_DRAFTS
-    state = item["user_review_state"]
-    if state not in ACTIVE_REVIEW_STATES:
+    if not _compares_user_review(item, relationship):
         return SECTION_TO_REVIEW
+    state = item["user_review_state"]
     change = _changed_since(item, item["user_review_sha"], detector)
     if state == "APPROVED":
         return None if change == UNCHANGED else SECTION_TO_REVIEW
@@ -329,31 +344,39 @@ def _section(item: dict[str, Any], relationship: str, detector: Detector) -> str
 def evaluate(
     items: list[dict[str, Any]],
     login: str,
-    detector: Detector,
+    detector: BatchDetector,
     *,
     overrides: dict[str, str] | None = None,
     removals: set[str] | None = None,
 ) -> list[Row]:
+    """The rows to render. The detector reads ahead twice: the comparisons sections need, then the ones the AI review
+    column needs for the rows that remain, so an approved pull request left out reads nothing more."""
     if not login:
         raise TrackerError("GitHub login is required")
     login_key = login.casefold()
     excluded = removals or set()
     pinned = overrides or {}
-    rows: list[Row] = []
+    related: list[tuple[dict[str, Any], str, str]] = []
     for item in items:
         key = f"{item['repository']}#{item['number']}"
-        if key in excluded:
-            continue
         relationship = _relationship(item, login_key)
-        if relationship is None:
-            continue
-        if key in pinned:
-            section: str | None = pinned[key]
-        else:
-            section = _section(item, relationship, detector)
-        if section is None:
-            continue
-        rows.append(Row(item, relationship, section, _ai_review(item, detector), key in pinned))
+        if key not in excluded and relationship is not None:
+            related.append((item, key, relationship))
+    detector.prefetch(
+        _query(item, item["user_review_sha"])
+        for item, key, relationship in related
+        if key not in pinned and _compares_user_review(item, relationship)
+    )
+    placed: list[tuple[dict[str, Any], str, str, bool]] = []
+    for item, key, relationship in related:
+        section = pinned[key] if key in pinned else _section(item, relationship, detector)
+        if section is not None:
+            placed.append((item, relationship, section, key in pinned))
+    detector.prefetch(_query(item, item["reviewed_head_sha"]) for item, *_ in placed if item["reviewed_head_sha"])
+    rows = [
+        Row(item, relationship, section, _ai_review(item, detector), overridden)
+        for item, relationship, section, overridden in placed
+    ]
     return sorted(rows, key=lambda row: (row.item["repository"], row.item["number"]))
 
 
@@ -538,7 +561,7 @@ def update_dashboard_rows(
     dashboard: Path,
     login: str,
     *,
-    detector: Detector | None = None,
+    detector: BatchDetector | None = None,
     start_marker: str = START_MARKER,
     end_marker: str = END_MARKER,
     overrides: dict[str, str] | None = None,

@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -144,6 +145,18 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual('{"login": "octo"}', client.run(["api", "user"]).stdout)
         self.assertEqual([5.0], sleeper.waits)
         self.assertEqual([["gh", "api", "user"], ["gh", "api", "user"]], calls)
+
+    def test_call_count_counts_every_command_run_retries_included_across_threads(self) -> None:
+        run, _ = scripted(failed(SECONDARY_LIMIT), ok(), failed("HTTP 404: Not Found"))
+        client, _ = client_for(run)
+        client.run(["api", "user"])
+        with self.assertRaises(GitHubError):
+            client.run(["api", "repos/o/r"])
+        self.assertEqual(3, client.call_count)
+        threaded = GitHubClient(lambda arguments: ok(), sleeper=Recorder())
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            list(executor.map(lambda _: threaded.run(["api", "user"]), range(400)))
+        self.assertEqual(400, threaded.call_count)
 
     def test_exhausting_retries_raises_the_rate_limit_after_the_bounded_waits(self) -> None:
         run, calls = scripted(*[failed(SECONDARY_LIMIT)] * 6)

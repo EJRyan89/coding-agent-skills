@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import review_archive
 import review_fixture
 import tracker_pipeline as tp
 from github_client import CommandResult
@@ -427,6 +428,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=4",
+                "GITHUB_CALLS 3",  # #2's two commits for the user's review and its reviewed head for the AI's
                 "CANDIDATE missing example/one#1",
                 "CANDIDATE stale example/one#2",
                 "CANDIDATE missing example/one#3",
@@ -462,6 +464,16 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(0, code, err)
         row = next(line for line in self.dashboard.read_text(encoding="utf-8").splitlines() if "#12 " in line)
         return item, row
+
+    def test_collect_reads_each_record_once(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        reviews = [{"state": "COMMENTED", "commit": {"oid": review_fixture.HEADS[1]}}]
+        validate = review_archive.validate_record_pair
+        with mock.patch.object(review_archive, "validate_record_pair", wraps=validate) as read:
+            item, _ = self.collect_fixture(reviews)
+        self.assertEqual(3, read.call_count, "three versions, each validated once")
+        self.assertEqual(review_fixture.HEADS[3], item["reviewed_head_sha"])
+        self.assertEqual({"version": 1, "new": 1, "addressed": 1}, item["ai_review"]["since_review"])
 
     def compares(self) -> list[list[str]]:
         return [call for call in self.github.calls if call[-1].endswith("?per_page=1")]
@@ -661,7 +673,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.collect()
         code, out, err = self.run_main("update", "--input", str(self.input), "--remove", "Example/One#1")
         self.assertEqual(0, code, err)
-        self.assertEqual([f"UPDATED {self.dashboard} rows=3"], out.splitlines())
+        self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 3"], out.splitlines())
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
 
     def test_failed_update_leaves_the_dashboard_untouched(self) -> None:
@@ -697,7 +709,9 @@ class UpdateTests(TrackerPipelineFixture):
             check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
-        self.assertEqual([f"UPDATED {self.dashboard} rows=0"], result.stdout.decode("utf-8").splitlines())
+        self.assertEqual(
+            [f"UPDATED {self.dashboard} rows=0", "GITHUB_CALLS 0"], result.stdout.decode("utf-8").splitlines()
+        )
 
 
 if __name__ == "__main__":
