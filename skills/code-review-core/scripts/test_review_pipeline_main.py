@@ -834,6 +834,7 @@ class RunListTests(MainCase):
                         "notes": [],
                         "canary_root": "canary root",
                         "hashes": {"record.json": "d1", "review.md": "d2"},
+                        "stats": ["snapshot source=checkout files=2", "reviewer generic files_read=unknown"],
                         "verdict": "request-changes",
                         "findings": 0,
                         "markdown": "canary.md",
@@ -850,6 +851,8 @@ class RunListTests(MainCase):
                 "CANARY example/app#5 canary root\n"
                 "SHA256 d1 record.json\n"
                 "SHA256 d2 review.md\n"
+                "STATS example/app#5 snapshot source=checkout files=2\n"
+                "STATS example/app#5 reviewer generic files_read=unknown\n"
                 "RECORDED example/app#5 verdict=request-changes findings=0 canary.md\n"
                 "FAILED run c state locked\n",
                 "",

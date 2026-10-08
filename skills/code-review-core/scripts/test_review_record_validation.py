@@ -44,6 +44,17 @@ def _finding(identifier: str, severity: str) -> dict[str, Any]:
     }
 
 
+SNAPSHOT = {
+    "source": "checkout",
+    "files": 12_700,
+    "bytes": 213_909_504,
+    "seconds": {"fetch": 1.5, "materialize": 33.2, "prompts": 0.4},
+}
+REVIEWER = {"id": "generic", "category": "General", "files": 1, "findings": 1, "retries": 0, "dispositions_only": False}
+READ_COUNTS = "Review reviewer generic files_read and bytes_read must both be non-negative integers or both null"
+SNAPSHOT_SECONDS = "Review snapshot seconds must give fetch, materialize, prompts as non-negative numbers"
+
+
 def _record() -> dict[str, Any]:
     """The smallest valid record: an initial review with one finding and none of the optional parts."""
     return {
@@ -100,6 +111,8 @@ def _full_record() -> dict[str, Any]:
                     "dispositions_only": False,
                     "seconds": 125,
                     "model": "model-x",
+                    "files_read": 14,
+                    "bytes_read": 52_000,
                 }
             ],
             "patches": {"src/app.py": {"sha256": SHA256, "lines": 10}},
@@ -114,6 +127,7 @@ def _full_record() -> dict[str, Any]:
                 "lines_total": 10,
             },
             "dispatch": "inline",
+            "snapshot": SNAPSHOT,
         }
     )
     record["review"]["adapter"].update(
@@ -215,6 +229,19 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ("dispatched as subagents", _record, _set((*REVIEW, "dispatch"), "subagents")),
     ("dispatched to the Copilot CLI host", _record, _set((*REVIEW, "dispatch"), "copilot-host")),
     ("worked inline", _record, _set((*REVIEW, "dispatch"), "inline")),
+    # The snapshot and the reads a guard counted; literal values, since a record keeps them.
+    ("snapshot from a checkout", _record, _set((*REVIEW, "snapshot"), SNAPSHOT)),
+    (
+        "snapshot from a tarball, empty, timed in whole seconds",
+        _record,
+        _set(
+            (*REVIEW, "snapshot"),
+            {"source": "tarball", "files": 0, "bytes": 0, "seconds": {"fetch": 4, "materialize": 0, "prompts": 0}},
+        ),
+    ),
+    ("reads counted", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 0, "bytes_read": 0}])),
+    ("reads unknown", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": None, "bytes_read": None}])),
+    ("reads not recorded", _record, _set((*REVIEW, "reviewers"), [REVIEWER])),
     ("coverage without uncovered files", _record, _set((*REVIEW, "coverage"), {"unavailable_sources": []})),
     (
         "INCOMPLETE with unavailable sources",
@@ -370,6 +397,64 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ("dispatch in another case", _set((*REVIEW, "dispatch"), "Inline"), R, "Review dispatch is invalid"),
     ("dispatch not a string", _set((*REVIEW, "dispatch"), ["inline"]), R, "Review dispatch is invalid"),
     ("dispatch null", _set((*REVIEW, "dispatch"), None), R, "Review dispatch is invalid"),
+    ("snapshot null", _set((*REVIEW, "snapshot"), None), R, "Review snapshot fields are malformed"),
+    ("snapshot seconds null", _set((*REVIEW, "snapshot"), {**SNAPSHOT, "seconds": None}), R, SNAPSHOT_SECONDS),
+    (
+        "snapshot without seconds",
+        _set((*REVIEW, "snapshot"), {key: SNAPSHOT[key] for key in ("source", "files", "bytes")}),
+        R,
+        "Review snapshot fields are malformed",
+    ),
+    (
+        "snapshot field unknown",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "paths": []}),
+        R,
+        "Review snapshot fields are malformed",
+    ),
+    (
+        "snapshot source unknown",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "source": "archive"}),
+        R,
+        "Review snapshot source is invalid",
+    ),
+    *[
+        (
+            f"snapshot {field} {value!r}",
+            _set((*REVIEW, "snapshot"), {**SNAPSHOT, field: value}),
+            R,
+            "Review snapshot files and bytes must be non-negative integers",
+        )
+        for field in ("files", "bytes")
+        for value in (-1, 1.5, True, "1", None)
+    ],
+    *[
+        (
+            f"snapshot seconds {name}",
+            _set((*REVIEW, "snapshot"), {**SNAPSHOT, "seconds": seconds}),
+            R,
+            SNAPSHOT_SECONDS,
+        )
+        for name, seconds in (
+            ("missing a phase", {"fetch": 1, "materialize": 2}),
+            ("with another phase", {"fetch": 1, "materialize": 2, "prompts": 3, "review": 4}),
+            ("negative", {"fetch": -0.1, "materialize": 2, "prompts": 3}),
+            ("infinite", {"fetch": float("inf"), "materialize": 2, "prompts": 3}),
+            ("not a number", {"fetch": "1", "materialize": 2, "prompts": 3}),
+            ("true", {"fetch": True, "materialize": 2, "prompts": 3}),
+            ("one number", 36.5),
+        )
+    ],
+    *[
+        (f"reads {name}", _set((*REVIEW, "reviewers"), [{**REVIEWER, **counts}]), R, READ_COUNTS)
+        for name, counts in (
+            ("files alone", {"files_read": 3}),
+            ("bytes alone", {"bytes_read": 3}),
+            ("one null", {"files_read": 3, "bytes_read": None}),
+            ("negative", {"files_read": -1, "bytes_read": 0}),
+            ("not integers", {"files_read": 1.0, "bytes_read": 2}),
+            ("true", {"files_read": True, "bytes_read": 2}),
+        )
+    ],
     ("reviewed_at not a string", _set((*REVIEW, "reviewed_at"), 1), R, "Review timestamp is invalid"),
     ("reviewed_at unparsable", _set((*REVIEW, "reviewed_at"), "yesterday"), R, "Review timestamp is invalid"),
     *_blank_and_non_string((*REVIEW, "summary"), "Review summary is invalid"),
@@ -559,7 +644,22 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ("head_sha", _set((*PULL, "head_sha"), ""), R, f"pull_request.head_sha {SHA_RULE}"),
     ("review fields", _set((*REVIEW, "extra"), 1), R, "Review metadata fields are malformed"),
     ("dispatch", _set((*REVIEW, "dispatch"), "workflow"), R, "Review dispatch is invalid"),
+    ("snapshot fields", _set((*REVIEW, "snapshot"), []), R, "Review snapshot fields are malformed"),
+    (
+        "snapshot source",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "source": "x"}),
+        R,
+        "Review snapshot source is invalid",
+    ),
+    (
+        "snapshot counts",
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "files": -1}),
+        R,
+        "Review snapshot files and bytes must be non-negative integers",
+    ),
+    ("snapshot seconds", _set((*REVIEW, "snapshot"), {**SNAPSHOT, "seconds": {}}), R, SNAPSHOT_SECONDS),
     ("reviewers", _set((*REVIEW, "reviewers"), []), R, "Review reviewers must be a non-empty array"),
+    ("reads", _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 1}]), R, READ_COUNTS),
     ("patches", _set((*REVIEW, "patches"), {}), R, "Review patches must be a non-empty object"),
     ("verdict", _set((*REVIEW, "verdict"), "MAYBE"), R, "Review verdict is invalid"),
     ("coverage", _set((*REVIEW, "coverage"), []), R, "Review coverage is malformed"),

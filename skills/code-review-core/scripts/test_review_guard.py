@@ -140,6 +140,68 @@ class ReadTests(GuardFixture):
         self.assertIsNotNone(self.decide("Read", file_path=f"/{drive.lower()}{rest}/app/Collections.cs"))
 
 
+class ReadLogTests(GuardFixture):
+    """The guard logs each snapshot file a reviewer reads to its role's read log, which only `check` reads."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.source = self.run_directory / "source"
+        (self.source / "app" / "Service.cs").write_text("class Service {}\n", encoding="utf-8")
+        (self.source / "app" / "Role.cs").write_text("class Role {}\n", encoding="utf-8")
+
+    def logged(self, role: str = "csharp-review") -> list[str]:
+        return [json.loads(line) for line in guard.read_log(self.run_directory, role).read_text("utf-8").splitlines()]
+
+    @staticmethod
+    def entry(relative: str) -> str:
+        """A path as the log names it: relative to the snapshot, in the case the file system compares."""
+        return Path(os.path.normcase(relative)).as_posix()
+
+    def test_a_claim_starts_the_log_and_each_snapshot_file_read_is_logged(self) -> None:
+        log = guard.read_log(self.run_directory, "csharp-review")
+        self.assertEqual(self.run_directory / "work" / "reads-csharp-review.log", log)
+        self.assertFalse(log.exists())
+        self.claim()
+        self.assertEqual([], self.logged(), "a claim starts an empty log, so a guarded reviewer is told from others")
+        service = str(self.source / "app" / "Service.cs")
+        for tool, tool_input in (
+            ("Read", {"file_path": service}),
+            ("Read", {"file_path": service, "offset": 10}),  # read again: check counts it once
+            ("Read", {"file_path": str(self.source / "app" / ".." / "app" / "Service.cs")}),
+            ("Grep", {"pattern": "class", "path": str(self.source / "app" / "Role.cs")}),  # a search of one file
+            # Allowed, but not a read of a snapshot file: a folder search, a pattern, a missing file, and the work,
+            # reviewer, and reference files.
+            ("Grep", {"pattern": "class", "path": str(self.source)}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(self.source)}),
+            ("Read", {"file_path": str(self.source / "app" / "Missing.cs")}),
+            ("Read", {"file_path": str(self.run_directory / "work" / "csharp-review.diff")}),
+            ("Read", {"file_path": str(self.run_directory / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),
+            ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assertIsNone(self.decide(tool, **tool_input))
+        # A denied read is not logged, and a reviewer cannot write its log.
+        self.assert_denied(self.decide("Read", file_path=str(self.other_run / "source" / "app" / "Service.cs")))
+        self.assert_denied(self.decide("Write", file_path=str(log), content="[]"))
+        self.assertEqual(
+            [*[self.entry("app/Service.cs")] * 3, self.entry("app/Role.cs")],
+            self.logged(),
+        )
+
+    def test_each_role_has_its_own_log(self) -> None:
+        self.claim()
+        self.claim("sql-review", agent=OTHER_AGENT)
+        self.assertIsNone(self.decide("Read", file_path=str(self.source / "app" / "Role.cs")))
+        self.assertIsNone(self.decide("Read", agent=OTHER_AGENT, file_path=str(self.source / "app" / "Service.cs")))
+        self.assertEqual([self.entry("app/Role.cs")], self.logged())
+        self.assertEqual([self.entry("app/Service.cs")], self.logged("sql-review"))
+
+    def test_a_log_that_cannot_be_written_never_denies_a_read(self) -> None:
+        guard.read_log(self.run_directory, "csharp-review").mkdir(parents=True)  # a folder where the log should be
+        self.claim()
+        self.assertIsNone(self.decide("Read", file_path=str(self.source / "app" / "Service.cs")))
+
+
 class WriteTests(GuardFixture):
     def test_a_reviewer_writes_only_its_own_roles_result_in_its_own_run(self) -> None:
         self.claim()

@@ -357,7 +357,9 @@ class PrepareFixture(unittest.TestCase):
             fetch_tarball=self.tarball,
             resolve_runtime=self.resolve_runtime,
             today=lambda: date(2026, 3, 10),
+            timer=lambda: self.now,
         )
+        self.now = 0.0  # prepare's phase timer, which stands still unless a test advances it
         self.flags_path = self.root / "flags" / "flags.json"
         environment = mock.patch.dict(
             os.environ,
@@ -447,6 +449,15 @@ class PrepareFixture(unittest.TestCase):
         with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
             result = rp.prepare(selector, config_path=self.config_path, services=self.services, **options)
         return self.normalize(result), printed.getvalue()
+
+    def taking(self, seconds: float, step: Callable[..., Any]) -> Callable[..., Any]:
+        """`step` as a stand-in that advances prepare's phase timer by `seconds` before it runs."""
+
+        def timed(*arguments: Any, **options: Any) -> Any:
+            self.now += seconds
+            return step(*arguments, **options)
+
+        return timed
 
     def refused(self, selector: str = SELECTOR, **options: Any) -> tuple[type[BaseException], str, str]:
         """The class and normalized message prepare raises, and what it printed."""
@@ -839,6 +850,15 @@ def generic_role(run: str = "<root>/run") -> dict[str, Any]:
     }
 
 
+# The fixture head's snapshot from the checkout, timed by a clock that stands still.
+SNAPSHOT = {
+    "source": "checkout",
+    "files": 11,
+    "bytes": 1780,
+    "seconds": {"fetch": 0.0, "materialize": 0.0, "prompts": 0.0},
+}
+
+
 def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
     """run.json of a generic initial review of the fixture pull request; `changes` replaces entries."""
     return {
@@ -859,6 +879,8 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "roles": [generic_role(run)],
         "attempts": {"generic-review": 0},
         "dispatched_at": {"generic-review": NOW},
+        "snapshot": SNAPSHOT,
+        "reads": {},
         "notes": [LINK_NOTE],
         "patches": PATCHES,
         "scope": None,
@@ -998,6 +1020,27 @@ class InitialReviewTests(PrepareFixture):
         self.assertEqual([("auto", None)], self.runtime_calls)
         self.assertEqual([], list(self.temporary.iterdir()), "the snapshot's temporary archive is gone")
 
+    def test_each_phase_of_a_checkout_snapshot_is_timed_and_its_size_counted(self) -> None:
+        # Fetching the head, materializing the snapshot, and writing the request and prompts each take time.
+        with (
+            mock.patch.object(rp, "ensure_local_commit", self.taking(2.04, rp.ensure_local_commit)),
+            mock.patch.object(rp, "materialize_source_snapshot", self.taking(33.0, rp.materialize_source_snapshot)),
+            mock.patch.object(rp, "_write_roles", self.taking(0.46, rp._write_roles)),
+        ):
+            result, _ = self.prepare()
+        expected = {
+            "source": "checkout",
+            "files": 11,
+            "bytes": 1780,
+            "seconds": {"fetch": 2.0, "materialize": 33.0, "prompts": 0.5},
+        }
+        self.assertEqual(expected, result["snapshot"])
+        self.assertEqual(expected, self.json_file("run.json")["snapshot"])
+        # The counts are the files the snapshot holds, its manifest left out, and their bytes.
+        held = [path for path in (self.run_dir / "source").rglob("*") if path.is_file()]
+        held = [path for path in held if path.name != "source-snapshot.json"]
+        self.assertEqual((11, 1780), (len(held), sum(path.stat().st_size for path in held)))
+
     def test_a_run_directory_prepare_creates(self) -> None:
         result, _ = self.prepare(run_directory=None)
         [created] = [entry.name for entry in self.temporary.iterdir()]
@@ -1131,6 +1174,28 @@ class SnapshotFromGitHubTests(PrepareFixture):
         self.assertEqual(
             plan_prompt(GENERIC_INTRO, "generic-review", changed, [], trusted=NO_GUIDANCE, links=True, checkout=False),
             self.text_file("work/generic-review.prompt.md"),
+        )
+
+    def test_a_tarball_snapshot_times_the_download_apart_from_materializing_it(self) -> None:
+        self.services.fetch_tarball = self.taking(4.0, self.tarball)
+        with (
+            mock.patch.object(
+                rp,
+                "materialize_source_snapshot_from_github",
+                self.taking(1.25, rp.materialize_source_snapshot_from_github),
+            ),
+            mock.patch.object(rp, "_write_request", self.taking(0.04, rp._write_request)),
+        ):
+            result, _ = self.prepare()
+        readme, service = len(b"Read me\n"), len(HEAD_FILES["app/service.py"].encode("utf-8"))
+        self.assertEqual(
+            {
+                "source": "tarball",
+                "files": 2,
+                "bytes": readme + service,
+                "seconds": {"fetch": 4.0, "materialize": 1.2, "prompts": 0.0},
+            },
+            result["snapshot"],
         )
 
     def test_a_path_with_a_control_character_reaches_no_prompt_and_is_a_coverage_gap(self) -> None:

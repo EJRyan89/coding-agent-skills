@@ -17,6 +17,11 @@ Parallel reviewers share one session, so the hook tells them apart by the `agent
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
 reviewer can write. A retry is a fresh agent that claims the same role.
 
+The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
+allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
+the snapshot, as one JSON string per line. Only the pipeline's `check` reads the log, and it keeps nothing of it but
+counts. A log that cannot be written is left short: counting never denies a call.
+
 Other tools pass. Anything the hook cannot evaluate is denied, a call without an agent ID included: a reviewer
 reading the wrong code, or writing another role's result, produces a plausible but wrong review, which is worse
 than a failed one that check reports and retries.
@@ -43,6 +48,7 @@ REFERENCES = SCRIPT_DIRECTORY.parent / "references"
 PIPELINE = SCRIPT_DIRECTORY / "review_pipeline.py"
 RUN_PREFIX = "code-review-run-"
 RUN_FILE = "run.json"
+SOURCE = "source"  # the run's source snapshot
 READ_TOOLS = {"Read", "Grep", "Glob"}
 WRITE_TOOLS = {"Write", "Edit"}
 SAFE = r'[^"`$\r\n]+'
@@ -53,12 +59,39 @@ SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
 FIRST = "read the prompt file your task names first"
+ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Claim = tuple[Path, dict[str, str]]
 
 
 class Denied(Exception):
     pass
+
+
+def read_log(run: Path, role: str) -> Path:
+    """The file the guard logs a role's snapshot reads in. `check` in review_pipeline.py reduces it to counts."""
+    return run / "work" / f"reads-{role}.log"
+
+
+def _start_log(run: Path, role: str) -> None:
+    """Create the role's read log, so a reviewer the guard held is told from one no guard held, which has none."""
+    if ROLE_ID.fullmatch(role):
+        with contextlib.suppress(OSError):
+            read_log(run, role).parent.mkdir(exist_ok=True)
+            read_log(run, role).touch()
+
+
+def _log_read(tool: str, path: Path, claim: Claim) -> None:
+    """Append a file a reviewer read under its run's snapshot to its role's read log. A search of a folder or a
+    pattern is not a read of a file, so only a Read, or a Grep naming one file, counts."""
+    run, role = claim[0], claim[1]["id"]
+    source = run / SOURCE
+    if tool == "Glob" or not ROLE_ID.fullmatch(role) or not _inside(path, source) or not path.is_file():
+        return
+    root = Path(os.path.normcase(str(source.resolve(strict=False))))
+    relative = Path(os.path.normcase(str(path))).relative_to(root)
+    with contextlib.suppress(OSError), read_log(run, role).open("a", encoding="utf-8") as log:
+        log.write(json.dumps(relative.as_posix()) + "\n")
 
 
 def _path(value: Any, cwd: Path) -> Path:
@@ -150,6 +183,7 @@ def _claim(agent: str, path: Path) -> None:
         return
     with os.fdopen(handle, "w", encoding="utf-8") as stream:
         stream.write(json.dumps({"run": str(run), "role": role["id"]}))
+    _start_log(run, role["id"])
 
 
 def _check_in_run(tool: str, path: Path, run: Path) -> None:
@@ -175,6 +209,7 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim |
     if claim is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
     _check_in_run(tool, path, claim[0])
+    _log_read(tool, path, claim)
 
 
 def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:

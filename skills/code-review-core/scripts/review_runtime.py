@@ -1115,6 +1115,11 @@ def _populate_snapshot(
     return verify_source_snapshot(destination, expected_repository=repository, expected_commit=commit, contents=False)
 
 
+def snapshot_bytes(root: Path, metadata: dict[str, Any]) -> int:
+    """The total size of the files a snapshot its manifest verified holds, its manifest left out."""
+    return sum(root.joinpath(*PurePosixPath(relative).parts).stat().st_size for relative in metadata["source_hashes"])
+
+
 def _prepare_destination(destination: Path) -> None:
     if destination.exists() and any(destination.iterdir()):
         raise RuntimeContractError("Source snapshot destination must be empty")
