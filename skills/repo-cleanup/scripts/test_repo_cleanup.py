@@ -88,11 +88,13 @@ def build_fixture(root: Path) -> None:
     spaces whose github.com origin is rewritten to the bare remote."""
     remote, other, clone = fixture_paths(root)
     (root / "Repos Root").mkdir(parents=True)
-    git(root, "init", "--quiet", "--bare", "-b", "main", str(remote))
-    git(root, "clone", "--quiet", str(remote), str(other))
+    # An empty template leaves out the sample hooks, most of each repository's files and nothing Git runs, so each
+    # test's copy of the three is smaller.
+    git(root, "init", "--quiet", "--bare", "--template=", "-b", "main", str(remote))
+    git(root, "clone", "--quiet", "--template=", str(remote), str(other))
     git(other, "commit", "--quiet", "--allow-empty", "-m", "initial")
     git(other, "push", "--quiet", "origin", "main")
-    git(root, "clone", "--quiet", str(remote), str(clone))
+    git(root, "clone", "--quiet", "--template=", str(remote), str(clone))
     git(clone, "remote", "set-url", "origin", REMOTE_URL)
     git(clone, "config", f"url.{remote.as_posix()}.insteadOf", REMOTE_URL)
 

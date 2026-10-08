@@ -20,9 +20,11 @@ from suite_discovery import (
     MAXIMUM_SHARDS,
     SHARD_RUNNER,
     TESTS_PER_SHARD,
+    recorded_cost_problems,
     regression_suites,
     shard_count,
     suite_discovery_documentation_problems,
+    suite_jobs,
     unsuited_script_problems,
     untested_module_problems,
 )
@@ -90,6 +92,89 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             self.assertEqual(MAXIMUM_SHARDS, shard_count(root / "test_huge.py"))
             self.assertEqual(1, shard_count(root / "test_script.ps1"))
             self.assertEqual(["*deployer*", "test_*.py"], name_patterns(["deployer", "test_*.py"]))
+
+    def test_a_recorded_test_gets_a_shard_to_itself_and_every_test_still_runs_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "suite with spaces"
+            root.mkdir()
+            log = root / "log.txt"
+            tests = "".join(f"    def test_{number}(self):\n        record('test_{number}')\n" for number in range(7))
+            suite = root / "test_fixture.py"
+            suite.write_text(
+                "import unittest\nfrom pathlib import Path\n"
+                f"LOG = Path({str(log)!r})\n"
+                "def record(entry):\n    with LOG.open('a', encoding='utf-8') "
+                "as handle:\n        handle.write(entry + '\\n')\n"
+                f"class Fixture(unittest.TestCase):\n{tests}"
+                "if __name__ == '__main__':\n    unittest.main()\n",
+                encoding="utf-8",
+            )
+
+            def shard(index: int, *recorded: str) -> list[str]:
+                log.unlink(missing_ok=True)
+                completed = subprocess.run(
+                    [sys.executable, "-B", str(SHARD_RUNNER), str(suite), str(index), "3", *recorded],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                return log.read_text(encoding="utf-8").splitlines()
+
+            # Nothing recorded: round-robin in test-ID order, as before.
+            self.assertEqual(["test_0", "test_3", "test_6"], shard(0))
+            # test_3 recorded at five seconds: packed first, alone on shard 0; the rest share shards 1 and 2.
+            packed = [shard(index, "Fixture.test_3=5") for index in range(3)]
+            self.assertEqual(["test_3"], packed[0])
+            self.assertEqual(["test_0", "test_2", "test_5"], packed[1])
+            ran = sorted(entry for entries in packed for entry in entries)
+            self.assertEqual(sorted(f"test_{number}" for number in range(7)), ran)
+            for recorded in ("Fixture.test_9=5", "Fixture.test_3", "Fixture.test_3=many"):
+                with self.subTest(recorded=recorded):
+                    refused = subprocess.run(
+                        [sys.executable, "-B", str(SHARD_RUNNER), str(suite), "0", "3", recorded],
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(2, refused.returncode, refused.stderr)
+
+    def test_recorded_seconds_raise_the_shard_count_and_reach_every_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            suite = Path(temporary) / "test_costly.py"
+            body = "".join(f"    def test_{number}(self): pass\n" for number in range(17))
+            suite.write_text(f"import unittest\nclass T(unittest.TestCase):\n{body}", encoding="utf-8")
+            self.assertEqual(17 // TESTS_PER_SHARD, shard_count(suite, {}))
+            self.assertEqual((17 + 12) // TESTS_PER_SHARD, shard_count(suite, {"T.test_4": 13}))
+            jobs = suite_jobs([suite], {"test_costly.py": {"T.test_4": 13}}, root=Path(temporary))
+            self.assertEqual(shard_count(suite, {"T.test_4": 13}), len(jobs))
+            self.assertEqual({(17 + 12) / len(jobs)}, {job.weight for job in jobs})
+
+    def test_recorded_seconds_must_name_a_suite_and_a_test_it_defines(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tests/test_costly.py": "import unittest\nclass Slow(unittest.TestCase):\n"
+                    "    def test_long(self): pass\nif __name__ == '__main__':\n    unittest.main()\n",
+                },
+            )
+            self.assertEqual([], recorded_cost_problems(root, {"tests/test_costly.py": {"Slow.test_long": 13}}))
+            self.assertEqual(
+                [
+                    "tests/test_costly.py records Slow.test_gone, which it does not define",
+                    "tests/test_costly.py records Fast.test_long, which it does not define",
+                    "tests/test_missing.py records test costs but is not a regression suite",
+                    "tests/test_costly.py records Slow.test_long at 0 seconds; record only tests that cost more than 1",
+                ],
+                recorded_cost_problems(
+                    root,
+                    {
+                        "tests/test_costly.py": {"Slow.test_gone": 4, "Fast.test_long": 4},
+                        "tests/test_missing.py": {"Slow.test_long": 4},
+                    },
+                )
+                + recorded_cost_problems(root, {"tests/test_costly.py": {"Slow.test_long": 0}}),
+            )
 
     def test_suite_discovery_documentation_policy_detects_each_missing_rule(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
