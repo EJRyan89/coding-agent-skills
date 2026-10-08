@@ -2,10 +2,11 @@
 
 Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full]
 
-It runs the policy checks, then every regression suite under tests/ and each skill's scripts/ in one pool of worker
-processes, largest first. The policies live in tests/validation/, one module per family, each with its fixture tests
-beside it as tests/validation/test_<module>.py, which run in the pool as regression suites. A large Python suite is
-split into shards, each run by tests/run_shard.py in its own process, so no single suite sets the length of the run.
+It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
+and the policy checks in this process while the pool works, printing their report when they finish. The policies live
+in tests/validation/, one module per family, each with its fixture tests beside it as
+tests/validation/test_<module>.py, which run in the pool as regression suites. A large Python suite is split into
+shards, each run by tests/run_shard.py in its own process, so no single suite sets the length of the run.
 -k selects the policy checks whose name, and the suites whose path, matches a pattern. VALIDATION_JOBS sets the
 number of workers.
 
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import io
 import os
 import sys
 import time
@@ -39,7 +41,7 @@ import suite_discovery
 import toolchain
 import upgrade_notes
 import workflows
-from job_pool import append_step_summary, run_jobs, step_summary, worker_count
+from job_pool import OUTPUT_LOCK, append_step_summary, run_beside, step_summary, worker_count
 from job_selection import (
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
@@ -54,8 +56,8 @@ from validation_support import REPOSITORY_ROOT
 
 from deployer import tools
 
-# The modules whose policy checks run before the suites, in this process. Each policy module's fixture tests run in
-# the pool as the regression suite beside it.
+# The modules whose policy checks run in this process while the pool runs the suites. Each policy module's fixture
+# tests run in the pool as the regression suite beside it.
 POLICY_MODULES = (
     duplication,
     fsops_platform,
@@ -151,6 +153,15 @@ class DocumentationDecision(unittest.TestCase):
                 self.assertIn(reason, why)
 
 
+def run_policies(policies: unittest.TestSuite, verbose: bool) -> unittest.TestResult:
+    """Run the policy checks into a buffer and print their report in one block once they finish."""
+    report = io.StringIO()
+    result = unittest.TextTestRunner(stream=report, verbosity=2 if verbose else 1).run(policies)
+    with OUTPUT_LOCK:
+        print(f"Policy checks:\n{report.getvalue()}", end="", flush=True)
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
     parser.add_argument(
@@ -199,10 +210,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=sys.stderr)
         return 2
 
-    policy_result = unittest.TextTestRunner(verbosity=2 if arguments.verbose else 1).run(policies)
     workers = worker_count()
-    print(f"Running {len(jobs)} suite jobs on {workers} workers.", flush=True)
-    failures = run_jobs(jobs, arguments.verbose, workers)
+    print(
+        f"Running {policies.countTestCases()} policy checks beside {len(jobs)} suite jobs on {workers} workers.",
+        flush=True,
+    )
+    policy_result, failures = run_beside(
+        lambda: run_policies(policies, arguments.verbose), jobs, arguments.verbose, workers
+    )
     for failure in failures:
         print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", flush=True)
     passed = policy_result.wasSuccessful() and not failures
