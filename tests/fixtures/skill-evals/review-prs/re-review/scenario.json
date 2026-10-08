@@ -1,0 +1,16 @@
+{
+  "skill": "review-prs",
+  "mode": "re-review",
+  "prior": "prior.json",
+  "title": "Search and ship stock, and pad shelf labels",
+  "body": "Adds Store.Search and Store.Ship, and PaddedLabel for fixed-width label printers. Ship now updates atomically.",
+  "expectations": [
+    {"kind": "disposition", "entry": "v1:F001", "disposition": "still_present"},
+    {"kind": "disposition", "entry": "v1:F002", "disposition": "still_present"},
+    {"kind": "disposition", "entry": "v1:F003", "disposition": "addressed"},
+    {"kind": "ledger", "addressed": 1, "still_present": 2},
+    {"kind": "repeats", "path": "store.go", "lines": [44, 45], "entry": "v1:F001"},
+    {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["labels.go", "labels_test.go"]},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}
