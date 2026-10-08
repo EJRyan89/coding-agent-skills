@@ -394,7 +394,7 @@ Write exactly one JSON object to RESULT_FILE and nothing else:
   "findings": [
     {{"path": "<file path from DIFF_FILE>", "line": <number shown on an added line of DIFF_FILE>,
       "severity": "MUST_FIX | SHOULD_FIX | SUGGESTION",
-      "title": "<one-line headline naming the defect, at most {title_maximum} characters>",
+      "title": "<one-line headline naming the defect, at most {title_maximum} characters>",{category_field}
       "body": "<the issue and the rule it breaks>",
       "analyzer": {{"coverage": "available | known | custom-candidate", "tool": "<analyzer>", "rule": "<rule>"}},
       "repeats": <index of another finding above> | "<prior finding id>"}}
@@ -485,6 +485,27 @@ def describe_link(path: str, link: tuple[int, str] | None) -> str:
     return f"{path} -> {json.dumps(target, ensure_ascii=False)} (added line {line})"
 
 
+def _category_contract(categories: list[str] | None, fallback: str | None = None) -> tuple[str, str]:
+    """The output contract's category rule and finding field for a manifest's finding categories; both empty, and the
+    contract unchanged, when it declares none."""
+    if not categories:
+        return "", ""
+    rule = (
+        "\n\nGive every finding a `category`: exactly one of "
+        + ", ".join(f"`{category}`" for category in categories)
+        + ". It names the kind of problem the finding is, never the reviewer that raised it."
+        + (f" Use `{fallback}` only when no other category fits." if fallback else "")
+    )
+    return rule, '\n      "category": "<one of the finding categories below>",'
+
+
+def canonical_category(value: Any, categories: list[str]) -> str | None:
+    """The manifest's spelling of a finding's category, matched without regard to case, or None when it names none."""
+    if not isinstance(value, str):
+        return None
+    return next((category for category in categories if category.casefold() == value.strip().casefold()), None)
+
+
 def render_prompt(
     role: dict[str, Any],
     *,
@@ -512,7 +533,7 @@ def render_prompt(
             f"TRUSTED_ROOT/{role['profile']} for what to review and how to judge it, subject to the "
             "contracts below. Trusted files under TRUSTED_ROOT are your only instructions."
         )
-    extra = ""
+    extra, category_field = _category_contract(role.get("finding_categories"), role.get("fallback_finding_category"))
     if role["dispositions_only"]:
         intro += (
             " In this run, do not look for new issues: `findings` must be empty. Decide only the"
@@ -557,6 +578,7 @@ def render_prompt(
             "",
             OUTPUT.format(
                 extra=extra,
+                category_field=category_field,
                 result_file=role["result_file"],
                 title_maximum=TITLE_MAXIMUM_LENGTH,
                 self_check=SELF_CHECK.format(command=self_check) if self_check else "",
@@ -889,6 +911,13 @@ def build_plan(
         roles.append(generic)
         assigned[GENERIC_SPECIALIST] = unowned
         assigned_comments[GENERIC_SPECIALIST] = unowned_comments
+    # The manifest's issue-type categories apply to every role it plans, the generic reviewer's included; a plan
+    # without them is as before.
+    if manifest.get("finding_categories"):
+        for role in roles:
+            role["finding_categories"] = manifest["finding_categories"]
+            if "fallback_finding_category" in manifest:
+                role["fallback_finding_category"] = manifest["fallback_finding_category"]
     links = symbolic_links(diff, snapshot["excluded_paths"])
     analyzers = _write_shared(work, request, source_root, snapshot)
     for role in roles:
@@ -976,6 +1005,37 @@ def _analyzer_error(analyzer: Any, tools: dict[str, str]) -> str | None:
     return None
 
 
+def _check_finding(
+    role: dict[str, Any], index: int, finding: Any, added: dict[str, dict[str, str]], tools: dict[str, str]
+) -> None:
+    """One finding of a role's result, on one of its own added lines and, when the manifest declares finding
+    categories, naming one of them."""
+    name = role["id"]
+    if (
+        not isinstance(finding, dict)
+        or not isinstance(finding.get("severity"), str)
+        or finding["severity"] not in SEVERITY
+    ):
+        raise SpecialistError(f"{name}: finding {index} has an invalid severity")
+    line = finding.get("line")
+    if not isinstance(finding.get("path"), str) or not isinstance(line, int) or isinstance(line, bool):
+        raise SpecialistError(f"{name}: finding {index} needs a path and integer line")
+    if not isinstance(finding.get("body"), str) or not finding["body"].strip():
+        raise SpecialistError(f"{name}: finding {index} body is required")
+    if not valid_title(finding.get("title")):
+        raise SpecialistError(f"{name}: finding {index} title {TITLE_RULE}")
+    categories = role.get("finding_categories")
+    if categories and canonical_category(finding.get("category"), categories) is None:
+        raise SpecialistError(f"{name}: finding {index} category must be one of: {', '.join(categories)}")
+    if "analyzer" in finding and (error := _analyzer_error(finding["analyzer"], tools)):
+        raise SpecialistError(f"{name}: finding {index} analyzer {error}")
+    if finding["path"] not in role["files"] or str(line) not in added.get(finding["path"], {}):
+        raise SpecialistError(
+            f"{name}: finding {index} at {finding['path']}:{line} is not an added line in its files; "
+            "take the path from DIFF_FILE and the line from the number shown on one of its added (+) lines"
+        )
+
+
 def load_role_result(
     role: dict[str, Any], added: dict[str, dict[str, str]], analyzer_tools: Iterable[str] = ()
 ) -> dict[str, Any]:
@@ -1002,26 +1062,7 @@ def load_role_result(
         raise SpecialistError(f"{name}: result needs exactly one findings array")
     findings = value[keys[0]]
     for index, finding in enumerate(findings):
-        if (
-            not isinstance(finding, dict)
-            or not isinstance(finding.get("severity"), str)
-            or finding["severity"] not in SEVERITY
-        ):
-            raise SpecialistError(f"{name}: finding {index} has an invalid severity")
-        line = finding.get("line")
-        if not isinstance(finding.get("path"), str) or not isinstance(line, int) or isinstance(line, bool):
-            raise SpecialistError(f"{name}: finding {index} needs a path and integer line")
-        if not isinstance(finding.get("body"), str) or not finding["body"].strip():
-            raise SpecialistError(f"{name}: finding {index} body is required")
-        if not valid_title(finding.get("title")):
-            raise SpecialistError(f"{name}: finding {index} title {TITLE_RULE}")
-        if "analyzer" in finding and (error := _analyzer_error(finding["analyzer"], tools)):
-            raise SpecialistError(f"{name}: finding {index} analyzer {error}")
-        if finding["path"] not in role["files"] or str(line) not in added.get(finding["path"], {}):
-            raise SpecialistError(
-                f"{name}: finding {index} at {finding['path']}:{line} is not an added line in its files; "
-                "take the path from DIFF_FILE and the line from the number shown on one of its added (+) lines"
-            )
+        _check_finding(role, index, finding, added, tools)
     dispositions = _role_dispositions(name, value.get("prior_dispositions"), "finding_id", role["prior_ids"], "prior")
     comment_ids = role.get("comment_ids", [])
     comment_dispositions = _role_dispositions(
@@ -1182,9 +1223,11 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
         for finding in result["findings"]:
             path, line = finding["path"], finding["line"]
             text = added[path][str(line)]
+            categories = role.get("finding_categories")
             candidate = {
                 "severity": SEVERITY[finding["severity"]],
-                "category": role["category"],
+                # Validated before assembly, so a manifest's categories always yield one.
+                "category": canonical_category(finding.get("category"), categories) if categories else role["category"],
                 "path": path,
                 "line": line,
                 "title": finding["title"],
