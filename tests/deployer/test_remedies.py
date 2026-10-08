@@ -92,9 +92,25 @@ class SourceRemedyTests(RemedyTestCase):
             result.output,
             "ERROR: deploy-meta/alpha.json has an invalid metadata shape",
             "It must be a JSON object whose required_vars, shared_deps, skill_deps, tools, optional_tools, and "
-            "agent_deps, where present, are lists of strings, and whose selectable and opt_in, where present, are "
-            "true or false. "
+            "agent_deps, where present, are lists of strings, whose selectable and opt_in, where present, are "
+            "true or false, and whose runtime_support, where present, declares each runtime. "
             "docs/adding-a-skill.md describes each key.",
+        )
+
+    def test_a_malformed_runtime_support_states_its_shape(self) -> None:
+        self.fixture()
+        self.write(
+            self.source / "deploy-meta" / "alpha.json",
+            json.dumps({"runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "most"}}),
+        )
+        result = self.deploy_fails("--all", pattern="runtime_support")
+        self.assert_lines(
+            result.output,
+            'ERROR: deploy-meta/alpha.json: copilot-cli must be "full" or an object with level, needs, and reason',
+            "runtime_support, where present, must name each of claude-code, codex, and copilot-cli once: either "
+            '"full", or an object {"level": "partial" or "none", "needs": [capabilities], "reason": "<one line>"}, '
+            "where a partial names at least one need. Known capabilities: agent-delegation, workflow, "
+            'user-only-start. See "Metadata" in docs/adding-a-skill.md.',
         )
 
 

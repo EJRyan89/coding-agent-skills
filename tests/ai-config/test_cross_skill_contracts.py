@@ -210,6 +210,28 @@ class CrossSkillContractTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 self.assertNotIn("runtime_canary", path.read_text(encoding="utf-8"))
 
+    def test_the_runtime_support_matrix_agrees_with_the_review_pipeline_on_agent_delegation(self) -> None:
+        # The matrix says which runtimes start subagents; the review pipeline decides how reviewers run from its own
+        # table. When one changes, review-prs's declared support has to change with it.
+        from deployer import runtime_support
+
+        pipeline = literal_assignment(
+            REPOSITORY_ROOT / "skills/code-review-core/scripts/review_runtime.py", "RUNTIME_CAPABILITIES"
+        )
+        if not isinstance(pipeline, dict):
+            self.fail("RUNTIME_CAPABILITIES in review_runtime.py is not a dictionary")
+        self.assertEqual(set(runtime_support.RUNTIMES), set(pipeline))
+        for runtime in runtime_support.RUNTIMES:
+            with self.subTest(runtime=runtime):
+                self.assertEqual(
+                    "agent-delegation" in pipeline[runtime],
+                    "agent-delegation" in runtime_support.RUNTIME_CAPABILITIES[runtime],
+                )
+        self.assertEqual(
+            {"claude-code": True, "codex": True, "copilot-cli": False},
+            {runtime: "agent-delegation" in pipeline[runtime] for runtime in runtime_support.RUNTIMES},
+        )
+
     def test_no_skill_pins_a_model(self) -> None:
         # In Claude Code a skill's `model` applies for the rest of the turn that invoked it (#75), so a code review
         # started in the same turn as `update-coding-agent-skills`, then pinned to Haiku, ran every reviewer on Haiku

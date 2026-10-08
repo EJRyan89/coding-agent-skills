@@ -329,6 +329,62 @@ class MetadataValidationTests(DeployerTestCase):
         )
         self.deploy_ok("--all")
 
+    def test_runtime_support_names_every_runtime_with_a_known_level_need_and_reason(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Test")
+        self.make_config()
+        partial = {"level": "partial", "needs": ["user-only-start"], "reason": "Start it interactively."}
+        cases = [
+            ("full", "runtime_support must be an object keyed by runtime"),
+            ({"claude-code": "full", "codex": "full"}, "runtime_support does not declare copilot-cli"),
+            (
+                {"claude-code": "full", "codex": "full", "copilot-cli": "full", "gemini": "full"},
+                "runtime_support names unknown runtime 'gemini'",
+            ),
+            ({"claude-code": "full", "codex": "yes", "copilot-cli": "full"}, 'codex must be "full" or an object'),
+            (
+                {"claude-code": "full", "codex": "full", "copilot-cli": {**partial, "needs": ["telepathy"]}},
+                "copilot-cli needs unknown capability 'telepathy'",
+            ),
+            (
+                {"claude-code": "full", "codex": "full", "copilot-cli": {**partial, "needs": []}},
+                "copilot-cli is partial but names no need",
+            ),
+            (
+                {"claude-code": "full", "codex": "full", "copilot-cli": {**partial, "reason": " "}},
+                "copilot-cli is partial without a one-line reason",
+            ),
+            (
+                {"claude-code": "full", "codex": {"level": "none"}, "copilot-cli": "full"},
+                "codex is none without a one-line reason",
+            ),
+            (
+                {"claude-code": "full", "codex": "full", "copilot-cli": {**partial, "level": "most"}},
+                "copilot-cli has level 'most'; an object's level is partial or none",
+            ),
+        ]
+        for value, message in cases:
+            with self.subTest(message=message):
+                self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"runtime_support": value}))
+                self.deploy_fails("--all", pattern=re.escape(f"deploy-meta/alpha.json: {message}"))
+        declared = {
+            "claude-code": "full",
+            "codex": {"level": "none", "reason": "Not on Codex."},
+            "copilot-cli": partial,
+        }
+        self.write(self.source / "deploy-meta" / "alpha.json", json.dumps({"runtime_support": declared}))
+        self.deploy_ok("--all")
+        loaded = source.discover(self.paths, source.load_source_id(self.paths))
+        support = loaded.skills["alpha"].runtime_support
+        self.assertEqual(
+            {runtime: (value.level, value.needs, value.reason) for runtime, value in (support or {}).items()},
+            {
+                "claude-code": ("full", (), ""),
+                "codex": ("none", (), "Not on Codex."),
+                "copilot-cli": ("partial", ("user-only-start",), "Start it interactively."),
+            },
+        )
+
     def test_opt_in_is_a_flag_on_menu_items_only(self) -> None:
         self.make_config()
         self.make_source_json()

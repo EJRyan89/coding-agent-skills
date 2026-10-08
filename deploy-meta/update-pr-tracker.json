@@ -2,5 +2,6 @@
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["code-review-core", "skill-core"],
-    "tools": ["gh"]
+    "tools": ["gh"],
+    "runtime_support": {"claude-code": "full", "codex": {"level": "partial", "needs": ["workflow"], "reason": "The reviews it starts run through review-prs, which loses reviewer effort settings here."}, "copilot-cli": {"level": "partial", "needs": ["agent-delegation", "workflow"], "reason": "The reviews it starts run through review-prs, which here runs the generic reviewer and delegation-free specialists inline and fails a specialists manifest that keeps agent-delegation."}}
 }

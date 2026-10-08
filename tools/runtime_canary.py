@@ -22,7 +22,10 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   RUNTIME <runtime> <skill> BLOCKED "<policy>" KEPT "<ambient>"
   RUNTIME <runtime> <skill> FAILED "<reason>" KEPT "<ambient>"
   RUNTIME <runtime> <skill> UNSUPPORTED "<reason>"  the runtime cannot start the skill headless, so it never ran
+  RUNTIME <runtime> <skill> NOT_ATTEMPTED "<reason>"  the skill declares none for the runtime, so it never ran
   TRANSCRIPT <runtime> <skill> "<path>"         the runtime's output for that run
+  MATRIX <runtime> <skill> AGREES <level>       what ran is what the skill's declared runtime support expects
+  MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
 
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
@@ -37,6 +40,12 @@ Bash script, however the runtime names Bash. RAN means the script ran from the c
 skill it declares in skill_deps; a script from the installed copy is a failure, never RAN. Copilot's headless mode
 cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model is called for it.
 --discovery-only lists skills without running any model.
+
+Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
+RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
+capabilities lie past the first script the canary asks for, and `none` is NOT_ATTEMPTED. After the runs, one MATRIX
+line per RUNTIME line compares the two, and the canary exits 1 when any disagrees or a skill declares nothing, so the
+matrix cannot claim more than a run shows.
 
 This is a manual check, never part of tests/run_validation.py: each run calls a model, and a model may choose
 not to run the command. See .claude/skills/runtime-canary/SKILL.md.
@@ -63,7 +72,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 import frontmatter
 
-from deployer import discovery, pipeline, platform_support
+from deployer import discovery, pipeline, platform_support, runtime_support
 from deployer import source as deploy_source
 from deployer.errors import DeployError
 from deployer.paths import Paths
@@ -71,6 +80,12 @@ from deployer.paths import Paths
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 RUNTIMES = ("claude", "codex", "copilot")
+# Each runtime's name in a skill's runtime_support declaration.
+DECLARED_RUNTIME = {"claude": "claude-code", "codex": "codex", "copilot": "copilot-cli"}
+# The outcome a partial skill reaches where the runtime lacks the capability; any other limit lies past the first
+# script the canary asks for, so the skill still runs that far.
+PARTIAL_OUTCOME = {"user-only-start": "UNSUPPORTED"}
+OUTCOME_LINE = re.compile(r"^RUNTIME (\S+) (\S+) ([A-Z_]+)\b")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
 FIXTURE_SKILL = "runtime-canary-probe"
 STATE = ".runtime-canary"
@@ -240,6 +255,50 @@ def dependencies(sources: list[Path]) -> dict[str, list[str]]:
             src = deploy_source.discover(paths, deploy_source.load_source_id(paths))
             closure.update({name: deploy_source.expand(src, [], [name]) for name in src.skills})
     return closure
+
+
+Declarations = Mapping[str, Mapping[str, runtime_support.Support] | None]
+
+
+def declarations(sources: list[Path]) -> dict[str, dict[str, runtime_support.Support] | None]:
+    """Each skill in the sources with its declared runtime support, or None when it declares none."""
+    declared: dict[str, dict[str, runtime_support.Support] | None] = {}
+    for source_dir in sources:
+        paths = Paths(source_dir, source_dir)
+        with contextlib.suppress(DeployError):
+            src = deploy_source.discover(paths, deploy_source.load_source_id(paths))
+            declared.update({name: skill.runtime_support for name, skill in src.skills.items()})
+    return declared
+
+
+def expected(support: runtime_support.Support) -> str:
+    """The outcome a run must reach for the declared support."""
+    if support.level == runtime_support.NONE:
+        return "NOT_ATTEMPTED"
+    if support.level == runtime_support.PARTIAL:
+        return next((PARTIAL_OUTCOME[need] for need in support.needs if need in PARTIAL_OUTCOME), "RAN")
+    return "RAN"
+
+
+def compare(lines: Sequence[str], declared: Declarations) -> list[str]:
+    """One MATRIX line per RUNTIME line: whether what ran is what the skill's declared support expects."""
+    result = []
+    for line in lines:
+        match = OUTCOME_LINE.match(line)
+        if match is None:
+            continue
+        runtime, skill, outcome = match.groups()
+        support = (declared.get(skill) or {}).get(DECLARED_RUNTIME[runtime])
+        if support is None:
+            result.append(f"MATRIX {runtime} {skill} DISAGREES undeclared {quote('it declares no runtime_support')}")
+            continue
+        want = expected(support)
+        if outcome == want:
+            result.append(f"MATRIX {runtime} {skill} AGREES {support.level}")
+        else:
+            reason = f"{support.level} expects {want}, but the run was {outcome}"
+            result.append(f"MATRIX {runtime} {skill} DISAGREES {support.level} {quote(reason)}")
+    return result
 
 
 def environment(base: Mapping[str, str], script_log: Path, home: Path) -> dict[str, str]:
@@ -510,6 +569,7 @@ def check_runtime(
     closure: Mapping[str, list[str]],
     codex_sandbox: str = DEFAULT_CODEX_SANDBOX,
     talk: discovery.Converse | None = None,
+    declared: Declarations | None = None,
 ) -> list[str]:
     lines = []
     # Claude Code has no listing; its run reports the skills it found.
@@ -524,6 +584,10 @@ def check_runtime(
         return lines
     lines += [f"SUPPLIED {runtime} {quote(setting)}" for setting in supplied(runtime, codex_sandbox)]
     for skill in skills:
+        support = ((declared or {}).get(skill) or {}).get(DECLARED_RUNTIME[runtime])
+        if support is not None and support.level == runtime_support.NONE:
+            lines.append(f"RUNTIME {runtime} {skill} NOT_ATTEMPTED {quote(support.reason)}")
+            continue
         reason = unsupported(runtime, skill, home)
         if reason:
             lines.append(f"RUNTIME {runtime} {skill} UNSUPPORTED {quote(reason)}")
@@ -570,16 +634,33 @@ def canary(
     (state / "recorder" / "bash_env.sh").write_text(BASH_RECORDER, encoding="utf-8", newline="\n")
     ordered = [FIXTURE_SKILL, *(skill for skill in dict.fromkeys(skills) if skill != FIXTURE_SKILL)]
     closure = dependencies(sources)
+    declared = declarations(sources)
+    printed = []
     for runtime in runtimes:
         executable = which(runtime)
         if executable is None:
             print(f"SKIPPED {runtime} {quote(f'{runtime} is not on PATH')}")
             continue
         for line in check_runtime(
-            runtime, executable, ordered, home, base, runner, discovery_only, timeout, closure, codex_sandbox, talk
+            runtime,
+            executable,
+            ordered,
+            home,
+            base,
+            runner,
+            discovery_only,
+            timeout,
+            closure,
+            codex_sandbox,
+            talk,
+            declared,
         ):
             print(line, flush=True)
-    return 0
+            printed.append(line)
+    matrix = compare(printed, declared)
+    for line in matrix:
+        print(line, flush=True)
+    return 1 if any(" DISAGREES " in line for line in matrix) else 0
 
 
 def create_home() -> Path:

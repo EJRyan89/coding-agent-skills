@@ -149,6 +149,93 @@ def metadata_format_problems(root: Path) -> list[str]:
     return problems
 
 
+INVOKED_SKILL = re.compile(r"`([a-z0-9-]+)[` ]")
+
+
+def _skill_file(root: Path, name: str) -> Path | None:
+    candidates = [root / "skills" / name, *sorted((root / "skills").glob(f"*/{name}"))]
+    return next((path / "SKILL.md" for path in candidates if (path / "SKILL.md").is_file()), None)
+
+
+def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
+    """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
+
+    An invoked skill is a backticked skill name on a SKILL.md line that says "invoke", the rule
+    tests/ai-config/test_cross_skill_contracts.py applies; its limits reach the step that invokes it.
+    """
+    import frontmatter
+
+    from deployer import runtime_support
+
+    skill_md = _skill_file(root, name)
+    if skill_md is None:
+        return set()
+    document = frontmatter.read(skill_md)
+    granted = document.value("allowed-tools") or []
+    user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
+    needs = runtime_support.frontmatter_needs(granted if isinstance(granted, list) else [granted], user_only)
+    invoked = {
+        match
+        for line in skill_md.read_text(encoding="utf-8-sig").splitlines()
+        if "invoke" in line
+        for match in INVOKED_SKILL.findall(line)
+        if match != name and match not in seen and _skill_file(root, match) is not None
+    }
+    for other in sorted(invoked):
+        # Starting an invoked skill is the invoker's step, so only what the invoked skill does carries over.
+        needs |= derived_needs(root, other, seen | {name}) - {"user-only-start"}
+    return needs
+
+
+def runtime_support_problems(root: Path) -> list[str]:
+    """Report deploy-meta files whose runtime support is missing or does not follow from what the skill needs.
+
+    A selectable skill is full on a runtime that offers every capability it needs (derived_needs), and otherwise
+    partial or none, naming exactly the capabilities that runtime lacks. A hidden skill is none everywhere, since no
+    runtime starts it.
+    """
+    from deployer import runtime_support
+
+    problems: list[str] = []
+    for metadata in sorted((root / "deploy-meta").glob("*.json")):
+        name = f"deploy-meta/{metadata.name}"
+        document = json.loads(metadata.read_text(encoding="utf-8"))
+        if "runtime_support" not in document:
+            problems.append(f"{name} declares no runtime_support; see {METADATA_DOC}")
+            continue
+        try:
+            declared = runtime_support.parse(document["runtime_support"])
+        except runtime_support.RuntimeSupportError as exc:
+            problems.append(f"{name}: {exc}; see {METADATA_DOC}")
+            continue
+        if document.get("selectable", True) is False:
+            problems += [
+                f"{name} declares {runtime} {support.level}, but a hidden skill is none on every runtime"
+                for runtime, support in declared.items()
+                if support.level != runtime_support.NONE
+            ]
+            continue
+        needs = derived_needs(root, metadata.stem)
+        for runtime, support in declared.items():
+            lacking = runtime_support.lacking(runtime, needs)
+            if not lacking and support.level != runtime_support.FULL:
+                problems.append(
+                    f"{name} declares {runtime} {support.level}, but {runtime} offers everything the skill needs, "
+                    f"so it is full; see {METADATA_DOC}"
+                )
+            elif lacking and support.level == runtime_support.FULL:
+                problems.append(
+                    f"{name} declares {runtime} full, but {runtime} lacks {', '.join(lacking)}, "
+                    f"so it is partial or none; see {METADATA_DOC}"
+                )
+            elif lacking and tuple(sorted(support.needs)) != tuple(sorted(lacking)):
+                problems.append(
+                    f"{name} declares {runtime} needs {', '.join(support.needs) or 'nothing'}, "
+                    f"but {runtime} lacks {', '.join(lacking)}; see {METADATA_DOC}"
+                )
+    return problems
+
+
 INSTALL_PATH = re.compile(r"\{\{HOME\}\}/\.claude/skills/([A-Za-z0-9._-]+)")
 SIBLING_PATH = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/\.\./([A-Za-z0-9._-]+)")
 # A concrete file a skill names through its directory; a pattern such as scripts/* in a grant names none.
@@ -467,6 +554,9 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_deploy_metadata_is_in_the_canonical_format(self) -> None:
         self.assertEqual([], metadata_format_problems(REPOSITORY_ROOT))
+
+    def test_runtime_support_follows_from_what_each_skill_needs(self) -> None:
+        self.assertEqual([], runtime_support_problems(REPOSITORY_ROOT))
 
     def test_skill_scripts_declare_each_sibling_they_put_on_sys_path(self) -> None:
         self.assertEqual([], script_dependency_problems(REPOSITORY_ROOT))

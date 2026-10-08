@@ -1,4 +1,5 @@
 {
     "required_vars": [],
-    "shared_deps": []
+    "shared_deps": [],
+    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 }

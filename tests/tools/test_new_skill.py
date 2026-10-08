@@ -20,9 +20,14 @@ from tools import new_skill, skill_reference
 
 README = (
     "# Fixture\n\n## Included skills\n\n| Skill | What it does |\n|---|---|\n"
-    "| [`alpha`](docs/skills.md#alpha) | Alpha. |\n| `suite` | A bundle. |\n\nSee [Skills](docs/skills.md).\n"
+    "| [`alpha`](docs/skills.md#alpha) | Alpha. |\n| `suite` | A bundle. |\n\nSee [Skills](docs/skills.md) and "
+    "[Runtime support](docs/skills.md#runtime-support).\n"
 )
-REFERENCE = "# Skills\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n"
+REFERENCE = (
+    "# Skills\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n\n"
+    "<!-- generated:runtime-support -->\n<!-- /generated:runtime-support -->\n"
+)
+FULL = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 DESCRIPTION = 'Report "widgets" in a repository with spaces — use it when asked about them.'
 
 
@@ -83,7 +88,7 @@ class NewSkillTestCase(unittest.TestCase):
             fm.read(skill_md).value("allowed-tools"),
         )
         self.assertEqual(
-            {"required_vars": [], "shared_deps": ["runtime-compatibility.md"]},
+            {"required_vars": [], "shared_deps": ["runtime-compatibility.md"], "runtime_support": FULL},
             json.loads((self.root / "deploy-meta" / "widget-report.json").read_text(encoding="utf-8")),
         )
         reference = (self.root / "docs" / "skills.md").read_text(encoding="utf-8")
@@ -129,12 +134,35 @@ class NewSkillTestCase(unittest.TestCase):
         # The canonical layout that validation holds every deploy-meta file to.
         self.assertEqual(
             '{\n    "required_vars": [],\n    "shared_deps": ["runtime-compatibility.md"],\n    "tools": ["gh"],\n'
-            '    "opt_in": true\n}\n',
+            '    "opt_in": true,\n    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": '
+            '{"level": "partial", "needs": ["user-only-start"], "reason": "A headless copilot -p session cannot start '
+            'it; start it from an interactive session."}}\n}\n',
             (self.root / "deploy-meta" / "tidy.json").read_text(encoding="utf-8"),
         )
         self.assertIn(
             "Started by you. Opt-in: deploy it with `--include tidy`. Needs `gh`. Takes no arguments.",
             (self.root / "docs" / "skills.md").read_text(encoding="utf-8"),
+        )
+
+    def test_a_skill_granted_agent_and_workflow_is_scaffolded_partial_where_a_runtime_lacks_them(self) -> None:
+        new_skill.scaffold(self.root, "fan-out", DESCRIPTION, allowed_tools=["Read", "Agent", "Workflow"])
+
+        self.assertEqual(
+            {
+                "claude-code": "full",
+                "codex": {
+                    "level": "partial",
+                    "needs": ["workflow"],
+                    "reason": "It uses Claude Code's Workflow tool, which this runtime lacks.",
+                },
+                "copilot-cli": {
+                    "level": "partial",
+                    "needs": ["agent-delegation", "workflow"],
+                    "reason": "It starts subagents, which this runtime cannot. "
+                    "It uses Claude Code's Workflow tool, which this runtime lacks.",
+                },
+            },
+            json.loads((self.root / "deploy-meta" / "fan-out.json").read_text(encoding="utf-8"))["runtime_support"],
         )
 
     def test_refusals_change_nothing(self) -> None:

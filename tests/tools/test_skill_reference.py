@@ -14,11 +14,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools import skill_reference
 
-INITIAL_REFERENCE = "# Skills\n\nIntro.\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n"
+INITIAL_REFERENCE = (
+    "# Skills\n\nIntro.\n\n<!-- generated:summary -->\n<!-- /generated:summary -->\n\n## Runtime support\n\n"
+    "<!-- generated:runtime-support -->\n<!-- /generated:runtime-support -->\n"
+)
 README = (
     "# Fixture\n\n## Included skills\n\n| Skill | What it does |\n|---|---|\n"
     "| [`alpha`](docs/skills.md#alpha) | Sweeps. |\n| `suite` | A bundle: [`beta`](docs/skills.md#beta). |\n\n"
-    "See [Skills](docs/skills.md).\n\n## Other\n"
+    "See [Skills](docs/skills.md) and [Runtime support](docs/skills.md#runtime-support).\n\n## Other\n"
 )
 
 
@@ -32,7 +35,20 @@ class SkillReferenceTestCase(unittest.TestCase):
             "alpha",
             'description: "Sweeps every repository under {{REPOS_ROOT}}, '
             '\\"carefully\\". Use it when asked to sweep."\nargument-hint: "[--flag X]"',
-            {"required_vars": ["REPOS_ROOT"], "opt_in": True, "tools": ["copilot"]},
+            {
+                "required_vars": ["REPOS_ROOT"],
+                "opt_in": True,
+                "tools": ["copilot"],
+                "runtime_support": {
+                    "claude-code": "full",
+                    "codex": {"level": "none", "reason": "Not tried."},
+                    "copilot-cli": {
+                        "level": "partial",
+                        "needs": ["user-only-start", "agent-delegation"],
+                        "reason": "Start it interactively.",
+                    },
+                },
+            },
         )
         self.add_skill(
             "beta",
@@ -93,6 +109,24 @@ class SkillReferenceTestCase(unittest.TestCase):
         )
         # A skill lists only the tools it declares: beta does not run gamma's copilot through its dependency.
         self.assertNotIn("copilot", text[text.index("## `beta`") :])
+
+    def test_write_generates_the_runtime_support_table_and_explains_each_partial_or_none(self) -> None:
+        skill_reference.write(self.root)
+        text = self.text()
+        start, end = text.index("<!-- generated:runtime-support -->"), text.index("<!-- /generated:runtime-support -->")
+
+        self.assertEqual(
+            "<!-- generated:runtime-support -->\n"
+            "| Skill | Claude Code | Codex CLI | Copilot CLI |\n"
+            "|---|---|---|---|\n"
+            "| [`alpha`](#alpha) | Full | None | Partial |\n"
+            "| [`beta`](#beta) | Not declared | Not declared | Not declared |\n"
+            "\n"
+            "- `alpha` on Codex CLI: none. Not tried.\n"
+            "- `alpha` on Copilot CLI: partial, lacking `user-only-start` and `agent-delegation`. "
+            "Start it interactively.\n",
+            text[start:end],
+        )
 
     def test_a_section_without_hand_written_prose_is_reported(self) -> None:
         skill_reference.write(self.root)
@@ -204,6 +238,8 @@ class SkillReferenceTestCase(unittest.TestCase):
             [
                 "README.md: 'Included skills' has no row for `suite`",
                 "README.md: 'Included skills' does not link docs/skills.md",
+                "README.md: 'Included skills' does not link docs/skills.md#runtime-support, "
+                "which says which runtimes run each skill",
             ],
             skill_reference.problems(self.root),
         )
@@ -240,6 +276,12 @@ class SkillReferenceTestCase(unittest.TestCase):
         self.assertEqual(1, len(found))
         self.assertIn("no summary block", found[0])
         with self.assertRaisesRegex(skill_reference.ReferenceError, "no summary block"):
+            skill_reference.write(self.root)
+
+    def test_a_reference_without_a_runtime_support_block_is_reported(self) -> None:
+        self.reference.write_text(INITIAL_REFERENCE.split("\n## Runtime support")[0], encoding="utf-8")
+
+        with self.assertRaisesRegex(skill_reference.ReferenceError, "no runtime-support block"):
             skill_reference.write(self.root)
 
     def test_a_folded_description_is_read_as_one_line(self) -> None:

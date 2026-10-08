@@ -4,5 +4,6 @@
     "skill_deps": ["skill-core"],
     "tools": ["dotnet-format"],
     "optional_tools": ["gh"],
-    "opt_in": true
+    "opt_in": true,
+    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 }

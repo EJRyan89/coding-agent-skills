@@ -1,5 +1,6 @@
 {
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
-    "skill_deps": ["code-review-core", "skill-core"]
+    "skill_deps": ["code-review-core", "skill-core"],
+    "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 }
