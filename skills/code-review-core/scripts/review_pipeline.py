@@ -92,7 +92,7 @@ from review_operation import (
     latest_reviewed_heads,
     parse_pull_selector,
     prior_severities,
-    repository_watermark,
+    recorded_watermark,
     reviewed_head,
     safe_watermark,
     select_eligible_pulls,
@@ -1884,17 +1884,43 @@ def enumerate_batch(
     batch: dict[str, Any] = {"schema_version": BATCH_SCHEMA_VERSION, "today": today.isoformat(), "repositories": {}}
 
     def listing(repository: str) -> dict[str, Any]:
-        watermark = repository_watermark(state, repository, today)
+        recorded = recorded_watermark(state, repository)
+        # A repository without a watermark starts today, so its first batch run reviews only open pull requests
+        # instead of every merged pull request in its history.
+        watermark = today if recorded is None else recorded
         entry: dict[str, Any] = {
             "previous_watermark": watermark.isoformat(),
             "complete": False,
             "error": None,
             "eligible": [],
+            "listing": None,
         }
+        read: list[int] = []
+
+        def reviewed_heads(numbers: list[int]) -> dict[int, str]:
+            read.extend(numbers)
+            return latest_reviewed_heads(archive_root, repository, numbers)
+
         try:
-            pulls = services.github.list_pulls(repository, state="all")
-            heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in pulls])
-            entry["eligible"] = select_eligible_pulls(pulls, merged_since=watermark, reviewed_heads=heads, force=force)
+            if recorded is None:
+                # No watermark yet: list the whole history once; `advance` then records one.
+                listings = [services.github.list_pulls(repository, state="all")]
+            else:
+                listings = [
+                    services.github.list_pulls(repository, state="open"),
+                    services.github.list_closed_pulls_since(repository, watermark),
+                ]
+            # A pull request merged between the two listings is in both; the later listing is the current one.
+            pulls = {pull["number"]: pull for found in listings for pull in found.pulls}
+            entry["eligible"] = select_eligible_pulls(
+                pulls.values(), merged_since=watermark, reviewed_heads=reviewed_heads, force=force
+            )
+            entry["listing"] = {
+                "scan": "full" if recorded is None else "watermark",
+                "pages": sum(found.pages for found in listings),
+                "pulls": len(pulls),
+                "read": len(read),
+            }
             entry["complete"] = True
         except (GitHubError, ReviewOperationError, ArchiveError, PersistenceError, RecordError) as exc:
             entry["error"] = str(exc)
@@ -2132,6 +2158,12 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
     for repository, entry in batch["repositories"].items():
         if not entry["complete"]:
             print(f"REPOSITORY_FAILED {repository} {entry['error']}")
+        else:
+            found = entry["listing"]
+            print(
+                f"LISTED {repository} scan={found['scan']} pages={found['pages']} pulls={found['pulls']} "
+                f"read={found['read']} candidates={len(entry['eligible'])}"
+            )
         for pull in entry["eligible"]:
             print(f"PULL {repository}#{pull['number']}")
     print(f"BATCH {output}")

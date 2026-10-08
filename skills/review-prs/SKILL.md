@@ -19,7 +19,7 @@ Every `--re-review` needs `--scope`, which applies to all of them. If `--re-revi
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" enumerate
    ```
-   Review each printed `PULL <owner/repo#number>`. Report each `REPOSITORY_FAILED <repository> <error>`. The last line, `BATCH <batch file>`, names the batch file it wrote under a new temporary directory; step 6 uses it.
+   Review each printed `PULL <owner/repo#number>`. Report each `REPOSITORY_FAILED <repository> <error>`, and each `LISTED <repository> ... candidates=<n>` line's counts in one line per repository. The last line, `BATCH <batch file>`, names the batch file it wrote under a new temporary directory; step 6 uses it.
 2. **Prepare** the pull requests in groups of up to four, one `--pull` per pull request in one command (or `--re-review` for one given with `--re-review`), adding `--scope` when the command has a `--re-review`, and `--force` when given. `--host` names the runtime this session is running in: `claude-code`, `codex`, or `copilot-cli`. Add `--inline` when this session cannot start subagents, or the user asked for an inline review. Give it a timeout of at least 10 minutes:
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/../code-review-core/scripts/review_pipeline.py" prepare --host "<runtime>" --pull "<owner/repo#number>" --pull "<owner/repo#number>"
