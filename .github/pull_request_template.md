@@ -26,6 +26,7 @@ Closes #
 - [ ] `python -B tests/run_validation.py` passes in full, with no skipped prerequisites
 - [ ] Regression coverage added or updated for every behavior change
 - [ ] For a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are below, with each runtime's version and any `SKIPPED` reason
+- [ ] For a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited below with its table, and `docs/skill-evaluations.md` holds its result
 - [ ] For a skill change, `analyze-skill-cost` audited each changed skill from the source tree with no MUST FIX left; any SUGGESTION left is named below with why
 - [ ] Documentation updated in this change
 - [ ] Diff reviewed for personal paths, organization names, credentials, and generated artifacts

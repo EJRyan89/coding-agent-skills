@@ -1,7 +1,8 @@
-"""Judge a skill's runs of fixed scenarios, model by model, against the review record each run wrote.
+"""Run a skill's fixed scenarios, model by model, and judge the review record each run wrote.
 
 Usage:
-  python -B tools/skill_evals.py SKILL --records DIR [--scenario NAME ...] [--model NAME ...]
+  python -B tools/skill_evals.py SKILL [--write] [--timeout SECONDS] [--jobs N]
+  python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--records DIR]
 
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships. It is a code-review
 fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews in place of a pull request: the
@@ -34,35 +35,92 @@ Records come from a record source, a function of a scenario and a model that ret
 --records DIR reads DIR/<scenario>/<model>.json, the record JSON a run finalized. A missing or unreadable record fails
 every expectation of its scenario and model.
 
+Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
+deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model
+in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
+session's model: a fixture's generic reviewer has no MODEL line, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
+Then, for each scenario and model, up to --jobs at once, it starts Claude Code headless with the model's home as
+its working directory, so the deployed skills and agent load as project ones, and the prompt
+`/<skill> <prepare_arguments>`. The session, which orchestrates the skill, stays on SESSION_MODEL. It has no
+Workflow tool, so reviewers start as native subagents, whose messages --forward-subagent-text puts in the
+transcript with the model each ran on. A run counts only if every one of those messages names that model's family;
+a run with no subagent, or one on another model, fails every expectation, since the model was not the one judged.
+Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
+inside the home, and the reviewers' self-check command is allowed; the skill's allowed-tools grant the rest. Each
+run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every system,
+so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
+highest review version in that canary root. The code-review configuration the runs read is written there too.
+
+What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
+canary, and the reviewer agent's guard: its hook finds review_guard.py in the profile folder's
+.claude/skills/code-review-core, so the installed copy runs, and the run refuses to start without one.
+
 Output, one fact per line:
+  HOME "<dir>"                                    the throwaway directory, one home per model inside it
+  DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run
+  RUNTIME claude <version>
+  TRANSCRIPT <scenario> <model> "<path>"          a run finished; its stream-json output, in the order runs end
+  REVIEWER <model> <model ID>[,<model ID>]        the models the reviewers ran on, or `none`
   PASS <skill> <scenario> <model> <expectation>
   FAIL <skill> <scenario> <model> <expectation> "<reason>"
-  FAILED "<reason>"                               the scenarios could not be loaded; nothing was judged
+  FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
+                                                  or Claude Code or the installed guard is missing
 then a Markdown table, one row per scenario and one column per model, each cell the expectations passed of those
-checked. It exits 1 on any FAIL or FAILED line, 0 otherwise, and 2 on a usage error.
+checked, then `WROTE <file>` when --write replaced the skill's rows in docs/skill-evaluations.md, and `REMOVED
+"<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. It exits 1 on any
+FAIL or FAILED line, 0 otherwise, and 2 on a usage error.
 
-It records pass or fail and nothing else: no tokens, cost, or timings.
+It records pass or fail, the model identifiers, the runtime version, and the date, and nothing else: no tokens,
+cost, or timings. It calls models, so it is never part of validation; see .claude/skills/evaluate-skill/SKILL.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import datetime
 import json
+import os
 import re
+import shutil
 import sys
+import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from deployer import platform_support
+import frontmatter
+
+from deployer import fsops, platform_support, tools
+from tools import runtime_canary
+from tools.runtime_canary import Completed, Runner
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals"
-# The reviewer subagent models a run is judged on, as the Agent tool names them. The one place they are named.
+RESULTS = REPOSITORY_ROOT / "docs" / "skill-evaluations.md"
+# The reviewer subagent models a run is judged on, as Claude Code names them. The one place they are named.
 MODELS = ("haiku", "sonnet", "opus")
+# The session's own model, which orchestrates the skill: the strongest, so the orchestration never limits a result.
+SESSION_MODEL = MODELS[-1]
+DEFAULT_TIMEOUT = 1800
+DEFAULT_JOBS = 3
+# The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs from the profile.
+REVIEWER_AGENT = Path(".claude") / "agents" / "code-review-reviewer.md"
+INSTALLED_GUARD = Path(".claude") / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+# The one command a reviewer runs besides its file tools: its self-check, which review_pipeline.py writes as
+# python -B "<script>" validate-result --run "<run>" --role "<role>".
+SELF_CHECK = 'python -B "*review_pipeline.py" validate-result --run *'
+STATE = ".skill-evals"
+RESULTS_BEGIN = "<!-- skill-evals:begin -->"
+RESULTS_END = "<!-- skill-evals:end -->"
+RESULTS_HEADER = (
+    "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+)
 SEVERITIES = ("SUGGESTION", "SHOULD_FIX", "MUST_FIX")
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = ("addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify")
@@ -402,6 +460,304 @@ def records_in(directory: Path) -> RecordSource:
     return source
 
 
+# Running
+
+
+@dataclass(frozen=True)
+class Run:
+    """One scenario run on one model: the record it wrote, or why it counts for nothing, and the models it used."""
+
+    record: Record | None
+    failure: str | None
+    reviewers: frozenset[str]
+    session: frozenset[str]
+
+
+def review_config(directory: Path) -> dict[str, Any]:
+    """The code-review configuration every run reads. A fixture is reviewed by the generic reviewer whatever is
+    configured, so the one repository is a placeholder; only the runtime and the verdict policy matter."""
+    generic = {"id": "generic", "protocol_version": 1, "trusted_ref": None, "scope": "generic", "manifest_path": None}
+    return {
+        "schema_version": 1,
+        "default_repository_set": "evaluations",
+        "repository_sets": {"evaluations": ["example/unrelated"]},
+        "repositories": {"example/unrelated": {"reviewer": generic, "checkout_path": None}},
+        "archive_root": str(directory / "archive"),
+        "local_mirror_root": None,
+        "summary_root": str(directory / "summaries"),
+        "dashboard_file": str(directory / "dashboard.md"),
+        "github_login": "reviewer",
+        "runtime": "claude-code",
+        "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+        "dashboard": {},
+    }
+
+
+def prompt(scenario: Scenario) -> str:
+    """The skill started by name with the scenario's prepare arguments, each path quoted."""
+    arguments = [item if item.startswith("--") else f'"{item}"' for item in prepare_arguments(scenario)]
+    return " ".join([f"/{scenario.skill}", *arguments])
+
+
+def claude_command(executable: str, scenario: Scenario) -> list[str]:
+    # Project settings only, so the installed skills and agents do not load beside the home's, and no Workflow tool,
+    # so reviewers start as native subagents whose messages the transcript carries with their model.
+    return [
+        executable,
+        "-p",
+        prompt(scenario),
+        "--model",
+        SESSION_MODEL,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--forward-subagent-text",
+        "--setting-sources",
+        "project,local",
+        "--strict-mcp-config",
+        "--no-session-persistence",
+        "--disallowedTools",
+        "Workflow",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        f"Bash({SELF_CHECK})",
+        f"PowerShell({SELF_CHECK})",
+    ]
+
+
+def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[str, str]:
+    """The user's environment, sign-in included, with the run's own temporary directory and code-review files."""
+    return {
+        **base,
+        "TMPDIR": str(run / "tmp"),
+        "CODE_REVIEW_CONFIG": str(config),
+        "CODE_REVIEW_STATE": str(run / "state.json"),
+        "CODE_REVIEW_FLAGS": str(run / "flags.json"),
+    }
+
+
+def set_reviewer_model(home: Path, model: str) -> str | None:
+    """Put the model in the home's copy of the reviewer agent in place of `model: inherit`; return why it could
+    not, or None."""
+    path = home / REVIEWER_AGENT
+    try:
+        lines = path.read_text(encoding="utf-8").split("\n")
+        at = lines.index("model: inherit", 1, lines.index("---", 1))
+    except (OSError, ValueError):
+        return f"{runtime_canary.forward(path)} has no frontmatter line `model: inherit` to set"
+    lines[at] = f"model: {model}"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return None if frontmatter.read(path).string("model") == model else f"the reviewer agent does not read as {model}"
+
+
+def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
+    """The models the session's own messages named, and those its subagents' messages named."""
+    session: set[str] = set()
+    subagents: set[str] = set()
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            not isinstance(event, dict)
+            or event.get("type") != "assistant"
+            or not isinstance(event.get("message"), dict)
+        ):
+            continue
+        model = event["message"].get("model")
+        # A message Claude Code writes itself, such as an API error, names no model of its own.
+        if isinstance(model, str) and model.startswith("claude-"):
+            (subagents if event.get("parent_tool_use_id") else session).add(model)
+    return frozenset(session), frozenset(subagents)
+
+
+def find_record(directory: Path) -> Record:
+    """The highest review version under the canary roots in a run's temporary directory."""
+    records = []
+    for path in sorted(directory.glob("code-review-canary-*/**/*.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        review = value.get("review") if isinstance(value, dict) else None
+        if isinstance(review, dict) and isinstance(review.get("version"), int):
+            records.append(value)
+    if not records:
+        raise RecordError("the run recorded no review")
+    return max(records, key=lambda record: record["review"]["version"])
+
+
+def run_failure(model: str, completed: Completed, timeout: float, skill: str, missing: str | None) -> str | None:
+    """Why a run counts for nothing, or None when it recorded a review on the model it was given."""
+    listed, denials = runtime_canary.claude_stream(completed.stdout)
+    reviewers = stream_models(completed.stdout)[1]
+    if missing is not None:
+        reasons = [missing]
+        if completed.timed_out:
+            reasons.append(f"timed out after {timeout:g} seconds")
+        elif completed.returncode != 0:
+            reasons.append(f"Claude Code exited with code {completed.returncode}")
+        if listed is not None and skill not in listed:
+            reasons.append(f"Claude Code did not list {skill}")
+        if denials:
+            reasons.append(f"denied: {'; '.join(denials)}")
+        return "; ".join(reasons)
+    if not reviewers:
+        return "no reviewer subagent ran, so the record is not the model's"
+    other = sorted(name for name in reviewers if f"claude-{model}-" not in name)
+    if other:
+        return f"reviewers ran on {', '.join(other)}, not {model}"
+    return None
+
+
+def run_scenario(
+    scenario: Scenario, model: str, home: Path, executable: str, base: Mapping[str, str], runner: Runner, timeout: float
+) -> tuple[Run, Path]:
+    """Run the scenario once in the model's home; return what it gave and its transcript."""
+    run = home / STATE / scenario.name
+    (run / "tmp").mkdir(parents=True)
+    environment = run_environment(base, run, home / STATE / "config.json")
+    completed = runner(claude_command(executable, scenario), home, environment, timeout)
+    transcript = run / "transcript.jsonl"
+    transcript.write_text(completed.stdout, encoding="utf-8")
+    if completed.stderr:
+        transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
+    record: Record | None = None
+    missing = None
+    try:
+        record = find_record(run / "tmp")
+    except RecordError as exc:
+        missing = str(exc)
+    failure = run_failure(model, completed, timeout, scenario.skill, missing)
+    session, reviewers = stream_models(completed.stdout)
+    return Run(None if failure else record, failure, reviewers, session), transcript
+
+
+def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[int, str]]) -> str | None:
+    """Deploy the checkout into the model's home and set its reviewer model; return why that failed, or None."""
+    home.mkdir(parents=True)
+    code, log = deploy(home, REPOSITORY_ROOT)
+    if code != 0:
+        (home / STATE).mkdir(exist_ok=True)
+        log_file = home / STATE / "deploy.log"
+        log_file.write_text(log, encoding="utf-8")
+        return f"the deployment failed; its log is {runtime_canary.forward(log_file)}"
+    reason = set_reviewer_model(home, model)
+    if reason:
+        return reason
+    (home / STATE).mkdir(exist_ok=True)
+    (home / STATE / "config.json").write_text(json.dumps(review_config(home / STATE), indent=2), encoding="utf-8")
+    return None
+
+
+def run_all(
+    scenarios: Sequence[Scenario],
+    homes: Mapping[str, Path],
+    executable: str,
+    base: Mapping[str, str],
+    runner: Runner,
+    timeout: float,
+    jobs: int,
+) -> dict[tuple[str, str], Run]:
+    """Every scenario on every model with a home, up to `jobs` at once, printing each transcript as its run ends."""
+    runs: dict[tuple[str, str], Run] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
+        pending = {
+            pool.submit(run_scenario, scenario, model, home, executable, base, runner, timeout): (scenario.name, model)
+            for scenario in scenarios
+            for model, home in homes.items()
+        }
+        for future in concurrent.futures.as_completed(pending):
+            run, transcript = future.result()
+            runs[pending[future]] = run
+            print(f"TRANSCRIPT {' '.join(pending[future])} {quote(runtime_canary.forward(transcript))}", flush=True)
+    return runs
+
+
+def runs_source(runs: Mapping[tuple[str, str], Run]) -> RecordSource:
+    """A record source over finished runs."""
+
+    def source(scenario: Scenario, model: str) -> Record:
+        run = runs[(scenario.name, model)]
+        if run.record is None:
+            raise RecordError(run.failure or "the run recorded no review")
+        return run.record
+
+    return source
+
+
+def claude_version(executable: str, runner: Runner, base: Mapping[str, str], directory: Path) -> str:
+    completed = runner([executable, "--version"], directory, dict(base), 60)
+    version = tools.parse_version(completed.stdout) if completed.returncode == 0 else None
+    return tools.format_version(version) if version else "unknown"
+
+
+# Recording the result
+
+
+def _cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def result_rows(
+    skill: str,
+    scenarios: Sequence[Scenario],
+    models: Sequence[str],
+    outcomes: Sequence[Outcome],
+    runs: Mapping[tuple[str, str], Run],
+    version: str,
+    today: datetime.date,
+) -> list[str]:
+    """One row per model: the model IDs its reviewers ran on, its expectations passed, and the run's versions; a
+    model none of whose reviewers ran is recorded as not run, with the first reason."""
+    rows = []
+    for model in models:
+        mine = [runs[(scenario.name, model)] for scenario in scenarios if (scenario.name, model) in runs]
+        reviewers = sorted({name for run in mine for name in run.reviewers})
+        session = ", ".join(sorted({name for run in mine for name in run.session})) or "unknown"
+        theirs = [outcome for outcome in outcomes if outcome.model == model]
+        passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
+        if reviewers:
+            identifier = ", ".join(reviewers)
+            detail = ", ".join(
+                f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
+                f"/{sum(1 for o in theirs if o.scenario == scenario.name)}"
+                for scenario in scenarios
+            )
+        else:
+            identifier = "not run"
+            detail = next((outcome.failure for outcome in theirs if outcome.failure), "no run")
+        cells = [skill, model, identifier, passed, detail, session, version, today.isoformat()]
+        rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
+    return rows
+
+
+def results_table(text: str) -> tuple[int, int]:
+    """The line indexes of the results markers in docs/skill-evaluations.md, or a ScenarioError."""
+    lines = text.split("\n")
+    if lines.count(RESULTS_BEGIN) != 1 or lines.count(RESULTS_END) != 1:
+        raise ScenarioError(f"the results file needs one {RESULTS_BEGIN} line and one {RESULTS_END} line")
+    begin, end = lines.index(RESULTS_BEGIN), lines.index(RESULTS_END)
+    if end < begin:
+        raise ScenarioError(f"{RESULTS_END} comes before {RESULTS_BEGIN} in the results file")
+    return begin, end
+
+
+def replace_results(text: str, skill: str, rows: Sequence[str]) -> str:
+    """The results file with the skill's rows replaced by these, every other skill's rows kept, sorted by skill."""
+    lines = text.split("\n")
+    begin, end = results_table(text)
+    kept = [
+        line
+        for line in lines[begin + 1 : end]
+        if line.startswith("| ") and line not in RESULTS_HEADER and line.split("|")[1].strip() != skill
+    ]
+    table = sorted([*kept, *rows], key=lambda line: line.split("|")[1].strip())
+    return "\n".join([*lines[: begin + 1], *RESULTS_HEADER, *table, *lines[end:]])
+
+
 # Judging and reporting
 
 
@@ -442,29 +798,125 @@ def table(scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequen
     return lines
 
 
+def report(skill: str, scenarios: Sequence[Scenario], models: Sequence[str], outcomes: Sequence[Outcome]) -> bool:
+    """Print every outcome and the table; return whether any expectation failed."""
+    for outcome in outcomes:
+        print(outcome_line(skill, outcome))
+    for line in table(scenarios, models, outcomes):
+        print(line)
+    return any(outcome.failure is not None for outcome in outcomes)
+
+
+def new_home() -> Path:
+    return Path(tempfile.mkdtemp(prefix="skill-evals-")).resolve()
+
+
+@dataclass(frozen=True)
+class Seams:
+    """What a run reaches outside this module, so tests can stand in for each."""
+
+    runner: Runner = runtime_canary.run_process
+    which: Callable[[str], str | None] = shutil.which
+    deploy: Callable[[Path, Path], tuple[int, str]] = runtime_canary.deploy
+    environment: Mapping[str, str] | None = None
+    make_home: Callable[[], Path] = new_home
+    today: Callable[[], datetime.date] = datetime.date.today
+    results: Path = RESULTS
+
+
+def preflight(write: bool, seams: Seams, base: Mapping[str, str]) -> tuple[str, str | None]:
+    """Claude Code's path and, with --write, the results file's text; raise ScenarioError before any run when
+    something a run needs is missing."""
+    executable = seams.which("claude")
+    if executable is None:
+        raise ScenarioError("Claude Code (claude) is not on PATH")
+    guard = platform_support.home_directory(base) / INSTALLED_GUARD
+    if not guard.is_file():
+        raise ScenarioError(
+            f"the reviewer agent's hook runs {runtime_canary.forward(guard)}, which is missing; "
+            "deploy code-review-core from the hub first"
+        )
+    if not write:
+        return executable, None
+    try:
+        text = seams.results.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ScenarioError(f"cannot read {seams.results}: {exc}") from exc
+    results_table(text)
+    return executable, text
+
+
+def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namespace, seams: Seams) -> int:
+    """Run every scenario on every model from throwaway homes, judge the records, and print the result."""
+    models = list(dict.fromkeys(options.model or MODELS))
+    base = dict(os.environ if seams.environment is None else seams.environment)
+    try:
+        executable, results_text = preflight(options.write, seams, base)
+    except ScenarioError as exc:
+        print(f"FAILED {quote(str(exc))}")
+        return 1
+    root = seams.make_home()
+    print(f"HOME {quote(runtime_canary.forward(root))}", flush=True)
+    homes = {model: root / model for model in models}
+    for model, home in homes.items():
+        reason = prepare_home(home, model, seams.deploy)
+        if reason:
+            print(f"DEPLOY_FAILED {model} {quote(reason)}")
+            return 1
+        print(f"DEPLOYED {model} {runtime_canary.source_id(REPOSITORY_ROOT)}", flush=True)
+    version = claude_version(executable, seams.runner, base, root)
+    print(f"RUNTIME claude {version}", flush=True)
+    runs = run_all(scenarios, homes, executable, base, seams.runner, options.timeout, options.jobs)
+    for model in models:
+        used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
+        print(f"REVIEWER {model} {','.join(used) or 'none'}")
+    outcomes = judge(scenarios, models, runs_source(runs))
+    failed = report(skill, scenarios, models, outcomes)
+    if results_text is not None:
+        rows = result_rows(skill, scenarios, models, outcomes, runs, version, seams.today())
+        seams.results.write_text(replace_results(results_text, skill, rows), encoding="utf-8", newline="\n")
+        print(f"WROTE {runtime_canary.forward(seams.results)}")
+    if not failed:
+        fsops.remove(root)
+        print(f"REMOVED {quote(runtime_canary.forward(root))}")
+    return 1 if failed else 0
+
+
+def positive(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, not {value}")
+    return number
+
+
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description="Judge a skill's scenario runs against their review records.")
+    result = argparse.ArgumentParser(description="Run a skill's scenarios on each model and judge their records.")
     result.add_argument("skill", help="the skill whose scenarios to judge, a folder under tests/fixtures/skill-evals")
-    result.add_argument("--records", type=Path, required=True, help="a folder of <scenario>/<model>.json records")
+    result.add_argument("--records", type=Path, help="judge a folder of <scenario>/<model>.json records; run nothing")
     result.add_argument("--scenario", action="append", default=[], help="judge only this scenario (repeatable)")
     result.add_argument("--model", action="append", choices=MODELS, help="judge only this model (repeatable)")
+    result.add_argument("--write", action="store_true", help="replace the skill's rows in docs/skill-evaluations.md")
+    result.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
+    )
+    result.add_argument("--jobs", type=positive, default=DEFAULT_JOBS, help=f"runs at once (default {DEFAULT_JOBS})")
     return result
 
 
-def main(argv: Sequence[str], root: Path = SCENARIO_ROOT) -> int:
-    options = parser().parse_args(argv)
+def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = None) -> int:
+    command = parser()
+    options = command.parse_args(argv)
+    if options.write and (options.records or options.scenario or options.model):
+        command.error("--write records a full run: every scenario on every model, with no --records")
     try:
         scenarios = load_scenarios(options.skill, options.scenario, root)
     except ScenarioError as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
+    if options.records is None:
+        return evaluate(options.skill, scenarios, options, seams or Seams())
     models = list(dict.fromkeys(options.model or MODELS))
-    outcomes = judge(scenarios, models, records_in(options.records))
-    for outcome in outcomes:
-        print(outcome_line(options.skill, outcome))
-    for line in table(scenarios, models, outcomes):
-        print(line)
-    return 1 if any(outcome.failure is not None for outcome in outcomes) else 0
+    return 1 if report(options.skill, scenarios, models, judge(scenarios, models, records_in(options.records))) else 0
 
 
 if __name__ == "__main__":
