@@ -20,6 +20,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none
 - Pull request: #262
 
+### A status override may not name a section the tracker renders, such as `My PRs`
+
+- Level: minor. A fix that would be major from `1.0.0`: `dashboard.status_overrides` now refuses every section name `update-pr-tracker` renders, trimmed and in any case, which adds `my prs` to the refused states; `to review`, `awaiting response`, `drafts`, `my pull requests`, `missing`, `current`, and `stale` stay refused. An override named `My PRs` was accepted before, and the dashboard then showed that section twice and dropped every authored pull request not overridden; a configuration holding one now fails to load.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none, unless an override's status is `My PRs` in any case. Then rename or remove it in the code-review configuration file by hand, since `tracker_pipeline.py override` validates the file before changing it.
+- Pull request: #263
+
 ## v0.4.0
 
 ### A specialist condition may declare the snapshot paths it reads, so its review keeps the lazy snapshot
