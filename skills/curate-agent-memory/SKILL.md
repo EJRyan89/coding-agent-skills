@@ -2,7 +2,7 @@
 name: curate-agent-memory
 description: "Audit and clean up Claude Code auto-memory for a project: find stale, duplicated, or misplaced memories, move durable rules to their proper home, and apply only the changes the user approves. Use it when asked to review, tidy, or prune a project's memories."
 argument-hint: "[repository path] [--memory-dir DIR]"
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Write", "Grep", "AskUserQuestion", "Skill"]
+allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "Edit", "Grep", "AskUserQuestion", "Skill"]
 ---
 
 # Curate agent memory
@@ -68,7 +68,7 @@ Ask which groups to apply with a multi-select question, one option per non-empty
   python -B "${CLAUDE_SKILL_DIR}/scripts/memory_audit.py" delete --memory-dir "<memory dir>" "<file>.md" ...
   ```
 
-  It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
+  It checks every name before deleting any, and prints `DELETED <file>` for each file it deletes. A lone `FAILED <memory dir> ...` line, here or from `reindex`, means the directory holds no `MEMORY.md` or lies inside a skills directory, so it changed nothing; show it and go back to Step 1. `FAILED <file>: <reason>` lines with no `DELETED` line mean it refused those names and deleted nothing; show the reasons and fix the list. A `FAILED` line after `DELETED` lines means the deletion stopped part way: the `DELETED` files are gone and the rest remain, so show the reason and rerun with the remaining files.
 - For review findings, invoke `flag-review-finding` with the memory's substance; delete the memory the same way once the finding is recorded.
 - When any memory changed or the "Rebuild index" group was approved, rebuild `MEMORY.md` last instead of editing it by hand:
 
