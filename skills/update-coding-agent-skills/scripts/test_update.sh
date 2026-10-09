@@ -115,7 +115,7 @@ printf '%s\n' "$OUTPUT" | grep -q "first change" || fail "behind: pulled commit 
 printf '%s\n' "$OUTPUT" | grep -q "second change" || fail "behind: pulled commit missing"
 expect_deployed "behind"
 
-# A clean clone on another branch is switched to main before the fast-forward.
+# A clean clone on another branch is switched to main before the fast-forward, and stays there.
 new_clone
 git_quiet -C "$CLONE" checkout -b topic
 publish "third change"
@@ -148,7 +148,70 @@ expect_status 1 "diverged"
 expect_first_line "NOT_FAST_FORWARD" "diverged"
 expect_no_stderr "diverged"
 [ "$(git -C "$CLONE" rev-parse HEAD)" = "$LOCAL" ] || fail "diverged: main moved"
+printf '%s\n' "$OUTPUT" | grep -q "local work" || fail "diverged: local commit not listed: $OUTPUT"
 expect_not_deployed "diverged"
+
+# A diverged main stops before any checkout, so a clone on another branch stays on it.
+new_clone
+git_quiet -C "$CLONE" commit --allow-empty -m "local work"
+LOCAL=$(git -C "$CLONE" rev-parse main)
+git_quiet -C "$CLONE" checkout -b topic
+publish "sixth change"
+run_subject "$CLONE"
+expect_status 1 "diverged on topic"
+expect_first_line "NOT_FAST_FORWARD" "diverged on topic"
+expect_no_stderr "diverged on topic"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "diverged on topic: branch switched"
+[ "$(git -C "$CLONE" rev-parse main)" = "$LOCAL" ] || fail "diverged on topic: main moved"
+expect_not_deployed "diverged on topic"
+
+# A fast-forward Git refuses after the switch, here over an untracked file the update adds, switches back.
+new_clone
+git_quiet -C "$CLONE" checkout -b topic
+BEFORE=$(git -C "$CLONE" rev-parse main)
+printf 'added\n' >"$SEED/added.txt"
+git_quiet -C "$SEED" add added.txt
+git_quiet -C "$SEED" commit -m "add a file"
+git_quiet -C "$SEED" push origin main
+printf 'untracked copy\n' >"$CLONE/added.txt"
+run_subject "$CLONE"
+expect_status 1 "refused on topic"
+expect_first_line "NOT_FAST_FORWARD" "refused on topic"
+expect_no_stderr "refused on topic"
+[ "$(git -C "$CLONE" branch --show-current)" = "topic" ] || fail "refused on topic: not switched back"
+[ "$(git -C "$CLONE" rev-parse main)" = "$BEFORE" ] || fail "refused on topic: main moved"
+[ "$(cat "$CLONE/added.txt")" = "untracked copy" ] || fail "refused on topic: untracked file overwritten"
+expect_not_deployed "refused on topic"
+
+# A detached HEAD is returned to the same commit.
+git_quiet -C "$CLONE" checkout --detach topic
+DETACHED=$(git -C "$CLONE" rev-parse HEAD)
+run_subject "$CLONE"
+expect_status 1 "refused detached"
+expect_first_line "NOT_FAST_FORWARD" "refused detached"
+[ -z "$(git -C "$CLONE" branch --show-current)" ] || fail "refused detached: HEAD not detached"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$DETACHED" ] || fail "refused detached: not switched back"
+expect_not_deployed "refused detached"
+
+# When the switch back fails too, the output says the clone is still on main. A Git wrapper refuses that switch.
+git_quiet -C "$CLONE" checkout topic
+WRAPPER="$FIXTURE/git wrapper"
+mkdir -p "$WRAPPER"
+cat >"$WRAPPER/git" <<EOF
+#!/usr/bin/env bash
+case " \$* " in
+  *" checkout --quiet topic "*) echo "error: switch refused by the test" >&2; exit 1 ;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$WRAPPER/git"
+PATH="$WRAPPER:$PATH" run_subject "$CLONE"
+expect_status 1 "switch back refused"
+expect_first_line "NOT_FAST_FORWARD" "switch back refused"
+printf '%s\n' "$OUTPUT" | grep -qx "still on main: cannot switch back to topic: error: switch refused by the test" ||
+  fail "switch back refused: no still-on-main line: $OUTPUT"
+[ "$(git -C "$CLONE" branch --show-current)" = "main" ] || fail "switch back refused: expected main"
+expect_not_deployed "switch back refused"
 
 # A branch that cannot switch to main, here over an untracked file main tracks, is never forced.
 new_clone
