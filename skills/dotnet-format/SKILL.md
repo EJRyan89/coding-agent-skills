@@ -4,7 +4,7 @@ description: "Run dotnet format (whitespace + style + analyzers) and region layo
 allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Read", "AskUserQuestion"]
 ---
 
-Check the C# files changed on the current branch with the `dotnet-format` global tool (whitespace, code-style, and analyzer rules the repository configures) and with this skill's region layout checker, then offer to fix what they find. Every step is one script command, run exactly as shown. Each prints one tab-separated fact per line. Do not read the changed files, count braces, or edit source files yourself: the tools find and fix every violation. Act on the printed lines, not the exit code: a command that reports findings also exits 1. A last line `FAILED <reason>` means stop: read the end of the `LOG` file, when one was printed, and report the reason, the cause the log shows, and its path.
+Check the C# files changed on the current branch with the `dotnet-format` global tool, or the .NET SDK's `dotnet format` for a `.slnx` solution (whitespace, code-style, and analyzer rules the repository configures) and with this skill's region layout checker, then offer to fix what they find. Every step is one script command, run exactly as shown. Each prints one tab-separated fact per line. Do not read the changed files, count braces, or edit source files yourself: the tools find and fix every violation. Act on the printed lines, not the exit code: a command that reports findings also exits 1. A last line `FAILED <reason>` means stop: read the end of the `LOG` file, when one was printed, and report the reason, the cause the log shows, and its path.
 
 ## Steps
 
@@ -14,7 +14,7 @@ Check the C# files changed on the current branch with the `dotnet-format` global
    python -B "${CLAUDE_SKILL_DIR}/scripts/dotnet_format_targets.py" resolve
    ```
 
-   `STOP <reason>` means there is nothing to format: report the reason and stop. Report each `SKIPPED_ASPNET <file> <project>` line (ASP.NET projects crash the formatter) and each `OUTSIDE_SOLUTION <file>` line (no project of the chosen solution owns it, so the formatter skips it; only the layout checker sees it). Keep `REPO_ROOT`, `SOLUTION`, and `FILE_LIST` for the next steps.
+   `STOP <reason>` means there is nothing to format: report the reason and stop. Report a `FETCH_FAILED <reason>` line (the base is origin as last fetched, so it may be stale) and go on. Report each `SKIPPED_ASPNET <file> <project>` line (ASP.NET projects crash the formatter) and each `OUTSIDE_SOLUTION <file>` line (no project of the chosen solution owns it, so the formatter skips it; only the layout checker sees it). Keep `REPO_ROOT`, `SOLUTION`, and `FILE_LIST` for the next steps.
 
 2. **Check the layout analyzer configuration:**
 

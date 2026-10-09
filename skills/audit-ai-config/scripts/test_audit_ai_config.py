@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -1079,11 +1080,11 @@ class CopilotConfigurationTests(unittest.TestCase):
 
     def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
         # Pinned while _frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
-        single_line = "Frontmatter must use single-line key: value entries"
+        single_line = "Frontmatter must use single-line key: value entries or block scalars"
         mismatch = "Skill name must be lowercase hyphenated and match its directory"
         cases = {
             '---\nname: "demo"\ndescription: d\n---\n': [(None, mismatch)],
-            "---\nname: demo\ndescription: >-\n  long\n  text\n---\n": [(4, single_line), (5, single_line)],
+            "---\nname: demo\ndescription: >-\n  long\n  text\n---\n": [],
             "---\nname: demo\ndescription: d\nmetadata:\n  author: x\n---\n": [(5, single_line)],
             "---\nname: demo\ndescription: *bold* text\n---\n": [],
             "---\nname: demo\nname: demo\ndescription: d\n---\n": [(3, "Duplicate frontmatter key 'name'")],
@@ -1108,6 +1109,43 @@ class CopilotConfigurationTests(unittest.TestCase):
                 agent.write_text(text, encoding="utf-8")
                 found = audit._validate_agent(agent, self.root)
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
+    def test_block_scalars_are_read_as_yaml_reads_them(self) -> None:
+        # Copilot's skill documentation and the Agent Skills specification define the frontmatter as YAML.
+        cases = {
+            "---\ndescription: >-\n  long\n  text\n---\n": ("long text", []),
+            "---\ndescription: >\n  long\n\n  text\n---\n": ("long\ntext\n", []),
+            "---\ndescription: >-\n  long\n    code\n  text\n---\n": ("long\n  code\ntext", []),
+            "---\ndescription: |\n  long\n  text\n---\n": ("long\ntext\n", []),
+            "---\ndescription: |+2\n    long\n\n---\n": ("  long\n\n", []),
+            "---\ndescription: >2-\n   long\n---\n": (" long", []),
+            "---\ndescription: >-\nname: demo\n---\n": ("", []),
+            "---\ndescription: >-\n  long\nnot an entry\n---\n": (
+                "long",
+                [(4, "Frontmatter must use single-line key: value entries or block scalars")],
+            ),
+        }
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for text, (description, expected) in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                values, found = audit._frontmatter(skill)
+                self.assertEqual(description, values["description"])
+                self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
+    def test_an_empty_block_scalar_description_is_a_missing_description(self) -> None:
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: demo\ndescription: >-\n---\n", encoding="utf-8")
+        found = audit._validate_skill(skill, self.root)
+        self.assertEqual([(None, "Skill frontmatter requires description")], [(f.line, f.message) for f in found])
+
+    def test_the_decision_keeping_the_bespoke_parser_is_stated_beside_it(self) -> None:
+        source = Path(audit.__file__).read_text(encoding="utf-8")
+        comment = source[: source.index("def _frontmatter(")].rsplit("\n\n", 1)[-1]
+        self.assertIn("issues/27", comment)
+        self.assertIn("line number", comment)
 
     def test_agent_filename_and_description_validated(self) -> None:
         path = self.root / ".claude/agents/bad name.txt"
@@ -3204,6 +3242,192 @@ class GeneratedLayoutReferenceTests(unittest.TestCase):
         }
         self.assertIn(".github/workflows/ai-config-parity-pr.yml", documented)
         self.assertEqual(set(), documented - set(audit.MANIFEST_ALLOWED_PATHS))
+
+
+class ReportSchemaReferenceTests(unittest.TestCase):
+    """references/report-schema.md shows the report the engine prints; its examples must be that output."""
+
+    REFERENCE = Path(__file__).resolve().parent.parent / "references/report-schema.md"
+
+    def _fence(self, heading: str, language: str) -> str:
+        text = self.REFERENCE.read_text(encoding="utf-8")
+        section = text[text.index(heading) :]
+        start = section.index(f"```{language}\n") + len(f"```{language}\n")
+        return section[start : section.index("\n```\n", start) + 1]
+
+    def _example(self) -> audit.AuditResult:
+        return audit.AuditResult(
+            repository="{repo_name}",
+            authority="conforming",
+            scope_status="independently-derived",
+            findings=[
+                audit.Finding("INFO", "inventory", "CLAUDE.md", message="Found CLAUDE.md"),
+                audit.Finding(
+                    "WARNING",
+                    "mcp",
+                    message="Copilot repository MCP (cloud agent/code review) configured via repository settings "
+                    "— cannot validate statically",
+                ),
+                audit.Finding(
+                    "ERROR",
+                    "copilot-config",
+                    ".github/skills/demo/SKILL.md",
+                    4,
+                    "Frontmatter must use single-line key: value entries or block scalars",
+                ),
+            ],
+        )
+
+    def test_the_markdown_example_is_the_report_the_engine_prints(self) -> None:
+        self.assertEqual(self._fence("### Markdown (default)", "markdown"), audit.format_markdown(self._example()))
+
+    def test_the_json_example_is_the_report_the_engine_prints(self) -> None:
+        self.assertEqual(
+            json.loads(self._fence("### JSON (for CI integration)", "json")),
+            json.loads(audit.format_json(self._example())),
+        )
+
+    def test_the_finding_table_names_exactly_the_fields_a_finding_has(self) -> None:
+        text = self.REFERENCE.read_text(encoding="utf-8")
+        section = text[text.index("## Finding Structure") : text.index("## Severities")]
+        documented = [line.split("|")[1].strip().strip("`") for line in section.splitlines() if line.startswith("| `")]
+        self.assertEqual(["severity", "check", "path", "line", "message"], documented)
+        self.assertEqual(documented, [field.name for field in dataclasses.fields(audit.Finding)])
+
+
+class ReportFormatTests(unittest.TestCase):
+    def test_the_markdown_table_carries_each_findings_line(self) -> None:
+        result = audit.AuditResult(
+            repository="example",
+            authority="conforming",
+            findings=[
+                audit.Finding("ERROR", "copilot-config", "a/SKILL.md", 4, "Bad entry"),
+                audit.Finding("ERROR", "copilot-config", "a/SKILL.md", 5, "Bad entry"),
+                audit.Finding("INFO", "scope", message="No scope"),
+            ],
+        )
+        rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ")]
+        self.assertEqual(
+            [
+                "| Severity | Check | Path | Line | Message |",
+                "| ERROR | copilot-config | a/SKILL.md | 4 | Bad entry |",
+                "| ERROR | copilot-config | a/SKILL.md | 5 | Bad entry |",
+                "| INFO | scope |  |  | No scope |",
+            ],
+            rows,
+        )
+
+    def test_json_findings_carry_no_detail(self) -> None:
+        data = json.loads(audit.format_json(audit.AuditResult(findings=[audit.Finding("INFO", "scope")])))
+        self.assertEqual({"severity", "check", "path", "line", "message"}, set(data["findings"][0]))
+
+
+class RootNameTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "named repo"
+        (self.root / ".git").mkdir(parents=True)
+        _setup_conforming_repo(self.root)
+        self.cwd = Path.cwd()
+        os.chdir(self.root)
+
+    def tearDown(self) -> None:
+        os.chdir(self.cwd)
+        self.temp.cleanup()
+
+    def test_a_relative_root_reports_and_checks_the_directorys_own_name(self) -> None:
+        output = io.StringIO()
+        with (
+            contextlib.redirect_stdout(output),
+            mock.patch.object(sys, "argv", ["audit_ai_config.py", "--root", ".", "--json"]),
+        ):
+            code = audit.main()
+        data = json.loads(output.getvalue())
+        self.assertEqual("named repo", data["repository"])
+        # The generated AGENTS.md names the repository, so an empty name would be a parity ERROR.
+        self.assertEqual((0, []), (code, [f for f in data["findings"] if f["severity"] == "ERROR"]))
+
+
+class UnreadableConfigurationTests(unittest.TestCase):
+    """An undecodable or invalid file is a finding, never a traceback."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _setup_conforming_repo(self.root)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _errors(self, rel: str) -> list[tuple[str, str]]:
+        return [
+            (f.check, f.message) for f in audit.audit(self.root).findings if f.path == rel and f.severity == "ERROR"
+        ]
+
+    def test_an_undecodable_copilot_skill_or_agent_is_an_error(self) -> None:
+        for rel in (".github/skills/demo/SKILL.md", ".github/agents/reviewer.md", ".claude/agents/reviewer.md"):
+            with self.subTest(rel=rel):
+                path = self.root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(UNDECODABLE)
+                errors = self._errors(rel)
+                self.assertIn("copilot-config", [check for check, _ in errors])
+                self.assertTrue(any(message.startswith("Could not read:") for _, message in errors), errors)
+                path.unlink()
+
+    def test_an_undecodable_manifest_owned_projection_is_an_error(self) -> None:
+        manifest = json.loads((self.root / ".github/ai-config-manifest.json").read_text(encoding="utf-8"))
+        manifest["artifacts"].append({"path": ".github/skills/demo/SKILL.md"})
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (self.root / ".github/skills/demo").mkdir(parents=True)
+        (self.root / ".github/skills/demo/SKILL.md").write_bytes(UNDECODABLE)
+        errors = self._errors(".github/skills/demo/SKILL.md")
+        self.assertIn(("parity", "Generated artifact exists but could not be read"), errors)
+
+    def test_an_undecodable_codex_config_is_invalid_toml(self) -> None:
+        (self.root / ".codex").mkdir()
+        (self.root / ".codex/config.toml").write_bytes(UNDECODABLE)
+        errors = self._errors(".codex/config.toml")
+        self.assertEqual(["mcp"], [check for check, _ in errors])
+        self.assertTrue(errors[0][1].startswith("Invalid TOML:"), errors)
+
+    def test_a_generator_with_a_null_byte_is_unreadable_scope(self) -> None:
+        (self.root / ".github/scripts").mkdir(parents=True)
+        (self.root / ".github/scripts/ai_config.py").write_text("CLAUDE.md\0\n", encoding="utf-8")
+        self.assertEqual((None, "generator-scope-unreadable"), audit.derive_generator_scope(self.root))
+
+
+class RepositoryWalkTests(unittest.TestCase):
+    """Walks for nested files skip version-control and dependency directories."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _setup_conforming_repo(self.root)
+        manifest = json.loads((self.root / ".github/ai-config-manifest.json").read_text(encoding="utf-8"))
+        manifest["surfaces"] = ["copilot_cli", "cloud_agent"]
+        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_nested_files_below_skipped_directories_are_not_reported(self) -> None:
+        for directory in ("src", *sorted(audit.SKIPPED_DIRECTORIES), "src/node_modules/pkg", "lib/.venv"):
+            for name in ("AGENTS.md", "AGENTS.override.md", ".mcp.json"):
+                path = self.root / directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n" if name == ".mcp.json" else "# Nested\n", encoding="utf-8")
+        reported = {f.path for f in audit.audit(self.root).findings if f.path and "/" in f.path}
+        self.assertEqual(
+            {"src/AGENTS.md", "src/AGENTS.override.md", "src/.mcp.json"},
+            {path for path in reported if path.rsplit("/", 1)[-1] in ("AGENTS.md", "AGENTS.override.md", ".mcp.json")},
+        )
+
+    def test_the_skipped_directories_are_version_control_and_dependency_directories(self) -> None:
+        self.assertEqual(
+            {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".nox"},
+            audit.SKIPPED_DIRECTORIES,
+        )
 
 
 if __name__ == "__main__":

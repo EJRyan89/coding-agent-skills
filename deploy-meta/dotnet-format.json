@@ -3,7 +3,7 @@
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["skill-core"],
     "tools": ["dotnet-format"],
-    "optional_tools": ["gh"],
+    "optional_tools": ["dotnet", "gh"],
     "opt_in": true,
     "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 }
