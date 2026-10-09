@@ -5,6 +5,8 @@ import dataclasses
 import io
 import json
 import os
+import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 
 import review_insights as ri
 import review_records
+import review_synthesis
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
@@ -966,6 +969,50 @@ class AnalyzerTests(InsightFixture):
                 covered("custom-candidate", "Roslyn", "unbounded-retry-loop"),
             ],
         )
+
+    def test_record_values_print_on_one_line_and_decide_as_printed(self) -> None:
+        # The record contract allows shell punctuation and control characters in an analyzer name and anything
+        # non-blank in a category; the report screens them where it prints them, and a decision names them as printed.
+        tool, rule, category = 'Tool$;"\x1bx', "R'(1)&", "Two\nlines"
+        self.commit("owner/repo", 7, [covered("available", tool, rule), category])
+        json_path, lines = self.report()
+        self.assertEqual(
+            ["RECOMMENDATION", "RECOMMENDATION", "ANALYZER", "EXAMPLE"], [line.split(" ", 1)[0] for line in lines]
+        )
+        shown_category = re.fullmatch(r"RECOMMENDATION (\S+) (.+) findings=1 decision=deferred flags=none", lines[1])
+        shown_analyzer = re.fullmatch(r"ANALYZER (\S+) coverage=(\S+) tool=(\S+) rule=(\S+) findings=1 .*", lines[2])
+        if shown_category is None or shown_analyzer is None:
+            self.fail(lines)
+        self.assertEqual("Two lines", shown_category[2])
+        self.assertEqual(("available", "Tool?;??x", "R'(1)&"), shown_analyzer.groups()[1:])
+        stored = {item["id"]: item for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]}
+        self.assertEqual(category, stored[shown_category[1]]["category"], "the record's value is kept as it was")
+
+        # Each subject passed back as SKILL.md writes it, double-quoted, parses to the value printed.
+        subjects = [
+            (shown_category[1], f'--category "{shown_category[2]}"'),
+            (shown_analyzer[1], '--analyzer "{}" "{}" "{}"'.format(*shown_analyzer.groups()[1:])),
+        ]
+        for identifier, subject in subjects:
+            arguments = shlex.split(subject)
+            self.assertFalse(any(review_synthesis.UNSAFE_ARGUMENT.search(value) for value in arguments), arguments)
+            code, out, err = self.run_main(
+                "decide", "--report", str(json_path), identifier, *arguments, "--flags", "none", "accepted"
+            )
+            self.assertEqual((0, [f"DECIDED {identifier} accepted"]), (code, out.splitlines()), err)
+        # The record's value names the subject too, as it did before.
+        code, out, err = self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            shown_category[1],
+            "--category",
+            category,
+            "--flags",
+            "none",
+            "rejected",
+        )
+        self.assertEqual(0, code, err)
 
     def test_analyzer_findings_become_recommendations_ranked_cheapest_first(self) -> None:
         self.commit_covered()

@@ -34,6 +34,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none. A `merged_since` edited by hand to something else is now refused; correct it to a `YYYY-MM-DD` date, or remove it to start that repository again from today.
 - Pull request: #295
 
+### review-insights prints categories and analyzer names screened, and decides them as printed
+
+- Level: patch. A fix: a `RECOMMENDATION` line's category and an `ANALYZER` line's tool and rule are printed on one line, with whitespace flattened and `?` for a double quote, backtick, `$`, backslash, or control character, so a value from a record never breaks the one-fact-per-line output or reaches a shell unquoted. `decide` takes the subject as printed or as recorded, and the skill passes every value in double quotes. A synthesized title is now refused for a control character too. Records and reports are unchanged.
+- Contract: none
+- User action: none
+- Pull request: #293
+
 ### update-coding-agent-skills leaves a clone on the branch it was found on when it stops
 
 - Level: patch. A fix: when local `main` has commits that `origin/main` lacks, `update-coding-agent-skills` now stops with `NOT_FAST_FORWARD` before switching branches, so a clone found on another branch stays on it, and the lines after the status list those local commits instead of Git's error. When Git refuses the fast-forward itself after the switch, for an untracked file in its way, the clone is switched back, or a `still on main:` line says why it could not be. An update still switches the clone to `main` and leaves it there, as before.
