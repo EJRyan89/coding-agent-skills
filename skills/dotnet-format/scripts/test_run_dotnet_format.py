@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
@@ -52,6 +55,12 @@ SAMPLE_DIAGNOSTICS = [
     ["DIAGNOSTIC", "C:/elsewhere/Generated.cs", "1", "1", "warning", "CA1822"],
     ["SUMMARY", "5", "3", "CA1822,FINALNEWLINE,IDE0005,RCS0041,WHITESPACE"],
 ]
+
+
+def stop_recorded_process(pid_file: Path) -> None:
+    """End the process whose id a test program recorded in `pid_file`, if it recorded one and it still runs."""
+    with contextlib.suppress(OSError, ValueError):
+        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
 
 
 class FakeRunner:
@@ -187,11 +196,42 @@ class SubprocessRunnerTests(unittest.TestCase):
         self.assertFalse(result.timed_out)
         self.assertEqual(["out", "err"], result.output.decode().split())
 
+    def test_runs_in_the_repository_with_no_stdin_and_every_prompt_off(self) -> None:
+        script = (
+            "import json, os, sys; print(json.dumps([os.getcwd(), sys.stdin.read(), "
+            "[os.environ.get(name) for name in ('GIT_TERMINAL_PROMPT', 'GCM_INTERACTIVE', 'GH_PROMPT_DISABLED')]]))"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "a repository"
+            root.mkdir()
+            result = formatter.subprocess_runner([sys.executable, "-c", script], root, 60)
+            directory, stdin, prompts = json.loads(result.output)
+            self.assertEqual(root.resolve(), Path(directory).resolve())
+        self.assertEqual((0, "", ["0", "never", "1"]), (result.returncode, stdin, prompts))
+
     def test_a_run_past_the_timeout_is_stopped_and_marked(self) -> None:
         script = "import time; print('partial', flush=True); time.sleep(60)"
         result = formatter.subprocess_runner([sys.executable, "-c", script], Path.cwd(), 2)
         self.assertEqual((-1, True), (result.returncode, result.timed_out))
         self.assertIn(b"partial", result.output)
+
+    def test_a_build_host_left_holding_the_output_does_not_hold_the_timeout(self) -> None:
+        # The formatter starts a long-lived child that inherits its output, as an MSBuild node or build host can.
+        with tempfile.TemporaryDirectory() as temporary:
+            holder_pid = Path(temporary) / "holder.pid"
+            holder = "import time; time.sleep(30)"
+            script = (
+                "import subprocess, sys, time; "
+                f"holder = subprocess.Popen([sys.executable, '-c', {holder!r}]); "
+                f"open({str(holder_pid)!r}, 'w').write(str(holder.pid)); "
+                "print('loading', flush=True); time.sleep(60)"
+            )
+            self.addCleanup(stop_recorded_process, holder_pid)
+            started = time.monotonic()
+            result = formatter.subprocess_runner([sys.executable, "-c", script], Path.cwd(), 2)
+            self.assertLess(time.monotonic() - started, 15)
+        self.assertEqual((-1, True), (result.returncode, result.timed_out))
+        self.assertIn(b"loading", result.output)
 
 
 class MainTests(unittest.TestCase):
