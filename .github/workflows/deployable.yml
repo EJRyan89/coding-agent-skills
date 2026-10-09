@@ -1,6 +1,8 @@
 name: Deployable
 
-# A manual check, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It starts
+# A signal, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It also runs
+# weekly, the day after validate.yml's weekly run, once on the README's versions and once on the latest release of every
+# runtime, so a runtime release that breaks a fresh install shows within a week. It starts
 # from a fresh GitHub-hosted Windows runner, installs the prerequisites and both CLI runtimes, deploys into the
 # runner's real profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and
 # deploys again. It does not start a model, so it does not show a skill running; the runtime canary does that.
@@ -26,6 +28,8 @@ on:
         description: GitHub Copilot CLI version to install from npm, or latest. The default is the README's tested version.
         type: string
         default: '1.0.91'
+  schedule:
+    - cron: '23 6 * * 2'
 
 permissions:
   contents: read
@@ -36,9 +40,19 @@ concurrency:
 
 jobs:
   deployable:
-    name: Deploy to a fresh Windows profile
+    name: Deploy to a fresh Windows profile (${{ matrix.runtimes }} runtimes)
     runs-on: windows-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # A dispatch runs the versions it was given. A scheduled run has no inputs, so it runs the README's versions,
+        # the inputs' defaults, and beside them the latest release of every runtime.
+        runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
+    env:
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.160.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.91' }}
     defaults:
       run:
         shell: pwsh
@@ -91,10 +105,6 @@ jobs:
           }
 
       - name: Install Claude Code, Codex CLI, and GitHub Copilot CLI
-        env:
-          CLAUDE_VERSION: ${{ inputs.claude-version }}
-          CODEX_VERSION: ${{ inputs.codex-version }}
-          COPILOT_VERSION: ${{ inputs.copilot-version }}
         run: |
           npm install --global "@anthropic-ai/claude-code@$env:CLAUDE_VERSION" "@openai/codex@$env:CODEX_VERSION" "@github/copilot@$env:COPILOT_VERSION"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -103,10 +113,6 @@ jobs:
 
       # A new step is a new shell with the PATH a person would see after opening a terminal.
       - name: Verify the tools in a fresh shell
-        env:
-          CLAUDE_VERSION: ${{ inputs.claude-version }}
-          CODEX_VERSION: ${{ inputs.codex-version }}
-          COPILOT_VERSION: ${{ inputs.copilot-version }}
         run: |
           foreach ($command in @('python', 'git', 'pwsh', 'shellcheck', 'gh', 'node', 'npm', 'claude', 'codex', 'copilot')) {
             $resolved = Get-Command $command -ErrorAction Stop | Select-Object -First 1
@@ -247,6 +253,6 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: deployable-run
+          name: deployable-run-${{ matrix.runtimes }}
           path: ${{ runner.temp }}/deployable-logs
           if-no-files-found: warn
