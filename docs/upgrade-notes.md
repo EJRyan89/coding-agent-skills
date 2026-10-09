@@ -25,7 +25,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. An addition: `check` lists `Git` (used by every skill; `MISSING` when it is not on `PATH`, which leaves deploying possible) and `Claude Code` (optional) with their versions, so its output is all the bug template asks for besides the model. Neither has a floor, and no other line changes.
 - Contract: `deployer/tools.py`
 - User action: none.
-- Pull request: #195
+- Pull request: #231
 
 ### --force-item names an agent without its .md and refuses a name the run does not install
 
