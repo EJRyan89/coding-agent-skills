@@ -55,7 +55,7 @@ OPTIONAL_REVIEWER_FIELDS = frozenset({"seconds", "model", "files_read", "bytes_r
 READ_COUNT_FIELDS = ("files_read", "bytes_read")
 # Where a review's source snapshot came from, how large it was, and how long each step of prepare around it took:
 # fetching the head, materializing the snapshot, and writing the request and every role's prompt.
-SNAPSHOT_SOURCES = ("checkout", "tarball")
+SNAPSHOT_SOURCES = ("checkout", "checkout-lazy", "tarball")
 SNAPSHOT_FIELDS = frozenset({"source", "files", "bytes", "seconds"})
 SNAPSHOT_PHASES = ("fetch", "materialize", "prompts")
 TITLE_MAXIMUM_LENGTH = 120

@@ -30,10 +30,16 @@ from review_io import PersistenceError, atomic_write_json, read_diff
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
 SOURCE_SNAPSHOT_MANIFEST = "source-snapshot.json"
+SOURCE_SNAPSHOT_FIELDS = frozenset({"schema_version", "repository", "source_commit", "source_hashes", "excluded_paths"})
+# A lazy snapshot's manifest also lists, by blob id, each path it can hold that prepare did not write; review_source.py
+# writes one when a reviewer asks for it.
+SNAPSHOT_FETCHABLE = "fetchable"
 MAX_SOURCE_SNAPSHOT_FILES = 50_000
 MAX_SOURCE_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
 BINARY_PROBE_BYTES = 8000
+MAX_SEARCH_MATCHES = 200
+MAX_MATCH_CHARACTERS = 300
 SNAPSHOT_WRITE_WORKERS = 8
 GIT_WRITER_SECONDS = 10  # how long the id writer gets to finish once git is gone
 MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
@@ -864,36 +870,45 @@ def verify_source_snapshot(
     re-hashing every file, for a step that runs in the same process as the write with nothing untrusted in
     between. Under real-time antivirus each file read costs milliseconds, so a full pass over a large repository
     takes minutes, and it walks the snapshot again after the reads to check the file set against what is there then.
+
+    A lazy snapshot (see `materialize_source_snapshot`) may also hold any of the files its manifest lists as
+    fetchable, each within the per-file and total limits, and `contents` checks each one held against its blob id.
     """
+    return _verify_snapshot(
+        root, expected_repository=expected_repository, expected_commit=expected_commit, contents=contents
+    )[0]
+
+
+def _verify_snapshot(
+    root: Path, *, expected_repository: str, expected_commit: str, contents: bool
+) -> tuple[dict[str, Any], _SnapshotTree, int]:
+    """`verify_source_snapshot`'s manifest, the walk the file set was checked against, and the bytes the files it
+    holds total."""
     if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
         raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
     metadata = _read_snapshot_metadata(root)
     require_snapshot_source(metadata, expected_repository, expected_commit)
-    hashes, excluded = _snapshot_maps(metadata)
+    hashes, excluded, fetchable = _snapshot_maps(metadata)
     tree = _walk_snapshot(root)
-    expected_files = _verify_snapshot_files(tree, hashes, contents=contents)
+    expected_files, total_bytes = _verify_snapshot_files(tree, hashes, contents=contents)
     for relative, reason in excluded.items():
         _validate_snapshot_exclusion(relative, reason, hashes)
+    total_bytes = _verify_fetched_files(tree, fetchable, metadata, total_bytes, contents=contents)
     if contents:  # the reads took time, so the file set is checked against a walk made after them
         tree = _walk_snapshot(root)
-    _require_snapshot_file_set(tree, expected_files)
-    return metadata
+    _require_snapshot_file_set(tree, expected_files, set(fetchable))
+    return metadata, tree, total_bytes
 
 
 def _read_snapshot_metadata(root: Path) -> Any:
-    """The snapshot's manifest, once it holds exactly the contract's fields at a supported schema version."""
+    """The snapshot's manifest, once it holds exactly the contract's fields, and a lazy one's fetchable paths, at a
+    supported schema version."""
     metadata_path = root / SOURCE_SNAPSHOT_MANIFEST
     try:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
-    if not isinstance(metadata, dict) or set(metadata) != {
-        "schema_version",
-        "repository",
-        "source_commit",
-        "source_hashes",
-        "excluded_paths",
-    }:
+    if not isinstance(metadata, dict) or set(metadata) - {SNAPSHOT_FETCHABLE} != SOURCE_SNAPSHOT_FIELDS:
         raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
     if metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
@@ -910,20 +925,24 @@ def require_snapshot_source(metadata: dict[str, Any], expected_repository: str, 
         raise RuntimeContractError("Source snapshot commit does not match the request head")
 
 
-def _snapshot_maps(metadata: dict[str, Any]) -> tuple[Any, Any]:
-    """The source hashes and the exclusions, once both are objects and the hashes are within the file-count limit."""
+def _snapshot_maps(metadata: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """The source hashes, the exclusions, and a lazy snapshot's fetchable paths (empty for a full snapshot), once each
+    is an object and the files it can hold are within the file-count limit."""
     hashes = metadata["source_hashes"]
     excluded = metadata["excluded_paths"]
+    fetchable = metadata.get(SNAPSHOT_FETCHABLE, {})
     if not isinstance(hashes, dict) or not isinstance(excluded, dict):
         raise RuntimeContractError("Source snapshot hashes and exclusions must be objects")
-    if len(hashes) > MAX_SOURCE_SNAPSHOT_FILES:
+    if not isinstance(fetchable, dict):
+        raise RuntimeContractError("Source snapshot fetchable paths must be an object")
+    if len(hashes) + len(fetchable) > MAX_SOURCE_SNAPSHOT_FILES:
         raise RuntimeContractError("Source snapshot exceeds the file-count limit")
-    return hashes, excluded
+    return hashes, excluded, fetchable
 
 
-def _verify_snapshot_files(tree: _SnapshotTree, hashes: dict[str, Any], *, contents: bool) -> set[str]:
-    """The paths the snapshot holds, its manifest included, once every listed file checks out and their total size
-    is within the limit. `contents` also compares each file's hash."""
+def _verify_snapshot_files(tree: _SnapshotTree, hashes: dict[str, Any], *, contents: bool) -> tuple[set[str], int]:
+    """The paths the snapshot holds, its manifest included, and their total size, once every listed file checks out
+    and the total is within the limit. `contents` also compares each file's hash."""
     expected_files = {SOURCE_SNAPSHOT_MANIFEST}
     total_bytes = 0
     for relative, expected_hash in hashes.items():
@@ -934,7 +953,46 @@ def _verify_snapshot_files(tree: _SnapshotTree, hashes: dict[str, Any], *, conte
         if contents and hashlib.sha256(target.read_bytes()).hexdigest() != expected_hash:
             raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
         expected_files.add(relative)
-    return expected_files
+    return expected_files, total_bytes
+
+
+def _blob_algorithm(blob: str) -> str:
+    """The hash a git object id of this length is: SHA-1 for 40 hexadecimal digits, SHA-256 for 64."""
+    return "sha1" if len(blob) == 40 else "sha256"
+
+
+def _verify_fetched_files(
+    tree: _SnapshotTree, fetchable: dict[str, Any], metadata: dict[str, Any], total_bytes: int, *, contents: bool
+) -> int:
+    """The bytes the snapshot holds once the fetched files are added to `total_bytes`, once each fetchable path is a
+    safe name the snapshot neither holds from the start nor excludes, with a blob id of the commit's hash, and each
+    one fetched is within the per-file and total limits. `contents` also compares each fetched file's blob id."""
+    hashes, excluded = metadata["source_hashes"], metadata["excluded_paths"]
+    length = len(metadata["source_commit"])
+    for relative, blob in fetchable.items():
+        normalized = _safe_relative_path(relative, "fetchable path")
+        if (
+            normalized != relative
+            or relative == SOURCE_SNAPSHOT_MANIFEST
+            or relative in hashes
+            or relative in excluded
+            or _is_agent_instruction_path(relative)
+            or not isinstance(blob, str)
+            or len(blob) != length
+            or not GIT_OBJECT_ID.fullmatch(blob)
+        ):
+            raise RuntimeContractError(f"Source snapshot fetchable path is invalid: {relative!r}")
+        size = tree.files.get(relative)
+        if size is None:
+            continue
+        total_bytes += size
+        if size > MAX_SOURCE_FILE_BYTES or total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
+            raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
+        if contents:
+            content = tree.root.joinpath(*PurePosixPath(relative).parts).read_bytes()
+            if _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
+                raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
+    return total_bytes
 
 
 def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tuple[Path, int]:
@@ -973,14 +1031,14 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
 
 
-def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str]) -> None:
-    """The snapshot holds exactly the files its manifest lists, none of them a reparse point or other non-regular
-    file."""
+def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str], fetchable: set[str]) -> None:
+    """The snapshot holds exactly the files its manifest lists, and any of those it lists as fetchable, none of them
+    a reparse point or other non-regular file."""
     tree.require_clean()
     actual_files = set(tree.files)
-    if actual_files != expected_files:
-        missing = sorted(expected_files - actual_files)
-        extra = sorted(actual_files - expected_files)
+    missing = sorted(expected_files - actual_files)
+    extra = sorted(actual_files - expected_files - fetchable)
+    if missing or extra:
         raise RuntimeContractError(f"Source snapshot file set mismatch; missing={missing}, extra={extra}")
 
 
@@ -1021,13 +1079,19 @@ def _content_exclusion(relative: str, content: bytes, written: dict[str, str]) -
     """
     if b"\0" in content[:BINARY_PROBE_BYTES]:
         return "binary"
+    _claim_name(relative, written)
+    return None
+
+
+def _claim_name(relative: str, written: dict[str, str]) -> None:
+    """Record a kept path in `written`, keyed as a case-insensitive file system names it, refusing a second path it
+    would merge with the first."""
     key = relative.casefold()  # a name ending in a dot or a space, which Windows would also merge, is never kept
     if key in written:
         raise RuntimeContractError(
             f"Source paths collide on a case-insensitive filesystem: {written[key]} and {relative}"
         )
     written[key] = relative
-    return None
 
 
 def _write_object_ids(stdin: IO[bytes], blobs: Sequence[str]) -> None:
@@ -1093,6 +1157,9 @@ def _commit_members(
     blob_reader: BlobReader,
     changed_paths: frozenset[str],
     room: PathRoom,
+    *,
+    upfront: Callable[[str], bool] | None = None,
+    fetchable: dict[str, str] | None = None,
 ) -> Generator[SnapshotMember, None, None]:
     """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
 
@@ -1100,6 +1167,11 @@ def _commit_members(
     tree, so no .gitattributes entry (export-ignore, export-subst, eol, a filter) and no line-ending setting can leave
     a file out or change a byte. A submodule has no blob here and is skipped. The count and size limits are the
     caller's to apply.
+
+    With `upfront`, the snapshot is lazy: only the changed paths and those it accepts are read, and every other path
+    the snapshot would keep by its name, kind, and size goes into `fetchable` with its blob id before the first blob
+    is yielded. Whether such a blob is binary is decided when it is fetched, so the names a case-insensitive file
+    system would merge are refused among all of them here.
     """
     # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
     listing = _run_git(checkout, runner, "ls-tree", "-r", "-z", "-l", "--full-tree", commit)
@@ -1123,6 +1195,14 @@ def _commit_members(
         else:
             yield relative, reason
     written: dict[str, str] = {}
+    if upfront is not None and fetchable is not None:
+        names: dict[str, str] = {}
+        for relative, _, _ in pending:
+            _claim_name(relative, names)
+        fetchable.update(
+            (relative, blob) for relative, blob, _ in pending if relative not in changed_paths and not upfront(relative)
+        )
+        pending = [entry for entry in pending if entry[0] not in fetchable]
     blobs = iter(blob_reader(checkout, [blob for _, blob, _ in pending]))
     try:
         for relative, _, length in pending:
@@ -1165,8 +1245,15 @@ def _tarball_members(
 
 
 def _populate_snapshot(
-    members: Iterable[SnapshotMember], destination: Path, *, repository: str, commit: str
+    members: Iterable[SnapshotMember],
+    destination: Path,
+    *,
+    repository: str,
+    commit: str,
+    fetchable: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """Write the members and the manifest, which lists `fetchable` when it is given, once the members have filled it:
+    the snapshot is then lazy."""
     hashes: dict[str, str] = {}
     excluded: dict[str, str] = {}
     total_bytes = 0
@@ -1195,13 +1282,17 @@ def _populate_snapshot(
                 pending.pop(0).result()
         for write in pending:
             write.result()
-    metadata = {
+    metadata: dict[str, Any] = {
         "schema_version": SOURCE_SNAPSHOT_SCHEMA_VERSION,
         "repository": repository,
         "source_commit": commit,
         "source_hashes": hashes,
         "excluded_paths": excluded,
     }
+    if fetchable is not None:
+        if len(hashes) + len(fetchable) > MAX_SOURCE_SNAPSHOT_FILES:
+            raise RuntimeContractError("Source snapshot exceeds the file-count limit")
+        metadata[SNAPSHOT_FETCHABLE] = fetchable
     atomic_write_json(destination / SOURCE_SNAPSHOT_MANIFEST, metadata)
     # The hashes were computed from the bytes just written, in this process; re-reading them proves nothing more.
     return verify_source_snapshot(destination, expected_repository=repository, expected_commit=commit, contents=False)
@@ -1227,8 +1318,13 @@ def materialize_source_snapshot(
     runner: Runner = subprocess_runner,
     changed_paths: Iterable[str] = (),
     blob_reader: BlobReader = git_blob_reader,
+    upfront: Callable[[str], bool] | None = None,
 ) -> dict[str, Any]:
-    """Snapshot the exact commit from a local checkout's object store (no worktree or branch change)."""
+    """Snapshot the exact commit from a local checkout's object store (no worktree or branch change).
+
+    With `upfront`, the snapshot is lazy: it holds the changed files and the paths `upfront` accepts, and its
+    manifest lists every other path it would hold, with its blob id, under `fetchable`, for `fetch_source_file`.
+    """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
         raise RuntimeContractError("Source snapshot commit is invalid")
@@ -1239,12 +1335,128 @@ def materialize_source_snapshot(
     _prepare_destination(destination)
     try:
         room = path_room(destination)
-        members = _commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths), room)
+        fetchable: dict[str, str] | None = None if upfront is None else {}
+        members = _commit_members(
+            checkout,
+            commit,
+            runner,
+            blob_reader,
+            frozenset(changed_paths),
+            room,
+            upfront=upfront,
+            fetchable=fetchable,
+        )
         with closing(members):
-            return _populate_snapshot(members, destination, repository=repository, commit=commit)
+            return _populate_snapshot(members, destination, repository=repository, commit=commit, fetchable=fetchable)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise
+
+
+def fetch_source_file(
+    checkout: Path,
+    root: Path,
+    relative: str,
+    *,
+    repository: str,
+    commit: str,
+    staging: Path,
+    blob_reader: BlobReader = git_blob_reader,
+) -> Path | str:
+    """A head file's path in the snapshot at `root`, written there from the commit when a lazy snapshot lists it as
+    fetchable, or the reason the snapshot leaves it out (an exclusion's, or `binary`).
+
+    Only a path the manifest names is looked up, so nothing a caller passes becomes a file name: a path the commit
+    does not hold as a file, in any other spelling, raises with nothing written. The blob is read from `checkout`'s
+    object store by the id the manifest lists, and its bytes must hash to that id. It is written through a temporary
+    file in `staging`, which must be on the snapshot's volume, into a folder checked for reparse points and escape,
+    and the snapshot's total size limit holds. A file already there is checked against its id instead.
+    """
+    metadata, tree, held = _verify_snapshot(
+        root, expected_repository=repository, expected_commit=commit, contents=False
+    )
+    target = root.joinpath(*PurePosixPath(relative).parts)
+    if relative in metadata["source_hashes"]:
+        return target
+    if relative in metadata["excluded_paths"]:
+        return str(metadata["excluded_paths"][relative])
+    blob = metadata.get(SNAPSHOT_FETCHABLE, {}).get(relative)
+    if blob is None:
+        raise RuntimeContractError(f"The head commit has no file {json.dumps(relative)} the snapshot can hold")
+    if relative in tree.files:
+        held_content = target.read_bytes()
+        if _git_blob_id(_blob_algorithm(blob), len(held_content), [held_content]) != blob:
+            raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
+        return target
+    blobs = iter(blob_reader(checkout, [blob]))
+    try:
+        content = next(blobs, None)
+    finally:
+        close = getattr(blobs, "close", None)
+        if close is not None:  # a generator reader ends its git process
+            close()
+    if content is None or _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
+        raise RuntimeContractError(f"The checkout did not return blob {blob} of {json.dumps(relative)}")
+    if b"\0" in content[:BINARY_PROBE_BYTES]:
+        return "binary"
+    if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
+        raise RuntimeContractError("Source snapshot would exceed the size limit")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _require_safe_snapshot_path(root, target.parent)
+    handle, name = tempfile.mkstemp(prefix="fetch-", dir=staging)
+    temporary = Path(name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            stream.write(content)
+        try:
+            temporary.replace(target)
+        except PermissionError:  # another reviewer fetched it first and the file is open
+            if not target.is_file() or target.read_bytes() != content:
+                raise
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def search_source(
+    checkout: Path, root: Path, pattern: str, *, repository: str, commit: str
+) -> tuple[list[tuple[str, str, str]], bool]:
+    """Matches of an extended regular expression in the head commit's files, as (path, line number, text), in the
+    paths the snapshot at `root` can hold only, and whether more than MAX_SEARCH_MATCHES were found.
+
+    `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. It skips binary files
+    by the snapshot's own test, applies no textconv, and reads each line's text as UTF-8 with U+FFFD for any other
+    byte, cut at MAX_MATCH_CHARACTERS. A path the snapshot excludes, such as an agent instruction file, is left out.
+    """
+    metadata = _verify_snapshot(root, expected_repository=repository, expected_commit=commit, contents=False)[0]
+    searchable = set(metadata["source_hashes"]) | set(metadata.get(SNAPSHOT_FETCHABLE, {}))
+    arguments = ["grep", "--null", "--line-number", "-I", "-E", "--no-color", "--full-name", "-e", pattern, commit]
+    matches: list[tuple[str, str, str]] = []
+    prefix = f"{commit}:".encode("ascii")
+    try:
+        with GitClient().stream([*arguments, "--"], directory=checkout) as stream:
+            stream.stdin.close()
+            while line := stream.readline():
+                name, _, rest = line.rstrip(b"\r\n").partition(b"\0")
+                number, _, text = rest.partition(b"\0")
+                path = name.removeprefix(prefix).decode("utf-8", "surrogateescape")
+                if path not in searchable:
+                    continue
+                if len(matches) == MAX_SEARCH_MATCHES:
+                    return matches, True
+                matches.append((path, number.decode("ascii", "replace"), _match_text(text)))
+            status = stream.wait()
+            if status not in {0, 1}:  # 1 is no match
+                raise RuntimeContractError(stream.stderr().strip() or f"git grep failed with exit code {status}")
+    except GitError as exc:
+        raise RuntimeContractError(str(exc)) from exc
+    return matches, False
+
+
+def _match_text(text: bytes) -> str:
+    """A matched line as one line of text, cut to MAX_MATCH_CHARACTERS."""
+    decoded = text.decode("utf-8", "replace").replace("\r", " ").replace("\0", " ")
+    return decoded if len(decoded) <= MAX_MATCH_CHARACTERS else decoded[:MAX_MATCH_CHARACTERS] + "..."
 
 
 @dataclass(frozen=True)

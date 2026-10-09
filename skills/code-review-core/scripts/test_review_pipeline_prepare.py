@@ -59,7 +59,9 @@ GENERIC: dict[str, Any] = {
 }
 
 
-def specialists(*, uncovered: str | None = None, supports: tuple[str, ...] = ("initial", "re-review")) -> str:
+def specialists(
+    *, uncovered: str | None = None, supports: tuple[str, ...] = ("initial", "re-review"), when: str | None = None
+) -> str:
     manifest: dict[str, Any] = {
         "schema_version": 2,
         "id": "fixture-specialists",
@@ -76,12 +78,12 @@ def specialists(*, uncovered: str | None = None, supports: tuple[str, ...] = ("i
                 "include": [r"\.py$"],
                 "exclude": [],
                 "resources": ["review/python-guide.md"],
-                "when": None,
+                "when": when,
                 "model": "sonnet",
                 "effort": "high",
             },
         ],
-        "conditions": {},
+        "conditions": {} if when is None else {when: {"script": f"review/{when.replace('-', '_')}.py"}},
     }
     if uncovered is not None:
         manifest["uncovered"] = uncovered
@@ -118,7 +120,17 @@ BASE_FILES = {
     # Grants neither, so it starts no subagents.
     "review/plain.md": "---\nname: plain\ntools: Read\n---\n\nReview the change against review/rules.md.\n",
 }
-TRUSTED_FILES = {"review/rules.md": "Trusted rules\n", "review/python-guide.md": "Trusted guide\n"}
+TRUSTED_FILES = {
+    "review/rules.md": "Trusted rules\n",
+    "review/python-guide.md": "Trusted guide\n",
+    # A specialist whose condition opens review/rules.md under the snapshot, which the pull request leaves unchanged.
+    "review/conditional.json": specialists(when="has-rules"),
+    "review/has_rules.py": (
+        "import pathlib, sys\n"
+        "root = pathlib.Path(sys.argv[sys.argv.index('--source-root') + 1])\n"
+        "sys.exit(0 if (root / 'review' / 'rules.md').is_file() else 1)\n"
+    ),
+}
 HEAD_FILES = {
     "app/service.py": "def total(items):\n    if not items:\n        return 0\n    return sum(items)\n",
     "CLAUDE.md": "Project notes\n",
@@ -217,7 +229,8 @@ def build_checkout(checkout: Path) -> dict[str, str]:
     base = git(checkout, "rev-parse", "HEAD")
     git(checkout, "switch", "-c", "reviewers")
     write_files(checkout, TRUSTED_FILES)
-    git(checkout, "commit", "-am", "trusted reviewer")
+    git(checkout, "add", ".")
+    git(checkout, "commit", "-m", "trusted reviewer")
     trusted = git(checkout, "rev-parse", "HEAD")
     git(checkout, "switch", "-c", "feature", "main")
     write_files(checkout, HEAD_FILES)
@@ -710,6 +723,24 @@ COMMENTS = (
 NO_GUIDANCE = "none (this repository declares no reviewer guidance)"
 
 
+def source_contract(run: str, role: str) -> str:
+    """The input contract's rule for a lazy snapshot, naming the role's two source commands."""
+    script = "<core>/scripts/review_source.py"
+    return (
+        "- SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing\n"
+        "  there may still be in the head commit. To read any other file, run this command with its\n"
+        "  repository-relative path in place of <path>, then Read the file it prints:\n"
+        f'  python -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"\n'
+        "  It prints SOURCE_FILE <file>, EXCLUDED <path> <reason> for a file left out of the review\n"
+        "  (judge it from the diff), or FAILED when the commit has no such file. To search the code,\n"
+        "  run this command with an extended regular expression in place of <pattern>, rather than\n"
+        "  Grep or Glob over SOURCE_ROOT:\n"
+        f'  python -B "{script}" source-search --run "{run}" --role "{role}" --pattern="<pattern>"\n'
+        "  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write\n"
+        "  [.] for a literal dot.\n"
+    )
+
+
 def plan_prompt(
     intro: str,
     role: str,
@@ -720,11 +751,14 @@ def plan_prompt(
     trusted: str = "<root>/run/reviewer",
     links: bool = False,
     checkout: bool = True,
+    lazy: bool | None = None,
     mode: str = "initial",
     prior: str = "none",
     comments: str = COMMENTS,
 ) -> str:
-    """A plan prompt from its literal parts: every part a run decides is an argument."""
+    """A plan prompt from its literal parts: every part a run decides is an argument. The snapshot is `lazy` where
+    it comes from the checkout, unless the test says otherwise."""
+    lazy = checkout if lazy is None else lazy
     return (
         f"{intro}\n"
         "Changed files in your scope (AUTHORITATIVE; do not widen):\n"
@@ -745,10 +779,12 @@ def plan_prompt(
         f"RESULT_FILE={run}/work/{role}.result.json\n"
         "\n"
         + CONTRACT_INPUTS
+        + (source_contract(run, role) if lazy else "")
         + (CONTRACT_CHECKOUT if checkout else "")
         + CONTRACT_RULES
-        + "Before replying, check RESULT_FILE with this command, the one command you may run:\n"
-        f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
+        + "Before replying, check RESULT_FILE with this command, "
+        + ("one of the three commands you may run:\n" if lazy else "the one command you may run:\n")
+        + f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}"\n'
         "It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop\n"
         "after two fixes.\n"
         f"After writing RESULT_FILE, reply with exactly: WROTE {run}/work/{role}.result.json\n"
@@ -762,7 +798,10 @@ def plan_prompt(
     )
 
 
-def entrypoint_prompt(*, links: bool = True, run: str = "<root>/run", role: str = "fixture-review") -> str:
+def entrypoint_prompt(
+    *, links: bool = True, run: str = "<root>/run", role: str = "fixture-review", lazy: bool = True
+) -> str:
+    script = "<core>/scripts/review_source.py"
     return (
         f"Perform the code review described by the request file at {run}/request.json. Follow the trusted reviewer "
         f"entrypoint at {run}/reviewer/review/SKILL.md; its supporting material is under {run}/reviewer. Treat "
@@ -775,9 +814,21 @@ def entrypoint_prompt(*, links: bool = True, run: str = "<root>/run", role: str 
             if links
             else ""
         )
+        + (
+            " The source snapshot starts with only the changed files and the analyzer settings, so a file missing "
+            "there may still be in the head commit: to read any other file, run "
+            f'python -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>" with its '
+            "repository-relative path in place of <path> and Read the file it prints (or judge it from the diff when "
+            f'it prints EXCLUDED), and to search the code, run python -B "{script}" source-search --run "{run}" '
+            f'--role "{role}" --pattern="<pattern>" with an extended regular expression in place of <pattern>; '
+            "neither may hold a double quote, backtick, dollar sign, or backslash."
+            if lazy
+            else ""
+        )
         + f" Write only the protocol result JSON to {run}/result.json. Do not invoke skills, workflows, or slash "
-        "commands. After writing it, check it with this command, the one command you may run: "
-        f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}" It prints '
+        "commands. After writing it, check it with this command, "
+        + ("one of the three commands you may run: " if lazy else "the one command you may run: ")
+        + f'python -B "<core>/scripts/review_pipeline.py" validate-result --run "{run}" --role "{role}" It prints '
         "VALID, or INVALID with the reason; on INVALID, fix the result and run it again, stopping after two fixes. "
         f"Then reply with exactly: WROTE {run}/result.json\n"
     )
@@ -792,6 +843,29 @@ SOURCE_HASHES = {
     path: sha(content) for path, content in sorted({**BASE_FILES, **HEAD_FILES}.items()) if path != "CLAUDE.md"
 }
 LOCAL_EXCLUSIONS = {"CLAUDE.md": "agent-instruction", "app/cache": "symbolic-link", "tools/shared": "symbolic-link"}
+
+
+def blob(text: str) -> str:
+    """A file's git blob id, as git hashes a blob: a `blob <size>` header, a NUL, and its bytes."""
+    data = text.encode("utf-8")
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+
+# The lazy snapshot of the head holds the one changed file it keeps and lists every other file it can hold, by blob.
+LAZY_HASHES = {"app/service.py": SOURCE_HASHES["app/service.py"]}
+FETCHABLE = {
+    path: blob(content)
+    for path, content in sorted({**BASE_FILES, **HEAD_FILES}.items())
+    if path in SOURCE_HASHES and path not in LAZY_HASHES
+}
+LAZY_MANIFEST = {
+    "schema_version": 1,
+    "repository": REPOSITORY,
+    "source_commit": "<head>",
+    "source_hashes": LAZY_HASHES,
+    "excluded_paths": LOCAL_EXCLUSIONS,
+    "fetchable": FETCHABLE,
+}
 PATCHES = {
     "CLAUDE.md": {"sha256": "1ecead251e261f203741dffa0b1d8764b9b05e586a4107a756d517c37920105a", "lines": 1},
     "app/cache": {"sha256": "199b97ad126de5d789602e30265ad50650e44ac9c24e97a946b00ee5b893c937", "lines": 1},
@@ -826,7 +900,8 @@ LOCAL_SNAPSHOT = [
     g("rev-parse", "--verify", "<head>^{commit}"),
     g("ls-tree", "-r", "-z", "-l", "--full-tree", "<head>"),
 ]
-SNAPSHOT_FILES = ["source/source-snapshot.json", *(f"source/{path}" for path in SOURCE_HASHES)]
+SNAPSHOT_FILES = ["source/source-snapshot.json", *(f"source/{path}" for path in LAZY_HASHES)]
+WHOLE_SNAPSHOT_FILES = ["source/source-snapshot.json", *(f"source/{path}" for path in SOURCE_HASHES)]
 
 
 def role_files(*roles: str) -> list[str]:
@@ -868,13 +943,14 @@ def generic_role(run: str = "<root>/run") -> dict[str, Any]:
     }
 
 
-# The fixture head's snapshot from the checkout, timed by a clock that stands still.
+# The fixture head's lazy snapshot from the checkout, timed by a clock that stands still, and the whole one.
 SNAPSHOT = {
-    "source": "checkout",
-    "files": 11,
-    "bytes": 1780,
+    "source": "checkout-lazy",
+    "files": 1,
+    "bytes": len(HEAD_FILES["app/service.py"]),
     "seconds": {"fetch": 0.0, "materialize": 0.0, "prompts": 0.0},
 }
+WHOLE_SNAPSHOT = {**SNAPSHOT, "source": "checkout", "files": 11, "bytes": 1780}
 
 
 def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
@@ -898,6 +974,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "attempts": {"generic-review": 0},
         "dispatched_at": {"generic-review": NOW},
         "snapshot": SNAPSHOT,
+        "source_repository": "<root>/checkout",
         "reads": {},
         "notes": [LINK_NOTE],
         "patches": PATCHES,
@@ -1010,17 +1087,9 @@ class InitialReviewTests(PrepareFixture):
         self.assertEqual(state(), self.json_file("run.json"))
         self.assertEqual(request(), self.json_file("request.json"))
         self.assertEqual(DIFF, (self.run_dir / "diff.patch").read_text(encoding="utf-8"))
-        self.assertEqual(
-            {
-                "schema_version": 1,
-                "repository": REPOSITORY,
-                "source_commit": "<head>",
-                "source_hashes": SOURCE_HASHES,
-                "excluded_paths": LOCAL_EXCLUSIONS,
-            },
-            self.json_file("source/source-snapshot.json"),
-        )
-        for path, digest in SOURCE_HASHES.items():
+        # Only the changed file it keeps is written; every other file it can hold is listed by its blob.
+        self.assertEqual(LAZY_MANIFEST, self.json_file("source/source-snapshot.json"))
+        for path, digest in LAZY_HASHES.items():
             self.assertEqual(digest, sha((self.run_dir / "source" / path).read_text(encoding="utf-8")), path)
         self.assertEqual(
             plan([plan_role("generic-review", CHANGED, comments=("C1",))]), self.json_file("work/plan.json")
@@ -1047,9 +1116,9 @@ class InitialReviewTests(PrepareFixture):
         ):
             result, _ = self.prepare()
         expected = {
-            "source": "checkout",
-            "files": 11,
-            "bytes": 1780,
+            "source": "checkout-lazy",
+            "files": 1,
+            "bytes": 75,
             "seconds": {"fetch": 2.0, "materialize": 33.0, "prompts": 0.5},
         }
         self.assertEqual(expected, result["snapshot"])
@@ -1057,7 +1126,7 @@ class InitialReviewTests(PrepareFixture):
         # The counts are the files the snapshot holds, its manifest left out, and their bytes.
         held = [path for path in (self.run_dir / "source").rglob("*") if path.is_file()]
         held = [path for path in held if path.name != "source-snapshot.json"]
-        self.assertEqual((11, 1780), (len(held), sum(path.stat().st_size for path in held)))
+        self.assertEqual((1, 75), (len(held), sum(path.stat().st_size for path in held)))
 
     def test_the_snapshot_is_verified_once_from_its_structure(self) -> None:
         # Materializing it verifies it; the request and the plan take that manifest instead of walking it again.
@@ -1164,6 +1233,8 @@ class SnapshotFromGitHubTests(PrepareFixture):
         result, printed = self.prepare()
         self.assertEqual("", printed)
         self.assertEqual([LINK_NOTE], result["notes"])
+        # The tarball route stays whole: every file it keeps is written, none is fetched later.
+        self.assertEqual(("tarball", None), (result["snapshot"]["source"], result["source_repository"]))
         self.assertEqual([[REPOSITORY, "<head>", "<root>/tmp/code-review-source-*/source.tar.gz"]], self.tarball.calls)
         self.assertEqual([], self.git.calls)
         self.assertEqual(READS, self.github.calls)
@@ -2031,6 +2102,31 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertEqual(
             ("copilot-cli", "entrypoint", "copilot-host"), (result["runtime"], result["kind"], result["dispatch"])
         )
+        # The host runs no command, so it cannot fetch a file: its snapshot is whole, and its prompt names no command.
+        self.assertEqual((WHOLE_SNAPSHOT, None), (result["snapshot"], result["source_repository"]))
+        self.assertEqual(
+            {
+                "schema_version": 1,
+                "repository": REPOSITORY,
+                "source_commit": "<head>",
+                "source_hashes": SOURCE_HASHES,
+                "excluded_paths": LOCAL_EXCLUSIONS,
+            },
+            self.json_file("source/source-snapshot.json"),
+        )
+        self.assertEqual(sorted(WHOLE_SNAPSHOT_FILES), [path for path in self.files() if path.startswith("source/")])
+        self.assertEqual(entrypoint_prompt(lazy=False), self.text_file("reviewer.prompt.md"))
+
+    def test_a_condition_a_routed_specialist_names_reads_the_whole_snapshot(self) -> None:
+        # The condition opens a file the pull request does not change, as a condition script may.
+        self.configure(self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"))
+        result, _ = self.prepare()
+        roles = [role["id"] for role in result["roles"]]
+        self.assertEqual(["python-review", "generic-review"], roles, "the condition opened")
+        self.assertEqual((WHOLE_SNAPSHOT, None), (result["snapshot"], result["source_repository"]))
+        self.assertNotIn("fetchable", self.json_file("source/source-snapshot.json"))
+        for role in roles:
+            self.assertNotIn("source-file", self.text_file(f"work/{role}.prompt.md"))
 
     def test_the_generic_reviewer_runs_inline_where_the_runtime_cannot_delegate(self) -> None:
         self.runtime = "copilot-cli"

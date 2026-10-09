@@ -32,6 +32,7 @@ from review_reviewers import frontmatter_value
 from review_runtime import (
     GENERIC_SPECIALIST,
     MODEL_ALIASES,
+    SNAPSHOT_FETCHABLE,
     RuntimeContractError,
     declared_reviewer_files,
     require_snapshot_source,
@@ -313,6 +314,14 @@ def uncovered(manifest: dict[str, Any], changed: list[str]) -> list[str]:
     return [path for path in changed if path not in matched]
 
 
+def needs_conditions(manifest: dict[str, Any], changed: list[str]) -> bool:
+    """Whether routing these changed files runs a condition script, as `route` does for a specialist with a `when`
+    that matches any of them. A condition reads the source snapshot as it chooses, so it needs every file there."""
+    return any(
+        specialist["when"] is not None and _matched(specialist, changed) for specialist in manifest["specialists"]
+    )
+
+
 def route(
     manifest: dict[str, Any],
     changed: list[str],
@@ -365,7 +374,7 @@ RULES = """Input contract (this replaces any instruction above about how to obta
 - Wherever your instructions read a repository guideline, convention, or agent document,
   read that repository-relative path under TRUSTED_ROOT.
 - Wherever your instructions read a source file, read that repository-relative path under
-  SOURCE_ROOT, and use SOURCE_ROOT for any path-existence check.{checkout_rule}
+  SOURCE_ROOT, and use SOURCE_ROOT for any path-existence check.{source_rule}{checkout_rule}
 - Make independent reads and searches in the same turn, not one per turn: start by reading
   your instructions, the documents they name, and DIFF_FILE together.
 - SOURCE_ROOT, DIFF_FILE, OTHER_CHANGES_FILE, GITHUB_COMMENTS_FILE, and ANALYZERS_FILE are
@@ -381,6 +390,19 @@ Scope rules (violating them invalidates your result):
   consumer the same pull request changed; report it on the added line it concerns.
 - Do not speculate about code you did not read, report compile errors, duplicate analyzer
   rules the repository enforces as errors, or request explanatory comments."""
+
+SOURCE_RULE = """
+- SOURCE_ROOT starts with only the changed files and the analyzer settings, so a file missing
+  there may still be in the head commit. To read any other file, run this command with its
+  repository-relative path in place of <path>, then Read the file it prints:
+  {fetch}
+  It prints SOURCE_FILE <file>, EXCLUDED <path> <reason> for a file left out of the review
+  (judge it from the diff), or FAILED when the commit has no such file. To search the code,
+  run this command with an extended regular expression in place of <pattern>, rather than
+  Grep or Glob over SOURCE_ROOT:
+  {search}
+  The path or pattern may not hold a double quote, backtick, dollar sign, or backslash; write
+  [.] for a literal dot."""
 
 CHECKOUT_RULE = """
 - Never read anything under {checkout}. It is a local working copy, possibly on another
@@ -435,7 +457,7 @@ rules run and how severely; read it only when a finding might qualify. Prefer th
   characters, that you would give every occurrence of the same pattern.
 `tool` and `rule` never contain spaces.{extra}
 {self_check}After writing RESULT_FILE, reply with exactly: WROTE {result_file}"""
-SELF_CHECK = """Before replying, check RESULT_FILE with this command, the one command you may run:
+SELF_CHECK = """Before replying, check RESULT_FILE with this command, {only}:
 {command}
 It prints VALID, or INVALID with the reason. On INVALID, fix RESULT_FILE and run it again; stop
 after two fixes.
@@ -519,8 +541,11 @@ def render_prompt(
     local_checkout: Path | None = None,
     other_files: Sequence[str] = (),
     links: dict[str, tuple[int, str] | None] | None = None,
+    source_commands: tuple[str, str] | None = None,
 ) -> str:
-    """`links`, from `symbolic_links`, names the symbolic links among the role's files, which it raises as findings."""
+    """`links`, from `symbolic_links`, names the symbolic links among the role's files, which it raises as findings.
+    `source_commands`, a lazy snapshot's `source-file` and `source-search` commands for this role, are named in the
+    input contract."""
     identity = role["id"]
     if identity == GENERIC_SPECIALIST:
         instructions = role["instructions"]
@@ -575,14 +600,24 @@ def render_prompt(
             ),
             inputs,
             "",
-            RULES.format(checkout_rule=CHECKOUT_RULE.format(checkout=local_checkout) if local_checkout else ""),
+            RULES.format(
+                source_rule=SOURCE_RULE.format(fetch=source_commands[0], search=source_commands[1])
+                if source_commands
+                else "",
+                checkout_rule=CHECKOUT_RULE.format(checkout=local_checkout) if local_checkout else "",
+            ),
             "",
             OUTPUT.format(
                 extra=extra,
                 category_field=category_field,
                 result_file=role["result_file"],
                 title_maximum=TITLE_MAXIMUM_LENGTH,
-                self_check=SELF_CHECK.format(command=self_check) if self_check else "",
+                self_check=SELF_CHECK.format(
+                    command=self_check,
+                    only="one of the three commands you may run" if source_commands else "the one command you may run",
+                )
+                if self_check
+                else "",
             ),
             "",
             f"Review mode: {request['mode']}",
@@ -807,7 +842,8 @@ def _generic_role(
 
 def _write_shared(work: Path, request: dict[str, Any], source_root: Path, snapshot: dict[str, Any]) -> dict[str, Any]:
     """The analyzer inventory and every open review comment, which all roles share; returns the inventory."""
-    analyzers = inventory(source_root, snapshot["source_hashes"])
+    # A lazy snapshot's fetchable paths are named too: it holds every settings file the inventory reads.
+    analyzers = inventory(source_root, [*snapshot["source_hashes"], *snapshot.get(SNAPSHOT_FETCHABLE, {})])
     atomic_write_json(work / ANALYZERS, analyzers)
     atomic_write_text(
         work / "github-comments.json",
@@ -828,6 +864,7 @@ def _write_role(
     links: dict[str, tuple[int, str] | None],
     self_check: Callable[[str], str] | None,
     local_checkout: Path | None,
+    source_commands: Callable[[str], tuple[str, str]] | None = None,
 ) -> None:
     """A role's result and prompt paths and its disposition IDs, then its inputs and prompt, in that order."""
     identity = role["id"]
@@ -861,6 +898,7 @@ def _write_role(
             local_checkout=local_checkout,
             other_files=[path for path in diff if path not in role["files"]],
             links={path: link for path, link in links.items() if path in role["files"]},
+            source_commands=source_commands(identity) if source_commands else None,
         ),
     )
 
@@ -875,6 +913,7 @@ def build_plan(
     snapshot: dict[str, Any] | None = None,
     local_checkout: Path | None = None,
     review_files: set[str] | None = None,
+    source_commands: Callable[[str], tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
 
@@ -882,6 +921,7 @@ def build_plan(
     materialization verified. Without it the snapshot is verified here, contents included.
     `review_files`, for an incremental re-review, names the files to review in full. A role with none of them
     only gives dispositions, and a specialist with no prior finding or comment either is left out.
+    `source_commands` gives a role's `source-file` and `source-search` commands, for a lazy snapshot.
     """
     request = _load_request(request_path)
     manifest, source_commit = _load_reviewer(reviewer_root, request["mode"])
@@ -936,6 +976,7 @@ def build_plan(
             links=links,
             self_check=self_check,
             local_checkout=local_checkout,
+            source_commands=source_commands,
         )
     plan = {
         "schema_version": PLAN_SCHEMA_VERSION,

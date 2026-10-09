@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_guard as guard
 import review_pipeline as rp
+import review_source
 from git_client import GitError, GitResult
 from github_client import CommandResult, subprocess_runner
 from review_archive import latest_record, list_versions, pull_directory
@@ -975,7 +976,9 @@ class SelfCheckTests(PipelineFixture):
         self.assertIn(" ", str(ready["run"]), "the fixture run path must contain a space")
         prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn(
-            f"Before replying, check RESULT_FILE with this command, the one command you may run:\n{command}\n", prompt
+            f"Before replying, check RESULT_FILE with this command, one of the three commands you may run:\n"
+            f"{command}\n",
+            prompt,
         )
         self.assertIn("stop\nafter two fixes.\nAfter writing RESULT_FILE, reply with exactly: WROTE", prompt)
 
@@ -1959,7 +1962,7 @@ class RepositoryReviewerTests(PipelineFixture):
         self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
         script = SCRIPT_DIRECTORY / "review_pipeline.py"
         self.assertIn(
-            f'the one command you may run: python -B "{script}" validate-result --run "{ready["run"]}" '
+            f'one of the three commands you may run: python -B "{script}" validate-result --run "{ready["run"]}" '
             f'--role "fixture-review" It prints VALID',
             prompt,
         )
@@ -2182,7 +2185,12 @@ class ReadCountTests(PipelineFixture):
         self.assertEqual(1, self.run_main("check", "--run", str(run))[0])
         self.assertEqual({}, rp.load_run(run)["reads"], "a role set aside keeps its log for its rerun")
         self.assertTrue(log.is_file())
-        # The rerun is a fresh reviewer of the same role: what both read counts once.
+        # The rerun is a fresh reviewer of the same role: what both read counts once. It fetches review/rules.md,
+        # which the lazy snapshot did not hold, and reads it.
+        self.assertEqual(
+            [f"SOURCE_FILE {run / 'source' / 'review' / 'rules.md'}"],
+            review_source.source_file(run, role["id"], "review/rules.md"),
+        )
         self.guarded(role, "a73176509870d6114", "app/service.py", "review/rules.md")
         with log.open("a", encoding="utf-8") as stream:  # lines that name no file of the snapshot count for nothing
             stream.write('"../run.json"\n"app/missing.py"\nnot json\n42\n')
@@ -3495,43 +3503,97 @@ class FixtureCanaryTests(PipelineFixture):
         real_record = json.loads(Path(real["json"]).read_text(encoding="utf-8"))
         self.assertEqual(record_structure(real_record), record_structure(record))
 
+    def guarded_command(self, role: dict[str, Any], command: str) -> tuple[int, list[str]]:
+        """Run a Bash command a guarded reviewer of `role` makes, once the guard allows it, as review_source.py."""
+        event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(self.root), "agent_id": "a1"}
+        self.assertIsNone(guard.decide(event), command)
+        arguments = re.fullmatch(
+            r'python -B "[^"]+" (\S+) --run "([^"]+)" --role "([^"]+)" (--[a-z]+)="([^"]*)"', command
+        )
+        if arguments is None:
+            raise AssertionError(f"not a source command: {command}")
+        command_name, run, identity, option, value = arguments.groups()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = review_source.main([command_name, "--run", run, "--role", identity, f"{option}={value}"])
+        return code, out.getvalue().splitlines()
+
     def test_a_fixture_canary_records_its_snapshot_and_reads_and_prints_them_on_stats_lines(self) -> None:
         claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
         claims.start()
         self.addCleanup(claims.stop)
         state = self.prepare_fixture_run("--fixture", str(self.fixture("measured", FIXTURE_HEAD)))
         [role] = state["roles"]
-        source = Path(state["request_path"]).parent / "source"
+        run = Path(state["request_path"]).parent
+        source = run / "source"
+        # Only the changed file the snapshot keeps is written; the rest of the head is fetched on demand from the
+        # fixture's repository, moved into the run.
         kept = sorted(path for path in source.rglob("*") if path.is_file() and path.name != "source-snapshot.json")
+        self.assertEqual([source / "app" / "service.py"], kept)
         self.assertEqual(
-            ("checkout", len(kept), sum(path.stat().st_size for path in kept)),
+            ("checkout-lazy", len(kept), sum(path.stat().st_size for path in kept)),
             (state["snapshot"]["source"], state["snapshot"]["files"], state["snapshot"]["bytes"]),
         )
+        self.assertEqual(str(run / "repository"), state["source_repository"])
         self.assertEqual(["fetch", "materialize", "prompts"], list(state["snapshot"]["seconds"]))
-        # A guarded reviewer reads its prompt and one snapshot file.
+        prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
+        fetch, search = review_source.source_commands(run, role["id"])
+        self.assertIn(f"  {fetch}\n", prompt)
+        self.assertIn(f"  {search}\n", prompt)
+        # A guarded reviewer reads its prompt and one snapshot file, fetches an unchanged file and reads it, searches
+        # the commit, and asks for a path the commit does not hold.
         for path in (role["prompt_file"], str(source / "app" / "service.py")):
             event = {"tool_name": "Read", "tool_input": {"file_path": path}, "cwd": str(self.root), "agent_id": "a1"}
             self.assertIsNone(guard.decide(event), path)
-        read = (source / "app" / "service.py").stat().st_size
+        fetched = source / "README.md"
+        self.assertFalse(fetched.exists(), "the unchanged README.md is not written until it is fetched")
+        self.assertEqual(
+            (0, [f"SOURCE_FILE {fetched}"]), self.guarded_command(role, fetch.replace("<path>", "README.md"))
+        )
+        self.assertEqual(
+            (self.root / "fixtures" / "measured" / "head" / "README.md").read_bytes(), fetched.read_bytes()
+        )
+        event = {
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(fetched)},
+            "cwd": str(self.root),
+            "agent_id": "a1",
+        }
+        self.assertIsNone(guard.decide(event))
+        # The search covers the commit's files, fetched or not, and never the agent instructions the snapshot drops.
+        self.assertEqual(
+            (0, ["MATCH README.md:1: Totals", "MATCH app/service.py:1: def total(items):", "MATCHES 2"]),
+            self.guarded_command(role, search.replace("<pattern>", "[Tt]otal|approve")),
+        )
+        self.assertEqual(
+            (0, ['EXCLUDED "CLAUDE.md" agent-instruction']),
+            self.guarded_command(role, fetch.replace("<path>", "CLAUDE.md")),
+        )
+        code, refused = self.guarded_command(role, fetch.replace("<path>", "../run.json"))
+        self.assertEqual(
+            (1, ['FAILED The head commit has no file "../run.json" the snapshot can hold']), (code, refused)
+        )
+        read = (source / "app" / "service.py").stat().st_size + fetched.stat().st_size
         lines = self.finish(state, findings=[])
         _, record = self.canary_record(lines)
         snapshot, [reviewer] = record["review"]["snapshot"], record["review"]["reviewers"]
         self.assertEqual(state["snapshot"], snapshot)
-        self.assertEqual((1, read), (reviewer["files_read"], reviewer["bytes_read"]))
+        self.assertEqual((2, read), (reviewer["files_read"], reviewer["bytes_read"]), "the fetch counts as a read")
         seconds = " ".join(f"{phase}={value:.1f}s" for phase, value in snapshot["seconds"].items())
         selector = state["selector"]
         self.assertEqual(
             [
-                f"STATS {selector} snapshot source=checkout files={len(kept)} bytes={snapshot['bytes']} {seconds}",
-                f"STATS {selector} reviewer {role['id']} files_read=1 bytes_read={read}",
+                f"STATS {selector} snapshot source=checkout-lazy files={len(kept)} bytes={snapshot['bytes']} {seconds}",
+                f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read}",
             ],
             [line for line in lines if line.startswith("STATS ")],
         )
         self.assertLess(
-            lines.index(f"STATS {selector} reviewer {role['id']} files_read=1 bytes_read={read}"),
+            lines.index(f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read}"),
             next(index for index, line in enumerate(lines) if line.startswith("RECORDED ")),
         )
         self.assertNotIn(str(source), "\n".join(lines), "counts and seconds only, never a path")
+        self.assertFalse(run.exists(), "finalize removes the run, the fixture's repository with it")
 
     def test_a_fixture_re_review_carries_the_prior_ledger_as_a_real_re_review_does(self) -> None:
         first = self.prepare_fixture_run("--fixture", str(self.fixture("first", FIXTURE_HEAD)))

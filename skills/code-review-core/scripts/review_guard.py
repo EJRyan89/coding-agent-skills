@@ -11,7 +11,9 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   `run.json`: the snapshot, the trusted reviewer files, and the work files) or this skill's `references` folder.
   Grep and Glob must name that folder explicitly, because their default is the session's working directory.
 - Write and Edit only on the claimed role's result file, as the run's `run.json` names it.
-- Bash only for the claimed role's self-check command, exactly as the pipeline writes it.
+- Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and, for a lazy snapshot,
+  its `source-file` and `source-search` commands (review_source.py), with the one path or pattern the reviewer
+  fills in, which may hold no quote, backtick, dollar sign, backslash, or line break.
 
 Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
@@ -19,8 +21,9 @@ reviewer can write. A retry is a fresh agent that claims the same role.
 
 The hook also counts what a reviewer reads: a claim creates the role's read log in the run's `work` folder, and each
 allowed Read of a file, or Grep of one file, under the run's source snapshot appends that file's path, relative to
-the snapshot, as one JSON string per line. Only the pipeline's `check` reads the log, and it keeps nothing of it but
-counts. A log that cannot be written is left short: counting never denies a call.
+the snapshot, as one JSON string per line, as `source-file` does for each file it fetches or finds. Only the
+pipeline's `check` reads the log, and it keeps nothing of it but counts. A log that cannot be written is left
+short: counting never denies a call.
 
 Other tools pass. Anything the hook cannot evaluate is denied, a call without an agent ID included: a reviewer
 reading the wrong code, or writing another role's result, produces a plausible but wrong review, which is worse
@@ -55,6 +58,16 @@ SAFE = r'[^"`$\r\n]+'
 SELF_CHECK = re.compile(
     rf'^python -B "(?P<script>{SAFE})" validate-result --run "(?P<run>{SAFE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
 )
+# The two commands review_source.py gives a lazy snapshot's reviewer. The script and the run must be the known ones,
+# and no quoted value may end in a backslash, which would escape its closing quote; the path or pattern, the one value
+# the reviewer chooses, holds no backslash at all, so it can never end up outside its quotes.
+SOURCE_VALUE = r'[^"`$\r\n]*[^"`$\r\n\\]'
+SOURCE_COMMAND = re.compile(
+    rf'^python -B "(?P<script>{SOURCE_VALUE})" (?P<command>source-file|source-search) --run "(?P<run>{SOURCE_VALUE})" '
+    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)" --(?P<option>path|pattern)="[^"`$\\\r\n]+"$'
+)
+SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
+SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
 SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
@@ -221,15 +234,30 @@ def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
 
 def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
     command = tool_input.get("command")
-    match = SELF_CHECK.match(command.strip()) if isinstance(command, str) else None
-    if match is None or not _same(_path(match.group("script"), cwd), PIPELINE):
-        raise Denied("run no command except the self-check command the prompt gives, exactly as written")
+    text = command.strip() if isinstance(command, str) else ""
+    match = SELF_CHECK.match(text)
+    if match is not None and _same(_path(match.group("script"), cwd), PIPELINE):
+        _check_own_run(match, cwd, claim, "self-check")
+        return
+    match = SOURCE_COMMAND.match(text)
+    if (
+        match is not None
+        and _same(_path(match.group("script"), cwd), SOURCE_SCRIPT)
+        and SOURCE_OPTIONS[match.group("command")] == match.group("option")
+    ):
+        _check_own_run(match, cwd, claim, match.group("command"))
+        return
+    raise Denied("run no command except the self-check and source commands the prompt gives, exactly as written")
+
+
+def _check_own_run(match: re.Match[str], cwd: Path, claim: Claim, name: str) -> None:
+    """The command, named `name` in a denial, names the reviewer's own review run folder and role."""
     run = _path(match.group("run"), cwd)
     root = run_root(run)
     if root is None or not _same(root, run):
-        raise Denied("the self-check must name the review run folder")
+        raise Denied(f"the {name} must name the review run folder")
     if not _same(run, claim[0]) or match.group("role") != claim[1]["id"]:
-        raise Denied("the self-check must name your own role and review run")
+        raise Denied(f"the {name} must name your own role and review run")
 
 
 def _check(tool: str, tool_input: dict[str, Any], cwd: Path, agent: str) -> None:
