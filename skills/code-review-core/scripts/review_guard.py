@@ -13,7 +13,8 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
 - Write and Edit only on the claimed role's result file, as the run's `run.json` names it.
 - Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and, for a lazy snapshot,
   its `source-file` and `source-search` commands (review_source.py), with the one path or pattern the reviewer
-  fills in, which may hold no quote, backtick, dollar sign, backslash, or line break.
+  fills in, which may hold no quote, backtick, dollar sign, backslash, or line break. No quoted script or run in
+  either may end in a backslash, which would escape its closing quote.
 
 Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
@@ -54,16 +55,18 @@ RUN_FILE = "run.json"
 SOURCE = "source"  # the run's source snapshot
 READ_TOOLS = {"Read", "Grep", "Glob"}
 WRITE_TOOLS = {"Write", "Edit"}
-SAFE = r'[^"`$\r\n]+'
+# A quoted script or run in any allowed command. No quoted value may end in a backslash, which would escape its closing
+# quote and leave what follows outside quotes, though the path still normalizes to the known script or run.
+QUOTED_VALUE = r'[^"`$\r\n]*[^"`$\r\n\\]'
 SELF_CHECK = re.compile(
-    rf'^python -B "(?P<script>{SAFE})" validate-result --run "(?P<run>{SAFE})" --role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
+    rf'^python -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
+    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
 )
-# The two commands review_source.py gives a lazy snapshot's reviewer. The script and the run must be the known ones,
-# and no quoted value may end in a backslash, which would escape its closing quote; the path or pattern, the one value
-# the reviewer chooses, holds no backslash at all, so it can never end up outside its quotes.
-SOURCE_VALUE = r'[^"`$\r\n]*[^"`$\r\n\\]'
+# The two commands review_source.py gives a lazy snapshot's reviewer. The script and the run must be the known ones;
+# the path or pattern, the one value the reviewer chooses, holds no backslash at all, so it can never end up outside
+# its quotes.
 SOURCE_COMMAND = re.compile(
-    rf'^python -B "(?P<script>{SOURCE_VALUE})" (?P<command>source-file|source-search) --run "(?P<run>{SOURCE_VALUE})" '
+    rf'^python -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) --run "(?P<run>{QUOTED_VALUE})" '
     rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)" --(?P<option>path|pattern)="[^"`$\\\r\n]+"$'
 )
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
