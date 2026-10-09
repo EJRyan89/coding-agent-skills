@@ -54,12 +54,14 @@ def run_bounded(
     timeout: float,
     *,
     stdout: IO[bytes] | None = None,
+    stderr: IO[bytes] | None = None,
     cwd: Path | None = None,
     input_bytes: bytes | None = None,
 ) -> Finished:
     """Run `command` without a shell, and with no stdin but `input_bytes`, and return its exit status and output.
 
-    With `stdout`, the command writes there and the result's stdout is empty. With `cwd`, it runs in that directory.
+    With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
+    file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
     With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
     subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds.
@@ -69,7 +71,7 @@ def run_bounded(
             list(command),
             stdin=stdin,
             stdout=output if stdout is None else stdout,
-            stderr=errors,
+            stderr=errors if stderr is None else stderr,
             env=non_interactive_environment(),
             cwd=cwd,
         )

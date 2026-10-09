@@ -96,6 +96,20 @@ class BoundedProcessTests(unittest.TestCase):
             self.assertEqual(bytes(range(256)), target.read_bytes())
         self.assertEqual(Finished(0, b"", b""), finished)
 
+    def test_stderr_may_go_to_a_file_of_the_callers_and_share_it_with_stdout(self) -> None:
+        program = (
+            "import sys; sys.stdout.write('one '); sys.stdout.flush(); sys.stderr.write('two '); sys.stderr.flush(); "
+            "sys.stdout.write('three')"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            alone, shared = Path(temporary) / "alone", Path(temporary) / "shared"
+            with alone.open("wb") as handle:
+                separate = run_bounded([sys.executable, "-c", program], 60, stderr=handle)
+            with shared.open("wb") as handle:
+                together = run_bounded([sys.executable, "-c", program], 60, stdout=handle, stderr=handle)
+            self.assertEqual((b"two ", b"one two three"), (alone.read_bytes(), shared.read_bytes()))
+        self.assertEqual((Finished(0, b"one three", b""), Finished(0, b"", b"")), (separate, together))
+
     def test_the_command_may_run_in_another_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "a folder"

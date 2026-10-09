@@ -40,6 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from bounded_process import run_bounded
 from console import use_utf8_output
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -66,19 +67,19 @@ Runner = Callable[[Sequence[str], Path, float], Completed]
 
 
 def subprocess_runner(arguments: Sequence[str], cwd: Path, timeout: float) -> Completed:
-    try:
-        result = subprocess.run(
-            list(arguments),
-            cwd=cwd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as expired:
-        return Completed(-1, expired.output or b"", timed_out=True)
-    return Completed(result.returncode, result.stdout)
+    """Run the formatter with no stdin and every prompt off, and return its exit code and output.
+
+    Its stdout and stderr go together, in the order written, to a file rather than a pipe, so a build host it leaves
+    running cannot hold the time limit, and what it wrote is kept when it does not finish.
+    """
+    with tempfile.TemporaryFile() as output:
+        try:
+            result = run_bounded(arguments, timeout, stdout=output, stderr=output, cwd=cwd)
+        except subprocess.TimeoutExpired:
+            output.seek(0)
+            return Completed(-1, output.read(), timed_out=True)
+        output.seek(0)
+        return Completed(result.returncode, output.read())
 
 
 @dataclass
