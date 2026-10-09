@@ -20,6 +20,20 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none
 - Pull request: #262
 
+### A status override may not name a section the tracker renders, such as `My PRs`
+
+- Level: minor. A fix that would be major from `1.0.0`: `dashboard.status_overrides` now refuses every section name `update-pr-tracker` renders, trimmed and in any case, which adds `my prs` to the refused states; `to review`, `awaiting response`, `drafts`, `my pull requests`, `missing`, `current`, and `stale` stay refused. An override named `My PRs` was accepted before, and the dashboard then showed that section twice and dropped every authored pull request not overridden; a configuration holding one now fails to load.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none, unless an override's status is `My PRs` in any case. Then rename or remove it in the code-review configuration file by hand, since `tracker_pipeline.py override` validates the file before changing it.
+- Pull request: #292
+
+### The review state refuses a merged_since that is not a date, and enumerate fails only that repository
+
+- Level: patch. A fix: `validate_state` now refuses a repository's `merged_since` whose first ten characters are not a `YYYY-MM-DD` calendar date, as the review state table already said, so such a `state.json` fails with one `FAILED` line naming the repository instead of a traceback from `enumerate`. A watermark that still cannot be read when `enumerate` lists its repository ends in `REPOSITORY_FAILED` for that repository, and the command exits 1 after the batch, as for any other failed repository. Every watermark `advance` writes is such a date, so a state the scripts wrote is read as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none. A `merged_since` edited by hand to something else is now refused; correct it to a `YYYY-MM-DD` date, or remove it to start that repository again from today.
+- Pull request: #295
+
 ### update-coding-agent-skills leaves a clone on the branch it was found on when it stops
 
 - Level: patch. A fix: when local `main` has commits that `origin/main` lacks, `update-coding-agent-skills` now stops with `NOT_FAST_FORWARD` before switching branches, so a clone found on another branch stays on it, and the lines after the status list those local commits instead of Git's error. When Git refuses the fast-forward itself after the switch, for an untracked file in its way, the clone is switched back, or a `still on main:` line says why it could not be. An update still switches the clone to `main` and leaves it there, as before.

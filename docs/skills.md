@@ -339,7 +339,7 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 
 Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
 
-To keep a pull request under a status of your own, such as `on hold` or `delegated`, ask for it: the skill records it in `dashboard.status_overrides` in the code-review configuration through a validated write, and from the next update the row sits in a section named after that status. The status can't be a state the tracker computed itself (`to review`, `awaiting response`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`). Unlike `--remove`, it lasts until you ask to clear it, which also works once the pull request has closed.
+To keep a pull request under a status of your own, such as `on hold` or `delegated`, ask for it: the skill records it in `dashboard.status_overrides` in the code-review configuration through a validated write, and from the next update the row sits in a section named after that status. The status can't be a state the tracker computed itself (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`). Unlike `--remove`, it lasts until you ask to clear it, which also works once the pull request has closed.
 
 The reviews it offers run through `review-prs`, so in Codex and Copilot CLI they have the limits that skill's section states. The dashboard itself works the same in every runtime.
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,8 @@ from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
 
 SCHEMA_VERSION = 1
+# A watermark's date as the contract states it. date.fromisoformat alone also takes a week date or the basic form.
+WATERMARK_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 class StateError(ValueError):
@@ -22,6 +26,17 @@ def default_state_path() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".coding-agent-skills" / "code-review" / "state.json"
+
+
+def watermark_date(identity: str, value: str) -> date:
+    """The date a repository's merged_since watermark names: its first ten characters, as YYYY-MM-DD."""
+    head = value[:10]
+    if WATERMARK_DATE.fullmatch(head):
+        try:
+            return date.fromisoformat(head)
+        except ValueError:
+            pass  # a day the calendar lacks, refused below
+    raise StateError(f"State {identity}.merged_since must begin with a YYYY-MM-DD date, not {value!r}")
 
 
 def validate_state(value: Any) -> dict[str, Any]:
@@ -41,6 +56,8 @@ def validate_state(value: Any) -> dict[str, Any]:
         for field in ("merged_since", "updated_at"):
             if field in state and not isinstance(state[field], str):
                 raise StateError(f"State {identity}.{field} must be a string")
+        if "merged_since" in state:
+            watermark_date(identity, state["merged_since"])
     return value
 
 

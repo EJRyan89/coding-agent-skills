@@ -174,7 +174,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | --- | --- | --- | --- |
 | `start_marker` | string | no | The line that opens the owned section. A trimmed, non-empty single line; defaults to `<!-- code-review-pr-tracker:start -->`. |
 | `end_marker` | string | no | The line that closes it, different from `start_marker`; defaults to `<!-- code-review-pr-tracker:end -->`. |
-| `status_overrides` | object | no | Keyed by `owner/repo#number`. Each value is a non-empty status shown for that pull request, and may not be a computed one (`to review`, `awaiting response`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`, in any case). |
+| `status_overrides` | object | no | Keyed by `owner/repo#number`. Each value is a non-empty status shown for that pull request, and may not be a computed one (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`, in any case). |
 | `author_names` | object | no | Keyed by GitHub login, unique ignoring case. Each value is the non-empty single-line name the Requestor column shows instead of the author's profile name. |
 
 ### Reviewer manifests
@@ -579,7 +579,7 @@ The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date (`YYYY-MM-DD`; only the first ten characters are read) are eligible. Absent until a batch run first advances it. |
+| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date are eligible. Its first ten characters are a `YYYY-MM-DD` calendar date, and only they are read; `validate_state` refuses any other value, so a state that holds one fails every operation that reads it. Absent until a batch run first advances it. |
 | `updated_at` | string | no | The date `advance` last moved the watermark. |
 
 ### Legacy review index

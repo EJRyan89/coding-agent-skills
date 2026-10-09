@@ -32,7 +32,16 @@ LINES_MESSAGE = "re_review_scope.full_lines must be a positive integer"
 THRESHOLD_MESSAGE = "verdict_policy.should_fix_threshold must be a positive integer"
 SEVERITY_MESSAGE = "verdict_policy.request_changes_for contains an invalid severity"
 # The tracker's own states, which a status override may not repeat; an independent copy of the module's list.
-COMPUTED_STATES = ["to review", "awaiting response", "my pull requests", "drafts", "missing", "current", "stale"]
+COMPUTED_STATES = [
+    "to review",
+    "awaiting response",
+    "my prs",
+    "my pull requests",
+    "drafts",
+    "missing",
+    "current",
+    "stale",
+]
 
 
 def _generic_entry() -> dict[str, Any]:
@@ -1174,7 +1183,7 @@ REJECTED: list[Case] = [
             C,
             "Dashboard status override owner/repo#1 duplicates a computed tracker state",
         )
-        for value in [*COMPUTED_STATES, " To Review ", "DRAFTS"]
+        for value in [*COMPUTED_STATES, " To Review ", "DRAFTS", "My PRs", "Awaiting Response"]
     ],
     ("author_names null", _set(("dashboard", "author_names"), None), C, "dashboard.author_names must be an object"),
     (
