@@ -41,6 +41,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none
 - Pull request: #293
 
+### audit-ai-config asks before its MCP handshake starts a repository's servers
+
+- Level: minor. A fix with a new output line: in Claude Code, `audit-ai-config` pre-approves only its audit engine, so the opt-in handshake, which starts each MCP server the repository configures, now asks for approval before it runs. `analyze-skill-cost`'s `skill_inventory.py tools` prints `REPOSITORY_CODE` for a command that runs a script declaring `RUNS_REPOSITORY_CODE` and is left to prompt, and `GRANTED_REPOSITORY_CODE` for one a grant covers, in place of `UNGRANTED` for such a command.
+- Contract: none
+- User action: none. Approve the handshake command when you have authorized the operational validation.
+- Pull request: #299
+
 ### update-coding-agent-skills leaves a clone on the branch it was found on when it stops
 
 - Level: patch. A fix: when local `main` has commits that `origin/main` lacks, `update-coding-agent-skills` now stops with `NOT_FAST_FORWARD` before switching branches, so a clone found on another branch stays on it, and the lines after the status list those local commits instead of Git's error. When Git refuses the fast-forward itself after the switch, for an untracked file in its way, the clone is switched back, or a `still on main:` line says why it could not be. An update still switches the clone to `main` and leaves it there, as before.

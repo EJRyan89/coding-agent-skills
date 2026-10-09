@@ -46,6 +46,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from audit_ai_config import _parse_mcp_json
 from console import use_utf8_output
 
+# Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
+# and the user approves each run.
+RUNS_REPOSITORY_CODE = "starts each stdio MCP server command the target repository configures"
 PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2024-11-05", "2025-03-26", PROTOCOL_VERSION})
