@@ -139,6 +139,32 @@ class MemoryAuditTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual((values, body), memory_audit.parse_frontmatter(text))
 
+    def test_a_block_scalar_description_is_read_whole(self) -> None:
+        write(
+            self.memory_dir / "folded.md",
+            "---\nname: folded\ndescription: >-\n  First line of the hook\n  continues here.\n"
+            "metadata:\n  type: project\n---\n\nBody.\n",
+        )
+        entry = self.by_file(self.run_audit())["folded.md"]
+        self.assertEqual("First line of the hook continues here.", entry["description"])
+        self.assertEqual("project", entry["type"])
+
+    def test_block_scalars_fold_or_keep_lines_as_their_style_says(self) -> None:
+        for text, values in (
+            ("---\ndescription: >\n  one\n  two\n\n  three\n---\n", {"description": "one two\nthree"}),
+            ("---\ndescription: |-\n  one\n    two\n---\n", {"description": "one\n  two"}),
+            ("---\ndescription: |1- # note\n   one\n   two\n\n---\n", {"description": "one\n  two"}),
+            (
+                "---\ndescription: >-\n  type: not a key\nname: n\n---\n",
+                {"description": "type: not a key", "name": "n"},
+            ),
+            ("---\nmetadata:\n  note: |\n    nested\n  type: user\n---\n", {"note": "nested", "type": "user"}),
+            ("---\ndescription: >-\nname: n\n---\n", {"name": "n"}),
+            ("---\ndescription: >-\n  never closed\n", {}),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(values, memory_audit.parse_frontmatter(text)[0])
+
     def test_links_resolve_by_name_or_file_stem(self) -> None:
         write(self.memory_dir / "first.md", memory("first-slug", "See [[second]], [[first-slug]] and [[missing-one]]."))
         write(self.memory_dir / "second.md", memory("other-slug", "Second."))
@@ -314,6 +340,7 @@ class ReindexTests(unittest.TestCase):
         self.memory_dir = Path(self._temporary.name) / "memory"
         self.memory_dir.mkdir()
         self.index = self.memory_dir / "MEMORY.md"
+        self.index.write_bytes(b"")
 
     def tearDown(self) -> None:
         self._temporary.cleanup()
@@ -373,14 +400,25 @@ class ReindexTests(unittest.TestCase):
     def test_without_write_nothing_changes(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
         self.assertEqual(["INDEX_LINE one.md", "ADDED one.md", f"WOULD_WRITE {self.index.as_posix()}"], self.reindex())
-        self.assertFalse(self.index.exists())
+        self.assertEqual(b"", self.index.read_bytes())
         self.reindex("--write")
         self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
         self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
 
-    def test_empty_directory_without_index_writes_nothing(self) -> None:
+    def test_an_empty_index_without_memories_is_unchanged(self) -> None:
         self.assertEqual(["UNCHANGED"], self.reindex("--write"))
-        self.assertFalse(self.index.exists())
+        self.assertEqual(["MEMORY.md"], [path.name for path in self.memory_dir.iterdir()])
+        self.assertEqual(b"", self.index.read_bytes())
+
+    def test_a_block_scalar_description_becomes_the_whole_hook(self) -> None:
+        write(
+            self.memory_dir / "folded.md",
+            "---\nname: folded\ndescription: >-\n  First line of the hook\n  continues here.\n---\n\nBody.\n",
+        )
+        self.reindex("--write")
+        self.assertEqual(
+            "- [folded](folded.md) — First line of the hook continues here.\n", self.index.read_text(encoding="utf-8")
+        )
 
     def test_long_descriptions_become_one_short_line(self) -> None:
         description = "word " * 60
@@ -408,7 +446,8 @@ class ReindexTests(unittest.TestCase):
             ["INDEX_LINE one.md", "ADDED one.md", f"FAILED cannot write {self.index.as_posix()}: Access is denied"],
             lines,
         )
-        self.assertEqual(["one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+        self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+        self.assertEqual(b"", self.index.read_bytes())
 
     def test_an_unreadable_memory_is_a_failed_line(self) -> None:
         write(self.memory_dir / "one.md", memory("one", "Body."))
@@ -533,6 +572,91 @@ class DeleteTests(unittest.TestCase):
                 "outside.md",
             ],
             sorted(self.snapshot()),
+        )
+
+
+class MemoryStoreGuardTests(unittest.TestCase):
+    """delete and reindex change only a directory that is a memory store, and never one inside a skills directory."""
+
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+        self.home = self.root / "home"
+        self.skills_root = self.root / "source skills"
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    def populate(self, directory: Path, index: bool = True) -> dict[str, bytes]:
+        write(directory / "SKILL.md", "---\nname: some-skill\ndescription: d\n---\nBody.\n")
+        write(directory / "notes.md", memory("notes", "Notes."))
+        if index:
+            write(directory / "MEMORY.md", "- [notes](notes.md) — stale hook\n")
+        return self.snapshot()
+
+    def snapshot(self) -> dict[str, bytes]:
+        return {
+            path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()
+        }
+
+    def run_both(self, directory: Path) -> list[tuple[int, str, str]]:
+        with (
+            mock.patch.object(Path, "home", return_value=self.home),
+            mock.patch.object(memory_audit, "SKILLS_ROOT", self.skills_root),
+        ):
+            return [
+                run_main("reindex", "--memory-dir", str(directory), "--write"),
+                run_main("delete", "--memory-dir", str(directory), "SKILL.md", "notes.md"),
+            ]
+
+    def test_a_directory_without_an_index_is_refused_and_left_alone(self) -> None:
+        directory = self.root / "plain folder"
+        before = self.populate(directory, index=False)
+        failure = f"FAILED {directory} is not a memory directory: it holds no MEMORY.md\n"
+        self.assertEqual([(1, failure, "")] * 2, self.run_both(directory))
+        self.assertEqual(before, self.snapshot())
+
+    def test_a_directory_inside_a_skills_directory_is_refused_and_left_alone(self) -> None:
+        for root in (self.home / ".claude" / "skills", self.home / ".agents" / "skills", self.skills_root):
+            directory = root / "some-skill"
+            with self.subTest(root=root):
+                before = self.populate(directory)
+                failure = (
+                    f"FAILED {directory} is inside the skills directory {root}; "
+                    "name the memory directory resolve printed\n"
+                )
+                self.assertEqual([(1, failure, "")] * 2, self.run_both(directory))
+                self.assertEqual(before, self.snapshot())
+
+    def test_a_memory_store_beside_a_skills_directory_is_changed(self) -> None:
+        directory = self.root / "projects" / "memory"
+        self.populate(directory)
+        (directory / "SKILL.md").unlink()
+        write(self.skills_root / "some-skill" / "SKILL.md", "---\nname: some-skill\n---\n")
+        reindexed, deleted = self.run_both(directory)
+        self.assertEqual((0, f"INDEX_LINE notes.md\nWROTE {(directory / 'MEMORY.md').as_posix()}\n", ""), reindexed)
+        self.assertEqual((1, "FAILED SKILL.md: no such file\n", ""), deleted)
+        self.assertEqual(
+            "- [notes](notes.md) — notes description\n", (directory / "MEMORY.md").read_text(encoding="utf-8")
+        )
+
+
+class ConsoleTests(unittest.TestCase):
+    def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            memory_dir = Path(temporary) / "memory dir"
+            write(memory_dir / "MEMORY.md", "")
+            write(memory_dir / "arrow → ✓.md", memory("arrow", "Body."))
+            result = subprocess.run(
+                [sys.executable, "-B", memory_audit.__file__, "reindex", "--memory-dir", str(memory_dir)],
+                capture_output=True,
+                env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(
+            f"INDEX_LINE arrow → ✓.md\nADDED arrow → ✓.md\nWOULD_WRITE {(memory_dir / 'MEMORY.md').as_posix()}\n",
+            result.stdout.decode("utf-8").replace("\r\n", "\n"),
         )
 
 
