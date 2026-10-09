@@ -21,6 +21,7 @@ INSTALLED = {
     "codex": ("C:/tools/codex.exe", "codex-cli 0.160.0\n"),
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
     "claude": ("C:/tools/claude.exe", "2.1.291 (Claude Code)\n"),
+    "dotnet": ("C:/tools/dotnet.exe", "10.0.301\n"),
 }
 GIT = "C:/tools/git.exe"
 GIT_VERSION = "git version 2.54.0.windows.1\n"
@@ -180,6 +181,15 @@ class CheckCommandTests(DeployerTestCase):
             self.check(Machine(versions={"gh": "gh version 2.48.0 (2024-04-17)\n"})).output, "CHECK"
         )
         self.assertIn("gh 2.48.0 (used by operations, reporter)", groups["FOUND"])
+        self.assertNotIn("OUTDATED", groups)
+
+    def test_dotnet_before_9_0_200_is_outdated_because_earlier_sdks_cannot_read_slnx(self) -> None:
+        # dotnet-format formats a .slnx solution with the SDK's `dotnet format`; 9.0.200 is the first SDK that reads it.
+        set_tools(self, "formatter", ["dotnet"], key="optional_tools")
+        groups = self.report_groups(self.check(Machine(versions={"dotnet": "9.0.100\n"})).output, "CHECK")
+        self.assertEqual(["dotnet 9.0.100 (needs 9.0.200 or newer)"], groups["OUTDATED"])
+        groups = self.report_groups(self.check(Machine(versions={"dotnet": "9.0.200\n"})).output, "CHECK")
+        self.assertIn("dotnet 9.0.200 (used by formatter)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
 
     def test_windows_powershell_is_enough_to_deploy(self) -> None:
