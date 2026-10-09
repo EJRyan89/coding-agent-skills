@@ -41,6 +41,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -120,7 +121,9 @@ from review_runtime import (
     RuntimeContractError,
     build_adapter_request,
     choose_dispatch,
+    declared_reviewer_files,
     github_tarball_fetcher,
+    glob_matcher,
     materialize_reviewer,
     materialize_source_snapshot,
     materialize_source_snapshot_from_github,
@@ -442,11 +445,13 @@ def _snapshot(
     changed: list[str],
     services: Services,
     notes: list[str],
+    exclude: Sequence[str] = (),
 ) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any], dict[str, Any]]:
-    """Snapshot the head at `source`, from the checkout or else GitHub's tarball. Returns the symbolic links the
-    snapshot leaves out that the pull request changes, each one noted, the snapshot's statistics: its source, files,
-    and bytes, and the seconds spent fetching the head and materializing it, and the manifest materializing it
-    verified, which the request and the plan take in place of verifying the snapshot again.
+    """Snapshot the head at `source`, from the checkout or else GitHub's tarball, leaving out what the repository's
+    `exclude` globs match. Returns the symbolic links the snapshot leaves out that the pull request changes, each one
+    noted, the snapshot's statistics: its source, files, bytes, and exclusions by reason, and the seconds spent
+    fetching the head and materializing it, and the manifest materializing it verified, which the request and the
+    plan take in place of verifying the snapshot again.
 
     A checkout's snapshot is lazy: it holds the changed files and the analyzer settings, and its reviewers fetch the
     rest through review_source.py. `_complete_snapshot` makes it whole where they cannot."""
@@ -457,7 +462,14 @@ def _snapshot(
         ensure_local_commit(checkout, head, f"refs/pull/{number}/head", services.git)
         fetched = services.timer() - started
         snapshot = materialize_source_snapshot(
-            checkout, repository, head, source, runner=services.git, changed_paths=changed, upfront=reads_settings
+            checkout,
+            repository,
+            head,
+            source,
+            runner=services.git,
+            changed_paths=changed,
+            upfront=reads_settings,
+            exclude=exclude,
         )
     else:
 
@@ -468,7 +480,7 @@ def _snapshot(
             fetched += services.timer() - began
 
         snapshot = materialize_source_snapshot_from_github(
-            repository, head, source, fetcher=fetcher, changed_paths=changed
+            repository, head, source, fetcher=fetcher, changed_paths=changed, exclude=exclude
         )
     materialized = services.timer() - started - fetched
     # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
@@ -478,9 +490,16 @@ def _snapshot(
         "source": "tarball" if checkout is None else "checkout-lazy",
         "files": len(snapshot["source_hashes"]),
         "bytes": snapshot_bytes(source, snapshot),
+        "excluded": exclusion_counts(snapshot["excluded_paths"]),
         "seconds": {"fetch": fetched, "materialize": materialized},
     }
     return links, stats, snapshot
+
+
+def exclusion_counts(excluded: dict[str, str]) -> dict[str, int]:
+    """How many paths a snapshot leaves out for each reason, by reason."""
+    counts = Counter(excluded.values())
+    return {reason: counts[reason] for reason in sorted(counts)}
 
 
 def _needs_whole_snapshot(dispatch: str, kind: str, reviewer_root: Path | None, changed: list[str]) -> bool:
@@ -505,17 +524,19 @@ def _complete_snapshot(
     changed: list[str],
     services: Services,
     stats: dict[str, Any],
+    exclude: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Replace a lazy snapshot with the whole one, adding the time it takes to `stats`, now of a `checkout` snapshot.
     Returns the manifest materializing it verified."""
     started = services.timer()
     shutil.rmtree(source)
     snapshot = materialize_source_snapshot(
-        checkout, repository, head, source, runner=services.git, changed_paths=changed
+        checkout, repository, head, source, runner=services.git, changed_paths=changed, exclude=exclude
     )
     stats["source"] = "checkout"
     stats["files"] = len(snapshot["source_hashes"])
     stats["bytes"] = snapshot_bytes(source, snapshot)
+    stats["excluded"] = exclusion_counts(snapshot["excluded_paths"])
     stats["seconds"]["materialize"] += services.timer() - started
     return snapshot
 
@@ -728,6 +749,8 @@ class _Review:
     # Whether `source` is a throwaway repository prepare moves into the run, as a fixture's is, so that a lazy
     # snapshot's reviewers can fetch from it until finalize removes the run.
     adopt_source: bool = False
+    # The repository's configured snapshot_exclude globs; a fixture has none.
+    snapshot_exclude: tuple[str, ...] = ()
 
 
 # The reviewer of every fixture, which has no trusted commit a repository reviewer could be loaded from.
@@ -799,6 +822,7 @@ def prepare(
         source=checkout,
         read_diff=lambda diff_path: _fetch_diff(repository, number, pull, diff_path, services, notes),
         canary=canary,
+        snapshot_exclude=tuple(entry["snapshot_exclude"]),
     )
     return _prepare_run(
         review,
@@ -908,7 +932,7 @@ def _prepare_run(
         if repository_path is not None and review.adopt_source:
             repository_path = Path(shutil.move(repository_path, run / SOURCE_REPOSITORY))
         links, snapshot, manifest = _snapshot(
-            repository_path, repository, number, head, source, parsed, changed, services, notes
+            repository_path, repository, number, head, source, parsed, changed, services, notes, review.snapshot_exclude
         )
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
@@ -928,7 +952,9 @@ def _prepare_run(
             and SNAPSHOT_FETCHABLE in manifest
             and _needs_whole_snapshot(dispatch, kind, reviewer_root, list(parsed))
         ):
-            manifest = _complete_snapshot(repository_path, repository, head, source, changed, services, snapshot)
+            manifest = _complete_snapshot(
+                repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude
+            )
         lazy = SNAPSHOT_FETCHABLE in manifest
         # The Copilot CLI host starts in a process of its own, so it checks the snapshot against this stamp.
         stamp = None
@@ -1038,6 +1064,8 @@ def _configured_entry(
 def _repository_reviewer(
     repository: str, config_path: Path | None, services: Services
 ) -> tuple[Path, str, dict[str, Any], Path]:
+    """The configuration file, the repository's identity, its configured entry, and its checkout, once the entry
+    names a repository reviewer and the checkout's origin is the repository."""
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)
     repository = validate_repository_identity(repository)
@@ -1048,7 +1076,7 @@ def _repository_reviewer(
         raise PipelineError(f"{repository} uses the suite's generic reviewer; it has no repository reviewer")
     checkout = Path(entry["checkout_path"])
     verify_checkout_remote(checkout, repository, services.git)
-    return config_path, repository, entry["reviewer"], checkout
+    return config_path, repository, entry, checkout
 
 
 def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
@@ -1065,7 +1093,8 @@ def inspect_reviewer(
 ) -> list[str]:
     """Whether a repository's review skill can run as one entrypoint reviewer or needs a specialists manifest."""
     services = services or Services()
-    config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
+    config_path, repository, entry, checkout = _repository_reviewer(repository, config_path, services)
+    reviewer = entry["reviewer"]
     commit = _reviewer_commit(checkout, reviewer, ref, services)
     lines = [f"REVIEWER {reviewer['id']} {repository} commit={commit}"]
     if reviewer["manifest_path"]:
@@ -1104,10 +1133,22 @@ def run_source_example() -> Path:
     return Path(tempfile.gettempdir()).resolve() / f"{RUN_PREFIX}{'x' * 8}" / "source"
 
 
-def _snapshot_line(checkout: Path, commit: str, changed: list[str], services: Services) -> str:
+def _excluded_reviewer_files(manifest: dict[str, Any], exclude: Sequence[str]) -> list[str]:
+    """Each file the reviewer declares that a snapshot_exclude glob matches, as `<pattern> <path>`."""
+    return [
+        f"{pattern} {path}"
+        for pattern in exclude
+        for path in declared_reviewer_files(manifest)
+        if glob_matcher(pattern)(path)
+    ]
+
+
+def _snapshot_line(
+    checkout: Path, commit: str, changed: list[str], services: Services, exclude: Sequence[str] = ()
+) -> str:
     """The source snapshot prepare would write for this commit, or the reason prepare would refuse it."""
     size = measure_source_snapshot(
-        checkout, commit, destination=run_source_example(), runner=services.git, changed_paths=changed
+        checkout, commit, destination=run_source_example(), runner=services.git, changed_paths=changed, exclude=exclude
     )
     error = size.limit_error()
     if error:
@@ -1132,10 +1173,13 @@ def _route_condition(
     work: Path,
     results: dict[str, bool],
     services: Services,
+    exclude: Sequence[str] = (),
 ) -> bool:
     """Evaluate one routing condition on the pull request's source snapshot, taken on first use, and record it."""
     if not source.exists():
-        materialize_source_snapshot(checkout, repository, head, source, runner=services.git, changed_paths=changed)
+        materialize_source_snapshot(
+            checkout, repository, head, source, runner=services.git, changed_paths=changed, exclude=exclude
+        )
     work.mkdir(exist_ok=True)
     results[name] = evaluate_condition(reviewer_root, manifest["conditions"][name]["script"], source, work)
     return results[name]
@@ -1152,11 +1196,13 @@ def validate_reviewer(
     """Prove a repository reviewer works without starting a reviewer or writing anything.
 
     Checks the manifest's structure, that every file it names exists (profiles at the trusted commit, condition
-    scripts beside a local manifest), which include patterns match nothing, and, for each pull request, which
-    specialists its changes would start, with each condition script's real result against the pull's head.
+    scripts beside a local manifest), that no snapshot_exclude glob matches one of them, which include patterns
+    match nothing, and, for each pull request, which specialists its changes would start, with each condition
+    script's real result against the pull's head.
     """
     services = services or Services()
-    config_path, repository, reviewer, checkout = _repository_reviewer(repository, config_path, services)
+    config_path, repository, entry, checkout = _repository_reviewer(repository, config_path, services)
+    reviewer, exclude = entry["reviewer"], entry["snapshot_exclude"]
     targets = _validation_targets(repository, checkout, reviewer, pulls, ref, services)
     lines: list[str] = []
     checked: set[str] = set()
@@ -1183,6 +1229,12 @@ def validate_reviewer(
                 local_root=resolved.local_root,
             )
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
+            excluded = _excluded_reviewer_files(manifest, exclude)
+            if excluded:
+                raise PipelineError(
+                    f"snapshot_exclude of {repository} matches a file its reviewer declares, which a review must be "
+                    "able to read; narrow the pattern: " + ", ".join(excluded)
+                )
             if commit not in checked:
                 checked.add(commit)
                 lines.append(
@@ -1191,14 +1243,14 @@ def validate_reviewer(
                 lines.append(f"FILES {len(hashes)} found")
                 lines.extend(_unmatched_patterns(manifest, repository_files(checkout, commit, services.git)))
             if pull is None:
-                lines.append(_snapshot_line(checkout, commit, [], services))
+                lines.append(_snapshot_line(checkout, commit, [], services, exclude))
                 continue
             changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
             lines.append(
                 f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
                 f"head={pull['headRefOid'][:12]} files={len(changed)}"
             )
-            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services))
+            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude))
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
@@ -1215,6 +1267,7 @@ def validate_reviewer(
                 work=scratch / f"conditions-{index}",
                 results=results,
                 services=services,
+                exclude=exclude,
             )
             routes = route(manifest, changed, condition)
             lines.extend(f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items())
@@ -1960,8 +2013,16 @@ def stats_lines(review: dict[str, Any]) -> list[str]:
     snapshot = review.get("snapshot")
     if snapshot is not None:
         seconds = " ".join(f"{phase}={value:.1f}s" for phase, value in snapshot["seconds"].items())
+        # Absent from records written before exclusions were counted.
+        excluded = (
+            ""
+            if "excluded" not in snapshot
+            else " excluded="
+            + (",".join(f"{reason}:{count}" for reason, count in snapshot["excluded"].items()) or "none")
+        )
         lines.append(
-            f"snapshot source={snapshot['source']} files={snapshot['files']} bytes={snapshot['bytes']} {seconds}"
+            f"snapshot source={snapshot['source']} files={snapshot['files']} bytes={snapshot['bytes']}{excluded} "
+            f"{seconds}"
         )
     for reviewer in review.get("reviewers", []):
         if "files_read" in reviewer:

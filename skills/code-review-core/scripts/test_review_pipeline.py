@@ -371,7 +371,14 @@ class PipelineFixture(unittest.TestCase):
         git(self.checkout, "commit", "-m", "change")
         return git(self.checkout, "rev-parse", "HEAD")
 
-    def configure(self, reviewer: dict[str, Any] | None = None, *, checkout: bool = True, **settings: Any) -> None:
+    def configure(
+        self,
+        reviewer: dict[str, Any] | None = None,
+        *,
+        checkout: bool = True,
+        snapshot_exclude: list[str] | None = None,
+        **settings: Any,
+    ) -> None:
         """Write the fixture configuration; `settings` adds or replaces top-level entries."""
         self.config_path = self.root / "config.json"
         write_config(
@@ -390,6 +397,7 @@ class PipelineFixture(unittest.TestCase):
                             "manifest_path": None,
                         },
                         "checkout_path": str(self.checkout) if checkout else None,
+                        **({} if snapshot_exclude is None else {"snapshot_exclude": snapshot_exclude}),
                     }
                 },
                 "archive_root": str(self.archive),
@@ -3601,7 +3609,8 @@ class FixtureCanaryTests(PipelineFixture):
         selector = state["selector"]
         self.assertEqual(
             [
-                f"STATS {selector} snapshot source=checkout-lazy files={len(kept)} bytes={snapshot['bytes']} {seconds}",
+                f"STATS {selector} snapshot source=checkout-lazy files={len(kept)} bytes={snapshot['bytes']} "
+                f"excluded=agent-instruction:1 {seconds}",
                 f"STATS {selector} reviewer {role['id']} files_read=2 bytes_read={read}",
             ],
             [line for line in lines if line.startswith("STATS ")],
@@ -3770,6 +3779,29 @@ class SnapshotSizeTests(PipelineFixture):
             f"SNAPSHOT {commit[:12]} files={files} bytes={size} limit=268435456 "
             "excluded=agent-instruction:3,unsafe-path:3",
             out.splitlines(),
+        )
+
+    def test_validate_reviewer_counts_configured_exclusions(self) -> None:
+        reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
+        self.configure(reviewer, snapshot_exclude=["review/*.JSON", "**/solo.md"])
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        self.assertEqual(0, code, err)
+        files, _ = self.kept(self.base)
+        snapshot = [line for line in out.splitlines() if line.startswith("SNAPSHOT ")]
+        self.assertEqual(1, len(snapshot), out)
+        self.assertTrue(snapshot[0].startswith(f"SNAPSHOT {self.base[:12]} files={files - 4} "), snapshot)
+        self.assertTrue(snapshot[0].endswith(" excluded=agent-instruction:3,configured:4"), snapshot)
+
+    def test_validate_reviewer_refuses_a_configured_exclusion_over_a_file_the_reviewer_declares(self) -> None:
+        reviewer = self.skill_reviewer(".claude/agents/team-review.md", manifest=str(self.local_manifest()))
+        self.configure(reviewer, snapshot_exclude=["app/**", "**/*.MD", "window.py"])
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            f"FAILED snapshot_exclude of {REPOSITORY} matches a file its reviewer declares, which a review must be "
+            "able to read; narrow the pattern: **/*.MD review/rules.md, **/*.MD .claude/agents/python-reviewer.md, "
+            "window.py window.py\n",
+            out,
         )
 
     def test_validate_reviewer_measures_at_a_path_as_long_as_the_source_folder_of_prepares_run(self) -> None:
@@ -4108,6 +4140,25 @@ class GitHubReadTests(unittest.TestCase):
         client = GitHubClient(runner=lambda arguments: CommandResult(0, response, ""))
         with self.assertRaisesRegex(Exception, "unexpected shape"):
             client.list_open_review_threads("example/one", 3)
+
+
+class StatsLineTests(unittest.TestCase):
+    def test_the_snapshot_line_names_exclusions_by_reason_none_or_nothing_for_an_older_record(self) -> None:
+        snapshot = {
+            "source": "tarball",
+            "files": 2,
+            "bytes": 83,
+            "seconds": {"fetch": 4.0, "materialize": 1.2, "prompts": 0.0},
+        }
+        timing = "fetch=4.0s materialize=1.2s prompts=0.0s"
+        for excluded, shown in (
+            ({"binary": 1, "configured": 1_200}, " excluded=binary:1,configured:1200"),
+            ({}, " excluded=none"),
+            (None, ""),
+        ):
+            with self.subTest(excluded=excluded):
+                review = {"snapshot": snapshot if excluded is None else {**snapshot, "excluded": excluded}}
+                self.assertEqual([f"snapshot source=tarball files=2 bytes=83{shown} {timing}"], rp.stats_lines(review))
 
 
 if __name__ == "__main__":

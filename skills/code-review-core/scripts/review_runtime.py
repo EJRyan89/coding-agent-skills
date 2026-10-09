@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
@@ -46,6 +47,7 @@ MAX_CHANGED_FILE_BYTES = 16 * 1024 * 1024
 SNAPSHOT_EXCLUSION_REASONS = {
     "agent-instruction",
     "binary",
+    "configured",
     "file-size-limit",
     "unsafe-path",
     "symbolic-link",
@@ -230,6 +232,47 @@ UNSAFE_PATH_RULES: tuple[tuple[str, Callable[[str, PathRoom], bool]], ...] = (
 def unsafe_path_reason(relative: str, room: PathRoom) -> str | None:
     """Why the snapshot cannot hold this head path as named, from UNSAFE_PATH_RULES, or None when it can."""
     return next((reason for reason, applies in UNSAFE_PATH_RULES if applies(relative, room)), None)
+
+
+# A path the snapshot leaves out because the repository's configured snapshot_exclude matches it.
+Exclusion = Callable[[str], bool]
+
+
+def _never_excluded(relative: str) -> bool:
+    return False
+
+
+def glob_matcher(pattern: str) -> Exclusion:
+    """Whether a snapshot-relative path matches one snapshot_exclude glob, ignoring case, as a whole path.
+
+    `*`, `?`, and `[...]` match within one segment, as fnmatch does; a `**` segment matches any number of segments,
+    none included. So `*.resx` matches only a root file, and `**/*.resx` one at any depth.
+    """
+    segments = [
+        None if part == "**" else re.compile(fnmatch.translate(part), re.IGNORECASE) for part in pattern.split("/")
+    ]
+
+    def matches(relative: str) -> bool:
+        parts = relative.split("/")
+        reached = {0}  # how many of the path's segments the pattern's segments so far can consume
+        for segment in segments:
+            if segment is None:
+                reached = set(range(min(reached), len(parts) + 1))
+            else:
+                reached = {index + 1 for index in reached if index < len(parts) and segment.match(parts[index])}
+            if not reached:
+                return False
+        return len(parts) in reached
+
+    return matches
+
+
+def configured_exclusion(patterns: Sequence[str]) -> Exclusion:
+    """Whether any of a repository's snapshot_exclude globs matches a snapshot-relative path."""
+    matchers = [glob_matcher(pattern) for pattern in patterns]
+    if not matchers:
+        return _never_excluded
+    return lambda relative: any(matches(relative) for matches in matchers)
 
 
 def _path_list(value: Any, field: str) -> list[str]:
@@ -1110,7 +1153,7 @@ def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str], fe
 
 
 def _entry_exclusion(
-    name: str, kind: str, size: int, changed_paths: frozenset[str], room: PathRoom
+    name: str, kind: str, size: int, changed_paths: frozenset[str], room: PathRoom, configured: Exclusion
 ) -> tuple[str, str | None]:
     """A head path's name in the manifest, and why the snapshot leaves it out, or None when its bytes are to be read.
 
@@ -1120,7 +1163,8 @@ def _entry_exclusion(
     diff. A symbolic link, and any other entry that is not a regular file, is excluded without being read, written,
     or followed; reviewers see a link only as diff text. Raises for a name that would leave the snapshot or name its
     root (an absolute path, or an empty, `.`, or `..` segment), which no tree git accepts holds, and for the reserved
-    manifest path.
+    manifest path. A regular file the repository's snapshot_exclude matches, changed or not, is a `configured`
+    exclusion.
     """
     if name.startswith("/") or any(segment in {"", ".", ".."} for segment in _segments(name)):
         raise RuntimeContractError(f"source snapshot member is unsafe: {name!r}")
@@ -1133,6 +1177,8 @@ def _entry_exclusion(
         return relative, kind
     if _is_agent_instruction_path(relative):
         return relative, "agent-instruction"
+    if configured(relative):
+        return relative, "configured"
     limit = MAX_CHANGED_FILE_BYTES if relative in changed_paths else MAX_SOURCE_FILE_BYTES
     if size > limit:
         return relative, "file-size-limit"
@@ -1227,6 +1273,7 @@ def _commit_members(
     *,
     upfront: Callable[[str], bool] | None = None,
     fetchable: dict[str, str] | None = None,
+    configured: Exclusion = _never_excluded,
 ) -> Generator[SnapshotMember, None, None]:
     """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
 
@@ -1256,7 +1303,7 @@ def _commit_members(
         if kind != "blob" or not GIT_OBJECT_ID.fullmatch(blob) or not size.isdigit():
             raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
         entry = "symbolic-link" if mode == "120000" else "file" if mode.startswith("100") else "non-regular"
-        relative, reason = _entry_exclusion(name, entry, int(size), changed_paths, room)
+        relative, reason = _entry_exclusion(name, entry, int(size), changed_paths, room, configured)
         if reason is None:
             pending.append((relative, blob, int(size)))
         else:
@@ -1286,7 +1333,7 @@ def _commit_members(
 
 
 def _tarball_members(
-    archive: Path, changed_paths: frozenset[str], room: PathRoom
+    archive: Path, changed_paths: frozenset[str], room: PathRoom, configured: Exclusion = _never_excluded
 ) -> Generator[SnapshotMember, None, None]:
     """Each entry of GitHub's tarball below its top folder, as (path, content bytes) when the snapshot keeps it or
     (path, reason) when not. The count and size limits are the caller's to apply."""
@@ -1298,7 +1345,7 @@ def _tarball_members(
                 continue
             kind = "file" if member.isfile() else "symbolic-link" if member.issym() else "non-regular"
             name = PurePosixPath(*parts).as_posix()
-            relative, reason = _entry_exclusion(name, kind, member.size, changed_paths, room)
+            relative, reason = _entry_exclusion(name, kind, member.size, changed_paths, room, configured)
             if reason is not None:
                 yield relative, reason
                 continue
@@ -1386,11 +1433,13 @@ def materialize_source_snapshot(
     changed_paths: Iterable[str] = (),
     blob_reader: BlobReader = git_blob_reader,
     upfront: Callable[[str], bool] | None = None,
+    exclude: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Snapshot the exact commit from a local checkout's object store (no worktree or branch change).
 
     With `upfront`, the snapshot is lazy: it holds the changed files and the paths `upfront` accepts, and its
     manifest lists every other path it would hold, with its blob id, under `fetchable`, for `fetch_source_file`.
+    A path one of the `exclude` globs matches is a `configured` exclusion, never written or fetchable.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -1412,6 +1461,7 @@ def materialize_source_snapshot(
             room,
             upfront=upfront,
             fetchable=fetchable,
+            configured=configured_exclusion(exclude),
         )
         with closing(members):
             return _populate_snapshot(members, destination, repository=repository, commit=commit, fetchable=fetchable)
@@ -1557,6 +1607,7 @@ def measure_source_snapshot(
     runner: Runner = subprocess_runner,
     changed_paths: Iterable[str] = (),
     blob_reader: BlobReader = git_blob_reader,
+    exclude: Sequence[str] = (),
 ) -> SnapshotSize:
     """Measure the snapshot materialize_source_snapshot would write for a commit at `destination`, without writing it.
 
@@ -1567,7 +1618,10 @@ def measure_source_snapshot(
     directories: dict[str, int] = {}
     files = 0
     room = path_room(destination)
-    with closing(_commit_members(checkout, commit, runner, blob_reader, frozenset(changed_paths), room)) as members:
+    members = _commit_members(
+        checkout, commit, runner, blob_reader, frozenset(changed_paths), room, configured=configured_exclusion(exclude)
+    )
+    with closing(members):
         for relative, content in members:
             if isinstance(content, str):
                 excluded[content] = excluded.get(content, 0) + 1
@@ -1682,11 +1736,12 @@ def materialize_source_snapshot_from_github(
     *,
     fetcher: Callable[[str, str, Path], None] = github_tarball_fetcher,
     changed_paths: Iterable[str] = (),
+    exclude: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Snapshot the exact commit from GitHub's tarball, for repositories without a configured checkout.
 
     The fetcher is responsible for the tarball being the exact commit; `github_tarball_fetcher` checks it against
-    the commit's tree.
+    the commit's tree. A path one of the `exclude` globs matches is a `configured` exclusion, never written.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -1696,7 +1751,9 @@ def materialize_source_snapshot_from_github(
         with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
-            members = _tarball_members(archive, frozenset(changed_paths), path_room(destination))
+            members = _tarball_members(
+                archive, frozenset(changed_paths), path_room(destination), configured_exclusion(exclude)
+            )
             with closing(members):
                 return _populate_snapshot(members, destination, repository=repository, commit=commit)
     except BaseException:
@@ -1765,11 +1822,12 @@ def build_adapter_request(
     }
 
 
-COVERAGE_GAP_REASONS = {"file-size-limit", "unsafe-path"}
+COVERAGE_GAP_REASONS = {"configured", "file-size-limit", "unsafe-path"}
 
 
 def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
-    """Changed files whose source the snapshot could not provide (too large, or an unsafe name).
+    """Changed files whose source the snapshot could not provide (too large, an unsafe name, or left out by the
+    repository's snapshot_exclude, which the pull request's author cannot hide a change behind).
 
     Binary, agent-instruction, symbolic-link, and non-regular exclusions are deliberate and reviewed from the diff
     alone.
