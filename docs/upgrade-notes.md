@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### --force-item names an agent without its .md and refuses a name the run does not install
+
+- Level: minor. A deployer flag changes: `--force-item` now accepts an agent's own name, such as `code-review-reviewer`, as well as its file name, and a run given a `--force-item` that matches no item it installs stops before anything changes, listing the names it accepts, where it used to ignore the name and deploy without replacing anything.
+- Contract: none
+- User action: none, unless a script passes `--force-item` a name that the run does not install; correct the name or drop it.
+- Pull request: #196
+
 ### A batch review lists only the pull requests its watermark can still select
 
 - Level: minor. An addition: `enumerate` prints `LISTED <repository> scan=<full|watermark> pages=<n> pulls=<n> read=<n> candidates=<n>` before each listed repository's `PULL` lines. A repository with a watermark now lists its open pull requests and its closed ones from the most recently updated back to the watermark, instead of its whole history, and only the pull requests that can still be selected are looked up in the archive. Which pull requests are selected does not change: a merged pull request is judged by its merge date, as the contract now states.

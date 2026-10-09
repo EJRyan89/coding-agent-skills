@@ -350,6 +350,20 @@ class ExecuteTests(unittest.TestCase):
             self.execute(Options(), stdin=self.stdin, _reject_other_checkout=refused),
         )
 
+    def test_any_failure_of_the_checkout_check_is_reported_and_releases_the_lock(self) -> None:
+        denied = OSError(5, "Access is denied", "skills")
+        cases: list[tuple[BaseException, int, list[str]]] = [
+            (denied, 1, ["", "ERROR: Could not check the source checkout: skills: Access is denied", CHECK, HINT, ""]),
+            (KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
+        ]
+        for failure, code, lines in cases:
+            self.calls = []
+            with self.subTest(failure=failure):
+                self.assertEqual(
+                    (code, [*self.prepared(), *self.held(), "release"], lines),
+                    self.execute(Options(), stdin=self.stdin, _reject_other_checkout=failure),
+                )
+
     def test_a_failed_recovery_releases_the_lock_and_deploys_nothing(self) -> None:
         self.assertEqual(
             (1, [*self.prepared(), *self.held(), "recover_incomplete(paths(home))", "release"], RECOVERY_FAILED),

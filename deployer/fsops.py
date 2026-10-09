@@ -28,11 +28,6 @@ def move(source: Path, destination: Path) -> None:
     source.rename(destination)
 
 
-def replace(source: Path, destination: Path) -> None:
-    """Atomically replace a destination file the deployer itself owns."""
-    source.replace(destination)
-
-
 def make_directory(path: Path) -> None:
     path.mkdir()
 
@@ -84,13 +79,18 @@ def write_file(path: Path, content: bytes) -> None:
 
 
 def write_private(path: Path, content: bytes) -> None:
-    """Atomically replace a file only its owner may read, removing the temporary copy if anything fails."""
+    """Atomically replace a file under a private folder, syncing it first and removing the temporary copy on failure.
+
+    mkstemp asks for owner-only mode bits, but on Windows those set no access control: the file inherits its folder's
+    permissions, so the folder decides who may read it.
+    """
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        # mkstemp already creates the file readable and writable by its owner only, and the replace keeps that.
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
         temporary.replace(path)
     finally:
         if temporary.exists():

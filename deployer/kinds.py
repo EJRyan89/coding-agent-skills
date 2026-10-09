@@ -33,6 +33,11 @@ class ItemKind:
     directory: bool
     removal_reason: str
     unmanaged_reason: str
+    suffix: str = ""  # what the deployed file name adds to the item's own name
+
+    def item_name(self, deployed: str) -> str:
+        """The item's own name, as the source and --force-item give it: an agent's file name without its .md."""
+        return deployed.removesuffix(self.suffix)
 
     @property
     def type_name(self) -> str:
@@ -50,7 +55,7 @@ ADAPTER_KIND = ItemKind(
     ADAPTERS, ADAPTER, ADAPTER, "Runtime adapter", "agents", ADAPTER_STAGING, True, "obsolete", DIFFERS
 )
 AGENT_KIND = ItemKind(
-    "agents", AGENT, AGENT, "Agent", "claude-agents", AGENT_STAGING, False, "no selected skill needs it", DIFFERS
+    "agents", AGENT, AGENT, "Agent", "claude-agents", AGENT_STAGING, False, "no selected skill needs it", DIFFERS, ".md"
 )
 # In the manifest's order, which is also the order every pass over the kinds checks, writes, and reports them in.
 KINDS = (SKILL, SHARED, ADAPTER_KIND, AGENT_KIND)
