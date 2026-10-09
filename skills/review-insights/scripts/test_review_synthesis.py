@@ -31,6 +31,16 @@ def _lines(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
+class ScreeningTests(unittest.TestCase):
+    def test_a_value_is_flattened_to_one_line_and_each_character_a_shell_expands_is_marked(self) -> None:
+        self.assertEqual("a b ?x? ? ?", rs.screened(' a\n\t b $x" \x1b `\u2028'))
+        self.assertEqual("R'(1)&;", rs.screened("R'(1)&;"), "punctuation literal inside double quotes stays")
+        self.assertEqual(
+            ["a?b", "?", "?", "?", "Correctness"],
+            [rs.screened(value) for value in ("a\\b", "\x7f", "\x9b", "\x00", "Correctness")],
+        )
+
+
 class SynthesisFixture(InsightFixture):
     def setUp(self) -> None:
         super().setUp()
@@ -355,6 +365,10 @@ class RecordTests(SynthesisFixture):
             "a title unsafe on the command line": (
                 {"recommendations": recommendation(title='Quote "this"')},
                 "without quotes",
+            ),
+            "a title holding a control character": (
+                {"recommendations": recommendation(title="Name\tthe timezone")},
+                "or control characters",
             ),
             "a flagged recommendation naming no flag": (
                 {"recommendations": recommendation(type="flagged", flags=[])},

@@ -88,8 +88,9 @@ FLAG_BODY = 1500
 HEADLINE = 120
 EVIDENCE_LIMIT = 10
 TEXT_LIMITS = {"short": 300, "rationale": 1500, "change": 2000}
-# A title is passed back on the command line as the subject of a decision, so it holds no shell metacharacters.
-UNSAFE_TITLE = re.compile(r'["`$\\\r\n]')
+# A title, category, or analyzer name is passed back on the command line inside double quotes as the subject of a
+# decision, and printed on a fact line, so it holds no character a shell expands there and no control character.
+UNSAFE_ARGUMENT = re.compile(r'["`$\\\x00-\x1f\x7f-\x9f\u2028\u2029]')
 ADJACENT_DAYS = 7
 PERIOD = re.compile(r"(\d{4}-\d{2}-\d{2})--(\d{4}-\d{2}-\d{2})")
 PROBLEMS_SHOWN = 20
@@ -113,6 +114,12 @@ def finding_ref(record: dict[str, Any], finding: dict[str, Any]) -> str:
 def _line(text: str, limit: int) -> str:
     flat = re.sub(r"\s+", " ", text).strip()
     return flat if len(flat) <= limit else flat[: limit - 3].rstrip() + "..."
+
+
+def screened(value: str) -> str:
+    """`value` as a fact line prints it and a decision names it: whitespace flattened to single spaces, and each other
+    character UNSAFE_ARGUMENT matches shown as `?`. A title is refused instead, since the synthesis can rewrite it."""
+    return UNSAFE_ARGUMENT.sub("?", re.sub(r"\s+", " ", value).strip())
 
 
 def _headline(finding: dict[str, Any]) -> str:
@@ -585,8 +592,9 @@ Write one JSON object:
   `{{"analyzer": {{"coverage": "...", "tool": "...", "rule": "..."}}}}`, with coverage {coverages}, the tool the
   analyzer's name, and the rule its rule ID or, for a custom rule, a short kebab-case pattern name; every other type
   targets a repository and a guidance file. `flagged` addresses flags no finding pattern covers.
-- `title` is one line of at most 120 characters without quotes, backticks, dollar signs, or backslashes, unique among
-  the recommendations. `change` says exactly what text or configuration to add, change, or remove.
+- `title` is one line of at most 120 characters without quotes, backticks, dollar signs, backslashes, tabs, or other
+  control characters, unique among the recommendations. `change` says exactly what text or configuration to add,
+  change, or remove.
 - `categories` has one entry for every `category` line, no more. `topics` names 1 to 5 concrete patterns or topics
   within the category, each with its count and up to 3 examples, never just the category's name. `assessment` says
   what the category's findings show and what should change, or why nothing should. `addressed_by` lists the titles of
@@ -731,9 +739,10 @@ class _Checker:
             self.problem(f"{where}.priority", f"must be one of {', '.join(PRIORITIES)}")
         self.target(f"{where}.target", item["type"], item["target"])
         title = item["title"]
-        if not _text(title, HEADLINE) or UNSAFE_TITLE.search(title):
+        if not _text(title, HEADLINE) or UNSAFE_ARGUMENT.search(title):
             self.problem(
-                f"{where}.title", "must be one line of at most 120 characters without quotes, backticks, $, or \\"
+                f"{where}.title",
+                "must be one line of at most 120 characters without quotes, backticks, $, \\, or control characters",
             )
         elif title.casefold() in titles:
             self.problem(f"{where}.title", "repeats another recommendation's title")
