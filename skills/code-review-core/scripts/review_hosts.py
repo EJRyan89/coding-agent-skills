@@ -31,7 +31,7 @@ from review_runtime import (
     _safe_relative_path,
     _snapshot_files,
     negotiate_capabilities,
-    verify_source_snapshot,
+    verify_stamped_snapshot,
 )
 
 
@@ -371,6 +371,7 @@ def run_copilot(
     diagnostic_path: Path,
     isolation_root: Path,
     staging_path: Path | None = None,
+    snapshot_stamp: str | None = None,
     promote: Promote = replace_result,
     runner: Runner = subprocess_runner,
     executable: str | None = None,
@@ -378,12 +379,13 @@ def run_copilot(
 ) -> HostResult:
     """Run one Copilot CLI review. Copilot writes only the staging file; once it is a JSON object, `promote`
     renames it to the result path, so a reader sees the whole result or none, and a refused promotion is
-    HostSuperseded."""
+    HostSuperseded. `snapshot_stamp` is the stamp `prepare` took of the source snapshot, so the snapshot is re-read
+    before Copilot starts only as far as something can have changed since (see `verify_stamped_snapshot`)."""
     staging_path = staging_path or result_path.with_name(f"{result_path.stem}.staging{result_path.suffix}")
     materialized_resolved, entrypoint_resolved = _copilot_reviewer(
         run_directory, materialized_root, request_path, result_path, staging_path, diagnostic_path
     )
-    source_resolved = _verified_copilot_source(run_directory, _read_copilot_request(request_path))
+    source_resolved = _verified_copilot_source(run_directory, _read_copilot_request(request_path), snapshot_stamp)
     execution_directory, environment = isolated_copilot_environment(isolation_root, base_environment)
     executable = executable or find_copilot()
     version_result = _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
@@ -467,9 +469,9 @@ def _read_copilot_request(request_path: Path) -> _CopilotRequest:
     return _CopilotRequest(source_snapshot, source_root, source_manifest, diff_path, repository, head_sha)
 
 
-def _verified_copilot_source(run_directory: Path, request: _CopilotRequest) -> Path:
+def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stamp: str | None) -> Path:
     """The resolved source snapshot root, once the diff and the snapshot are inside the run directory and the snapshot
-    verifies against the request's repository and head."""
+    verifies against the request's repository and head, and against `stamp` as far as it still holds."""
     run_resolved = run_directory.resolve(strict=True)
     try:
         source_resolved = request.source_root.resolve(strict=True)
@@ -484,10 +486,11 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest) -> P
         raise RuntimeContractError("Copilot source snapshot manifest path is invalid")
     if request.source_snapshot.get("source_commit") != request.head_sha:
         raise RuntimeContractError("Copilot source snapshot commit is invalid")
-    verify_source_snapshot(
+    verify_stamped_snapshot(
         request.source_root,
         expected_repository=request.repository,
         expected_commit=request.head_sha,
+        stamp=stamp,
     )
     return source_resolved
 
