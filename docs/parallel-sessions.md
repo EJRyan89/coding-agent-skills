@@ -186,11 +186,12 @@ It also fails open: input it cannot judge is allowed, with a note on stderr, so 
 block every tool. The one exception is an alias that runs in the hub: one it cannot read is refused. Runtimes other than Claude Code do not run the hook, so for them the `CLAUDE.md` rules are
 the guard.
 
-`.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore declare hooks and
-`attribution`, which turns off Claude Code's commit trailers, pull request footer, and session links for this
-repository, and nothing else. A rule about what a developer must allow belongs in that developer's own user
-settings or `settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, or if a
-`settings.local.json` is ever committed. It also fails when the guard's hook stops matching any tool that can
+`.claude/settings.json` is tracked and reaches every developer's sessions. It may therefore name its `$schema`,
+declare hooks, and set `attribution`, which turns off Claude Code's commit trailers, pull request footer, and session
+links for this repository, and nothing else. A rule about what a developer must allow belongs in that developer's own
+user settings or `settings.local.json`. `tests/run_validation.py` fails if any other top-level key appears, if
+`$schema` names another schema, if `attribution` is anything but `{"commit": "", "pr": "", "sessionUrl": false}`, or
+if a `settings.local.json` is ever committed. It also fails when the guard's hook stops matching any tool that can
 edit a file or run git (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `Bash`, and `PowerShell`). A tool
 missing from the matcher is never shown to the guard, so the hub would be open through it.
 

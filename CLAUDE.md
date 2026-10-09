@@ -53,7 +53,7 @@ Several sessions may work in this repository at once, and sessions that share a 
 - Deploy only from the hub on `main`. A deployment records its source path, so `deploy.py` refuses to deploy from a linked worktree; `--dry-run` and `--canary-home` (a throwaway home under the temporary directory) still work there.
 - Never pop or drop a stash you did not create: the stash stack is shared by every worktree.
 - In a clone that opts in with `git config coding-agent-skills.hubGuard true`, the Claude Code hook in `.claude/settings.json` refuses edits to the hub and git commands that would move its HEAD or write its tree. Other runtimes do not run the hook, so for them these rules are the guard.
-- `.claude/settings.json` is tracked and may hold hooks and `attribution` only. Its `attribution` turns off Claude Code's commit trailers, pull request footer, and session links, so commits and pull requests made here carry none. Permissions and every other setting belong in each developer's user or `settings.local.json` settings, and validation enforces this.
+- `.claude/settings.json` is tracked and may hold `$schema`, hooks, and `attribution` only. Its `attribution` turns off Claude Code's commit trailers, pull request footer, and session links, so commits and pull requests made here carry none. Permissions and every other setting belong in each developer's user or `settings.local.json` settings. Validation fails on any other top-level key, a `$schema` other than Claude Code's settings schema, an `attribution` other than `{"commit": "", "pr": "", "sessionUrl": false}`, and a committed `settings.local.json`.
 
 ## Required validation
 
