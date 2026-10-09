@@ -97,7 +97,7 @@ from review_runtime import (
     verify_checkout_remote,
     verify_source_snapshot,
 )
-from review_state import StateError, empty_state, load_state, update_state
+from review_state import StateError, empty_state, load_state, update_state, validate_state
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -453,6 +453,23 @@ class StateAndLockTests(unittest.TestCase):
             with self.assertRaisesRegex(StateError, "only schema_version and repositories"):
                 update_state(path, lambda state: {**state, "extra": True})
             self.assertEqual(updated, load_state(path), "a refused replacement leaves the state as it was")
+
+    def test_a_watermark_must_begin_with_a_calendar_date(self) -> None:
+        def state(value: str) -> dict:
+            return {"schema_version": 1, "repositories": {"example/one": {"merged_since": value}}}
+
+        for value in ("2026-03-10", "2026-03-10T00:00:00Z"):
+            with self.subTest(value=value):
+                self.assertEqual(state(value), validate_state(state(value)))
+        # A week date and the basic form parse as ISO 8601 dates in Python, but the watermark is YYYY-MM-DD.
+        for value in ("not-a-date", "", "2026-3-10", "2026-02-30", "2026-W10-1", "20260310", "２０２６-03-10"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    StateError, r"State example/one\.merged_since must begin with a YYYY-MM-DD date"
+                ),
+            ):
+                validate_state(state(value))
 
     def test_contended_lock_fails_without_removing_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
