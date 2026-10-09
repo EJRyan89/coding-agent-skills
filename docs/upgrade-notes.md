@@ -25,7 +25,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: patch. A fix: a `RECOMMENDATION` line's category and an `ANALYZER` line's tool and rule are printed on one line, with whitespace flattened and `?` for a double quote, backtick, `$`, backslash, or control character, so a value from a record never breaks the one-fact-per-line output or reaches a shell unquoted. `decide` takes the subject as printed or as recorded, and the skill passes every value in double quotes. A synthesized title is now refused for a control character too. Records and reports are unchanged.
 - Contract: none
 - User action: none
-- Pull request: #269
+- Pull request: #293
 
 ## v0.4.0
 
