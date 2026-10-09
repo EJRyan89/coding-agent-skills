@@ -165,7 +165,7 @@ class ReviewerCommandTests(MainCase):
             [
                 (
                     ("example/app",),
-                    {"pulls": [3, 5], "ref": None, "config_path": Path(CONFIG), "services": SERVICES},
+                    {"pulls": [3, 5], "ref": None, "host": None, "config_path": Path(CONFIG), "services": SERVICES},
                 )
             ],
             stub.calls,
@@ -178,9 +178,22 @@ class ReviewerCommandTests(MainCase):
             self.run_main("validate-reviewer", "--repository", "example/app", "--ref", "abc123"),
         )
         self.assertEqual(
-            [(("example/app",), {"pulls": [], "ref": "abc123", "config_path": None, "services": SERVICES})],
+            [
+                (
+                    ("example/app",),
+                    {"pulls": [], "ref": "abc123", "host": None, "config_path": None, "services": SERVICES},
+                )
+            ],
             stub.calls,
         )
+
+    def test_validate_reviewer_passes_the_host(self) -> None:
+        stub = self.stub("validate_reviewer", ["VALID example/app"])
+        result = self.run_main(
+            "validate-reviewer", "--repository", "example/app", "--pull", "3", "--host", "copilot-cli"
+        )
+        self.assertEqual((0, "VALID example/app\n", ""), result)
+        self.assertEqual("copilot-cli", stub.calls[0][1]["host"])
 
 
 class EnumerateTests(MainCase):
