@@ -81,7 +81,7 @@ SUMMARY INFO inventory 1
 
 | Severity | Check | Path | Line | Message |
 |---|---|---|---|---|
-| ERROR | copilot-config | .github/skills/demo/SKILL.md | 4 | Frontmatter must use single-line key: value entries or block scalars |
+| ERROR | copilot-config | .github/skills/demo/SKILL.md | 4 | Frontmatter must use key: value entries, block scalars, block lists, or nested mappings |
 | WARNING | mcp |  |  | Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically |
 | INFO | inventory | CLAUDE.md |  | Found CLAUDE.md |
 ```
@@ -107,7 +107,7 @@ output has no summary; count its `findings` instead.
       "check": "copilot-config",
       "path": ".github/skills/demo/SKILL.md",
       "line": 4,
-      "message": "Frontmatter must use single-line key: value entries or block scalars"
+      "message": "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
     },
     {
       "severity": "WARNING",
