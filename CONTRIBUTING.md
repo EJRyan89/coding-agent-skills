@@ -149,6 +149,10 @@ The template's sections ask for the problem and the chosen behavior, the user-vi
 
 Under the checklist, name anything that could not be run, and why.
 
+## Questions
+
+Ask a question in an issue from the question template, which applies the `question` label. Discussions stay off, so the issue tracker is the one place to ask, and blank issues stay off, so every issue starts from a template.
+
 ## Gates the maintainer runs
 
 Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging:

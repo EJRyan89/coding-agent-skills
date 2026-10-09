@@ -24,5 +24,8 @@ assignees: ''
 ## Commit and environment
 
 <!-- The output of python deploy.py check, run in the clone the skills were deployed from: it names the deployed
-     commit and the versions of Python, PowerShell, ShellCheck, gh, Codex, and Copilot CLI. Add the version
-     of the agent runtime the problem showed in (Claude Code, Codex, or Copilot CLI) and of Git for Windows. -->
+     commit and the versions of Python, Git, PowerShell, ShellCheck, gh, Claude Code, Codex, and Copilot CLI.
+     Below it, name the runtime the problem showed in and the model the skill ran on, since several skills behave
+     differently by model. -->
+
+Runtime and model:

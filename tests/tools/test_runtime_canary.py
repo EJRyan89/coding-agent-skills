@@ -246,6 +246,45 @@ class DeploymentTests(RuntimeCanaryTestCase):
         self.assertIn("unknown skill: no-such-skill", output.getvalue())
 
 
+class RemoveHomeTests(unittest.TestCase):
+    # The skill deletes the home through the script, which its allowed-tools already grant, rather than through a
+    # prefix grant on rm that would approve deleting any directory.
+    def remove(self, *arguments: str) -> tuple[int, str]:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = runtime_canary.main(["--remove-home", *arguments])
+        return code, output.getvalue()
+
+    def test_a_home_the_canary_made_is_removed(self) -> None:
+        home = runtime_canary.create_home()
+        (home / ".runtime-canary" / "transcripts").mkdir(parents=True)
+        (home / ".runtime-canary" / "transcripts" / "claude.txt").write_text("a run\n", encoding="utf-8")
+        code, output = self.remove(str(home))
+        self.assertEqual((0, f'REMOVED "{home.as_posix()}"\n'), (code, output))
+        self.assertFalse(home.exists())
+
+    def test_any_other_directory_is_refused_and_kept(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="runtime-canary-") as directory:
+            root = Path(directory)
+            nested = root / "runtime-canary-nested"
+            nested.mkdir()
+            with tempfile.TemporaryDirectory(prefix="not-a-canary-") as other:
+                for candidate in (nested, Path(other), root / "runtime-canary-missing"):
+                    with self.subTest(candidate=candidate.name):
+                        code, output = self.remove(str(candidate))
+                        self.assertEqual(1, code)
+                        self.assertRegex(output, r'^FAILED ".+ is not a home the canary made under .+"\n$')
+                self.assertTrue(Path(other).is_dir())
+            self.assertTrue(nested.is_dir())
+
+    def test_remove_home_takes_no_skill(self) -> None:
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output), self.assertRaises(SystemExit) as raised:
+            runtime_canary.main(["--remove-home", "somewhere", "review-prs"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("--remove-home takes no SKILL", output.getvalue())
+
+
 class RunTests(RuntimeCanaryTestCase):
     def test_a_runtime_that_runs_the_fixture_is_reported_with_the_marker_it_wrote(self) -> None:
         runner = FakeRuntimes()

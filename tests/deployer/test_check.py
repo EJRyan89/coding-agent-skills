@@ -20,8 +20,10 @@ INSTALLED = {
     "copilot": ("C:/tools/copilot.exe", "GitHub Copilot CLI 1.0.89.\n"),
     "codex": ("C:/tools/codex.exe", "codex-cli 0.160.0\n"),
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
+    "claude": ("C:/tools/claude.exe", "2.1.291 (Claude Code)\n"),
 }
 GIT = "C:/tools/git.exe"
+GIT_VERSION = "git version 2.54.0.windows.1\n"
 COMMIT = "71ad8150c0ffee5eed0123456789abcdef012345"
 
 
@@ -76,6 +78,8 @@ class Machine:
     def run_tool(self, arguments: list[str]) -> platform_support.ToolResult:
         if arguments[0] != GIT:
             return platform_support.ToolResult(0, self.versions[arguments[0]])
+        if arguments[1:] == ["--version"]:
+            return platform_support.ToolResult(0, GIT_VERSION)
         self.git_calls.append(arguments)
         if self.describe is None:
             return platform_support.ToolResult(128, "fatal: No names found, cannot describe anything.\n")
@@ -112,7 +116,8 @@ class CheckCommandTests(DeployerTestCase):
             "\n"
             "=== CHECK ===\n"
             "\n"
-            "FOUND (6):\n"
+            "FOUND (7):\n"
+            "  Git 2.54.0 (used by every skill)\n"
             "  Git Bash (needed to deploy; C:/Program Files/Git/bin/bash.exe)\n"
             "  PowerShell 7.6.6 (needed to deploy)\n"
             "  Python 3.12.1 (needed to deploy; 3.11 or newer)\n"
@@ -120,7 +125,8 @@ class CheckCommandTests(DeployerTestCase):
             "  dotnet-format 5.1.250801 (used by formatter)\n"
             "  gh 2.97.0 (used by operations, reporter)\n"
             "\n"
-            "OPTIONAL (2):\n"
+            "OPTIONAL (3):\n"
+            "  Claude Code 2.1.291 (used by every skill run in Claude Code)\n"
             "  codex 0.160.0 (used by Codex verification)\n"
             "  copilot 1.0.89 (used by operations, Copilot verification)\n"
             "\n"
@@ -152,6 +158,7 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine(missing=("copilot",))).output, "CHECK")
         self.assertEqual(
             [
+                "Claude Code 2.1.291 (used by every skill run in Claude Code)",
                 "codex 0.160.0 (used by Codex verification)",
                 "copilot (not installed; used by operations, Copilot verification)",
             ],
@@ -202,14 +209,19 @@ class CheckCommandTests(DeployerTestCase):
     def test_the_runtimes_verify_lists_are_reported_whether_or_not_a_skill_declares_them(self) -> None:
         # deploy.py verify runs Codex CLI and Copilot CLI, so check reports both even when no skill runs either.
         set_tools(self, "core", ["gh"])
-        groups = self.report_groups(self.check(Machine()).output, "CHECK")
-        self.assertEqual(
-            ["codex 0.160.0 (used by Codex verification)", "copilot 1.0.89 (used by Copilot verification)"],
-            groups["OPTIONAL"],
-        )
-        groups = self.report_groups(self.check(Machine(missing=("codex", "copilot"))).output, "CHECK")
+        groups = self.report_groups(self.check(Machine(missing=("claude",))).output, "CHECK")
         self.assertEqual(
             [
+                "Claude Code (not installed; used by every skill run in Claude Code)",
+                "codex 0.160.0 (used by Codex verification)",
+                "copilot 1.0.89 (used by Copilot verification)",
+            ],
+            groups["OPTIONAL"],
+        )
+        groups = self.report_groups(self.check(Machine(missing=("claude", "codex", "copilot"))).output, "CHECK")
+        self.assertEqual(
+            [
+                "Claude Code (not installed; used by every skill run in Claude Code)",
                 "codex (not installed; used by Codex verification)",
                 "copilot (not installed; used by Copilot verification)",
             ],
@@ -245,6 +257,19 @@ class CheckCommandTests(DeployerTestCase):
         set_tools(self, "reporter", [], key="optional_tools")
         groups = self.report_groups(self.check(Machine(missing=("gh",))).output, "CHECK")
         self.assertEqual(["gh (used by formatter, reporter)"], groups["MISSING"])
+
+    def test_git_and_claude_code_versions_are_reported_for_a_bug_report(self) -> None:
+        # The bug template asks for check's output alone, so check names the Git and Claude Code versions too, though
+        # deploying needs neither. Without Git the skills fail, but deploying still works.
+        groups = self.report_groups(self.check(Machine()).output, "CHECK")
+        self.assertIn("Git 2.54.0 (used by every skill)", groups["FOUND"])
+        self.assertIn("Claude Code 2.1.291 (used by every skill run in Claude Code)", groups["OPTIONAL"])
+        result = self.check(Machine(missing=("git", "claude")))
+        self.assertEqual(0, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual(["Git (used by every skill)"], groups["MISSING"])
+        self.assertIn("Claude Code (not installed; used by every skill run in Claude Code)", groups["OPTIONAL"])
+        self.assertIn("Ready to deploy. Skills that use a missing or outdated tool will fail\n", result.output)
 
     def test_tools_no_skill_declares_are_not_listed(self) -> None:
         set_tools(self, "formatter", [])
