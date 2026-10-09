@@ -12,11 +12,13 @@ import unittest
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 import review_insights as ri
+import review_records
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
@@ -516,6 +518,20 @@ class ReportTests(InsightFixture):
         report = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual((3, 2), (report["record_count"], report["finding_count"]))
         self.assertEqual({"SHOULD_FIX": 2}, report["severity_counts"])
+
+    def test_each_record_pair_is_validated_once_a_report(self) -> None:
+        # Collection, the ledgers, and the synthesis's guidance files all read the pairs, in range or not.
+        self.commit_repeats(judged_after=True)
+        self.commit("owner/other", 3, ["Style"])
+        with (
+            mock.patch.object(ri, "validate_record_pair", wraps=ri.validate_record_pair) as pair,
+            mock.patch.object(review_records, "validate_record", wraps=review_records.validate_record) as record,
+        ):
+            self.report()
+        validated = sorted(str(call.args[0]) for call in pair.call_args_list)
+        self.assertEqual(5, len(validated), "four versions of owner/repo#7, one of owner/other#3")
+        self.assertEqual(sorted(set(validated)), validated)
+        self.assertEqual(5, record.call_count, "no stage validates a record a second time")
 
     def test_a_finding_no_later_review_judged_has_no_outcome(self) -> None:
         # v3 judged the Correctness finding still present in the review that repeated it, so no later review has.

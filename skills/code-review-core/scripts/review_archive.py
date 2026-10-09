@@ -16,12 +16,23 @@ class ArchiveError(RuntimeError):
     pass
 
 
+def pulls_directory(root: Path, repository: str) -> Path:
+    owner, name = validate_repository_identity(repository).split("/", 1)
+    return root / owner / name / "pulls"
+
+
 def pull_directory(root: Path, repository: str, pull_number: int) -> Path:
-    normalized = validate_repository_identity(repository)
+    pulls = pulls_directory(root, repository)
     if not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1:
         raise ArchiveError("Pull number must be a positive integer")
-    owner, name = normalized.split("/", 1)
-    return root / owner / name / "pulls" / str(pull_number)
+    return pulls / str(pull_number)
+
+
+def record_files(root: Path, repository: str) -> list[Path]:
+    """The JSON file of every review record pair of a repository's pull requests, sorted: each pull request's version
+    chain and any pair beside it, such as one converted from another tool, which list_versions leaves out."""
+    pulls = pulls_directory(root, repository)
+    return sorted(pulls.glob("*/review*.json")) if pulls.exists() else []
 
 
 def _version_from_name(path: Path) -> int | None:

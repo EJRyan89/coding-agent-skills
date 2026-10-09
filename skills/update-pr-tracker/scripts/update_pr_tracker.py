@@ -551,11 +551,6 @@ def _read_dashboard(dashboard: Path) -> str:
         raise TrackerError(str(exc)) from exc
 
 
-def update_dashboard(input_path: Path, dashboard: Path, login: str, **options: Any) -> list[dict[str, Any]]:
-    """Update the owned section and return the relevant pull requests whose AI review is missing or stale."""
-    return review_candidates(update_dashboard_rows(input_path, dashboard, login, **options))
-
-
 def update_dashboard_rows(
     input_path: Path,
     dashboard: Path,

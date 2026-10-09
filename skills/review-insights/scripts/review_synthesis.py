@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from review_io import PersistenceError, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, SEVERITIES, RecordError, valid_analyzer, validate_record
+from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, valid_analyzer
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -132,13 +132,10 @@ class _Group:
     pairs: list[tuple[dict[str, Any], dict[str, Any], Any]] = field(default_factory=list)
 
     def rank(self, outcomes: dict[Any, str], flagged: set[Any]) -> tuple[int, int, int, int]:
-        severity = max(_SEVERITY_RANK[finding["severity"]] for _, finding, _ in self.pairs)
+        severity = max(SEVERITY_RANK[finding["severity"]] for _, finding, _ in self.pairs)
         still = sum(outcomes.get(entry) in {"still_present", "partially_addressed"} for _, _, entry in self.pairs)
         marked = sum(entry in flagged for _, _, entry in self.pairs)
         return -len(self.pairs), -marked, -still, -severity
-
-
-_SEVERITY_RANK = {"SUGGESTION": 1, "SHOULD_FIX": 2, "MUST_FIX": 3}
 
 
 def _group_line(group: _Group, identifier: str, outcomes: dict[Any, str], flagged: set[Any]) -> dict[str, Any]:
@@ -240,27 +237,23 @@ def scoped_flags(
     return lines
 
 
-def guidance_files(archive_root: Path, repositories: list[str]) -> dict[str, list[str]]:
+def guidance_files(repositories: list[str], records: dict[Path, dict[str, Any]]) -> dict[str, list[str]]:
     """Each repository's guidance files: the source files of the latest record each repository-scoped reviewer
-    wrote, anywhere in the archive."""
-    guidance: dict[str, list[str]] = {}
-    for repository in repositories:
-        owner, name = repository.lower().split("/", 1)
-        latest: dict[str, tuple[str, list[str]]] = {}
-        base = archive_root / owner / name / "pulls"
-        for path in sorted(base.glob("*/review*.json")) if base.exists() else []:
-            try:
-                adapter = validate_record(read_json(path))["review"]
-            except (PersistenceError, RecordError, KeyError):
-                continue
-            source = adapter["adapter"]
-            if source["scope"] != "repository" or not source["source_hashes"]:
-                continue
-            stamp = adapter["reviewed_at"]
-            if source["name"] not in latest or latest[source["name"]][0] < stamp:
-                latest[source["name"]] = (stamp, sorted(source["source_hashes"]))
-        guidance[repository.lower()] = sorted({path for _, paths in latest.values() for path in paths})
-    return guidance
+    wrote, anywhere in the archive. `records` holds every validated record of the repositories by its path."""
+    latest: dict[str, dict[str, tuple[str, list[str]]]] = {repository.lower(): {} for repository in repositories}
+    for path in sorted(records):
+        record = records[path]
+        adapter, by_name = record["review"], latest.get(record["repository"].lower())
+        source = adapter["adapter"]
+        if by_name is None or source["scope"] != "repository" or not source["source_hashes"]:
+            continue
+        stamp = adapter["reviewed_at"]
+        if source["name"] not in by_name or by_name[source["name"]][0] < stamp:
+            by_name[source["name"]] = (stamp, sorted(source["source_hashes"]))
+    return {
+        repository: sorted({path for _, paths in by_name.values() for path in paths})
+        for repository, by_name in latest.items()
+    }
 
 
 def previous_period(set_root: Path, start: date, load: Any) -> tuple[Path, dict[str, Any]] | None:

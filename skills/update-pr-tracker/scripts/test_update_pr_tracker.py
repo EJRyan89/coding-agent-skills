@@ -25,7 +25,7 @@ from update_pr_tracker import (
     TrackerError,
     evaluate,
     review_candidates,
-    update_dashboard,
+    update_dashboard_rows,
     validate_items,
 )
 
@@ -99,7 +99,8 @@ def run(
         dashboard = root / "dashboard.md"
         source.write_text(json.dumps(items), encoding="utf-8")
         dashboard.write_text(f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n", encoding="utf-8")
-        candidates = update_dashboard(source, dashboard, "reviewer", detector=detector or FakeDetector(), **options)
+        rows = update_dashboard_rows(source, dashboard, "reviewer", detector=detector or FakeDetector(), **options)
+        candidates = review_candidates(rows)
         return dashboard.read_text(encoding="utf-8"), candidates
 
 
@@ -537,17 +538,17 @@ class TrackerTests(unittest.TestCase):
             source.write_text(json.dumps([item(), copy.deepcopy(item())]), encoding="utf-8")
             dashboard.write_text("No markers\n", encoding="utf-8")
             with self.assertRaisesRegex(TrackerError, "Duplicate"):
-                update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+                update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
             source.write_text(json.dumps([item()]), encoding="utf-8")
             with self.assertRaisesRegex(TrackerError, "marker pair"):
-                update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+                update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
 
     def test_markers_are_checked_before_github_is_asked(self) -> None:
         detector = RecordingDetector()
         with tempfile.TemporaryDirectory() as temporary:
             source, dashboard = dashboard_files(Path(temporary), b"No markers\n")
             with self.assertRaisesRegex(TrackerError, "marker pair"):
-                update_dashboard(source, dashboard, "reviewer", detector=detector)
+                update_dashboard_rows(source, dashboard, "reviewer", detector=detector)
             self.assertEqual([], detector.calls)
             self.assertEqual(b"No markers\n", dashboard.read_bytes())
 
@@ -708,7 +709,7 @@ class DashboardWriteTests(unittest.TestCase):
             )
             edited = f"Before, edited\n{START_MARKER}\nold\n{END_MARKER}\nAfter\nA new note\n".encode()
             detector = RecordingDetector(lambda: dashboard.write_bytes(edited))
-            update_dashboard(source, dashboard, "reviewer", detector=detector)
+            update_dashboard_rows(source, dashboard, "reviewer", detector=detector)
             self.assertNotEqual([], detector.calls)
             written = dashboard.read_bytes()
             self.assertEqual(outside(edited), outside(written))
@@ -720,14 +721,14 @@ class DashboardWriteTests(unittest.TestCase):
             source, dashboard = dashboard_files(Path(temporary), f"{START_MARKER}\n{END_MARKER}\n".encode())
             detector = RecordingDetector(lambda: dashboard.write_bytes(b"Rewritten\n"))
             with self.assertRaisesRegex(TrackerError, "marker pair"):
-                update_dashboard(source, dashboard, "reviewer", detector=detector)
+                update_dashboard_rows(source, dashboard, "reviewer", detector=detector)
             self.assertEqual(b"Rewritten\n", dashboard.read_bytes())
 
     def test_a_crlf_dashboard_keeps_crlf_and_every_byte_outside_the_owned_section(self) -> None:
         original = f"﻿Before\r\n\r\n{START_MARKER}\r\nold\r\n{END_MARKER}\r\nAfter — café\r\n".encode()
         with tempfile.TemporaryDirectory() as temporary:
             source, dashboard = dashboard_files(Path(temporary), original)
-            update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+            update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
             written = dashboard.read_bytes()
         self.assertEqual(outside(original), outside(written))
         start, end = written.index(START_MARKER.encode()), written.index(END_MARKER.encode())
@@ -744,7 +745,7 @@ class DashboardWriteTests(unittest.TestCase):
             original = f"{before}{START_MARKER}\n{END_MARKER}".encode()
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
                 source, dashboard = dashboard_files(Path(temporary), original)
-                update_dashboard(source, dashboard, "reviewer", detector=FakeDetector())
+                update_dashboard_rows(source, dashboard, "reviewer", detector=FakeDetector())
                 written = dashboard.read_bytes()
                 self.assertEqual(outside(original), outside(written))
                 owned = written[written.index(START_MARKER.encode()) : written.index(END_MARKER.encode())]
