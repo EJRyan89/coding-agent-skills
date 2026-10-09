@@ -965,7 +965,11 @@ class FixtureInputTests(AdversarialFixture):
 
         # A link has no place in a fixture: refused before any run exists.
         real = review_canary._is_reparse_point
-        with mock.patch.object(review_canary, "_is_reparse_point", lambda path: path.name == "CLAUDE.md" or real(path)):
+        with mock.patch.object(
+            review_canary,
+            "_is_reparse_point",
+            lambda path, metadata=None: path.name == "CLAUDE.md" or real(path, metadata),
+        ):
             code, out, err = self.main("prepare", "--canary", "--fixture", str(fixture))
         self.assertEqual(
             (1, f"FAILED {fixture} The fixture holds a link or special file: CLAUDE.md\n", ""), (code, out, err)

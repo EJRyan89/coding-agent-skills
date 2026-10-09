@@ -16,6 +16,7 @@ diff git computes between the two commits as GitHub would serve it. Nothing here
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 from collections.abc import Iterator
@@ -119,16 +120,28 @@ def validate_prior_record(value: Any, *, repository: str, number: int) -> dict[s
 
 def _tree_files(root: Path) -> list[tuple[str, Path]]:
     """Each file under `root` as (its POSIX path, its path), sorted. A link or another entry that is not a regular
-    file or folder has no place in a fixture and is refused."""
+    file or folder has no place in a fixture and is refused.
+
+    Each entry is judged from the metadata its folder's listing already holds, reparse flag included, so the walk
+    makes no file-system call per entry, and the POSIX path is built as a string rather than through pathlib."""
     if not root.is_dir() or _is_reparse_point(root):
         raise FixtureError(f"The fixture has no {root.name}/ tree")
     files: list[tuple[str, Path]] = []
-    for current, directories, names in os.walk(root, followlinks=False):
-        for name in [*directories, *names]:
-            child = Path(current) / name
-            if _is_reparse_point(child) or not (child.is_dir() if name in directories else child.is_file()):
-                raise FixtureError(f"The fixture holds a link or special file: {child.relative_to(root).as_posix()}")
-        files.extend((Path(current, name).relative_to(root).as_posix(), Path(current, name)) for name in names)
+    folders = [("", str(root))]
+    while folders:
+        prefix, folder = folders.pop()
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                relative = prefix + entry.name
+                path, metadata = Path(entry.path), entry.stat(follow_symlinks=False)
+                if _is_reparse_point(path, metadata):
+                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
+                if stat.S_ISDIR(metadata.st_mode):
+                    folders.append((relative + "/", entry.path))
+                elif stat.S_ISREG(metadata.st_mode):
+                    files.append((relative, path))
+                else:
+                    raise FixtureError(f"The fixture holds a link or special file: {relative}")
     return sorted(files)
 
 
