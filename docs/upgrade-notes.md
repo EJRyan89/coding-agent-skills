@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### On Codex, review-prs notes a reviewer's model instead of asking for a Claude alias
+
+- Level: patch. A fix: Codex's native delegation takes only its own model identifiers, so where a specialist's manifest or profile names `sonnet`, `opus`, `haiku`, or `fable`, `prepare` and `check` on Codex now print a `NOTE` naming the model in place of the `MODEL` line, as they do for an inline role, and the reviewer runs on the session's model. The record's `model` is the one the reviewer reports, as before. Claude Code still gets the `MODEL` line. An inline retry no longer prints a `MODEL` line either.
+- Contract: none
+- User action: none
+- Pull request: #297
+
 ### The reviewer guard refuses a self-check whose script or run ends in a backslash
 
 - Level: patch. A fix: in Claude Code, the reviewer guard now holds a `code-review-reviewer`'s self-check command to the rule its source commands already followed, so no quoted script or run may end in a backslash, which would escape its closing quote. The self-check the pipeline writes is allowed as before.

@@ -107,6 +107,9 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # `inherit` to use the session's model whatever the profile says. `effort` reaches reviewers the Workflow tool starts.
 OPTIONAL_SPECIALIST_KEYS = {"model", "effort"}
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
+# The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
+# identifiers, so there a reviewer starts on the session's model.
+MODEL_ALIAS_RUNTIMES = frozenset({"claude-code"})
 GENERIC_SPECIALIST = "generic-review"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # The snapshot paths a condition may declare it reads: glob patterns, bounded as a repository's snapshot_exclude is.

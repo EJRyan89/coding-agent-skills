@@ -2445,6 +2445,10 @@ class InlineReviewTests(PipelineFixture):
             lines,
         )
         self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
+        # The run keeps no model either, so a retry that check hands back names none.
+        run = Path(lines[0].removeprefix(f"RUN {SELECTOR} "))
+        roles = {role["id"]: role for role in rp.load_run(run)["roles"]}
+        self.assertIsNone(roles["python-reviewer"]["model"])
 
     def test_only_next_role_works_an_inline_run(self) -> None:
         run = self.prepare_inline()
@@ -2871,6 +2875,46 @@ class ProfileModelTests(PipelineFixture):
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith(f"RETRY {SELECTOR} python-review "), out)
         self.assertEqual(f"MODEL {SELECTOR} python-review sonnet", lines[1])
+
+    def test_a_codex_session_notes_the_profile_model_and_its_reviewer_inherits_the_session_model(self) -> None:
+        # Codex's native delegation takes its own model identifiers, not a Claude alias, so no MODEL line asks it to.
+        self.services.resolve_runtime = lambda configured, host: "codex"
+        self.trusted_profile("model: Sonnet\n")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual([], [line for line in lines if line.startswith("MODEL ")])
+        self.assertIn(
+            f"NOTE {SELECTOR} python-review asks for model sonnet; codex starts every reviewer on this session's model",
+            lines,
+        )
+        run = lines[0].removeprefix(f"RUN {SELECTOR} ")
+        state = json.loads((Path(run) / rp.RUN_FILE).read_text(encoding="utf-8"))
+        self.assertEqual([None, None], [role["model"] for role in state["roles"]])
+        # A retry starts on the session's model too, and the record names the model the reviewer says it ran on.
+        python, generic = state["roles"]
+        self.write_role_result(python, findings=[self.finding(line=1)])
+        self.write_role_result(generic)
+        code, out, _ = self.run_main("check", "--run", run)
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith(f"RETRY {SELECTOR} python-review "), out)
+        self.assertNotIn("MODEL ", out)
+        self.write_role_result(python, model="codex-session-model")
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", run))
+        self.assertEqual(0, self.run_main("finalize", "--run", run)[0])
+        reviewers = archived_record(self.archive, 12)["review"]["reviewers"]
+        self.assertEqual(
+            {"python-review": "codex-session-model", "generic-review": "fixture-model"},
+            {reviewer["id"]: reviewer["model"] for reviewer in reviewers},
+        )
+
+    def test_a_claude_code_session_keeps_the_model_line(self) -> None:
+        self.services.resolve_runtime = lambda configured, host: "claude-code"
+        self.trusted_profile("model: opus\n")
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertIn(f"MODEL {SELECTOR} python-review opus", out.splitlines())
+        self.assertNotIn("NOTE", out)
 
     def test_inherit_or_no_model_starts_the_reviewer_on_the_session_model(self) -> None:
         for header in ("model: inherit\n", "tools: Read\n"):
