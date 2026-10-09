@@ -626,6 +626,41 @@ class OtherCheckoutTests(LinkedWorktreeTestCase):
         result = self.deploy_fails_from(self.source, "--all")
         self.assertIn(f"ERROR: Source 'test/skills' is deployed from {forward(clone)}, not from this", result.output)
 
+    def test_an_uninstall_removes_every_kind_and_keeps_the_source_entry_and_its_checkout(self) -> None:
+        """As docs/installation.md's "Uninstalling" says: a later clone must still take the source over."""
+        self.make_source_json(shared_assets={"shared.md": "owner"})
+        self.make_shared_asset("shared.md")
+        self.make_agent("reviewer")
+        self.make_skill("alpha", "Alpha from the first clone", shared_deps=["shared.md"], agent_deps=["reviewer"])
+        self.make_config()
+        self.deploy_ok("--all")
+        installed = [
+            self.skills_dir / "alpha",
+            self.skills_dir / "shared.md",
+            self.agents_dir / "alpha",
+            self.claude_agents_dir / "reviewer.md",
+        ]
+        self.assertTrue(all(path.exists() for path in installed))
+        self.deploy_ok(stdin="none\n")
+        self.assertEqual([], [path for path in installed if path.exists()])
+        entry = self.manifest()["sources"]["test/skills"]
+        self.assertEqual(forward(self.source), self.recorded_source_dir())
+        self.assertEqual(
+            {"skills": {}, "shared": {}, "wrappers": {}, "agents": {}},
+            {key: entry[key] for key in ("skills", "shared", "wrappers", "agents")},
+        )
+        clone = self.snapshot_source("Second Clone (2)")
+        self.assert_refused_unchanged_after_uninstall(clone)
+        self.deploy_from(clone, "--all", "--take-over-source")
+        self.assertEqual(forward(clone), self.recorded_source_dir())
+
+    def assert_refused_unchanged_after_uninstall(self, clone: Path) -> None:
+        manifest = self.manifest_file.read_bytes()
+        result = self.deploy_fails_from(clone, "--all")
+        self.assertIn(self.refusal(clone), result.output)
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
     def test_take_over_source_from_the_recorded_checkout_changes_nothing_about_it(self) -> None:
         self.deployed_clone()
         result = self.deploy_ok("--all", "--take-over-source")

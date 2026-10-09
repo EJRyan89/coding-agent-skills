@@ -7,7 +7,7 @@ import sys
 from typing import TextIO
 
 from . import config, fsops, platform_support, source
-from .arguments import CONFIGURE_COMMAND, parse_command
+from .arguments import CONFIGURE_COMMAND, PROG, parse_command
 from .errors import Cancelled, DeployError, debug_requested, print_error, print_traceback
 from .paths import Paths, validate_managed_roots
 
@@ -90,6 +90,6 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
     print("Saved.")
     print("")
     print("Next, preview the deployment:")
-    print("  python deploy.py --all --dry-run")
+    print(f"  {PROG} --all --dry-run")
     print("")
     return 0

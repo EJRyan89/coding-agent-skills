@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from . import discovery, manifest, platform_support, tools
-from .arguments import VERIFY_COMMAND, parse_command
+from .arguments import PROG, VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError
 from .errors import DeployError, debug_requested, fail
 from .paths import Paths
@@ -83,9 +83,7 @@ def execute(namespace: argparse.Namespace, paths: Paths, environment: Mapping[st
         names = adapter_names(manifest.load(paths.manifest_file))
         if not names:
             where = platform_support.normalize(paths.adapter_dest_dir)
-            raise DeployError(
-                f"ERROR: No runtime adapters are deployed in {where}.", "Deploy first with 'python deploy.py'."
-            )
+            raise DeployError(f"ERROR: No runtime adapters are deployed in {where}.", f"Deploy first with '{PROG}'.")
         return _verify(names, paths, dict(os.environ if environment is None else environment))
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish verifying the adapters")

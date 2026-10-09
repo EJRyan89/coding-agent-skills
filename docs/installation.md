@@ -92,7 +92,7 @@ If an unmanaged or locally modified destination differs from the rendered templa
 python deploy.py --all --force-item dotnet-format
 ```
 
-Forced replacements are retained under `~/.claude/skills/.backups/<run-id>/`.
+`--force-item` takes the name the report shows; an agent may also be named without its `.md`, as `code-review-reviewer`. A name that matches no item the run installs is refused before anything changes, with the names it accepts. Forced replacements are retained under `.backups/<run-id>/` in the item's root: `~/.claude/skills/` for skills and shared assets, `~/.agents/skills/` for runtime adapters, and `~/.claude/agents/` for agents.
 
 ### When a command fails
 
@@ -118,6 +118,6 @@ If an updated skill requires a new configuration value, the deployer stops and a
 
 ## Uninstalling
 
-Run `python deploy.py --dry-run`, answer `none` at the selection prompt to preview the removal, then run `python deploy.py` and answer `none` again to remove every unmodified skill and shared asset deployed from this repository.
+Run `python deploy.py --dry-run`, answer `none` at the selection prompt to preview the removal, then run `python deploy.py` and answer `none` again to remove every unmodified skill, shared asset, runtime adapter, and agent deployed from this repository.
 
-Locally modified deployment outputs are preserved and reported for manual review. A shared asset that a preserved skill or another installed source still needs is kept and reported as `KEEP` in the preview and `KEPT` in the deployment report; resolve the preserved skill or uninstall that source, then rerun this uninstall to remove it. Configuration and retained backups are not deleted, and content owned by other sources is not affected.
+Locally modified deployment outputs are preserved and reported for manual review. A shared asset that a preserved skill or another installed source still needs is kept and reported as `KEEP` in the preview and `KEPT` in the deployment report; resolve the preserved skill or uninstall that source, then rerun this uninstall to remove it. Configuration and retained backups are not deleted, and content owned by other sources is not affected. The manifest keeps this source's entry, with no items and the checkout it was deployed from, so a later deployment from another clone needs `--take-over-source`; see [Deploying from another checkout](recovery.md#deploying-from-another-checkout).

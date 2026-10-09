@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result
 
-from deployer import cli, manifest, platform_support, source_commit
+from deployer import cli, fsops, manifest, platform_support, source_commit
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -83,6 +83,29 @@ class SourceCommitTests(DeployerTestCase):
         head = self.make_repository()
         self.deploy_ok("--all")
         self.assertRegex(self.recorded(), FULL_SHA1)
+        self.assertEqual(head, self.recorded())
+
+    def test_the_head_commit_is_read_before_the_deployment_moves_anything(self) -> None:
+        head = self.make_repository()
+        events: list[str] = []
+        real_head, real_move = source_commit.head_commit, fsops.move
+
+        def read_head(source_dir: Path) -> str | None:
+            events.append("read the commit")
+            return real_head(source_dir)
+
+        def move(origin: Path, destination: Path) -> None:
+            events.append("move")
+            real_move(origin, destination)
+
+        with (
+            mock.patch("deployer.source_commit.head_commit", side_effect=read_head),
+            mock.patch("deployer.fsops.move", side_effect=move),
+        ):
+            self.deploy_ok("--all")
+        self.assertEqual("read the commit", events[0], events)
+        self.assertEqual(1, events.count("read the commit"), events)
+        self.assertIn("move", events)
         self.assertEqual(head, self.recorded())
 
     def test_a_later_deployment_records_the_new_head_commit(self) -> None:
