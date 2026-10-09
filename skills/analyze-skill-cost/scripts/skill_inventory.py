@@ -16,7 +16,8 @@ exits 1; only a usage error exits 2.
 
 Token estimate: ceil(prose_chars / 4 + code_chars / 3), in characters of the UTF-8 text. Every
 character of a helper script or data file is code. In Markdown, lines inside fenced code blocks,
-including the fence lines, are code and the rest is prose. A file that is not UTF-8 text counts 0.
+including the fence lines, are code and the rest is prose. A file that is not UTF-8 text counts 0;
+tools and scan, which read the text itself, fail on one.
 The estimate is a relative signal, not the active model's tokenizer.
 
 Structure: BODY_OVER_500_LINES <lines> counts SKILL.md lines after the frontmatter. DOC_NO_TOC <lines> <path> is
@@ -162,8 +163,7 @@ SUBAGENT_PROMPT = re.compile(r"(?i)\bprompts?\b[^`\"\n]*?:\s*(`[^`\n]+`|\"[^\"\n
 # Wording that marks a skill as internal; such a skill should not sit in the model's skill list.
 INTERNAL_WORDING = re.compile(r"(?i)\binternal\b|not intended for direct invocation|do not invoke")
 MCP_TOOL = re.compile(r"\bmcp__[A-Za-z0-9_-]+")
-ALLOWED_ENTRY = re.compile(r"([A-Za-z_][\w-]*)(?:\([^)]*\))?")
-ALLOWED_PATTERN = re.compile(r"([A-Za-z_][\w-]*)(?:\((.*)\))?", re.DOTALL)
+ALLOWED_NAME = re.compile(r"[A-Za-z_][\w-]*")
 SHELL_TOOLS = ("Bash", "PowerShell")
 # Grant patterns that match every command, so they scope nothing.
 UNSCOPED_PATTERNS = frozenset({"", "*", ":*"})
@@ -258,6 +258,14 @@ def read_text(path: Path) -> str | None:
         return None
 
 
+def require_text(path: Path) -> str:
+    """A file's UTF-8 text; one that is binary or not UTF-8 fails rather than reading as empty."""
+    text = read_text(path)
+    if text is None:
+        raise InputError(f"cannot read {posix(path)}: not UTF-8 text")
+    return text
+
+
 @dataclass
 class Block:
     line: int
@@ -305,28 +313,43 @@ def parse_allowed_tools(value: str | list[str] | None) -> list[str] | None:
     """Base tool names from a JSON-style, comma- or space-separated, or block-list allowed-tools value."""
     if value is None:
         return None
-    entries = value if isinstance(value, list) else [value]
-    names: list[str] = []
-    for entry in entries:
-        for match in ALLOWED_ENTRY.finditer(entry.replace('"', " ").replace("'", " ")):
-            if match.group(1) not in names:
-                names.append(match.group(1))
-    return names
+    return list(dict.fromkeys(name for name, _ in allowed_entries(value)))
+
+
+def split_entries(text: str) -> list[tuple[str, str | None]]:
+    """The entries of one allowed-tools text: each tool name, and the pattern its parentheses hold.
+
+    A pattern ends at the parenthesis that closes its opening one, so `Bash(a), PowerShell(a)` is two entries and
+    `Bash(echo $(date))` one. Between entries, separators, quotes, and stray text are skipped; a pattern left open
+    runs to the end of the text.
+    """
+    entries: list[tuple[str, str | None]] = []
+    position = 0
+    while (name := ALLOWED_NAME.search(text, position)) is not None:
+        position = name.end()
+        if not text.startswith("(", position):
+            entries.append((name.group(0), None))
+            continue
+        depth = 0
+        for index in range(position, len(text)):
+            depth += {"(": 1, ")": -1}.get(text[index], 0)
+            if depth == 0:
+                entries.append((name.group(0), text[position + 1 : index]))
+                position = index + 1
+                break
+        else:
+            entries.append((name.group(0), text[position + 1 :]))
+            position = len(text)
+    return entries
 
 
 def allowed_entries(value: str | list[str] | None) -> list[tuple[str, str | None]]:
     """Each allowed-tools entry as its tool name and its pattern, or None for a bare tool name."""
     if value is None:
         return []
-    texts: list[str] = []
-    for entry in value if isinstance(value, list) else [value]:
-        whole = ALLOWED_PATTERN.fullmatch(entry.strip())
-        texts += [entry.strip()] if whole else [match.group(0) for match in ALLOWED_ENTRY.finditer(entry)]
     entries: list[tuple[str, str | None]] = []
-    for text in texts:
-        match = ALLOWED_PATTERN.fullmatch(text)
-        if match and (match.group(1), match.group(2)) not in entries:
-            entries.append((match.group(1), match.group(2)))
+    for text in value if isinstance(value, list) else [value]:
+        entries += [entry for entry in split_entries(text) if entry not in entries]
     return entries
 
 
@@ -741,7 +764,7 @@ def affirmed(pattern: re.Pattern[str], line: str) -> bool:
 def tools(path: Path) -> list[str]:
     if not path.is_file():
         raise InputError(f"skill file not found: {path}")
-    lines = (read_text(path) or "").splitlines()
+    lines = require_text(path).splitlines()
     try:
         found = frontmatter.split(lines)
         document = frontmatter.Frontmatter(found[0] if found else [])
@@ -802,9 +825,10 @@ def scan(paths: list[Path]) -> list[str]:
     missing = [posix(path) for path in paths if not path.is_file()]
     if missing:
         raise InputError("file not found: " + ", ".join(missing))
+    texts = [require_text(path) for path in paths]
     output: list[str] = []
-    for path in paths:
-        lines = (read_text(path) or "").splitlines()
+    for path, text in zip(paths, texts, strict=True):
+        lines = text.splitlines()
         if path.suffix.casefold() == ".md":
             start = body_start(lines)
             languages, _ = parse_fences(lines)
@@ -825,7 +849,7 @@ def scan(paths: list[Path]) -> list[str]:
             )
             if shell:
                 cues.append("shell-file-command")
-            if language is None and line_references(line, None, ["Agent", "Task"], []):
+            if language is None and (DELEGATION.search(line) or line_references(line, None, ["Agent", "Task"], [])):
                 cues.append("agent")
             if "wide-glob" in cues and "head_limit" in line:
                 cues.remove("wide-glob")

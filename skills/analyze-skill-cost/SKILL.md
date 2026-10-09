@@ -21,6 +21,7 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" locate "<SKILL_NAME>"
 
 It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills/` and `.claude/skills/`, and, in a skill source tree, `skills/` (`SCOPE source`, preferred over the deployed copy).
 
+- `REPO <path>` or `REPO none`: the repository searched; nothing to do.
 - `SKILL_FILE <path>`, `SKILL_DIR <path>`, `SCOPE <scope>`: continue with these.
 - `NOT_FOUND <name>` followed by `AVAILABLE <scope> <name>` lines: stop with `skill '<SKILL_NAME>' not found. Available skills: <user: …> / <project: …>`.
 - `AMBIGUOUS <scope> <path>` lines: stop with `ambiguous skill name '<SKILL_NAME>' — found at: <paths>. Rename one or delete the duplicate.`
@@ -31,7 +32,7 @@ It searches `{{HOME}}/.claude/skills/`, the current repository's `.agents/skills
 python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" inventory "<SKILL_DIR>"
 ```
 
-`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and Step 4 judges the rest.
+`FILE` lines list every file by category; a `doc` file is Markdown other than the main `SKILL.md`. `TOTAL` lines fill the report's Scope, and so do `DECLARED <kind> <name>` lines, or `DECLARED_UNREADABLE <path>` when the skill's metadata is not valid JSON. `NO_MAIN` means the folder lost its `SKILL.md`: stop and report it. Step 4 judges the rest.
 
 ## Step 3 — Read what the judgment needs
 
@@ -80,15 +81,7 @@ Recommend a tested command under `scripts/` that prints one fact per line, so th
 
 ## Step 6 — Agent delegation cost
 
-Review every `agent` cue. For each subagent invocation:
-
-- Identify the subagent type, if named. Estimate the prompt size from the surrounding quoted block or described context injection.
-- Two independent subagent calls described sequentially → **MUST FIX**; recommend parallel fan-out in a single assistant turn. A parallel fan-out in one turn is good; never flag it.
-- Injected context that could be passed as a file path instead (e.g. an inlined file list) → SUGGESTION.
-- A scope narrow enough for an inline search or read → SUGGESTION.
-- `subagent-reply` (the skill delegates but never bounds the reply) → SUGGESTION: even when the result goes to a file, every closing message lands in the orchestrator's context. Recommend a fixed one-line reply such as `WROTE <path>`.
-- Each `RUNTIME_PROMPT <file> <line> <script>`: a subagent reads a prompt that the named script (or `unknown`) writes at runtime, so this audit cannot see it. Never judge it as a small prompt; report a SUGGESTION to audit what that script renders: its size, any chain of reads it starts, and whether it bounds the reply.
-- A subagent call inside a loop over N items with no cap → **MUST FIX** (unbounded fan-out).
+When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section. Otherwise the skill delegates nothing and this bucket has no findings.
 
 ## Step 7 — Model, allowed-tools, and listing
 
@@ -98,18 +91,15 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/skill_inventory.py" tools "<SKILL_FILE>"
 
 `MODEL none` means the caller's model applies. A tool is `USED` only where the body names it in a tool-use context (a code span, call syntax, "tool" or "call", or a shell fence); a sentence that starts with "Read" is not a use. `IMPLIED` means prose names the tool's action ("read", "search", "ask", "subagent") without naming the tool; a prohibition ("do not read") and a prompt quoted for a subagent never count. The bullets below say what each other line means for the report.
 
-Model selection. Claude adapter values are `haiku`, `sonnet`, `opus`, or absent. For other runtimes, also inspect any native adapter metadata when present.
+Model. When `MODEL` names a model, or the skill's work is purely mechanical (shell and file operations only, no synthesis, no output beyond a fixed template), judge it by the Model section of `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md`. Otherwise the model has no finding.
 
-- **SUGGESTION** — a Claude skill does purely mechanical work (all shell and file/search operations; no synthesis, no subagent calls requiring reasoning, no natural-language output beyond a fixed template) and has no model set or pins `sonnet`/`opus`. Suggest trying `model: haiku`, and only after comparing real runs before and after: a cheaper model can quietly lower quality, so never make it a MUST FIX or recommend it without that comparison. Also warn that in Claude Code a skill's `model` applies for the rest of the turn that invoked it, not only while the skill runs; the session's model resumes at the user's next prompt. Every subagent started later in that turn without an explicit model runs on the skill's model. Never suggest a cheaper `model` for a skill that is usually followed, in the same turn, by work that starts subagents. When such a skill can run without the conversation's context, suggest `context: fork` with `model` instead, since `model` then sets only the forked subagent's model. For another runtime, suggest its low-cost equivalent only when that runtime supports skill-level model selection, under the same condition.
-- **SUGGESTION** — a skill pins `haiku` but includes reasoning-heavy steps (multi-file synthesis, severity judgment, written recommendations). Recommend removing the pin so the caller's default applies.
-
-Listing. While `INVOCATION` is `model`, every session in every project loads the description, whether or not the skill runs.
+Listing. While `INVOCATION` is `model`, every session in every project loads the description that `DESCRIPTION <characters> <tokens>` measures, whether or not the skill runs.
 
 - `INTERNAL_LISTED` → **MUST FIX**: add `disable-model-invocation: true`, and `user-invocable: false` when users should not start it either.
 - A skill only the user should start (it deletes, deploys, or otherwise acts outside the conversation) with `INVOCATION model` → SUGGESTION: add `disable-model-invocation: true`. First check that no other skill invokes it by name, since that needs model invocation.
 - A long description → SUGGESTION to trim it to what tells the model when to use the skill. Judge by content, not a fixed length.
 
-Allowed-tools grants. In Claude Code, `allowed-tools` pre-approves its entries for the turn that starts the skill and restricts nothing, so judge each entry by what it lets run unasked. A shell pattern matches the command's text, quotes included, with `*` for any text; on Windows the model may run a fence through Bash or PowerShell.
+Allowed-tools grants. `ALLOWED` lines fill the Scope. `NO_ALLOWED_TOOLS` renders it as `(none)`, and each `USED` line then counts as a `MISSING_ALLOWED` line. In Claude Code, `allowed-tools` pre-approves its entries for the turn that starts the skill and restricts nothing, so judge each entry by what it lets run unasked. A shell pattern matches the command's text, quotes included, with `*` for any text; on Windows the model may run a fence through Bash or PowerShell.
 
 - `UNUSED_ALLOWED <tool>` → SUGGESTION "remove from `allowed-tools`", after confirming the body does not need it in words the heuristic misses (invoking another skill by name needs skill invocation).
 - `MISSING_ALLOWED <tool> <line>` → for Claude, **MUST FIX** when that line tells the agent to use the tool, since the skill then prompts mid-run; ignore a line that only mentions it, such as a rubric or a counter-example. For another runtime, check that the compatibility contract provides a usable first-class mapping instead of requiring Claude tool names in native metadata.
@@ -143,6 +133,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
 - Frontmatter model: <value or "(inherits caller)">
 - Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable
 - Allowed tools: <comma-separated list>
+- Declared dependencies: <DECLARED names, "none", or "unreadable <path>">
 
 ---
 
