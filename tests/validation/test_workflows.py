@@ -62,6 +62,29 @@ class WorkflowsFixtures(unittest.TestCase):
                 self.assertTrue(problems)
                 self.assertTrue(any(problem in found for found in problems), problems)
 
+    def test_workflow_guard_pins_dispatch_and_the_weekly_cron(self) -> None:
+        clean = (
+            "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        type: string\n"
+            "  schedule:\n    - cron: '23 6 * * 2'\n\npermissions:\n  contents: read\n\njobs:\n  run:\n"
+            "    steps:\n      - run: echo done\n"
+        )
+        expected = ["workflow_dispatch", "schedule"]
+        self.assertEqual([], workflow_guard_problems(clean, expected, set(), ("23 6 * * 2",)))
+        for drifted, problem in (
+            (clean.replace("  schedule:\n", "  push:\n  schedule:\n"), "triggers"),
+            (clean.replace("  schedule:\n", "  pull_request:\n  schedule:\n"), "triggers"),
+            (clean.replace("  schedule:\n    - cron: '23 6 * * 2'\n", ""), "triggers"),
+            (clean.replace("* * 2'", "* * 1'"), "crons"),
+            (clean.replace("* * 2'\n", "* * 2'\n    - cron: '23 6 * * 5'\n"), "crons"),
+        ):
+            with self.subTest(problem=problem, drifted=drifted):
+                problems = workflow_guard_problems(drifted, expected, set(), ("23 6 * * 2",))
+                self.assertTrue(any(problem in found for found in problems), problems)
+        # A schedule the caller did not expect is drift too.
+        self.assertTrue(
+            any("crons" in found for found in workflow_guard_problems(clean, expected, set())),
+        )
+
     def test_a_read_only_job_and_text_that_only_mentions_secrets_pass(self) -> None:
         workflow = (
             "on:\n  workflow_dispatch:\n\npermissions:\n  contents: read\n\njobs:\n  run:\n"

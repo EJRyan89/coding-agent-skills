@@ -207,6 +207,13 @@ def _triggers(on: Node) -> list[str]:
     return [on] if isinstance(on, str) else []
 
 
+def _crons(on: Node) -> list[str]:
+    schedule = on.get("schedule") if isinstance(on, dict) else None
+    if not isinstance(schedule, list):
+        return []
+    return [str(item.get("cron")) if isinstance(item, dict) else str(item) for item in schedule]
+
+
 def _job_permission_problems(jobs: Node) -> list[str]:
     if not isinstance(jobs, dict) or not jobs:
         return ["the workflow has no jobs"]
@@ -239,8 +246,10 @@ def _string_problems(tree: Node) -> list[str]:
     return problems
 
 
-def workflow_guard_problems(workflow: str, triggers: list[str], actions: set[str]) -> list[str]:
-    """Report how a workflow departs from its expected triggers and actions, a read-only token, and no secrets.
+def workflow_guard_problems(
+    workflow: str, triggers: list[str], actions: set[str], crons: tuple[str, ...] = ()
+) -> list[str]:
+    """Report how a workflow departs from its expected triggers, crons, and actions, a read-only token, and no secrets.
 
     The workflow is parsed, so every trigger, every job's permissions, and every `${{ }}` expression, key, and value
     are checked wherever they sit. Every action is pinned to a full commit SHA with its version in a comment, which
@@ -256,6 +265,9 @@ def workflow_guard_problems(workflow: str, triggers: list[str], actions: set[str
     found = _triggers(tree.get("on"))
     if found != triggers:
         problems.append(f"the triggers are {found}, expected {triggers}")
+    scheduled = _crons(tree.get("on"))
+    if scheduled != list(crons):
+        problems.append(f"the schedule's crons are {scheduled}, expected {list(crons)}")
     if tree.get("permissions") != {"contents": "read"}:
         problems.append(f"the top-level permissions are {tree.get('permissions')}, not exactly `contents: read`")
     problems += _job_permission_problems(tree.get("jobs"))
@@ -274,17 +286,19 @@ def workflow_guard_problems(workflow: str, triggers: list[str], actions: set[str
 
 
 class WorkflowsPolicies(unittest.TestCase):
-    def test_deployable_workflow_is_a_manual_pinned_check_without_secrets(self) -> None:
+    def test_deployable_workflow_is_a_dispatched_and_weekly_pinned_check_without_secrets(self) -> None:
         workflows = REPOSITORY_ROOT / ".github/workflows"
         workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
         reviewed = (workflows / "validate.yml").read_text(encoding="utf-8")
-        # Dispatch is its only trigger, so it can never be a required status check or run on a pull request.
+        # Dispatch and a weekly schedule are its only triggers, so it can never be a required status check or run on a
+        # pull request. The schedule is Tuesday's, the day after validate.yml's Monday run.
         self.assertEqual(
             [],
             workflow_guard_problems(
                 workflow,
-                ["workflow_dispatch"],
+                ["workflow_dispatch", "schedule"],
                 {"actions/checkout", "actions/setup-python", "actions/setup-node", "actions/upload-artifact"},
+                ("23 6 * * 2",),
             ),
         )
         # An action both workflows use is pinned to the commit Dependabot reviews in validate.yml.
@@ -306,6 +320,7 @@ class WorkflowsPolicies(unittest.TestCase):
                 workflow,
                 ["pull_request", "push", "schedule", "workflow_dispatch"],
                 {"actions/checkout", "actions/setup-python"},
+                ("23 6 * * 1",),
             ),
         )
 
@@ -324,3 +339,6 @@ class WorkflowsPolicies(unittest.TestCase):
                     rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow
                 ).group(1)
                 self.assertEqual(tested, default)
+                # A scheduled run has no inputs, so its README leg falls back to the same version.
+                fallback = required_match(rf"inputs\.{key} \|\| '([^']+)'", workflow).group(1)
+                self.assertEqual(tested, fallback)
