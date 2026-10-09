@@ -12,10 +12,38 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from repository_hygiene import hub_guard_matcher_problems, private_references
+from repository_hygiene import hub_guard_matcher_problems, private_references, tracked_settings_problems
 
 
 class RepositoryHygieneFixtures(unittest.TestCase):
+    def test_tracked_settings_policy_pins_the_keys_the_schema_and_no_attribution(self) -> None:
+        # Pinned here as literals, not read back from the policy's constants.
+        schema = "https://json.schemastore.org/claude-code-settings.json"
+        off = {"commit": "", "pr": "", "sessionUrl": False}
+        self.assertEqual([], tracked_settings_problems({"$schema": schema, "hooks": {}, "attribution": off}))
+        self.assertEqual([], tracked_settings_problems({"attribution": off}))
+        self.assertEqual(
+            ["tracked settings may not set model", "tracked settings may not set permissions"],
+            tracked_settings_problems({"attribution": off, "permissions": {"allow": ["Bash"]}, "model": "opus"}),
+        )
+        self.assertEqual(
+            ["$schema is 'https://example.com/other.json', not " + schema],
+            tracked_settings_problems({"$schema": "https://example.com/other.json", "attribution": off}),
+        )
+        for attribution in (
+            None,
+            {"commit": "", "pr": ""},
+            {"commit": "Co-Authored-By: someone", "pr": "", "sessionUrl": False},
+            {"commit": "", "pr": "Generated", "sessionUrl": False},
+            {"commit": "", "pr": "", "sessionUrl": True},
+            {"commit": "", "pr": "", "sessionUrl": False, "extra": 1},
+        ):
+            with self.subTest(attribution=attribution):
+                settings: dict[str, object] = {"hooks": {}}
+                if attribution is not None:
+                    settings["attribution"] = attribution
+                self.assertEqual([f"attribution is {attribution!r}, not {off!r}"], tracked_settings_problems(settings))
+
     def test_hub_guard_matcher_policy_detects_a_missing_tool_or_hook(self) -> None:
         command = 'python -B "$CLAUDE_PROJECT_DIR/tools/worktrees.py" guard'
 

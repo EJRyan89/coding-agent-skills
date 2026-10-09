@@ -260,6 +260,43 @@ class ShellTargetsFixtures(unittest.TestCase):
         )
         self.assertEqual([], outdated_prerequisites({"PSScriptAnalyzer": (1, 25, 0)}, (3, 11, 0)))
 
+    def test_suppression_scan_finds_directives_attributes_and_configuration_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directive = "# shellcheck disable=SC2086"
+            files = {
+                "skills/alpha/scripts/run.sh": f"#!/usr/bin/env bash\n\n{directive}\necho $1\n",
+                "skills/alpha/scripts/combined.bash": "# shellcheck source=lib.sh disable=SC1091\n. lib.sh\n",
+                # Selecting a shell, or following a source, turns no check off.
+                "skills/alpha/scripts/clean.sh": "# shellcheck shell=bash\n# shellcheck source=lib.sh\n. lib.sh\n",
+                "skills/alpha/scripts/run.ps1": "function Get-It {\n"
+                "    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]\n"
+                "    param()\n}\n",
+                "skills/alpha/scripts/short.ps1": "[SuppressMessage('PSAvoidGlobalVars', '')]\nparam()\n",
+                "docs/guide.md": f"Text naming {directive} in prose.\n\n```bash\n\n{directive}\necho $1\n```\n\n"
+                "```powershell\n[System.Diagnostics.CodeAnalysis.SuppressMessage('X', '')]\nparam()\n```\n",
+                "docs/clean.md": '```bash\necho "$1"\n```\n',
+                ".shellcheckrc": "disable=SC2086\n",
+                "tools/PSScriptAnalyzerSettings.psd1": "@{ ExcludeRules = @('PSAvoidUsingWriteHost') }\n",
+                # deployer/render.py holds the one sanctioned header, in Python.
+                "deployer/render.py": f'HEADER = "{directive}"\n',
+            }
+            write_fixture_tree(root, files)
+            fix = "; fix the cause instead"
+            self.assertEqual(
+                [
+                    f".shellcheckrc configures ShellCheck{fix}",
+                    f"docs/guide.md:5 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"docs/guide.md:10 suppresses a rule with SuppressMessageAttribute{fix}",
+                    f"skills/alpha/scripts/combined.bash:1 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"skills/alpha/scripts/run.ps1:2 suppresses a rule with SuppressMessageAttribute{fix}",
+                    f"skills/alpha/scripts/run.sh:3 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"skills/alpha/scripts/short.ps1:1 suppresses a rule with SuppressMessageAttribute{fix}",
+                    f"tools/PSScriptAnalyzerSettings.psd1 configures PSScriptAnalyzer{fix}",
+                ],
+                shell_targets.shell_suppression_problems(root, [root / name for name in files]),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

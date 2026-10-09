@@ -27,6 +27,7 @@ from skill_layout import (
     script_dependency_problems,
     script_language_problems,
     script_layout_problems,
+    shared_guidance_problems,
     skill_path_problems,
     skill_tree_problems,
     unsupported_script_problems,
@@ -97,6 +98,28 @@ class SkillTreeFixtures(unittest.TestCase):
 
 
 class SkillLayoutFixtures(unittest.TestCase):
+    def test_shared_guidance_policy_finds_a_skill_naming_a_shared_markdown_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = {"shared_assets": {"runtime-compatibility.md": "owner", "helper.json": "dependency"}}
+            files = {
+                "source.json": json.dumps(source),
+                "skills/alpha/SKILL.md": "Read runtime-compatibility.md before you start.\n",
+                # A skill in a category is held as well.
+                "skills/tools/beta/SKILL.md": "First read ../runtime-compatibility.md.\n",
+                # Only Markdown guidance is the adapter's to point to.
+                "skills/gamma/SKILL.md": "Load helper.json for the table.\n",
+                "skills/delta/SKILL.md": "Nothing shared here.\n",
+            }
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                [
+                    "skills/alpha/SKILL.md points to runtime-compatibility.md; the runtime adapter does that",
+                    "skills/tools/beta/SKILL.md points to runtime-compatibility.md; the runtime adapter does that",
+                ],
+                shared_guidance_problems(root),
+            )
+
     def test_embedded_script_policy_recognizes_long_executable_fences(self) -> None:
         short_example = ["```bash", "echo one", "echo two", "```"]
         embedded_program = ["```python", *[f"line_{n}()" for n in range(6)], "```"]

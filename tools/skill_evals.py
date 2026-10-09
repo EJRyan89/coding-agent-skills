@@ -108,8 +108,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
+from console import use_utf8_output
 
-from deployer import fsops, platform_support, tools
+from deployer import fsops, tools
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
 
@@ -1091,5 +1092,5 @@ def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = 
 
 
 if __name__ == "__main__":
-    platform_support.use_utf8_output()
+    use_utf8_output(errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))

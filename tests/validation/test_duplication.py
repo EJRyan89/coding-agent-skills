@@ -43,10 +43,39 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
         )
 
     def test_a_copy_sanctioned_in_every_module_passes(self) -> None:
-        allowed = 'DUPLICATION_ALLOWED = {"shared": "a deployed skill cannot import the deployer"}\n\n\n'
+        def allowed(other: str) -> str:
+            return (
+                f'DUPLICATION_ALLOWED = {{"shared": "{other} holds a copy; a skill cannot import the deployer"}}\n\n\n'
+            )
+
         self.assertEqual(
             [],
-            self.problems({"deployer/one.py": allowed + self.SHARED, "skills/s/scripts/two.py": allowed + self.SHARED}),
+            self.problems(
+                {
+                    "deployer/one.py": allowed("skills/s/scripts/two.py") + self.SHARED,
+                    "skills/s/scripts/two.py": allowed("deployer/one.py's") + self.SHARED,
+                }
+            ),
+        )
+
+    def test_a_sanction_whose_reason_does_not_name_every_other_copy_fails(self) -> None:
+        def allowed(reason: str) -> str:
+            return f'DUPLICATION_ALLOWED = {{"shared": "{reason}"}}\n\n\n'
+
+        self.assertEqual(
+            [
+                "deployer/one.py: DUPLICATION_ALLOWED gives a reason for shared that does not name every other copy: "
+                "tools/three.py",
+                "skills/s/scripts/two.py: DUPLICATION_ALLOWED gives a reason for shared that does not name every other "
+                "copy: deployer/one.py and tools/three.py",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": allowed("skills/s/scripts/two.py cannot import the deployer") + self.SHARED,
+                    "skills/s/scripts/two.py": allowed("a deployed skill cannot import the deployer") + self.SHARED,
+                    "tools/three.py": allowed("deployer/one.py and skills/s/scripts/two.py hold copies") + self.SHARED,
+                }
+            ),
         )
 
     def test_no_allowance_sanctions_a_whole_module(self) -> None:
