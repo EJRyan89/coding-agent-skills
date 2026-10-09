@@ -25,7 +25,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. New output lines and fixes: when a step fails partway through cleaning a repository, the sweep now prints the repository's `PLAN` and its summary of what was done before the failure, headed `cleanup stopped partway (<reason>); done before it:`, then its `ERROR`; `delete-local` and `force-delete` print the summary before a `FAILED` line the same way. A repository with no plan summary now shows `CHECKOUT switched` and its `FF_DEFAULT` line, whose values are `current`, `forwarded <sha>`, `failed <reason>`, `diverged <ahead> <behind>`, and `skipped <reason>` (`ok` is gone). The summary's default branch row says when the run fast-forwarded the branch or switched to it, a default branch not fast-forwarded because of changes is listed under `Fast-forward skipped`, and `quiet` now means nothing changed. `Gone with open PR` is now `Open PR (kept)` and lists every branch with an open pull request. `delete-local` and `force-delete` exit 1 when Git refuses a deletion. A sweep that cannot reach GitHub prints only `FAILED` and creates no plans directory. A worktree holding ignored files, such as a `.env`, is now preserved instead of removed with them, `release` protection matches in any letter case, and a branch name that is not UTF-8 is printed with U+FFFD instead of stopping the output.
 - Contract: none
 - User action: none. A worktree now preserved for its ignored files is removed by hand once they are no longer needed.
-- Pull request: #266
+- Pull request: #307
 
 ### The reviewer guard refuses a self-check whose script or run ends in a backslash
 
