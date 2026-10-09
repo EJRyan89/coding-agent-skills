@@ -19,6 +19,9 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 
 from deployer import platform_support
 
@@ -156,5 +159,5 @@ def main(arguments: list[str] | None = None, runner: Runner = run_gh) -> int:
 
 
 if __name__ == "__main__":
-    platform_support.use_utf8_output()
+    use_utf8_output(errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))

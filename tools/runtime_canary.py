@@ -79,6 +79,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
+from console import use_utf8_output
 
 from deployer import discovery, pipeline, platform_support, runtime_support
 from deployer import source as deploy_source
@@ -811,13 +812,11 @@ def main(arguments: list[str]) -> int:
     if options.remove_home is not None:
         if options.skills:
             parser.error("--remove-home takes no SKILL")
-        platform_support.use_utf8_output()
         return remove_home(options.remove_home)
     sources = [REPOSITORY_ROOT, FIXTURE_SOURCE]
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
     if unknown:
         parser.error(f"unknown skill: {', '.join(unknown)}")
-    platform_support.use_utf8_output()
     return canary(
         options.skills,
         options.runtimes or list(RUNTIMES),
@@ -830,4 +829,5 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output(errors="backslashreplace")
     raise SystemExit(main(sys.argv[1:]))

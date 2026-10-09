@@ -10,8 +10,10 @@ import re
 import shlex
 import unittest
 from pathlib import Path
+from typing import TypeGuard
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
+from fsops_platform import import_aliases, qualified_name
 from validation_support import REPOSITORY_ROOT, SHELL_FENCES, is_test_script, skill_script_directories
 
 from deployer import render
@@ -269,46 +271,70 @@ def gh_filter_problems(root: Path) -> list[str]:
 
 CONSOLE_CORE = "skill-core"
 CONSOLE_SETUP = "use_utf8_output"
+CONSOLE_FUNCTION = f"console.{CONSOLE_SETUP}"
 CONSOLE_DOC = '"Script results" in docs/adding-a-skill.md'
 
 
-def console_setup_problems(root: Path) -> list[str]:
-    """Report a skill entry point whose __main__ block does not start by calling skill-core's use_utf8_output(), and
-    a script that reconfigures a stream's encoding itself.
+def console_entry_points(root: Path) -> list[Path]:
+    """The Python that can run as a program: every shipped and repository skill's scripts outside skill-core, deploy.py,
+    the deployer, and tools/, regression suites aside."""
+    files = [
+        path
+        for scripts in skill_script_directories(root)
+        if scripts.parent.name != CONSOLE_CORE
+        for path in scripts.glob("*.py")
+    ]
+    files += [root / "deploy.py", *(root / "deployer").rglob("*.py"), *(root / "tools").rglob("*.py")]
+    return sorted(
+        (path for path in files if path.is_file() and not is_test_script(path)),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
 
-    Skill output names paths and text the user wrote, which a Windows pipe's legacy code page cannot encode; one
-    function sets it up, so the copies cannot drift apart again.
+
+def _reconfigures_encoding(node: ast.AST) -> TypeGuard[ast.Call]:
+    """Whether a call reconfigures a stream's encoding, as stream.reconfigure(...) or through a name bound to it."""
+    if not isinstance(node, ast.Call) or not any(keyword.arg == "encoding" for keyword in node.keywords):
+        return False
+    function = node.func
+    return (isinstance(function, ast.Attribute) and function.attr == "reconfigure") or (
+        isinstance(function, ast.Name) and function.id == "reconfigure"
+    )
+
+
+def _sets_up_the_console(statement: ast.stmt, aliases: dict[str, str]) -> bool:
+    """Whether a statement calls skill-core's use_utf8_output, resolved through the module's imports."""
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and qualified_name(statement.value.func, aliases) == CONSOLE_FUNCTION
+    )
+
+
+def console_setup_problems(root: Path) -> list[str]:
+    """Report an entry point whose __main__ block does not start by calling skill-core's use_utf8_output(), and a
+    module that reconfigures a stream's encoding itself.
+
+    Skill scripts, deploy.py, the deployer, and tools/ print paths and text the user wrote, which a Windows pipe's
+    legacy code page cannot encode; one function sets it up, so the copies cannot drift apart again.
     """
     problems: list[str] = []
-    for path in sorted((root / "skills").glob("**/scripts/*.py")):
-        if is_test_script(path) or path.parent.parent.name == CONSOLE_CORE:
-            continue
+    for path in console_entry_points(root):
         name = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "reconfigure"
-                and any(keyword.arg == "encoding" for keyword in node.keywords)
-            ):
-                problems.append(
-                    f"{name}:{node.lineno} reconfigures a stream itself; call {CONSOLE_SETUP}() from "
-                    f"{CONSOLE_CORE} instead; see {CONSOLE_DOC}"
-                )
+        aliases = import_aliases(tree)
+        problems += [
+            f"{name}:{node.lineno} reconfigures a stream itself; call {CONSOLE_SETUP}() from {CONSOLE_CORE} instead; "
+            f"see {CONSOLE_DOC}"
+            for node in ast.walk(tree)
+            if _reconfigures_encoding(node)
+        ]
         for node in tree.body:
             if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
                 continue
-            first = node.body[0]
-            if not (
-                isinstance(first, ast.Expr)
-                and isinstance(first.value, ast.Call)
-                and isinstance(first.value.func, ast.Name)
-                and first.value.func.id == CONSOLE_SETUP
-            ):
+            if not _sets_up_the_console(node.body[0], aliases):
                 problems.append(
-                    f"{name}:{node.lineno} does not call {CONSOLE_SETUP}() first in its __main__ block; see "
-                    f"{CONSOLE_DOC}"
+                    f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_SETUP}() first in its __main__ "
+                    f"block; see {CONSOLE_DOC}"
                 )
     return problems
 
@@ -515,5 +541,5 @@ class SkillScriptsPolicies(unittest.TestCase):
     def test_skill_scripts_run_git_and_gh_through_skill_core(self) -> None:
         self.assertEqual([], client_command_problems(REPOSITORY_ROOT))
 
-    def test_skill_entry_points_set_up_the_console_through_skill_core(self) -> None:
+    def test_entry_points_set_up_the_console_through_skill_core(self) -> None:
         self.assertEqual([], console_setup_problems(REPOSITORY_ROOT))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import contextlib
 import importlib.util
 import io
@@ -477,6 +478,18 @@ class VersionTests(unittest.TestCase):
         )
         entry.require_supported_python((3, 11, 0))
         entry.require_supported_python(sys.version_info)
+
+    def test_deploy_py_and_its_console_setup_parse_as_python_3_7(self) -> None:
+        # deploy.py imports skill-core's console module before its version check, so an older Python reaches the
+        # check only while both files keep to a grammar it reads.
+        for path in (
+            REPOSITORY_ROOT / "deploy.py",
+            REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "console.py",
+        ):
+            with self.subTest(path=path.name):
+                ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 7))
+        with self.assertRaises(SyntaxError):
+            ast.parse("if (found := 1):\n    pass\n", feature_version=(3, 7))
 
 
 if __name__ == "__main__":
