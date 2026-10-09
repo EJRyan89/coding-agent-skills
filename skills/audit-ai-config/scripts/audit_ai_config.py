@@ -41,6 +41,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from frontmatter import NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -391,13 +392,27 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-# Kept instead of skill-core's frontmatter.py by decision
-# (https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710): this audit is a lint policy that
-# reports each frontmatter problem at its line number, which the shared reader does not give.
-def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
-    """Read simple YAML frontmatter without executing or loading YAML tags.
+@dataclass(frozen=True)
+class Nested:
+    """A value that is neither text nor a list of text: a nested mapping, such as the Agent Skills specification's
+    metadata, or a list of mappings, both accepted unread, or a list reported as unreadable."""
 
-    A value is one line, or a block scalar (| or >) whose indented lines follow it, read as YAML reads it.
+
+NESTED = Nested()
+FrontmatterValue = str | list[str] | Nested
+UNREADABLE_ENTRY = "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
+
+
+# The line walk is kept beside skill-core's frontmatter.py by decision
+# (https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710): this audit is a lint policy that
+# reports each frontmatter problem at its line number, which the shared reader does not give. The walk finds each
+# entry's lines and hands quoted values, lists, and continued scalars to the shared reader, so both read them alike.
+def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]]:
+    """Read YAML frontmatter line by line without executing or loading YAML tags.
+
+    A one-line plain value is kept as written. A block scalar (| or >) is read as YAML reads it. A quoted value, a
+    list, or a scalar continued on indented lines is read by skill-core's reader, and a nested mapping is accepted
+    without reading its entries.
     """
     rel = path.as_posix()
     try:
@@ -410,7 +425,7 @@ def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
         end = lines.index("---", 1)
     except ValueError:
         return {}, [Finding("ERROR", "copilot-config", rel, message="Unterminated YAML frontmatter")]
-    values: dict[str, str] = {}
+    values: dict[str, FrontmatterValue] = {}
     findings: list[Finding] = []
     index = 1
     while index < end:
@@ -421,26 +436,74 @@ def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
             continue
         match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$", line)
         if not match:
-            findings.append(
-                Finding(
-                    "ERROR",
-                    "copilot-config",
-                    rel,
-                    number,
-                    "Frontmatter must use single-line key: value entries or block scalars",
-                )
-            )
+            findings.append(Finding("ERROR", "copilot-config", rel, number, UNREADABLE_ENTRY))
             continue
-        key, value = match.groups()
-        header = BLOCK_SCALAR_HEADER.fullmatch(value)
+        key, inline = match.groups()
+        value: FrontmatterValue
+        header = BLOCK_SCALAR_HEADER.fullmatch(inline)
         if header:
             body = _block_scalar_lines(lines[index:end], header)
-            index += len(body)
             value = _block_scalar_value(body, header)
+        else:
+            body = _entry_lines(lines[index:end], listed=not inline)
+            value, problem = _entry_value(key, inline, body)
+            if problem:
+                offset, message = problem
+                findings.append(Finding("ERROR", "copilot-config", rel, number + offset, message))
+        index += len(body)
         if key in values:
             findings.append(Finding("ERROR", "copilot-config", rel, number, f"Duplicate frontmatter key '{key}'"))
         values[key] = value
     return values, findings
+
+
+def _entry_lines(lines: list[str], listed: bool) -> list[str]:
+    """The lines after a key that belong to its value: indented lines, and list items at the key's own indentation
+    when the key has no inline value, with the blank and comment lines between them."""
+    count = 0
+    for position, line in enumerate(lines, start=1):
+        if line.startswith((" ", "\t")) or (listed and line.startswith("-")):
+            count = position
+        elif line.strip() and not line.startswith("#"):
+            break
+    return lines[:count]
+
+
+def _indentation(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _entry_value(key: str, inline: str, body: list[str]) -> tuple[FrontmatterValue, tuple[int, str] | None]:
+    """An entry's value, and the offset from its key line and the message of the problem that makes it an ERROR."""
+    content = [
+        (offset, line)
+        for offset, line in enumerate(body, start=1)
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not content and (not inline or inline[0] not in "\"'["):
+        return inline, None
+    if not inline:
+        first = content[0][1]
+        indent = _indentation(first)
+        if SEQUENCE_ITEM.match(first.strip()):
+            for offset, line in content:
+                if _indentation(line) < indent or (
+                    _indentation(line) == indent and not SEQUENCE_ITEM.match(line.strip())
+                ):
+                    return NESTED, (offset, UNREADABLE_ENTRY)
+            if any(_indentation(line) > indent or NESTED_KEY.match(line.strip()[1:].strip()) for _, line in content):
+                return NESTED, None
+        elif NESTED_KEY.match(first.strip()):
+            stray = next((offset for offset, line in content if _indentation(line) < indent), None)
+            return NESTED, (stray, UNREADABLE_ENTRY) if stray else None
+    try:
+        value = Frontmatter([f"{key}: {inline}", *(line for _, line in content)]).value(key)
+    except FrontmatterError as error:
+        if inline.startswith("[") and not content:
+            # Kept as text, as Claude Code reads an argument-hint such as [pr-number] [priority].
+            return inline, None
+        return inline or NESTED, (0, f"Frontmatter entry cannot be read as YAML: {error}")
+    return ("" if value is None else value), None
 
 
 # A block scalar header: | (literal) or > (folded), then a chomping and an indentation indicator in either order.
@@ -511,6 +574,19 @@ def _fold(content: list[str]) -> str:
     return text
 
 
+def _text(values: dict[str, FrontmatterValue], key: str) -> str:
+    """A key's value when it is text, and an empty string when it is absent, a list, or a nested mapping."""
+    value = values.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def _is_tool_list(tools: FrontmatterValue) -> bool:
+    """A non-empty list of non-empty names, or text other than a flow list the reader could not read."""
+    if isinstance(tools, list):
+        return bool(tools) and all(tools)
+    return isinstance(tools, str) and not tools.startswith("[")
+
+
 def _identifier_from_agent_filename(path: Path) -> str:
     name = path.name
     return name[:-9] if name.endswith(".agent.md") else name[:-3]
@@ -525,15 +601,15 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
     directory_name = path.parent.name
     if not name:
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires name"))
-    elif name != directory_name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
+    elif name != directory_name or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", directory_name):
         findings.append(
             Finding(
                 "ERROR", "copilot-skill", rel, message="Skill name must be lowercase hyphenated and match its directory"
             )
         )
-    if not values.get("description", "").strip():
+    if not _text(values, "description").strip():
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires description"))
-    if "allowed-tools" in values and not values["allowed-tools"].strip():
+    if values.get("allowed-tools") == "":
         findings.append(Finding("ERROR", "copilot-skill", rel, message="allowed-tools must not be empty"))
     if directory_name in COPILOT_BUILTIN_NAMES:
         findings.append(
@@ -561,33 +637,26 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     for finding in frontmatter_findings:
         finding.path = rel
     findings.extend(frontmatter_findings)
-    if not values.get("description", "").strip():
+    if not _text(values, "description").strip():
         findings.append(Finding("ERROR", "copilot-agent", rel, message="Agent frontmatter requires description"))
-    target = values.get("target")
-    if target is not None and target not in {"vscode", "github-copilot"}:
+    if "target" in values and _text(values, "target") not in {"vscode", "github-copilot"}:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="target must be 'vscode' or 'github-copilot'"))
     for key in ("include-custom-instructions", "infer", "disable-model-invocation", "user-invocable"):
-        if key in values and values[key] not in {"true", "false"}:
+        if key in values and _text(values, key) not in {"true", "false"}:
             findings.append(Finding("ERROR", "copilot-agent", rel, message=f"{key} must be a boolean"))
-    if "tools" in values:
-        raw_tools = values["tools"]
-        if raw_tools.startswith("["):
-            try:
-                tools = json.loads(raw_tools)
-            except json.JSONDecodeError:
-                tools = None
-            if not isinstance(tools, list) or not tools or not all(isinstance(tool, str) and tool for tool in tools):
-                findings.append(
-                    Finding(
-                        "ERROR",
-                        "copilot-agent",
-                        rel,
-                        message="tools must be a non-empty string list or comma-separated string",
-                    )
-                )
-        elif not raw_tools.strip():
-            findings.append(Finding("ERROR", "copilot-agent", rel, message="tools must not be empty"))
-    if "modelPolicy" in values and values["modelPolicy"] not in {"preferred", "required"}:
+    tools = values.get("tools")
+    if tools == "":
+        findings.append(Finding("ERROR", "copilot-agent", rel, message="tools must not be empty"))
+    elif tools is not None and not _is_tool_list(tools):
+        findings.append(
+            Finding(
+                "ERROR",
+                "copilot-agent",
+                rel,
+                message="tools must be a non-empty string list or comma-separated string",
+            )
+        )
+    if "modelPolicy" in values and _text(values, "modelPolicy") not in {"preferred", "required"}:
         findings.append(Finding("ERROR", "copilot-agent", rel, message="modelPolicy must be 'preferred' or 'required'"))
     if agent_id.lower() in COPILOT_BUILTIN_NAMES:
         findings.append(
