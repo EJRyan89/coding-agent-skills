@@ -15,7 +15,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from pr_change import CHANGED, UNCHANGED, ChangeDetector, Query
+from pr_change import CHANGED, UNCHANGED, ChangeDetector, ComparisonError, Query
 from review_config import (
     COMPUTED_DASHBOARD_STATES,
     DASHBOARD_SECTION_AWAITING,
@@ -76,8 +76,20 @@ class TrackerError(ValueError):
     pass
 
 
+class ComparisonFailures(TrackerError):
+    """Pull requests whose comparison failed, in row order. Nothing is rendered, so the dashboard keeps every row as it
+    was rather than showing a review stale on evidence GitHub never gave."""
+
+    def __init__(self, failures: list[ComparisonError], related: int) -> None:
+        super().__init__(
+            f"{len(failures)} of {related} pull requests could not be compared; the dashboard keeps its previous rows"
+        )
+        self.failures = failures
+
+
 class Detector(Protocol):
-    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str: ...
+    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+        """CHANGED, UNCHANGED, or UNKNOWN; raises `ComparisonError` when a GitHub call the comparison needs failed."""
 
 
 class BatchDetector(Detector, Protocol):
@@ -353,7 +365,10 @@ def evaluate(
     removals: set[str] | None = None,
 ) -> list[Row]:
     """The rows to render. The detector reads ahead twice: the comparisons sections need, then the ones the AI review
-    column needs for the rows that remain, so an approved pull request left out reads nothing more."""
+    column needs for the rows that remain, so an approved pull request left out reads nothing more.
+
+    A pull request whose comparison fails reads nothing more either, and once every other row is evaluated,
+    `ComparisonFailures` names each that failed, so a call that failed never makes a review look stale."""
     if not login:
         raise TrackerError("GitHub login is required")
     login_key = login.casefold()
@@ -365,6 +380,28 @@ def evaluate(
         relationship = _relationship(item, login_key)
         if key not in excluded and relationship is not None:
             related.append((item, key, relationship))
+    failures: dict[tuple[str, int], ComparisonError] = {}
+    placed = _place(related, pinned, detector, failures)
+    detector.prefetch(_query(item, item["reviewed_head_sha"]) for item, *_ in placed if item["reviewed_head_sha"])
+    rows: list[Row] = []
+    for item, relationship, section, overridden in placed:
+        try:
+            rows.append(Row(item, relationship, section, _ai_review(item, detector), overridden))
+        except ComparisonError as exc:
+            failures[(item["repository"], item["number"])] = exc
+    if failures:
+        raise ComparisonFailures([failures[pull] for pull in sorted(failures)], len(related))
+    return sorted(rows, key=lambda row: (row.item["repository"], row.item["number"]))
+
+
+def _place(
+    related: list[tuple[dict[str, Any], str, str]],
+    pinned: dict[str, str],
+    detector: BatchDetector,
+    failures: dict[tuple[str, int], ComparisonError],
+) -> list[tuple[dict[str, Any], str, str, bool]]:
+    """Each related item that is shown, with its relationship, its section, and whether an override pinned it, after
+    reading ahead the comparisons the sections need. An item whose comparison fails is added to `failures` instead."""
     detector.prefetch(
         _query(item, item["user_review_sha"])
         for item, key, relationship in related
@@ -372,15 +409,14 @@ def evaluate(
     )
     placed: list[tuple[dict[str, Any], str, str, bool]] = []
     for item, key, relationship in related:
-        section = pinned[key] if key in pinned else _section(item, relationship, detector)
+        try:
+            section = pinned[key] if key in pinned else _section(item, relationship, detector)
+        except ComparisonError as exc:
+            failures[(item["repository"], item["number"])] = exc
+            continue
         if section is not None:
             placed.append((item, relationship, section, key in pinned))
-    detector.prefetch(_query(item, item["reviewed_head_sha"]) for item, *_ in placed if item["reviewed_head_sha"])
-    rows = [
-        Row(item, relationship, section, _ai_review(item, detector), overridden)
-        for item, relationship, section, overridden in placed
-    ]
-    return sorted(rows, key=lambda row: (row.item["repository"], row.item["number"]))
+    return placed
 
 
 def review_candidates(rows: list[Row]) -> list[dict[str, Any]]:

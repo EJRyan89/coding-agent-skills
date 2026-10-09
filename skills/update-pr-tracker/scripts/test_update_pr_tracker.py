@@ -15,13 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from github_client import CommandResult
-from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector
-from review_github import GitHubClient
+from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
+from review_github import GitHubClient, GitHubError
 from update_pr_tracker import (
     END_MARKER,
     SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
     START_MARKER,
+    ComparisonFailures,
     ConfigurationError,
     TrackerError,
     evaluate,
@@ -46,6 +47,19 @@ class FakeDetector:
 
     def prefetch(self, queries: Iterable[tuple[str, str, str, str]]) -> None:
         pass
+
+
+class FailingDetector(FakeDetector):
+    """Fails each named comparison, as the change detector does when a GitHub call it needs fails."""
+
+    def __init__(self, failing: dict[tuple[int, str], str]) -> None:
+        super().__init__()
+        self.failing = failing
+
+    def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
+        if (number, since_sha) in self.failing:
+            raise ComparisonError(f"{repository}#{number}", GitHubError(self.failing[(number, since_sha)]))
+        return super().detect(repository, number, base_ref, since_sha, head_sha)
 
 
 def item(repository: str = "owner/repo", number: int = 1) -> dict:
@@ -536,6 +550,25 @@ class TrackerTests(unittest.TestCase):
             review_candidates(rows),
         )
 
+    def test_a_failed_comparison_fails_the_update_and_leaves_the_dashboard_as_it_was(self) -> None:
+        failing = {(1, USER_REVIEWED): "HTTP 502: Bad Gateway", (2, AI_REVIEWED): "HTTP 403: Forbidden"}
+        before = f"Before\n{START_MARKER}\nold\n{END_MARKER}\nAfter\n".encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            # The section's comparison fails for pull 1 and the AI review's for pull 2; pull 3 compares.
+            source, dashboard = dashboard_files(Path(temporary), before)
+            source.write_text(json.dumps([item(number=2), reviewed(1, "APPROVED"), item(number=3)]), encoding="utf-8")
+            with self.assertRaises(ComparisonFailures) as raised:
+                update_dashboard_rows(source, dashboard, "reviewer", detector=FailingDetector(failing))
+            self.assertEqual(before, dashboard.read_bytes(), "no row is marked stale for a call that failed")
+        self.assertEqual(
+            [("owner/repo#1", "HTTP 502: Bad Gateway"), ("owner/repo#2", "HTTP 403: Forbidden")],
+            [(failure.pull, failure.reason) for failure in raised.exception.failures],
+        )
+        self.assertEqual(
+            "2 of 3 pull requests could not be compared; the dashboard keeps its previous rows",
+            str(raised.exception),
+        )
+
     def test_review_commit_is_required_exactly_when_a_review_is_active(self) -> None:
         missing_sha = item()
         missing_sha["user_review_state"] = "CHANGES_REQUESTED"
@@ -624,16 +657,17 @@ def commit(number: int) -> str:
 
 class GitHubRunner:
     """Answers the change detector's gh api calls: every commit's comparison lists a.py at its own blob, so each
-    comparison decides without a tree. Each call waits until four are running at once, and the endpoints in
-    `rate_limited` fail once with a rate limit first."""
+    comparison decides without a tree. Each call waits until four are running at once, the endpoints in
+    `rate_limited` fail once with a rate limit first, and those in `failing` always fail with their error output."""
 
-    def __init__(self, rate_limited: set[str] | None = None) -> None:
+    def __init__(self, rate_limited: set[str] | None = None, failing: dict[str, str] | None = None) -> None:
         self.barrier = threading.Barrier(4, timeout=10)
         self.lock = threading.Lock()
         self.calls: list[str] = []
         self.running = 0
         self.peak = 0
         self.rate_limited = set(rate_limited or ())
+        self.failing = failing or {}
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
         endpoint = arguments[-1]
@@ -649,6 +683,8 @@ class GitHubRunner:
                 self.barrier.wait(timeout=0.5)
             if limited:
                 return CommandResult(1, "", "HTTP 429: API rate limit exceeded")
+            if endpoint in self.failing:
+                return CommandResult(1, "", self.failing[endpoint])
             files = [{"filename": "a.py", "status": "modified", "sha": endpoint.rsplit("...", 1)[1]}]
             return CommandResult(0, json.dumps({"status": "ahead", "files": files}), "")
         finally:
@@ -716,6 +752,25 @@ class ReadAheadTests(unittest.TestCase):
         self.assertEqual([5.0, 5.0], waits)
         self.assertEqual(20, len(runner.calls), "eighteen comparisons and two retries")
         self.assertEqual(6, len(rows))
+
+    def test_a_failed_comparison_is_reported_and_a_transport_failure_stops_the_update(self) -> None:
+        endpoint = f"repos/owner/repo/compare/main...{commit(4)}"  # pull 1's commit the user reviewed
+        for stderr in ("HTTP 403: Forbidden", "HTTP 502: Bad Gateway", "HTTP 404: Not Found"):
+            with self.subTest(stderr=stderr):
+                runner = GitHubRunner(failing={endpoint: stderr})
+                detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
+                if stderr.startswith("HTTP 404"):
+                    rows = evaluate(self.items(6), "reviewer", detector)  # a missing commit is unknown evidence
+                    self.assertEqual(6, len(rows))
+                    continue
+                with self.assertRaises(ComparisonFailures) as raised:
+                    evaluate(self.items(6), "reviewer", detector)
+                self.assertEqual([("owner/repo#1", stderr)], [(f.pull, f.reason) for f in raised.exception.failures])
+                self.assertEqual(17, len(runner.calls), "every other pull request is still compared")
+        runner = GitHubRunner(failing={endpoint: "error connecting to api.github.com"})
+        with self.assertRaises(GitHubError) as stopped:
+            evaluate(self.items(6), "reviewer", ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None)))
+        self.assertEqual("network", stopped.exception.kind)
 
 
 class DashboardWriteTests(unittest.TestCase):
