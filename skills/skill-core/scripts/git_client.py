@@ -8,6 +8,9 @@ that git produced and raises only when git could not run or finish; `output` rai
 stdout is decoded with surrogateescape, so `stdout.encode("utf-8", "surrogateescape")` is exactly what git printed;
 stderr only feeds messages, so a byte that is not UTF-8 becomes U+FFFD there.
 
+`input_bytes` gives a command such as `fast-import` its whole stdin up front; it then sees stdin closed,
+and the time limit and the failure classification apply as without it. Tests inject `input_runner` for that form.
+
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
 """
@@ -19,7 +22,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TypeVar
+from typing import IO, Protocol, TypeVar
 
 from bounded_process import Streaming, run_bounded, streaming
 
@@ -57,10 +60,22 @@ class GitResult:
 Runner = Callable[[Sequence[str], float], GitResult]
 
 
-def subprocess_runner(command: Sequence[str], timeout: float) -> GitResult:
-    """Run a command through the bounded, non-interactive layer, classifying why it could not run or finish."""
+class InputRunner(Protocol):
+    """A runner that gives the command `input_bytes` as its whole stdin."""
+
+    def __call__(self, command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult: ...
+
+
+def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
+    """Run a command through the bounded, non-interactive layer, classifying why it could not run or finish.
+
+    With `input_bytes`, the command's stdin is exactly those bytes and then closed.
+    """
     try:
-        finished = run_bounded(command, timeout)
+        if input_bytes is None:
+            finished = run_bounded(command, timeout)
+        else:
+            finished = run_bounded(command, timeout, input_bytes=input_bytes)
     except FileNotFoundError as exc:
         raise GitError(MISSING_GIT, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:
@@ -118,27 +133,50 @@ class GitStream:
 
 
 class GitClient:
-    """Runs git within a time limit, with no stdin and no prompt, and classifies its failures."""
+    """Runs git within a time limit, with no stdin but input given up front and no prompt, and classifies its
+    failures."""
 
-    def __init__(self, runner: Runner = subprocess_runner, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        runner: Runner = subprocess_runner,
+        *,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        input_runner: InputRunner = subprocess_runner,
+    ) -> None:
         self.runner = runner
+        self.input_runner = input_runner
         self.timeout = timeout
 
     def run(
-        self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
+        self,
+        arguments: Sequence[str],
+        *,
+        directory: str | Path | None = None,
+        timeout: float | None = None,
+        input_bytes: bytes | None = None,
     ) -> GitResult:
         """Run `git <arguments>`, in `directory` when given (as `git -C`), and return its result whatever its exit.
 
+        With `input_bytes`, git's stdin is exactly those bytes and then closed, through `input_runner`.
         Raises GitError when git is missing, cannot start, or does not finish within `timeout` (the client's default
         when None).
         """
-        return self.runner(_command(arguments, directory), self.timeout if timeout is None else timeout)
+        command = _command(arguments, directory)
+        limit = self.timeout if timeout is None else timeout
+        if input_bytes is None:
+            return self.runner(command, limit)
+        return self.input_runner(command, limit, input_bytes=input_bytes)
 
     def output(
-        self, arguments: Sequence[str], *, directory: str | Path | None = None, timeout: float | None = None
+        self,
+        arguments: Sequence[str],
+        *,
+        directory: str | Path | None = None,
+        timeout: float | None = None,
+        input_bytes: bytes | None = None,
     ) -> str:
         """Run `git <arguments>` as `run` does and return its stdout; a nonzero exit raises a classified GitError."""
-        result = self.run(arguments, directory=directory, timeout=timeout)
+        result = self.run(arguments, directory=directory, timeout=timeout, input_bytes=input_bytes)
         if result.returncode != 0:
             message = (
                 result.stderr.strip() or f"git {' '.join(arguments[:1])} failed with exit code {result.returncode}"

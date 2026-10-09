@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -41,6 +42,46 @@ class BoundedProcessTests(unittest.TestCase):
             },
             json.loads(finished.stdout),
         )
+
+    def test_given_input_is_the_whole_stdin_with_every_prompt_still_off(self) -> None:
+        with mock.patch.dict("os.environ", {"KEPT": "kept", "GIT_TERMINAL_PROMPT": "1", "GCM_INTERACTIVE": "auto"}):
+            finished = run_bounded([sys.executable, "-c", ENVIRONMENT_PROGRAM], 60, input_bytes=b"given\n")
+        self.assertEqual(0, finished.returncode)
+        self.assertEqual(
+            {
+                "stdin": "given\n",
+                "variables": {
+                    "GIT_TERMINAL_PROMPT": "0",
+                    "GCM_INTERACTIVE": "never",
+                    "GH_PROMPT_DISABLED": "1",
+                    "KEPT": "kept",
+                },
+            },
+            json.loads(finished.stdout),
+        )
+
+    def test_input_larger_than_a_pipe_arrives_byte_for_byte_and_then_ends(self) -> None:
+        given = bytes(range(256)) * 8192 + b"\r\n\0 last"  # 2 MiB, far past any pipe's buffer
+        program = (
+            "import hashlib, sys; data = sys.stdin.buffer.read(); after = sys.stdin.buffer.read(); "
+            "print(len(data), hashlib.sha256(data).hexdigest(), len(after))"
+        )
+        finished = run_bounded([sys.executable, "-c", program], 60, input_bytes=given)
+        self.assertEqual((0, b""), (finished.returncode, finished.stderr))
+        self.assertEqual(f"{len(given)} {hashlib.sha256(given).hexdigest()} 0", finished.stdout.decode().strip())
+
+    def test_a_command_that_reads_none_of_its_input_still_finishes(self) -> None:
+        started = time.monotonic()
+        finished = run_bounded([sys.executable, "-c", "pass"], 60, input_bytes=b"x" * (4 * 1024 * 1024))
+        self.assertEqual(Finished(0, b"", b""), finished)
+        self.assertLess(time.monotonic() - started, 30)
+
+    def test_the_time_limit_covers_a_command_given_input(self) -> None:
+        program = "import sys, time; sys.stdin.buffer.read(); time.sleep(60)"
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_bounded([sys.executable, "-c", program], 0.5, input_bytes=b"request\n")
+        self.assertLess(time.monotonic() - started, 30)
 
     def test_exit_status_and_both_streams_are_returned_as_bytes(self) -> None:
         program = "import sys; sys.stdout.buffer.write(b'out \\xff'); sys.stderr.buffer.write(b'err'); sys.exit(4)"

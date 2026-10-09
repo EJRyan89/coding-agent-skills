@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -16,6 +18,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import git_client
 import review_canary
 import review_fixture
 from git_client import subprocess_runner
@@ -176,18 +179,110 @@ class FixtureChangeTests(unittest.TestCase):
         self.assertFalse(repository.exists())
         self.assertEqual([], list(self.temporary.iterdir()))
 
-    def test_files_are_committed_in_batches_that_fit_a_command_line(self) -> None:
-        files = {f"folder/file-{index:03}.txt": f"{index}\n".encode() for index in range(40)}
+    def recording(self) -> tuple[Any, list[tuple[str, bytes | None]]]:
+        """A patch of the bounded layer that records each git command's verb and the input it was given."""
+        started: list[tuple[str, bytes | None]] = []
+        real = git_client.run_bounded
+
+        def run(command: Sequence[str], timeout: float, **options: Any) -> Any:
+            arguments = list(command)[3:]  # after git -C <repository>
+            while arguments[0] == "-c":
+                arguments = arguments[2:]
+            started.append((arguments[0], options.get("input_bytes")))
+            return real(command, timeout, **options)
+
+        return mock.patch.object(git_client, "run_bounded", run), started
+
+    def test_each_tree_is_committed_by_one_fast_import_and_one_update_index_fed_on_stdin(self) -> None:
+        # 150 blobs, past fast-import's default unpackLimit of 100, so the head's blobs land in one pack.
+        files = {f"folder {index % 3}/file-{index:03} é.txt": f"{index}\r\n".encode() for index in range(150)}
         directory = write_fixture(self.root / "fixture", {}, files)
-        with (
-            mock.patch.object(review_canary, "ARGUMENT_BUDGET", 200),
-            fixture_change(directory, subprocess_runner) as change,
-        ):
-            listed = git(change.repository, "ls-tree", "-r", "--name-only", change.pull["headRefOid"]).decode()
-            self.assertEqual(sorted(files), listed.split())
+        patch, started = self.recording()
+        with patch, fixture_change(directory, subprocess_runner) as change:
+            repository, head = change.repository, change.pull["headRefOid"]
+            listed = git(repository, "ls-tree", "-r", "-z", "--name-only", head)
+            self.assertEqual(sorted(files), [name for name in listed.decode().split("\0") if name])
             self.assertEqual(
-                "", git(change.repository, "ls-tree", "-r", "--name-only", change.pull["baseRefOid"]).decode()
+                files["folder 2/file-149 é.txt"], git(repository, "cat-file", "blob", f"{head}:folder 2/file-149 é.txt")
             )
+            self.assertEqual(b"", git(repository, "ls-tree", "-r", "--name-only", change.pull["baseRefOid"]))
+            objects = repository / ".git" / "objects"
+            self.assertEqual(1, len(list((objects / "pack").glob("*.pack"))))
+            loose = [f"{file.parent.name}{file.name}" for file in objects.glob("??/*")]
+            kinds = {git(repository, "cat-file", "-t", name).decode().strip() for name in loose}
+            self.assertEqual({"tree", "commit"}, kinds, "every blob is in the pack, none loose")
+        per_tree = ["read-tree", "fast-import", "update-index", "write-tree", "commit-tree"]
+        self.assertEqual(["init", "remote", *per_tree, *per_tree, "diff"], [verb for verb, _ in started])
+        self.assertEqual(
+            ["fast-import", "update-index"] * 2,
+            [verb for verb, given in started if given is not None],
+            "no other input",
+        )
+        fed = [given for _, given in started if given is not None]
+        self.assertEqual([b"feature get-mark\n", b""], fed[:2], "the empty base tree")
+        self.assertTrue(fed[2].startswith(b"feature get-mark\nblob\nmark :1\ndata 3\n"), fed[2][:60])
+        self.assertEqual(150, fed[2].count(b"\nget-mark :"))
+        self.assertEqual(150, fed[3].count(b"\0"))
+        self.assertTrue(fed[3].startswith(b"100644 blob "), fed[3][:40])
+        self.assertIn("folder 0/file-000 é.txt".encode() + b"\0", fed[3])
+
+    def test_a_path_git_refuses_is_still_refused_though_index_info_would_skip_it(self) -> None:
+        # Each of these the former `update-index --cacheinfo` batches refused; `--index-info` only skips them.
+        refused = [".git/config", "sub/.GIT/hooks", "x/git~1/y"]
+        old = self.root / "old"
+        old.mkdir()
+        git(old, "init", "--quiet")
+        for path in refused:
+            with self.subTest(path):
+                blob = (
+                    subprocess.run(
+                        ["git", "-C", str(old), "hash-object", "-w", "--stdin"], input=b"x\n", capture_output=True
+                    )
+                    .stdout.decode()
+                    .strip()
+                )
+                cacheinfo = subprocess.run(
+                    ["git", "-C", str(old), "update-index", "--add", "--cacheinfo", "100644", blob, path],
+                    capture_output=True,
+                )
+                self.assertNotEqual(0, cacheinfo.returncode, "the old form refused it")
+                directory = write_fixture(self.root / path.replace("/", "-"), {}, {"kept.txt": b"k\n", path: b"x\n"})
+                with (
+                    self.assertRaisesRegex(
+                        FixtureError, f"git update-index refused the fixture path {re.escape(path)}$"
+                    ),
+                    fixture_change(directory, subprocess_runner),
+                ):
+                    pass
+                self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_path_stdin_cannot_carry_is_refused_before_the_tree_is_read(self) -> None:
+        directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"})
+        files = [("a.txt", directory / "base" / "a.txt"), ("a\udcffb.txt", directory / "base" / "missing")]
+        patch, started = self.recording()
+        with (
+            patch,
+            mock.patch.object(review_canary, "_tree_files", return_value=files),
+            self.assertRaisesRegex(FixtureError, "a path that is not Unicode: 'a\\\\udcffb.txt'"),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        self.assertEqual(["init", "remote"], [verb for verb, _ in started])
+        self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_file_that_cannot_be_read_is_refused_before_fast_import_runs(self) -> None:
+        directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"})
+        files = [("gone.txt", directory / "base" / "gone.txt")]
+        patch, started = self.recording()
+        with (
+            patch,
+            mock.patch.object(review_canary, "_tree_files", return_value=files),
+            self.assertRaisesRegex(FixtureError, "Cannot read the fixture file gone.txt"),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        self.assertEqual(["init", "remote"], [verb for verb, _ in started])
+        self.assertEqual([], list(self.temporary.iterdir()))
 
     def test_a_fixture_without_its_parts_is_refused_and_leaves_nothing(self) -> None:
         cases = {

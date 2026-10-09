@@ -551,7 +551,7 @@ A pull request migrated from the legacy review skills keeps a `legacy-review.jso
 
 ### Fixture pull request
 
-A fixture canary, `prepare --canary --fixture <directory>`, reviews a fixture directory in place of a pull request: `base/` and `head/` hold the change as two trees, and `pull.json` the pull request around it, validated by `validate_fixture_pull` in `review_canary.py`. `prepare` commits each tree's files, byte for byte, to a throwaway repository, and takes the base and head commits and the diff from it; a fixture tree holds only regular files and folders. A re-review canary's prior record is a `record`, the pull request's first review. See "Fixture canaries" in [Code-review operations](code-review-operations.md#fixture-canaries).
+A fixture canary, `prepare --canary --fixture <directory>`, reviews a fixture directory in place of a pull request: `base/` and `head/` hold the change as two trees, and `pull.json` the pull request around it, validated by `validate_fixture_pull` in `review_canary.py`. `prepare` commits each tree's files, byte for byte, to a throwaway repository, and takes the base and head commits and the diff from it; a fixture tree holds only regular files and folders, at paths git accepts in an index (none inside `.git`, for one). A re-review canary's prior record is a `record`, the pull request's first review. See "Fixture canaries" in [Code-review operations](code-review-operations.md#fixture-canaries).
 
 #### Fixture pull request (`fixture-pull`)
 

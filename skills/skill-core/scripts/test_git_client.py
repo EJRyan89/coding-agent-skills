@@ -82,6 +82,32 @@ class ClientTests(unittest.TestCase):
             GitClient(runner).output(["fetch", "--all"])
         self.assertEqual("git fetch failed with exit code 5", str(context.exception))
 
+    def test_input_goes_to_the_input_runner_with_the_same_command_timeout_and_classifier(self) -> None:
+        runner, plain = scripted(GitResult(0, "plain\n", ""))
+        given: list[tuple[list[str], float, bytes]] = []
+        answers = [GitResult(0, "fed\n", ""), GitResult(128, "", NOT_A_REPOSITORY)]
+
+        def input_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+            given.append((list(command), timeout, input_bytes))
+            return answers.pop(0)
+
+        client = GitClient(runner, timeout=20, input_runner=input_runner)
+        self.assertEqual("plain\n", client.output(["status"]))
+        self.assertEqual(
+            "fed\n", client.output(["hash-object", "--stdin-paths"], directory="repo", input_bytes=b"a\nb\n")
+        )
+        with self.assertRaises(GitError) as context:
+            client.output(["update-index", "--index-info"], timeout=600, input_bytes=b"")
+        self.assertEqual(("not_repository", 128), (context.exception.kind, context.exception.returncode))
+        self.assertEqual([(["git", "status"], 20)], plain)
+        self.assertEqual(
+            [
+                (["git", "-C", "repo", "hash-object", "--stdin-paths"], 20, b"a\nb\n"),
+                (["git", "update-index", "--index-info"], 600, b""),
+            ],
+            given,
+        )
+
     def test_classifier_reads_literal_git_stderr(self) -> None:
         self.assertEqual("not_repository", classify_failure(NOT_A_REPOSITORY))
         self.assertEqual("not_repository", classify_failure("fatal: Not A Git Repository: 'x'"))
@@ -102,6 +128,13 @@ class SubprocessRunnerTests(unittest.TestCase):
             result = git_client.subprocess_runner(["git", "status"], 12)
         self.assertEqual(mock.call(["git", "status"], 12), run.call_args)
         self.assertEqual(GitResult(2, "out \udcff", "bad �"), result)
+
+    def test_given_input_goes_through_the_bounded_layer(self) -> None:
+        finished = bounded_process.Finished(0, b"id\n", b"")
+        with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
+            result = git_client.subprocess_runner(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob")
+        self.assertEqual(mock.call(["git", "hash-object", "--stdin"], 12, input_bytes=b"blob"), run.call_args)
+        self.assertEqual(GitResult(0, "id\n", ""), result)
 
     def test_missing_git_is_a_prerequisite_error(self) -> None:
         with (
@@ -130,16 +163,32 @@ class SubprocessRunnerTests(unittest.TestCase):
         self.assertIn("did not finish within 0.5 seconds", str(context.exception))
         self.assertIsInstance(context.exception.__cause__, subprocess.TimeoutExpired)
 
+    def test_a_command_given_input_that_runs_too_long_is_a_timeout(self) -> None:
+        program = "import sys, time; sys.stdin.buffer.read(); time.sleep(60)"
+        with self.assertRaises(GitError) as context:
+            git_client.subprocess_runner([sys.executable, "-c", program], 0.5, input_bytes=b"request\n")
+        self.assertEqual("timeout", context.exception.kind)
+        self.assertIsInstance(context.exception.__cause__, subprocess.TimeoutExpired)
+
+    def test_real_git_reads_given_input_as_its_whole_stdin(self) -> None:
+        # The blob id of "hello\n", as git has always printed it.
+        self.assertEqual(
+            "ce013625030ba8dba906f756967f9e9ca394464a\n",
+            GitClient().output(["hash-object", "--stdin"], input_bytes=b"hello\n"),
+        )
+
     def test_real_git_outside_a_repository_is_not_a_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary) / "plain folder"
             directory.mkdir()
-            with (
-                mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": temporary}),
-                self.assertRaises(GitError) as context,
-            ):
-                GitClient().output(["rev-parse", "--show-toplevel"], directory=directory)
-        self.assertEqual("not_repository", context.exception.kind)
+            for arguments, given in ((["rev-parse", "--show-toplevel"], None), (["update-index", "--index-info"], b"")):
+                with (
+                    self.subTest(arguments[0]),
+                    mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": temporary}),
+                    self.assertRaises(GitError) as context,
+                ):
+                    GitClient().output(arguments, directory=directory, input_bytes=given)
+                self.assertEqual("not_repository", context.exception.kind)
 
 
 class StreamTests(unittest.TestCase):

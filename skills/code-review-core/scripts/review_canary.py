@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,8 +39,6 @@ PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "bas
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
-# Characters of paths one git command takes, well under the 32,767 of a Windows command line.
-ARGUMENT_BUDGET = 24_000
 
 
 class FixtureError(ValueError):
@@ -134,19 +132,24 @@ def _tree_files(root: Path) -> list[tuple[str, Path]]:
     return sorted(files)
 
 
-def _batches(arguments: Sequence[tuple[str, ...]]) -> Iterator[list[str]]:
-    """The argument groups, flattened into lists that each fit one command line."""
-    batch: list[str] = []
-    size = 0
-    for group in arguments:
-        length = sum(len(argument) + 3 for argument in group)
-        if batch and size + length > ARGUMENT_BUDGET:
-            yield batch
-            batch, size = [], 0
-        batch.extend(group)
-        size += length
-    if batch:
-        yield batch
+def _blob_stream(files: list[tuple[str, Path]]) -> bytes:
+    """A fast-import stream of each file's bytes as a blob, asking for its id after each one."""
+    blobs = [b"feature get-mark\n"]
+    for number, (relative, path) in enumerate(files, start=1):
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise FixtureError(f"Cannot read the fixture file {relative}: {exc}") from exc
+        blobs.append(b"blob\nmark :%d\ndata %d\n%s\nget-mark :%d\n" % (number, len(content), content, number))
+    return b"".join(blobs)
+
+
+def _index_path(relative: str) -> bytes:
+    """`relative` as update-index reads it on stdin, which carries only Unicode text."""
+    try:
+        return relative.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise FixtureError(f"The fixture holds a path that is not Unicode: {relative!r}") from exc
 
 
 class _Repository:
@@ -154,26 +157,37 @@ class _Repository:
         self.path = path
         self.client = GitClient(runner)
 
-    def git(self, *arguments: str) -> str:
+    def git(self, *arguments: str, input_bytes: bytes | None = None) -> str:
         try:
-            return self.client.output(arguments, directory=self.path)
+            return self.client.output(arguments, directory=self.path, input_bytes=input_bytes)
         except GitError as exc:
             raise FixtureError(f"git {arguments[0]} failed for the fixture: {exc}") from exc
 
     def commit(self, tree: Path, message: str, parent: str | None = None) -> str:
-        """A commit of exactly the files under `tree`, each as its bytes on disk: hash-object --no-filters applies no
-        attribute, line-ending setting, or filter. Every file is a regular, non-executable one."""
+        """A commit of exactly the files under `tree`, each as its bytes on disk: fast-import stores a blob as given,
+        with no attribute, line-ending setting, or filter. Every file is a regular, non-executable one.
+
+        Two git commands take the whole tree on stdin. fast-import writes every blob into one pack, since thousands
+        of loose objects take minutes to write and to remove on Windows. update-index --index-info then places each
+        blob at its path; it skips a path git refuses, such as one inside `.git`, and still succeeds, so `--verbose`
+        lists each path it adds and a path missing from that list is refused here."""
         files = _tree_files(tree)
+        paths = [_index_path(relative) for relative, _ in files]
+        stream = _blob_stream(files)
         self.git("read-tree", "--empty")
-        blobs: list[str] = []
-        for batch in _batches([(str(path),) for _, path in files]):
-            printed = self.git("hash-object", "-w", "--no-filters", "--", *batch).split()
-            if len(printed) != len(batch):
-                raise FixtureError("git hash-object printed an unexpected listing")
-            blobs.extend(printed)
-        entries = [("--cacheinfo", "100644", blob, relative) for (relative, _), blob in zip(files, blobs, strict=True)]
-        for batch in _batches(entries):
-            self.git("update-index", "--add", *batch)
+        blobs = self.git("fast-import", "--quiet", "--cat-blob-fd=1", input_bytes=stream).split()
+        if len(blobs) != len(files):
+            raise FixtureError("git fast-import printed an unexpected listing")
+        entries = b"".join(
+            b"100644 blob %s\t%s\0" % (blob.encode("ascii"), path) for path, blob in zip(paths, blobs, strict=True)
+        )
+        added = self.git("update-index", "--verbose", "-z", "--add", "--index-info", input_bytes=entries)
+        if added != "".join(f"add '{relative}'\n" for relative, _ in files):
+            listed = set(added.splitlines())
+            refused = next((relative for relative, _ in files if f"add '{relative}'" not in listed), None)
+            if refused is None:
+                raise FixtureError("git update-index printed an unexpected listing")
+            raise FixtureError(f"git update-index refused the fixture path {refused}")
         tree_id = self.git("write-tree").strip()
         parents = ("-p", parent) if parent else ()
         return self.git(*IDENTITY, "commit-tree", "--no-gpg-sign", tree_id, *parents, "-m", message).strip()
