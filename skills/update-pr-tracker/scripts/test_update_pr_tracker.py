@@ -19,6 +19,7 @@ from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector
 from review_github import GitHubClient
 from update_pr_tracker import (
     END_MARKER,
+    SECTION_SUMMARIES,
     SECTION_TO_REVIEW,
     START_MARKER,
     ConfigurationError,
@@ -471,9 +472,27 @@ class TrackerTests(unittest.TestCase):
         content, candidates = run([item()], overrides={"owner/repo#1": "On hold"})
         self.assertEqual({"On Hold": ["owner/repo#1"]}, sections(content))
         self.assertEqual([], candidates)
-        for computed in ("stale", "Drafts", "awaiting response", "To Review"):
+        for computed in ("stale", "Drafts", "awaiting response", "To Review", "my pull requests"):
             with self.subTest(computed=computed), self.assertRaisesRegex(TrackerError, "computed tracker state"):
                 run([item()], overrides={"owner/repo#1": computed})
+
+    def test_an_override_naming_a_rendered_section_is_refused(self) -> None:
+        # A pinned section named like a computed one rendered twice, and the computed one lost its own rows.
+        rendered = ["To Review", "Awaiting Response", "My PRs", "Drafts"]
+        self.assertEqual(sorted(rendered), sorted(SECTION_SUMMARIES))
+        for section in rendered:
+            for value in (section, section.upper(), f" {section.lower()} "):
+                with self.subTest(value=value), self.assertRaisesRegex(TrackerError, "computed tracker state"):
+                    run([item()], overrides={"owner/repo#1": value})
+
+    def test_an_authored_row_survives_an_override_naming_another_status(self) -> None:
+        mine = item(number=1)
+        mine["author"] = "reviewer"
+        pinned = item(number=2)
+        pinned["author"] = "reviewer"
+        content, _ = run([mine, pinned], overrides={"owner/repo#2": "My PR"})
+        self.assertEqual({"My PR": ["owner/repo#2"], "My PRs": ["owner/repo#1"]}, sections(content))
+        self.assertEqual(1, content.count("### My PRs ("))
 
     def test_review_candidates_list_relevant_missing_and_stale_reviews_including_drafts(self) -> None:
         missing = item(number=1)
