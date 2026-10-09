@@ -30,6 +30,7 @@ from review_config import (
     validate_config,
 )
 from review_runtime import RuntimeContractError
+from review_state import StateError
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -554,6 +555,9 @@ class ReviewedHeadTests(unittest.TestCase):
         state = {"schema_version": 1, "repositories": {"owner/repo": {"merged_since": "2026-09-26"}}}
         self.assertEqual(date(2026, 9, 26), review_operation.recorded_watermark(state, "owner/repo"))
         self.assertIsNone(review_operation.recorded_watermark(state, "owner/new"))
+        state = {"schema_version": 1, "repositories": {"owner/repo": {"merged_since": "not-a-date"}}}
+        with self.assertRaisesRegex(StateError, "owner/repo.merged_since must begin with a YYYY-MM-DD date"):
+            review_operation.recorded_watermark(state, "owner/repo")
 
 
 class EnumerateBatchTests(unittest.TestCase):

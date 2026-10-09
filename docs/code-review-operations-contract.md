@@ -579,7 +579,7 @@ The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date (`YYYY-MM-DD`; only the first ten characters are read) are eligible. Absent until a batch run first advances it. |
+| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date are eligible. Its first ten characters are a `YYYY-MM-DD` calendar date, and only they are read; `validate_state` refuses any other value, so a state that holds one fails every operation that reads it. Absent until a batch run first advances it. |
 | `updated_at` | string | no | The date `advance` last moved the watermark. |
 
 ### Legacy review index

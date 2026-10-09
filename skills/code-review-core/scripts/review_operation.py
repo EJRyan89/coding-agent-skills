@@ -21,6 +21,7 @@ from review_archive import (
 from review_config import validate_repository_identity
 from review_io import read_json
 from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
+from review_state import watermark_date
 
 
 class ReviewOperationError(ValueError):
@@ -442,6 +443,6 @@ def latest_reviewed_heads(archive_root: Path, repository: str, numbers: Iterable
 
 def recorded_watermark(state: dict[str, Any], repository: str) -> date | None:
     """A repository's recorded merged-pull watermark, or None before its first batch run advances one."""
-    entry = state.get("repositories", {}).get(validate_repository_identity(repository), {})
-    value = entry.get("merged_since")
-    return date.fromisoformat(value[:10]) if isinstance(value, str) else None
+    identity = validate_repository_identity(repository)
+    value = state.get("repositories", {}).get(identity, {}).get("merged_since")
+    return watermark_date(identity, value) if isinstance(value, str) else None
