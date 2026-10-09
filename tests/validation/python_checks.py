@@ -30,6 +30,10 @@ FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deplo
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
+# The codes a noqa comment names, separated by commas or spaces as ruff reads them.
+NOQA_CODES = re.compile(r"#\s*noqa:\s*((?:[A-Z]+[0-9]+[\s,]*)+)", re.IGNORECASE)
+# Function complexity and length take no noqa: a function over either ceiling is split instead.
+CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
@@ -58,6 +62,58 @@ def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
                 and not NOQA_WITH_REASON.search(token.string)
             ):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+    return found
+
+
+def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
+    """Each noqa comment that suppresses the complexity or length ceiling, as path:line and the codes it names."""
+    found: list[str] = []
+    for path in sorted(files):
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type != tokenize.COMMENT:
+                continue
+            for match in NOQA_CODES.finditer(token.string):
+                named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
+                if named:
+                    found.append(
+                        f"{path.relative_to(root).as_posix()}:{token.start[0]} suppresses {' and '.join(named)}; "
+                        "split the function instead"
+                    )
+    return found
+
+
+# A comment that turns a check off for a file or a region instead of one finding on its line: mypy's inline
+# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; an isort
+# skip, which ruff's import rules honor; and the formatter's off and skip markers.
+PYTHON_SUPPRESSION = re.compile(
+    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b|fmt:\s*(?:off|skip)\b"
+    r"|yapf:\s*disable\b)",
+    re.IGNORECASE,
+)
+# ruff reads its configuration from the nearest of these to each file, so one anywhere but the root's pyproject.toml
+# would replace the rule set validation pins for every file beneath it.
+RUFF_CONFIGURATION_FILES = frozenset({"ruff.toml", ".ruff.toml", "pyproject.toml"})
+
+
+def python_suppression_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each comment that turns a Python check off beyond one finding on its line, and each ruff configuration file
+    other than the root's pyproject.toml."""
+    found: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.name in RUFF_CONFIGURATION_FILES and name != "pyproject.toml":
+            found.append(f"{name} configures ruff; pyproject.toml at the repository root is its one configuration")
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        found += [
+            f"{name}:{token.start[0]} turns a check off with {match.group(0)!r}; fix each finding at its cause"
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT and (match := PYTHON_SUPPRESSION.search(token.string))
+        ]
     return found
 
 
@@ -284,6 +340,12 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_turns_no_python_check_off(self) -> None:
+        self.assertEqual([], python_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_suppresses_neither_ceiling(self) -> None:
+        self.assertEqual([], ceiling_noqa(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_comments_state_reasons_instead_of_issue_numbers(self) -> None:
         self.assertEqual([], issue_numbers_in_comments(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

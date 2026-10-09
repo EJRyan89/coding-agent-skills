@@ -48,14 +48,6 @@ def ensure_supported() -> None:
         raise DeployError(f"ERROR: The deployer currently supports Windows only (detected platform: {sys.platform}).")
 
 
-def use_utf8_output() -> None:
-    """Write UTF-8 even when output is redirected, where Windows would otherwise use the ANSI code page."""
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="backslashreplace")
-
-
 def normalize(path: str | os.PathLike[str]) -> str:
     """Render a path with forward slashes, the form used in config values and output."""
     return os.fspath(path).replace("\\", "/")

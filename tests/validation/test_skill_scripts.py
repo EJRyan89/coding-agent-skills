@@ -22,6 +22,7 @@ from skill_scripts import (
     shell_commands,
     skill_command_problems,
 )
+from validation_support import write_fixture_tree
 
 
 def mark_skills(root: Path) -> Path:
@@ -305,36 +306,47 @@ class SkillScriptsFixtures(unittest.TestCase):
                 skill_command_problems(root, {"gh"}, {"git", "python"}),
             )
 
-    def test_console_setup_policy_detects_a_missing_late_or_copied_setup(self) -> None:
+    def test_console_setup_policy_detects_a_missing_late_unresolved_or_copied_setup(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            scripts = root / "skills" / "alpha" / "scripts"
-            scripts.mkdir(parents=True)
             main = 'if __name__ == "__main__":\n'
+            imported = "from console import use_utf8_output\n\n"
             files = {
-                "good.py": f"{main}    use_utf8_output()\n    raise SystemExit(main())\n",
-                "late.py": f"{main}    parse()\n    use_utf8_output()\n",
-                "missing.py": f"{main}    raise SystemExit(main())\n",
-                "copied.py": 'def main():\n    sys.stdout.reconfigure(encoding="utf-8")\n\n\n'
-                f"{main}    use_utf8_output()\n",
-                "library.py": "def helper():\n    return 1\n",
-                # Suites are not entry points of the skill.
-                "test_good.py": f"{main}    unittest.main()\n",
+                "skills/alpha/scripts/good.py": f"{imported}{main}    use_utf8_output()\n    main()\n",
+                "skills/alpha/scripts/aliased.py": f"import console as c\n\n{main}    c.use_utf8_output()\n",
+                "skills/alpha/scripts/late.py": f"{imported}{main}    parse()\n    use_utf8_output()\n",
+                "skills/alpha/scripts/missing.py": f"{main}    raise SystemExit(main())\n",
+                # A function of the same name that is not skill-core's is a second setup.
+                "skills/alpha/scripts/local.py": f"def use_utf8_output():\n    pass\n\n\n{main}    use_utf8_output()\n",
+                "skills/alpha/scripts/copied.py": 'def main():\n    sys.stdout.reconfigure(encoding="utf-8")\n\n\n'
+                f"{imported}{main}    use_utf8_output()\n",
+                "skills/alpha/scripts/library.py": "def helper():\n    return 1\n",
+                # Suites are not entry points.
+                "skills/alpha/scripts/test_good.py": f"{main}    unittest.main()\n",
+                "skills/skill-core/scripts/console.py": 'sys.stdout.reconfigure(encoding="utf-8")\n',
+                # deploy.py, the deployer, and tools/ are held as skill scripts are.
+                "deploy.py": f"{imported}{main}    raise SystemExit(main())\n",
+                "deployer/platform_support.py": "def setup():\n    reconfigure = sys.stdout.reconfigure\n"
+                '    reconfigure(encoding="utf-8")\n',
+                "deployer/cli.py": "def main():\n    return 0\n",
+                "tools/good_tool.py": f"{imported}{main}    use_utf8_output(errors='backslashreplace')\n    main()\n",
+                "tools/late_tool.py": f"{imported}{main}    options = parse()\n    use_utf8_output()\n",
+                "tools/test_tool.py": f"{main}    unittest.main()\n",
             }
-            for name, text in files.items():
-                (scripts / name).write_text(text, encoding="utf-8")
-            core = root / "skills" / "skill-core" / "scripts"
-            core.mkdir(parents=True)
-            (core / "console.py").write_text('sys.stdout.reconfigure(encoding="utf-8")\n', encoding="utf-8")
+            write_fixture_tree(root, files)
+            mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
+            late = f"does not call skill-core's use_utf8_output() first in its __main__ block; see {doc}"
+            copied = f"reconfigures a stream itself; call use_utf8_output() from skill-core instead; see {doc}"
             self.assertEqual(
                 [
-                    f"skills/alpha/scripts/copied.py:2 reconfigures a stream itself; call use_utf8_output() from "
-                    f"skill-core instead; see {doc}",
-                    f"skills/alpha/scripts/late.py:1 does not call use_utf8_output() first in its __main__ block; "
-                    f"see {doc}",
-                    f"skills/alpha/scripts/missing.py:1 does not call use_utf8_output() first in its __main__ block; "
-                    f"see {doc}",
+                    f"deploy.py:3 {late}",
+                    f"deployer/platform_support.py:3 {copied}",
+                    f"skills/alpha/scripts/copied.py:2 {copied}",
+                    f"skills/alpha/scripts/late.py:3 {late}",
+                    f"skills/alpha/scripts/local.py:5 {late}",
+                    f"skills/alpha/scripts/missing.py:1 {late}",
+                    f"tools/late_tool.py:3 {late}",
                 ],
                 console_setup_problems(root),
             )

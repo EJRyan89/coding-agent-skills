@@ -18,6 +18,51 @@ from validation_support import write_fixture_tree
 
 
 class FsopsPlatformFixtures(unittest.TestCase):
+    def test_an_allowed_write_must_land_under_the_system_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "tempfile.TemporaryFile": "captured output under the system temporary directory",\n'
+                '    "shutil.rmtree": "removes only the directory mkdtemp made",\n'
+                "}\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "from pathlib import Path\n"
+                "\n"
+                "\n"
+            )
+            files = {
+                "deployer/kept.py": allowance + "def run():\n"
+                '    work = Path(tempfile.mkdtemp(prefix="run-"))\n'
+                "    with tempfile.TemporaryFile() as captured:\n"
+                "        captured.write(b'x')\n"
+                "    shutil.rmtree(work, ignore_errors=True)\n",
+                "deployer/strayed.py": allowance + "def run(target):\n"
+                '    work = tempfile.mkdtemp(dir="C:/managed")\n'  # 12: dir names another directory
+                '    tempfile.TemporaryFile("w+b")\n'  # 13: a positional argument may reach dir
+                "    shutil.rmtree(target)\n"  # 14: a parameter, not a directory mkdtemp made
+                "    shutil.rmtree(work)\n"  # 15: bound to a call whose dir is elsewhere
+                '    other = Path("C:/managed")\n'
+                "    other = Path(tempfile.mkdtemp())\n"
+                "    shutil.rmtree(other)\n",  # 18: bound to something else as well
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:12 " + message.format("tempfile.mkdtemp"),
+                    "deployer/strayed.py:13 " + message.format("tempfile.TemporaryFile"),
+                    "deployer/strayed.py:14 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:15 " + message.format("shutil.rmtree"),
+                    "deployer/strayed.py:18 " + message.format("shutil.rmtree"),
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_filesystem_write_policy_detects_each_write_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

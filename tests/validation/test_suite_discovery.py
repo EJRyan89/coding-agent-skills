@@ -24,6 +24,7 @@ from suite_discovery import (
     regression_suites,
     shard_count,
     suite_discovery_documentation_problems,
+    suite_entry_point_problems,
     suite_jobs,
     unsuited_script_problems,
     untested_module_problems,
@@ -32,6 +33,38 @@ from validation_support import TEST_NAME_PATTERNS, is_test_script, write_fixture
 
 
 class SuiteDiscoveryFixtures(unittest.TestCase):
+    def test_entry_point_policy_requires_a_last_main_block_that_calls_unittest_main(self) -> None:
+        main = 'if __name__ == "__main__":\n'
+        case = "import unittest\n\n\nclass Case(unittest.TestCase):\n    def test_it(self):\n        pass\n\n\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "tests/test_good.py": f"{case}{main}    unittest.main()\n",
+                "tests/test_exits.py": f"import sys\n{case}{main}    sys.exit(unittest.main())\n",
+                "tests/test_imported.py": f"from unittest import main as run\n{case}{main}    run(verbosity=2)\n",
+                "tests/test_none.py": case,
+                # The entry point named only in a comment runs nothing.
+                "tests/test_comment.py": f"{case}# {main}#     unittest.main()\n",
+                "tests/test_early.py": f"{case}{main}    unittest.main()\n\n\ndef helper():\n    pass\n",
+                "tests/test_other_call.py": f"{case}def main():\n    pass\n\n\n{main}    main()\n",
+                "tests/test_local_main.py": f"{case}class runner:\n    main = print\n\n\n{main}    runner.main()\n",
+                "tests/helper.py": "def helper():\n    pass\n",
+                "tests/test_shell.sh": "exit 0\n",
+            }
+            write_fixture_tree(root, files)
+            ends = 'does not end with an `if __name__ == "__main__":` block, so it runs no tests'
+            calls = 'its `if __name__ == "__main__":` block does not call unittest.main()'
+            self.assertEqual(
+                [
+                    f"tests/test_comment.py {ends}",
+                    f"tests/test_early.py {ends}",
+                    f"tests/test_local_main.py:13 {calls}",
+                    f"tests/test_none.py {ends}",
+                    f"tests/test_other_call.py:13 {calls}",
+                ],
+                suite_entry_point_problems(root),
+            )
+
     def test_shards_run_each_test_once_with_its_fixtures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "suite with spaces"

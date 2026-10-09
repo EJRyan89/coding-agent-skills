@@ -369,23 +369,24 @@ def _call_writes(call: ast.Call, aliases: dict[str, str], bindings: dict[str, se
     return None
 
 
-def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
-    """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
+def _write_nodes(tree: ast.Module) -> list[tuple[ast.ImportFrom | ast.Call, str]]:
+    """The imports and calls through which a module's code writes to the filesystem, with each one's token, ignoring
+    test cases."""
     aliases = import_aliases(tree)
     bindings = _string_bindings(tree)
-    found: list[tuple[int, str]] = []
+    found: list[tuple[ast.ImportFrom | ast.Call, str]] = []
 
     def visit(node: ast.AST) -> None:
         if _is_test_case(node):
             return
         if isinstance(node, ast.ImportFrom):
             found.extend(
-                (node.lineno, f"{node.module}.{alias.name}")
+                (node, f"{node.module}.{alias.name}")
                 for alias in node.names
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
         elif isinstance(node, ast.Call) and (token := _call_writes(node, aliases, bindings)):
-            found.append((node.lineno, token))
+            found.append((node, token))
         for child in ast.iter_child_nodes(node):
             visit(child)
 
@@ -393,8 +394,76 @@ def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
     return found
 
 
+def _filesystem_writes(tree: ast.Module) -> list[tuple[int, str]]:
+    """The filesystem writes a module's code makes, as (line, token), ignoring test cases."""
+    return [(node.lineno, token) for node, token in _write_nodes(tree)]
+
+
+TEMPORARY_DIRECTORY_CALL = "tempfile.mkdtemp"
+
+
+def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether a tempfile call takes keyword arguments only, none of them dir, so it writes under the system temporary
+    directory. A positional argument may be dir, so none is accepted."""
+    return qualified_name(call.func, aliases).startswith("tempfile.") and (
+        not call.args and all(keyword.arg not in {"dir", None} for keyword in call.keywords)
+    )
+
+
+def _temporary_directory_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
+    """The names a module binds only to a directory tempfile.mkdtemp created under the system temporary directory,
+    directly or through one wrapping call such as Path(...), and never as a parameter or a loop or with target."""
+    values: dict[str, list[ast.expr | None]] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                for name in (part for part in ast.walk(target) if isinstance(part, ast.Name)):
+                    values.setdefault(name.id, []).append(node.value if isinstance(target, ast.Name) else None)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            values.setdefault(node.target.id, []).append(node.value)
+        elif isinstance(node, ast.arg):
+            values.setdefault(node.arg, []).append(None)
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor, ast.comprehension, ast.NamedExpr, ast.withitem)):
+            rebound = node.optional_vars if isinstance(node, ast.withitem) else node.target
+            for name in (part for part in ast.walk(rebound) if isinstance(part, ast.Name)) if rebound else ():
+                values.setdefault(name.id, []).append(None)
+
+    def created(value: ast.expr | None) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        if qualified_name(value.func, aliases) == TEMPORARY_DIRECTORY_CALL:
+            return _in_the_temporary_directory(value, aliases)
+        return len(value.args) == 1 and not value.keywords and created(value.args[0])
+
+    return {name for name, bound in values.items() if all(created(value) for value in bound)}
+
+
+def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, str]) -> list[str]:
+    """Report each call an allowance sanctions that may write outside the system temporary directory: a tempfile call
+    that is not keyword-only without dir, or any other write whose first argument is not a name bound only to a
+    directory tempfile.mkdtemp created there."""
+    aliases = import_aliases(tree)
+    directories = _temporary_directory_names(tree, aliases)
+    problems: list[str] = []
+    for node, token in _write_nodes(tree):
+        if not isinstance(node, ast.Call) or token not in allowed:
+            continue
+        if token.startswith("tempfile."):
+            temporary = _in_the_temporary_directory(node, aliases)
+        else:
+            first = node.args[0] if node.args else None
+            temporary = isinstance(first, ast.Name) and first.id in directories
+        if not temporary:
+            problems.append(
+                f"{name}:{node.lineno} {FSOPS_ALLOWANCE} allows {token} only under the system temporary directory, "
+                "and this call may write elsewhere"
+            )
+    return problems
+
+
 def filesystem_write_problems(root: Path) -> list[str]:
-    """Report filesystem writes in the deployer outside deployer/fsops.py, and allowances no longer needed."""
+    """Report filesystem writes in the deployer outside deployer/fsops.py, allowances no longer needed, and allowed
+    writes that may land outside the system temporary directory."""
     found: set[tuple[str, int, str]] = set()
     problems: list[str] = []
     for path in sorted(_writes_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
@@ -410,6 +479,7 @@ def filesystem_write_problems(root: Path) -> list[str]:
             f"{name}: {FSOPS_ALLOWANCE} allows {token}, which it no longer names"
             for token in sorted(set(allowed) - {token for _, token in writes})
         ]
+        problems += _temporary_write_problems(name, tree, allowed)
     return [
         f"{name}:{line} writes with {token}; route it through deployer/fsops.py" for name, line, token in sorted(found)
     ] + problems

@@ -38,6 +38,24 @@ def private_references(root: Path, files: list[Path]) -> list[str]:
     return found
 
 
+# Tracked settings reach every developer's sessions, so they may name their schema, add hooks, and turn off Claude
+# Code's commit trailers, pull request footer, and session links, but never decide what a developer allows.
+TRACKED_SETTINGS = frozenset({"$schema", "hooks", "attribution"})
+SETTINGS_SCHEMA = "https://json.schemastore.org/claude-code-settings.json"
+NO_ATTRIBUTION = {"commit": "", "pr": "", "sessionUrl": False}
+
+
+def tracked_settings_problems(settings: dict[str, object]) -> list[str]:
+    """Report a tracked settings key other than $schema, hooks, and attribution, a $schema that is not Claude Code's,
+    and an attribution that does not turn off commit trailers, the pull request footer, and session links."""
+    problems = [f"tracked settings may not set {key}" for key in sorted(set(settings) - TRACKED_SETTINGS)]
+    if "$schema" in settings and settings["$schema"] != SETTINGS_SCHEMA:
+        problems.append(f"$schema is {settings['$schema']!r}, not {SETTINGS_SCHEMA}")
+    if settings.get("attribution") != NO_ATTRIBUTION:
+        problems.append(f"attribution is {settings.get('attribution')!r}, not {NO_ATTRIBUTION!r}")
+    return problems
+
+
 def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
     """Report each tool that can edit a file or run git whose calls the hub guard's PreToolUse hook would not see."""
     hooks = settings.get("hooks")
@@ -59,12 +77,10 @@ def hub_guard_matcher_problems(settings: dict[str, object]) -> list[str]:
 
 
 class RepositoryHygienePolicies(unittest.TestCase):
-    def test_tracked_claude_settings_hold_hooks_and_attribution_only(self) -> None:
-        # Tracked settings reach every developer's sessions, so they may add hooks and set the repository's
-        # commit and pull request attribution but never decide what a developer allows; permissions and every
-        # other setting stay in user or local settings.
+    def test_tracked_claude_settings_hold_schema_hooks_and_no_attribution_only(self) -> None:
+        # Permissions and every other setting stay in each developer's user or local settings.
         settings = json.loads((REPOSITORY_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-        self.assertLessEqual(set(settings), {"$schema", "hooks", "attribution"})
+        self.assertEqual([], tracked_settings_problems(settings))
         self.assertEqual([], [path for path in repository_files(REPOSITORY_ROOT) if path.name == "settings.local.json"])
 
     def test_hub_guard_hook_sees_every_tool_that_edits_files_or_runs_git(self) -> None:

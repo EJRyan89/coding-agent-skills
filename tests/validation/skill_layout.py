@@ -16,7 +16,6 @@ from validation_support import (
     SCRIPT_INTERPRETERS,
     SHELL_FENCES,
     SKILL_GUIDE,
-    SKILLS_ROOT,
     TEMPLATE_TOKEN,
     UNSUPPORTED_SCRIPT_EXTENSIONS,
     _fence_body_line,
@@ -24,8 +23,8 @@ from validation_support import (
     fence_holders,
     is_executable_script,
     is_test_script,
-    relative,
     scripts_put_on_path,
+    skill_directories,
 )
 
 from deployer import render
@@ -495,6 +494,22 @@ def skill_tree_problems(root: Path) -> list[str]:
     return problems
 
 
+def shared_guidance_problems(root: Path) -> list[str]:
+    """Report a shipped skill whose SKILL.md names a shared Markdown asset from source.json.
+
+    Claude runs a skill directly; only the generated ~/.agents adapter tells other runtimes to read shared Markdown
+    guidance first, so a skill that points to it spends a turn on every Claude run.
+    """
+    shared = json.loads((root / "source.json").read_text(encoding="utf-8")).get("shared_assets", {})
+    guidance = sorted(name for name in shared if name.endswith(".md"))
+    return [
+        f"{(skill / 'SKILL.md').relative_to(root).as_posix()} points to {name}; the runtime adapter does that"
+        for skill in skill_directories(root)
+        for name in guidance
+        if name in (skill / "SKILL.md").read_text(encoding="utf-8")
+    ]
+
+
 class SkillLayoutPolicies(unittest.TestCase):
     def test_skill_scripts_use_standard_layout(self) -> None:
         self.assertEqual([], script_layout_problems(REPOSITORY_ROOT))
@@ -506,15 +521,9 @@ class SkillLayoutPolicies(unittest.TestCase):
         self.assertEqual([], embedded_program_problems(REPOSITORY_ROOT))
 
     def test_skills_leave_shared_runtime_guidance_to_their_adapters(self) -> None:
-        # Claude runs a skill directly; only the generated ~/.agents adapter tells other runtimes to read shared
-        # Markdown guidance first, so a skill that points to it spends a turn on every Claude run.
         shared = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["shared_assets"]
-        guidance = sorted(name for name in shared if name.endswith(".md"))
-        self.assertIn("runtime-compatibility.md", guidance)
-        for skill in sorted(SKILLS_ROOT.glob("*/SKILL.md")):
-            text = skill.read_text(encoding="utf-8")
-            for name in guidance:
-                self.assertNotIn(name, text, f"{relative(skill)} points to {name}; the runtime adapter does that")
+        self.assertIn("runtime-compatibility.md", shared)
+        self.assertEqual([], shared_guidance_problems(REPOSITORY_ROOT))
 
     def test_deploy_variables_are_declared_consistently_and_used(self) -> None:
         from deployer import config

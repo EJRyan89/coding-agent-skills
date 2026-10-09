@@ -28,6 +28,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+
+from console import use_utf8_output
 
 from deployer import platform_support
 
@@ -717,7 +720,6 @@ def list_worktrees() -> int:
 
 
 def main(arguments: list[str]) -> int:
-    platform_support.use_utf8_output()
     parser = argparse.ArgumentParser(prog="worktrees.py", description=__doc__.splitlines()[0])
     commands = parser.add_subparsers(dest="command", required=True)
     create = commands.add_parser("new", help="create a worktree for a task under .claude/worktrees")
@@ -738,4 +740,5 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
+    use_utf8_output(errors="backslashreplace")
     sys.exit(main(sys.argv[1:]))
