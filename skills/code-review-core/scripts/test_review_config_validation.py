@@ -71,6 +71,7 @@ def _expected() -> dict[str, Any]:
                     "manifest": None,
                 },
                 "checkout_path": None,
+                "snapshot_exclude": [],
             }
         },
         "archive_root": "C:\\reviews\\archive",
@@ -170,6 +171,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest": True,
                 },
                 "checkout_path": "C:\\src\\repo",
+                "snapshot_exclude": [],
             },
             "owner/tools": {
                 "reviewer": {
@@ -182,6 +184,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest": "C:\\manifests\\tools.json",
                 },
                 "checkout_path": "C:\\src\\tools",
+                "snapshot_exclude": [],
             },
             "owner/committed": {
                 "reviewer": {
@@ -194,6 +197,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest": None,
                 },
                 "checkout_path": "C:\\src\\committed",
+                "snapshot_exclude": [],
             },
             "owner/generic": {
                 "reviewer": {
@@ -206,6 +210,7 @@ def _full_expected() -> dict[str, Any]:
                     "manifest": None,
                 },
                 "checkout_path": "D:\\src\\generic",
+                "snapshot_exclude": [],
             },
         },
         "archive_root": "C:\\reviews\\archive",
@@ -329,15 +334,43 @@ def _repository_expected(**reviewer: Any) -> Mutation:
         "manifest": None,
     }
     fields.update(reviewer)
-    return _set(REPO, {"reviewer": fields, "checkout_path": "C:\\src\\repo"})
+    return _set(REPO, {"reviewer": fields, "checkout_path": "C:\\src\\repo", "snapshot_exclude": []})
+
+
+# Snapshot exclusion patterns validate_config accepts as given: a root file, any depth, a whole folder, character
+# classes, a pattern as long as allowed, and as many as allowed.
+ACCEPTED_PATTERNS: list[tuple[str, list[str]]] = [
+    ("a root file and a nested glob", ["*.resx", "**/*.Designer.cs"]),
+    ("a whole folder and a class", ["Reports/**", "src/[Gg]enerated/*.xml", "data/?.sql"]),
+    ("a pattern of 200 characters", ["a" * 200]),
+    ("100 patterns", [f"generated/{index}/**" for index in range(100)]),
+    ("dots inside a segment", ["**/.vs/**", "..x/*..cs"]),
+]
+# Values that are not an array of patterns, and array items that are not a pattern string.
+NOT_ARRAYS: list[tuple[str, Any]] = [("null", None), ("a string", "*.resx"), ("an object", {})]
+NOT_PATTERNS: list[tuple[str, Any]] = [("null", None), ("a number", 1), ("a list", ["*.resx"])]
+TOO_MANY_PATTERNS = [f"generated/{index}/**" for index in range(101)]
+PATTERN_MESSAGE = (
+    f"{FIELD}.snapshot_exclude[0] must be a repository-relative glob pattern of 1 to 200 characters, without a "
+    "backslash, a control character, or an empty, '.', or '..' segment: "
+)
 
 
 # Configurations validate_config accepts: each mutates _config(), and the expected result is _expected() mutated alike.
 ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
     ("minimal configuration", _chain(), _chain()),
+    *[
+        (
+            f"snapshot_exclude {name}",
+            _set((*REPO, "snapshot_exclude"), patterns),
+            _set((*REPO, "snapshot_exclude"), patterns),
+        )
+        for name, patterns in ACCEPTED_PATTERNS
+    ],
     (
         "every optional section at its default",
         _chain(
+            _set((*REPO, "snapshot_exclude"), []),
             _set(("runtime",), "auto"),
             _set(("reviewer_effort",), None),
             _set(("re_review_scope",), {}),
@@ -857,6 +890,57 @@ REJECTED: list[Case] = [
     ),
     *_path_faults(f"{FIELD}.checkout_path", (*REPO, "checkout_path"), nullable=True),
     *[
+        (
+            f"snapshot_exclude {name}",
+            _set((*REPO, "snapshot_exclude"), value),
+            C,
+            f"{FIELD}.snapshot_exclude must be an array of glob patterns",
+        )
+        for name, value in NOT_ARRAYS
+    ],
+    (
+        "snapshot_exclude of 101 patterns",
+        _set((*REPO, "snapshot_exclude"), TOO_MANY_PATTERNS),
+        C,
+        f"{FIELD}.snapshot_exclude holds more than 100 patterns",
+    ),
+    *[
+        (
+            f"snapshot_exclude pattern {name}",
+            _set((*REPO, "snapshot_exclude"), [pattern]),
+            C,
+            PATTERN_MESSAGE + repr(pattern),
+        )
+        for name, pattern in [
+            ("empty", ""),
+            ("of 201 characters", "a" * 201),
+            ("with a backslash", "src\\*.resx"),
+            ("absolute", "/src/*.resx"),
+            ("ending in a slash", "Reports/"),
+            ("with an empty segment", "src//*.resx"),
+            ("with a parent segment", "../*.resx"),
+            ("with a parent segment inside", "src/../*.resx"),
+            ("with a current segment", "./*.resx"),
+            ("with a control character", "src/*.resx\n"),
+            ("with a delete character", "src/\x7f.resx"),
+        ]
+    ],
+    *[
+        (
+            f"snapshot_exclude pattern {name}",
+            _set((*REPO, "snapshot_exclude"), [value]),
+            C,
+            PATTERN_MESSAGE + repr(value),
+        )
+        for name, value in NOT_PATTERNS
+    ],
+    (
+        "snapshot_exclude listing a pattern twice ignoring case",
+        _set((*REPO, "snapshot_exclude"), ["**/*.resx", "Reports/**", "**/*.RESX"]),
+        C,
+        f"{FIELD}.snapshot_exclude lists '**/*.RESX' twice (patterns match ignoring case)",
+    ),
+    *[
         (f"repository {name}", _chain(REPOSITORY_REVIEWER, mutation), error, message)
         for name, mutation, error, message in _path_faults(
             f"{FIELD}.checkout_path", (*REPO, "checkout_path"), nullable=True
@@ -1172,6 +1256,30 @@ STAGES: list[Case] = [
         f"{FIELD}.checkout_path must be an absolute drive-letter path",
     ),
     (
+        "snapshot_exclude not an array",
+        _set((*REPO, "snapshot_exclude"), "*.resx"),
+        C,
+        f"{FIELD}.snapshot_exclude must be an array of glob patterns",
+    ),
+    (
+        "snapshot_exclude too long",
+        _set((*REPO, "snapshot_exclude"), TOO_MANY_PATTERNS),
+        C,
+        f"{FIELD}.snapshot_exclude holds more than 100 patterns",
+    ),
+    (
+        "snapshot_exclude pattern",
+        _set((*REPO, "snapshot_exclude"), ["../*.resx", "*.resx", "*.resx"]),
+        C,
+        PATTERN_MESSAGE + "'../*.resx'",
+    ),
+    (
+        "snapshot_exclude duplicate",
+        _set((*REPO, "snapshot_exclude"), ["*.resx", "*.Resx"]),
+        C,
+        f"{FIELD}.snapshot_exclude lists '*.Resx' twice (patterns match ignoring case)",
+    ),
+    (
         "second entry",
         _set(("repositories", "owner/later"), {"reviewer": None}),
         C,
@@ -1348,6 +1456,8 @@ VALUE_VARIANTS = {
     "contains unknown field(s): ",
     "must be a non-empty absolute Windows path",
     "must not be a filesystem root",
+    PATTERN_MESSAGE,
+    " twice (patterns match ignoring case)",
 }
 
 

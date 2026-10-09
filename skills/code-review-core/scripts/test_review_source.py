@@ -81,6 +81,9 @@ def build_checkout(checkout: Path) -> str:
 
 
 class LazySnapshotFixture(unittest.TestCase):
+    # The repository's configured snapshot_exclude globs.
+    EXCLUDE: tuple[str, ...] = ()
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-source-")
         self.addCleanup(temporary.cleanup)
@@ -96,7 +99,33 @@ class LazySnapshotFixture(unittest.TestCase):
             self.source,
             changed_paths=["src/changed.py"],
             upfront=reads_settings,
+            exclude=self.EXCLUDE,
         )
+
+    def write_run(self) -> None:
+        """The run.json and request prepare would have written around the lazy snapshot, and the read log the
+        guard's claim makes."""
+        request = {"repository": REPOSITORY, "pull_request": {"head_sha": self.head}}
+        (self.run_directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        self.state = {
+            "schema_version": 1,
+            "request_path": str(self.run_directory / "request.json"),
+            "roles": [{"id": "generic-review", "prompt_file": "p", "result_file": "r"}],
+            "source_repository": str(self.checkout),
+        }
+        self.write_state()
+        self.log = read_log(self.run_directory, "generic-review")
+        self.log.parent.mkdir()
+        self.log.touch()
+
+    def write_state(self) -> None:
+        (self.run_directory / "run.json").write_text(json.dumps(self.state), encoding="utf-8")
+
+    def main(self, *arguments: str) -> tuple[int, list[str]]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = review_source.main(list(arguments))
+        return code, out.getvalue().splitlines()
 
     def held(self) -> list[str]:
         return sorted(path.relative_to(self.source).as_posix() for path in self.source.rglob("*") if path.is_file())
@@ -298,27 +327,7 @@ class CommandTests(LazySnapshotFixture):
 
     def setUp(self) -> None:
         super().setUp()
-        request = {"repository": REPOSITORY, "pull_request": {"head_sha": self.head}}
-        (self.run_directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
-        self.state = {
-            "schema_version": 1,
-            "request_path": str(self.run_directory / "request.json"),
-            "roles": [{"id": "generic-review", "prompt_file": "p", "result_file": "r"}],
-            "source_repository": str(self.checkout),
-        }
-        self.write_state()
-        self.log = read_log(self.run_directory, "generic-review")
-        self.log.parent.mkdir()
-        self.log.touch()  # the guard's claim made it
-
-    def write_state(self) -> None:
-        (self.run_directory / "run.json").write_text(json.dumps(self.state), encoding="utf-8")
-
-    def main(self, *arguments: str) -> tuple[int, list[str]]:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            code = review_source.main(list(arguments))
-        return code, out.getvalue().splitlines()
+        self.write_run()
 
     def test_source_file_prints_the_file_and_counts_it_for_a_guarded_role(self) -> None:
         run = str(self.run_directory)
@@ -382,6 +391,101 @@ class CommandTests(LazySnapshotFixture):
                 # The prompt hands the reviewer one shell command line, so it runs through a shell exactly as written.
                 shell = subprocess.run(command, shell=True, capture_output=True, text=True, encoding="utf-8")  # noqa: S602 - the command line under test
                 self.assertEqual((0, expected), (shell.returncode, shell.stdout), shell.stderr)
+
+
+class ConfiguredExclusionTests(LazySnapshotFixture):
+    """A repository's snapshot_exclude on the lazy checkout route: what it matches is never written or fetched."""
+
+    # A folder, a name at any depth matched ignoring case, and the changed file itself.
+    EXCLUDE = ("src/deep/**", "**/* SPACE.py", "src/changed.py")
+    CONFIGURED = ("src/deep/nested/store.py", "src/with space.py", "src/changed.py")
+
+    def test_a_configured_path_is_an_exclusion_not_a_fetchable_path_even_when_it_changed(self) -> None:
+        self.assertEqual(["pyproject.toml", "source-snapshot.json"], self.held())
+        self.assertEqual(
+            {"src/unchanged.py": blob(UNCHANGED.encode()), "assets/logo.bin": blob(b"PNG\0helper")},
+            self.manifest["fetchable"],
+        )
+        self.assertEqual(
+            {
+                "CLAUDE.md": "agent-instruction",
+                "docs/big.txt": "file-size-limit",
+                "link-to-helper": "symbolic-link",
+                **dict.fromkeys(self.CONFIGURED, "configured"),
+            },
+            self.manifest["excluded_paths"],
+        )
+        self.verify()
+
+    def test_a_fetch_or_a_search_of_a_configured_path_is_refused_with_its_reason(self) -> None:
+        for relative in self.CONFIGURED:
+            with self.subTest(path=relative):
+                self.assertEqual("configured", self.fetch(relative))
+        self.assertEqual(
+            ([("src/unchanged.py", "1", "def helper(value):")], False),
+            search_source(self.checkout, self.source, "helper", repository=REPOSITORY, commit=self.head),
+        )
+        self.write_run()
+        self.assertEqual(
+            (0, ['EXCLUDED "src/with space.py" configured']),
+            self.main(
+                "source-file", "--run", str(self.run_directory), "--role", "generic-review", "--path=src/with space.py"
+            ),
+        )
+        self.assertEqual("", self.log.read_text(encoding="utf-8"), "a refused fetch reads nothing")
+        self.assertEqual(["pyproject.toml", "source-snapshot.json"], self.held(), "nothing written")
+
+    def test_the_whole_snapshot_leaves_out_the_same_paths_and_a_changed_one_is_unavailable(self) -> None:
+        whole = self.root / "whole"
+        metadata = materialize_source_snapshot(
+            self.checkout, REPOSITORY, self.head, whole, changed_paths=["src/changed.py"], exclude=self.EXCLUDE
+        )
+        self.assertEqual(self.manifest["excluded_paths"] | {"assets/logo.bin": "binary"}, metadata["excluded_paths"])
+        self.assertEqual(["pyproject.toml", "src/unchanged.py"], sorted(metadata["source_hashes"]))
+        measured = review_runtime.measure_source_snapshot(
+            self.checkout, self.head, destination=whole, changed_paths=["src/changed.py"], exclude=self.EXCLUDE
+        )
+        self.assertEqual(3, measured.excluded["configured"])
+        diff = self.root / "diff.patch"
+        diff.write_text(
+            "diff --git a/src/changed.py b/src/changed.py\nindex 1111111..2222222 100644\n"
+            "--- a/src/changed.py\n+++ b/src/changed.py\n@@ -1 +1 @@\n-old\n+new\n",
+            encoding="utf-8",
+        )
+        for snapshot in (self.manifest, metadata):
+            self.assertEqual(["src/changed.py"], review_runtime.unavailable_sources(diff, snapshot))
+
+
+class GlobMatcherTests(unittest.TestCase):
+    def test_each_pattern_matches_whole_paths_by_segment_ignoring_case(self) -> None:
+        for pattern, path, expected in (
+            ("*.resx", "Strings.resx", True),
+            ("*.resx", "src/Strings.resx", False),  # a pattern without ** matches at the root only
+            ("**/*.resx", "Strings.resx", True),  # ** matches no segment too
+            ("**/*.resx", "a/b/c/Strings.RESX", True),
+            ("**/*.resx", "a/b/Strings.resx.cs", False),
+            ("src/*.cs", "src/a/b.cs", False),  # * stays within one segment
+            ("src/**/*.cs", "src/b.cs", True),
+            ("src/**/*.cs", "src/a/b/c.cs", True),
+            ("src/**/gen/*.cs", "src/a/gen/x/c.cs", False),
+            ("Reports/**", "reports/monthly/summary.rdlc", True),
+            ("Reports/**", "src/Reports/summary.rdlc", False),
+            ("**/*.Designer.cs", "ui/Form1.designer.CS", True),
+            ("data/?.sql", "data/a.sql", True),
+            ("data/?.sql", "data/ab.sql", False),
+            ("src/[gG]en/*.xml", "src/Gen/a.xml", True),
+            ("src/[!g]en/*.xml", "src/gen/a.xml", False),
+            ("**", "any/path/at/all.txt", True),
+            ("a/**/b/**/c", "a/x/b/y/z/c", True),
+            ("a/**/b/**/c", "a/x/y/c", False),
+        ):
+            with self.subTest(pattern=pattern, path=path):
+                self.assertIs(expected, review_runtime.glob_matcher(pattern)(path))
+
+    def test_no_pattern_excludes_nothing_and_any_pattern_may_match(self) -> None:
+        self.assertFalse(review_runtime.configured_exclusion([])("src/a.cs"))
+        either = review_runtime.configured_exclusion(["**/*.resx", "Reports/**"])
+        self.assertEqual([True, True, False], [either(path) for path in ("a/b.resx", "Reports/x", "src/a.cs")])
 
 
 if __name__ == "__main__":

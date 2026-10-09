@@ -57,6 +57,9 @@ READ_COUNT_FIELDS = ("files_read", "bytes_read")
 # fetching the head, materializing the snapshot, and writing the request and every role's prompt.
 SNAPSHOT_SOURCES = ("checkout", "checkout-lazy", "tarball")
 SNAPSHOT_FIELDS = frozenset({"source", "files", "bytes", "seconds"})
+# How many head paths the snapshot left out, by the reason its manifest records; absent from older records.
+OPTIONAL_SNAPSHOT_FIELDS = frozenset({"excluded"})
+EXCLUSION_REASON = re.compile(r"[a-z][a-z-]{0,39}")
 SNAPSHOT_PHASES = ("fetch", "materialize", "prompts")
 TITLE_MAXIMUM_LENGTH = 120
 TITLE_RULE = f"must be a single non-blank line of at most {TITLE_MAXIMUM_LENGTH} characters"
@@ -678,9 +681,16 @@ def snapshot_seconds(seconds: dict[str, float]) -> dict[str, float]:
 
 
 def describe_snapshot(snapshot: dict[str, Any]) -> str:
-    """A review's source snapshot in one line: its source, size, and the seconds of each phase of prepare."""
+    """A review's source snapshot in one line: its source, size, the paths it left out by reason, and the seconds of
+    each phase of prepare."""
     seconds = ", ".join(f"{phase} {snapshot['seconds'][phase]:.1f}s" for phase in SNAPSHOT_PHASES)
-    return f"{snapshot['source']}: {snapshot['files']:,} files, {_size(snapshot['bytes'])}; {seconds}"
+    excluded = snapshot.get("excluded") or {}
+    left_out = (
+        " (excluded: " + ", ".join(f"{reason} {count:,}" for reason, count in excluded.items()) + ")"
+        if excluded
+        else ""
+    )
+    return f"{snapshot['source']}: {snapshot['files']:,} files, {_size(snapshot['bytes'])}{left_out}; {seconds}"
 
 
 def _duration(seconds: int | None) -> str:
@@ -754,9 +764,19 @@ def _validate_read_counts(reviewer: dict[str, Any]) -> None:
 
 
 def _validate_snapshot(snapshot: Any) -> None:
-    """The source snapshot's origin, file count, byte total, and the seconds of each phase of prepare."""
-    if not isinstance(snapshot, dict) or set(snapshot) != SNAPSHOT_FIELDS:
+    """The source snapshot's origin, file count, byte total, exclusions by reason, and the seconds of each phase of
+    prepare."""
+    if (
+        not isinstance(snapshot, dict)
+        or not SNAPSHOT_FIELDS <= set(snapshot) <= SNAPSHOT_FIELDS | OPTIONAL_SNAPSHOT_FIELDS
+    ):
         raise RecordError("Review snapshot fields are malformed")
+    excluded = snapshot.get("excluded", {})
+    if not isinstance(excluded, dict) or not all(
+        isinstance(reason, str) and EXCLUSION_REASON.fullmatch(reason) and _count(count) and count > 0
+        for reason, count in excluded.items()
+    ):
+        raise RecordError("Review snapshot excluded must give a positive count for each exclusion reason")
     if not _one_of(snapshot["source"], set(SNAPSHOT_SOURCES)):
         raise RecordError("Review snapshot source is invalid")
     if not _count(snapshot["files"]) or not _count(snapshot["bytes"]):

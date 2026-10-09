@@ -47,7 +47,11 @@ REVIEWER_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # at least this share of its changed lines changed again, or at least this many lines did.
 RE_REVIEW_SCOPE_DEFAULTS = {"full_share": 0.5, "full_lines": 1000}
 OPERATIONS = {"review-prs", "update-pr-tracker", "review-insights"}
-REPOSITORY_KEYS = {"reviewer", "checkout_path"}
+REPOSITORY_KEYS = {"reviewer", "checkout_path", "snapshot_exclude"}
+# A repository's snapshot_exclude: glob patterns over snapshot-relative paths, matched as review_runtime's
+# configured_exclusion matches them.
+MAX_SNAPSHOT_EXCLUDE_PATTERNS = 100
+MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
 GITHUB_LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
@@ -209,7 +213,35 @@ def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
     )
     if reviewer["scope"] == "repository" and checkout is None:
         raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
-    return {"reviewer": reviewer, "checkout_path": checkout}
+    exclude = _validate_snapshot_exclude(entry.get("snapshot_exclude", []), f"repositories.{identity}.snapshot_exclude")
+    return {"reviewer": reviewer, "checkout_path": checkout, "snapshot_exclude": exclude}
+
+
+def _validate_snapshot_exclude(value: Any, field: str) -> list[str]:
+    """Distinct glob patterns, each a repository-relative POSIX path pattern that cannot name the snapshot's root or
+    leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment."""
+    if not isinstance(value, list):
+        raise ConfigurationError(f"{field} must be an array of glob patterns")
+    if len(value) > MAX_SNAPSHOT_EXCLUDE_PATTERNS:
+        raise ConfigurationError(f"{field} holds more than {MAX_SNAPSHOT_EXCLUDE_PATTERNS} patterns")
+    seen: set[str] = set()
+    for index, pattern in enumerate(value):
+        if (
+            not isinstance(pattern, str)
+            or not 0 < len(pattern) <= MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH
+            or "\\" in pattern
+            or re.search(r"[\x00-\x1f\x7f]", pattern)
+            or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
+        ):
+            raise ConfigurationError(
+                f"{field}[{index}] must be a repository-relative glob pattern of 1 to "
+                f"{MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH} characters, without a backslash, a control character, or an "
+                f"empty, '.', or '..' segment: {pattern!r}"
+            )
+        if pattern.casefold() in seen:
+            raise ConfigurationError(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
+        seen.add(pattern.casefold())
+    return list(value)
 
 
 def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:

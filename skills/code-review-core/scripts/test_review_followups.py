@@ -65,7 +65,9 @@ def serving(stdout: str) -> Callable[[Sequence[str]], CommandResult]:
 
 
 class GitHubSnapshotTests(unittest.TestCase):
-    def snapshot(self, members: dict[str, bytes], changed: tuple[str, ...] = ()) -> tuple[Path, dict]:
+    def snapshot(
+        self, members: dict[str, bytes], changed: tuple[str, ...] = (), exclude: tuple[str, ...] = ()
+    ) -> tuple[Path, dict]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         destination = Path(temporary.name).resolve() / "source"
@@ -76,8 +78,48 @@ class GitHubSnapshotTests(unittest.TestCase):
             destination,
             fetcher=writing(data),
             changed_paths=changed,
+            exclude=exclude,
         )
         return destination, metadata
+
+    def test_tarball_snapshot_leaves_out_configured_paths_and_a_changed_one_is_unavailable(self) -> None:
+        destination, metadata = self.snapshot(
+            {
+                "src/A.cs": b"class A {}\n",
+                "src/Strings.resx": b"<root/>\n",
+                "src/Form1.Designer.cs": b"partial class Form1 {}\n",
+                "Reports/Monthly/summary.rdlc": b"<Report/>\n",
+                "CLAUDE.md": b"instructions",
+            },
+            changed=("src/Form1.Designer.cs", "src/A.cs"),
+            exclude=("**/*.RESX", "**/*.designer.cs", "Reports/**", "CLAUDE.md"),
+        )
+        self.assertEqual(
+            {
+                "src/Strings.resx": "configured",
+                "src/Form1.Designer.cs": "configured",
+                "Reports/Monthly/summary.rdlc": "configured",
+                "CLAUDE.md": "agent-instruction",  # its own reason comes first
+            },
+            metadata["excluded_paths"],
+        )
+        self.assertEqual(["src/A.cs"], list(metadata["source_hashes"]))
+        self.assertEqual(
+            sorted([review_runtime.SOURCE_SNAPSHOT_MANIFEST, "src/A.cs"]),
+            sorted(path.relative_to(destination).as_posix() for path in destination.rglob("*") if path.is_file()),
+        )
+        review_runtime.verify_source_snapshot(destination, expected_repository="owner/repo", expected_commit=HEAD)
+        # The changed file the maintainer's exclusion matches still makes the review incomplete; the other does not.
+        diff = destination.parent / "diff.patch"
+        diff.write_text(
+            "".join(
+                f"diff --git a/{path} b/{path}\nindex 1111111..2222222 100644\n--- a/{path}\n+++ b/{path}\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+                for path in ("src/A.cs", "src/Form1.Designer.cs")
+            ),
+            encoding="utf-8",
+        )
+        self.assertEqual(["src/Form1.Designer.cs"], review_runtime.unavailable_sources(diff, metadata))
 
     def test_tarball_snapshot_strips_top_folder_and_records_exclusions(self) -> None:
         big = b"x" * (review_runtime.MAX_SOURCE_FILE_BYTES + 1)
