@@ -28,7 +28,7 @@ Validation and CI take two Python packages from PyPI, pinned in `requirements-de
 python -m pip install -r requirements-dev.txt
 ```
 
-`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. The line length is 120. `tests/run_validation.py` runs `ruff format --check` and `ruff check` on `deployer/`, `tools/`, `tests/`, `skills/`, `.claude/skills/`, and `deploy.py`, excluding none. The format check names every file it would change; run `python -m ruff format` on those files to fix it. The lint check names every finding of the rule sets `pyproject.toml` selects; fix each one. Validation also runs mypy, with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each skill's `scripts/` directory, and names every error, regression suites included.
+`pyproject.toml` configures the tools and installs nothing, so it has no `[project]` table. [Python checks](../CONTRIBUTING.md#python-checks) in the contributing guide states what validation runs with them and how to fix what each check names.
 
 Dependabot (`.github/dependabot.yml`) checks `requirements-dev.txt` weekly, on the same cadence as the actions, and groups the bumps into one pull request, with security updates in their own group. A new development dependency is a decision recorded here first.
 
@@ -58,7 +58,7 @@ The README's "Supported platforms and runtimes" table records the Claude Code, C
 
 Every action in `.github/workflows/validate.yml` is pinned to a full commit SHA with its version in a comment beside it. Dependabot (`.github/dependabot.yml`) checks the pins weekly and groups the bumps into one pull request; with Dependabot security updates enabled for the repository, a security advisory opens its own grouped pull request. Review the upstream release notes and the proposed commit before merging, and keep the version comment.
 
-`.github/workflows/deployable.yml` pins its actions the same way, and Dependabot bumps it in the same grouped pull request. `tests/run_validation.py` fails unless every action it shares with `validate.yml` carries the same SHA and version comment, so a Dependabot pull request that touches only one of them cannot merge green. The Codex CLI and Copilot CLI versions it installs by default are the README's tested versions, and validation fails when they differ; change the README row and the workflow default together.
+`.github/workflows/deployable.yml` pins its actions the same way, and Dependabot bumps it in the same grouped pull request. `tests/run_validation.py` fails unless every action it shares with `validate.yml` carries the same SHA and version comment, so a Dependabot pull request that touches only one of them cannot merge green. The Claude Code, Codex CLI, and Copilot CLI versions it installs by default, `claude-version`, `codex-version`, and `copilot-version` and the fallback a scheduled run uses, are the README's fresh-runner column; [Tested runtimes](#tested-runtimes) states the check that holds them.
 
 ### After a Dependabot pull request
 

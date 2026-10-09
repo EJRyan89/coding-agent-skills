@@ -13,13 +13,13 @@ line-ending = "auto"
 # Validation runs `ruff check` with these rule sets on the same roots it formats, and no rule or file is exempt.
 # E501 stays on: the formatter wraps code, and a string, comment, or docstring it cannot wrap is split by hand.
 # A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
-# C901 and PLR0915 cap function complexity and length at the ceilings below (#91), with no noqa for either;
+# C901 and PLR0915 cap function complexity and length at the ceilings below, with no noqa for either;
 # tests/run_validation.py refuses a raised ceiling.
 # The S prefixes select every stable bandit rule except S603 (a subprocess call without a shell) and S607 (a program
 # started by its PATH name); the S4 import rules are preview-only, which this configuration does not enable. Every
 # subprocess call here runs a declared tool as an argument list found on PATH, which skill_command_problems, the tools
 # catalogue in deployer/tools.py, and the shell-token policy already hold, so those two would flag the design itself on
-# every call (#90). Leaving them unselected exempts no finding of a selected rule.
+# every call. Leaving them unselected exempts no finding of a selected rule.
 [tool.ruff.lint]
 select = [
     "E",
@@ -48,11 +48,11 @@ select = [
     "S7",
 ]
 
-# #91's ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
+# A ratchet: the most complex function's score, lowered as each split lands. The number only goes down, never up.
 [tool.ruff.lint.mccabe]
 max-complexity = 15
 
-# #91's ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
+# A ratchet: the longest function's statement count, lowered as each split lands. It only goes down, never up.
 [tool.ruff.lint.pylint]
 max-statements = 50
 
