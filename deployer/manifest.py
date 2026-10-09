@@ -10,7 +10,7 @@ from typing import Any
 from . import fsops
 from .errors import DeployError
 from .hashing import HASH_PATTERN
-from .kinds import ADAPTERS, KINDS, SHARED, SKILL, ItemKind
+from .kinds import ADAPTERS, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
 from .source import SOURCE_ID_PATTERN, is_valid_name
 from .source_commit import COMMIT_PATTERN
@@ -18,6 +18,9 @@ from .source_commit import COMMIT_PATTERN
 MANIFEST_VERSION = 7
 # Version 7 adds agent ownership. A version 6 manifest is read as having no agents and saved as version 7, which a
 # version 6 deployer refuses, so it never rewrites a source entry and drops the agents this version owns.
+# A skill entry's agent_deps came later in version 7 without a new version: an entry without it records no agents, and
+# a deployer that predates it drops it on rewrite, which loses only the agents a skill left in place would keep, never
+# an owned item.
 OLDEST_READABLE_VERSION = 6
 OWNED_KINDS = tuple(kind.key for kind in KINDS)
 
@@ -26,16 +29,24 @@ def _by_kind() -> dict[str, dict[str, str]]:
     return {kind.key: {} for kind in KINDS}
 
 
+def _by_dependency_kind() -> dict[str, dict[str, list[str]]]:
+    return {kind.key: {} for kind in DEPENDENCY_KINDS}
+
+
 @dataclass
 class Ownership:
     hashes: dict[str, dict[str, str]] = field(default_factory=_by_kind)  # kind key -> item name -> hash
-    skill_shared_deps: dict[str, list[str]] = field(default_factory=dict)
+    # kind key -> skill name -> the items of that kind the skill was deployed with
+    skill_deps: dict[str, dict[str, list[str]]] = field(default_factory=_by_dependency_kind)
     shared_roles: dict[str, str] = field(default_factory=dict)
     requested_skills: set[str] = field(default_factory=set)
     requested_bundles: set[str] = field(default_factory=set)
 
     def of(self, kind: ItemKind) -> dict[str, str]:
         return self.hashes[kind.key]
+
+    def deps_of(self, kind: ItemKind) -> dict[str, list[str]]:
+        return self.skill_deps[kind.key]
 
     @property
     def skills(self) -> dict[str, str]:
@@ -100,7 +111,8 @@ class Manifest:
                 owned.of(kind)[name] = _hash_of(value)
                 details = value if isinstance(value, dict) else {}
                 if kind is SKILL:
-                    owned.skill_shared_deps[name] = list(details.get("shared_deps", []))
+                    for dependency in DEPENDENCY_KINDS:
+                        owned.deps_of(dependency)[name] = list(details.get(dependency.dependency_key, []))
                 elif kind is SHARED:
                     owned.shared_roles[name] = details.get("role", "owner")
         owned.requested_skills = set(entry.get("requested_skills", []))
@@ -126,10 +138,23 @@ def _hash_of(value: Any) -> str:
     return ""
 
 
-def _safe_names(values: Any) -> bool:
-    return isinstance(values, list) and all(
-        isinstance(value, str) and safe_name_problem(value, "shared dependency") is None for value in values
+def _is_agent_file(name: Any) -> bool:
+    """An agent's deployed file name: a safe name that is a valid item name followed by .md."""
+    return (
+        isinstance(name, str)
+        and safe_name_problem(name, "agent") is None
+        and name.endswith(AGENT_KIND.suffix)
+        and is_valid_name(AGENT_KIND.item_name(name))
     )
+
+
+def _valid_dependencies(values: Any, kind: ItemKind) -> bool:
+    """A skill entry's list of the items of one kind it depends on, each a name that kind's items may have."""
+    if not isinstance(values, list):
+        return False
+    if kind is AGENT_KIND:
+        return all(_is_agent_file(value) for value in values)
+    return all(isinstance(value, str) and safe_name_problem(value, "shared dependency") is None for value in values)
 
 
 def _validate_source_commit(source_id: str, entry: dict[str, Any]) -> None:
@@ -167,16 +192,21 @@ def _validate(data: dict[str, Any], path: Path) -> None:
             for name, value in items.items():
                 named_like_skill = kind in ("skills", ADAPTERS)
                 safe = isinstance(name, str) and safe_name_problem(name, "item") is None
-                agent_file = safe and name.endswith(".md") and is_valid_name(name[: -len(".md")])
                 if (
                     not safe
                     or (named_like_skill and not is_valid_name(name))
-                    or (kind == "agents" and not agent_file)
+                    or (kind == "agents" and not _is_agent_file(name))
                     or not isinstance(value, dict)
                     or not isinstance(value.get("hash"), str)
                     or not HASH_PATTERN.fullmatch(value["hash"])
                     or (kind == "shared" and value.get("role", "owner") not in ("owner", "dependency"))
-                    or (kind == "skills" and not _safe_names(value.get("shared_deps", [])))
+                    or (
+                        kind == "skills"
+                        and not all(
+                            _valid_dependencies(value.get(dependency.dependency_key, []), dependency)
+                            for dependency in DEPENDENCY_KINDS
+                        )
+                    )
                 ):
                     raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind} {name!r}")
 

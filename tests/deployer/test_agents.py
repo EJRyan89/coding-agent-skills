@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -57,10 +58,12 @@ class AgentDeploymentTests(DeployerTestCase):
 
     def test_an_agent_no_selected_skill_needs_is_removed_unless_modified(self) -> None:
         self.deploy_ok("--all")
+        self.assertEqual(["reviewer.md"], self.owned("skills")["alpha"]["agent_deps"])
         self.make_skill("alpha", "Alpha")  # no longer declares the agent
         result = self.deploy_ok("--all")
         self.assertFalse(self.agent.exists())
         self.assertEqual({}, self.owned("agents"))
+        self.assertEqual([], self.owned("skills")["alpha"]["agent_deps"])
         self.assertIn(
             "reviewer.md (agent, no selected skill needs it)", self.report_groups(result.output, "DEPLOYED")["REMOVED"]
         )
@@ -74,6 +77,62 @@ class AgentDeploymentTests(DeployerTestCase):
             "reviewer.md (agent, modified since last deploy)",
             self.report_groups(result.output, "DEPLOYED")["PRESERVED"],
         )
+
+    def test_a_modified_deselected_skill_keeps_its_agent(self) -> None:
+        self.make_skill("beta", "Beta")
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local edit\n")
+        result = self.deploy_ok(stdin=self.selection_number("beta") + "\n")
+        groups = self.report_groups(result.output, "DEPLOYED")
+        self.assertIn("alpha (modified since last deploy)", groups["PRESERVED"])
+        self.assertIn("reviewer.md (agent, needed by alpha)", groups["KEPT"])
+        self.assertEqual(self.content, self.agent.read_bytes())
+        self.assertIn("reviewer.md", self.owned("agents"))
+        self.assertEqual(["reviewer.md"], self.owned("skills")["alpha"]["agent_deps"], "carried with the skill")
+
+    def test_an_uninstall_that_preserves_a_skill_keeps_and_reports_its_agent(self) -> None:
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local edit\n")
+        preview = self.deploy_ok("--dry-run", stdin="none\n").output
+        self.assertIn("reviewer.md (agent, needed by alpha)", self.report_groups(preview, "DRY RUN")["KEEP"])
+        result = self.deploy_ok(stdin="none\n")
+        self.assertIn("reviewer.md (agent, needed by alpha)", self.report_groups(result.output, "DEPLOYED")["KEPT"])
+        self.assertEqual(self.content, self.agent.read_bytes())
+        self.assertIn("reviewer.md", self.owned("agents"))
+
+        shutil.rmtree(self.skills_dir / "alpha")
+        result = self.deploy_ok(stdin="none\n")
+        self.assertIn(
+            "reviewer.md (agent, no selected skill needs it)", self.report_groups(result.output, "DEPLOYED")["REMOVED"]
+        )
+        self.assertFalse(self.agent.exists())
+        self.assertEqual({}, self.owned("agents"))
+
+    def test_a_manifest_that_records_no_agents_for_a_skill_reads_as_none(self) -> None:
+        self.deploy_ok("--all")
+        data = self.manifest()
+        del data["sources"]["test/skills"]["skills"]["alpha"]["agent_deps"]
+        self.write_manifest(data)
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "local edit\n")
+        preview = self.deploy_ok("--dry-run", stdin="none\n").output
+        self.assertIn(
+            "reviewer.md (agent, no selected skill needs it)", self.report_groups(preview, "DRY RUN")["REMOVE"]
+        )
+        self.deploy_ok("--all", "--force-item", "alpha")
+        self.assertEqual(["reviewer.md"], self.owned("skills")["alpha"]["agent_deps"], "the next deployment records")
+
+    def test_malformed_agent_deps_in_the_manifest_are_rejected(self) -> None:
+        self.deploy_ok("--all")
+        for bad in ("reviewer", "../reviewer.md", "Bad_Name.md", 7, "reviewer.md,"):
+            with self.subTest(bad=bad):
+                data = self.manifest()
+                data["sources"]["test/skills"]["skills"]["alpha"]["agent_deps"] = [bad]
+                self.write_manifest(data)
+                self.deploy_fails("--all", pattern="Manifest entry is malformed: source 'test/skills' skills 'alpha'")
+        data = self.manifest()
+        data["sources"]["test/skills"]["skills"]["alpha"]["agent_deps"] = "reviewer.md"
+        self.write_manifest(data)
+        self.deploy_fails("--all", pattern="Manifest entry is malformed: source 'test/skills' skills 'alpha'")
 
     def test_an_unmanaged_agent_file_is_skipped_unless_forced(self) -> None:
         self.write(self.agent, "my own reviewer\n")

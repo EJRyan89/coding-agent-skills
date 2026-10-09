@@ -34,6 +34,9 @@ class ItemKind:
     removal_reason: str
     unmanaged_reason: str
     suffix: str = ""  # what the deployed file name adds to the item's own name
+    # The field of a skill's manifest entry that lists the items of this kind it was deployed with, for the kinds a
+    # skill depends on; empty for the others.
+    dependency_key: str = ""
 
     def item_name(self, deployed: str) -> str:
         """The item's own name, as the source and --force-item give it: an agent's file name without its .md."""
@@ -50,13 +53,36 @@ class ItemKind:
 SKILL = ItemKind(
     "skills", "", "skill", "Skill", "claude", "", True, "deselected or absent from source", DIFFERS_FROM_SKILL
 )
-SHARED = ItemKind("shared", SHARED_ASSET, SHARED_ASSET, "Shared asset", "claude", "", False, "obsolete", DIFFERS)
+SHARED = ItemKind(
+    "shared",
+    SHARED_ASSET,
+    SHARED_ASSET,
+    "Shared asset",
+    "claude",
+    "",
+    False,
+    "obsolete",
+    DIFFERS,
+    dependency_key="shared_deps",
+)
 ADAPTER_KIND = ItemKind(
     ADAPTERS, ADAPTER, ADAPTER, "Runtime adapter", "agents", ADAPTER_STAGING, True, "obsolete", DIFFERS
 )
 AGENT_KIND = ItemKind(
-    "agents", AGENT, AGENT, "Agent", "claude-agents", AGENT_STAGING, False, "no selected skill needs it", DIFFERS, ".md"
+    "agents",
+    AGENT,
+    AGENT,
+    "Agent",
+    "claude-agents",
+    AGENT_STAGING,
+    False,
+    "no selected skill needs it",
+    DIFFERS,
+    ".md",
+    dependency_key="agent_deps",
 )
 # In the manifest's order, which is also the order every pass over the kinds checks, writes, and reports them in.
 KINDS = (SKILL, SHARED, ADAPTER_KIND, AGENT_KIND)
 BY_LABEL = {kind.label: kind for kind in KINDS}
+# The kinds a skill depends on, which a skill left in place keeps.
+DEPENDENCY_KINDS = tuple(kind for kind in KINDS if kind.dependency_key)

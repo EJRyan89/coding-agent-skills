@@ -9,7 +9,7 @@ The deployer changes your home directory only through a journaled transaction, s
 | `~/.claude/skills/<name>` | A deployed skill or shared asset. |
 | `~/.agents/skills/<name>` | A deployed runtime adapter for Codex and Copilot CLI. |
 | `~/.claude/agents/<name>.md` | A deployed Claude Code subagent definition. |
-| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, and the last committed run ID. |
+| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, the shared assets (`shared_deps`) and agents (`agent_deps`) each skill was deployed with, and the last committed run ID. |
 | `~/.claude/deployer/config/<id>.config` | The configuration for one source, written by `python deploy.py configure`. |
 | `~/.claude/deployer/staging/<run-id>/` | One run in progress: its rendered files and its journal, `journal.jsonl`. |
 | `~/.claude/deployer/.deploy.lock.d/` | The lock held by the deployment that is running. |

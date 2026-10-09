@@ -15,7 +15,7 @@ from . import fsops, hashing, journal, platform_support, render
 from .arguments import PROG
 from .context import Context
 from .errors import DeployError, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, KINDS, MODIFIED, SHARED, SHARED_ASSET, SKILL, ItemKind
+from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
 from .names import require_safe_name
 from .paths import Paths
 from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL, ReportLine, print_report
@@ -32,8 +32,8 @@ class PlanEntry:
     """What this run does to one item: the dry run prints it, and the deployment carries out exactly that.
 
     state is what the run found at the destination: absent, wrong type, unmodified (it matches the manifest), modified,
-    unmanaged and identical, unmanaged and differs, still needed (a retained shared asset, left unread), or owned by
-    another source (an item the file system treats as another source's, left unread).
+    unmanaged and identical, unmanaged and differs, still needed (a retained shared asset or agent, left unread), or
+    owned by another source (an item the file system treats as another source's, left unread).
     """
 
     name: str
@@ -150,8 +150,8 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
     """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out.
 
     The owned items it releases come first and then the items it installs, each pass in the kinds' order. Skills are
-    planned before the rest because the others depend on them: a skill left in place keeps the shared assets it was
-    deployed with, and a runtime adapter is skipped with its skill.
+    planned before the rest because the others depend on them: a skill left in place keeps the shared assets and agents
+    it was deployed with, and a runtime adapter is skipped with its skill.
     """
     owned = context.owned
     selected, adapters = wanted[SKILL], wanted[ADAPTER_KIND]
@@ -164,15 +164,17 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
         _plan_selected(context, SKILL, name, owned.skills.get(name), staged.skill_hash(name), staged.skills[name])
         for name in selected
     ]
-    # An owned skill whose installed copy this run leaves in place keeps the shared assets it was deployed with.
+    # An owned skill whose installed copy this run leaves in place keeps the shared assets and agents it was deployed
+    # with.
     survivors = sorted(
         entry.name
         for entry in [*unselected_skills, *skills]
         if entry.action in ("SKIP", "PRESERVE") and entry.name in owned.skills
     )
-    retained = _retained_shared(context, survivors, wanted[SHARED])
+    retained = {kind: _retained(context, kind, survivors, wanted[kind]) for kind in DEPENDENCY_KINDS}
     kept = {kind: set(names) for kind, names in wanted.items()}
-    kept[SHARED] |= set(retained)
+    for kind, items in retained.items():
+        kept[kind] |= set(items)
     skipped_skills = {entry.name for entry in skills if entry.action == "SKIP"}
     adapter_entries: list[PlanEntry] = []
     for name in adapters:
@@ -196,8 +198,9 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
     return [
         *unselected_skills,
         *(
-            PlanEntry(asset, SHARED_ASSET, "still needed", "KEEP", f"needed by {reason}")
-            for asset, reason in retained.items()
+            PlanEntry(name, kind.label, "still needed", "KEEP", f"needed by {reason}")
+            for kind, items in retained.items()
+            for name, reason in items.items()
         ),
         *(
             _plan_unselected(context, kind, name, value)
@@ -315,22 +318,26 @@ def shared_to_stage(context: Context, selected: list[str], assets: dict[str, str
     return sorted(asset for asset in needed if assets.get(asset) == "owner")
 
 
-def _retained_shared(context: Context, survivors: list[str], staged_shared: list[str]) -> dict[str, str]:
-    """Owned shared assets this run does not install but keeps, each with what still needs it."""
+def _retained(context: Context, kind: ItemKind, survivors: list[str], staged: list[str]) -> dict[str, str]:
+    """Owned items of a kind skills depend on that this run does not install but keeps, each with what needs it.
+
+    A skill another source deploys can depend on a shared asset this source owns, declared there with the role
+    dependency, so another source's skills keep shared assets too. An agent is deployed only by the source whose skill
+    declares it, and two sources never own one agent, so only this source's skills keep an agent.
+    """
     required_by: dict[str, str] = {}
     for name in survivors:
-        for asset in context.owned.skill_shared_deps.get(name, []):
-            required_by.setdefault(asset, name)
-    for other, entry in sorted(context.manifest.sources.items()):
-        if other == context.source_id:
-            continue
-        for skill_entry in (entry.get("skills") or {}).values():
-            for asset in skill_entry.get("shared_deps", []):
-                required_by.setdefault(asset, f"source {other}")
+        for item in context.owned.deps_of(kind).get(name, []):
+            required_by.setdefault(item, name)
+    if kind is SHARED:
+        for other, entry in sorted(context.manifest.sources.items()):
+            if other == context.source_id:
+                continue
+            for skill_entry in (entry.get(SKILL.key) or {}).values():
+                for asset in skill_entry.get(SHARED.dependency_key, []):
+                    required_by.setdefault(asset, f"source {other}")
     return {
-        asset: required_by[asset]
-        for asset in sorted(context.owned.shared)
-        if asset not in staged_shared and asset in required_by
+        item: required_by[item] for item in sorted(context.owned.of(kind)) if item not in staged and item in required_by
     }
 
 

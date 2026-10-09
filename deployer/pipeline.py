@@ -32,7 +32,7 @@ from . import selection as selection_module
 from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
-from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, KINDS, SHARED, SKILL
+from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
@@ -89,7 +89,8 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         kind.key: {name: {"hash": value} for name, value in owned.of(kind).items()} for kind in KINDS
     }
     for name, owned_entry in recorded[SKILL.key].items():
-        owned_entry["shared_deps"] = list(owned.skill_shared_deps.get(name, []))
+        for dependency in DEPENDENCY_KINDS:
+            owned_entry[dependency.dependency_key] = list(owned.deps_of(dependency).get(name, []))
     for name, owned_entry in recorded[SHARED.key].items():
         owned_entry["role"] = owned.shared_roles.get(name, "owner")
     for entry in entries:
@@ -99,7 +100,8 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         elif entry.action in INSTALLING:
             details: dict[str, object] = {"hash": entry.staged}
             if kind is SKILL:
-                details["shared_deps"] = sorted(context.source.skills[entry.name].shared_deps)
+                details[SHARED.dependency_key] = sorted(context.source.skills[entry.name].shared_deps)
+                details[AGENT_KIND.dependency_key] = source.agent_closure(context.source, [entry.name])
             elif kind is SHARED:
                 details["role"] = "owner"
             recorded[kind.key][entry.name] = details
