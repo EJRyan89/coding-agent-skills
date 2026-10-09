@@ -46,7 +46,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -527,14 +527,24 @@ def _snapshot_reads(
     reads the snapshot as it chooses."""
     if SNAPSHOT_FETCHABLE not in snapshot:
         return []
+    manifest = None
+    if kind == "specialists" and reviewer_root is not None:
+        try:
+            manifest = load_materialized_manifest(reviewer_root)[0]
+        except SpecialistError as exc:
+            raise PipelineError(str(exc)) from exc
+    return _route_reads(dispatch, manifest, changed)
+
+
+def _route_reads(dispatch: str | None, manifest: dict[str, Any] | None, changed: list[str]) -> list[str] | None:
+    """The route a checkout's snapshot takes for a run dispatched as `dispatch` (None when it is not the Copilot CLI
+    host) whose reviewer's `manifest` (None for the generic reviewer) sees these changed files: the glob patterns of
+    the paths its lazy snapshot holds from the start, or None when it is written whole, as `_snapshot_reads` says.
+    prepare and validate-reviewer both decide the route here, so they measure the same snapshot."""
     if dispatch == "copilot-host":
         return None
-    if kind != "specialists" or reviewer_root is None:
+    if manifest is None or manifest.get("kind") != "specialists":
         return []
-    try:
-        manifest = load_materialized_manifest(reviewer_root)[0]
-    except SpecialistError as exc:
-        raise PipelineError(str(exc)) from exc
     return condition_reads(manifest, changed)
 
 
@@ -1193,9 +1203,9 @@ def _configured_entry(
 
 def _repository_reviewer(
     repository: str, config_path: Path | None, services: Services
-) -> tuple[Path, str, dict[str, Any], Path]:
-    """The configuration file, the repository's identity, its configured entry, and its checkout, once the entry
-    names a repository reviewer and the checkout's origin is the repository."""
+) -> tuple[Path, str, dict[str, Any], Path, str]:
+    """The configuration file, the repository's identity, its configured entry, its checkout, and the configured
+    runtime, once the entry names a repository reviewer and the checkout's origin is the repository."""
     config_path = (config_path or default_config_path()).resolve()
     config = load_config(config_path)
     repository = validate_repository_identity(repository)
@@ -1206,7 +1216,7 @@ def _repository_reviewer(
         raise PipelineError(f"{repository} uses the suite's generic reviewer; it has no repository reviewer")
     checkout = Path(entry["checkout_path"])
     verify_checkout_remote(checkout, repository, services.git)
-    return config_path, repository, entry, checkout
+    return config_path, repository, entry, checkout, config["runtime"]
 
 
 def _reviewer_commit(checkout: Path, reviewer: dict[str, Any], ref: str | None, services: Services) -> str:
@@ -1223,7 +1233,7 @@ def inspect_reviewer(
 ) -> list[str]:
     """Whether a repository's review skill can run as one entrypoint reviewer or needs a specialists manifest."""
     services = services or Services()
-    config_path, repository, entry, checkout = _repository_reviewer(repository, config_path, services)
+    config_path, repository, entry, checkout, _ = _repository_reviewer(repository, config_path, services)
     reviewer = entry["reviewer"]
     commit = _reviewer_commit(checkout, reviewer, ref, services)
     lines = [f"REVIEWER {reviewer['id']} {repository} commit={commit}"]
@@ -1274,19 +1284,33 @@ def _excluded_reviewer_files(manifest: dict[str, Any], exclude: Sequence[str]) -
 
 
 def _snapshot_line(
-    checkout: Path, commit: str, changed: list[str], services: Services, exclude: Sequence[str] = ()
+    checkout: Path,
+    commit: str,
+    changed: list[str],
+    services: Services,
+    exclude: Sequence[str] = (),
+    reads: Sequence[str] | None = (),
 ) -> str:
-    """The source snapshot prepare would write for this commit, or the reason prepare would refuse it."""
+    """The source snapshot prepare would write for this commit on the route `_route_reads` gave, or the reason prepare
+    would refuse it: lazy, writing the changed files, the analyzer settings, and the paths the `reads` patterns
+    match, and listing the rest as fetchable, or whole when `reads` is None."""
     size = measure_source_snapshot(
-        checkout, commit, destination=run_source_example(), runner=services.git, changed_paths=changed, exclude=exclude
+        checkout,
+        commit,
+        destination=run_source_example(),
+        runner=services.git,
+        changed_paths=changed,
+        exclude=exclude,
+        upfront=None if reads is None else lazy_upfront(reads),
     )
+    source = "checkout" if reads is None else "checkout-lazy"
     error = size.limit_error()
     if error:
-        raise PipelineError(f"The source snapshot of {commit[:12]} cannot be prepared: {error}")
+        raise PipelineError(f"The {source} source snapshot of {commit[:12]} cannot be prepared: {error}")
     excluded = ",".join(f"{reason}:{count}" for reason, count in sorted(size.excluded.items())) or "none"
     return (
-        f"SNAPSHOT {commit[:12]} files={size.files} bytes={size.bytes} limit={MAX_SOURCE_SNAPSHOT_BYTES} "
-        f"excluded={excluded}"
+        f"SNAPSHOT {commit[:12]} source={source} files={size.files} fetchable={size.fetchable} bytes={size.bytes} "
+        f"limit={MAX_SOURCE_SNAPSHOT_BYTES} excluded={excluded}"
     )
 
 
@@ -1329,6 +1353,7 @@ def validate_reviewer(
     *,
     pulls: list[int] | None = None,
     ref: str | None = None,
+    host: str | None = None,
     config_path: Path | None = None,
     services: Services | None = None,
 ) -> list[str]:
@@ -1336,27 +1361,38 @@ def validate_reviewer(
 
     Checks the manifest's structure, that every file it names exists (profiles at the trusted commit, condition
     scripts beside a local manifest), that no snapshot_exclude glob matches one of them, which include patterns
-    match nothing, and, for each pull request, which specialists its changes would start, with each condition
-    script's real result against the pull's head.
+    match nothing, and, for each pull request, where prepare would read its reviewer, the snapshot prepare would
+    write on the route it would take, and which specialists its changes would start, with each condition script's
+    real result against the pull's head. `host` decides an auto runtime as prepare's does; only an entrypoint
+    reviewer's route depends on the runtime.
     """
     services = services or Services()
-    config_path, repository, entry, checkout = _repository_reviewer(repository, config_path, services)
+    config_path, repository, entry, checkout, runtime = _repository_reviewer(repository, config_path, services)
     reviewer, exclude = entry["reviewer"], entry["snapshot_exclude"]
-    targets = _validation_targets(repository, checkout, reviewer, pulls, ref, services)
+    targets = _validation_targets(repository, checkout, reviewer, pulls, ref, config_path, services)
     lines: list[str] = []
     checked: set[str] = set()
     with tempfile.TemporaryDirectory(prefix="code-review-validate-") as temporary:
         scratch = Path(temporary)
-        for index, (commit, pull) in enumerate(targets):
-            resolved = resolve_reviewer(
-                reviewer,
-                checkout=checkout,
-                commit=commit,
-                config_path=config_path,
-                repository=repository,
-                runner=services.git,
-            )
-            manifest = resolved.manifest
+        for index, target in enumerate(targets):
+            pull = target.pull
+            changed: list[str] = []
+            pull_lines: list[str] = []
+            if pull is not None:
+                changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
+                pull_lines = [
+                    f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
+                    f"head={pull['headRefOid'][:12]} files={len(changed)} reviewer={target.source}",
+                    *(f"NOTE {note}" for note in target.notes),
+                ]
+            if target.commit is None or target.resolved is None:
+                # The suite's generic reviewer stands in, on the lazy snapshot prepare gives it.
+                lines.extend(pull_lines)
+                if pull is not None:
+                    lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude))
+                lines.append(f"GENERIC files={len(changed)} (the suite's generic reviewer reviews it)")
+                continue
+            commit, manifest = target.commit, target.resolved.manifest
             root = scratch / f"reviewer-{index}"
             hashes = materialize_reviewer(
                 checkout,
@@ -1365,7 +1401,7 @@ def validate_reviewer(
                 root,
                 runner=services.git,
                 guideline_commit=pull["baseRefOid"] if pull else None,
-                local_root=resolved.local_root,
+                local_root=target.resolved.local_root,
             )
             kind = "specialists" if manifest.get("kind") == "specialists" else "entrypoint"
             excluded = _excluded_reviewer_files(manifest, exclude)
@@ -1377,64 +1413,93 @@ def validate_reviewer(
             if commit not in checked:
                 checked.add(commit)
                 lines.append(
-                    f"REVIEWER {manifest['id']} {kind} source={resolved.source} {resolved.location} commit={commit}"
+                    f"REVIEWER {manifest['id']} {kind} source={target.resolved.source} {target.resolved.location} "
+                    f"commit={commit}"
                 )
                 lines.append(f"FILES {len(hashes)} found")
                 lines.extend(_unmatched_patterns(manifest, repository_files(checkout, commit, services.git)))
+            # Only an entrypoint reviewer can run on the Copilot CLI host, whose snapshot is whole.
+            dispatch = choose_dispatch(services.resolve_runtime(runtime, host), kind) if kind == "entrypoint" else None
+            reads = _route_reads(dispatch, manifest, changed)
+            lines.extend(pull_lines)
             if pull is None:
-                lines.append(_snapshot_line(checkout, commit, [], services, exclude))
+                lines.append(_snapshot_line(checkout, commit, [], services, exclude, reads))
                 continue
-            changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
-            lines.append(
-                f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
-                f"head={pull['headRefOid'][:12]} files={len(changed)}"
-            )
-            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude))
+            lines.append(_snapshot_line(checkout, pull["headRefOid"], changed, services, exclude, reads))
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
-            results: dict[str, bool] = {}
-            condition = functools.partial(
-                _route_condition,
-                checkout=checkout,
-                repository=repository,
-                head=pull["headRefOid"],
-                changed=changed,
-                reviewer_root=root,
-                manifest=manifest,
-                source=scratch / f"source-{index}",
-                work=scratch / f"conditions-{index}",
-                results=results,
-                services=services,
-                exclude=exclude,
-            )
-            routes = route(manifest, changed, condition)
-            lines.extend(f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items())
-            specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
-            for identity, files in routes.items():
-                model, note = specialist_model(specialists[identity], root)
-                effort = specialists[identity].get("effort")
-                lines.append(
-                    f"ROUTE {identity} files={len(files)}"
-                    + (f" model={model}" if model else "")
-                    + (f" effort={effort}" if effort else "")
-                )
-                lines.extend([f"NOTE {note}"] if note else [])
-            if not routes:
-                lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
-                continue
-            outside = uncovered(manifest, changed)
-            lines.extend(f"UNCOVERED {path}" for path in outside)
-            if outside and manifest.get("uncovered", "review") == "ignore":
-                lines.append(
-                    f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record lists them)"
-                )
-            elif outside:
-                lines.append(
-                    f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer reviews them)"
-                )
+            routing = _Routing(checkout, repository, pull["headRefOid"], root, scratch, index, services, exclude)
+            lines.extend(_routing_lines(manifest, changed, routing))
     lines.append("VALID")
     return lines
+
+
+class _Routing(NamedTuple):
+    """Where validate-reviewer evaluates one pull request's routing conditions, as a review would."""
+
+    checkout: Path
+    repository: str
+    head: str
+    reviewer_root: Path
+    scratch: Path
+    target: int  # the target's position, which names its scratch folders
+    services: Services
+    exclude: Sequence[str]
+
+
+def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routing) -> list[str]:
+    """What a specialists manifest does with a pull request's changes: each condition's result, each route with its
+    settings, and the changed files no route covers."""
+    results: dict[str, bool] = {}
+    condition = functools.partial(
+        _route_condition,
+        checkout=routing.checkout,
+        repository=routing.repository,
+        head=routing.head,
+        changed=changed,
+        reviewer_root=routing.reviewer_root,
+        manifest=manifest,
+        source=routing.scratch / f"source-{routing.target}",
+        work=routing.scratch / f"conditions-{routing.target}",
+        results=results,
+        services=routing.services,
+        exclude=routing.exclude,
+    )
+    routes = route(manifest, changed, condition)
+    lines = [f"CONDITION {name} {'open' if value else 'closed'}" for name, value in results.items()]
+    specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
+    for identity, files in routes.items():
+        model, note = specialist_model(specialists[identity], routing.reviewer_root)
+        effort = specialists[identity].get("effort")
+        lines.append(
+            f"ROUTE {identity} files={len(files)}"
+            + (f" model={model}" if model else "")
+            + (f" effort={effort}" if effort else "")
+        )
+        lines.extend([f"NOTE {note}"] if note else [])
+    if not routes:
+        lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
+        return lines
+    outside = uncovered(manifest, changed)
+    lines.extend(f"UNCOVERED {path}" for path in outside)
+    if outside and manifest.get("uncovered", "review") == "ignore":
+        lines.append(f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record lists them)")
+    elif outside:
+        lines.append(f"GENERIC files={len(outside)} (no specialist covers them; the generic reviewer reviews them)")
+    return lines
+
+
+class _ValidationTarget(NamedTuple):
+    """One reviewer validate-reviewer checks: the commit it is read from and what it resolved to there, the pull
+    request it reviews, the review.adapter.source prepare would record, and prepare's notes on a fallback. `commit`
+    and `resolved` are None where the suite's generic reviewer stands in for the repository's."""
+
+    commit: str | None
+    resolved: ResolvedReviewer | None
+    pull: dict[str, Any] | None
+    source: str | None
+    notes: list[str]
 
 
 def _validation_targets(
@@ -1443,30 +1508,45 @@ def _validation_targets(
     reviewer: dict[str, Any],
     pulls: list[int] | None,
     ref: str | None,
+    config_path: Path,
     services: Services,
-) -> list[tuple[str, dict[str, Any] | None]]:
-    """Each commit to read the reviewer from, with the pull request it validates against: for each pull request, its
-    trusted ref or base, once both of its commits are local; with none, --ref, the trusted ref, or origin's default."""
-    targets: list[tuple[str, dict[str, Any] | None]] = []
+) -> list[_ValidationTarget]:
+    """Each reviewer to validate, resolved before any is materialized: for each pull request, once both of its
+    commits are local, the one prepare would read (the trusted ref or the base, else the default branch's tip, else
+    the generic reviewer); with none, the reviewer at --ref, the trusted ref, or origin's default."""
+    targets: list[_ValidationTarget] = []
     for number in pulls or []:
         fetched = validate_canary_pull(
             services.github.get_pull(repository, number), repository=repository, number=number
         )
         ensure_local_commit(checkout, fetched["headRefOid"], f"refs/pull/{number}/head", services.git)
         ensure_local_commit(checkout, fetched["baseRefOid"], f"refs/heads/{fetched['baseRefName']}", services.git)
-        targets.append(
-            (
-                resolve_reviewer_commit(
-                    checkout,
-                    reviewer["trusted_ref"] or fetched["baseRefOid"],
-                    head_sha=fetched["headRefOid"],
-                    runner=services.git,
-                ),
-                fetched,
-            )
+        notes: list[str] = []
+        found = _resolve_reviewer_source(
+            reviewer,
+            checkout=checkout,
+            pull=fetched,
+            config_path=config_path,
+            repository=repository,
+            services=services,
+            notes=notes,
         )
+        if found is None:
+            targets.append(_ValidationTarget(None, None, fetched, "generic-fallback", notes))
+        else:
+            source, commit, resolved = found
+            targets.append(_ValidationTarget(commit, resolved, fetched, source, notes))
     if not targets:
-        targets.append((_reviewer_commit(checkout, reviewer, ref, services), None))
+        commit = _reviewer_commit(checkout, reviewer, ref, services)
+        resolved = resolve_reviewer(
+            reviewer,
+            checkout=checkout,
+            commit=commit,
+            config_path=config_path,
+            repository=repository,
+            runner=services.git,
+        )
+        targets.append(_ValidationTarget(commit, resolved, None, None, []))
     return targets
 
 
@@ -2414,6 +2494,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--pull", action="append", type=int, default=[], dest="pulls", help="pull request number to route; repeatable"
     )
     validate_parser.add_argument("--ref", help="commit to read the reviewer from when no --pull is given")
+    validate_parser.add_argument(
+        "--host",
+        choices=sorted(RUNTIME_CAPABILITIES),
+        help="the runtime prepare would run in; decides an auto runtime before PATH does, as prepare's --host does",
+    )
     return parser
 
 
@@ -2452,7 +2537,7 @@ def _run_inspect_reviewer(args: argparse.Namespace, services: Services | None) -
 
 def _run_validate_reviewer(args: argparse.Namespace, services: Services | None) -> int:
     lines = validate_reviewer(
-        args.repository, pulls=args.pulls, ref=args.ref, config_path=args.config, services=services
+        args.repository, pulls=args.pulls, ref=args.ref, host=args.host, config_path=args.config, services=services
     )
     print("\n".join(lines))
     return 0

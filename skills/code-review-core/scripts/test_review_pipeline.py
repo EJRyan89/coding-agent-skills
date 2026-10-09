@@ -3071,7 +3071,7 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertTrue(lines[0].startswith(f"REVIEWER team-specialists specialists source=local-manifest {manifest} "))
         self.assertIn("FILES 3 found", lines)
         self.assertIn("UNMATCHED docs-reviewer ^Documentation/", lines)
-        self.assertIn(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2", lines)
+        self.assertIn(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base", lines)
         self.assertIn("CONDITION window open", lines)
         self.assertIn("ROUTE python-reviewer files=1", lines)
         self.assertEqual("VALID", lines[-1])
@@ -3236,8 +3236,14 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     """validate_reviewer, pinned: every line it prints, and the order in which it reads each pull request, makes sure
     its commits are local, and resolves the commit the reviewer comes from, all before it materializes anything."""
 
-    BASE_SNAPSHOT = "files=9 bytes=1206 limit=268435456 excluded=agent-instruction:3"
-    HEAD_SNAPSHOT = "files=9 bytes=1241 limit=268435456 excluded=agent-instruction:3"
+    # Without a pull request nothing is changed, so the lazy snapshot only lists the files; the local manifest's
+    # condition declares no reads, so its pull requests' snapshots are whole.
+    BASE_SNAPSHOT = "source=checkout-lazy files=0 fetchable=9 bytes=0 limit=268435456 excluded=agent-instruction:3"
+    HEAD_SNAPSHOT = "source=checkout files=9 fetchable=0 bytes=1241 limit=268435456 excluded=agent-instruction:3"
+    # An entrypoint reviewer's pull request writes only its changed files; one of the two is CLAUDE.md, never held.
+    ENTRYPOINT_SNAPSHOT = (
+        "source=checkout-lazy files=1 fetchable=8 bytes=75 limit=268435456 excluded=agent-instruction:3"
+    )
     GENERIC = "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)"
 
     def setUp(self) -> None:
@@ -3277,9 +3283,11 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     def reviewer_line(self) -> str:
         return f"REVIEWER team-specialists specialists source=local-manifest {self.manifest} commit={self.base}"
 
-    def pull_lines(self, number: int, head: str, files: int, snapshot: str, routed: int) -> list[str]:
+    def pull_lines(
+        self, number: int, head: str, files: int, snapshot: str, routed: int, source: str = "base"
+    ) -> list[str]:
         return [
-            f"PULL {REPOSITORY}#{number} base={self.base[:12]} head={head[:12]} files={files}",
+            f"PULL {REPOSITORY}#{number} base={self.base[:12]} head={head[:12]} files={files} reviewer={source}",
             f"SNAPSHOT {head[:12]} {snapshot}",
             "CONDITION window open",
             f"ROUTE python-reviewer files={routed}",
@@ -3358,7 +3366,12 @@ class ValidateReviewerSequenceTests(PipelineFixture):
         self.use("refs/heads/main")
         lines, events, reads = self.validate(pulls=[12])
         self.assertEqual(
-            [self.reviewer_line(), "FILES 3 found", *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1), "VALID"],
+            [
+                self.reviewer_line(),
+                "FILES 3 found",
+                *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1, "trusted-ref"),
+                "VALID",
+            ],
             lines,
         )
         self.assertEqual(
@@ -3381,7 +3394,13 @@ class ValidateReviewerSequenceTests(PipelineFixture):
                 self.reviewer_line(),
                 "FILES 3 found",
                 *self.pull_lines(12, self.head, 2, self.HEAD_SNAPSHOT, 1),
-                *self.pull_lines(13, later, 3, "files=10 bytes=1247 limit=268435456 excluded=agent-instruction:3", 2),
+                *self.pull_lines(
+                    13,
+                    later,
+                    3,
+                    "source=checkout files=10 fetchable=0 bytes=1247 limit=268435456 excluded=agent-instruction:3",
+                    2,
+                ),
                 "VALID",
             ],
             lines,
@@ -3400,19 +3419,21 @@ class ValidateReviewerSequenceTests(PipelineFixture):
         )
         self.assertEqual([f"repos/{REPOSITORY}/pulls/{number}" for number in (12, 13, 12, 13)], reads)
 
+    def entrypoint_lines(self, snapshot: str) -> list[str]:
+        return [
+            f"REVIEWER fixture-review entrypoint source=repository-manifest review/entrypoint.json commit={self.base}",
+            "FILES 2 found",
+            f"PULL {REPOSITORY}#12 base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base",
+            f"SNAPSHOT {self.head[:12]} {snapshot}",
+            "ENTRYPOINT fixture-review files=2",
+            "VALID",
+        ]
+
     def test_an_entrypoint_reviewer_reports_its_files(self) -> None:
         self.configure(self.repository_reviewer("review/entrypoint.json"))
         self.assertEqual(
             (
-                [
-                    f"REVIEWER fixture-review entrypoint source=repository-manifest review/entrypoint.json "
-                    f"commit={self.base}",
-                    "FILES 2 found",
-                    f"PULL {REPOSITORY}#12 base={self.base[:12]} head={self.head[:12]} files=2",
-                    f"SNAPSHOT {self.head[:12]} {self.HEAD_SNAPSHOT}",
-                    "ENTRYPOINT fixture-review files=2",
-                    "VALID",
-                ],
+                self.entrypoint_lines(self.ENTRYPOINT_SNAPSHOT),
                 [
                     ("ensure", self.head, "refs/pull/12/head"),
                     ("ensure", self.base, "refs/heads/main"),
@@ -3422,6 +3443,14 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             ),
             self.validate(pulls=[12]),
         )
+
+    def test_an_entrypoint_reviewer_on_the_copilot_cli_host_is_measured_whole(self) -> None:
+        # The host runs no command, so it cannot fetch a file, and prepare writes its snapshot whole; the host decides
+        # an auto runtime, as it does for prepare.
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        self.services.resolve_runtime = lambda configured, host: host or "claude-code"
+        self.assertEqual(self.entrypoint_lines(self.HEAD_SNAPSHOT), self.validate(pulls=[12], host="copilot-cli")[0])
+        self.assertEqual(self.entrypoint_lines(self.ENTRYPOINT_SNAPSHOT), self.validate(pulls=[12], host="codex")[0])
 
 
 class CanaryTests(PipelineFixture):
@@ -3811,21 +3840,27 @@ class SnapshotSizeTests(PipelineFixture):
         return len(sizes), sum(sizes)
 
     def test_validate_reviewer_reports_the_snapshot_of_the_default_branch_and_of_each_pull(self) -> None:
+        # Without a pull request nothing is changed, so the lazy snapshot writes nothing and lists every file. The
+        # pull request routes a specialist whose condition declares no reads, so its snapshot is whole.
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
         self.assertEqual(0, code, err)
         files, size = self.kept(self.base)
         self.assertIn(
-            f"SNAPSHOT {self.base[:12]} files={files} bytes={size} limit=268435456 excluded=agent-instruction:3",
+            f"SNAPSHOT {self.base[:12]} source=checkout-lazy files=0 fetchable={files} bytes=0 limit=268435456 "
+            "excluded=agent-instruction:3",
             out.splitlines(),
         )
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         files, size = self.kept(self.head)
         lines = out.splitlines()
-        snapshot = f"SNAPSHOT {self.head[:12]} files={files} bytes={size} limit=268435456 excluded=agent-instruction:3"
+        snapshot = (
+            f"SNAPSHOT {self.head[:12]} source=checkout files={files} fetchable=0 bytes={size} limit=268435456 "
+            "excluded=agent-instruction:3"
+        )
         self.assertEqual(
             lines.index(snapshot),
-            lines.index(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2") + 1,
+            lines.index(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base") + 1,
         )
         self.assertEqual("VALID", lines[-1])
 
@@ -3844,9 +3879,9 @@ class SnapshotSizeTests(PipelineFixture):
         plumbing("update-ref", "refs/heads/unsafe", commit)
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "unsafe")
         self.assertEqual(0, code, err)
-        files, size = self.kept(self.base)
+        files, _ = self.kept(self.base)
         self.assertIn(
-            f"SNAPSHOT {commit[:12]} files={files} bytes={size} limit=268435456 "
+            f"SNAPSHOT {commit[:12]} source=checkout-lazy files=0 fetchable={files} bytes=0 limit=268435456 "
             "excluded=agent-instruction:3,unsafe-path:3",
             out.splitlines(),
         )
@@ -3859,7 +3894,10 @@ class SnapshotSizeTests(PipelineFixture):
         files, _ = self.kept(self.base)
         snapshot = [line for line in out.splitlines() if line.startswith("SNAPSHOT ")]
         self.assertEqual(1, len(snapshot), out)
-        self.assertTrue(snapshot[0].startswith(f"SNAPSHOT {self.base[:12]} files={files - 4} "), snapshot)
+        self.assertTrue(
+            snapshot[0].startswith(f"SNAPSHOT {self.base[:12]} source=checkout-lazy files=0 fetchable={files - 4} "),
+            snapshot,
+        )
         self.assertTrue(snapshot[0].endswith(" excluded=agent-instruction:3,configured:4"), snapshot)
 
     def test_validate_reviewer_refuses_a_configured_exclusion_over_a_file_the_reviewer_declares(self) -> None:
@@ -3879,20 +3917,63 @@ class SnapshotSizeTests(PipelineFixture):
         self.addCleanup(run.rmdir)
         self.assertEqual(len(str(run / "source")), len(str(rp.run_source_example())))
 
-    def test_a_snapshot_over_the_size_limit_fails_naming_the_largest_directories(self) -> None:
-        # 3 MiB of text under app/: over a 2 MiB limit, though each file is under the 1 MiB per-file limit.
-        self.commit({f"app/data{index}.txt": "x" * (1024 * 1024 - 1) for index in range(3)})
+    def large_tree(self) -> tuple[str, str]:
+        """An entrypoint reviewer, whose snapshot only the Copilot CLI host writes whole, and two commits after the
+        fixture's head: one adding 3 MiB of text under app/, over a 2 MiB limit though each file is under the 1 MiB
+        per-file limit, and one changing a small file. Returns them."""
+        self.configure(self.repository_reviewer("review/entrypoint.json"))
+        self.services.resolve_runtime = lambda configured, host: host or "claude-code"
+        large = self.commit({f"app/data{index}.txt": "x" * (1024 * 1024 - 1) for index in range(3)})
+        return large, self.commit({"notes.txt": "a small change"})
+
+    def validate_size(self, number: int, *options: str) -> tuple[int, str, str]:
         with mock.patch("review_runtime.MAX_SOURCE_SNAPSHOT_BYTES", 2 * 1024 * 1024):
-            code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "feature")
+            return self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", str(number), *options)
+
+    def test_a_lazy_snapshot_counts_only_the_files_it_writes_against_the_size_limit(self) -> None:
+        # prepare writes only the changed file, so the large files it leaves unchanged count by number alone. The
+        # line names the limit this module imported, which the test lowers only where the snapshot applies it.
+        large, small = self.large_tree()
+        self.github.pulls[13] = rest_pull(13, small, large)
+        code, out, err = self.validate_size(13)
+        self.assertEqual((0, ""), (code, err), out)
+        files, _ = self.kept(small)
+        self.assertIn(
+            f"SNAPSHOT {small[:12]} source=checkout-lazy files=1 fetchable={files - 1} bytes=14 limit=268435456 "
+            "excluded=agent-instruction:3",
+            out.splitlines(),
+        )
+        self.assertEqual("VALID", out.splitlines()[-1])
+
+    def test_a_lazy_snapshot_over_the_size_limit_by_its_changed_files_fails_naming_the_largest_directories(
+        self,
+    ) -> None:
+        # It writes the changed files and the analyzer settings, which the fixture keeps under review/.
+        large, _ = self.large_tree()
+        self.github.pulls[12] = rest_pull(12, large, self.head)
+        code, out, err = self.validate_size(12)
         self.assertEqual((1, ""), (code, err))
         self.assertRegex(
             out,
-            r"^FAILED The source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
+            r"^FAILED The checkout-lazy source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
+            r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB, review 0\.0 MiB\n$",
+        )
+
+    def test_a_whole_snapshot_over_the_size_limit_fails_naming_the_largest_directories(self) -> None:
+        # The Copilot CLI host cannot fetch a file, so the same pull request's snapshot is whole and over the limit.
+        large, small = self.large_tree()
+        self.github.pulls[13] = rest_pull(13, small, large)
+        code, out, err = self.validate_size(13, "--host", "copilot-cli")
+        self.assertEqual((1, ""), (code, err))
+        self.assertRegex(
+            out,
+            r"^FAILED The checkout source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
             r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB, "
-            r"review 0\.0 MiB\n$",
+            r"review 0\.0 MiB, \(root\) 0\.0 MiB\n$",
         )
 
     def test_a_snapshot_over_the_file_count_limit_fails(self) -> None:
+        # The lazy snapshot writes none of them, but lists every one, and each counts.
         files, _ = self.kept(self.base)
         with mock.patch("review_runtime.MAX_SOURCE_SNAPSHOT_FILES", files - 1):
             code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--ref", "main")
@@ -3915,6 +3996,36 @@ class SnapshotSizeTests(PipelineFixture):
         self.assertEqual({reason: reasons.count(reason) for reason in reasons}, size.excluded)
         self.assertEqual({"agent-instruction": 3, "binary": 1, "file-size-limit": 1}, size.excluded)
         self.assertIsNone(size.limit_error())
+
+    def test_the_lazy_measurement_matches_the_lazy_snapshot_prepare_writes(self) -> None:
+        # The lazy snapshot reads only the changed file and the settings, so it judges no other file binary.
+        head = self.commit(
+            {"assets/logo.txt": "PNG\0data", "big/unchanged.txt": "y" * 3000, "big/changed.txt": "z" * 3000}
+        )
+        changed = ["big/changed.txt"]
+        with mock.patch("review_runtime.MAX_SOURCE_FILE_BYTES", 2000):
+            snapshot = self.root / "snapshot"
+            upfront = rp.lazy_upfront(())
+            size = rp.measure_source_snapshot(
+                self.checkout, head, destination=snapshot, changed_paths=changed, upfront=upfront
+            )
+            metadata = rp.materialize_source_snapshot(
+                self.checkout, REPOSITORY, head, snapshot, changed_paths=changed, upfront=upfront
+            )
+        written = [snapshot.joinpath(*relative.split("/")).stat().st_size for relative in metadata["source_hashes"]]
+        self.assertEqual(
+            (len(written), sum(written), len(metadata[rp.SNAPSHOT_FETCHABLE])), (size.files, size.bytes, size.fetchable)
+        )
+        reasons = sorted(metadata["excluded_paths"].values())
+        self.assertEqual({reason: reasons.count(reason) for reason in reasons}, size.excluded)
+        self.assertEqual({"agent-instruction": 3, "file-size-limit": 1}, size.excluded)
+        self.assertEqual((1, 3000), (size.files, size.bytes))
+        with mock.patch("review_runtime.MAX_SOURCE_SNAPSHOT_FILES", size.files + size.fetchable - 1):
+            self.assertEqual(
+                f"it would hold {size.files + size.fetchable} files, over the "
+                f"{size.files + size.fetchable - 1}-file limit",
+                size.limit_error(),
+            )
 
 
 class LocalCommitTests(unittest.TestCase):

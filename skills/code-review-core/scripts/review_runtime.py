@@ -1619,11 +1619,13 @@ class SnapshotSize:
     bytes: int
     excluded: dict[str, int]  # exclusion reason -> file count
     directories: dict[str, int]  # top-level directory ("" for root files) -> bytes kept
+    fetchable: int = 0  # the files a lazy snapshot lists to fetch later, which count toward the file-count limit only
 
     def limit_error(self) -> str | None:
         """Why prepare would refuse this snapshot, naming the largest directories, or None when it fits."""
-        if self.files > MAX_SOURCE_SNAPSHOT_FILES:
-            return f"it would hold {self.files} files, over the {MAX_SOURCE_SNAPSHOT_FILES}-file limit"
+        files = self.files + self.fetchable
+        if files > MAX_SOURCE_SNAPSHOT_FILES:
+            return f"it would hold {files} files, over the {MAX_SOURCE_SNAPSHOT_FILES}-file limit"
         if self.bytes <= MAX_SOURCE_SNAPSHOT_BYTES:
             return None
         largest = sorted(self.directories.items(), key=lambda item: (-item[1], item[0]))[:5]
@@ -1643,18 +1645,30 @@ def measure_source_snapshot(
     changed_paths: Iterable[str] = (),
     blob_reader: BlobReader = git_blob_reader,
     exclude: Sequence[str] = (),
+    upfront: Callable[[str], bool] | None = None,
 ) -> SnapshotSize:
     """Measure the snapshot materialize_source_snapshot would write for a commit at `destination`, without writing it.
 
     It applies the same exclusions, the room `destination` leaves each path included, and fails on the same
     unrepresentable entries, but not on the count or size limits, so a commit over them reports how far over it is.
+    With `upfront`, it measures the lazy snapshot: the files it would write, read and sized, and the files it would
+    list as fetchable, counted without being read, as the snapshot counts them against its limits.
     """
     excluded: dict[str, int] = {}
     directories: dict[str, int] = {}
     files = 0
     room = path_room(destination)
+    fetchable: dict[str, str] | None = None if upfront is None else {}
     members = _commit_members(
-        checkout, commit, runner, blob_reader, frozenset(changed_paths), room, configured=configured_exclusion(exclude)
+        checkout,
+        commit,
+        runner,
+        blob_reader,
+        frozenset(changed_paths),
+        room,
+        upfront=upfront,
+        fetchable=fetchable,
+        configured=configured_exclusion(exclude),
     )
     with closing(members):
         for relative, content in members:
@@ -1664,7 +1678,7 @@ def measure_source_snapshot(
             files += 1
             top = relative.split("/", 1)[0] if "/" in relative else ""
             directories[top] = directories.get(top, 0) + len(content)
-    return SnapshotSize(files, sum(directories.values()), excluded, directories)
+    return SnapshotSize(files, sum(directories.values()), excluded, directories, len(fetchable or {}))
 
 
 def _git_blob_id(algorithm: str, size: int, chunks: Iterable[bytes]) -> str:

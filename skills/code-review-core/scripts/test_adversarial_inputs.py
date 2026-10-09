@@ -620,10 +620,27 @@ class MovingHeadTests(AdversarialFixture):
 
 
 class TreeSizeTests(AdversarialFixture):
+    LARGE = files({f"app/part{index}.py": b"x = 1\n" * 4 for index in range(4)})
+
     def test_a_tree_over_the_size_limit_fails_prepare_and_leaves_no_run(self) -> None:
-        self.pull_request({**BASE, **files({f"app/part{index}.py": b"x = 1\n" * 4 for index in range(4)})})
+        # Every large file is changed, so the lazy snapshot writes each one.
+        self.pull_request({**BASE, **self.LARGE})
         with mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_BYTES", 64):
             self.assert_prepare_fails("Source snapshot exceeds the size limit")
+
+    def test_large_files_the_pull_request_leaves_unchanged_are_listed_never_written_or_counted_by_size(self) -> None:
+        # The same tree, its large files on the base: the lazy snapshot writes the changed file alone, and a reviewer
+        # that fetches the others meets the limit there.
+        changed = b"def total(items):\n    return 0\n"
+        self.pull_request({**BASE, **self.LARGE, **files({"app/service.py": changed})}, {**BASE, **self.LARGE})
+        with mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_BYTES", 64):
+            ready = self.prepare()
+        state = json.loads((ready["run"] / "run.json").read_text(encoding="utf-8"))
+        snapshot = {key: state["snapshot"][key] for key in ("source", "files", "bytes")}
+        self.assertEqual({"source": "checkout-lazy", "files": 1, "bytes": len(changed)}, snapshot)
+        manifest = json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(path.decode() for path in self.LARGE), sorted(manifest["fetchable"]))
+        self.assertEqual([], sorted((ready["run"] / "source").rglob("part*.py")))
 
 
 class AgentConfigurationTests(AdversarialFixture):
@@ -696,6 +713,20 @@ class ReviewerSourceTests(AdversarialFixture):
         notes = [line.removeprefix(f"NOTE {SELECTOR} ") for line in out.splitlines() if line.startswith("NOTE ")]
         return {**state, "run": run}, notes
 
+    def validated(self) -> tuple[str, str | None, str]:
+        """The reviewer source validate-reviewer says prepare would record, the commit it reads the reviewer from,
+        and its note on the fallback, once it prints VALID."""
+        code, out, err = self.main("validate-reviewer", "--repository", REPOSITORY, "--pull", str(NUMBER))
+        lines = out.splitlines()
+        self.assertEqual((0, "", "VALID"), (code, err, lines[-1]), out)
+        pull = next(line for line in lines if line.startswith(f"PULL {SELECTOR} "))
+        reviewer = re.search(r"^REVIEWER .* commit=([0-9a-f]+)$", out, re.MULTILINE)
+        note, snapshot, review = lines[lines.index(pull) + 1 : lines.index(pull) + 4]
+        self.assertTrue(snapshot.startswith(f"SNAPSHOT {self.github.head[:12]} source=checkout-lazy "), snapshot)
+        if reviewer is None:
+            self.assertEqual("GENERIC files=1 (the suite's generic reviewer reviews it)", review)
+        return pull.rpartition(" reviewer=")[2], reviewer and reviewer.group(1), note.removeprefix("NOTE ")
+
     def recorded(self, ready: dict[str, Any]) -> dict[str, Any]:
         if ready["kind"] == "entrypoint":
             result = {
@@ -736,6 +767,7 @@ class ReviewerSourceTests(AdversarialFixture):
                 adapter = ready["adapter"]
                 self.assertEqual((source, commit), (adapter["source"], adapter["source_commit"]))
                 self.assertRegex(notes[-1], rf"\bbase {base[:12]} .* review skill {re.escape(self.SKILL)}\b")
+                self.assertEqual((source, commit, notes[-1]), self.validated())
                 reviewer = ready["run"] / "reviewer"
                 if commit is None:
                     self.assertEqual(("generic", None), (ready["kind"], ready["reviewer_root"]))

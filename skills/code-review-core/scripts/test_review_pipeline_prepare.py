@@ -2212,6 +2212,17 @@ class RepositoryReviewerTests(PrepareFixture):
         for role in roles:
             self.assertNotIn("source-file", self.text_file(f"work/{role}.prompt.md"))
 
+    def test_the_size_limit_holds_for_the_files_each_route_writes(self) -> None:
+        # At a limit of exactly what the lazy route writes, the same pull request fits lazily and not whole.
+        written = len(HEAD_FILES["app/service.py"]) + len(BASE_FILES["review/rules.md"])
+        with mock.patch.object(review_runtime, "MAX_SOURCE_SNAPSHOT_BYTES", written):
+            self.configure(self.repository("review/declared.json", trusted_ref="refs/heads/reviewers"))
+            result, _ = self.prepare()
+            self.assertEqual(("checkout-lazy", written), (result["snapshot"]["source"], result["snapshot"]["bytes"]))
+            self.configure(self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"))
+            with self.assertRaisesRegex(RuntimeContractError, "^Source snapshot exceeds the size limit$"):
+                self.prepare(run_directory=self.root / "whole run")
+
     def test_a_condition_that_declares_its_reads_keeps_the_snapshot_lazy_and_decides_as_on_the_whole_one(self) -> None:
         self.configure(self.repository("review/declared.json", trusted_ref="refs/heads/reviewers"))
         result, _ = self.prepare()
