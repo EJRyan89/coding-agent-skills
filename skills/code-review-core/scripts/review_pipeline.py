@@ -129,6 +129,7 @@ from review_runtime import (
     resolve_reviewer_commit,
     resolve_runtime,
     snapshot_bytes,
+    stamp_source_snapshot,
     verify_checkout_remote,
     write_adapter_request,
 )
@@ -929,6 +930,10 @@ def _prepare_run(
         ):
             manifest = _complete_snapshot(repository_path, repository, head, source, changed, services, snapshot)
         lazy = SNAPSHOT_FETCHABLE in manifest
+        # The Copilot CLI host starts in a process of its own, so it checks the snapshot against this stamp.
+        stamp = None
+        if dispatch == "copilot-host":
+            stamp = stamp_source_snapshot(source, expected_repository=repository, expected_commit=head)
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
         if review.previous is not None and scope is not None:  # a re-review, which always names its scope
@@ -997,6 +1002,8 @@ def _prepare_run(
             "snapshot": snapshot,
             # The repository a lazy snapshot's reviewers fetch files from, by blob id; None for a whole snapshot.
             "source_repository": str(repository_path) if lazy and repository_path is not None else None,
+            # The snapshot's stamp, taken before anything untrusted ran, for the Copilot CLI host; None otherwise.
+            "snapshot_stamp": stamp,
             # Each role's distinct snapshot files read and their bytes, as check reduces the guard's read log.
             "reads": {},
             "notes": notes,
@@ -1647,6 +1654,7 @@ def run_host(run: Path, token: str, services: Services) -> str:
             request_path=Path(state["request_path"]),
             result_path=Path(state["result_path"]),
             staging_path=staging_path(run, attempt),
+            snapshot_stamp=state.get("snapshot_stamp"),  # a run prepared before stamps has none
             promote=promote,
             diagnostic_path=run / f"copilot-diagnostic-{attempt}.jsonl",
             isolation_root=run / f"copilot-isolation-{attempt}",

@@ -557,7 +557,9 @@ class GenericReviewTests(PipelineFixture):
                     ready = self.prepare(force=True)
                 source = ready["run"] / "source"
                 self.assertTrue((source / "app" / "service.py").is_file())
-                self.assertEqual([], [path for path in reads if path.is_relative_to(source)])
+                # Only the manifest is read, as verification always reads it; no file is read back to be hashed.
+                manifest = source / "source-snapshot.json"
+                self.assertEqual([], [path for path in reads if path.is_relative_to(source) and path != manifest])
 
     def test_prepare_check_finalize_records_a_generic_review(self) -> None:
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
@@ -2597,6 +2599,22 @@ class CopilotHostTests(PipelineFixture):
                 with self.assertRaises(SystemExit) as raised:
                     self.run_main("wait", "--run", self.run_path, "--timeout", timeout)
                 self.assertEqual(2, raised.exception.code)
+
+    def test_a_snapshot_file_changed_after_prepare_fails_the_host_before_copilot_starts(self) -> None:
+        source = self.run_directory / "source"
+        changed = next(path for path in sorted(source.rglob("*.py")) if path.is_file())
+        changed.write_bytes(changed.read_bytes() + b"# written after prepare\n")
+        self.run_main("dispatch", "--run", self.run_path)
+        self.assertEqual(0, self.run_host()[0])
+        self.assertEqual(0, self.copilot_calls, "Copilot never starts on a changed snapshot")
+        self.assertEqual(
+            (
+                1,
+                f"FAILED fixture-copilot: Source snapshot hash mismatch: {changed.relative_to(source).as_posix()}\n",
+                "",
+            ),
+            self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
+        )
 
     def test_wait_reports_a_failed_host_by_its_reviewer(self) -> None:
         self.review = "failed"

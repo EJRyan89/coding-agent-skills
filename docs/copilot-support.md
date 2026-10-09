@@ -51,7 +51,7 @@ The bounded host runs a repository entrypoint reviewer. It requires GitHub Copil
 - runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values;
 - disables custom instructions, built-in MCP servers, remote delegation, interactive questions, shell, URL, and memory tools;
 - verifies the exact file set and SHA-256 hashes of the trusted materialized reviewer;
-- requires the diff and verified source snapshot to be inside the isolated review run;
+- requires the diff and source snapshot to be inside the isolated review run, and checks the snapshot against the stamp `prepare` took, re-reading only what can have changed since ("Source snapshots" in [Code-review operations](code-review-operations.md#source-snapshots));
 - grants read access to the isolated review run and trusted materialized reviewer only;
 - grants write access only to the protocol result path;
 - names the exact trusted materialized entrypoint in the prompt; and
