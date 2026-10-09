@@ -22,11 +22,15 @@ from review_io import PersistenceError, atomic_write_json, atomic_write_text, re
 from review_records import (
     ANALYZER_RULE,
     MODEL_RULE,
+    SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
     TITLE_RULE,
+    RecordError,
     valid_analyzer,
     valid_model,
     valid_title,
+    validate_dispositions,
+    validate_repeat,
 )
 from review_reviewers import frontmatter_value
 from review_runtime import (
@@ -49,8 +53,6 @@ SEVERITY = {
     "SHOULD FIX": "SHOULD_FIX",
     "SUGGESTION": "SUGGESTION",
 }
-RANK = {"MUST_FIX": 0, "SHOULD_FIX": 1, "SUGGESTION": 2}
-DISPOSITIONS = {"addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"}
 # The fields OUTPUT gives a result and each of its findings; a result with any other is invalid.
 RESULT_FIELDS = {"model", "summary", "findings", "prior_dispositions", "comment_dispositions"}
 FINDING_FIELDS = {"path", "line", "severity", "title", "category", "body", "analyzer", "repeats"}
@@ -1118,10 +1120,10 @@ def load_role_result(
     findings = value["findings"]
     for index, finding in enumerate(findings):
         _check_finding(role, index, finding, added, tools)
-    dispositions = _role_dispositions(name, value.get("prior_dispositions"), "finding_id", role["prior_ids"], "prior")
+    dispositions = _role_dispositions(name, value.get("prior_dispositions"), "finding_id", role["prior_ids"], "Prior")
     comment_ids = role.get("comment_ids", [])
     comment_dispositions = _role_dispositions(
-        name, value.get("comment_dispositions", [] if not comment_ids else None), "comment_id", comment_ids, "comment"
+        name, value.get("comment_dispositions", [] if not comment_ids else None), "comment_id", comment_ids, "Comment"
     )
     if role["dispositions_only"] and findings:
         raise SpecialistError(f"{name}: disposition-only review returned findings")
@@ -1138,10 +1140,12 @@ def load_role_result(
 def _check_repeats(
     name: str, findings: list[dict[str, Any]], dispositions: list[dict[str, Any]], role: dict[str, Any]
 ) -> None:
-    """A finding's `repeats` is the index of another finding in the result that is not itself a repeat, or a prior
-    finding the role judged still present; either way at least as severe."""
+    """A finding's `repeats` is the index of another finding in the result or a prior finding listed for the role,
+    as validate_repeat requires."""
     judged = {item["finding_id"]: item["disposition"] for item in dispositions}
-    for index, finding in enumerate(findings):
+    # Severities as the record spells them, since a role may write MUST FIX for MUST_FIX.
+    normalized = [{**finding, "severity": SEVERITY[finding["severity"]]} for finding in findings]
+    for index, finding in enumerate(normalized):
         if "repeats" not in finding:
             continue
         target = finding["repeats"]
@@ -1150,36 +1154,17 @@ def _check_repeats(
                 f"{name}: finding {index} repeats must be the index of another finding in this "
                 "result or a prior finding ID"
             )
-        if isinstance(target, int):
-            if not 0 <= target < len(findings):
-                raise SpecialistError(
-                    f"{name}: finding {index} repeats {target}, which is not a finding in this result"
-                )
-            if target == index:
-                raise SpecialistError(f"{name}: finding {index} cannot repeat itself")
-            if "repeats" in findings[target]:
-                raise SpecialistError(
-                    f"{name}: finding {index} repeats finding {target}, which is itself a repeat; "
-                    "give the finding that one repeats"
-                )
-            severity = SEVERITY[findings[target]["severity"]]
-        else:
-            if target not in role["prior_ids"]:
-                raise SpecialistError(
-                    f"{name}: finding {index} repeats {target}, which is not a prior finding listed for you"
-                )
-            if judged.get(target) not in {"still_present", "partially_addressed"}:
-                raise SpecialistError(
-                    f"{name}: finding {index} repeats {target}, so mark that prior finding "
-                    "still_present or partially_addressed"
-                )
-            severity = role.get("prior_severities", {}).get(target)
-            if severity not in RANK:
-                raise SpecialistError(f"{name}: finding {index} repeats {target}, whose severity is unknown")
-        if RANK[severity] > RANK[SEVERITY[finding["severity"]]]:
+        if isinstance(target, int) and not 0 <= target < len(findings):
+            raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a finding in this result")
+        if isinstance(target, str) and target not in role["prior_ids"]:
             raise SpecialistError(
-                f"{name}: finding {index} repeats a less severe finding; link a finding only to one at least as severe"
+                f"{name}: finding {index} repeats {target}, which is not a prior finding listed for you"
             )
+        linked = normalized[target] if isinstance(target, int) else None
+        try:
+            validate_repeat(index, finding, linked, judged, role.get("prior_severities", {}))
+        except RecordError as exc:
+            raise SpecialistError(f"{name}: {exc}") from exc
 
 
 def _resolve_repeats(merged: list[dict[str, Any]], prior_severities: dict[str, str]) -> dict[int, Any]:
@@ -1196,32 +1181,17 @@ def _resolve_repeats(merged: list[dict[str, Any]], prior_severities: dict[str, s
         if link is None or (isinstance(link, dict) and id(link) in seen):
             continue
         severity = prior_severities.get(link) if isinstance(link, str) else link["severity"]
-        if severity in RANK and RANK[severity] <= RANK[item["severity"]]:
+        if severity in SEVERITY_RANK and SEVERITY_RANK[severity] >= SEVERITY_RANK[item["severity"]]:
             resolved[index] = link if isinstance(link, str) else position[id(link)]
     return resolved
 
 
-def _role_dispositions(name: str, dispositions: Any, key: str, ids: list[str], what: str) -> list[dict[str, Any]]:
+def _role_dispositions(name: str, dispositions: Any, key: str, ids: list[str], label: str) -> list[dict[str, Any]]:
     """Exactly one disposition, with a rationale, for each prior finding or review comment the role was given."""
-    if not isinstance(dispositions, list):
-        raise SpecialistError(f"{name}: {what}_dispositions must be an array")
-    expected = set(ids)
-    seen: set[str] = set()
-    for item in dispositions:
-        if not isinstance(item, dict) or set(item) != {key, "disposition", "rationale"}:
-            raise SpecialistError(f"{name}: {what} disposition fields do not match")
-        identifier = item[key]
-        # Check types before set membership: an unhashable value (a list or object) must be a validation error
-        # the orchestrator can retry, not a crash.
-        if not isinstance(identifier, str) or identifier not in expected or identifier in seen:
-            raise SpecialistError(f"{name}: unexpected or duplicate disposition {identifier!r}")
-        if not isinstance(item["disposition"], str) or item["disposition"] not in DISPOSITIONS:
-            raise SpecialistError(f"{name}: invalid disposition for {identifier}")
-        if not isinstance(item["rationale"], str) or not item["rationale"].strip():
-            raise SpecialistError(f"{name}: disposition {identifier} needs a rationale")
-        seen.add(identifier)
-    if seen != expected:
-        raise SpecialistError(f"{name}: missing dispositions for {', '.join(sorted(expected - seen))}")
+    try:
+        validate_dispositions(dispositions, key, set(ids), label)
+    except RecordError as exc:
+        raise SpecialistError(f"{name}: {exc}") from exc
     return dispositions
 
 
@@ -1297,9 +1267,9 @@ def assemble(plan: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
                 merged.append(candidate)
                 continue
             # Keep the most severe finding's wording and category; on equal severity, the more detailed one.
-            replaces = (RANK[candidate["severity"]], -len(candidate["body"])) < (
-                RANK[duplicate["severity"]],
-                -len(duplicate["body"]),
+            replaces = (SEVERITY_RANK[candidate["severity"]], len(candidate["body"])) > (
+                SEVERITY_RANK[duplicate["severity"]],
+                len(duplicate["body"]),
             )
             if replaces:
                 for field in ("severity", "title", "body", "category"):

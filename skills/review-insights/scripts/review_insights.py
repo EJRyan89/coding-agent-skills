@@ -51,7 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_synthesis as synthesis_stage
 from console import use_utf8_output
 from git_client import GitClient, GitError
-from review_archive import pull_records
+from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
     ConfigurationError,
     load_config,
@@ -178,9 +178,23 @@ def parse_date(value: str) -> date:
         raise argparse.ArgumentTypeError(f"invalid ISO date: {value!r}") from exc
 
 
+class RecordPairs:
+    """The review record pairs a report reads, each validated once by its JSON path however many stages read it."""
+
+    def __init__(self) -> None:
+        self.validated: dict[Path, dict[str, Any]] = {}
+
+    def read(self, json_path: Path) -> dict[str, Any]:
+        if json_path not in self.validated:
+            self.validated[json_path] = validate_record_pair(json_path, json_path.with_suffix(".md"))
+        return self.validated[json_path]
+
+
 def collect_records(
-    archive_root: Path, repositories: list[str], start: date, end: date
+    archive_root: Path, repositories: list[str], start: date, end: date, pairs: RecordPairs
 ) -> list[tuple[Path, dict[str, Any]]]:
+    """The records reviewed in the range. Every pair of the repositories is validated, in range or not, so `pairs`
+    holds them all for the stages after this one."""
     if start > end:
         raise InsightError("Start date must not be after end date")
     normalized = [validate_repository_identity(value) for value in repositories]
@@ -188,14 +202,9 @@ def collect_records(
         raise InsightError("Repositories must be a non-empty unique list")
     records: list[tuple[Path, dict[str, Any]]] = []
     for repository in normalized:
-        owner, name = repository.split("/", 1)
-        base = archive_root / owner / name / "pulls"
-        if not base.exists():
-            continue
-        for json_path in base.glob("*/review*.json"):
-            markdown_path = json_path.with_suffix(".md")
+        for json_path in record_files(archive_root, repository):
             try:
-                record = validate_record_pair(json_path, markdown_path)
+                record = pairs.read(json_path)
                 reviewed = date.fromisoformat(record["review"]["reviewed_at"][:10])
             except (KeyError, ValueError, OSError, RecordError) as exc:
                 raise InsightError(f"Invalid review pair {json_path}: {exc}") from exc
@@ -239,7 +248,7 @@ def raised_by(record: dict[str, Any], finding: dict[str, Any]) -> list[tuple[str
     return named or [(part, UNKNOWN_MODEL) for part in parts]
 
 
-def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]]) -> Ledgers:
+def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]], pairs: RecordPairs) -> Ledgers:
     """The ledger entry of every finding of each analyzed pull request, and each entry's outcome, read from every
     review of it, in range or not. An entry is read from the ledger that ends its chain: the last review before the
     next initial review, which starts a new ledger. Its outcome is the latest disposition a review made after the
@@ -248,7 +257,8 @@ def read_ledgers(archive_root: Path, records: list[tuple[Path, dict[str, Any]]])
     pulls = sorted({(record["repository"].lower(), record["pull_request"]["number"]) for _, record in records})
     for repository, number in pulls:
         try:
-            history = pull_records(archive_root, repository, number)
+            directory = pull_directory(archive_root, repository, number)
+            history = [pairs.read(record_paths(directory, version)[0]) for version in list_versions(directory)]
         except (KeyError, ValueError, OSError, RecordError) as exc:
             raise InsightError(f"Invalid review history for {repository}#{number}: {exc}") from exc
         by_version = ledger_history(history)
@@ -702,7 +712,8 @@ def create_report(
     decision history, and a recorded synthesis while its input is unchanged; a changed input supersedes it."""
     if not SET_NAME.fullmatch(repository_set):
         raise InsightError("Repository-set name is invalid")
-    records = collect_records(archive_root, repositories, start, end)
+    pairs = RecordPairs()
+    records = collect_records(archive_root, repositories, start, end, pairs)
     set_root = summary_root / repository_set
     json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     earlier = load_report(json_path) if json_path.exists() else None
@@ -711,7 +722,7 @@ def create_report(
     prior_synthesis = earlier["synthesis"] if earlier else None
     for run in prior_synthesis["superseded"] if prior_synthesis else []:
         previous.update({("superseded", item["id"]): item for item in run["recommendations"]})
-    ledgers = read_ledgers(archive_root, records)
+    ledgers = read_ledgers(archive_root, records, pairs)
     report = {
         "schema_version": SCHEMA_VERSION,
         "repository_set": repository_set,
@@ -742,7 +753,7 @@ def create_report(
         json_path.parent,
         analyzed,
         flags=flags or [],
-        guidance=synthesis_stage.guidance_files(archive_root, report["repositories"]),
+        guidance=synthesis_stage.guidance_files(report["repositories"], pairs.validated),
         previous=synthesis_stage.previous_period(set_root, start, load_report),
         script=SCRIPT,
     )

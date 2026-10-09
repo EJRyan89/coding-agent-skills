@@ -55,17 +55,10 @@ def load_state(path: Path | None = None) -> dict[str, Any]:
     return validate_state(read_json(selected))
 
 
-def update_state(
-    path: Path,
-    update: Callable[[dict[str, Any]], dict[str, Any]],
-    *,
-    expected: dict[str, Any] | None = None,
-) -> dict[str, Any]:
+def update_state(path: Path, update: Callable[[dict[str, Any]], dict[str, Any]]) -> dict[str, Any]:
     lock_path = path.parent / ".locks" / "state.lock"
     with ResourceLock(lock_path):
         current = load_state(path)
-        if expected is not None and current != expected:
-            raise StateError("State changed after it was read; retry with fresh state")
         replacement = validate_state(update(current))
         atomic_write_json(path, replacement, validator=validate_state)
         return replacement

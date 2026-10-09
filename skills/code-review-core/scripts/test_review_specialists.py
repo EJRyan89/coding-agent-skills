@@ -1053,9 +1053,10 @@ class RepeatLinkTests(unittest.TestCase):
         for findings, dispositions, message in (
             ([self.finding(134, repeats=1)], [], "not a finding in this result"),
             ([self.finding(134, repeats=0)], [], "cannot repeat itself"),
-            ([self.finding(134), self.finding(135, repeats=0), self.finding(136, repeats=1)], [], "itself a repeat"),
+            ([self.finding(134), self.finding(135, repeats=0), self.finding(136, repeats=1)], [], "repeats a repeat"),
             ([self.finding(134, "SUGGESTION"), self.finding(135, "MUST_FIX", repeats=0)], [], "less severe"),
             ([self.finding(134, "MUST_FIX", repeats="v1:F001")], self.STILL, "less severe"),
+            ([self.finding(134, "SHOULD FIX"), self.finding(135, "MUST FIX", repeats=0)], [], "less severe"),
             ([self.finding(134, repeats="v1:F009")], self.STILL, "not a prior finding listed for you"),
             (
                 [self.finding(134, repeats="v1:F001")],
@@ -1623,6 +1624,29 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         )
         self.assertEqual("complete", result["status"])
 
+    def test_a_role_s_prior_dispositions_are_held_to_the_record_s_rules(self) -> None:
+        # The same validation as a reviewer result's, each fault named for the role so the orchestrator can retry it.
+        plan = self.plan([{"id": "F001", "path": "src/A.cs", "line": 2}])
+        role = next(r for r in plan["roles"] if r["id"] == "csharp-review")
+        given = {"finding_id": "F001", "disposition": "still_present", "rationale": "Line 2."}
+        for dispositions, message in (
+            (None, "prior_dispositions must be an array"),
+            ([{**given, "extra": 1}], "Prior disposition fields do not match the protocol"),
+            ([{**given, "finding_id": ["F001"]}], "Prior disposition IDs must be unique strings"),
+            ([given, given], "Prior disposition IDs must be unique strings"),
+            ([{**given, "disposition": "fixed"}], "Invalid disposition for prior finding F001"),
+            ([{**given, "rationale": " "}], "Prior finding F001 requires a rationale"),
+            ([{**given, "finding_id": "F009"}], "Prior dispositions mismatch; missing=['F001'], unknown=['F009']"),
+        ):
+            with self.subTest(message):
+                Path(role["result_file"]).write_text(
+                    json.dumps(
+                        {"model": "fixture-model", "summary": "ok", "findings": [], "prior_dispositions": dispositions}
+                    ),
+                    encoding="utf-8",
+                )
+                self.assertEqual(f"csharp-review: {message}", rs.check(plan)["csharp-review"])
+
     def test_review_comments_go_to_the_owning_specialist_and_unowned_to_generic(self) -> None:
         comments: list[dict[str, Any]] = [
             {
@@ -1672,7 +1696,9 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         result("db-review", [])
         result("csharp-review", [])
         result("generic-review", [{"comment_id": "C2", "disposition": "still_present", "rationale": "Not done."}])
-        self.assertIn("missing dispositions for C1", rs.check(plan)["db-review"])
+        self.assertEqual(
+            "db-review: Comment dispositions mismatch; missing=['C1'], unknown=[]", rs.check(plan)["db-review"]
+        )
         result("db-review", [{"comment_id": "C1", "disposition": "addressed", "rationale": "WHERE added."}])
         self.assertEqual({}, rs.check(plan))
         assembled = rs.assemble(plan, json.loads(self.request_path.read_text(encoding="utf-8")))
