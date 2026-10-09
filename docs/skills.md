@@ -337,7 +337,7 @@ Started by you or the agent. Installed with the `code-review-operations` bundle.
 - `--no-review`: update the dashboard without offering reviews for pull requests whose AI review is missing or out of date.
 - `--remove owner/repo#number ...`: leave those pull requests out of this run's dashboard, for example one you consider approved. It removes only the row and never acts on GitHub.
 
-Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
+Without `--no-review`, it lists the pull requests that need a review, asks whether to review them, and asks once for a re-review scope when any review is out of date. A review is out of date when the pull request changed since it or GitHub's answers can't show that it didn't, never because a GitHub call failed: then the dashboard keeps its previous rows, no review is offered, and the skill names each pull request it couldn't compare, with the error. The pull requests it collects are kept in a new temporary directory, never in a skill directory.
 
 To keep a pull request under a status of your own, such as `on hold` or `delegated`, ask for it: the skill records it in `dashboard.status_overrides` in the code-review configuration through a validated write, and from the next update the row sits in a section named after that status. The status can't be a state the tracker computed itself (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`). Unlike `--remove`, it lasts until you ask to clear it, which also works once the pull request has closed.
 

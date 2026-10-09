@@ -8,7 +8,8 @@
              other
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
-which any repository failed, print `FAILED <reason>` as the last line and exit 1; only a usage error exits 2.
+which any repository failed and an update in which any pull request's comparison failed, print `FAILED <reason>` as the
+last line and exit 1; only a usage error exits 2.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ from review_io import PersistenceError, atomic_write_json, map_in_order, read_js
 from review_operation import reviewed_head
 from review_records import RecordError, flagged_entries, ledger_history, ledger_id
 from update_pr_tracker import (
+    ComparisonFailures,
     Row,
     TrackerError,
     normalize_overrides,
@@ -410,6 +412,11 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             for candidate in review_candidates(rows):
                 print(f"CANDIDATE {candidate['status']} {candidate['repository']}#{candidate['number']}")
         return 0
+    except ComparisonFailures as exc:
+        for failure in exc.failures:
+            print(f"PULL_FAILED {failure.pull} {failure.reason}")
+        print(f"FAILED {exc}")
+        return 1
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {exc}")
         return 1
