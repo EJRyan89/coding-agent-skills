@@ -57,6 +57,10 @@ TOOL_ENTRY = re.compile(r"[^,\s(]+(?:\([^)]*\))?")
 AGENT_DIRECTORIES = (".claude/agents/", ".github/agents/")
 
 
+class MissingSkillError(RuntimeContractError):
+    """The configured review skill is not in the commit it was to be read from."""
+
+
 @dataclass
 class Inspection:
     """What a review skill's own files say about how it runs."""
@@ -178,7 +182,7 @@ def repository_files(checkout: Path, commit: str, runner: Runner = subprocess_ru
 def inspect_configured_skill(checkout: Path, commit: str, skill: str, runner: Runner = subprocess_runner) -> Inspection:
     files = repository_files(checkout, commit, runner)
     if skill not in files:
-        raise RuntimeContractError(f"The configured review skill {skill} does not exist at {commit[:12]}")
+        raise MissingSkillError(f"The configured review skill {skill} does not exist at {commit[:12]}")
     try:
         text = _read_git_file(checkout, commit, skill, runner).decode("utf-8-sig")
     except UnicodeError as exc:

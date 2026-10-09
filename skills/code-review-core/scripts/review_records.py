@@ -18,6 +18,17 @@ RECORD_SCHEMA_VERSION = 1
 # How a review's reviewer roles were worked, as its record's `review.dispatch` says: as native subagents (or by a Claude
 # Code Workflow), by the bounded Copilot CLI host, or inline by the orchestrating session itself, one role at a time.
 DISPATCH_MODES = ("subagents", "copilot-host", "inline")
+# Where the reviewer that ran came from, as its record's `review.adapter.source` says, with each one's scope: the
+# suite's generic reviewer the repository is configured with; a repository reviewer read at its trusted ref, at the pull
+# request's base, or at the default branch's tip because the base predates its review skill; or the generic reviewer
+# in place of a review skill that neither the base nor the tip could supply.
+ADAPTER_SOURCES = {
+    "generic": "generic",
+    "trusted-ref": "repository",
+    "base": "repository",
+    "default-branch": "repository",
+    "generic-fallback": "generic",
+}
 ADAPTER_PROTOCOL_VERSION = 1
 SEVERITIES = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
 DISPOSITIONS = {
@@ -609,6 +620,8 @@ def build_record(
                 "name": request["adapter"]["name"],
                 "protocol_version": ADAPTER_PROTOCOL_VERSION,
                 "scope": request["adapter"]["scope"],
+                # Absent from runs prepared before the source was recorded.
+                **({"source": request["adapter"]["source"]} if "source" in request["adapter"] else {}),
                 "source_commit": request["adapter"].get("source_commit"),
                 "source_hashes": request["adapter"].get("source_hashes", {}),
                 "reviewer": adapter_result["reviewer"],
@@ -691,6 +704,18 @@ def describe_snapshot(snapshot: dict[str, Any]) -> str:
         else ""
     )
     return f"{snapshot['source']}: {snapshot['files']:,} files, {_size(snapshot['bytes'])}{left_out}; {seconds}"
+
+
+def describe_reviewer_source(adapter: dict[str, Any]) -> str:
+    """Where the reviewer that ran came from, in one line, from a record's adapter that names its source."""
+    commit = _code(str(adapter["source_commit"])[:12])
+    return {
+        "generic": "the suite's generic reviewer",
+        "trusted-ref": f"the configured trusted ref, at {commit}",
+        "base": f"the pull request's base, {commit}",
+        "default-branch": f"the default branch's tip, {commit}, because the base predates the review skill",
+        "generic-fallback": "the suite's generic reviewer, in place of a review skill the base predates",
+    }[adapter["source"]]
 
 
 def _duration(seconds: int | None) -> str:
@@ -1168,22 +1193,22 @@ def _validate_source_hashes(source_hashes: Any) -> None:
 
 
 def _validate_adapter(adapter: Any) -> None:
-    """Which adapter produced the review, at which source, and how it ended."""
-    if not isinstance(adapter, dict) or set(adapter) != {
-        "name",
-        "protocol_version",
-        "scope",
-        "source_commit",
-        "source_hashes",
-        "reviewer",
-        "status",
-        "usage",
-    }:
+    """Which adapter produced the review, at which source, and how it ended. Records written before the source was
+    recorded have no `source`."""
+    fields = {"name", "protocol_version", "scope", "source_commit", "source_hashes", "reviewer", "status", "usage"}
+    if not isinstance(adapter, dict) or not fields <= set(adapter) <= fields | {"source"}:
         raise RecordError("Review adapter metadata is malformed")
     if adapter["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Review adapter protocol is unsupported")
     if not _one_of(adapter["scope"], {"generic", "repository"}):
         raise RecordError("Review adapter scope is invalid")
+    # A repository reviewer was read at a commit; the generic reviewer at none.
+    if "source" in adapter and (
+        not _one_of(adapter["source"], set(ADAPTER_SOURCES))
+        or ADAPTER_SOURCES[adapter["source"]] != adapter["scope"]
+        or (adapter["source_commit"] is None) != (adapter["scope"] == "generic")
+    ):
+        raise RecordError(f"Review adapter source is invalid for a {adapter['scope']} reviewer")
     for field in ("name", "reviewer"):
         if not isinstance(adapter[field], str) or not adapter[field].strip():
             raise RecordError(f"Review adapter {field} is invalid")
@@ -1604,6 +1629,7 @@ def render_markdown(
             *([f"| **Dispatch** | {review['dispatch']} |"] if "dispatch" in review else []),
             *([f"| **Snapshot** | {describe_snapshot(review['snapshot'])} |"] if "snapshot" in review else []),
             f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
+            *([f"| **Reviewer source** | {_cell(describe_reviewer_source(adapter))} |"] if "source" in adapter else []),
             f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
             # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
             *(

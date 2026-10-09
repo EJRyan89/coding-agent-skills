@@ -749,8 +749,38 @@ class LedgerReportTests(unittest.TestCase):
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
         self.assertIn(" | 0 | 40s | 0 (0 B) |\n", report)
 
+    def test_the_reviewer_source_line_names_where_the_reviewer_came_from(self) -> None:
+        first, second, third = review_fixture.commit_fixture(self.archive)
+        review = copy.deepcopy(third)
+        adapter = review["review"]["adapter"]
+        commit = "0123456789ab" + "c" * 28
+        for scope, source, source_commit, line in (
+            ("generic", "generic", None, "the suite's generic reviewer"),
+            (
+                "generic",
+                "generic-fallback",
+                None,
+                "the suite's generic reviewer, in place of a review skill the base predates",
+            ),
+            ("repository", "trusted-ref", commit, "the configured trusted ref, at `0123456789ab`"),
+            ("repository", "base", commit, "the pull request's base, `0123456789ab`"),
+            (
+                "repository",
+                "default-branch",
+                commit,
+                "the default branch's tip, `0123456789ab`, because the base predates the review skill",
+            ),
+        ):
+            with self.subTest(source):
+                adapter.update(scope=scope, source=source, source_commit=source_commit)
+                self.assertIs(review, validate_record(review))
+                report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
+                self.assertIn(f"| **Adapter** | `generic` ({scope}) |\n| **Reviewer source** | {line} |\n", report)
+
     def test_an_earlier_record_without_snapshot_or_reads_reads_as_absent(self) -> None:
         first, second, third = review_fixture.commit_fixture(self.archive)
+        self.assertNotIn("source", third["review"]["adapter"])
+        self.assertNotIn("**Reviewer source**", fixture_report(self.archive, 3))
         self.assertNotIn("snapshot", third["review"])
         self.assertTrue(all("files_read" not in reviewer for reviewer in third["review"]["reviewers"]))
         self.assertIs(third, validate_record(third))

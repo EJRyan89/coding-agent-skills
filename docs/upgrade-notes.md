@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### A review skill the base predates is read from the default branch's tip, or the generic reviewer runs, and the record names the reviewer's source
+
+- Level: minor. Additive: a pull request whose base commit predates the repository's configured review `skill`, with no `trusted_ref` configured, no longer fails `prepare` with `does not exist at`. The skill is read from the default branch's tip as origin reports it; when the tip lacks it too, or is the pull request's head, the suite's generic reviewer reviews that pull request. `prepare` prints a `NOTE` for either fallback. Each record's `review.adapter` gains `source`: `generic`, `trusted-ref`, `base`, `default-branch`, or `generic-fallback`, which the report shows as **Reviewer source**. A reviewer with a `trusted_ref` or a `manifest_path`, and a pull request whose base has the skill, behave as before. A previous release refuses a record that has `source`.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #252
+
 ### update-pr-tracker sets and clears status overrides with a validated command
 
 - Level: minor. An addition: `tracker_pipeline.py override` lists the configuration's `dashboard.status_overrides` (`OVERRIDE <owner/repo#N> <status>`, then `OVERRIDES <n>`), and with `--set owner/repo#N=STATUS` or `--clear owner/repo#N` changes them in one validated write, printing `SET`, `CLEARED`, and `WROTE <configuration>`. It changes nothing else in the file and fills in no default. It refuses a computed state, a malformed key, or clearing an override that is not set, and clears an override whose pull request has closed. `update-pr-tracker` now tells the agent to use it when you ask for a pull request to be shown under a status of your own.

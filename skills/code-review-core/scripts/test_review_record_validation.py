@@ -28,6 +28,7 @@ ANALYZER_RULE = (
     "lowercase kebab-case pattern name of at most 60 characters"
 )
 SHA_RULE = "must be a lowercase Git or SHA-256 hash"
+GENERIC_SOURCE = "Review adapter source is invalid for a generic reviewer"
 
 
 def _finding(identifier: str, severity: str) -> dict[str, Any]:
@@ -268,6 +269,21 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
         _chain(_set((*ADAPTER, "scope"), "repository"), _set((*ADAPTER, "status"), "partial")),
     ),
     ("failed adapter", _record, _set((*ADAPTER, "status"), "failed")),
+    # Where the reviewer came from; literal values, since a record keeps them.
+    ("the configured generic reviewer", _record, _set((*ADAPTER, "source"), "generic")),
+    ("the generic reviewer in place of a review skill", _record, _set((*ADAPTER, "source"), "generic-fallback")),
+    *(
+        (
+            f"a repository reviewer read at its {source}",
+            _record,
+            _chain(
+                _set((*ADAPTER, "scope"), "repository"),
+                _set((*ADAPTER, "source"), source),
+                _set((*ADAPTER, "source_commit"), BASE_SHA),
+            ),
+        )
+        for source in ("trusted-ref", "base", "default-branch")
+    ),
     (
         "no findings",
         _record,
@@ -491,6 +507,35 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ("protocol_version 2", _set((*ADAPTER, "protocol_version"), 2), R, "Review adapter protocol is unsupported"),
     ("protocol_version string", _set((*ADAPTER, "protocol_version"), "1"), R, "Review adapter protocol is unsupported"),
     ("adapter scope unknown", _set((*ADAPTER, "scope"), "global"), R, "Review adapter scope is invalid"),
+    ("adapter source unknown", _set((*ADAPTER, "source"), "head"), R, GENERIC_SOURCE),
+    ("adapter source not a string", _set((*ADAPTER, "source"), ["base"]), R, GENERIC_SOURCE),
+    ("adapter source of a repository reviewer", _set((*ADAPTER, "source"), "base"), R, GENERIC_SOURCE),
+    (
+        "generic adapter source read at a commit",
+        _chain(_set((*ADAPTER, "source"), "generic-fallback"), _set((*ADAPTER, "source_commit"), BASE_SHA)),
+        R,
+        GENERIC_SOURCE,
+    ),
+    (
+        "repository adapter source of the generic reviewer",
+        _chain(
+            _set((*ADAPTER, "scope"), "repository"),
+            _set((*ADAPTER, "source"), "generic"),
+            _set((*ADAPTER, "source_commit"), BASE_SHA),
+        ),
+        R,
+        "Review adapter source is invalid for a repository reviewer",
+    ),
+    (
+        "repository adapter source without a commit",
+        _chain(
+            _set((*ADAPTER, "scope"), "repository"),
+            _set((*ADAPTER, "source"), "default-branch"),
+            _set((*ADAPTER, "source_commit"), None),
+        ),
+        R,
+        "Review adapter source is invalid for a repository reviewer",
+    ),
     *_blank_and_non_string((*ADAPTER, "name"), "Review adapter name is invalid"),
     *_blank_and_non_string((*ADAPTER, "reviewer"), "Review adapter reviewer is invalid"),
     ("adapter status unknown", _set((*ADAPTER, "status"), "done"), R, "Review adapter status is invalid"),
@@ -705,6 +750,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ("adapter", _set(ADAPTER, []), R, "Review adapter metadata is malformed"),
     ("protocol", _set((*ADAPTER, "protocol_version"), 2), R, "Review adapter protocol is unsupported"),
     ("adapter scope", _set((*ADAPTER, "scope"), "global"), R, "Review adapter scope is invalid"),
+    ("adapter source", _set((*ADAPTER, "source"), "head"), R, GENERIC_SOURCE),
     ("adapter name", _set((*ADAPTER, "name"), ""), R, "Review adapter name is invalid"),
     ("adapter reviewer", _set((*ADAPTER, "reviewer"), ""), R, "Review adapter reviewer is invalid"),
     ("adapter status", _set((*ADAPTER, "status"), "done"), R, "Review adapter status is invalid"),
@@ -769,6 +815,7 @@ ABSENCE_FAULTS = {"scope on an initial review", "comment dispositions alone", "r
 VALUE_VARIANTS = {
     (C, "Invalid repository identity: None"),
     (R, "Review adapter source hash is invalid: b.md"),
+    (R, "Review adapter source is invalid for a repository reviewer"),
 }
 
 
