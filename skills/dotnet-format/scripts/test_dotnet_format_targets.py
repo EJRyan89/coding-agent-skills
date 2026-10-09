@@ -47,6 +47,14 @@ def solution(*projects: str) -> str:
     return "\r\n".join(lines) + "\r\n"
 
 
+def slnx(*projects: str, folder: str | None = None) -> str:
+    """An XML solution listing projects by path, inside a solution folder when one is named."""
+    entries = "".join(f'    <Project Path="{project}" />\n' for project in projects)
+    if folder is not None:
+        entries = f'  <Folder Name="{folder}">\n{entries}  </Folder>\n'
+    return f"<Solution>\n{entries}</Solution>\n"
+
+
 class Repository:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -84,9 +92,9 @@ class Repository:
 
 
 class Services(targets.Services):
-    """Real Git, no gh, and no network fetch."""
+    """Real Git, the .NET SDK, no gh unless its output is given, and no network fetch."""
 
-    def __init__(self, pull_base: str | None = None, gh_output: bytes | None = None) -> None:
+    def __init__(self, pull_base: str | None = None, gh_output: bytes | None = None, dotnet: bool = True) -> None:
         self.calls: list[list[str]] = []
         if gh_output is None and pull_base:
             gh_output = json.dumps({"baseRefName": pull_base}).encode() + b"\n"
@@ -113,7 +121,9 @@ class Services(targets.Services):
         super().__init__(
             git=GitClient(git),
             gh=gh_in,
-            which=lambda name: "gh" if name == "gh" and gh_output is not None else None,
+            which=lambda name: (
+                name if (name == "gh" and gh_output is not None) or (name == "dotnet" and dotnet) else None
+            ),
         )
 
 
@@ -271,7 +281,7 @@ class ResolveTests(unittest.TestCase):
         repo.write("Only.sln", solution("Other\\Other.csproj"))
         repo.commit("solutions")
         self.assertEqual(
-            [["changed files do not belong to any .sln found: Only.sln"]], self.values(self.resolve(), "STOP")
+            [["changed files do not belong to any solution found: Only.sln"]], self.values(self.resolve(), "STOP")
         )
 
     def test_scoring_matches_solution_project_paths_exactly(self) -> None:
@@ -315,7 +325,7 @@ class ResolveTests(unittest.TestCase):
         repo.write("B.sln", solution("Third\\Third.csproj"))
         repo.commit("solutions")
         self.assertEqual(
-            [["changed files do not belong to any .sln found: A.sln, B.sln"]], self.values(self.resolve(), "STOP")
+            [["changed files do not belong to any solution found: A.sln, B.sln"]], self.values(self.resolve(), "STOP")
         )
 
     def test_stops_when_there_is_no_solution(self) -> None:
@@ -323,7 +333,7 @@ class ResolveTests(unittest.TestCase):
         self.repository.commit("code")
         lines = self.resolve()
         self.assertEqual([["Code.cs"]], self.values(lines, "FILE"))
-        self.assertEqual([[f"no .sln found under {self.repository.root}"]], self.values(lines, "STOP"))
+        self.assertEqual([[f"no .sln or .slnx found under {self.repository.root}"]], self.values(lines, "STOP"))
         self.assertEqual([], self.values(lines, "FILE_LIST"))
 
     def test_stops_when_nothing_changed(self) -> None:
@@ -459,9 +469,72 @@ class ResolveTests(unittest.TestCase):
             return real(command, timeout)
 
         services.git = GitClient(run)
-        self.assertEqual([["origin/main"]], self.values(self.resolve(services=services), "BASE"))
+        lines = self.resolve(services=services)
+        self.assertEqual([["git fetch did not finish within 300 seconds"]], self.values(lines, "FETCH_FAILED"))
+        self.assertEqual(["REPO_ROOT", "FETCH_FAILED", "BASE"], [fields[0] for fields in lines[:3]])
+        self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
         stalled.add("ls-files")
         self.assertEqual("git ls-files did not finish within 300 seconds", self.failed(services=services))
+
+    def test_a_failed_fetch_is_reported_on_one_line_and_the_last_fetched_refs_serve(self) -> None:
+        services = Services()
+        real = services.git.runner
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if command[3] == "fetch":
+                return GitResult(
+                    128, "", "fatal: unable to access 'https://example.invalid/r.git/':\n\tCould not resolve host\n"
+                )
+            return real(command, timeout)
+
+        services.git = GitClient(run)
+        lines = self.resolve(services=services)
+        self.assertEqual(
+            [["fatal: unable to access 'https://example.invalid/r.git/': Could not resolve host"]],
+            self.values(lines, "FETCH_FAILED"),
+        )
+        self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
+        # Without stderr the exit code is the reason; the fixture's fetch exits 128 and says nothing.
+        self.assertEqual([["git fetch origin exited with code 128"]], self.values(self.resolve(), "FETCH_FAILED"))
+
+    def test_a_fetch_that_succeeds_reports_nothing(self) -> None:
+        services = Services()
+        real = services.git.runner
+
+        def run(command: Sequence[str], timeout: float) -> GitResult:
+            if command[3] == "fetch":
+                return GitResult(0, "", "")
+            return real(command, timeout)
+
+        services.git = GitClient(run)
+        self.assertEqual([], self.values(self.resolve(services=services), "FETCH_FAILED"))
+
+    def test_missing_git_and_a_stalled_git_are_reported_as_such(self) -> None:
+        def missing(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError(git_client.MISSING_GIT, kind="prerequisite")
+
+        def stalled(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError(f"git {command[3]} did not finish within {timeout:g} seconds", kind="timeout")
+
+        for runner, reason in (
+            (missing, git_client.MISSING_GIT),
+            (stalled, "git rev-parse did not finish within 300 seconds"),
+        ):
+            with self.subTest(reason=reason):
+                services = Services()
+                services.git = GitClient(runner)
+                self.assertEqual(reason, self.failed(services=services))
+
+    def test_a_repository_git_refuses_is_reported_with_gits_reason(self) -> None:
+        services = Services()
+        stderr = "fatal: detected dubious ownership in repository at 'C:/repo'\nTo add an exception, run:\n"
+        services.git = GitClient(lambda command, timeout: GitResult(128, "", stderr))
+        self.assertEqual(
+            "fatal: detected dubious ownership in repository at 'C:/repo' To add an exception, run:",
+            self.failed(services=services),
+        )
+        services.git = GitClient(lambda command, timeout: GitResult(129, "", ""))
+        self.assertEqual("git rev-parse --show-toplevel exited with code 129", self.failed(services=services))
 
     def test_an_unreadable_project_fails(self) -> None:
         self.repository.write("Lib/Lib.csproj", SDK_PROJECT)
@@ -510,6 +583,83 @@ class ResolveTests(unittest.TestCase):
                 self.assertEqual("", output.getvalue())
                 self.assertIn("usage:", errors.getvalue())
 
+    def test_an_slnx_solution_is_found_and_scored_like_an_sln(self) -> None:
+        repo = self.repository
+        repo.write("Sources/Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Sources/Lib/Code.cs")
+        repo.write("Sources/App/App.csproj", SDK_PROJECT)
+        repo.write("Sources/App/One.cs")
+        repo.write("Sources/Local.slnx", slnx("Lib/Lib.csproj"))
+        repo.write("Everything.SLNX", slnx("Sources\\Lib\\Lib.csproj", "Sources/App/App.csproj", folder="/src/"))
+        repo.commit("solutions")
+        self.assertEqual([["Sources/Local.slnx", "1"]], self.values(self.resolve(repo.root / "Sources"), "SOLUTION"))
+        lines = self.resolve()
+        self.assertEqual([["Everything.SLNX", "2"]], self.values(lines, "SOLUTION"))
+        self.assertEqual([], self.values(lines, "OUTSIDE_SOLUTION"))
+        self.assertEqual(
+            [repo.root / "Everything.SLNX", repo.root / "Sources/Local.slnx"], targets.find_solutions(repo.root)
+        )
+
+    def test_an_slnx_without_the_dotnet_sdk_stops_and_an_sln_does_not_need_it(self) -> None:
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("App.slnx", slnx("Lib/Lib.csproj"))
+        repo.commit("solutions")
+        status, lines, errors = self.run_resolve(services=Services(dotnet=False))
+        self.assertEqual((0, ""), (status, errors))
+        self.assertEqual(
+            [
+                "STOP",
+                "App.slnx is a .slnx solution, which only the .NET SDK's dotnet format opens; "
+                "install the .NET SDK 9.0.200 or newer",
+            ],
+            lines[-1],
+        )
+        self.assertEqual([], self.values(lines, "FILE_LIST"))
+        self.assertEqual([], self.values(lines, "SOLUTION"))
+
+        repo.write("App.sln", solution("Lib\\Lib.csproj"))
+        repo.commit("sln")
+        self.assertEqual([["App.sln", "1"]], self.values(self.resolve(services=Services(dotnet=False)), "SOLUTION"))
+
+    def test_an_sln_beside_an_slnx_listing_the_same_projects_wins_the_tie(self) -> None:
+        # A repository part way through migrating keeps both; the .sln wins even where the .slnx sorts first by name.
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("All.slnx", slnx("Lib/Lib.csproj"))
+        repo.write("Legacy.sln", solution("Lib\\Lib.csproj"))
+        repo.write("Deep/Deeper.sln", solution("..\\Lib\\Lib.csproj"))
+        repo.commit("solutions")
+        self.assertEqual([["Legacy.sln", "1"]], self.values(self.resolve(), "SOLUTION"))
+
+    def test_an_slnx_that_is_not_xml_owns_nothing(self) -> None:
+        repo = self.repository
+        repo.write("Lib/Lib.csproj", SDK_PROJECT)
+        repo.write("Lib/Code.cs")
+        repo.write("Broken.slnx", '<Solution><Project Path="Lib/Lib.csproj">\n')
+        repo.write(
+            "Entity.slnx",
+            '<!DOCTYPE Solution [<!ENTITY lib "Lib/Lib.csproj">]>\n<Solution><Project Path="&lib;" /></Solution>\n',
+        )
+        repo.write("Other.slnx", '<Solution><Project Path="Other/Other.csproj" /><Project /></Solution>\n')
+        repo.commit("solutions")
+        self.assertEqual(
+            [["changed files do not belong to any solution found: Broken.slnx, Entity.slnx, Other.slnx"]],
+            self.values(self.resolve(), "STOP"),
+        )
+
+    def test_an_slnx_declaring_another_encoding_is_read_as_decoded(self) -> None:
+        repo = self.repository
+        (repo.root / "Lib").mkdir()
+        (repo.root / "Lib/Lib.csproj").write_bytes(SDK_PROJECT.encode("utf-8"))
+        repo.write("Lib/Code.cs")
+        declared = '<?xml version="1.0" encoding="utf-16"?>\n' + slnx("Lib/Lib.csproj")
+        (repo.root / "App.slnx").write_bytes(declared.encode("utf-16"))
+        repo.commit("solutions")
+        self.assertEqual([["App.slnx", "1"]], self.values(self.resolve(), "SOLUTION"))
+
     def test_reads_utf16_and_bom_project_files(self) -> None:
         repo = self.repository
         (repo.root / "Web").mkdir()
@@ -523,6 +673,27 @@ class ResolveTests(unittest.TestCase):
         lines = self.resolve()
         self.assertEqual([["Web/Page.cs", "Web/Web.csproj"]], self.values(lines, "SKIPPED_ASPNET"))
         self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
+
+
+class ConsoleTests(unittest.TestCase):
+    def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Repository(Path(directory).resolve())
+            repository.git("init", "--quiet", "--initial-branch=main")
+            repository.write("README.md", "fixture\n")
+            repository.commit("base")
+            repository.git("update-ref", "refs/remotes/origin/main", "HEAD")
+            repository.write("arrow → ✓.cs")
+            result = subprocess.run(
+                [sys.executable, "-B", targets.__file__, "resolve", "--cwd", str(repository.root)],
+                capture_output=True,
+                env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+                check=False,
+            )
+        self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
+        lines = result.stdout.decode("utf-8").splitlines()
+        self.assertIn("FILE\tarrow → ✓.cs", lines)
+        self.assertEqual(f"STOP\tno .sln or .slnx found under {repository.root}", lines[-1])
 
 
 if __name__ == "__main__":

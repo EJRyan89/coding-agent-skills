@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,18 @@ class FakeRunner:
         return self.result
 
 
+class ScriptedRunner:
+    """Answers each call with the next of the results given."""
+
+    def __init__(self, *results: formatter.Completed) -> None:
+        self.results = list(results)
+        self.calls: list[tuple[list[str], Path, float]] = []
+
+    def __call__(self, arguments: Sequence[str], cwd: Path, timeout: float) -> formatter.Completed:
+        self.calls.append((list(arguments), cwd, timeout))
+        return self.results[len(self.calls) - 1]
+
+
 class CommandTests(unittest.TestCase):
     def test_check_adds_check_and_keeps_each_file_one_argument(self) -> None:
         self.assertEqual(
@@ -103,6 +116,24 @@ class CommandTests(unittest.TestCase):
             ],
             formatter.command("fix", "App.sln", ["A.cs"], "info"),
         )
+
+
+class BatchTests(unittest.TestCase):
+    def test_a_list_that_fits_is_one_run(self) -> None:
+        self.assertEqual([["A.cs", "My Folder/B.cs"]], formatter.batches(["dotnet-format"], ["A.cs", "My Folder/B.cs"]))
+
+    def test_runs_keep_the_order_and_each_fills_but_never_passes_the_limit(self) -> None:
+        prefix = ["dotnet-format", "App.sln", "--include"]  # 31 characters
+        files = ["A 1.cs", "B.cs", "C.cs", "D 2.cs"]  # 9, 5, 5, and 9 characters with the space before each
+        self.assertEqual([["A 1.cs", "B.cs"], ["C.cs", "D 2.cs"]], formatter.batches(prefix, files, limit=45))
+        self.assertEqual([["A 1.cs", "B.cs", "C.cs"], ["D 2.cs"]], formatter.batches(prefix, files, limit=50))
+        for limit in (45, 50, 60):
+            for run in formatter.batches(prefix, files, limit=limit):
+                self.assertLessEqual(len(subprocess.list2cmdline([*prefix, *run])), limit)
+
+    def test_a_file_that_fits_no_command_line_fails(self) -> None:
+        with self.assertRaisesRegex(formatter.Failed, "^Long Name.cs does not fit a command line of 40 characters$"):
+            formatter.batches(["dotnet-format", "App.sln", "--include"], ["A.cs", "Long Name.cs"], limit=40)
 
 
 class ParseTests(unittest.TestCase):
@@ -173,9 +204,12 @@ class MainTests(unittest.TestCase):
         self.file_list.write_text("".join(f"{name}\n" for name in self.files), encoding="utf-8")
 
     def run_formatter(
-        self, mode: str, runner: formatter.Runner, installed: bool = True, *extra: str
+        self, mode: str, runner: formatter.Runner | formatter.Services, installed: bool = True, *extra: str
     ) -> tuple[int, list[list[str]], str]:
-        services = formatter.Services(run=runner, which=lambda name: "dotnet-format" if installed else None)
+        if isinstance(runner, formatter.Services):
+            services = runner
+        else:
+            services = formatter.Services(run=runner, which=lambda name: "dotnet-format" if installed else None)
         output, errors = io.StringIO(), io.StringIO()
         arguments = [
             mode,
@@ -302,6 +336,149 @@ class MainTests(unittest.TestCase):
                 self.assertEqual("LOG", lines[-2][0])
                 self.assertEqual(runner.result.output, Path(lines[-2][1]).read_bytes())
 
+    def sdk_services(self, runner: formatter.Runner, installed: bool = True) -> formatter.Services:
+        """Only the .NET SDK's dotnet is installed, or nothing is."""
+        return formatter.Services(run=runner, which=lambda name: name if installed and name == "dotnet" else None)
+
+    def test_an_slnx_check_runs_the_sdks_dotnet_format_and_exit_2_means_findings(self) -> None:
+        log = sample_log(self.root)
+        runner = FakeRunner(2, log)
+        status, lines, errors = self.run_formatter("check", self.sdk_services(runner), True, "--solution", "App.slnx")
+        self.assertEqual((1, ""), (status, errors))
+        self.assertEqual(SAMPLE_DIAGNOSTICS, lines[:-1])
+        ((arguments, cwd, timeout),) = runner.calls
+        self.assertEqual((self.root, 570.0), (cwd, timeout))
+        self.assertEqual(
+            [
+                "dotnet",
+                "format",
+                "App.slnx",
+                "--no-restore",
+                "--severity",
+                "warn",
+                "--verbosity",
+                "detailed",
+                "--verify-no-changes",
+                "--include",
+                "src/App/Program.cs",
+                "src/App/My Folder/Util.cs",
+            ],
+            arguments,
+        )
+
+    def test_an_slnx_fix_and_clean_check_exit_0(self) -> None:
+        runner = FakeRunner(0, "")
+        status, lines, _ = self.run_formatter(
+            "fix", self.sdk_services(runner), True, "--solution", "Src/App.SLNX", "--severity", "info"
+        )
+        self.assertEqual(0, status)
+        self.assertEqual(["SUMMARY", "0", "0", "-"], lines[0])
+        ((arguments, _, _),) = runner.calls
+        self.assertEqual(["dotnet", "format", "Src/App.SLNX", "--no-restore", "--severity", "info"], arguments[:6])
+        self.assertNotIn("--verify-no-changes", arguments)
+        status, _, _ = self.run_formatter("check", self.sdk_services(FakeRunner(0, "")), True, "--solution", "A.slnx")
+        self.assertEqual(0, status)
+
+    def test_slnx_failures_name_dotnet_format(self) -> None:
+        cases = (
+            (FakeRunner(2, "changed\n"), "dotnet format reported changes it did not itemize; see the log"),
+            (FakeRunner(1, "error\n"), "dotnet format exited with code 1; see the log"),
+            (FakeRunner(-1, "", timed_out=True), "dotnet format did not finish within 570 seconds; see the log"),
+        )
+        for runner, reason in cases:
+            with self.subTest(reason=reason):
+                self.assert_failed(
+                    self.run_formatter("check", self.sdk_services(runner), True, "--solution", "App.slnx"), reason
+                )
+
+    def test_an_slnx_without_dotnet_fails_without_running(self) -> None:
+        runner = FakeRunner(0, "")
+        services = formatter.Services(run=runner, which=lambda name: name if name == "dotnet-format" else None)
+        lines = self.assert_failed(
+            self.run_formatter("check", services, True, "--solution", "App.slnx"),
+            "dotnet is not installed; a .slnx solution needs the .NET SDK 9.0.200 or newer",
+        )
+        self.assertEqual(1, len(lines))
+        self.assertEqual([], runner.calls)
+        # The other way round: the SDK alone does not format a .sln.
+        self.assert_failed(self.run_formatter("check", self.sdk_services(runner)), INSTALL_HINT)
+        self.assertEqual([], runner.calls)
+
+    def many_files(self) -> list[str]:
+        """2,000 changed files, about 82,000 characters of command line: three runs' worth."""
+        files = [f"src/Project {number // 100}/Generated File {number:04}.cs" for number in range(2000)]
+        self.file_list.write_text("".join(f"{name}\n" for name in files), encoding="utf-8")
+        return files
+
+    def test_a_long_file_list_runs_in_batches_that_each_fit_the_command_line(self) -> None:
+        files = self.many_files()
+        first = f"{self.root / files[0]}(1,1): error WHITESPACE: Fix whitespace formatting.\n"
+        last = f"{self.root / files[-1]}(2,3): warning IDE0005: Using directive is unnecessary.\n"
+        runner = ScriptedRunner(
+            formatter.Completed(2, first.encode()),
+            formatter.Completed(0, b"clean\n"),
+            formatter.Completed(2, last.encode()),
+        )
+        status, lines, errors = self.run_formatter("check", runner)
+
+        self.assertEqual((1, ""), (status, errors))
+        self.assertEqual(3, len(runner.calls))
+        included = []
+        for arguments, cwd, _ in runner.calls:
+            self.assertEqual(self.root, cwd)
+            self.assertLessEqual(len(subprocess.list2cmdline(arguments)), formatter.COMMAND_LINE_LIMIT)
+            self.assertEqual(
+                formatter.command("check", "App.sln", [], "warn"), arguments[: arguments.index("--include") + 1]
+            )
+            included += arguments[arguments.index("--include") + 1 :]
+        self.assertEqual(files, included)
+        self.assertEqual(
+            [
+                ["DIAGNOSTIC", files[0], "1", "1", "error", "WHITESPACE"],
+                ["DIAGNOSTIC", files[-1], "2", "3", "warning", "IDE0005"],
+                ["SUMMARY", "2", "2", "IDE0005,WHITESPACE"],
+            ],
+            lines[:-1],
+        )
+        self.assertEqual(f"{first}clean\n{last}".encode(), Path(lines[-1][1]).read_bytes())
+
+    def test_batches_share_one_time_limit(self) -> None:
+        self.many_files()
+        clock = iter((100.0, 300.0, 520.0, 600.0))
+        runner = ScriptedRunner(*[formatter.Completed(0, b"")] * 3)
+        services = formatter.Services(run=runner, which=lambda name: name, clock=lambda: next(clock))
+        status, _, _ = self.run_formatter("fix", services)
+        self.assertEqual(0, status)
+        self.assertEqual([570.0, 370.0, 150.0], [timeout for _, _, timeout in runner.calls])
+
+    def test_a_batch_that_fails_stops_the_rest_and_keeps_the_log_so_far(self) -> None:
+        cases = (
+            (formatter.Completed(3, b"crash\n"), "dotnet-format exited with code 3; see the log"),
+            (
+                formatter.Completed(-1, b"crash\n", timed_out=True),
+                "dotnet-format did not finish within 570 seconds; see the log",
+            ),
+            (formatter.Completed(2, b"crash\n"), "dotnet-format reported changes it did not itemize; see the log"),
+        )
+        self.many_files()
+        for second, reason in cases:
+            with self.subTest(reason=reason):
+                runner = ScriptedRunner(formatter.Completed(0, b"first\n"), second, formatter.Completed(0, b""))
+                lines = self.assert_failed(self.run_formatter("check", runner), reason)
+                self.assertEqual(2, len(runner.calls))
+                self.assertEqual(b"first\ncrash\n", Path(lines[-2][1]).read_bytes())
+
+    def test_no_batch_starts_once_the_time_limit_is_spent(self) -> None:
+        self.many_files()
+        clock = iter((0.0, 570.0))
+        runner = ScriptedRunner(formatter.Completed(0, b"first\n"))
+        services = formatter.Services(run=runner, which=lambda name: name, clock=lambda: next(clock))
+        lines = self.assert_failed(
+            self.run_formatter("check", services), "dotnet-format did not finish within 570 seconds; see the log"
+        )
+        self.assertEqual(1, len(runner.calls))
+        self.assertEqual(b"first\n", Path(lines[-2][1]).read_bytes())
+
     def test_a_timeout_names_the_timeout_given(self) -> None:
         runner = FakeRunner(-1, "", timed_out=True)
         self.assert_failed(
@@ -369,6 +546,38 @@ class MainTests(unittest.TestCase):
                 self.assertEqual("", output.getvalue())
                 self.assertIn("usage:", errors.getvalue())
                 self.assertEqual([], runner.calls)
+
+
+class ConsoleTests(unittest.TestCase):
+    def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            # A stub the tool lookup finds, so the run reaches the file list, whose path it then prints.
+            tools = Path(temporary) / "tools"
+            tools.mkdir()
+            for name in ("dotnet-format.cmd", "dotnet-format"):
+                (tools / name).write_text("exit 1\n", encoding="utf-8")
+                (tools / name).chmod(0o755)
+            file_list = Path(temporary) / "files → ✓.txt"
+            file_list.write_text("\n", encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-B",
+                    formatter.__file__,
+                    "check",
+                    "--repo-root",
+                    temporary,
+                    "--solution",
+                    "App.sln",
+                    "--include-file",
+                    str(file_list),
+                ],
+                capture_output=True,
+                env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "PYTHONIOENCODING": "cp1252"},
+                check=False,
+            )
+        self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual(f"FAILED {file_list} lists no files\n", result.stdout.decode("utf-8").replace("\r\n", "\n"))
 
 
 if __name__ == "__main__":

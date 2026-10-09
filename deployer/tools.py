@@ -116,6 +116,9 @@ SKILL_TOOLS = {
         Tool("gh", "gh", lambda: platform_support.find_executable("gh"), minimum=(2, 48, 0)),
         COPILOT,
         Tool("dotnet-format", "dotnet-format", lambda: platform_support.find_executable("dotnet-format")),
+        # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open;
+        # 9.0.200 is the first SDK that reads .slnx.
+        Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
     )
 }
 
