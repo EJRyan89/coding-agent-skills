@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. A deployer flag changes: `--force-item` now accepts an agent's own name, such as `code-review-reviewer`, as well as its file name, and a run given a `--force-item` that matches no item it installs stops before anything changes, listing the names it accepts, where it used to ignore the name and deploy without replacing anything.
 - Contract: none
 - User action: none, unless a script passes `--force-item` a name that the run does not install; correct the name or drop it.
-- Pull request: #196
+- Pull request: #224
 
 ### A batch review lists only the pull requests its watermark can still select
 
