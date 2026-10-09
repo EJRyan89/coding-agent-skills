@@ -123,6 +123,7 @@ from review_reviewers import (
 )
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
+    MODEL_ALIAS_RUNTIMES,
     RUNTIME_CAPABILITIES,
     SNAPSHOT_FETCHABLE,
     RuntimeContractError,
@@ -832,17 +833,28 @@ def _write_roles(
 
 
 def _write_run(run: Path, state: dict[str, Any]) -> None:
-    """Write a prepared run's run.json. An inline run first notes each model its roles cannot switch to, and seals
-    every file prepare wrote."""
+    """Write a prepared run's run.json. A run that cannot start a role on the model it asks for first notes that model
+    in place of its `MODEL` line, so the role runs on the session's model; an inline run then seals every file
+    prepare wrote."""
+    reason = _unapplied_model_reason(state["runtime"], state["dispatch"])
+    if reason is not None:
+        for role in state["roles"]:
+            if role.get("model"):
+                state["notes"].append(f"{role['id']} asks for model {role['model']}; {reason}")
+                role["model"] = None
     if state["dispatch"] == "inline":
-        # The orchestrating session works every role on its own model; no subagent can be started on another.
-        state["notes"].extend(
-            f"{role['id']} asks for model {role['model']}; an inline review works every role on this session's model"
-            for role in state["roles"]
-            if role.get("model")
-        )
         state["seal"] = {"files": sealed_files(run, state), "results": {}}
     atomic_write_json(run / RUN_FILE, state)
+
+
+def _unapplied_model_reason(runtime: str, dispatch: str) -> str | None:
+    """Why no role of a run dispatched this way on this runtime starts on a model alias, or None when every role can."""
+    if dispatch == "inline":
+        # The orchestrating session works every role on its own model; no subagent can be started on another.
+        return "an inline review works every role on this session's model"
+    if runtime not in MODEL_ALIAS_RUNTIMES:
+        return f"{runtime} starts every reviewer on this session's model"
+    return None
 
 
 @dataclass

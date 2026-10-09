@@ -63,7 +63,7 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 
 - `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
 - `review-insights` on Copilot CLI: partial, lacking `agent-delegation`. The synthesis runs inline in the session instead of a subagent, so its whole input loads into the session's context.
-- `review-prs` on Codex CLI: partial, lacking `workflow`. Reviewers start as native subagents, so a reviewer effort setting has no effect.
+- `review-prs` on Codex CLI: partial, lacking `workflow`. Reviewers start as native subagents on the session's model, so a reviewer model or effort setting has no effect.
 - `review-prs` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The generic reviewer and delegation-free specialists run inline; a specialists manifest that keeps agent-delegation fails.
 - `update-coding-agent-skills` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
 - `update-pr-tracker` on Codex CLI: partial, lacking `workflow`. The reviews it starts run through review-prs, which loses reviewer effort settings here.

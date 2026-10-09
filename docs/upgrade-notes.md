@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### On Codex, review-prs notes a reviewer's model instead of asking for a Claude alias
+
+- Level: patch. A fix: Codex's native delegation takes only its own model identifiers, so where a specialist's manifest or profile names `sonnet`, `opus`, `haiku`, or `fable`, `prepare` and `check` on Codex now print a `NOTE` naming the model in place of the `MODEL` line, as they do for an inline role, and the reviewer runs on the session's model. The record's `model` is the one the reviewer reports, as before. Claude Code still gets the `MODEL` line. An inline retry no longer prints a `MODEL` line either.
+- Contract: none
+- User action: none
+- Pull request: #305
+
 ### dotnet-format stops at its time limit even when the formatter leaves a build host running
 
 - Level: patch. A fix: the formatter now runs through skill-core's bounded runner, writing its output to a file rather than a pipe, so a process it starts and leaves holding that output, such as a build host, no longer keeps a check or a fix waiting past `--timeout` (570 seconds by default) on Windows. It reads no stdin and runs with the git, Git Credential Manager, and gh prompts turned off, as every other bounded command does. The output, the `LOG` file, and the exit codes are unchanged.
