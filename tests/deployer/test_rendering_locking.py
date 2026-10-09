@@ -171,7 +171,7 @@ class RenderedExecutableTests(DeployerTestCase):
             if not path.name.startswith("test_")
             and re.search(r'^if __name__ == "__main__":', path.read_text(encoding="utf-8"), re.MULTILINE)
         )
-        self.assertEqual(15, len(entry_points), entry_points)
+        self.assertEqual(16, len(entry_points), entry_points)
         for entry_point in entry_points:
             with self.subTest(entry_point=entry_point.as_posix()):
                 hook = entry_point.name == "review_guard.py"  # a hook reads its event on stdin and takes no options
