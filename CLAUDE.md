@@ -69,7 +69,7 @@ Never work around a failing check. Do not mark tests as expected failures or ski
 
 Add regression coverage for every behavior change. When a token appears in executable content, include a rendered execution fixture with representative values containing spaces and other allowed punctuation. For a token in Bash or PowerShell, validation requires it to sit inside quotes and requires a `tests/deployer/` test named `*with_spaces*` that carries the token in a string literal, runs the rendered result with that language's shell through `run_tool`, and asserts the output against a value containing a space.
 
-A regression suite runs only if its name matches `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` with a `.py`, `.sh`, or `.ps1` extension, and a Python suite must end with `if __name__ == "__main__":`; "Validation" in `docs/adding-a-skill.md` states these rules and validation checks that it does.
+A regression suite runs only if its name matches `test_*`, `test-*`, `*_test`, `*-test`, or `*.test.*` with a `.py`, `.sh`, or `.ps1` extension, and a Python suite must end with an `if __name__ == "__main__":` block that calls `unittest.main()`; validation fails on a Python suite whose last top-level statement is not that block or whose block does not call it, and "Validation" in `docs/adding-a-skill.md` states these rules, which validation checks it does.
 
 Every skill with executable files must include an executable regression suite under its `scripts/` directory. Markdown may use executable-language fences only for command examples of five lines or fewer; extract longer programs into tested files under `scripts/`.
 

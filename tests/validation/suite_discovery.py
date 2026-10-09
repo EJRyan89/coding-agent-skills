@@ -13,6 +13,7 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
+from fsops_platform import import_aliases, qualified_name
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
 from toolchain import find_powershell
@@ -225,6 +226,37 @@ def recorded_cost_problems(
     return problems
 
 
+def _calls_unittest_main(statement: ast.stmt, aliases: dict[str, str]) -> bool:
+    """Whether a statement calls unittest.main, resolved through the module's imports, or exits with its result."""
+    if not isinstance(statement, ast.Expr | ast.Raise):
+        return False
+    call = statement.value if isinstance(statement, ast.Expr) else statement.exc
+    if isinstance(call, ast.Call) and qualified_name(call.func, aliases) in {"sys.exit", "SystemExit"} and call.args:
+        call = call.args[0]
+    return isinstance(call, ast.Call) and qualified_name(call.func, aliases) == "unittest.main"
+
+
+def suite_entry_point_problems(root: Path) -> list[str]:
+    """Report a Python regression suite whose last top-level statement is not an `if __name__ == "__main__":` block
+    that calls unittest.main().
+
+    Every suite runs as `python <file>`, so one without that block defines its tests, runs none, and still exits 0;
+    the block comes last, after every test it runs is defined.
+    """
+    problems: list[str] = []
+    for path in regression_suites(root):
+        if path.suffix.casefold() != ".py":
+            continue
+        name = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        last = tree.body[-1] if tree.body else None
+        if not (isinstance(last, ast.If) and ast.unparse(last.test) == "__name__ == '__main__'"):
+            problems.append(f"{name} does not end with an `{PYTHON_ENTRY_POINT}` block, so it runs no tests")
+        elif not any(_calls_unittest_main(statement, import_aliases(tree)) for statement in last.body):
+            problems.append(f"{name}:{last.lineno} its `{PYTHON_ENTRY_POINT}` block does not call unittest.main()")
+    return problems
+
+
 def unsuited_script_problems(root: Path) -> list[str]:
     """Report a shipped or repository skill whose scripts/ holds executable files but no regression suite."""
     problems: list[str] = []
@@ -258,12 +290,8 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
         self.assertNotIn("tests/run_shard.py", suites)
 
     def test_python_suites_run_their_tests_when_executed(self) -> None:
-        # Every suite runs as `python <file>`, so one without a __main__ entry point defines its tests, runs none,
-        # and still exits 0.
-        suites = [path for path in regression_suites() if path.suffix.casefold() == ".py"]
-        self.assertTrue(suites)
-        missing = [relative(path) for path in suites if PYTHON_ENTRY_POINT not in path.read_text(encoding="utf-8")]
-        self.assertEqual([], missing)
+        self.assertTrue([path for path in regression_suites() if path.suffix.casefold() == ".py"])
+        self.assertEqual([], suite_entry_point_problems(REPOSITORY_ROOT))
 
     def test_suite_discovery_rules_are_documented(self) -> None:
         self.assertEqual([], suite_discovery_documentation_problems(REPOSITORY_ROOT))
