@@ -975,6 +975,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "dispatched_at": {"generic-review": NOW},
         "snapshot": SNAPSHOT,
         "source_repository": "<root>/checkout",
+        "snapshot_stamp": None,
         "reads": {},
         "notes": [LINK_NOTE],
         "patches": PATCHES,
@@ -2116,6 +2117,11 @@ class RepositoryReviewerTests(PrepareFixture):
         )
         self.assertEqual(sorted(WHOLE_SNAPSHOT_FILES), [path for path in self.files() if path.startswith("source/")])
         self.assertEqual(entrypoint_prompt(lazy=False), self.text_file("reviewer.prompt.md"))
+        # The host starts in a process of its own, so prepare stamps the snapshot it wrote for the host to check.
+        stamp = review_runtime.stamp_source_snapshot(
+            self.run_dir / "source", expected_repository=REPOSITORY, expected_commit=self.head
+        )
+        self.assertEqual(stamp, result["snapshot_stamp"])
 
     def test_a_condition_a_routed_specialist_names_reads_the_whole_snapshot(self) -> None:
         # The condition opens a file the pull request does not change, as a condition script may.
