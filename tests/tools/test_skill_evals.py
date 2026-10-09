@@ -370,17 +370,24 @@ class RepeatsTests(unittest.TestCase):
         self.assertIsNone(check(self.spec, self.reviewed(found)))
         self.assertIsNone(check(self.spec, self.reviewed(found[:1], severity="SHOULD_FIX")))
 
-    def test_a_restatement_at_the_entrys_severity_or_higher_fails(self) -> None:
-        cases = {
-            "MUST_FIX": [finding("store.go", 45, "MUST_FIX", "F002"), finding("store.go", 44, "SUGGESTION", "F003")],
-            "SHOULD_FIX": [finding("store.go", 45, "MUST_FIX", "F002"), finding("store.go", 44, "SUGGESTION", "F003")],
-            "SUGGESTION": [finding("store.go", 45, "SUGGESTION", "F002")],
-        }
-        for severity, found in cases.items():
+    def test_an_unlinked_restatement_at_the_entrys_severity_fails(self) -> None:
+        for severity in ("MUST_FIX", "SHOULD_FIX", "SUGGESTION"):
+            found = [finding("store.go", 45, severity, "F002"), finding("labels.go", 45, severity, "F003")]
             with self.subTest(severity=severity):
                 self.assertEqual(
                     "F002 at line 45 not linked to v1:F001", check(self.spec, self.reviewed(found, severity))
                 )
+
+    def test_a_more_severe_finding_on_a_repeated_line_is_a_new_finding_and_passes(self) -> None:
+        # The record contract refuses a repeats link to a less severe finding, so a review escalating the entry
+        # records a new finding beside it; demanding the link here would fail every record the contract allows.
+        cases = {
+            "SHOULD_FIX": [finding("store.go", 45, "MUST_FIX", "F002"), finding("store.go", 44, "SUGGESTION", "F003")],
+            "SUGGESTION": [finding("store.go", 45, "SHOULD_FIX", "F002"), finding("store.go", 44, "MUST_FIX", "F003")],
+        }
+        for severity, found in cases.items():
+            with self.subTest(severity=severity):
+                self.assertIsNone(check(self.spec, self.reviewed(found, severity)))
 
     def test_the_entry_must_be_in_the_ledger_with_a_severity(self) -> None:
         found = [finding("store.go", 45, "MUST_FIX", "F002")]
