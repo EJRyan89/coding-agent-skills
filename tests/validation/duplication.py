@@ -38,7 +38,7 @@ def _joined(items: list[str]) -> str:
 def duplicated_definition_problems(root: Path) -> list[str]:
     """Report a top-level function or class defined identically in two files, and allowances no longer needed.
 
-    Every copy #27 lists began identical and then drifted; a copy caught while it is still identical is caught before
+    Copied helpers began identical and then drifted; a copy caught while it is still identical is caught before
     it diverges. Two scripts of one skill count, because one can import the other.
     """
     copies: dict[str, list[tuple[str, int, str]]] = {}
@@ -202,7 +202,7 @@ def skill_core_import_problems(root: Path) -> list[str]:
 
 class DuplicationPolicies(unittest.TestCase):
     def test_repository_copies_only_what_it_sanctions(self) -> None:
-        # Every copy #27 lists began identical and then drifted, so a copy is caught while it is still identical.
+        # Copied helpers began identical and then drifted, so a copy is caught while it is still identical.
         self.assertEqual([], duplicated_definition_problems(REPOSITORY_ROOT))
 
     def test_repository_keeps_shared_modules_in_skill_core(self) -> None:

@@ -1096,7 +1096,7 @@ class WorkflowTests(PipelineFixture):
         )
         self.assertNotIn('"medium"', text, "no reviewer_effort is configured, so no role names one")
         # Each role runs as the guarded reviewer agent. One that fails is left unfinished for check to retry under
-        # the guard, never rerun as an unguarded general-purpose agent (#142).
+        # the guard, never rerun as an unguarded general-purpose agent.
         self.assertIn("start(role, 'code-review-reviewer').catch(() => null)", text)
         self.assertNotIn("general-purpose", text)
 
@@ -1130,7 +1130,7 @@ class WorkflowTests(PipelineFixture):
 class WaitReviewersTests(PipelineFixture):
     """wait-reviewers keeps the orchestrating turn busy with a granted pipeline command while the Workflow's
     reviewers run. The skill's tool grants end with the turn that invoked it, so check and finalize must run
-    in that turn (#40)."""
+    in that turn."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -1209,7 +1209,7 @@ class WaitReviewersTests(PipelineFixture):
         self.configure({**self.repository_reviewer("review/specialists.json"), "trusted_ref": trusted})
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         first, second = self.start(SELECTOR, "example/one#13")
-        # The generic reviewer covers the changed files no specialist routes (#44).
+        # The generic reviewer covers the changed files no specialist routes, which nobody reviewed before.
         self.assertEqual(["python-review", "python-style", "generic-review"], [role["id"] for role in first["roles"]])
         for role in [*first["roles"][1:], *second["roles"]]:
             self.write_role_result(role)
@@ -1249,7 +1249,7 @@ class WaitReviewersTests(PipelineFixture):
 
 
 class UnfinalizedTests(PipelineFixture):
-    """A run that never reached finalize is the pull request's failure, so the session never reports success (#40)."""
+    """A run that never reached finalize is the pull request's failure, so the session never reports success."""
 
     def test_a_prepared_run_is_unfinalized_until_finalize_records_it(self) -> None:
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
@@ -1277,7 +1277,7 @@ class UnfinalizedTests(PipelineFixture):
 
     def test_a_recorded_run_a_held_file_keeps_is_marked_recorded(self) -> None:
         # Antivirus or the exiting Copilot CLI host holding a file left the folder, and unfinalized reported a
-        # recorded review as failed (#146).
+        # recorded review as failed.
         ready = self.prepare()
         self.write_role_result(ready["roles"][0], findings=[self.finding()])
         run = ready["run"]
@@ -1429,7 +1429,7 @@ class ReReviewTests(PipelineFixture):
         self.assertEqual("addressed", record["prior_dispositions"][0]["disposition"])
 
     def test_finalize_fails_closed_when_another_version_was_recorded_after_prepare(self) -> None:
-        # Session A's dispositions, judged against version 1, were applied on top of session B's version 2 (#146).
+        # Session A's dispositions, judged against version 1, were applied on top of session B's version 2.
         self.record_initial_review()
         self.push({"app/service.py": "def total(items):\n    return float(sum(items or []))\n"})
         judged_against_v1 = self.prepare(re_review=True, scope="full")
@@ -3992,7 +3992,7 @@ class BatchTests(PipelineFixture):
         )
 
         code, out, _ = self.run_main("advance", "--batch", str(batch_path))
-        self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-04\n", out)  # #14 is still unreviewed
+        self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-04\n", out)  # example/one#14 is still unreviewed
 
         self.github.pulls[14] = rest_pull(14, self.head, self.base, state="closed", merged_at="2026-03-05T10:00:00Z")
         batch = json.loads(batch_path.read_text(encoding="utf-8"))

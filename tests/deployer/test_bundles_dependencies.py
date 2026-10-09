@@ -161,7 +161,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.assertEqual({}, entry["skills"])
 
     def test_a_member_retired_from_an_installed_bundle_is_removed_and_the_bundle_kept(self) -> None:
-        # Retiring a skill from a bundle (as re-review was, #116) relies on the next deployment removing it.
+        # Retiring a skill from a bundle (as re-review was) relies on the next deployment removing it.
         self.bundle_fixture()
         self.deploy_ok(stdin=self.selection_number("operations", bundle=True) + "\n")
         self.make_source_json(bundles={"operations": {"members": ["alpha"]}})

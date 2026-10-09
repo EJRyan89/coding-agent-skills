@@ -1,4 +1,5 @@
-"""The Python static checks: ruff format and lint, mypy and its mypy_path, and the noqa and type: ignore rules."""
+"""The Python static checks: ruff format and lint, mypy and its mypy_path, the noqa and type: ignore rules, and the
+rule against issue numbers in comments and docstrings."""
 
 from __future__ import annotations
 
@@ -35,6 +36,12 @@ TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
 # A type: ignore names its error codes and states its reason in a comment after it: `# type: ignore[code]  # <why>`.
 TYPE_IGNORE = re.compile(r"#\s*type:\s*ignore\b")
 TYPE_IGNORE_WITH_REASON = re.compile(r"#\s*type:\s*ignore\[[a-z-]+(?:\s*,\s*[a-z-]+)*\]\s*#\s*\S")
+# A comment or docstring states its reason in words, never as an issue number: a number after a hash sign, alone, in
+# parentheses, or possessive, or after the word issue. A hash sign after a word or a slash, as in a fixture's
+# owner/repo pull selector, is not one. It holds the Python under FORMAT_ROOTS except the fixture trees under
+# tests/fixtures, which are review inputs, not this code.
+ISSUE_REFERENCE = re.compile(r"(?<![\w/&#])#\d+\b|\bissues?\s+#?\d+\b", re.IGNORECASE)
+ISSUE_REFERENCE_EXCLUDED = ("tests/fixtures",)
 
 
 def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
@@ -68,6 +75,42 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
                 and not TYPE_IGNORE_WITH_REASON.search(token.string)
             ):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+    return found
+
+
+def docstring_lines(source: str) -> list[tuple[int, str]]:
+    """Each line of the module's, every class's, and every function's docstring, with its line number in the source."""
+    lines: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) or not node.body:
+            continue
+        first = node.body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
+            segment = ast.get_source_segment(source, first.value) or ""
+            lines += [(first.lineno + offset, line) for offset, line in enumerate(segment.splitlines())]
+    return lines
+
+
+def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
+    """Each comment or docstring line under the checked roots that cites an issue number, as path:line."""
+    found: list[str] = []
+    for path in sorted(files):
+        name = path.relative_to(root).as_posix()
+        if (
+            path.suffix != ".py"
+            or not any(name == prefix or name.startswith(f"{prefix}/") for prefix in FORMAT_ROOTS)
+            or any(name.startswith(f"{prefix}/") for prefix in ISSUE_REFERENCE_EXCLUDED)
+        ):
+            continue
+        source = path.read_text(encoding="utf-8")
+        lines = {
+            token.start[0]
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            # The comment's own leading hash sign is not a citation, so the search starts after it.
+            if token.type == tokenize.COMMENT and ISSUE_REFERENCE.search(token.string[1:])
+        }
+        lines |= {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
+        found += [f"{name}:{number}" for number in sorted(lines)]
     return found
 
 
@@ -241,3 +284,6 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_comments_state_reasons_instead_of_issue_numbers(self) -> None:
+        self.assertEqual([], issue_numbers_in_comments(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

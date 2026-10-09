@@ -1901,7 +1901,7 @@ def wait_for_reviewers(
     """Wait at most `timeout` seconds until no role of these runs is running.
 
     The orchestrator runs this while the Workflow's reviewers work, so it never has to end its turn to wait: the
-    skill's tool grants last only for the turn that invoked it, and check and finalize must run in that turn (#40).
+    skill's tool grants last only for the turn that invoked it, and check and finalize must run in that turn.
     Returns each run's selector and role progress, in the given order, and the reason for each run that cannot be read.
     """
     loaded: list[tuple[Path, dict[str, Any]]] = []

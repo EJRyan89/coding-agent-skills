@@ -185,7 +185,7 @@ class RenderedExecutableTests(DeployerTestCase):
                 self.assertEqual(0, result.returncode, result.stderr.decode("utf-8", "replace"))
 
     def test_an_installation_without_skill_core_adds_it_on_update(self) -> None:
-        # The installations before #27 have no skill-core; updating one installs it with the skills that import it.
+        # An installation from before skill-core has none; updating one installs it with the skills that import it.
         source_id = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))["id"]
         self.make_config(source_id)
         repository = self.repository_source()

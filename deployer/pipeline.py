@@ -104,7 +104,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
                 details["role"] = "owner"
             recorded[kind.key][entry.name] = details
     data.data["last_run_id"] = run_id
-    # An entry written before selected_skills was dropped loses it here: nothing reads it (#23).
+    # An entry written before selected_skills was dropped loses it here: nothing reads it.
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
         **({"source_commit": commit} if commit is not None else {}),

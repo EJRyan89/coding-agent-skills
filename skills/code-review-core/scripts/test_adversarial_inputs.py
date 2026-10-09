@@ -926,7 +926,7 @@ class ConcurrentReviewTests(AdversarialFixture):
         self.write_results(second)
         start = threading.Barrier(2)
         outcomes: dict[str, BaseException | None] = {}
-        # Force the interleaving that left the lock behind (#172): the session holding the pull request's lock waits
+        # Force the interleaving that left the lock behind: the session holding the pull request's lock waits
         # until the other is reading its owner file, and that read stays open until the lock is released.
         reading, released = threading.Event(), threading.Event()
         held: list[Path] = []
