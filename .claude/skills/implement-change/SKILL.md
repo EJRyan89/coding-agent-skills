@@ -4,6 +4,7 @@ description: >-
   Procedure for making a change in a repository that publishes an implementation profile
   (docs/implementing-changes.md), from the worktree and the plan to the pull request. Use it when asked to implement
   an issue or make a change in such a repository.
+allowed-tools: ["Bash(python tools/worktrees.py new *)", "PowerShell(python tools/worktrees.py new *)", "Bash(python -B tests/run_validation.py*)", "PowerShell(python -B tests/run_validation.py*)", "Bash(gh pr create *)", "PowerShell(gh pr create *)"]
 ---
 
 # Implementing a change
@@ -57,5 +58,11 @@ Work test first: write the failing test, then make it pass. Update *Documentatio
 
 ## 7. Pull request
 
-Bring the branch up to date with its base as the repository's instructions describe, and rerun validation if that brought in commits. Write the body from the repository's pull request template to a file and open the pull request with `gh pr create --body-file <file>`, naming `Closes #<number>` for an issue. In its two model lines, name the model that planned (or "no plan" with the size-gate reason) and the model that implemented. Do not merge.
+Bring the branch up to date with its base as the repository's instructions describe, and rerun validation if that brought in commits. Write the body from the repository's pull request template to a file, naming `Closes #<number>` for an issue, and open the pull request:
+
+```bash
+gh pr create --body-file '<file>'
+```
+
+In the body's two model lines, name the model that planned (or "no plan" with the size-gate reason) and the model that implemented. Do not merge.
 
