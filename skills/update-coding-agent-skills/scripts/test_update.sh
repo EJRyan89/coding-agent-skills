@@ -201,15 +201,51 @@ expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "deploy failed"
 [ "$(printf '%s\n' "$OUTPUT" | tail -n 1)" = "DEPLOY_FAILED 7" ] || fail "deploy failed: missing DEPLOY_FAILED 7: $OUTPUT"
 expect_deployed "deploy failed"
 
+# With no release tag on either side there is no release to cross, so the update proceeds.
+new_clone
+publish "untagged change"
+run_subject "$CLONE"
+expect_status 0 "no tag"
+printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "no tag: expected UPDATED: $OUTPUT"
+if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "no tag: crossing reported"; fi
+expect_no_stderr "no tag"
+expect_deployed "no tag"
+
+# A release tag on local main only cannot be crossed, so the gate passes and the diverged main stops the update.
+new_clone
+git_quiet -C "$CLONE" commit --allow-empty -m "local release"
+git_quiet -C "$CLONE" tag v0.9.0
+publish "upstream after local release"
+run_subject "$CLONE"
+expect_status 1 "local tag only"
+expect_first_line "NOT_FAST_FORWARD" "local tag only"
+expect_not_deployed "local tag only"
+
 # Version tags are published upstream only, so the clone must fetch them to see either side's version.
 tag_upstream() {
   git_quiet -C "$SEED" tag "$1"
   git_quiet -C "$SEED" push origin "$1"
 }
 
+# A release on origin/main stops a local main with no release tag, which counts as version zero.
+new_clone
+BEFORE=$(head_of "$CLONE" HEAD)
+publish "first release"
+tag_upstream v0.1.0
+run_subject "$CLONE"
+expect_status 1 "untagged"
+expect_first_line "MAJOR_UPDATE untagged..v0.1.0" "untagged"
+expect_no_stderr "untagged"
+printf '%s\n' "$OUTPUT" | grep -q "first release" || fail "untagged: pending commit not listed"
+[ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "untagged: main moved"
+expect_not_deployed "untagged"
+run_subject "$CLONE" --cross-major
+expect_status 0 "untagged accepted"
+printf '%s\n' "$OUTPUT" | grep -qx "CROSSED untagged..v0.1.0" || fail "untagged accepted: crossing not named: $OUTPUT"
+expect_deployed "untagged accepted"
+
 # A release with a higher breaking component stops before main moves, and lists what it would pull.
 new_clone
-tag_upstream v0.1.0
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "breaking change"
 tag_upstream v0.2.0
@@ -239,14 +275,17 @@ printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "patch: expected UPDATED: 
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "patch: crossing reported"; fi
 expect_deployed "patch"
 
-# Leaving 0.x raises the major, so it stops too.
+# Leaving 0.x raises the major, so it stops too. A nearer tag that is not numeric is not a release.
 new_clone
 BEFORE=$(head_of "$CLONE" HEAD)
 publish "first stable"
 tag_upstream v1.0.0
+publish "after first stable"
+tag_upstream v2x.0.0
 run_subject "$CLONE"
 expect_status 1 "to 1.0.0"
 expect_first_line "MAJOR_UPDATE v0.2.3..v1.0.0" "to 1.0.0"
+expect_no_stderr "to 1.0.0"
 expect_not_deployed "to 1.0.0"
 run_subject "$CLONE" --cross-major
 expect_status 0 "to 1.0.0 accepted"
@@ -269,6 +308,25 @@ expect_status 1 "stable major"
 expect_first_line "MAJOR_UPDATE v1.5.0..v2.0.0" "stable major"
 [ "$(head_of "$CLONE" HEAD)" = "$BEFORE" ] || fail "stable major: main moved"
 expect_not_deployed "stable major"
+
+# A pre-release counts as its version: one of the next major stops, and its final release then passes.
+run_subject "$CLONE" --cross-major
+expect_status 0 "stable major accepted"
+new_clone
+publish "third major candidate"
+tag_upstream v3.0.0-rc.1
+run_subject "$CLONE"
+expect_status 1 "pre-release"
+expect_first_line "MAJOR_UPDATE v2.0.0..v3.0.0-rc.1" "pre-release"
+expect_not_deployed "pre-release"
+run_subject "$CLONE" --cross-major
+expect_status 0 "pre-release accepted"
+publish "third major"
+tag_upstream v3.0.0
+run_subject "$CLONE"
+expect_status 0 "pre-release to release"
+if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release to release: crossing reported"; fi
+expect_deployed "pre-release to release"
 
 # An unknown option is a usage error.
 run_subject "$CLONE" --force
