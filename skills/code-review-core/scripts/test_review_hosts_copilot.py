@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_hosts
 from review_hosts import HostResult, HostSuperseded, ProcessResult, replace_result, run_copilot
-from review_runtime import RuntimeContractError
+from review_runtime import RuntimeContractError, stamp_source_snapshot
 
 HEAD = "b" * 40
 SOURCE = b"class Example {}\n"
@@ -47,6 +48,8 @@ class Copilot:
     request: dict[str, Any] = field(default_factory=dict)  # dotted request fields replaced, values formatted
     request_text: str | None = None  # the whole request file, in place of the request
     snapshot_repository: str = "example/one"
+    stamp: bool = False  # pass the stamp prepare would take, with Example.cs dated a minute before the manifest
+    after_stamp: str | None = None  # then "changed" (Example.cs), "added" (Added.cs), or "touched" (dated now)
     materialization_schema: int = 1
     isolation_files: list[str] = field(default_factory=list)  # left in the isolation root beforehand
     executable: str | None = "copilot"
@@ -293,6 +296,16 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
         (RuntimeContractError, "Source snapshot repository does not match the request", 0, None),
     ),
     (
+        "a snapshot file changed after prepare's stamp",
+        _chain(_change("stamp", True), _change("after_stamp", "changed")),
+        (RuntimeContractError, "Source snapshot hash mismatch: Example.cs", 0, None),
+    ),
+    (
+        "a snapshot file added after prepare's stamp",
+        _chain(_change("stamp", True), _change("after_stamp", "added")),
+        (RuntimeContractError, "Source snapshot file set mismatch; missing=[], extra=['Added.cs']", 0, None),
+    ),
+    (
         "an isolation root that is not empty",
         _change("isolation_files", ["stale.txt"]),
         (RuntimeContractError, "Copilot isolation root must be empty", 0, None),
@@ -421,6 +434,7 @@ class CopilotHostTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.temporary = Path(temporary.name).resolve()
         self.cases = 0
+        self.stamps: dict[Path, str] = {}  # each stamped snapshot's stamp
 
     def materialize(self, copilot: Copilot) -> dict[str, Path]:
         """Write the call's files and return the paths it names."""
@@ -454,6 +468,8 @@ class CopilotHostTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+        if copilot.stamp:
+            self.stamp_snapshot(copilot, paths["source"])
         paths["diff"].write_text("diff --git a/Example.cs b/Example.cs\n", encoding="utf-8")
         (root / "outside.patch").write_text("diff --git a/Example.cs b/Example.cs\n", encoding="utf-8")
         paths["trusted"].mkdir()
@@ -479,6 +495,20 @@ class CopilotHostTests(unittest.TestCase):
             encoding="utf-8",
         )
         return paths
+
+    def stamp_snapshot(self, copilot: Copilot, source: Path) -> None:
+        """Take the snapshot's stamp as prepare does, then change the snapshot as `after_stamp` says."""
+        written = (source / "source-snapshot.json").stat().st_mtime_ns - 60 * 10**9
+        os.utime(source / "Example.cs", ns=(written, written))
+        self.stamps[source] = stamp_source_snapshot(
+            source, expected_repository=copilot.snapshot_repository, expected_commit=HEAD
+        )
+        if copilot.after_stamp == "changed":
+            (source / "Example.cs").write_bytes(SOURCE.replace(b"Example", b"Exploit"))
+        elif copilot.after_stamp == "added":
+            (source / "Added.cs").write_bytes(SOURCE)
+        elif copilot.after_stamp == "touched":
+            os.utime(source / "Example.cs")
 
     @staticmethod
     def request(copilot: Copilot, paths: dict[str, Path]) -> dict[str, Any]:
@@ -539,6 +569,8 @@ class CopilotHostTests(unittest.TestCase):
         }
         if copilot.default_staging:
             del arguments["staging_path"]
+        if copilot.stamp:
+            arguments["snapshot_stamp"] = self.stamps[paths["source"]]
         for name, mode in copilot.arguments.items():
             arguments[name] = {
                 "missing": paths["root"] / "missing",
@@ -667,6 +699,33 @@ class CopilotHostTests(unittest.TestCase):
         self.assertIs(RuntimeContractError, type(raised))
         self.assertEqual(f"Copilot request artifacts are invalid: {missing.exception}", str(raised))
         self.assertEqual([], events)
+
+    def test_a_stamped_snapshot_is_re_read_only_as_far_as_it_changed_before_copilot_starts(self) -> None:
+        reads: list[Path] = []
+        original = Path.read_bytes
+
+        def read_bytes(path: Path) -> bytes:
+            reads.append(path)
+            return original(path)
+
+        for after_stamp, read in ((None, []), ("touched", ["Example.cs"])):
+            with self.subTest(after_stamp=after_stamp):
+                copilot = Copilot(stamp=True, after_stamp=after_stamp)
+                paths = self.materialize(copilot)
+                reads.clear()
+                with mock.patch.object(Path, "read_bytes", read_bytes):
+                    events, returned = self.call(copilot, paths)
+                self.assertIsInstance(returned, HostResult)
+                self.assertEqual(self.full_sequence(paths), events)
+                source = [path.name for path in reads if path.parent == paths["source"]]
+                self.assertEqual(read, [name for name in source if name != "source-snapshot.json"])
+
+    def test_a_file_changed_or_added_after_prepare_is_refused_before_copilot_starts(self) -> None:
+        stages = {name: (mutation, outcome) for name, mutation, outcome in REFUSED}
+        for name in ("a snapshot file changed after prepare's stamp", "a snapshot file added after prepare's stamp"):
+            with self.subTest(name):
+                mutation, outcome = stages[name]
+                self.assert_refused(mutation(Copilot()), outcome)
 
     def test_each_refusal_leaves_its_exact_trace(self) -> None:
         for name, mutation, outcome in REFUSED:

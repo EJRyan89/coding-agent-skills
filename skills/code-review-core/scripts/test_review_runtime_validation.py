@@ -927,6 +927,145 @@ class SnapshotLinkTests(unittest.TestCase):
             )
 
 
+UTIL = b"def util():\n    return 1\n"
+UTIL_BLOB = hashlib.sha1(b"blob %d\0" % len(UTIL) + UTIL, usedforsecurity=False).hexdigest()
+MINUTE = 60 * 10**9  # in the nanoseconds a file's time is set in
+
+
+class SnapshotStampTests(unittest.TestCase):
+    """stamp_source_snapshot and verify_stamped_snapshot, the Copilot CLI host's check before it starts a reviewer: a
+    snapshot whose listing still shows every file prepare wrote at the size and time prepare saw re-reads only the files
+    that time cannot vouch for, and anything else gets the full contents pass. Times are set explicitly, so whether a
+    file counts as written before the manifest never depends on the clock's resolution."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="snapshot-stamp-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve() / "source"
+        self.metadata = copy.deepcopy(_snapshot().metadata)
+        self.write(_snapshot().files)
+
+    def write(self, files: dict[str, bytes]) -> None:
+        """Write the files, then the manifest, and date every file a minute before the manifest."""
+        for relative, content in files.items():
+            self.put(relative, content)
+        self.manifest().write_text(json.dumps(self.metadata), encoding="utf-8")
+        for relative in files:
+            self.age(relative, self.manifest_time() - MINUTE)
+
+    def manifest(self) -> Path:
+        return self.root / "source-snapshot.json"
+
+    def manifest_time(self) -> int:
+        return self.manifest().stat().st_mtime_ns
+
+    def put(self, relative: str, content: bytes, modified: int | None = None) -> None:
+        target = self.root.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(content)
+        if modified is not None:
+            self.age(relative, modified)
+
+    def age(self, relative: str, modified: int) -> None:
+        os.utime(self.root.joinpath(*relative.split("/")), ns=(modified, modified))
+
+    def stamp(self) -> str:
+        return review_runtime.stamp_source_snapshot(self.root, expected_repository="owner/repo", expected_commit=HEAD)
+
+    def verify(self, stamp: str | None) -> tuple[dict[str, Any], list[str]]:
+        """The metadata the host's check returns, and the snapshot files it read, the manifest left out, which
+        `self.read` also holds when it raises."""
+        self.read: list[str] = []
+        read = self.read
+        original = Path.read_bytes
+
+        def read_bytes(path: Path) -> bytes:
+            if path != self.manifest():
+                read.append(path.relative_to(self.root).as_posix())
+            return original(path)
+
+        with mock.patch.object(Path, "read_bytes", read_bytes):
+            metadata = review_runtime.verify_stamped_snapshot(
+                self.root, expected_repository="owner/repo", expected_commit=HEAD, stamp=stamp
+            )
+        return metadata, read
+
+    def assert_refused(self, stamp: str | None, message: str) -> None:
+        with self.assertRaises(RuntimeContractError) as caught:
+            self.verify(stamp)
+        self.assertEqual(message, str(caught.exception))
+
+    def test_a_stamp_is_one_digest_and_names_the_snapshot_it_was_taken_of(self) -> None:
+        stamp = self.stamp()
+        self.assertRegex(stamp, r"\A[0-9a-f]{64}\Z")
+        self.assertEqual(stamp, self.stamp())
+        self.age("README.md", self.manifest_time() - 2 * MINUTE)
+        self.assertNotEqual(stamp, self.stamp(), "a file's time is part of the stamp")
+
+    def test_a_stamp_is_taken_only_of_a_snapshot_that_verifies(self) -> None:
+        self.put("extra.py", b"x = 1\n")
+        with self.assertRaises(RuntimeContractError) as caught:
+            self.stamp()
+        self.assertEqual("Source snapshot file set mismatch; missing=[], extra=['extra.py']", str(caught.exception))
+
+    def test_a_matching_stamp_reads_no_file_written_before_the_manifest(self) -> None:
+        self.assertEqual((self.metadata, []), self.verify(self.stamp()))
+
+    def test_a_file_written_in_the_manifests_clock_tick_is_read_though_the_stamp_matches(self) -> None:
+        # A rewrite in the same tick as prepare's write would keep its time, so time vouches only for older files.
+        self.age("README.md", self.manifest_time())
+        stamp = self.stamp()
+        self.assertEqual((self.metadata, ["README.md"]), self.verify(stamp))
+        self.put("README.md", b"# Readm!\n", self.manifest_time())
+        self.assert_refused(stamp, "Source snapshot hash mismatch: README.md")
+
+    def test_a_file_changed_after_the_stamp_is_refused_by_the_full_pass(self) -> None:
+        stamp = self.stamp()
+        self.put("src/app.py", b"print('pwn')\n")  # the same size, at the time it was written
+        self.assertEqual(len(APP), len(b"print('pwn')\n"))
+        self.assert_refused(stamp, "Source snapshot hash mismatch: src/app.py")
+
+    def test_a_file_added_after_the_stamp_is_refused_before_anything_is_read(self) -> None:
+        stamp = self.stamp()
+        self.put("src/added.py", b"x = 1\n")
+        self.assert_refused(stamp, "Source snapshot file set mismatch; missing=[], extra=['src/added.py']")
+        self.assertEqual([], self.read)
+
+    def test_a_file_removed_after_the_stamp_is_refused(self) -> None:
+        stamp = self.stamp()
+        (self.root / "README.md").unlink()
+        self.assert_refused(stamp, "Source snapshot file is missing: README.md")
+
+    def test_a_manifest_rewritten_after_the_stamp_is_refused_by_the_full_pass(self) -> None:
+        stamp = self.stamp()
+        modified = self.manifest_time()
+        self.metadata["source_hashes"]["README.md"] = "0" * 64
+        self.manifest().write_text(json.dumps(self.metadata), encoding="utf-8")
+        os.utime(self.manifest(), ns=(modified, modified))  # its time kept: its bytes are in the stamp
+        self.assert_refused(stamp, "Source snapshot hash mismatch: README.md")
+
+    def test_a_file_touched_but_unchanged_passes_the_full_pass(self) -> None:
+        stamp = self.stamp()
+        self.age("README.md", self.manifest_time() + MINUTE)
+        self.assertEqual((self.metadata, ["src/app.py", "README.md"]), self.verify(stamp))
+
+    def test_without_a_stamp_or_with_another_snapshots_every_file_is_read(self) -> None:
+        for stamp in (None, "0" * 64, "not a digest"):
+            with self.subTest(stamp=stamp):
+                self.assertEqual((self.metadata, ["src/app.py", "README.md"]), self.verify(stamp))
+
+    def test_a_lazy_snapshots_fetched_files_are_read_whenever_they_are_held(self) -> None:
+        metadata = {**copy.deepcopy(self.metadata), "fetchable": {"lib/util.py": UTIL_BLOB}}
+        self.metadata = metadata
+        self.write({})
+        stamp = self.stamp()
+        self.assertEqual((metadata, []), self.verify(stamp))
+        self.put("lib/util.py", UTIL, self.manifest_time() - MINUTE)  # fetched after the stamp
+        self.assertEqual((metadata, ["lib/util.py"]), self.verify(stamp))
+        self.put("lib/util.py", UTIL.replace(b"1", b"2"), self.manifest_time() - MINUTE)
+        self.assert_refused(stamp, "Source snapshot file does not match its blob: lib/util.py")
+
+
 # validate_adapter_manifest, pinned the same way, for an entrypoint manifest (schema 1) and a specialists manifest
 # (schema 2). The specialists' own fields belong to _validate_specialists; one of its errors shows where it runs.
 ManifestMutation = Callable[[Any], Any]

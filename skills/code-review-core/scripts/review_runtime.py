@@ -754,12 +754,14 @@ def _require_safe_snapshot_path(root: Path, target: Path) -> None:
 
 @dataclass
 class _SnapshotTree:
-    """What one walk of a snapshot found: each regular file with its size, the entries it refused to enter or count
-    (a reparse point, a folder that resolves outside the root, anything else that is neither a folder nor a regular
-    file), and a fault for each refused entry, in the order the walk met them."""
+    """What one walk of a snapshot found: each regular file with its size and its modification time in nanoseconds, as
+    its directory listing gives them, the entries it refused to enter or count (a reparse point, a folder that resolves
+    outside the root, anything else that is neither a folder nor a regular file), and a fault for each refused entry,
+    in the order the walk met them."""
 
     root: Path
     files: dict[str, int] = field(default_factory=dict)
+    modified: dict[str, int] = field(default_factory=dict)
     reparse: set[str] = field(default_factory=set)
     escaping: set[str] = field(default_factory=set)
     irregular: set[str] = field(default_factory=set)
@@ -838,6 +840,7 @@ def _walk_snapshot(root: Path) -> _SnapshotTree:
                 tree.reparse.add(relative)
             elif stat.S_ISREG(metadata.st_mode):
                 tree.files[relative] = metadata.st_size
+                tree.modified[relative] = metadata.st_mtime_ns
                 continue
             else:
                 tree.irregular.add(relative)
@@ -879,14 +882,79 @@ def verify_source_snapshot(
     )[0]
 
 
+def stamp_source_snapshot(root: Path, *, expected_repository: str, expected_commit: str) -> str:
+    """The snapshot's stamp, once its structure verifies, for `verify_stamped_snapshot` to tell that no file the
+    snapshot was written with has changed since. `prepare` takes it, after writing the snapshot and before anything
+    untrusted runs, for a reviewer that starts in a process of its own."""
+    metadata, tree, _, manifest_digest = _verify_snapshot(
+        root, expected_repository=expected_repository, expected_commit=expected_commit, contents=False
+    )
+    return _snapshot_stamp(metadata, tree, manifest_digest)
+
+
+def verify_stamped_snapshot(
+    root: Path, *, expected_repository: str, expected_commit: str, stamp: str | None
+) -> dict[str, Any]:
+    """Verify a snapshot a reviewer in another process is about to read, and return its manifest: the Copilot CLI
+    host's check before it starts its reviewer.
+
+    The structure is checked as `verify_source_snapshot` checks it, so a file added, removed, or replaced by a link
+    fails here. When `stamp` still matches, every file the snapshot was written with keeps the size and modification
+    time it had when `prepare` took the stamp, so the hashes `prepare` computed as it wrote them still hold, and only
+    the files a time cannot vouch for are read: each one dated no earlier than the manifest, which `prepare` writes
+    last, since a rewrite in the clock tick it was written in keeps its time, and each file a lazy snapshot fetched
+    since, against its blob id. A stamp that no longer matches, or none (a run prepared before stamps), has every file
+    read and hashed, as `verify_source_snapshot` does by default, so a file changed since `prepare` is refused.
+    """
+    metadata, tree, _, manifest_digest = _verify_snapshot(
+        root, expected_repository=expected_repository, expected_commit=expected_commit, contents=False
+    )
+    if stamp != _snapshot_stamp(metadata, tree, manifest_digest):
+        return verify_source_snapshot(
+            root, expected_repository=expected_repository, expected_commit=expected_commit, contents=True
+        )
+    written = tree.modified[SOURCE_SNAPSHOT_MANIFEST]
+    for relative, expected_hash in metadata["source_hashes"].items():
+        if tree.modified[relative] < written:
+            continue
+        if hashlib.sha256(_snapshot_path(root, relative).read_bytes()).hexdigest() != expected_hash:
+            raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
+    for relative, blob in metadata.get(SNAPSHOT_FETCHABLE, {}).items():
+        if relative in tree.files:
+            _require_blob(root, relative, blob)
+    return metadata
+
+
+def _snapshot_stamp(metadata: dict[str, Any], tree: _SnapshotTree, manifest_digest: str) -> str:
+    """One SHA-256 over the manifest's own SHA-256 and the path, size, and modification time, as the walk listed them,
+    of the manifest and of each file it lists by hash. A lazy snapshot's fetched files are left out, since a fetch adds
+    them."""
+    digest = hashlib.sha256(manifest_digest.encode("ascii"))
+    for relative in sorted([SOURCE_SNAPSHOT_MANIFEST, *metadata["source_hashes"]]):
+        entry = [relative, tree.files[relative], tree.modified[relative]]
+        digest.update(json.dumps(entry).encode("ascii") + b"\n")
+    return digest.hexdigest()
+
+
+def _snapshot_path(root: Path, relative: str) -> Path:
+    return root.joinpath(*PurePosixPath(relative).parts)
+
+
+def _require_blob(root: Path, relative: str, blob: str) -> None:
+    """A fetched file's bytes hash to its blob id."""
+    content = _snapshot_path(root, relative).read_bytes()
+    if _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
+        raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
+
+
 def _verify_snapshot(
     root: Path, *, expected_repository: str, expected_commit: str, contents: bool
-) -> tuple[dict[str, Any], _SnapshotTree, int]:
-    """`verify_source_snapshot`'s manifest, the walk the file set was checked against, and the bytes the files it
-    holds total."""
+) -> tuple[dict[str, Any], _SnapshotTree, int, str]:
+    """`verify_source_snapshot`'s manifest, the walk the file set was checked against, the bytes the files it holds
+    total, and the SHA-256 of the manifest's bytes."""
     if not root.is_absolute() or not root.is_dir() or _is_reparse_point(root):
         raise RuntimeContractError("Source snapshot root must be an existing absolute non-reparse directory")
-    metadata = _read_snapshot_metadata(root)
+    metadata, manifest_digest = _read_snapshot_metadata(root)
     require_snapshot_source(metadata, expected_repository, expected_commit)
     hashes, excluded, fetchable = _snapshot_maps(metadata)
     tree = _walk_snapshot(root)
@@ -897,22 +965,23 @@ def _verify_snapshot(
     if contents:  # the reads took time, so the file set is checked against a walk made after them
         tree = _walk_snapshot(root)
     _require_snapshot_file_set(tree, expected_files, set(fetchable))
-    return metadata, tree, total_bytes
+    return metadata, tree, total_bytes, manifest_digest
 
 
-def _read_snapshot_metadata(root: Path) -> Any:
+def _read_snapshot_metadata(root: Path) -> tuple[Any, str]:
     """The snapshot's manifest, once it holds exactly the contract's fields, and a lazy one's fetchable paths, at a
-    supported schema version."""
+    supported schema version, and the SHA-256 of the bytes it was read from."""
     metadata_path = root / SOURCE_SNAPSHOT_MANIFEST
     try:
-        metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        content = metadata_path.read_bytes()
+        metadata = json.loads(content.decode("utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
     if not isinstance(metadata, dict) or set(metadata) - {SNAPSHOT_FETCHABLE} != SOURCE_SNAPSHOT_FIELDS:
         raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
     if metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
-    return metadata
+    return metadata, hashlib.sha256(content).hexdigest()
 
 
 def require_snapshot_source(metadata: dict[str, Any], expected_repository: str, expected_commit: str) -> None:
@@ -989,9 +1058,7 @@ def _verify_fetched_files(
         if size > MAX_SOURCE_FILE_BYTES or total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
             raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
         if contents:
-            content = tree.root.joinpath(*PurePosixPath(relative).parts).read_bytes()
-            if _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
-                raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
+            _require_blob(tree.root, relative, blob)
     return total_bytes
 
 
@@ -1372,7 +1439,7 @@ def fetch_source_file(
     file in `staging`, which must be on the snapshot's volume, into a folder checked for reparse points and escape,
     and the snapshot's total size limit holds. A file already there is checked against its id instead.
     """
-    metadata, tree, held = _verify_snapshot(
+    metadata, tree, held, _ = _verify_snapshot(
         root, expected_repository=repository, expected_commit=commit, contents=False
     )
     target = root.joinpath(*PurePosixPath(relative).parts)
