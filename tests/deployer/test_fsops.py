@@ -77,6 +77,33 @@ class FilesystemOperationTests(unittest.TestCase):
         self.assertEqual("next\n", target.read_text(encoding="utf-8"))
         self.assertEqual(["info.json"], sorted(path.name for path in self.root.iterdir()))
 
+    def test_write_private_syncs_the_copy_before_it_replaces_the_target(self) -> None:
+        target = self.root / "deploy.config"
+        target.write_text("previous\n", encoding="utf-8")
+        events: list[str] = []
+        real_replace = Path.replace
+
+        def replace(path: Path, destination: Path) -> Path:
+            events.append("replace")
+            return real_replace(path, destination)
+
+        with (
+            mock.patch("os.fsync", side_effect=lambda descriptor: events.append("fsync")),
+            mock.patch.object(Path, "replace", replace),
+        ):
+            fsops.write_private(target, b"next\n")
+        self.assertEqual(["fsync", "replace"], events)
+        self.assertEqual("next\n", target.read_text(encoding="utf-8"))
+        self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
+
+    def test_write_private_keeps_the_target_and_removes_its_copy_when_the_sync_fails(self) -> None:
+        target = self.root / "deploy.config"
+        target.write_text("previous\n", encoding="utf-8")
+        with mock.patch("os.fsync", side_effect=OSError(28, "No space left on device")), self.assertRaises(OSError):
+            fsops.write_private(target, b"next\n")
+        self.assertEqual("previous\n", target.read_text(encoding="utf-8"))
+        self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
+
 
 if __name__ == "__main__":
     unittest.main()

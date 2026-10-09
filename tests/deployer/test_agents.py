@@ -96,6 +96,45 @@ class AgentDeploymentTests(DeployerTestCase):
         backups = list((self.claude_agents_dir / ".backups").rglob("reviewer.md"))
         self.assertEqual(["my own reviewer\n"], [path.read_text(encoding="utf-8") for path in backups])
 
+    def test_force_item_names_an_agent_by_its_name_as_well_as_its_file_name(self) -> None:
+        self.write(self.agent, "my own reviewer\n")
+        dry = self.deploy_ok("--all", "--dry-run", "--force-item", "reviewer")
+        self.assertIn(
+            "reviewer.md (agent, forced, was unmanaged, previous copy backed up)",
+            self.report_groups(dry.output, "DRY RUN")["REPLACE"],
+        )
+        forced = self.deploy_ok("--all", "--force-item", "reviewer")
+        self.assertEqual(self.content, self.agent.read_bytes())
+        groups = self.report_groups(forced.output, "DEPLOYED")
+        self.assertIn("reviewer.md (agent, forced, was unmanaged, previous copy backed up)", groups["REPLACED"])
+        self.assertEqual(["alpha"], groups["INSTALLED"], "only the agent is forced")
+
+    def test_an_unknown_force_item_is_refused_before_any_change_with_the_names_it_accepts(self) -> None:
+        self.make_source_json(shared_assets={"shared.md": "owner"})
+        self.make_skill("alpha", "Alpha", agent_deps=["reviewer"], shared_deps=["shared.md"])
+        self.make_skill("beta", "Beta")
+        self.make_shared_asset("shared.md")
+        self.write(self.agent, "my own reviewer\n")
+        refusal = (
+            "ERROR: --force-item names 'gamma' and 'reviewer.txt', which this run does not install.\n"
+            "Name one of: alpha, beta, reviewer, shared.md.\n"
+        )
+        forced = ("--force-item", "gamma", "--force-item", "alpha", "--force-item", "reviewer.txt")
+        for arguments in (("--dry-run",), ()):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails("--all", *arguments, *forced, pattern="--force-item names")
+                self.assertIn(refusal, result.output)
+                self.assertEqual(1, result.code)
+                self.assertFalse(self.manifest_file.exists())
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assertEqual("my own reviewer\n", self.agent.read_text(encoding="utf-8"))
+        nothing = self.deploy_fails("--force-item", "alpha", stdin="none\n", pattern="--force-item names")
+        self.assertIn(
+            "ERROR: --force-item names 'alpha', which this run does not install.\n"
+            "This run installs nothing, so --force-item has nothing to replace.\n",
+            nothing.output,
+        )
+
     def test_a_byte_identical_unmanaged_agent_is_adopted(self) -> None:
         self.agent.parent.mkdir(parents=True)
         self.agent.write_bytes(self.content)

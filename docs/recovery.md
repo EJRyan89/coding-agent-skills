@@ -44,7 +44,7 @@ To reconcile a run by hand:
 3. If the run was committed, keep each item as it is. Move its `<name>.deploying-bak` to `.backups/<run-id>/<name>` in the same root if you want to keep the previous copy, or delete it once you have checked you do not need it.
 4. If the run was not committed, put back what it replaced: move the current `<name>` out of the root, then rename `<name>.deploying-bak` to `<name>`. Moving it out of the root matters, because Claude Code, Codex, and Copilot would load anything left inside it.
 5. When no `.deploying-bak` remains in any of the three roots, delete the run's staging directory, `~/.claude/deployer/staging/<run-id>/`.
-6. Run `python deploy.py --all --dry-run`. An item whose content no longer matches the manifest is reported as modified and left alone; replace it with `--force-item <name>` when you are sure, which keeps a backup.
+6. Run `python deploy.py --all --dry-run`. An item whose content no longer matches the manifest is reported as modified and left alone; replace it with `--force-item <name>` when you are sure, which keeps a backup. The name is the one the report shows; an agent may also be named without its `.md`.
 
 A journal line that cannot be parsed stops recovery the same way, with `Malformed journal entry`, and is reconciled by the same steps. The one exception is a last line with no newline at its end. The deployer writes each line in full, newline included, before the change it records, so such a line was cut off when the run was stopped, before its change began. Recovery drops it with a `WARNING` that quotes it and proceeds, provided every line before it is valid; a bad line anywhere else still stops recovery.
 
