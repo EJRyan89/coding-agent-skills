@@ -174,7 +174,7 @@ The code-review configuration file, validated by `validate_config` in `review_co
 | --- | --- | --- | --- |
 | `start_marker` | string | no | The line that opens the owned section. A trimmed, non-empty single line; defaults to `<!-- code-review-pr-tracker:start -->`. |
 | `end_marker` | string | no | The line that closes it, different from `start_marker`; defaults to `<!-- code-review-pr-tracker:end -->`. |
-| `status_overrides` | object | no | Keyed by `owner/repo#number`. Each value is a non-empty status shown for that pull request, and may not be a computed one (`to review`, `awaiting response`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`, in any case). |
+| `status_overrides` | object | no | Keyed by `owner/repo#number`. Each value is a non-empty status shown for that pull request, and may not be a computed one (`to review`, `awaiting response`, `my prs`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`, in any case). |
 | `author_names` | object | no | Keyed by GitHub login, unique ignoring case. Each value is the non-empty single-line name the Requestor column shows instead of the author's profile name. |
 
 ### Reviewer manifests

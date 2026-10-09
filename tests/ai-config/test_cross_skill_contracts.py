@@ -15,8 +15,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
 import frontmatter as skill_frontmatter
+from review_config import COMPUTED_DASHBOARD_STATES
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
@@ -474,11 +476,6 @@ class CrossSkillContractTests(unittest.TestCase):
 
     def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
         # An override set to a computed state is refused, so the states a user is told to avoid must be those.
-        refused = literal_assignment(
-            REPOSITORY_ROOT / "skills/code-review-core/scripts/review_config.py", "COMPUTED_DASHBOARD_STATES"
-        )
-        if not isinstance(refused, set):
-            self.fail("COMPUTED_DASHBOARD_STATES is not a set literal")
         for path in (
             "skills/update-pr-tracker/SKILL.md",
             "docs/code-review-operations-contract.md",
@@ -487,7 +484,7 @@ class CrossSkillContractTests(unittest.TestCase):
             with self.subTest(path=path):
                 named = computed_states_named((REPOSITORY_ROOT / path).read_text(encoding="utf-8-sig"))
                 self.assertEqual(len(named), len(set(named)), named)
-                self.assertEqual(sorted(refused), sorted(named))
+                self.assertEqual(sorted(COMPUTED_DASHBOARD_STATES), sorted(named))
 
     def test_a_computed_state_list_is_read_from_its_one_line(self) -> None:
         line = "- `dashboard.status_overrides`: `on hold`, not a computed state (`drafts` or `stale`); see `--remove`."
