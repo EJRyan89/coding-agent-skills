@@ -221,8 +221,26 @@ def entrypoint_links(links: dict[str, tuple[int, str] | None]) -> str:
     )
 
 
+def command_script(name: str) -> str:
+    """The path a role's prompt gives for this folder's script `name`, spelled as this process was started.
+
+    `review-prs` grants its pipeline commands as text, `${CLAUDE_SKILL_DIR}/../code-review-core/scripts/` with the
+    skill's directory filled in, and an inline role runs its prompt's commands in that same session, so a command
+    spelled as the session started `prepare` matches the grant where the resolved path, with no `..`, never does.
+    The reviewer guard resolves either spelling to the same script. A start the prompt cannot reuse falls back to the
+    resolved path: a relative path, a path to another file, or one holding a character a quoted command cannot."""
+    pipeline = Path(__file__).resolve()
+    resolved = str(pipeline.parent / name)
+    started = sys.argv[0] if sys.argv else ""
+    if not started.endswith(pipeline.name) or not Path(started).is_absolute() or set(started) & set('"`$\r\n'):
+        return resolved
+    if os.path.normcase(str(Path(started).resolve())) != os.path.normcase(str(pipeline)):
+        return resolved
+    return started.removesuffix(pipeline.name) + name
+
+
 def self_check_command(run: Path, role: str) -> str:
-    return SELF_CHECK_COMMAND.format(script=Path(__file__).resolve(), run=run, role=role)
+    return SELF_CHECK_COMMAND.format(script=command_script("review_pipeline.py"), run=run, role=role)
 
 
 class PipelineError(ValueError):
@@ -801,9 +819,10 @@ def _write_roles(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Each reviewer role with its prompt written: an entrypoint's one, or the specialists plan's. Returns the roles
     and the changed files the plan leaves unreviewed. A `lazy` snapshot's prompts name its source commands."""
+    script = command_script("review_source.py")
     if kind == "entrypoint":
         prompt_path = run / "reviewer.prompt.md"
-        fetch, search = source_commands(run, adapter["name"])
+        fetch, search = source_commands(run, adapter["name"], script=script)
         atomic_write_text(
             prompt_path,
             ENTRYPOINT_PROMPT.format(
@@ -826,7 +845,7 @@ def _write_roles(
         snapshot=manifest,
         local_checkout=checkout,
         review_files=review_files,
-        source_commands=(lambda identity: source_commands(run, identity)) if lazy else None,
+        source_commands=(lambda identity: source_commands(run, identity, script=script)) if lazy else None,
     )
     roles = [
         {

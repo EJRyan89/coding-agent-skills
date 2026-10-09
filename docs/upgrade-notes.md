@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### An inline review's self-check and source commands match review-prs's grant
+
+- Level: patch. A fix: each reviewer prompt now gives its self-check, `source-file`, and `source-search` commands with the script path spelled as the session started `prepare`, `${CLAUDE_SKILL_DIR}/../code-review-core/scripts/` filled in, instead of the resolved path. In Claude Code, an inline role's commands now match `review-prs`'s grant rather than asking each time. Writing a role's result still asks, because no skill grant can name the system temporary directory. "Inline reviews" in the operations guide gives the allow rule a headless session needs.
+- Contract: none
+- User action: none
+- Pull request: #311
+
 ### validate-reviewer measures the snapshot route prepare takes and reads the reviewer where prepare does
 
 - Level: minor. New output fields, a new flag, and fixes: `validate-reviewer` now measures the source snapshot on the route `prepare` would take, which its `SNAPSHOT` line names as `source=checkout-lazy` or `source=checkout` beside a new `fetchable=<n>` count. On the lazy route only the files `prepare` writes (the changed files, the analyzer settings, and the paths declared `reads` match) count against the 256 MiB size limit, and every file it lists counts against the file-count limit, so a repository whose unchanged files pass 256 MiB is no longer refused while `prepare` accepts it. For each `--pull` it now reads the reviewer through `prepare`'s fallback, from the default branch's tip or as the suite's generic reviewer when the base predates the review skill, instead of failing, and its `PULL` line ends with `reviewer=<source>`, the `review.adapter.source` the record would name, followed by `prepare`'s `NOTE` on the fallback. `--host`, as on `prepare`, names the runtime that decides an `auto` runtime, since an entrypoint reviewer on the Copilot CLI host gets a whole snapshot.
