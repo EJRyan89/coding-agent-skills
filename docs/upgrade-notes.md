@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. Additive: a condition in a specialists manifest may list `reads`, glob patterns of the snapshot paths its script opens besides the changed files, matched as `snapshot_exclude` is. When every condition a review runs declares them, `prepare` keeps the checkout route's snapshot lazy, recorded as `checkout-lazy`, and writes the paths they match beside the changed files and the analyzer settings; the script sees no other path. A condition without `reads` keeps the whole snapshot, recorded as `checkout`, as before. A path `snapshot_exclude` matches is never written, declared or not. `validate-reviewer` runs each condition on the snapshot a review gives it, so its `CONDITION` lines match the review's. A previous release refuses a manifest that has `reads`.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: none. To use it, add `reads` to each condition of a repository's manifest and check the conditions with `validate-reviewer`; the "Specialist reviewers" section of `docs/code-review-operations.md` gives an example.
-- Pull request: #225
+- Pull request: #251
 
 ### update-pr-tracker sets and clears status overrides with a validated command
 
