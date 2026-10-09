@@ -732,6 +732,19 @@ class LedgerReportTests(unittest.TestCase):
         self.assertIn("| Retries | Time | Files read |\n", report)
         self.assertIn(" | 0 | 40s | 14 (50.8 KiB) |\n", report)
         self.assertIn(" | 0 | 12s | unknown |\n", report)
+        # A record that counted its exclusions names them by reason; one that excluded nothing names none.
+        review["review"]["snapshot"]["excluded"] = {"agent-instruction": 3, "configured": 1_200}
+        self.assertIn(
+            "| **Snapshot** | tarball: 12,700 files, 204.0 MiB (excluded: agent-instruction 3, configured 1,200); "
+            "fetch 6.0s, materialize 33.2s, prompts 0.4s |\n",
+            render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second]),
+        )
+        review["review"]["snapshot"]["excluded"] = {}
+        self.assertIn(
+            "| **Snapshot** | tarball: 12,700 files, 204.0 MiB; fetch 6.0s, materialize 33.2s, prompts 0.4s |\n",
+            render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second]),
+        )
+        del review["review"]["snapshot"]["excluded"]
         generic.update(files_read=0, bytes_read=0)
         report = render_markdown(review, record_payload_hash="0" * 64, prior_records=[first, second])
         self.assertIn(" | 0 | 40s | 0 (0 B) |\n", report)

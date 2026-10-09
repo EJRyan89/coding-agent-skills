@@ -2325,10 +2325,18 @@ class RuntimeContractTests(unittest.TestCase):
             )
             self.assertEqual([], review_runtime.unavailable_sources(diff, metadata))
         self.assertEqual(
-            {"agent-instruction", "binary", "file-size-limit", "unsafe-path", "symbolic-link", "non-regular"},
+            {
+                "agent-instruction",
+                "binary",
+                "configured",
+                "file-size-limit",
+                "unsafe-path",
+                "symbolic-link",
+                "non-regular",
+            },
             review_runtime.SNAPSHOT_EXCLUSION_REASONS,
         )
-        self.assertEqual({"file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
+        self.assertEqual({"configured", "file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

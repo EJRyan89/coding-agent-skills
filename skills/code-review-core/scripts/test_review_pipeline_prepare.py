@@ -400,7 +400,14 @@ class PrepareFixture(unittest.TestCase):
             raise RuntimeContractError("Unknown runtime host: unknown")
         return self.runtime
 
-    def configure(self, reviewer: dict[str, Any] | None = None, *, checkout: bool = True, **settings: Any) -> None:
+    def configure(
+        self,
+        reviewer: dict[str, Any] | None = None,
+        *,
+        checkout: bool = True,
+        snapshot_exclude: list[str] | None = None,
+        **settings: Any,
+    ) -> None:
         self.config_path = self.root / "config.json"
         write_config(
             {
@@ -411,6 +418,7 @@ class PrepareFixture(unittest.TestCase):
                     REPOSITORY: {
                         "reviewer": reviewer or GENERIC,
                         "checkout_path": str(self.checkout) if checkout else None,
+                        **({} if snapshot_exclude is None else {"snapshot_exclude": snapshot_exclude}),
                     }
                 },
                 "archive_root": str(self.archive),
@@ -948,6 +956,7 @@ SNAPSHOT = {
     "source": "checkout-lazy",
     "files": 1,
     "bytes": len(HEAD_FILES["app/service.py"]),
+    "excluded": {"agent-instruction": 1, "symbolic-link": 2},
     "seconds": {"fetch": 0.0, "materialize": 0.0, "prompts": 0.0},
 }
 WHOLE_SNAPSHOT = {**SNAPSHOT, "source": "checkout", "files": 11, "bytes": 1780}
@@ -1108,6 +1117,26 @@ class InitialReviewTests(PrepareFixture):
         self.assertEqual([("auto", None)], self.runtime_calls)
         self.assertEqual([], list(self.temporary.iterdir()), "the snapshot's temporary archive is gone")
 
+    def test_a_configured_exclusion_leaves_files_out_and_a_changed_one_is_an_unavailable_source(self) -> None:
+        # The changed service file and every review document match, the first in another case.
+        self.configure(snapshot_exclude=["APP/*.py", "review/**"])
+        result, _ = self.prepare()
+        manifest = self.json_file("source/source-snapshot.json")
+        configured = ["app/service.py", *sorted(path for path in BASE_FILES if path.startswith("review/"))]
+        self.assertEqual(
+            configured, sorted(path for path, reason in manifest["excluded_paths"].items() if reason == "configured")
+        )
+        self.assertEqual([], [path for path in configured if path in manifest["source_hashes"]], "never written")
+        self.assertEqual([], [path for path in configured if path in manifest["fetchable"]], "never fetchable")
+        self.assertFalse((self.run_dir / "source" / "app" / "service.py").exists())
+        # The author cannot hide a change behind the maintainer's exclusion: the diff names it, and its review is
+        # INCOMPLETE.
+        self.assertEqual({"unavailable_sources": ["app/service.py"]}, self.json_file("request.json")["coverage"])
+        self.assertEqual(
+            {"agent-instruction": 1, "configured": len(configured), "symbolic-link": 2}, result["snapshot"]["excluded"]
+        )
+        self.assertEqual(result["snapshot"], self.json_file("run.json")["snapshot"])
+
     def test_each_phase_of_a_checkout_snapshot_is_timed_and_its_size_counted(self) -> None:
         # Fetching the head, materializing the snapshot, and writing the request and prompts each take time.
         with (
@@ -1120,6 +1149,7 @@ class InitialReviewTests(PrepareFixture):
             "source": "checkout-lazy",
             "files": 1,
             "bytes": 75,
+            "excluded": {"agent-instruction": 1, "symbolic-link": 2},
             "seconds": {"fetch": 2.0, "materialize": 33.0, "prompts": 0.5},
         }
         self.assertEqual(expected, result["snapshot"])
@@ -1271,6 +1301,18 @@ class SnapshotFromGitHubTests(PrepareFixture):
             self.text_file("work/generic-review.prompt.md"),
         )
 
+    def test_a_configured_exclusion_applies_to_the_tarball_and_a_changed_file_stays_a_coverage_gap(self) -> None:
+        self.configure(checkout=False, snapshot_exclude=["README.md", "app/service.py"])
+        result, _ = self.prepare()
+        excluded = self.json_file("source/source-snapshot.json")["excluded_paths"]
+        self.assertEqual(("configured", "configured"), (excluded["README.md"], excluded["app/service.py"]))
+        self.assertEqual(["source/source-snapshot.json"], [path for path in self.files() if path.startswith("source/")])
+        self.assertEqual(
+            {"unavailable_sources": ["app/service.py", "app/what?.py", "data/huge.txt"]},
+            self.json_file("request.json")["coverage"],
+        )
+        self.assertEqual((0, 2), (result["snapshot"]["files"], result["snapshot"]["excluded"]["configured"]))
+
     def test_a_tarball_snapshot_is_verified_once_from_its_structure(self) -> None:
         self.assertEqual([("<root>/run/source", False)], self.verifications())
 
@@ -1291,6 +1333,14 @@ class SnapshotFromGitHubTests(PrepareFixture):
                 "source": "tarball",
                 "files": 2,
                 "bytes": readme + service,
+                "excluded": {
+                    "agent-instruction": 1,
+                    "binary": 1,
+                    "file-size-limit": 2,
+                    "non-regular": 1,
+                    "symbolic-link": 1,
+                    "unsafe-path": 1,
+                },
                 "seconds": {"fetch": 4.0, "materialize": 1.2, "prompts": 0.0},
             },
             result["snapshot"],
@@ -2133,6 +2183,19 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertNotIn("fetchable", self.json_file("source/source-snapshot.json"))
         for role in roles:
             self.assertNotIn("source-file", self.text_file(f"work/{role}.prompt.md"))
+
+    def test_the_whole_snapshot_a_condition_needs_leaves_out_the_configured_paths_too(self) -> None:
+        self.configure(
+            self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"),
+            snapshot_exclude=["review/*.json"],
+        )
+        result, _ = self.prepare()
+        self.assertEqual("checkout", result["snapshot"]["source"])
+        configured = sorted(path for path in BASE_FILES if path.startswith("review/") and path.endswith(".json"))
+        excluded = self.json_file("source/source-snapshot.json")["excluded_paths"]
+        self.assertEqual(configured, sorted(path for path, reason in excluded.items() if reason == "configured"))
+        self.assertEqual(len(configured), result["snapshot"]["excluded"]["configured"])
+        self.assertEqual([], [path for path in configured if (self.run_dir / "source" / path).exists()])
 
     def test_the_generic_reviewer_runs_inline_where_the_runtime_cannot_delegate(self) -> None:
         self.runtime = "copilot-cli"

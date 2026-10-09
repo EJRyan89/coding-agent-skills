@@ -520,6 +520,7 @@ def record_fixtures() -> list[dict[str, Any]]:
                 "source": "checkout",
                 "files": 120,
                 "bytes": 409_600,
+                "excluded": {"agent-instruction": 2, "configured": 31},
                 "seconds": {"fetch": 0.5, "materialize": 2, "prompts": 0.1},
             },
         ),
@@ -639,6 +640,7 @@ def config_fixtures() -> list[dict[str, Any]]:
                     "manifest": True,
                 },
                 "checkout_path": "C:\\Repos\\Five",
+                "snapshot_exclude": ["**/*.resx", "Reports/Generated/**"],
             },
             "example/two": {
                 "reviewer": {

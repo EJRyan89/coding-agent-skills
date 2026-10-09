@@ -53,6 +53,7 @@ SNAPSHOT = {
 REVIEWER = {"id": "generic", "category": "General", "files": 1, "findings": 1, "retries": 0, "dispositions_only": False}
 READ_COUNTS = "Review reviewer generic files_read and bytes_read must both be non-negative integers or both null"
 SNAPSHOT_SECONDS = "Review snapshot seconds must give fetch, materialize, prompts as non-negative numbers"
+SNAPSHOT_EXCLUDED = "Review snapshot excluded must give a positive count for each exclusion reason"
 
 
 def _record() -> dict[str, Any]:
@@ -239,6 +240,12 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
             {"source": "tarball", "files": 0, "bytes": 0, "seconds": {"fetch": 4, "materialize": 0, "prompts": 0}},
         ),
     ),
+    (
+        "snapshot with its exclusions by reason",
+        _record,
+        _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": {"agent-instruction": 3, "configured": 1_200}}),
+    ),
+    ("snapshot that excluded nothing", _record, _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": {}})),
     ("reads counted", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 0, "bytes_read": 0}])),
     ("reads unknown", _record, _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": None, "bytes_read": None}])),
     ("reads not recorded", _record, _set((*REVIEW, "reviewers"), [REVIEWER])),
@@ -426,6 +433,26 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         )
         for field in ("files", "bytes")
         for value in (-1, 1.5, True, "1", None)
+    ],
+    *[
+        (
+            f"snapshot excluded {name}",
+            _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": excluded}),
+            R,
+            SNAPSHOT_EXCLUDED,
+        )
+        for name, excluded in (
+            ("null", None),
+            ("a list", ["configured"]),
+            ("a zero count", {"configured": 0}),
+            ("a negative count", {"configured": -1}),
+            ("a fractional count", {"configured": 1.5}),
+            ("a true count", {"configured": True}),
+            ("a reason in capitals", {"Configured": 1}),
+            ("an empty reason", {"": 1}),
+            ("a reason with a space", {"file size": 1}),
+            ("a reason of 41 characters", {"a" * 41: 1}),
+        )
     ],
     *[
         (
@@ -657,6 +684,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         R,
         "Review snapshot files and bytes must be non-negative integers",
     ),
+    ("snapshot excluded", _set((*REVIEW, "snapshot"), {**SNAPSHOT, "excluded": []}), R, SNAPSHOT_EXCLUDED),
     ("snapshot seconds", _set((*REVIEW, "snapshot"), {**SNAPSHOT, "seconds": {}}), R, SNAPSHOT_SECONDS),
     ("reviewers", _set((*REVIEW, "reviewers"), []), R, "Review reviewers must be a non-empty array"),
     ("reads", _set((*REVIEW, "reviewers"), [{**REVIEWER, "files_read": 1}]), R, READ_COUNTS),
