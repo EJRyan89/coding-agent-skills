@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import sys
 import unittest
@@ -19,6 +20,8 @@ GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 # its directory, and a repository skill runs the repository's tools and tests from the working tree.
 OWN_SCRIPT_COMMAND = re.compile(r"\$\{CLAUDE_SKILL_DIR\}")
 REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
+# The modules through which a skill script starts a process: directly, or through skill-core's bounded runner.
+PROCESS_MODULES = frozenset({"subprocess", "bounded_process"})
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
@@ -35,8 +38,8 @@ def repository_skill_files(root: Path) -> list[Path]:
 def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
-    """Report shell grants that cover every command or one shell only, grants no step uses, and own-script commands
-    left ungranted.
+    """Report shell grants that cover every command or one shell only, grants no step uses, own-script commands
+    left ungranted, and grants that pre-approve a script that starts code from the target repository.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -60,11 +63,53 @@ def skill_grant_problems(
             elif kind == "UNGRANTED" and own.search(detail.split(" ", 2)[2]):
                 tool, number, command = detail.split(" ", 2)
                 problems.append(f"{name}:{number} no {tool} grant covers {command}; see {GRANTS_DOC}")
+            elif kind == "GRANTED_REPOSITORY_CODE":
+                tool, number, command = detail.split(" ", 2)
+                problems.append(
+                    f"{name}:{number} a {tool} grant pre-approves {command}, which runs code from the target "
+                    f"repository; see {GRANTS_DOC}"
+                )
             elif kind == "EXPANDS":
                 number, command = detail.split(" ", 1)
                 problems.append(
                     f"{name}:{number} expands a shell variable, so it always prompts: {command}; see {GRANTS_DOC}"
                 )
+    return problems
+
+
+def repository_code_declaration_problems(root: Path) -> list[str]:
+    """Report each RUNS_REPOSITORY_CODE declaration the inventory would not read, and each in a script that starts
+    no process.
+
+    The inventory leaves a command ungranted only for a script whose module-level declaration is a non-empty string,
+    so a declaration of another shape would fail silently, and one in a script that starts nothing is stale.
+    """
+    sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
+    import skill_inventory
+
+    declaration = skill_inventory.REPOSITORY_CODE_DECLARATION
+    problems: list[str] = []
+    for script in sorted([*(root / "skills").rglob("*.py"), *(root / REPOSITORY_SKILLS).rglob("*.py")]):
+        tree = ast.parse(script.read_text(encoding="utf-8"))
+        assigned = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign | ast.AnnAssign)
+            and any(
+                isinstance(target, ast.Name) and target.id == declaration
+                for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            )
+        ]
+        if not assigned:
+            continue
+        name = script.relative_to(root).as_posix()
+        if len(assigned) != 1 or assigned[0] not in tree.body or not skill_inventory.runs_repository_code(script):
+            problems.append(f"{name}: {declaration} must be one module-level assignment of a non-empty reason")
+        imports = {
+            alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+        } | {(node.module or "").split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+        if not imports & PROCESS_MODULES:
+            problems.append(f"{name}: declares {declaration} but starts no process; remove the declaration")
     return problems
 
 
@@ -141,3 +186,8 @@ class SkillGrantsPolicies(unittest.TestCase):
     def test_skills_grant_only_scoped_twin_shell_patterns_that_cover_their_own_scripts(self) -> None:
         # allowed-tools pre-approves; a bare Bash would pre-approve every command in the turn that starts the skill.
         self.assertEqual([], skill_grant_problems(REPOSITORY_ROOT))
+
+    def test_repository_code_declarations_are_read_and_current(self) -> None:
+        # A script that starts code the target repository configures declares it, so the grant policy above can
+        # hold its command ungranted; a declaration the inventory cannot read would let a grant cover it unnoticed.
+        self.assertEqual([], repository_code_declaration_problems(REPOSITORY_ROOT))

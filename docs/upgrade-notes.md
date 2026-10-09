@@ -41,6 +41,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none
 - Pull request: #293
 
+### audit-ai-config asks before its MCP handshake starts a repository's servers
+
+- Level: minor. A fix with a new output line: in Claude Code, `audit-ai-config` pre-approves only its audit engine, so the opt-in handshake, which starts each MCP server the repository configures, now asks for approval before it runs. `analyze-skill-cost`'s `skill_inventory.py tools` prints `REPOSITORY_CODE` for a command that runs a script declaring `RUNS_REPOSITORY_CODE` and is left to prompt, and `GRANTED_REPOSITORY_CODE` for one a grant covers, in place of `UNGRANTED` for such a command.
+- Contract: none
+- User action: none. Approve the handshake command when you have authorized the operational validation.
+- Pull request: #299
+
 ## v0.4.0
 
 ### A specialist condition may declare the snapshot paths it reads, so its review keeps the lazy snapshot

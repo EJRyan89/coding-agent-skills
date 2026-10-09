@@ -17,6 +17,7 @@ from skill_grants import (
     GRANTS_DOC,
     REPOSITORY_TOOL_COMMAND,
     description_problems,
+    repository_code_declaration_problems,
     repository_skill_files,
     repository_skill_problems,
     skill_grant_problems,
@@ -161,6 +162,62 @@ class SkillGrantsFixtures(unittest.TestCase):
                     f"skills/unused/SKILL.md grants Glob, which no step uses; see {GRANTS_DOC}",
                 ],
                 skill_grant_problems(root),
+            )
+
+    def test_grant_policy_fails_a_grant_over_a_script_that_runs_repository_code(self) -> None:
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        handshake = f'{own}start.py" --root "<repository root>"'
+        declaring = 'import subprocess\n\nRUNS_REPOSITORY_CODE = "starts each configured server"\n'
+        grants = {
+            "wide": json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
+            "narrow": json.dumps([f'Bash({own}audit.py" *)', f'PowerShell({own}audit.py" *)']),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files: dict[str, str] = {}
+            for skill, allowed in grants.items():
+                files[f"deploy-meta/{skill}.json"] = "{}"
+                files[f"skills/{skill}/scripts/start.py"] = declaring
+                files[f"skills/{skill}/SKILL.md"] = (
+                    f"---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n"
+                    f'```bash\n{own}audit.py" --json\n{handshake}\n```\n'
+                )
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                [
+                    f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {handshake}, which runs code from the "
+                    f"target repository; see {GRANTS_DOC}"
+                    for tool in ("Bash", "PowerShell")
+                ],
+                skill_grant_problems(root),
+            )
+
+    def test_repository_code_declarations_must_be_readable_and_current(self) -> None:
+        declared = 'RUNS_REPOSITORY_CODE = "starts servers"\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/a/scripts/good.py": f"from subprocess import Popen\n\n{declared}",
+                    "skills/a/scripts/bounded.py": 'import bounded_process\n\nRUNS_REPOSITORY_CODE: str = "x"\n',
+                    "skills/a/scripts/plain.py": "import json\n",
+                    "skills/a/scripts/empty.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE = ""\n',
+                    "skills/a/scripts/twice.py": f"import subprocess\n\n{declared}{declared}",
+                    "skills/a/scripts/nested.py": f"import subprocess\n\n\ndef f() -> None:\n    {declared}",
+                    ".claude/skills/b/scripts/stale.py": f"import json\n\n{declared}",
+                },
+            )
+            rule = "RUNS_REPOSITORY_CODE must be one module-level assignment of a non-empty reason"
+            self.assertEqual(
+                [
+                    ".claude/skills/b/scripts/stale.py: declares RUNS_REPOSITORY_CODE but starts no process; "
+                    "remove the declaration",
+                    f"skills/a/scripts/empty.py: {rule}",
+                    f"skills/a/scripts/nested.py: {rule}",
+                    f"skills/a/scripts/twice.py: {rule}",
+                ],
+                repository_code_declaration_problems(root),
             )
 
 

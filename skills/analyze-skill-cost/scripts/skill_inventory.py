@@ -50,11 +50,16 @@ reverse. UNGRANTED <tool> <line> <command> is a fence command that no pattern of
 matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
 with * for any text. EXPANDS <line> <command> is a fence command that expands a shell variable or command
 substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted.
+A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
+saying so, and its command must keep prompting. A fence command that runs one, through ${CLAUDE_SKILL_DIR}, is
+REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
+GRANTED_REPOSITORY_CODE <tool> <line> <command> when one does; it is never UNGRANTED.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -172,6 +177,10 @@ COMMAND_JOIN = re.compile(r"\s*(?:&&|\|\||\||\\)\s*$")
 # Shell expansion other than the values Claude Code fills in before the command runs. A command holding one is
 # never pre-approved, so it prompts in both shells whatever allowed-tools grants.
 SHELL_EXPANSION = re.compile(r"(?<!\\)\$(?!\{CLAUDE_SKILL_DIR\}|ARGUMENTS\b)(?:[A-Za-z_{(])")
+# The module-level string a script declares when it starts code the target repository configures, and the script a
+# fence command runs through the skill's directory.
+REPOSITORY_CODE_DECLARATION = "RUNS_REPOSITORY_CODE"
+SKILL_DIR_SCRIPT = re.compile(r"\$\{CLAUDE_SKILL_DIR\}/([^\"'\s]+\.py)")
 SHELL_FILE_COMMAND = r"(?:cat|head|tail|find|grep|rg|sed|awk|wc|ls)"
 # Word edges that also treat hyphens as part of a word, so "rev-parse" is not "parse".
 WORD_START = r"(?<![\w-])"
@@ -369,6 +378,32 @@ def grants(pattern: str, command: str) -> bool:
     return re.fullmatch(expression, command, re.DOTALL) is not None
 
 
+def runs_repository_code(script: Path) -> bool:
+    """Whether a Python script declares, as a module-level non-empty string, that it starts repository code."""
+    text = read_text(script) if script.is_file() else None
+    try:
+        tree = ast.parse(text or "")
+    except SyntaxError:
+        return False
+    for node in tree.body:
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        value = node.value if isinstance(node, ast.Assign | ast.AnnAssign) else None
+        if any(isinstance(target, ast.Name) and target.id == REPOSITORY_CODE_DECLARATION for target in targets):
+            return isinstance(value, ast.Constant) and isinstance(value.value, str) and bool(value.value.strip())
+    return False
+
+
+def repository_code_commands(skill_dir: Path, commands: list[tuple[int, str]]) -> frozenset[str]:
+    """The fence commands that run a script, through the skill's directory, that declares it starts repository code."""
+    return frozenset(
+        command
+        for _, command in commands
+        if any(runs_repository_code(skill_dir / script) for script in SKILL_DIR_SCRIPT.findall(command))
+    )
+
+
 def fence_commands(body: list[str], languages: list[str | None], start: int) -> list[tuple[int, str]]:
     """Each command line in a shell or PowerShell fence, with its file line number."""
     commands: list[tuple[int, str]] = []
@@ -381,8 +416,14 @@ def fence_commands(body: list[str], languages: list[str | None], start: int) -> 
     return commands
 
 
-def grant_findings(entries: list[tuple[str, str | None]], commands: list[tuple[int, str]]) -> list[str]:
-    """Shell grants that scope nothing or lack their twin, and fence commands no grant of a shell covers."""
+def grant_findings(
+    entries: list[tuple[str, str | None]],
+    commands: list[tuple[int, str]],
+    repository_code: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Shell grants that scope nothing or lack their twin, fence commands no grant of a shell covers, and whether a
+    grant covers a command in repository_code, which runs code from the target repository and must keep prompting.
+    """
     shell = [(name, pattern) for name, pattern in entries if name in SHELL_TOOLS]
     output = [
         f"UNSCOPED_ALLOWED {entry_text(name, pattern)}"
@@ -401,10 +442,15 @@ def grant_findings(entries: list[tuple[str, str | None]], commands: list[tuple[i
     for number, command in commands:
         for tool in SHELL_TOOLS:
             patterns = [pattern for name, pattern in shell if name == tool]
-            if patterns and not any(
+            covered = any(
                 pattern is None or pattern.strip() in UNSCOPED_PATTERNS or grants(pattern, command)
                 for pattern in patterns
-            ):
+            )
+            if command in repository_code:
+                output.append(
+                    f"{'GRANTED_REPOSITORY_CODE' if covered else 'REPOSITORY_CODE'} {tool} {number} {command}"
+                )
+            elif patterns and not covered:
                 output.append(f"UNGRANTED {tool} {number} {command}")
     output += [f"EXPANDS {number} {command}" for number, command in commands if SHELL_EXPANSION.search(command)]
     return output
@@ -798,7 +844,8 @@ def tools(path: Path) -> list[str]:
         output += [f"IMPLIED {name} {first_implied[name]}" for name in implied]
         output += [f"UNUSED_ALLOWED {name}" for name in allowed if name not in first_use and name not in implied]
         output += [f"MISSING_ALLOWED {name} {line}" for name, line in used if name not in allowed]
-        output += grant_findings(entries, fence_commands(body, languages, start))
+        commands = fence_commands(body, languages, start)
+        output += grant_findings(entries, commands, repository_code_commands(path.parent, commands))
     return output
 
 
