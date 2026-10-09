@@ -308,12 +308,61 @@ class FixtureChangeTests(unittest.TestCase):
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n", "link": b"a.txt"})
         real = review_canary._is_reparse_point
         with (
-            mock.patch.object(review_canary, "_is_reparse_point", lambda path: path.name == "link" or real(path)),
+            mock.patch.object(
+                review_canary,
+                "_is_reparse_point",
+                lambda path, metadata=None: path.name == "link" or real(path, metadata),
+            ),
             self.assertRaisesRegex(FixtureError, "The fixture holds a link or special file: link"),
             fixture_change(directory, subprocess_runner),
         ):
             pass
         self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_real_junction_in_a_tree_is_refused_from_its_listing_and_not_entered(self) -> None:
+        outside = self.root / "outside"
+        write_tree(outside, {"inner.txt": b"outside\n"})
+        directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"src/a.txt": b"b\n"})
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(directory / "head" / "src" / "linked"), str(outside)],
+            check=True,
+            capture_output=True,
+        )
+        with (
+            self.assertRaisesRegex(FixtureError, "The fixture holds a link or special file: src/linked$"),
+            fixture_change(directory, subprocess_runner),
+        ):
+            pass
+        self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_a_tree_is_walked_from_its_listings_alone_into_sorted_posix_paths(self) -> None:
+        tree = self.root / "tree"
+        write_tree(tree, {"b.txt": b"", "a/z.txt": b"", "a/b c/y.txt": b"", "a.txt": b""})
+        (tree / "empty").mkdir()
+        with (
+            mock.patch.object(review_canary.os, "lstat", wraps=review_canary.os.lstat) as lstat,
+            mock.patch.object(review_canary.os, "stat", wraps=review_canary.os.stat) as stat,
+        ):
+            files = review_canary._tree_files(tree)
+        self.assertEqual(
+            [
+                ("a.txt", tree / "a.txt"),
+                ("a/b c/y.txt", tree / "a" / "b c" / "y.txt"),
+                ("a/z.txt", tree / "a" / "z.txt"),
+                ("b.txt", tree / "b.txt"),
+            ],
+            files,
+        )
+        # Path.is_dir may stat the root, with or without follow_symlinks, or ask the platform directly; no entry below
+        # it is examined by a call.
+        self.assertEqual(
+            ([tree], []),
+            (
+                [call.args[0] for call in lstat.call_args_list],
+                [call.args[0] for call in stat.call_args_list if call.args[0] != tree],
+            ),
+            "only the root is examined by its own call",
+        )
 
     def test_an_invalid_pull_json_is_refused_before_any_repository_exists(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"}, pull={"number": 1})
