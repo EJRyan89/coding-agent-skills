@@ -496,7 +496,7 @@ def client_command_problems(root: Path) -> list[str]:
 
 class SkillScriptsPolicies(unittest.TestCase):
     def test_skill_scripts_follow_the_script_results_contract(self) -> None:
-        # An agent that learned one script's results can read every other's (#28).
+        # An agent that learned one script's results can read every other's.
         self.assertEqual([], script_contract_problems(REPOSITORY_ROOT))
 
     def test_no_shipped_function_is_named_so_codeql_reads_its_result_as_a_secret(self) -> None:

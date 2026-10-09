@@ -104,7 +104,7 @@ class CrossSkillContractTests(unittest.TestCase):
 
     def test_runtime_compatibility_holds_only_rules_a_shipped_skill_uses(self) -> None:
         # Every Codex and Copilot run of any skill reads this file first, so a rule no shipped skill needs is paid for
-        # on every run (#28).
+        # on every run.
         contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
         mapping = next(line for line in contract.splitlines() if "as Claude adapter names" in line)
         mapped = set(re.findall(r"`([A-Za-z]+)`", mapping))
@@ -253,7 +253,7 @@ class CrossSkillContractTests(unittest.TestCase):
         )
 
     def test_no_skill_pins_a_model(self) -> None:
-        # In Claude Code a skill's `model` applies for the rest of the turn that invoked it (#75), so a code review
+        # In Claude Code a skill's `model` applies for the rest of the turn that invoked it, so a code review
         # started in the same turn as `update-coding-agent-skills`, then pinned to Haiku, ran every reviewer on Haiku
         # and missed a must-fix finding. A skill runs on the session's model; pin one only with a measured reason
         # and an entry here. Repository skills under .claude/skills are held to the same rule.
@@ -515,7 +515,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual("'append'", declared_options(pipeline, "prepare_parser")["--re-review"]["action"])
 
     def test_review_prs_waits_for_the_copilot_host_in_bounded_calls(self) -> None:
-        # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30 (#36).
+        # A foreground command ends after 2 minutes by default in Claude Code; a host review can take 30.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         waits = re.findall(
             r"`wait --run <run directory> --timeout (\d+)` with a command timeout of at least (\d+) "
@@ -534,7 +534,7 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_review_prs_finishes_the_workflow_path_in_the_turn_that_invoked_it(self) -> None:
         # A session scheduled a wakeup instead of waiting for the Workflow. The skill's grants end with the
         # turn that invoked it, so check and finalize were denied later, nothing was recorded, and it still
-        # reported success (#40).
+        # reported success.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
@@ -583,7 +583,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('for name in ("check", "finalize", "unfinalized"):', source)
 
     def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
-        # Copilot CLI cannot start subagents, so the orchestrating session works each role itself (#3).
+        # Copilot CLI cannot start subagents, so the orchestrating session works each role itself.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         self.assertIn("Add `--inline` when this session cannot start subagents", body)
@@ -604,7 +604,7 @@ class CrossSkillContractTests(unittest.TestCase):
             self.assertIn(line, source)
 
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
-        # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host (#45).
+        # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --pull', skill)
         self.assertIn(
@@ -621,7 +621,7 @@ class CrossSkillContractTests(unittest.TestCase):
 
     def test_review_prs_prepares_canaries_in_the_shape_the_pipeline_accepts(self) -> None:
         # The skill takes `--canary owner/repo#number`, but the pipeline's --canary is a bare flag before --pull
-        # selectors; with only the --pull fence to copy, a canary run first tried `--canary <selector>` (#11).
+        # selectors; with only the --pull fence to copy, a canary run first tried `--canary <selector>`.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
         body = skill.split("---", 2)[2]
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --pull "<owner/repo#number>"', body)
@@ -665,7 +665,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('parser.error("--scope is required with --re-review and taken only with it")', pipeline)
 
     def test_no_skill_replays_another_skills_steps(self) -> None:
-        # re-review replayed "steps 2 to 5" of review-prs, so renumbering review-prs silently broke it (#116).
+        # re-review replayed "steps 2 to 5" of review-prs, so renumbering review-prs silently broke it.
         # A skill invokes another skill by name instead; it never reads that skill's SKILL.md or cites its steps.
         retired = (
             "Read `${CLAUDE_SKILL_DIR}/../review-prs/SKILL.md` and follow its steps 2 to 5 exactly for this one pull "
@@ -684,7 +684,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 self.assertEqual([], replayed_skills(body, path.parent.name, names))
 
     def test_re_review_is_retired_into_review_prs(self) -> None:
-        # review-prs --re-review does everything the re-review alias did, so the alias is gone (#116).
+        # review-prs --re-review does everything the re-review alias did, so the alias is gone.
         self.assertFalse((REPOSITORY_ROOT / "skills/re-review").exists())
         self.assertFalse((REPOSITORY_ROOT / "deploy-meta/re-review.json").exists())
         source = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))

@@ -1,5 +1,5 @@
 """pipeline.execute called directly, with every collaborator replaced: the calls it makes in order, where it releases
-the lock, what it prints, and the exit code it returns, for each way a run ends (#91)."""
+the lock, what it prints, and the exit code it returns, for each way a run ends."""
 
 from __future__ import annotations
 

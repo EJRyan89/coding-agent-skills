@@ -428,7 +428,7 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [
                 f"UPDATED {self.dashboard} rows=4",
-                "GITHUB_CALLS 3",  # #2's two commits for the user's review and its reviewed head for the AI's
+                "GITHUB_CALLS 3",  # pull 2's two commits for the user's review and its reviewed head for the AI's
                 "CANDIDATE missing example/one#1",
                 "CANDIDATE stale example/one#2",
                 "CANDIDATE missing example/one#3",

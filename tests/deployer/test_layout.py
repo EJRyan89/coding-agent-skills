@@ -1,4 +1,4 @@
-"""The deployment pipeline's module layout, as CLAUDE.md describes it, and the kind table every module shares (#23)."""
+"""The deployment pipeline's module layout, as CLAUDE.md describes it, and the kind table every module shares."""
 
 from __future__ import annotations
 

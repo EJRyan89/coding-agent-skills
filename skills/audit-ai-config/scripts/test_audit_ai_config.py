@@ -1322,7 +1322,7 @@ class ManifestSafetyTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_manifest_non_object_json_audit(self) -> None:
-        """#23: Non-object JSON manifest produces WARNING, no crash."""
+        """Non-object JSON manifest produces WARNING, no crash."""
         (self.root / ".github/ai-config-manifest.json").write_text("[]", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(

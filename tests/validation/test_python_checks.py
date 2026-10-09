@@ -18,6 +18,7 @@ import python_checks
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
+    issue_numbers_in_comments,
     mypy_path_problems,
     mypy_type_check,
     noqa_without_reason,
@@ -210,6 +211,57 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertEqual(
                 ["module.py:1", "module.py:2", "module.py:3"],
                 noqa_without_reason(root, [root / "module.py", root / "notes.md"]),
+            )
+
+    def test_issue_number_scan_reads_comments_and_docstrings_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # Each fixture line is a string literal here, so this file does not carry the citations it tests.
+            violating = [
+                '"""Pins the lock fix (#12)."""',
+                "a = 1  # see #12",
+                "# #12's reproduction left the lock behind.",
+                "# Issue 12 says why.",
+                "def f() -> None:",
+                '    """Rejects a quoted path.',
+                "",
+                '    The reproduction came from #142."""',
+                "class C:",
+                '    """Kept for issue #7."""',
+                "",
+            ]
+            conforming = [
+                '"""Pins the lock fix: a dead holder blocked every review."""',
+                "# example/one#12 is reviewed; approved#1 has no comparison.",
+                'BODY = "Closes #12"',
+                "def f() -> None:",
+                '    """Returns the issue numbers in a body."""',
+                '    print("#12", "issue 12")',
+                "",
+            ]
+            write_fixture_tree(
+                root,
+                {
+                    "tools/violating.py": "\n".join(violating),
+                    "deploy.py": "# Fixed in #3.\n",
+                    "skills/one/scripts/conforming.py": "\n".join(conforming),
+                    "tests/fixtures/review/base/app.py": "# Fixes #12.\n",
+                    "docs/notes.py": "# Fixes #12.\n",
+                    "skills/one/SKILL.md": "Fixed in #12.\n",
+                },
+            )
+            files = [path for path in root.rglob("*") if path.is_file()]
+            self.assertEqual(
+                [
+                    "deploy.py:1",
+                    "tools/violating.py:1",
+                    "tools/violating.py:2",
+                    "tools/violating.py:3",
+                    "tools/violating.py:4",
+                    "tools/violating.py:8",
+                    "tools/violating.py:10",
+                ],
+                issue_numbers_in_comments(root, files),
             )
 
     def test_missing_ruff_fails_the_lint_check_with_the_install_command(self) -> None:

@@ -1,6 +1,6 @@
 """The per-item plan: what one run does to every item, checked before rendering and carried out under the journal.
 
-The dry run prints the plan and the deployment carries it out, so the two cannot disagree (#23).
+The dry run prints the plan and the deployment carries it out, so the two cannot disagree.
 """
 
 from __future__ import annotations

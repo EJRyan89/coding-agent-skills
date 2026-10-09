@@ -540,7 +540,7 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual(["resource.lock"], [item.name for item in Path(temporary).iterdir()])
 
     def test_recent_lock_of_dead_owner_is_reclaimed_with_a_warning(self) -> None:
-        # A dead holder blocked every review of the repository for an hour (#146).
+        # A dead holder blocked every review of the repository for an hour.
         cases = {
             "dead": (ProcessStatus(False, None), "PID 4242 is not running"),
             "pid reused": (ProcessStatus(True, 5678), "PID 4242 now names another process"),
@@ -564,7 +564,7 @@ class StateAndLockTests(unittest.TestCase):
                 self.assertEqual([], list(Path(temporary).iterdir()), "the stale lock is deleted")
 
     def test_lock_without_owner_file_is_reclaimed_after_the_grace_period(self) -> None:
-        # A process killed between creating the lock and writing its owner left a lock nothing reclaimed (#146).
+        # A process killed between creating the lock and writing its owner left a lock nothing reclaimed.
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             path.mkdir()
@@ -607,7 +607,7 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual(["resource.lock"], [item.name for item in Path(temporary).iterdir()])
 
     def test_release_succeeds_while_a_waiter_reads_the_owner_file(self) -> None:
-        # A waiter reading the owner file made the holder's release fail, and the lock outlived both sessions (#172).
+        # A waiter reading the owner file made the holder's release fail, and the lock outlived both sessions.
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
             errors = io.StringIO()
@@ -1547,8 +1547,8 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(102, len(listing.pulls))
 
     def test_closed_walk_finds_a_pull_updated_onto_a_page_it_already_read(self) -> None:
-        # #50 is merged while page 1 is being read, so it moves from page 2 to the top of page 1, and page 1's last
-        # pull shifts onto page 2: the second page repeats it, and the reread of page 1 finds #50.
+        # Pull 50 is merged while page 1 is being read, so it moves from page 2 to the top of page 1, and page 1's last
+        # pull shifts onto page 2: the second page repeats it, and the reread of page 1 finds pull 50.
         first = self._closed_page(range(300, 200, -1), "2026-03-09T10:00:00Z")
         moved = self._closed_page([50], "2026-03-10T10:00:00Z")
         reads = {1: 0}

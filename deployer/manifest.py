@@ -152,7 +152,7 @@ def _validate(data: dict[str, Any], path: Path) -> None:
         if not isinstance(entry, dict):
             raise DeployError(f"ERROR: Manifest source '{source_id}' is malformed")
         _validate_source_commit(source_id, entry)
-        # selected_skills is no longer written, but an entry from before #23 still carries it until its source next
+        # selected_skills is no longer written, but an older entry still carries it until its source next
         # deploys, so it is validated, never trusted, on read.
         for field_name in ("selected_skills", "requested_skills", "requested_bundles"):
             values = entry.get(field_name, [])

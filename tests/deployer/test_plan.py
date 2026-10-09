@@ -1,4 +1,4 @@
-"""One plan per item: the dry run prints it and the deployment carries it out, so the two cannot disagree (#23)."""
+"""One plan per item: the dry run prints it and the deployment carries it out, so the two cannot disagree."""
 
 from __future__ import annotations
 
