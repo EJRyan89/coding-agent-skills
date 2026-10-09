@@ -353,10 +353,14 @@ class FixtureChangeTests(unittest.TestCase):
             ],
             files,
         )
-        # Path.is_dir may stat the root or ask the platform directly; no entry below it is examined by a call.
+        # Path.is_dir may stat the root, with or without follow_symlinks, or ask the platform directly; no entry below
+        # it is examined by a call.
         self.assertEqual(
-            ([mock.call(tree)], []),
-            (lstat.call_args_list, [call for call in stat.call_args_list if call != mock.call(tree)]),
+            ([tree], []),
+            (
+                [call.args[0] for call in lstat.call_args_list],
+                [call.args[0] for call in stat.call_args_list if call.args[0] != tree],
+            ),
             "only the root is examined by its own call",
         )
 
