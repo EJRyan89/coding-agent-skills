@@ -18,6 +18,7 @@ import python_checks
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
+    ceiling_noqa,
     issue_numbers_in_comments,
     mypy_path_problems,
     mypy_type_check,
@@ -211,6 +212,32 @@ class PythonChecksFixtures(unittest.TestCase):
             self.assertEqual(
                 ["module.py:1", "module.py:2", "module.py:3"],
                 noqa_without_reason(root, [root / "module.py", root / "notes.md"]),
+            )
+
+    def test_ceiling_scan_refuses_a_noqa_for_complexity_or_length(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            marker = "# no" + "qa"
+            (root / "module.py").write_text(
+                "\n".join(
+                    [
+                        f"def tangled():  {marker}: C901 - too many branches to split today",
+                        f"def long():  {marker}: E501, PLR0915 - generated",
+                        f"def both():  {marker}: c901 plr0915 - lower case still counts",
+                        f"import sys  {marker}: F401 - imported for its effect",
+                        f'TEXT = "{marker}: C901 - in a string"',
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                [
+                    "module.py:1 suppresses C901; split the function instead",
+                    "module.py:2 suppresses PLR0915; split the function instead",
+                    "module.py:3 suppresses C901 and PLR0915; split the function instead",
+                ],
+                ceiling_noqa(root, [root / "module.py"]),
             )
 
     def test_issue_number_scan_reads_comments_and_docstrings_only(self) -> None:

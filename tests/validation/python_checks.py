@@ -30,6 +30,10 @@ FORMAT_ROOTS = ("deployer", "tools", "tests", "skills", ".claude/skills", "deplo
 # A noqa comment names the codes it suppresses and says why after a dash, as in `noqa: F401 - <reason>`.
 NOQA = re.compile(r"#\s*noqa\b", re.IGNORECASE)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+-\s+\S")
+# The codes a noqa comment names, separated by commas or spaces as ruff reads them.
+NOQA_CODES = re.compile(r"#\s*noqa:\s*((?:[A-Z]+[0-9]+[\s,]*)+)", re.IGNORECASE)
+# Function complexity and length take no noqa: a function over either ceiling is split instead.
+CEILING_CODES = frozenset({"C901", "PLR0915"})
 # mypy checks these as one root from the repository root, and each skill's scripts/ directory from inside it, where
 # the deployed skill's own imports resolve. pyproject.toml's [tool.mypy] holds the configuration; it excludes nothing.
 TYPE_CHECK_ROOTS = ("deployer", "tools", "deploy.py", "tests")
@@ -58,6 +62,26 @@ def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
                 and not NOQA_WITH_REASON.search(token.string)
             ):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
+    return found
+
+
+def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
+    """Each noqa comment that suppresses the complexity or length ceiling, as path:line and the codes it names."""
+    found: list[str] = []
+    for path in sorted(files):
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type != tokenize.COMMENT:
+                continue
+            for match in NOQA_CODES.finditer(token.string):
+                named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
+                if named:
+                    found.append(
+                        f"{path.relative_to(root).as_posix()}:{token.start[0]} suppresses {' and '.join(named)}; "
+                        "split the function instead"
+                    )
     return found
 
 
@@ -284,6 +308,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_suppresses_neither_ceiling(self) -> None:
+        self.assertEqual([], ceiling_noqa(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_comments_state_reasons_instead_of_issue_numbers(self) -> None:
         self.assertEqual([], issue_numbers_in_comments(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
