@@ -34,7 +34,7 @@ The generated adapter sends Copilot to the authoritative skill under `~/.claude/
 copilot -p '<prompt>' --add-dir "$HOME/.claude/skills"
 ```
 
-A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In Copilot CLI 1.0.91, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool reports a user-only skill as not found, even though `copilot skill list` lists it as enabled. Start user-only skills from an interactive session.
+A headless session cannot start a user-only skill, such as `update-coding-agent-skills`. In Copilot CLI 1.0.91 through 1.0.94, the newest checked, `copilot -p` does not expand a prompt that begins with `/<skill>` into the skill, and the model's own `skill` tool reports a user-only skill as not found, even though `copilot skill list` lists it as enabled. Start user-only skills from an interactive session.
 
 The [runtime canary](../tools/runtime_canary.py) reaches Copilot only through `copilot -p`, so for a user-only skill it prints `RUNTIME copilot <skill> UNSUPPORTED` and runs no model. After a Copilot CLI upgrade, run a user-only skill headless by hand; once `-p` starts it, remove `USER_ONLY_UNSUPPORTED` from the canary.
 

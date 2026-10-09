@@ -56,6 +56,11 @@ Each fact has one owner; update the owner in the same change.
 | `docs/code-review-operations.md` | Code-review configuration and records. |
 | `docs/installation.md`, `docs/recovery.md` | Install, update, and recovery. |
 | `docs/codex-support.md`, `docs/copilot-support.md` | Per-runtime support. |
+| `CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
+| `SECURITY.md` | The supported line, how to report a vulnerability, and the security-sensitive areas. |
+| `docs/dependency-updates.md` | Every pin and floor: where it is declared, how it is updated and reviewed, and the check that holds it. |
+| `docs/upgrade-notes.md` | What each release changes for an installation, one entry per changed contract item. |
+| `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
 
 ## Model guidance
 

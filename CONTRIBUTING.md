@@ -44,7 +44,7 @@ Install the development dependencies into the Python that runs validation:
 python -m pip install -r requirements-dev.txt
 ```
 
-They are the only ones: contributor and CI tools, pinned, while the deployer and every shipped skill stay standard-library. Validation checks formatting with `ruff format` and lints with `ruff check`, both at a line length of 120 and with the rules in `pyproject.toml`; run `python -m ruff format` on any file the first names, and fix each finding the linter names (`python -m ruff check --fix` applies the fixes ruff marks safe). No rule or file is exempt; a finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`. Function complexity (C901) and length in statements (PLR0915) are the exception: they take no `noqa`, and their ceilings in `pyproject.toml` are a ratchet (#91) that only goes down. Validation fails a change that raises either ceiling; a pull request that splits the function at a ceiling lowers it to the new maximum, and the literal its test pins, in the same change. Validation type-checks with `mypy` at its default strictness and with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each skill's `scripts/` directory, and names each error; fix it, or, where an error must stay, write `# type: ignore[<code>]  # <reason>` on its line. Regression suites are type-checked too. [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
+They are the only ones: contributor and CI tools, pinned, while the deployer and every shipped skill stay standard-library. [Python checks](#python-checks) states what validation runs with them, and [Dependency updates](docs/dependency-updates.md#development-dependencies) records the decision and how the pins are updated.
 
 Install PSScriptAnalyzer from PowerShell 7; `-Force` also upgrades an older version and answers the untrusted-repository prompt:
 
@@ -106,6 +106,18 @@ Fetch `main` and the tags first, as in [Getting the source](#getting-the-source)
 The runner reports each failing suite by path. When diagnosing a failure, run that suite directly, as in `python -B tests/deployer/test_recovery_migration.py`, or narrow the runner with `-k <pattern>`, as in `-k deployer`. Suites run in parallel, with large ones split into shards; set `VALIDATION_JOBS` to change the worker count.
 
 Changes to deployment behavior should also be exercised against an isolated temporary home: `python deploy.py --canary-home <dir>` with a directory under the temporary directory, or a test that builds the deployer's paths on one. On Windows the deployer takes its home from the profile folder, not `HOME`, so setting `HOME` alone does not isolate a run. Never use ordinary development validation to deploy into the contributor's real agent directories.
+
+### Python checks
+
+This section is the one full account of the Python format, lint, and type checks; `CLAUDE.md` keeps the rules an agent session acts on, and [Adding a skill](docs/adding-a-skill.md#validation) adds what a skill's scripts need.
+
+Validation checks formatting with `ruff format --check` and lints with `ruff check`, both at a line length of 120 and with the rule sets `pyproject.toml` selects, on `deployer/`, `tools/`, `tests/`, `skills/`, `.claude/skills/`, and `deploy.py`. Run `python -m ruff format` on any file the first names, and fix each finding the linter names (`python -m ruff check --fix` applies the fixes ruff marks safe). No rule or file is exempt; a finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, and validation fails on a `noqa` without its codes and reason.
+
+Function complexity (C901) and length in statements (PLR0915) are the exception: they take no `noqa`, and their ceilings, `max-complexity` and `max-statements` in `pyproject.toml`, are a ratchet that only goes down. Validation fails a change that raises either ceiling, so split a function that exceeds them into helpers of one concern; a pull request that splits the function at a ceiling lowers it to the new maximum, and the literal its test pins, in the same change.
+
+The bandit security rules (`S`) are selected except S603 and S607, which flag every subprocess call made without a shell and every program started by its PATH name. The repository runs declared tools as argument lists found on PATH, which the checks under [Commands skills may run](docs/adding-a-skill.md#commands-skills-may-run) hold instead, so those two describe the design and are left unselected rather than suppressed on every call.
+
+Validation type-checks with `mypy` at its default strictness and with the `[tool.mypy]` configuration in `pyproject.toml`, once on `deployer/`, `tools/`, `deploy.py`, and `tests/` together and once on each shipped or repository skill's `scripts/` directory from inside it, and names each error. Fix it, or, where an error must stay, write `# type: ignore[<code>]  # <reason>` on its line; validation fails on a `type: ignore` without its codes and reason. Regression suites are type-checked too, so a fixture that is malformed on purpose is typed as the loose shape it is, never silenced. `mypy_path` lists each `skills/<name>/scripts` directory a module or suite puts on `sys.path`, and each test directory whose suites import a module beside them by its bare name; validation fails until the list matches.
 
 ## How `main` is protected
 
