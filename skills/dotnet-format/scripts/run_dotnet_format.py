@@ -1,4 +1,4 @@
-"""Run the dotnet-format global tool on the resolved files and print only its diagnostics.
+"""Run the formatter on the resolved files and print only its diagnostics.
 
     check  --repo-root R --solution S --include-file LIST   report what dotnet-format would change; save nothing
     fix    --repo-root R --solution S --include-file LIST   apply the whitespace, code-style, and analyzer fixes
@@ -11,13 +11,17 @@ temporary file; standard output gets one fact per line, tab separated:
     SUMMARY     <diagnostic count> <file count> <comma-separated rules, or ->
     LOG         <log file>
 
-FILE paths are relative to the repository root when they are inside it.
+The formatter is the dotnet-format global tool for a .sln solution and the .NET SDK's `dotnet format` for a .slnx
+solution, which the global tool cannot open; both print diagnostics in one layout, and both exit 2 from a check that
+finds changes. FILE paths are relative to the repository root when they are inside it. Files too many for one
+command line, which Windows limits to 32,767 characters, are formatted in several runs within the one time limit,
+and the log holds every run's output in order.
 
-`check` exits 1 when it prints a DIAGNOSTIC (findings) and 0 when it prints none. `fix` exits 0 once dotnet-format
+`check` exits 1 when it prints a DIAGNOSTIC (findings) and 0 when it prints none. `fix` exits 0 once the formatter
 succeeds: its DIAGNOSTIC lines are what it found to fix, because its log does not say which of them it could not
-fix, so rerun `check` to see what remains. A failure, such as dotnet-format not being installed, exiting with an
+fix, so rerun `check` to see what remains. A failure, such as the formatter not being installed, exiting with an
 unexpected code, or not finishing in time, prints `FAILED <reason>` as the last line, after the LOG line when
-dotnet-format ran, and exits 1. A usage error exits 2.
+the formatter ran, and exits 1. A usage error exits 2.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +50,9 @@ ISSUE = re.compile(
 CHECK_FAILED_EXIT_CODE = 2
 DEFAULT_TIMEOUT_SECONDS = 570
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
+SDK_INSTALL_HINT = "dotnet is not installed; a .slnx solution needs the .NET SDK 9.0.200 or newer"
+# Windows' CreateProcess takes a command line of at most 32,767 characters.
+COMMAND_LINE_LIMIT = 32_000
 
 
 @dataclass(frozen=True)
@@ -79,6 +87,7 @@ class Services:
 
     run: Runner = subprocess_runner
     which: Callable[[str], str | None] = field(default=shutil.which)
+    clock: Callable[[], float] = field(default=time.monotonic)
 
 
 class Failed(Exception):
@@ -94,7 +103,21 @@ class Diagnostic:
     rule: str
 
 
+def is_slnx(solution: str) -> bool:
+    return solution.casefold().endswith(".slnx")
+
+
+def formatter_name(solution: str) -> str:
+    return "dotnet format" if is_slnx(solution) else "dotnet-format"
+
+
 def command(mode: str, solution: str, files: list[str], severity: str) -> list[str]:
+    if is_slnx(solution):
+        # The SDK command runs the whitespace, code-style, and analyzer passes together at one --severity.
+        arguments = ["dotnet", "format", solution, "--no-restore", "--severity", severity, "--verbosity", "detailed"]
+        if mode == "check":
+            arguments.append("--verify-no-changes")
+        return [*arguments, "--include", *files]
     arguments = [
         "dotnet-format",
         solution,
@@ -110,6 +133,27 @@ def command(mode: str, solution: str, files: list[str], severity: str) -> list[s
     if mode == "check":
         arguments.append("--check")
     return [*arguments, "--include", *files]
+
+
+def command_line_length(arguments: Sequence[str]) -> int:
+    """The length of the command line Windows builds from these arguments, quoting included."""
+    return len(subprocess.list2cmdline(list(arguments)))
+
+
+def batches(prefix: Sequence[str], files: list[str], limit: int = COMMAND_LINE_LIMIT) -> list[list[str]]:
+    """The files in order, split into runs whose command line, `prefix` and then the run's files, fits `limit`."""
+    runs: list[list[str]] = [[]]
+    length = command_line_length(prefix)
+    for name in files:
+        size = 1 + command_line_length([name])
+        if runs[-1] and length + size > limit:
+            runs.append([])
+            length = command_line_length(prefix)
+        if length + size > limit:
+            raise Failed(f"{name} does not fit a command line of {limit} characters")
+        runs[-1].append(name)
+        length += size
+    return runs
 
 
 def display_path(path: str, root: Path) -> str:
@@ -151,6 +195,34 @@ def read_file_list(path: Path) -> list[str]:
     return files
 
 
+def run_batches(
+    mode: str, root: Path, solution: str, files: list[str], severity: str, timeout: float, services: Services
+) -> tuple[bytes, str | None]:
+    """Run the formatter on the files, as many times as the command-line limit needs, within one time limit.
+
+    Returns every run's output in order and the reason the runs stopped early, or None when each run succeeded.
+    """
+    outputs: list[bytes] = []
+    name = formatter_name(solution)
+    timed_out = f"{name} did not finish within {timeout:g} seconds; see the log"
+    start = services.clock()
+    spent = 0.0
+    for run_files in batches(command(mode, solution, [], severity), files):
+        if spent >= timeout:
+            return b"".join(outputs), timed_out
+        result = services.run(command(mode, solution, run_files, severity), root, timeout - spent)
+        spent = services.clock() - start
+        outputs.append(result.output)
+        if result.timed_out:
+            return b"".join(outputs), timed_out
+        if result.returncode == CHECK_FAILED_EXIT_CODE and mode == "check":
+            if not parse_diagnostics(result.output.decode("utf-8", errors="replace"), root):
+                return b"".join(outputs), f"{name} reported changes it did not itemize; see the log"
+        elif result.returncode != 0:
+            return b"".join(outputs), f"{name} exited with code {result.returncode}; see the log"
+    return b"".join(outputs), None
+
+
 def run(
     mode: str,
     root: Path,
@@ -161,15 +233,18 @@ def run(
     services: Services,
     emit: Callable[[str], None],
 ) -> bool:
-    """Run dotnet-format and print its diagnostics; return whether a check found any."""
-    if not services.which("dotnet-format"):
+    """Run the formatter and print its diagnostics; return whether a check found any."""
+    if is_slnx(solution):
+        if not services.which("dotnet"):
+            raise Failed(SDK_INSTALL_HINT)
+    elif not services.which("dotnet-format"):
         raise Failed(INSTALL_HINT)
     files = read_file_list(file_list)
-    result = services.run(command(mode, solution, files, severity), root, timeout)
+    log, failure = run_batches(mode, root, solution, files, severity, timeout, services)
     descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
     with os.fdopen(descriptor, "wb") as handle:
-        handle.write(result.output)
-    diagnostics = parse_diagnostics(result.output.decode("utf-8", errors="replace"), root)
+        handle.write(log)
+    diagnostics = parse_diagnostics(log.decode("utf-8", errors="replace"), root)
     for diagnostic in diagnostics:
         emit(
             "\t".join(
@@ -187,14 +262,8 @@ def run(
     file_count = len({diagnostic.path for diagnostic in diagnostics})
     emit(f"SUMMARY\t{len(diagnostics)}\t{file_count}\t{','.join(rules) or '-'}")
     emit(f"LOG\t{log_path}")
-    if result.timed_out:
-        raise Failed(f"dotnet-format did not finish within {timeout:g} seconds; see the log")
-    if result.returncode == CHECK_FAILED_EXIT_CODE and mode == "check":
-        if not diagnostics:
-            raise Failed("dotnet-format reported changes it did not itemize; see the log")
-        return True
-    if result.returncode != 0:
-        raise Failed(f"dotnet-format exited with code {result.returncode}; see the log")
+    if failure:
+        raise Failed(failure)
     # A fix run's log lists what it found before fixing, not what is left; the check rerun reports that.
     return mode == "check" and bool(diagnostics)
 

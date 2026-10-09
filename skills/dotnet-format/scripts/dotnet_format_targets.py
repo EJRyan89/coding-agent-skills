@@ -6,6 +6,7 @@
 Output, one fact per line, tab separated:
 
     REPO_ROOT       <absolute repository root>
+    FETCH_FAILED    <reason>                      `git fetch origin` failed; BASE is origin as last fetched
     BASE            <base ref the branch is compared with>
     SKIPPED_ASPNET  <file> <owning .csproj>       file belongs to an ASP.NET project, which crashes the formatter
     FILE            <file>                        a changed C# file to format
@@ -15,29 +16,30 @@ Output, one fact per line, tab separated:
     STOP            <reason>                      nothing to format; report the reason and stop
 
 BASE is the pull request's base branch when gh reports one, else the remote's default branch (origin/HEAD), else
-origin/main, else origin/master. SOLUTION is the nearest solution from the invocation directory that owns a FILE,
-else the repository solution owning the most. A solution owning none of them is never chosen, because the
-formatter would skip every file and report a clean result; that ends in STOP, as does finding no changed C# file
-or no solution.
+origin/main, else origin/master, after `git fetch origin` brings them up to date. SOLUTION is the nearest solution
+(.sln or .slnx) from the invocation directory that owns a FILE, else the repository solution owning the most. A
+solution owning none of them is never chosen, because the formatter would skip every file and report a clean result;
+that ends in STOP, as does finding no changed C# file or no solution, or choosing a .slnx solution when the .NET
+SDK's dotnet, which alone formats one, is not installed.
 
 FILE, SKIPPED_ASPNET, and SOLUTION paths are relative to REPO_ROOT with forward slashes, because dotnet-format
 runs from REPO_ROOT and matches --include paths against that directory.
 
-Exits 0 with its lines, ending in SOLUTION or STOP. When the directory is not in a Git repository, a git command
-fails, no base ref exists, or a file cannot be read or written, it prints `FAILED <reason>` as the last line and
-exits 1. A usage error exits 2.
+Exits 0 with its lines, ending in SOLUTION or STOP. When the directory is not in a Git repository, git is missing,
+a git command fails or does not finish in time, no base ref exists, or a file cannot be read or written, it prints
+`FAILED <reason>` as the last line and exits 1. A usage error exits 2.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -46,7 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from git_client import GitClient, GitError, GitResult
+from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 
@@ -57,6 +59,8 @@ WEB_PROJECT = re.compile(
 SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"]+)"')
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
+SOLUTION_SUFFIXES = (".sln", ".slnx")
+XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 
 
 def gh_runner_in(directory: Path) -> GhRunner:
@@ -105,6 +109,11 @@ def git(services: Services, directory: Path, *arguments: str) -> GitResult:
         raise Failed(str(exc)) from exc
 
 
+def one_line(text: str) -> str:
+    """Text git printed, as one line for a tab-separated output line."""
+    return " ".join(text.split())
+
+
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
     result = git(services, root, arguments[0], "-z", *arguments[1:])
     if result.returncode != 0:
@@ -115,7 +124,9 @@ def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
 def repository_root(services: Services, cwd: Path) -> Path:
     result = git(services, cwd, "rev-parse", "--show-toplevel")
     if result.returncode != 0:
-        raise Failed(f"{cwd} is not inside a Git repository")
+        if classify_failure(result.stderr) == "not_repository":
+            raise Failed(f"{cwd} is not inside a Git repository")
+        raise Failed(one_line(result.stderr) or f"git rev-parse --show-toplevel exited with code {result.returncode}")
     return Path(result.stdout.strip()).resolve()
 
 
@@ -148,11 +159,27 @@ def remote_default_branch(result: GitResult) -> str | None:
     return f"origin/{name}" if name and name != target else None
 
 
-def base_ref(services: Services, root: Path) -> str:
+def fetch_failure(services: Services, root: Path) -> str | None:
+    """Why `git fetch origin` failed, or None when it succeeded.
+
+    A failed fetch, offline or a remote that does not answer, leaves the remote-tracking refs as they were, which
+    still serve as a base, so the caller reports it and goes on.
+    """
+    try:
+        result = services.git.run(["fetch", "origin", "--quiet"], directory=root)
+    except GitError as exc:
+        return one_line(str(exc))
+    if result.returncode == 0:
+        return None
+    return one_line(result.stderr) or f"git fetch origin exited with code {result.returncode}"
+
+
+def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str:
     """The first that exists of the pull request's base branch when gh knows it, the remote's default branch
-    (origin/HEAD, which clone sets), origin/main, and origin/master."""
-    with contextlib.suppress(GitError):  # offline, or a remote that does not answer: the local refs still serve
-        services.git.run(["fetch", "origin", "--quiet"], directory=root)
+    (origin/HEAD, which clone sets), origin/main, and origin/master, after fetching origin."""
+    failure = fetch_failure(services, root)
+    if failure:
+        emit(f"FETCH_FAILED\t{failure}")
     candidates: list[str] = []
     if services.which("gh"):
         name = pull_request_base(services, root)
@@ -192,14 +219,33 @@ def is_web_project(project: Path) -> bool:
     return bool(WEB_PROJECT.search(read_text(project)))
 
 
+def is_solution(path: Path) -> bool:
+    return path.name.casefold().endswith(SOLUTION_SUFFIXES)
+
+
+def listed_projects(solution: Path) -> list[str]:
+    """The project paths a solution lists, as written: `Project(...) = "name", "path"` lines in a .sln, and the Path
+    of each Project element in a .slnx. A .slnx that is not well-formed XML, or declares a DOCTYPE or an entity,
+    lists none, as a .sln line that does not match lists nothing."""
+    text = read_text(solution)
+    if solution.name.casefold().endswith(".slnx"):
+        # Declarations can expand entities without bound; no solution needs them.
+        if "<!DOCTYPE" in text or "<!ENTITY" in text:
+            return []
+        try:
+            # The text is already decoded, so a declaration naming another encoding would only contradict it.
+            document = ElementTree.fromstring(  # noqa: S314 - DOCTYPE and ENTITY are refused above, so nothing expands
+                XML_DECLARATION.sub("", text, count=1)
+            )
+        except (ElementTree.ParseError, ValueError):
+            return []
+        return [path for element in document.iter("Project") if (path := element.get("Path"))]
+    return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]
+
+
 def solution_projects(solution: Path) -> set[str]:
-    """Normalized absolute paths of the projects a .sln file lists."""
-    projects: set[str] = set()
-    for line in read_text(solution).splitlines():
-        match = SOLUTION_PROJECT.match(line)
-        if match:
-            projects.add(same_path(solution.parent / match.group(1).replace("\\", "/")))
-    return projects
+    """Normalized absolute paths of the projects a solution lists."""
+    return {same_path(solution.parent / path.replace("\\", "/")) for path in listed_projects(solution)}
 
 
 def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
@@ -207,7 +253,7 @@ def nearest_solutions(root: Path, cwd: Path) -> list[Path]:
     inside = same_path(cwd) == same_path(root) or any(same_path(parent) == same_path(root) for parent in cwd.parents)
     directory = cwd if inside else root
     while True:
-        found = sorted(path for path in directory.glob("*.sln") if path.is_file())
+        found = sorted(path for path in directory.iterdir() if is_solution(path) and path.is_file())
         if found:
             return found
         if same_path(directory) == same_path(root) or directory.parent == directory:
@@ -227,7 +273,7 @@ def find_solutions(root: Path) -> list[Path]:
     found = []
     for current, directories, files in os.walk(root, onerror=raise_error):
         directories[:] = sorted(name for name in directories if name.casefold() not in IGNORED_DIRECTORIES)
-        found += [Path(current) / name for name in sorted(files) if name.casefold().endswith(".sln")]
+        found += [Path(current) / name for name in sorted(files) if is_solution(Path(name))]
     return found
 
 
@@ -237,10 +283,16 @@ def owns(solution: Path, owned: list[Path]) -> bool:
 
 
 def best_solution(root: Path, candidates: list[Path], owners: list[list[Path]]) -> tuple[Path, int]:
-    """The solution owning the most changed files; ties go to the shallowest, then by name."""
+    """The solution owning the most changed files; ties go to the shallowest, then to a .sln over a .slnx (the
+    dotnet-format global tool opens only a .sln), then by name."""
     ranked = sorted(
         ((sum(1 for owned in owners if owns(solution, owned)), solution) for solution in candidates),
-        key=lambda item: (-item[0], len(item[1].relative_to(root).parts), relative(item[1], root).casefold()),
+        key=lambda item: (
+            -item[0],
+            len(item[1].relative_to(root).parts),
+            item[1].name.casefold().endswith(".slnx"),
+            relative(item[1], root).casefold(),
+        ),
     )
     best_score, best = ranked[0]
     return best, best_score
@@ -259,18 +311,18 @@ def choose_solution(root: Path, cwd: Path, owners: list[list[Path]]) -> tuple[Pa
             return best, score
     everything = find_solutions(root)
     if not everything:
-        raise Stop(f"no .sln found under {root}")
+        raise Stop(f"no .sln or .slnx found under {root}")
     best, score = best_solution(root, everything, owners)
     if not score:
         names = ", ".join(relative(solution, root) for solution in everything)
-        raise Stop(f"changed files do not belong to any .sln found: {names}")
+        raise Stop(f"changed files do not belong to any solution found: {names}")
     return best, score
 
 
 def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     root = repository_root(services, cwd)
     emit(f"REPO_ROOT\t{root}")
-    base = base_ref(services, root)
+    base = base_ref(services, root, emit)
     emit(f"BASE\t{base}")
     kept: list[str] = []
     owners: list[list[Path]] = []
@@ -290,6 +342,11 @@ def resolve(cwd: Path, services: Services, emit: Callable[[str], None]) -> None:
     for name, owned in zip(kept, owners, strict=True):
         if not owns(solution, owned):
             emit(f"OUTSIDE_SOLUTION\t{name}")
+    if solution.name.casefold().endswith(".slnx") and not services.which("dotnet"):
+        raise Stop(
+            f"{relative(solution, root)} is a .slnx solution, which only the .NET SDK's dotnet format opens; "
+            "install the .NET SDK 9.0.200 or newer"
+        )
     descriptor, list_path = tempfile.mkstemp(prefix="dotnet-format-files-", suffix=".txt")
     with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
         handle.write("".join(f"{name}\n" for name in kept))
