@@ -200,7 +200,7 @@ class EnumerateTests(MainCase):
         }
     }
 
-    def test_prints_each_repository_then_the_batch(self) -> None:
+    def test_prints_each_repository_then_the_batch_and_exits_1_after_a_failed_repository(self) -> None:
         location = self.stub("working_path", Path("batch.json"))
         batch = self.stub("enumerate_batch", self.BATCH)
         result = self.run_main(
@@ -215,9 +215,11 @@ class EnumerateTests(MainCase):
             "--output",
             "my batch.json",
         )
+        # A failed repository is a batch item's failure, so the command exits 1, after still listing the others and
+        # writing the batch, as the tracker's collect does.
         self.assertEqual(
             (
-                0,
+                1,
                 "LISTED example/app scan=watermark pages=2 pulls=130 read=40 candidates=2\n"
                 "PULL example/app#3\n"
                 "PULL example/app#5\n"
@@ -245,6 +247,15 @@ class EnumerateTests(MainCase):
             ],
             batch.calls,
         )
+
+    def test_exits_0_when_every_repository_listed(self) -> None:
+        self.stub("working_path", Path("batch.json"))
+        listed = {name: entry for name, entry in self.BATCH["repositories"].items() if entry["complete"]}
+        self.stub("enumerate_batch", {"repositories": listed})
+        code, out, _ = self.run_main("enumerate")
+        self.assertEqual(0, code)
+        self.assertNotIn("REPOSITORY_FAILED", out)
+        self.assertEqual("BATCH batch.json", out.splitlines()[-1])
 
     def test_defaults(self) -> None:
         location = self.stub("working_path", Path("batch.json"))

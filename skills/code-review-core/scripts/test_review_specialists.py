@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -1272,7 +1273,6 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                     "body": "[csharp-review] Remove // Arrange comment.",
                 },
             ],
-            key="comments",
         )
 
     def test_a_reviewer_s_diff_numbers_each_line_and_no_added_lines_table_is_written(self) -> None:
@@ -1384,7 +1384,6 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                 },
                 {"path": "src/A.cs", "line": 5, "severity": "MUST_FIX", "body": "diff position, not a file line"},
             ],
-            key="comments",
         )
         errors = rs.check(plan)
         self.assertIn("src/A.cs:2 is not an added line", errors["db-review"])
@@ -1416,6 +1415,48 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         self.write_valid_results(plan)
         self.write(plan, "db-review", [{"path": "db/Procs.sql", "line": 2, "severity": ["MUST_FIX"], "body": "x"}])
         self.assertIn("invalid severity", rs.check(plan)["db-review"])
+
+    def test_a_result_holds_only_the_fields_its_output_contract_lists(self) -> None:
+        plan = self.plan()
+        self.write_valid_results(plan)
+        finding = {"path": "db/Procs.sql", "line": 2, "severity": "MUST_FIX", "body": "x"}
+        # `comments` was once read in place of `findings`; no prompt asks for it, so it is an unlisted field now.
+        for key in ("comments", "issues"):
+            with self.subTest(key=key):
+                self.write(plan, "db-review", [finding], key=key)
+                self.assertEqual("db-review: result needs a findings array", rs.check(plan)["db-review"])
+        self.write(plan, "db-review", [finding])
+        self.assertEqual({}, rs.check(plan))
+        result_file = Path(plan["roles"][0]["result_file"])
+        valid = json.loads(result_file.read_text(encoding="utf-8"))
+        for changed, error in (
+            (
+                {**valid, "findings": [], "comments": []},
+                "db-review: result has a field its output contract does not list: comments",
+            ),
+            (
+                {**valid, "confidence": "high", "verdict": "ok"},
+                "db-review: result has a field its output contract does not list: confidence, verdict",
+            ),
+            (
+                {**valid, "findings": [{**valid["findings"][0], "suggestion": "y"}]},
+                "db-review: finding 0 has a field the output contract does not list: suggestion",
+            ),
+            (
+                {**valid, "findings": [{**valid["findings"][0], "category": 7}]},
+                "db-review: finding 0 category must be a string",
+            ),
+        ):
+            with self.subTest(error=error):
+                result_file.write_text(json.dumps(changed), encoding="utf-8")
+                self.assertEqual(error, rs.check(plan)["db-review"])
+        # A category is read only when the manifest declares categories; otherwise the role's own one applies.
+        result_file.write_text(
+            json.dumps({**valid, "findings": [{**valid["findings"][0], "category": "Anything"}]}), encoding="utf-8"
+        )
+        self.assertEqual({}, rs.check(plan))
+        request = json.loads(self.request_path.read_text(encoding="utf-8"))
+        self.assertEqual("Database", rs.assemble(plan, request)["findings"][0]["category"])
 
     def test_a_finding_title_must_be_one_line_of_at_most_120_characters(self) -> None:
         plan = self.plan()
@@ -1800,6 +1841,23 @@ class UncoveredFilesTests(SpecialistFixture, unittest.TestCase):
             plan = rs.build_plan(self.request_path, reviewer, self.root / f"work-{reviewer.name}")
             self.assertEqual([("generic-review", self.UNCOVERED)], [(r["id"], r["files"]) for r in plan["roles"]])
             self.assertEqual([], plan["uncovered_files"])
+
+
+class GenericInstructionsTests(unittest.TestCase):
+    def test_the_generic_reviewer_writes_the_result_its_prompts_output_contract_states(self) -> None:
+        # The generic reviewer runs as a specialist, so the prompt's OUTPUT contract is its result format: its
+        # instructions name no other format, and every result field they name is one that contract lists.
+        text = rs.DEFAULT_GENERIC_INSTRUCTIONS.read_text(encoding="utf-8")
+        for other_format in ("schema", "candidate_key", "adapter"):
+            self.assertNotIn(other_format, text)
+        named = set(re.findall(r"`([a-z_]+)`", text))
+        self.assertLessEqual({"model", "title", "repeats", "findings"}, named)
+        self.assertLessEqual(named, rs.RESULT_FIELDS | rs.FINDING_FIELDS)
+        self.assertIn("RESULT_FILE", text)
+        for instruction, contract in (("0-based index", "0-based index"), ("`model`", '"model":')):
+            with self.subTest(instruction=instruction):
+                self.assertIn(instruction, text)
+                self.assertIn(contract, rs.OUTPUT)
 
 
 if __name__ == "__main__":

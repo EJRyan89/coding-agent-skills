@@ -2256,9 +2256,11 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
         config_path=args.config,
         services=services,
     )
+    failed = False
     for repository, entry in batch["repositories"].items():
         if not entry["complete"]:
             print(f"REPOSITORY_FAILED {repository} {entry['error']}")
+            failed = True
         else:
             found = entry["listing"]
             print(
@@ -2268,7 +2270,8 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
         for pull in entry["eligible"]:
             print(f"PULL {repository}#{pull['number']}")
     print(f"BATCH {output}")
-    return 0
+    # A repository that failed to list is a batch item's failure; the others are still listed and reviewable.
+    return 1 if failed else 0
 
 
 def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
