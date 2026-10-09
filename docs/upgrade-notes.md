@@ -25,7 +25,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: patch. A fix: when local `main` has commits that `origin/main` lacks, `update-coding-agent-skills` now stops with `NOT_FAST_FORWARD` before switching branches, so a clone found on another branch stays on it, and the lines after the status list those local commits instead of Git's error. When Git refuses the fast-forward itself after the switch, for an untracked file in its way, the clone is switched back, or a `still on main:` line says why it could not be. An update still switches the clone to `main` and leaves it there, as before.
 - Contract: none
 - User action: none
-- Pull request: #273
+- Pull request: #294
 
 ## v0.4.0
 
