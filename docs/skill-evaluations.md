@@ -27,5 +27,5 @@ scenarios. A pull request that changes a skill's prompt, model guidance, or revi
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | review-prs | haiku | claude-haiku-4-5-20251001 | 13/14 | clean-change 2/2, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |
 | review-prs | sonnet | claude-sonnet-5-5 | 14/14 | clean-change 2/2, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |
-| review-prs | opus | claude-opus-5-5 | 13/14 | clean-change 2/2, planted-defects 5/5, re-review 6/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |
+| review-prs | opus | claude-opus-5-5 | 14/14 | clean-change 2/2, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |
 <!-- skill-evals:end -->

@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_guard as guard
 import review_pipeline as rp
+from review_source import source_commands
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 AGENT = "a71dab35ebc1b97eb"  # the form Claude Code gives an agent ID
@@ -261,6 +262,47 @@ class BashTests(GuardFixture):
             command.replace('"csharp-review"', '"$(whoami)"'),
             rp.self_check_command(self.run_directory, "sql-review"),
             rp.self_check_command(self.other_run, "csharp-review"),
+        ):
+            with self.subTest(command=bad):
+                self.assert_denied(self.decide("Bash", command=bad))
+
+    def test_bash_runs_the_source_commands_of_its_own_role_and_run_with_a_path_or_pattern_kept_in_quotes(
+        self,
+    ) -> None:
+        fetch, search = source_commands(self.run_directory, "csharp-review")
+        file_command = fetch.replace("<path>", "app/Old Service.cs")
+        search_command = search.replace("<pattern>", "class [A-Z]+Service;|GetAssignments( |[(])")
+        self.assert_denied(self.decide("Bash", command=file_command), "read the prompt file your task names first")
+        self.claim()
+        for allowed in (file_command, search_command, fetch, search):
+            with self.subTest(command=allowed):
+                self.assertIsNone(self.decide("Bash", command=allowed))
+        other_fetch, other_search = source_commands(self.other_run, "csharp-review")
+        sibling_fetch, _ = source_commands(self.run_directory, "sql-review")
+        script = str(Path(rp.__file__).resolve().parent / "review_source.py")
+        for bad in (
+            # A value that leaves its quotes, or runs something itself.
+            fetch.replace("<path>", 'a.cs" && whoami && echo "'),
+            fetch.replace("<path>", "$(whoami)"),
+            fetch.replace("<path>", "`whoami`"),
+            search.replace("<pattern>", "a\\"),  # escapes its closing quote
+            search.replace("<pattern>", "a\\.b"),
+            fetch.replace("<path>", "a\nb"),
+            fetch.replace("<path>", ""),
+            f"{file_command}; rm -rf /",
+            f"{file_command} | sh",
+            # The run or the script ending in a backslash, which would shift every quote after it.
+            file_command.replace(f'--run "{self.run_directory}"', f'--run "{self.run_directory}\\"'),
+            file_command.replace(f'"{script}"', f'"{script}\\"'),
+            # The wrong option for the command, another script, another run or role.
+            file_command.replace("source-file", "source-search"),
+            search_command.replace("source-search", "source-file"),
+            file_command.replace(script, str(self.root / "review_source.py")),
+            file_command.replace(script, str(Path(rp.__file__).resolve())),
+            other_fetch.replace("<path>", "app/Service.cs"),
+            other_search.replace("<pattern>", "x"),
+            sibling_fetch.replace("<path>", "app/Service.cs"),
+            source_commands(self.checkout, "csharp-review")[0].replace("<path>", "a.cs"),
         ):
             with self.subTest(command=bad):
                 self.assert_denied(self.decide("Bash", command=bad))

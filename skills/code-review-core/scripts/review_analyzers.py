@@ -20,7 +20,7 @@ import json
 import re
 import tomllib
 import xml.etree.ElementTree as ElementTree
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -319,19 +319,8 @@ def inventory(root: Path, paths: Iterable[str]) -> dict[str, Any]:
         if posix.parts[0] == ".semgrep" and suffix in {".yml", ".yaml"}:
             found.tool("Semgrep", path)
             continue
-        if suffix in MSBUILD_SUFFIXES:
-            handler = _msbuild
-        elif name == ".editorconfig" or name.endswith(".globalconfig"):
-            handler = _editorconfig
-        elif name in {"ruff.toml", ".ruff.toml", "pyproject.toml"}:
-            handler = _toml
-        elif name in {".flake8", "setup.cfg", "tox.ini"}:
-            handler = _ini
-        elif name in {".shellcheckrc", "shellcheckrc"}:
-            handler = _shellcheckrc
-        elif name == "package.json":
-            handler = _package_json
-        else:
+        handler = _settings_handler(path)
+        if handler is None:
             continue
         text = _text(root, path)
         if text is None:
@@ -344,6 +333,32 @@ def inventory(root: Path, paths: Iterable[str]) -> dict[str, Any]:
             continue
         handler(found, path, text)
     return found.result()
+
+
+def _settings_handler(path: str) -> Callable[[_Inventory, str, str], None] | None:
+    """The reader of a file whose text the inventory parses for settings, by its name, or None."""
+    posix = PurePosixPath(path)
+    name, suffix = posix.name, posix.suffix.lower()
+    if name in CONFIG_FILES or (posix.parts[0] == ".semgrep" and suffix in {".yml", ".yaml"}):
+        return None  # named by the file alone
+    if suffix in MSBUILD_SUFFIXES:
+        return _msbuild
+    if name == ".editorconfig" or name.endswith(".globalconfig"):
+        return _editorconfig
+    if name in {"ruff.toml", ".ruff.toml", "pyproject.toml"}:
+        return _toml
+    if name in {".flake8", "setup.cfg", "tox.ini"}:
+        return _ini
+    if name in {".shellcheckrc", "shellcheckrc"}:
+        return _shellcheckrc
+    if name == "package.json":
+        return _package_json
+    return None
+
+
+def reads_settings(path: str) -> bool:
+    """Whether the inventory reads this snapshot file's text, so a lazy snapshot writes it before the inventory runs."""
+    return _settings_handler(path) is not None
 
 
 def tool_names(value: dict[str, Any]) -> list[str]:

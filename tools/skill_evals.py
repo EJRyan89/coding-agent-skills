@@ -46,7 +46,8 @@ Workflow tool, so reviewers start as native subagents, whose messages --forward-
 transcript with the model each ran on. A run counts only if every one of those messages names that model's family;
 a run with no subagent, or one on another model, fails every expectation, since the model was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
-inside the home, and the reviewers' self-check command is allowed; the skill's allowed-tools grant the rest. Each
+inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
+rest. Each
 run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every system,
 so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
 highest review version in that canary root. The code-review configuration the runs read is written there too.
@@ -111,9 +112,15 @@ DEFAULT_JOBS = 3
 # The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs from the profile.
 REVIEWER_AGENT = Path(".claude") / "agents" / "code-review-reviewer.md"
 INSTALLED_GUARD = Path(".claude") / "skills" / "code-review-core" / "scripts" / "review_guard.py"
-# The one command a reviewer runs besides its file tools: its self-check, which review_pipeline.py writes as
-# python -B "<script>" validate-result --run "<run>" --role "<role>".
-SELF_CHECK = 'python -B "*review_pipeline.py" validate-result --run *'
+# The commands a reviewer runs besides its file tools: its self-check, which review_pipeline.py writes as
+# python -B "<script>" validate-result --run "<run>" --role "<role>", and a lazy snapshot's two source commands, which
+# review_source.py writes as python -B "<script>" source-file --run "<run>" --role "<role>" --path="<path>", and the
+# same with source-search and --pattern.
+REVIEWER_COMMANDS = (
+    'python -B "*review_pipeline.py" validate-result --run *',
+    'python -B "*review_source.py" source-file --run *',
+    'python -B "*review_source.py" source-search --run *',
+)
 STATE = ".skill-evals"
 RESULTS_BEGIN = "<!-- skill-evals:begin -->"
 RESULTS_END = "<!-- skill-evals:end -->"
@@ -521,8 +528,7 @@ def claude_command(executable: str, scenario: Scenario) -> list[str]:
         "--permission-mode",
         "acceptEdits",
         "--allowedTools",
-        f"Bash({SELF_CHECK})",
-        f"PowerShell({SELF_CHECK})",
+        *(f"{tool}({command})" for command in REVIEWER_COMMANDS for tool in ("Bash", "PowerShell")),
     ]
 
 

@@ -770,6 +770,10 @@ class RunPieceTests(unittest.TestCase):
             [
                 'Bash(python -B "*review_pipeline.py" validate-result --run *)',
                 'PowerShell(python -B "*review_pipeline.py" validate-result --run *)',
+                'Bash(python -B "*review_source.py" source-file --run *)',
+                'PowerShell(python -B "*review_source.py" source-file --run *)',
+                'Bash(python -B "*review_source.py" source-search --run *)',
+                'PowerShell(python -B "*review_source.py" source-search --run *)',
             ],
             command[command.index("--allowedTools") + 1 :],
         )
