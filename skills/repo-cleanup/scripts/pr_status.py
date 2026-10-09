@@ -21,6 +21,8 @@ FIELDS = "number,state,headRefOid,headRepository,headRepositoryOwner"
 COMMIT_LIMIT = 250
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+# GitHubError kinds meaning gh itself did not run to completion: missing, unable to start, or out of time.
+RUN_FAILURES = frozenset({"prerequisite", "execution", "timeout"})
 
 InBase = Callable[[str], bool]
 
@@ -103,9 +105,11 @@ def _gh(runner: GhRunner, arguments: list[str], failure: str) -> CommandResult:
     try:
         return GitHubClient(runner).run(arguments)
     except GitHubError as exc:
-        if exc.returncode is None:
+        if exc.kind in RUN_FAILURES:
             raise QueryError(f"could not run gh: {exc}") from exc
-        raise QueryError(f"{failure} ({exc.returncode}): {exc}") from exc
+        # A refusal the client makes itself, such as a rate limit asking for too long a wait, has no exit status.
+        status = "" if exc.returncode is None else f" ({exc.returncode})"
+        raise QueryError(f"{failure}{status}: {exc}") from exc
     except OSError as exc:
         raise QueryError(f"could not run gh: {exc}") from exc
 

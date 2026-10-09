@@ -293,8 +293,8 @@ class Fixture(unittest.TestCase):
             result = action(rc.Services(gh=self.github))
         return result, output.getvalue().splitlines()
 
-    def sync(self, skip_checkout: bool = False) -> tuple[bool, list[str]]:
-        """Whether sync finished, so the sweep goes on to plan and apply, and the lines it printed."""
+    def sync(self, skip_checkout: bool = False) -> tuple[dict[str, Any] | None, list[str]]:
+        """What sync did, or None when it stopped before the sweep plans and applies, and the lines it printed."""
         return self.step(lambda services: rc.sync(str(self.clone), skip_checkout, services))
 
     def plan(self) -> tuple[int, list[str]]:
@@ -409,7 +409,11 @@ class DiscoverTests(Fixture):
             ),
             (
                 CommandResult(1, "", "HTTP 502: Bad Gateway\n"),
-                r"^GitHub CLI could not reach github.com \(api\) — HTTP 502",
+                r"^GitHub CLI access check failed \(api\) — HTTP 502",
+            ),
+            (
+                CommandResult(1, "", "gh: API rate limit exceeded (HTTP 403)\n"),
+                "^GitHub's rate limit refused the GitHub CLI — gh: API rate limit exceeded",
             ),
         ):
             with self.subTest(failure=failure), self.assertRaisesRegex(rc.CleanupError, message):
@@ -428,7 +432,9 @@ class SyncTests(Fixture):
         self.assertTrue(finished, lines)
         self.assertEqual([["main"]], facts(lines, "DEFAULT"))
         self.assertEqual([["switched"]], facts(lines, "CHECKOUT"))
-        self.assertEqual([["ok"]], facts(lines, "FF_DEFAULT"))
+        forwarded = ["forwarded", git(self.other, "rev-parse", "HEAD")]
+        self.assertEqual([forwarded], facts(lines, "FF_DEFAULT"))
+        self.assertEqual({"checkout": "switched", "fast_forward": forwarded, "behind": 1}, finished)
         self.assertEqual("refs/heads/main", git(self.clone, "symbolic-ref", "HEAD"))
         self.assertEqual(git(self.other, "rev-parse", "HEAD"), self.tip("main"))
         self.assertEqual("", git(self.clone, "for-each-ref", "refs/remotes/origin/pruned"))
@@ -448,7 +454,7 @@ class SyncTests(Fixture):
         finished, lines = self.sync(skip_checkout=True)
         self.assertTrue(finished, lines)
         self.assertEqual([["skipped"]], facts(lines, "CHECKOUT"))
-        self.assertEqual([["ok"]], facts(lines, "FF_DEFAULT"))
+        self.assertEqual([["forwarded", upstream]], facts(lines, "FF_DEFAULT"))
         self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
         self.assertEqual(topic, self.tip("topic"), "the checked-out branch must not take the default's commits")
         self.assertEqual(upstream, self.tip("main"))
@@ -466,6 +472,19 @@ class SyncTests(Fixture):
         )
         self.assertEqual(local, self.tip("main"))
         self.assertEqual(local, git(self.clone, "rev-parse", "HEAD"))
+
+    def test_a_switch_git_refuses_is_reported_and_the_sync_goes_on(self) -> None:
+        git(self.clone, "switch", "--quiet", "-c", "topic")
+        git(self.clone, "worktree", "add", "--quiet", str(self.area / "main wt"), "main")
+        finished, lines = self.sync()
+        self.assertTrue(finished, lines)
+        checkout = facts(lines, "CHECKOUT")
+        self.assertEqual(1, len(checkout), lines)
+        self.assertEqual("failed", checkout[0][0])
+        self.assertIn("main", checkout[0][1], "Git's reason names the branch it could not switch to")
+        self.assertEqual([["current"]], facts(lines, "FF_DEFAULT"))
+        self.assertEqual("refs/heads/topic", git(self.clone, "symbolic-ref", "HEAD"))
+        self.assertEqual("failed", finished["checkout"] if finished else None)
 
     def test_fetch_failure_stops_the_repository(self) -> None:
         git(self.clone, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
@@ -531,7 +550,7 @@ class PlanApplyTests(Fixture):
         self.assertIn("  PR status unverified:    1 — failing-gone (", summary)
         self.assertIn("  PR history unmatched:    1 — reused-gone (kept)", summary)
         self.assertIn("  Unmerged (kept):", summary)
-        self.assertIn("  Gone with open PR:", summary)
+        self.assertIn("  Open PR (kept):          1 — open-gone", summary)
         self.assertTrue(
             all(call[:2] == ["pr", "list"] or call[:2] == ["api", "--paginate"] for call in self.github.calls)
         )
@@ -615,6 +634,10 @@ class PlanApplyTests(Fixture):
         self.assertEqual("keep", self.branch_fact(planned, "local-open")[4])
         self.assertEqual([["local-merged"], ["local-squashed"], ["local-work"]], facts(applied, "CONFIRM_LOCAL"))
         self.assertEqual([], facts(applied, "DELETED"))
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        self.assertIn(
+            "  Open PR (kept):          1 — local-open", summary, "an open PR is reported with or without a remote"
+        )
 
         code, lines = self.confirm("force-delete", "local-work")
         self.assertEqual([["local-work", "not reported UNMERGED by this plan"]], facts(lines, "PRESERVED"))
@@ -636,6 +659,36 @@ class PlanApplyTests(Fixture):
         self.apply()
         with self.assertRaisesRegex(rc.CleanupError, "^this plan was already applied; run plan again$"):
             self.apply()
+
+    def test_a_deletion_git_refuses_exits_1_after_reporting_every_branch(self) -> None:
+        git(self.clone, "branch", "first", "main")
+        git(self.clone, "switch", "--quiet", "-c", "second", "main")
+        second = self.commit(self.clone, "unpublished work")
+        git(self.clone, "switch", "--quiet", "main")
+        self.clean()
+
+        def refusing(command: Sequence[str], timeout: float) -> GitResult:
+            if "branch" in command and command[-1] in ("first", "second"):
+                return GitResult(1, "", f"error: cannot lock ref 'refs/heads/{command[-1]}'")
+            return git_client.subprocess_runner(command, timeout)
+
+        services = rc.Services(git=GitClient(refusing), gh=self.github)
+        for command, branch in (("delete-local", "first"), ("delete-local", "second"), ("force-delete", "second")):
+            with self.subTest(command=command, branch=branch):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    code = rc.main([command, "--plan", str(self.plan_file), "--branch", branch], services)
+                lines = output.getvalue().splitlines()
+                if branch == "second" and command == "delete-local":
+                    self.assertEqual((0, [["second", second]]), (code, facts(lines, "UNMERGED")))
+                    continue
+                self.assertEqual(1, code, lines)
+                self.assertEqual(
+                    [[branch, f"error: cannot lock ref 'refs/heads/{branch}'"]], facts(lines, "PRESERVED")[-1:]
+                )
+                self.assertTrue(facts(lines, "SUMMARY"), "the summary is printed with the failure")
+        self.assertIsNotNone(self.tip("first"))
+        self.assertIsNotNone(self.tip("second"))
 
     def test_a_confirmation_with_a_missing_plan_fails_with_one_line(self) -> None:
         code, lines = self.confirm("force-delete", "anything")
@@ -974,6 +1027,102 @@ class SweepTests(Fixture):
         self.assertEqual(0, code, confirmed)
         self.assertEqual([["scratch"]], facts(confirmed, "DELETED"))
 
+    def summary(self, block: list[str]) -> str:
+        return "\n".join(fields[0] for fields in facts(block, "SUMMARY"))
+
+    def test_a_failure_partway_through_apply_reports_what_was_done_before_it(self) -> None:
+        self.finished_branch("done")
+        self.push_branch("behind")
+        self.advance_remotely("behind")
+
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            if "update-ref" in command and "refs/heads/behind" in command:
+                raise GitError("git vanished", kind="execution")
+            return git_client.subprocess_runner(command, timeout)
+
+        code, lines = self.sweep(rc.Services(git=GitClient(failing), gh=self.github), "my repo")
+        self.assertEqual(1, code, lines)
+        plan = (self.root / "plans" / "my repo.json").as_posix()
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "git-failed"]], facts(lines, "REPO"))
+        block = self.blocks(lines)["my repo"]
+        self.assertEqual(["PLAN", plan], block[0].split("\t"), "the plan stays usable for confirmations")
+        self.assertEqual("ERROR\tcould not run git: git vanished", block[-1], "the failure follows the summary")
+        summary = self.summary(block)
+        self.assertTrue(
+            summary.startswith("my repo cleanup stopped partway (could not run git: git vanished); done before it:"),
+            summary,
+        )
+        self.assertIn("  Branches deleted:        1 — done", summary)
+        self.assertIsNone(self.tip("done"))
+        recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
+        self.assertEqual((True, "could not run git: git vanished"), (recorded["applied"], recorded["stopped"]))
+
+    def test_a_repository_is_quiet_only_when_nothing_changed(self) -> None:
+        broken = self.make_clone("broken repo")
+        git(broken, "switch", "--quiet", "-c", "topic")
+        git(broken, "config", f"url.{(self.root / 'missing remote').as_posix()}.insteadOf", REMOTE_URL)
+        git(broken, "config", "--unset", f"url.{self.remote.as_posix()}.insteadOf")
+        self.make_clone("forwarded repo")
+        git(self.clone, "switch", "--quiet", "-c", "topic")
+        self.commit(self.other, "upstream work")
+        git(self.other, "push", "--quiet", "origin", "main")
+        self.make_clone("quiet repo")
+        git(self.make_clone("switched repo"), "switch", "--quiet", "--detach")
+        stuck = self.make_clone("stuck repo")
+        git(stuck, "switch", "--quiet", "--detach")
+        git(stuck, "worktree", "add", "--quiet", str(self.root / "stuck main"), "main")
+
+        code, lines = self.sweep()
+        self.assertEqual(1, code, lines)
+        root = self.repos.as_posix()
+        self.assertEqual(
+            [
+                [f"{root}/broken repo", "fetch-failed"],
+                [f"{root}/forwarded repo", "cleaned"],
+                [f"{root}/my repo", "cleaned"],
+                [f"{root}/quiet repo", "quiet"],
+                [f"{root}/stuck repo", "cleaned"],
+                [f"{root}/switched repo", "cleaned"],
+            ],
+            facts(lines, "REPO"),
+        )
+        blocks = self.blocks(lines)
+        self.assertEqual([["switched"]], facts(blocks["broken repo"], "CHECKOUT"), "no plan summary carries it")
+        default = "  Default branch:          main"
+        self.assertIn(f"{default} (up to date; fast-forwarded)\n", self.summary(blocks["forwarded repo"]))
+        self.assertIn(f"{default} (up to date; fast-forwarded; switched to it)\n", self.summary(blocks["my repo"]))
+        self.assertIn(f"{default} (up to date; switched to it)\n", self.summary(blocks["switched repo"]))
+        self.assertEqual("failed", facts(blocks["stuck repo"], "CHECKOUT")[0][0])
+        self.assertIn(f"{default} (up to date; switch to it failed)\n", self.summary(blocks["stuck repo"]))
+        for name in ("forwarded repo", "my repo", "quiet repo", "switched repo"):
+            self.assertEqual([], facts(blocks[name], "CHECKOUT") + facts(blocks[name], "FF_DEFAULT"), name)
+
+    def test_a_default_branch_not_fast_forwarded_for_changes_is_listed_as_skipped(self) -> None:
+        self.commit(self.other, "upstream work")
+        git(self.other, "push", "--quiet", "origin", "main")
+        (self.clone / "draft.txt").write_text("draft\n", encoding="utf-8")
+        code, lines = self.sweep(None, "--skip-checkout", "my repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([[f"{self.repos.as_posix()}/my repo", "cleaned"]], facts(lines, "REPO"))
+        held = f"worktree {self.clone.as_posix()} has 1 uncommitted change"
+        self.assertIn(f"  Fast-forward skipped:    1 — main (behind 1; {held})", self.summary(lines))
+
+    def test_a_branch_name_that_is_not_utf_8_is_reported_with_a_replacement_character(self) -> None:
+        sha = git(self.clone, "rev-parse", "main")
+        # Windows cannot name a loose ref file with these bytes, so the ref goes in packed-refs, whose header then
+        # stops claiming sorted order.
+        packed = self.clone / ".git" / "packed-refs"
+        existing = packed.read_bytes() if packed.exists() else b""
+        packed.write_bytes(existing.replace(b" sorted", b"") + f"{sha} refs/heads/caf".encode() + b"\xe9\n")
+        code, lines = self.sweep(None, "my repo")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([], [line for line in lines if re.search("[\udc80-\udcff]", line)], "all printable as UTF-8")
+        # gh and git are given the name Python decoded, which matches no ref, so the branch is kept unverified.
+        self.assertIn("  PR status unverified:    1 — caf� (", self.summary(lines))
+        self.assertEqual([], facts(lines, "CONFIRM_LOCAL"))
+        plan = json.loads((self.root / "plans" / "my repo.json").read_text(encoding="utf-8"))
+        self.assertEqual(["caf\udce9"], [branch["name"] for branch in plan["branches"]], "the plan keeps Git's bytes")
+
     def test_repositories_are_fetched_at_the_same_time(self) -> None:
         for name in ("second repo", "third repo"):
             self.make_clone(name)
@@ -1076,12 +1225,19 @@ class SweepTests(Fixture):
             facts(lines, "SWEPT"),
         )
 
-    def test_a_sweep_that_cannot_start_fails_with_one_line(self) -> None:
+    def test_a_sweep_that_cannot_start_fails_with_one_line_and_creates_nothing(self) -> None:
         self.github.authenticated = False
         code, lines = self.sweep()
         self.assertEqual(1, code, lines)
-        self.assertEqual(["PLANS", "FAILED"], [line.split("\t")[0] for line in lines])
-        self.assertEqual("FAILED\tGitHub CLI not authenticated — run 'gh auth login'", lines[-1])
+        self.assertEqual(["FAILED\tGitHub CLI not authenticated — run 'gh auth login'"], lines)
+        self.assertFalse((self.root / "plans").exists())
+        temporary = self.root / "tmp"
+        temporary.mkdir()
+        output = io.StringIO()
+        with mock.patch.object(tempfile, "tempdir", str(temporary)), contextlib.redirect_stdout(output):
+            code = rc.main(["sweep", "--repos-root", str(self.repos)], rc.Services(gh=self.github))
+        self.assertEqual((1, ["FAILED"]), (code, [line.split("\t")[0] for line in output.getvalue().splitlines()]))
+        self.assertEqual([], list(temporary.iterdir()), "no plans directory is created before the access check")
 
     def test_only_the_commands_the_skill_runs_remain(self) -> None:
         for command in ("discover", "sync", "plan", "apply"):
@@ -1184,6 +1340,25 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.assertEqual(["PRESERVED", "untracked"], events[0][:2])
         self.assertTrue((path / "draft.txt").is_file())
 
+    def test_ignored_files_keep_a_worktree_git_would_remove_with_them(self) -> None:
+        # git worktree remove counts a worktree holding only ignored files as clean and deletes them.
+        (self.repo / ".gitignore").write_text(".env\nbin/\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "--quiet", "-m", "ignore secrets and builds")
+        path = self.add("ignored")
+        (path / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        (path / "bin").mkdir()
+        (path / "bin" / "app.dll").write_text("x", encoding="utf-8")
+        self.assertEqual("", git(path, "status", "--porcelain"), "Git calls it clean")
+        removed, events, _ = self.remove("ignored")
+        self.assertFalse(removed)
+        self.assertEqual(
+            [["PRESERVED", "ignored", f"worktree {path} holds 2 ignored paths git worktree remove would delete"]],
+            events,
+        )
+        self.assertTrue((path / ".env").is_file())
+        self.assertIsNotNone(self.tip("ignored"))
+
     def test_an_unmerged_branch_outlives_its_removed_worktree(self) -> None:
         path = self.add("unmerged")
         git(path, "commit", "--quiet", "--allow-empty", "-m", "work")
@@ -1206,6 +1381,11 @@ class UnitTests(unittest.TestCase):
             ("topic/release-notes", "C:/GitHub/Worktrees/example/topic", False),
             ("topic/fix", "C:/GitHub/Worktrees/example/pre-release/topic", False),
             ("releases/1", "C:/GitHub/Worktrees/example/released", False),
+            # In any letter case: Windows treats Release and release as one directory and one loose ref.
+            ("Release/4.10", "C:/GitHub/Worktrees/example/topic", True),
+            ("RELEASE/4.10", "C:/GitHub/Worktrees/example/topic", True),
+            ("topic/fix", "C:/GitHub/Worktrees/example/Release/4.10", True),
+            ("topic/fix", "C:\\GitHub\\RELEASE\\example", True),
         ):
             with self.subTest(branch=branch, path=path):
                 self.assertEqual(expected, rc.is_protected(branch, path))
@@ -1249,6 +1429,19 @@ class UnitTests(unittest.TestCase):
         self.assertTrue((root / "elsewhere" / "empty").is_dir())
         self.assertEqual([], rc.prune_empty_parents(str(area), [str(area)]))
 
+    def test_empty_directory_pruning_stops_below_the_repository_root(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup prune root ")).resolve()
+        self.addCleanup(remove_tree, root)
+        area, repository = root / "Worktrees", root / "my repo"
+        (repository / ".worktrees" / "group").mkdir(parents=True)
+        area.mkdir()
+        self.assertEqual(
+            [(repository / ".worktrees" / "group").as_posix(), (repository / ".worktrees").as_posix()],
+            rc.prune_empty_parents(str(repository / ".worktrees" / "group" / "removed"), [str(area), str(repository)]),
+        )
+        self.assertTrue(repository.is_dir(), "the repository root itself is never removed")
+        self.assertTrue(area.is_dir())
+
     def test_dirty_count_counts_a_rename_once(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup status ")).resolve()
         self.addCleanup(remove_tree, root)
@@ -1275,6 +1468,25 @@ class ConsoleTests(unittest.TestCase):
         )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
         self.assertEqual([f"FAILED\t{plan} is not a repo-cleanup plan"], result.stdout.decode("utf-8").splitlines())
+
+    def test_a_branch_name_git_gave_as_bytes_that_are_not_utf_8_is_printed(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()
+        self.addCleanup(remove_tree, root)
+        plan = root / "plan.json"
+        recorded = {
+            "schema_version": rc.PLAN_SCHEMA_VERSION,
+            "repo_name": "my repo",
+            "default": {"name": "main", "status": "up to date"},
+            "branches": [],
+            "worktrees": [],
+            "events": [["CONFIRM_LOCAL", "caf\udce9"]],
+        }
+        plan.write_text(json.dumps(recorded), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)], capture_output=True, check=False
+        )
+        self.assertEqual(0, result.returncode, result.stdout.decode("utf-8", "replace"))
+        self.assertIn("SUMMARY\t  Local-only (kept):       1 — caf�", result.stdout.decode("utf-8").splitlines())
 
 
 if __name__ == "__main__":
