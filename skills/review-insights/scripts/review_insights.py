@@ -872,7 +872,8 @@ def decide(
     The subject (a category, an analyzer's coverage, tool, and rule, or a synthesized recommendation's title) and
     linked flags the user was shown must still match, so a decision never lands on a different recommendation or
     resolves a flag linked after the user saw it (a report regenerated in between keeps the ID but can gain flags).
-    Only an accepted recommendation resolves flags.
+    The subject matches as the report's line printed it, screened, or as recorded. Only an accepted recommendation
+    resolves flags.
     """
     services = services or Services()
     if decision not in DECISIONS:
@@ -887,7 +888,7 @@ def decide(
         raise InsightError(f"Unknown recommendation: {recommendation_id}")
     item = matching[0]
     shown_kind, shown, wanted = _shown_subject(category, analyzer, synthesized)
-    if subject_key(item) != wanted:
+    if _as_printed(subject_key(item)) != _as_printed(wanted):
         raise InsightError(
             f"{recommendation_id} is now {item['kind']} {describe(item)!r}, not {shown_kind} {shown!r}; run report "
             "again and confirm the decision with the user"
@@ -969,6 +970,12 @@ def decide_custom(
     return resolved, skipped, len(items)
 
 
+def _as_printed(key: tuple[str, ...]) -> tuple[str, ...]:
+    """A subject key as the report's lines print it, so a decision naming the subject as printed matches it. Two
+    subjects that print alike never share an ID, which `decide` matches first."""
+    return tuple(synthesis_stage.screened(part) for part in key)
+
+
 def _shown_subject(
     category: str | None, analyzer: tuple[str, str, str] | None, synthesized: str | None
 ) -> tuple[str, str, tuple[str, ...]]:
@@ -1045,7 +1052,8 @@ def _print_report(report: dict[str, Any]) -> None:
             continue
         if item["kind"] == "category":
             print(
-                f"RECOMMENDATION {item['id']} {item['category']} findings={item['finding_count']} "
+                f"RECOMMENDATION {item['id']} {synthesis_stage.screened(item['category'])} "
+                f"findings={item['finding_count']} "
                 f"decision={item['decision']} flags={flags}"
             )
             entry = synthesis_stage.category_entry(report, item["category"])
@@ -1053,7 +1061,8 @@ def _print_report(report: dict[str, Any]) -> None:
                 print(fact)
         else:
             print(
-                f"ANALYZER {item['id']} coverage={item['coverage']} tool={item['tool']} rule={item['rule']} "
+                f"ANALYZER {item['id']} coverage={item['coverage']} tool={synthesis_stage.screened(item['tool'])} "
+                f"rule={synthesis_stage.screened(item['rule'])} "
                 f"findings={item['finding_count']} repositories={','.join(item['repositories'])} "
                 f"decision={item['decision']} flags={flags}"
             )
