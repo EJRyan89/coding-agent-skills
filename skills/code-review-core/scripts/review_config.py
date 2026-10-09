@@ -55,15 +55,24 @@ MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH = 200
 REVIEWER_KEYS = {"id", "protocol_version", "trusted_ref", "scope", "manifest_path", "skill", "manifest"}
 DASHBOARD_KEYS = {"start_marker", "end_marker", "status_overrides", "author_names"}
 GITHUB_LOGIN_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
-COMPUTED_DASHBOARD_STATES = {
-    "to review",
-    "awaiting response",
-    "my pull requests",
-    "drafts",
-    "missing",
-    "current",
-    "stale",
-}
+# The sections the pull-request tracker computes. update-pr-tracker renders these names, and they live here, beside
+# the validation that refuses a status override naming one, so the names refused and the names rendered cannot drift:
+# an override named like a computed section rendered that section twice and dropped the rows placed in it.
+DASHBOARD_SECTION_TO_REVIEW = "To Review"
+DASHBOARD_SECTION_AWAITING = "Awaiting Response"
+DASHBOARD_SECTION_MINE = "My PRs"
+DASHBOARD_SECTION_DRAFTS = "Drafts"
+DASHBOARD_SECTIONS = (
+    DASHBOARD_SECTION_TO_REVIEW,
+    DASHBOARD_SECTION_AWAITING,
+    DASHBOARD_SECTION_MINE,
+    DASHBOARD_SECTION_DRAFTS,
+)
+# The values a status override may not take, compared trimmed and ignoring case: each computed section, the AI review
+# states the tracker shows beside them, and the earlier name of the authored section.
+COMPUTED_DASHBOARD_STATES = frozenset(
+    {section.casefold() for section in DASHBOARD_SECTIONS} | {"my pull requests", "missing", "current", "stale"}
+)
 
 
 class ConfigurationError(ValueError):
