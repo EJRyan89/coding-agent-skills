@@ -48,6 +48,7 @@ Each fact has one owner; update the owner in the same change.
 | Document | Owns |
 |---|---|
 | `CLAUDE.md` | Architecture, safety rules, validation and pull request rules for every agent runtime. |
+| `docs/design.md` | Why the repository is built as it is: the trust model, the invariants, and each decision with its reason, date, and source, and what was declined. |
 | `docs/skills.md` | Each skill's reference. Generated blocks come from `python tools/skill_reference.py --write`. |
 | `README.md` | The "Included skills" table and the front-door summary. |
 | `docs/adding-a-skill.md` | The skill contract. |
