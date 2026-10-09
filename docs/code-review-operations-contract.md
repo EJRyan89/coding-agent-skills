@@ -361,7 +361,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `retries` | integer | yes | How many times it was rerun. |
 | `dispositions_only` | boolean | yes | Whether it only gave dispositions, because none of its files changed. |
 | `model` | string | no | The model it reported running on: one trimmed line of at most 200 characters. Absent for a repository entrypoint reviewer and from older records. |
-| `seconds` | integer | no | Whole seconds from handing it the role to its accepted result, reruns included; absent when not timed. |
+| `seconds` | integer | no | Whole seconds from handing it the role to its accepted result, reruns included, and 0 for a result dated less than a second before it was handed out; absent when not timed or when the result is dated a second or more before. |
 | `files_read` | integer or null | with `bytes_read` | How many distinct files of the source snapshot it opened, with Read or a Grep of one file, as the reviewer guard logged them, reruns included. Null when no guard counted its reads (an inline, Copilot CLI host, Codex, or general-purpose fallback reviewer), which means unknown, not zero. Absent from older records. |
 | `bytes_read` | integer or null | with `files_read` | Those files' total size in bytes, each counted whole whatever part of it was read; null together with `files_read`. |
 

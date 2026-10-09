@@ -774,6 +774,18 @@ class GenericReviewTests(PipelineFixture):
                 markdown = Path(result["markdown"]).read_text(encoding="utf-8")
                 self.assertIn(f"| `generic-review` | General | fixture-model | 2 | 1 | 0 {cell}", markdown)
 
+    def test_a_result_dated_just_before_its_dispatch_records_zero_seconds(self) -> None:
+        # Windows dates a file from a coarser clock than the one that times dispatch, so a result written at once can
+        # carry an mtime a few milliseconds early. Under a second early is zero; a second or more is a stale result.
+        for offset, expected in ((-0.05, 0), (-0.9, 0), (-1.5, None), (-30.0, None)):
+            with self.subTest(offset=offset):
+                ready = self.prepare(force=True)
+                self.write_role_result(ready["roles"][0], findings=[self.finding()])
+                self.finish_after(ready["run"], ready["roles"][0], offset)
+                rp.finalize(ready["run"])
+                reviewer = archived_record(self.archive, 12)["review"]["reviewers"][0]
+                self.assertEqual(expected, reviewer.get("seconds"))
+
     def test_prepare_failure_removes_its_run_directory(self) -> None:
         self.github.pulls[12] = rest_pull(12, self.base, self.base)
         with self.assertRaisesRegex(rp.PipelineError, "changes no files"):

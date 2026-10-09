@@ -1255,15 +1255,20 @@ def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
 
 
 def reviewer_seconds(state: dict[str, Any]) -> dict[str, int]:
-    """Whole seconds from each role's dispatch to the last write of its result; untimed roles are left out."""
+    """Whole seconds from each role's dispatch to the last write of its result; untimed roles are left out.
+
+    Windows dates a file from a coarser clock than the one dispatch reads, so a result written at once can carry an
+    mtime a few milliseconds early: under a second early counts as zero. A second or more early is a result written
+    before the role was handed out, which is not timed.
+    """
     seconds = {}
     for role in state["roles"]:
         started = state.get("dispatched_at", {}).get(role["id"])
         if started is None:
             continue
         elapsed = Path(role["result_file"]).stat().st_mtime - started
-        if elapsed >= 0:
-            seconds[role["id"]] = round(elapsed)
+        if elapsed > -1:
+            seconds[role["id"]] = max(0, round(elapsed))
     return seconds
 
 
