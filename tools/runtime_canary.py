@@ -3,6 +3,7 @@
 Usage:
   python tools/runtime_canary.py [SKILL ...] [--runtime NAME ...] [--discovery-only] [--timeout SECONDS]
                                  [--codex-sandbox elevated|unelevated]
+  python tools/runtime_canary.py --remove-home DIR
 
 It makes a fresh home under the temporary directory and deploys this checkout into it with `deploy.py
 --canary-home`, which a linked worktree may do, then deploys the fixture source in tests/fixtures/runtime-canary.
@@ -10,7 +11,7 @@ That home is the only place anything is deployed. Each installed runtime then st
 directory, so it finds the deployed skills as project skills, and with a fixed prompt naming one skill: the fixture
 runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
-  HOME "<dir>"                                  the throwaway home; delete it when done
+  HOME "<dir>"                                  the throwaway home; delete it with --remove-home when done
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
   SKIPPED <runtime> "<reason>"                  the runtime is not on PATH
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy
@@ -27,6 +28,8 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
   MATRIX <runtime> <skill> AGREES <level>       what ran is what the skill's declared runtime support expects
   MATRIX <runtime> <skill> DISAGREES <level> "<what ran instead>"
 
+With --remove-home DIR it prints REMOVED "<dir>", or FAILED "<reason>" and exits 1.
+
 The isolation is of configuration, not of credentials: each runtime keeps its real configuration folder and so
 its sign-in, and the canary switches off what each runtime lets it: Claude Code's user settings, skills, and MCP
 servers; Codex's config.toml and rules; Copilot's custom instructions and built-in MCP servers. KEPT names what
@@ -39,7 +42,8 @@ sitecustomize.py on PYTHONPATH records every Python process the runtime starts, 
 Bash script, however the runtime names Bash. RAN means the script ran from the canary's copy of the skill or of a
 skill it declares in skill_deps; a script from the installed copy is a failure, never RAN. Copilot's headless mode
 cannot start a skill only the user may start, so such a skill is UNSUPPORTED there and no model is called for it.
---discovery-only lists skills without running any model.
+--discovery-only lists skills without running any model. --remove-home deletes a home an earlier run printed and
+nothing else: only a runtime-canary- directory directly under the temporary directory.
 
 Each skill's runtime_support in deploy-meta, the matrix docs/skills.md prints, says what to expect: `full` must be
 RAN, `partial` must be RAN or, when the runtime lacks user-only-start, UNSUPPORTED, since the limits of the other
@@ -89,6 +93,7 @@ OUTCOME_LINE = re.compile(r"^RUNTIME (\S+) (\S+) ([A-Z_]+)\b")
 FIXTURE_SOURCE = REPOSITORY_ROOT / "tests" / "fixtures" / "runtime-canary"
 FIXTURE_SKILL = "runtime-canary-probe"
 STATE = ".runtime-canary"
+HOME_PREFIX = "runtime-canary-"
 DEFAULT_TIMEOUT = 600
 RUNTIME_CANARY_MARKER = "RUNTIME-CANARY-RUN"
 # What each runtime still loads from the user's real configuration once the canary's flags have switched off all
@@ -664,7 +669,29 @@ def canary(
 
 
 def create_home() -> Path:
-    return Path(tempfile.mkdtemp(prefix="runtime-canary-")).resolve()
+    return Path(tempfile.mkdtemp(prefix=HOME_PREFIX)).resolve()
+
+
+def remove_home(directory: str) -> int:
+    """Delete a home the canary made, a HOME_PREFIX directory directly in the temporary directory, and nothing else."""
+    home = Path(directory)
+    temporary = Path(tempfile.gettempdir()).resolve()
+    resolved = home.resolve()
+    if (
+        home.is_symlink()
+        or not resolved.is_dir()
+        or resolved.parent != temporary
+        or not resolved.name.startswith(HOME_PREFIX)
+    ):
+        print(f"FAILED {quote(f'{forward(home)} is not a home the canary made under {forward(temporary)}')}")
+        return 1
+    try:
+        shutil.rmtree(resolved)
+    except OSError as exc:
+        print(f"FAILED {quote(f'cannot remove {forward(resolved)}: {exc}')}")
+        return 1
+    print(f"REMOVED {quote(forward(resolved))}")
+    return 0
 
 
 def main(arguments: list[str]) -> int:
@@ -681,6 +708,7 @@ def main(arguments: list[str]) -> int:
         help="check only this runtime; repeatable (default: all three)",
     )
     parser.add_argument("--discovery-only", action="store_true", help="list skills; run no model")
+    parser.add_argument("--remove-home", metavar="DIR", help="delete a home an earlier run printed as HOME, and exit")
     parser.add_argument(
         "--timeout",
         type=float,
@@ -695,6 +723,11 @@ def main(arguments: list[str]) -> int:
         help=f"Windows sandbox mode Codex runs with (default: {DEFAULT_CODEX_SANDBOX})",
     )
     options = parser.parse_args(arguments)
+    if options.remove_home is not None:
+        if options.skills:
+            parser.error("--remove-home takes no SKILL")
+        platform_support.use_utf8_output()
+        return remove_home(options.remove_home)
     sources = [REPOSITORY_ROOT, FIXTURE_SOURCE]
     unknown = [skill for skill in options.skills if skill not in dependencies(sources)]
     if unknown:

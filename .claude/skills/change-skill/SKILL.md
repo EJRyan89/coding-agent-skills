@@ -28,13 +28,15 @@ A skill change never passes the size gate's "no design choice remains" lightly, 
 
 ## 2. Scaffold a new skill
 
-For a new shipped skill only, with the values the plan settled:
+For a new shipped skill, with the values the plan settled:
 
 ```bash
 python tools/new_skill.py "<name>" --description "<description>" --argument-hint "<hint>" --tool gh
 ```
 
-Add `--user-only` and `--opt-in` as planned, and omit `--argument-hint` or `--tool` when there is none. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
+Add `--user-only` and `--opt-in` as planned, and omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for the skill's own scripts, and the file-reading tool. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
+
+`new_skill.py` scaffolds shipped skills only. A new repository skill is `.claude/skills/<name>/SKILL.md`, written by hand, and its shim `.agents/skills/<name>/SKILL.md`: the same frontmatter, then the two lines every shim has, naming the new skill. Validation fails until the shim exists and its frontmatter matches.
 
 ## 3. Implement test first
 
@@ -75,7 +77,7 @@ Validation never starts a runtime. When the change touches how a shipped skill n
 
 Validation checks the contract; `analyze-skill-cost` judges what the change costs: token footprint, deterministic work left to prose, delegation, and the `model`, `allowed-tools`, and listing frontmatter. From the worktree, run `analyze-skill-cost <name>` for each changed skill, shipped or repository, and check its `Scope`: `locate` reports `SCOPE source` for `skills/<name>` here and `SCOPE project-claude` for `.claude/skills/<name>`, never the deployed copy.
 
-It is the deployed user-level skill. If it is not installed, or reports another scope because the deployed copy predates this behavior, deploy from the hub on an up-to-date `main` and rerun it, or skip the audit and say why in the pull request. Resolve every MUST FIX before opening the pull request and rerun validation if that changed anything. A SUGGESTION may stay, but the pull request body names each one left and why.
+`analyze-skill-cost` is a shipped skill, so it runs from your deployment under `~/.claude/skills`, not from this checkout. If it is not deployed, or reports another scope because the deployed copy predates this behavior, deploy from the hub on an up-to-date `main` and rerun it, or skip the audit and say why in the pull request. Resolve every MUST FIX before opening the pull request and rerun validation if that changed anything. A SUGGESTION may stay, but the pull request body names each one left and why.
 
 ## 7. Open the pull request
 
