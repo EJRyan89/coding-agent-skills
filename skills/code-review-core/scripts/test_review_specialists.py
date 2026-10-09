@@ -1183,7 +1183,7 @@ class SpecialistFixture:
         materialize_reviewer(checkout, trusted, loaded, self.reviewer)
         self.checkout, self.trusted = checkout, trusted
         snapshot = self.root / "source"
-        materialize_source_snapshot(checkout, "example/one", head, snapshot)
+        self.manifest = materialize_source_snapshot(checkout, "example/one", head, snapshot)
         self.head = head
         self.request_path = self.root / "request.json"
         self.request_args: dict[str, Any] = dict(
@@ -1234,6 +1234,22 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         self.assertEqual(["db-review", "csharp-review"], [r["id"] for r in plan["roles"]])
         own = (Path(plan["roles"][1]["result_file"]).parent / "csharp-review.diff").read_text(encoding="utf-8")
         self.assertIn("+     3 | class B {} // caf\ufffd\n", own)
+
+    def test_a_request_given_the_manifest_its_snapshot_was_verified_with_does_not_verify_it_again(self) -> None:
+        source = self.request_args["source_snapshot_root"]
+        (source / "extra.txt").write_text("not declared\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeContractError, "file set mismatch"):
+            build_adapter_request(mode="initial", **self.request_args)
+        request = build_adapter_request(mode="initial", snapshot=self.manifest, **self.request_args)
+        self.assertEqual(
+            (str(source), self.head), (request["source_snapshot"]["root"], request["pull_request"]["head_sha"])
+        )
+        for field, value, message in (
+            ("source_commit", "d" * 40, "Source snapshot commit does not match the request head"),
+            ("repository", "example/other", "Source snapshot repository does not match the request"),
+        ):
+            with self.subTest(field), self.assertRaisesRegex(RuntimeContractError, f"^{message}$"):
+                build_adapter_request(mode="initial", snapshot={**self.manifest, field: value}, **self.request_args)
 
     def write_valid_results(self, plan: dict) -> None:
         """A result for each role whose findings are all on added lines of its own files."""

@@ -415,10 +415,11 @@ def _snapshot(
     changed: list[str],
     services: Services,
     notes: list[str],
-) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any]]:
+) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any], dict[str, Any]]:
     """Snapshot the head at `source`, from the checkout or else GitHub's tarball. Returns the symbolic links the
-    snapshot leaves out that the pull request changes, each one noted, and the snapshot's statistics: its source,
-    files, and bytes, and the seconds spent fetching the head and materializing it."""
+    snapshot leaves out that the pull request changes, each one noted, the snapshot's statistics: its source, files,
+    and bytes, and the seconds spent fetching the head and materializing it, and the manifest materializing it
+    verified, which the request and the plan take in place of verifying the snapshot again."""
     fetched = 0.0
     started = services.timer()
     if checkout is not None:
@@ -449,7 +450,7 @@ def _snapshot(
         "bytes": snapshot_bytes(source, snapshot),
         "seconds": {"fetch": fetched, "materialize": materialized},
     }
-    return links, stats
+    return links, stats, snapshot
 
 
 def _materialize_reviewer(
@@ -535,6 +536,7 @@ def _write_request(
     pull: dict[str, Any],
     diff_path: Path,
     source: Path,
+    manifest: dict[str, Any],
     prior: list[dict[str, Any]],
     comments: list[dict[str, Any]],
     unsafe: list[str],
@@ -554,7 +556,7 @@ def _write_request(
         source_snapshot_root=source,
         prior_findings=prior,
         github_comments=comments,
-        verify_contents=False,  # prepare materialized it, in this call
+        snapshot=manifest,  # prepare materialized and verified it, in this call
     )
     coverage = request["coverage"]
     coverage["unavailable_sources"] = sorted({*coverage["unavailable_sources"], *unsafe})
@@ -572,6 +574,7 @@ def _write_roles(
     entrypoint: str | None,
     links: dict[str, tuple[int, str] | None],
     checkout: Path | None,
+    manifest: dict[str, Any],
     review_files: set[str] | None,
     notes: list[str],
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -596,7 +599,7 @@ def _write_roles(
         reviewer_root,
         run / "work",
         self_check=lambda identity: self_check_command(run, identity),
-        verify_contents=False,
+        snapshot=manifest,
         local_checkout=checkout,
         review_files=review_files,
     )
@@ -825,7 +828,9 @@ def _prepare_run(
         parsed, changed, unsafe, patches, comments = review.read_diff(diff_path)
         source = run / "source"
         head = pull["headRefOid"]
-        links, snapshot = _snapshot(review.source, repository, number, head, source, parsed, changed, services, notes)
+        links, snapshot, manifest = _snapshot(
+            review.source, repository, number, head, source, parsed, changed, services, notes
+        )
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
             checkout=checkout,
@@ -856,6 +861,7 @@ def _prepare_run(
             pull=pull,
             diff_path=diff_path,
             source=source,
+            manifest=manifest,
             prior=review.prior,
             comments=comments,
             unsafe=unsafe,
@@ -877,6 +883,7 @@ def _prepare_run(
             entrypoint=entrypoint,
             links=links,
             checkout=checkout,
+            manifest=manifest,
             review_files=review_files,
             notes=notes,
         )

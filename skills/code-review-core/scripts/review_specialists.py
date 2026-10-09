@@ -34,6 +34,7 @@ from review_runtime import (
     MODEL_ALIASES,
     RuntimeContractError,
     declared_reviewer_files,
+    require_snapshot_source,
     validate_adapter_manifest,
     verify_source_snapshot,
 )
@@ -647,16 +648,18 @@ def _load_reviewer(reviewer_root: Path | None, mode: str) -> tuple[dict[str, Any
     return manifest, source_commit
 
 
-def _verified_snapshot(request: dict[str, Any], *, verify_contents: bool) -> tuple[Path, dict[str, Any]]:
-    """The snapshot's root and its verified manifest."""
+def _verified_snapshot(request: dict[str, Any], snapshot: dict[str, Any] | None) -> tuple[Path, dict[str, Any]]:
+    """The snapshot's root and its verified manifest: `snapshot`, once it names the request's repository and head, or
+    else the manifest a full verification returns."""
     source_root = Path(request["source_snapshot"]["root"])
+    repository, head = request["repository"], request["pull_request"]["head_sha"]
     try:
-        snapshot = verify_source_snapshot(
-            source_root,
-            expected_repository=request["repository"],
-            expected_commit=request["pull_request"]["head_sha"],
-            contents=verify_contents,
-        )
+        if snapshot is None:
+            snapshot = verify_source_snapshot(
+                source_root, expected_repository=repository, expected_commit=head, contents=True
+            )
+        else:
+            require_snapshot_source(snapshot, repository, head)
     except RuntimeContractError as exc:
         raise SpecialistError(str(exc)) from exc
     return source_root, snapshot
@@ -869,19 +872,20 @@ def build_plan(
     *,
     generic_instructions: Path = DEFAULT_GENERIC_INSTRUCTIONS,
     self_check: Callable[[str], str] | None = None,
-    verify_contents: bool = True,
+    snapshot: dict[str, Any] | None = None,
     local_checkout: Path | None = None,
     review_files: set[str] | None = None,
 ) -> dict[str, Any]:
     """Plan the review roles. Without a reviewer root, the suite's generic reviewer reviews the whole change.
 
-    `verify_contents=False` is for a caller that materialized the snapshot itself, moments earlier.
+    `snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
+    materialization verified. Without it the snapshot is verified here, contents included.
     `review_files`, for an incremental re-review, names the files to review in full. A role with none of them
     only gives dispositions, and a specialist with no prior finding or comment either is left out.
     """
     request = _load_request(request_path)
     manifest, source_commit = _load_reviewer(reviewer_root, request["mode"])
-    source_root, snapshot = _verified_snapshot(request, verify_contents=verify_contents)
+    source_root, snapshot = _verified_snapshot(request, snapshot)
     diff = _read_changes(request, work)
     changed = list(diff)
     routes = _route_files(manifest, changed, reviewer_root, source_root, work)
