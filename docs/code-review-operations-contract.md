@@ -21,12 +21,12 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - Review versions are allocated under a per-PR lock and never overwrite history.
 - Merged-pull watermarks are independent per repository. Incomplete enumeration or a failed eligible merge cannot advance that repository past the missing work.
 - A merged pull request is eligible when it merged on or after its repository's watermark date, judged by its merge time alone: one merged before the watermark stays out however recently it was updated (commented on, labeled, or edited) after merging. Because merging updates a pull request, every one merged on or after the watermark was last updated on or after it, so enumeration may stop listing closed pull requests, read from the most recently updated, at the first page whose last pull request was updated before the watermark. A repository without a watermark lists its whole history once.
-- Configuration, mutable state, flags, and review versions use separate short-lived locks; network and semantic review work occurs outside those locks.
+- Mutable state, flags, and review versions use separate short-lived locks; network and semantic review work occurs outside those locks. The configuration file takes none: nothing in the suite changes it in place, and `review_config.py write` replaces it whole through a uniquely named temporary file, so a reader sees the old file or the new one, and of two writes at once the later one stays.
 
 ## Reviewer behavior
 
-- The bundled generic reviewer and a repository-provided specialist both receive the same versioned request and must return the same normalized result shape.
-- The bundled generic reviewer prompt and result schema resolve from the installed `code-review-core` skill, not from a repository checkout or branch.
+- The bundled generic reviewer and a repository's specialists work under the same prompt contracts, and each writes a [specialist result](#specialist-result), which the core validates and assembles into one adapter result. A repository's entrypoint reviewer is given the versioned request and writes the adapter result itself.
+- The bundled generic reviewer's instructions and the adapter result schema resolve from the installed `code-review-core` skill, not from a repository checkout or branch.
 - Re-review requires exactly one disposition for every prior finding, and every open or unverified entry of the pull request's finding ledger is a prior finding until a review closes it.
 - A finding that repeats another one is linked to it with `repeats` and counted once, never twice. A link must name an existing finding at least as severe that is not itself a repeat.
 - The core assigns stable finding IDs, keeps the finding ledger, calculates verdicts from its open entries, renders reports, and owns durable writes. An initial review starts a fresh ledger; a record written before ledgers stays valid and is read as having no history.
@@ -48,7 +48,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - Repository identities are always full `owner/repo` values.
 - Mutable files use validated temporary writes and atomic replacement.
 - Review records are written as linked JSON/Markdown pairs under collision-safe owner/repository paths.
-- Runtime output is untrusted until it satisfies the adapter-result schema.
+- Runtime output is untrusted until the core validates it as a specialist result or an adapter result.
 - Review, re-review, tracker, flag, and insight operations only read GitHub state. None of them posts comments, creates pending reviews, or submits review state.
 - Repository-provided reviewers are loaded only from an immutable trusted commit.
 - Review source is materialized from the exact PR head into a hash-verified snapshot. On the checkout route it is lazy: the changed files and the analyzer settings are written up front, and any other file the head holds is written only when a reviewer asks for it, from the commit by its blob id and checked against that id. Agent configuration and instruction paths from the PR head are excluded; only reviewer-manifest files from the trusted base may instruct the reviewer.
@@ -97,7 +97,7 @@ The model does not cover these, by design:
 
 ## Formats
 
-These tables are the single statement of every file the suite reads or writes. Each format names the function that validates it, and `tests/code-review/test_format_contract.py` fails when a table and that function disagree on the suite's fixtures. The adapter result, which reviewers write, is stated instead by `skills/code-review-core/references/review-adapter.schema.json`, because reviewers read that file; the same suite checks it against `validate_adapter_result` in `review_records.py`. How to write and use each file is in [Code-review operations](code-review-operations.md).
+These tables are the single statement of every structured file the suite keeps between operations or takes from a reviewer, but one. That one is `review-insights`' own versioned report, `insights.json`, with the synthesis files `report` writes beside it: that skill alone writes them, and `load_report` in `review_insights.py` alone reads the report back, upgrading a report of any earlier version (1 to 6) to the current one, 7. "Synthesis" in [Code-review operations](code-review-operations.md#synthesis) describes them. Each format names the function that validates it, and `tests/code-review/test_format_contract.py` fails when a table and that function disagree on the suite's fixtures. The adapter result, which a repository's entrypoint reviewer writes and the core assembles from specialist results, is stated instead by `skills/code-review-core/references/review-adapter.schema.json`, because an entrypoint's author reads that file; the same suite checks it against `validate_adapter_result` in `review_records.py`. A file one operation writes and reads before it ends, such as a run's `run.json`, plan, prompts, and work files, the batch file, and the tracker input, is not stated here: the script that writes it is the only reader. How to write and use each file is in [Code-review operations](code-review-operations.md).
 
 How to read a table:
 
@@ -295,6 +295,33 @@ The snapshot's manifest records each path it leaves out under `excluded_paths`, 
 | `category` | string | yes | The flag's category, a label the user chose. |
 | `rationale` | string | yes | The flag's body: why the user judged the finding wrong or noisy. |
 
+### Specialist result
+
+The result the bundled generic reviewer and each specialist write to their role's result file, in the shape the output contract of their prompt shows. `load_role_result` in `review_specialists.py` validates it whenever `validate-result`, `check`, or `finalize` reads it, against the role's files and the added lines of its diff, the prior findings and review comments it was given, and the analyzers the repository has.
+
+#### Specialist result (`specialist-result`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `model` | string | yes | The model ID the reviewer's system prompt names, or `unknown`: one trimmed line of at most 200 characters. |
+| `summary` | string | yes | A short assessment. Not blank. |
+| `findings` | array | yes | Its findings, each on an added line of its own files. Empty for a role that only gives dispositions. |
+| `prior_dispositions` | array | yes | Exactly one for each prior finding the role was given; empty when it was given none. |
+| `comment_dispositions` | array | when the role was given review comments | Exactly one for each. |
+
+#### Specialist finding (`specialist-result.findings[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `path` | string | yes | One of the role's files, as its `diff --git` header names it. |
+| `line` | integer | yes | A number shown on an added line of that file in the role's diff. |
+| `severity` | string | yes | One of `MUST_FIX`, `SHOULD_FIX`, `SUGGESTION`, `MUST FIX`, or `SHOULD FIX`; the last two are read as the first two. |
+| `title` | string | yes | A headline: one trimmed line of at most 120 characters. |
+| `category` | string | when the specialists manifest declares `finding_categories` | One of those categories, matched ignoring case. Without them, the role's own category is recorded and this one is not read. |
+| `body` | string | yes | The problem. Not blank. |
+| `analyzer` | object | no | How a diagnostic analyzer could catch it instead. |
+| `repeats` | integer or string | no | The finding it repeats: the 0-based index of another finding in this result, or the ID of a prior finding this result judges `still_present` or `partially_addressed`. At least as severe, and not itself a repeat. |
+
 ### Review record
 
 A review version's JSON record, the archive's source of truth, validated by `validate_record` in `review_records.py` whenever it is written or read.
@@ -433,12 +460,12 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `analyzer` | object | no | How a diagnostic analyzer could catch it instead. |
 | `repeats` | object | no | The finding it repeats, which it is counted with: one in this review, or the first finding of an earlier ledger entry. At least as severe, and not itself a repeat. |
 
-#### Analyzer coverage (`record.findings[].analyzer`)
+#### Analyzer coverage (`record.findings[].analyzer`, `specialist-result.findings[].analyzer`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
 | `coverage` | string | yes | One of `available`, `known`, or `custom-candidate`: a rule in an analyzer the repository already has but does not enforce, a rule in an established analyzer it does not use, or a pattern no rule covers. |
-| `tool` | string | yes | The analyzer: at most 100 characters, with no whitespace, backticks, pipes, or angle brackets. |
+| `tool` | string | yes | The analyzer: at most 100 characters, with no whitespace, backticks, pipes, or angle brackets. In a specialist result, an `available` tool is one the repository's analyzer inventory lists, matched ignoring case, and a `known` one is not. |
 | `rule` | string | yes | The rule, written like `tool`. For `custom-candidate`, a lowercase kebab-case pattern name of at most 60 characters. |
 
 #### Finding reference (`record.findings[].repeats`, `record.ledger[].repeats[]`)
@@ -448,11 +475,11 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `version` | integer | yes | The review version of the finding. |
 | `id` | string | yes | Its finding ID in that version. |
 
-#### Prior disposition (`record.prior_dispositions[]`)
+#### Prior disposition (`record.prior_dispositions[]`, `specialist-result.prior_dispositions[]`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `finding_id` | string | yes | The prior finding: its ledger entry's `v<version>:F<nnn>` in a record with a ledger, or a bare finding ID of the version it compared with in an older record. Unique. |
+| `finding_id` | string | yes | The prior finding: its ledger entry's `v<version>:F<nnn>` in a record with a ledger or a specialist result, or a bare finding ID of the version it compared with in an older record. Unique. |
 | `disposition` | string | yes | One of `addressed`, `partially_addressed`, `still_present`, `superseded`, or `unable_to_verify`. |
 | `rationale` | string | yes | Why. Not blank. |
 
@@ -488,7 +515,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `body` | string | yes | The thread's first comment. |
 | `url` | string | yes | Its web address. |
 
-#### Comment disposition (`record.comment_dispositions[]`)
+#### Comment disposition (`record.comment_dispositions[]`, `specialist-result.comment_dispositions[]`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -530,6 +557,24 @@ The flag store shared by `flag-review-finding` and `review-insights`, validated 
 | `category` | string | yes | Its category. Not blank. |
 | `body` | string | yes | The observation. Not blank. |
 | `resolution` | string or null | yes | How it was resolved; null while open. |
+
+### Review state
+
+The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/code-review/state.json` unless the `CODE_REVIEW_STATE` environment variable names another file, validated by `validate_state` in `review_state.py` whenever it is read or written. A missing file is an empty state. `advance` changes it under the state lock and only ever moves a watermark forward.
+
+#### Review state (`state`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema_version` | integer | yes | One of `1`. |
+| `repositories` | object | yes | Keyed by `owner/repo` identity; each value is a [repository's state](#repository-state-staterepositoriesrepository). |
+
+#### Repository state (`state.repositories.<repository>`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date (`YYYY-MM-DD`; only the first ten characters are read) are eligible. Absent until a batch run first advances it. |
+| `updated_at` | string | no | The date `advance` last moved the watermark. |
 
 ### Legacy review index
 

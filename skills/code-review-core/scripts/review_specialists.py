@@ -51,6 +51,9 @@ SEVERITY = {
 }
 RANK = {"MUST_FIX": 0, "SHOULD_FIX": 1, "SUGGESTION": 2}
 DISPOSITIONS = {"addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"}
+# The fields OUTPUT gives a result and each of its findings; a result with any other is invalid.
+RESULT_FIELDS = {"model", "summary", "findings", "prior_dispositions", "comment_dispositions"}
+FINDING_FIELDS = {"path", "line", "severity", "title", "category", "body", "analyzer", "repeats"}
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 SOURCE_TAG = re.compile(r"^\s*\[[^\]]+\]\s*")
 DEFAULT_GENERIC_INSTRUCTIONS = Path(__file__).resolve().parents[1] / "references" / "generic-reviewer.md"
@@ -1062,6 +1065,10 @@ def _check_finding(
         or finding["severity"] not in SEVERITY
     ):
         raise SpecialistError(f"{name}: finding {index} has an invalid severity")
+    if unlisted := sorted(set(finding) - FINDING_FIELDS):
+        raise SpecialistError(
+            f"{name}: finding {index} has a field the output contract does not list: {', '.join(unlisted)}"
+        )
     line = finding.get("line")
     if not isinstance(finding.get("path"), str) or not isinstance(line, int) or isinstance(line, bool):
         raise SpecialistError(f"{name}: finding {index} needs a path and integer line")
@@ -1072,6 +1079,8 @@ def _check_finding(
     categories = role.get("finding_categories")
     if categories and canonical_category(finding.get("category"), categories) is None:
         raise SpecialistError(f"{name}: finding {index} category must be one of: {', '.join(categories)}")
+    if "category" in finding and not isinstance(finding["category"], str):
+        raise SpecialistError(f"{name}: finding {index} category must be a string")
     if "analyzer" in finding and (error := _analyzer_error(finding["analyzer"], tools)):
         raise SpecialistError(f"{name}: finding {index} analyzer {error}")
     if finding["path"] not in role["files"] or str(line) not in added.get(finding["path"], {}):
@@ -1102,10 +1111,11 @@ def load_role_result(
     # Reported by the reviewer itself, so a run that silently landed on a different model shows in the record.
     if not valid_model(value.get("model")):
         raise SpecialistError(f"{name}: model {MODEL_RULE}; write the model ID your system prompt names")
-    keys = [key for key in ("findings", "comments") if key in value]
-    if len(keys) != 1 or not isinstance(value[keys[0]], list):
-        raise SpecialistError(f"{name}: result needs exactly one findings array")
-    findings = value[keys[0]]
+    if not isinstance(value.get("findings"), list):
+        raise SpecialistError(f"{name}: result needs a findings array")
+    if unlisted := sorted(set(value) - RESULT_FIELDS):
+        raise SpecialistError(f"{name}: result has a field its output contract does not list: {', '.join(unlisted)}")
+    findings = value["findings"]
     for index, finding in enumerate(findings):
         _check_finding(role, index, finding, added, tools)
     dispositions = _role_dispositions(name, value.get("prior_dispositions"), "finding_id", role["prior_ids"], "prior")
