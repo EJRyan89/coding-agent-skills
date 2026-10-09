@@ -3,6 +3,9 @@
     collect  read every open pull request and its reviewed head for the selected repositories into a tracker input file
              (by default in a new temporary directory)
     update   render the owned dashboard section from that file, with every other argument taken from the configuration
+    override list, set, or clear the configuration's `dashboard.status_overrides`, validating the whole configuration
+             before it is written; it reads nothing from GitHub, so a closed pull request's override clears like any
+             other
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures, including a collection in
 which any repository failed, print `FAILED <reason>` as the last line and exit 1; only a usage error exits 2.
@@ -24,13 +27,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from console import use_utf8_output
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
-from review_config import ConfigurationError, default_config_path, load_config, resolve_repositories
+from review_config import (
+    ConfigurationError,
+    default_config_path,
+    load_config,
+    resolve_repositories,
+    validate_config,
+)
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
-from review_io import PersistenceError, atomic_write_json, map_in_order, working_path
+from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import reviewed_head
 from review_records import RecordError, flagged_entries, ledger_history, ledger_id
-from update_pr_tracker import Row, TrackerError, review_candidates, update_dashboard_rows, validate_items
+from update_pr_tracker import (
+    Row,
+    TrackerError,
+    normalize_overrides,
+    normalize_pull_keys,
+    review_candidates,
+    update_dashboard_rows,
+    validate_items,
+)
 
 # One query per page of 50 open pull requests. Nested connections are not paginated: a pull request with more
 # than 100 review requests or participants fails its repository rather than being tracked from partial data.
@@ -283,6 +300,59 @@ def update(
     return dashboard, rows
 
 
+def list_overrides(config_path: Path | None = None) -> dict[str, str]:
+    """The configured status overrides, keyed and trimmed as the tracker matches them."""
+    return normalize_overrides(load_config(config_path)["dashboard"]["status_overrides"])
+
+
+def _pull_key(value: str) -> str:
+    return next(iter(normalize_pull_keys([value], "override")))
+
+
+def override_changes(sets: list[str], clears: list[str]) -> dict[str, str | None]:
+    """Each named pull request's new status, or None to clear its override, keyed as the tracker matches it."""
+    changes: dict[str, str | None] = {}
+    for value in sets:
+        key, separator, status = value.partition("=")
+        if not separator:
+            raise TrackerError(f"Status override {value!r} must be owner/repo#number=status")
+        _add_change(changes, _pull_key(key), status.strip())
+    for value in clears:
+        _add_change(changes, _pull_key(value), None)
+    return changes
+
+
+def _add_change(changes: dict[str, str | None], key: str, status: str | None) -> None:
+    if key in changes:
+        raise TrackerError(f"Status override {key} is named more than once")
+    changes[key] = status
+
+
+def change_overrides(
+    sets: list[str], clears: list[str], *, config_path: Path | None = None
+) -> tuple[Path, dict[str, str | None]]:
+    """Set and clear status overrides in one validated write, changing nothing else in the configuration file.
+
+    The file is rewritten as the user wrote it rather than in `write_config`'s normalized form, which would fill in
+    every default, but it is validated exactly as `review_config.py write` validates it, before and after it is
+    serialized. A change that fails, such as a computed state, a malformed key, or clearing an override that is not
+    set, writes nothing."""
+    path = config_path or default_config_path()
+    changes = override_changes(sets, clears)
+    raw = read_json(path)
+    validate_config(raw)
+    dashboard = raw.setdefault("dashboard", {})
+    current = dashboard.get("status_overrides", {})
+    present = {_pull_key(key) for key in current}
+    missing = [key for key, status in changes.items() if status is None and key not in present]
+    if missing:
+        raise TrackerError(f"No status override for {missing[0]}")
+    kept = {key: status for key, status in current.items() if _pull_key(key) not in changes}
+    dashboard["status_overrides"] = {**kept, **{key: status for key, status in changes.items() if status is not None}}
+    atomic_write_json(path, raw, validator=validate_config)
+    return path, changes
+
+
 def main(arguments: list[str] | None = None, services: Services | None = None) -> int:
     services = services or Services()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -297,8 +367,17 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     update_parser.add_argument("--input", required=True, type=Path)
     update_parser.add_argument("--remove", action="append", default=[], help="owner/repo#number; repeatable")
     update_parser.add_argument("--candidates", action="store_true", help="list missing or stale AI reviews")
+    override_parser = commands.add_parser("override")
+    override_parser.add_argument(
+        "--set", action="append", default=[], dest="sets", metavar="OWNER/REPO#N=STATUS", help="repeatable"
+    )
+    override_parser.add_argument(
+        "--clear", action="append", default=[], dest="clears", metavar="OWNER/REPO#N", help="repeatable"
+    )
     args = parser.parse_args(arguments)
     try:
+        if args.command == "override":
+            return _override(args.sets, args.clears, args.config)
         if args.command == "collect":
             output = working_path(args.output, "update-pr-tracker-input-", "input.json")
             results = collect(
@@ -334,6 +413,20 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {exc}")
         return 1
+
+
+def _override(sets: list[str], clears: list[str], config_path: Path | None) -> int:
+    if not sets and not clears:
+        overrides = list_overrides(config_path)
+        for key, status in sorted(overrides.items()):
+            print(f"OVERRIDE {key} {status}")
+        print(f"OVERRIDES {len(overrides)}")
+        return 0
+    path, changes = change_overrides(sets, clears, config_path=config_path)
+    for key, change in changes.items():
+        print(f"CLEARED {key}" if change is None else f"SET {key} {change}")
+    print(f"WROTE {path}")
+    return 0
 
 
 if __name__ == "__main__":

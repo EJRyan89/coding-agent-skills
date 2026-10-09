@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### update-pr-tracker sets and clears status overrides with a validated command
+
+- Level: minor. An addition: `tracker_pipeline.py override` lists the configuration's `dashboard.status_overrides` (`OVERRIDE <owner/repo#N> <status>`, then `OVERRIDES <n>`), and with `--set owner/repo#N=STATUS` or `--clear owner/repo#N` changes them in one validated write, printing `SET`, `CLEARED`, and `WROTE <configuration>`. It changes nothing else in the file and fills in no default. It refuses a computed state, a malformed key, or clearing an override that is not set, and clears an override whose pull request has closed. `update-pr-tracker` now tells the agent to use it when you ask for a pull request to be shown under a status of your own.
+- Contract: none
+- User action: none
+- Pull request: #250
+
 ### A repository's snapshot_exclude leaves files out of its review snapshot, and a changed one still makes the review INCOMPLETE
 
 - Level: minor. Additive: a repository's entry in the code-review configuration may list `snapshot_exclude`, glob patterns of files to leave out of its source snapshot, such as resources, designer files, and generated reports; without it nothing changes. A matching file is recorded in the snapshot's manifest under `excluded_paths` with the new reason `configured`, on the lazy, whole, and tarball routes alike: it is never written, `source-file` prints `EXCLUDED <path> configured` for it, and `source-search` leaves it out. A changed file it matches is an unavailable source, so that review is `INCOMPLETE`. `validate-reviewer` fails on a pattern that matches a file the reviewer declares, and its `SNAPSHOT` line counts `configured` exclusions. Each record's `review.snapshot` gains `excluded`, the head's paths left out by reason, which the report's Snapshot row and a canary's `STATS` snapshot line show. A previous release refuses a record that has it.
