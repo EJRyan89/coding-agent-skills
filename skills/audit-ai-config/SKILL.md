@@ -1,7 +1,7 @@
 ---
 name: audit-ai-config
 description: "Read-only assessment of a repository's AI agent configuration for Claude Code, Codex, and Copilot that reports findings and never writes files. Use it when asked to audit or check a repository's agent instructions or setup, not to create or change them."
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "Bash(git rev-parse --show-toplevel)", "PowerShell(git rev-parse --show-toplevel)", "Read", "Glob", "AskUserQuestion"]
+allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/audit_ai_config.py\" *)", "Bash(git rev-parse --show-toplevel)", "PowerShell(git rev-parse --show-toplevel)", "Read", "Glob", "AskUserQuestion"]
 ---
 
 # Audit AI Agent Configuration
@@ -51,6 +51,8 @@ Only when the user explicitly authorizes it for a trusted repository, because bo
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/scripts/mcp_handshake.py" --root "<repository root>"
    ```
+
+   The skill does not pre-approve this command, because it starts commands the repository configures, so the user approves it when it runs.
 
    It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so its servers were not checked: report it as a failure, never as "no servers". Pass `--server <name>` to start only one; `FAILED no MCP server named <name>` means none has that name.
 
