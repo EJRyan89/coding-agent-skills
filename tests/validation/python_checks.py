@@ -210,7 +210,7 @@ class PythonChecksPolicies(unittest.TestCase):
             ],
             lint["select"],
         )
-        # Every bandit rule but these two is selected; #90 records why they describe the design rather than a fault.
+        # Every bandit rule but these two is selected; "Python checks" in CONTRIBUTING.md says why.
         for unselected in ("S603", "S607"):
             self.assertEqual([], [prefix for prefix in lint["select"] if unselected.startswith(prefix)], unselected)
         # A finding is fixed, or suppressed on its line with the reason beside it; no rule or file is exempt.
@@ -234,7 +234,7 @@ class PythonChecksPolicies(unittest.TestCase):
         self.assertEqual([], type_ignore_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_complexity_and_statement_thresholds_only_go_down(self) -> None:
-        # #91's ratchet: a pull request may lower these literals with the thresholds, never raise them.
+        # A ratchet: a pull request may lower these literals with the thresholds, never raise them.
         lint = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["ruff"]["lint"]
         self.assertLessEqual(lint["mccabe"]["max-complexity"], 15)
         self.assertLessEqual(lint["pylint"]["max-statements"], 50)
