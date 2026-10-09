@@ -575,6 +575,64 @@ class ToolsTests(TemporaryTestCase):
             self.grants(allowed, body),
         )
 
+    def test_a_script_that_runs_repository_code_is_reported_apart_from_ungranted_commands(self) -> None:
+        # Such a script starts code the target repository configures, so its command must keep prompting: one a
+        # grant covers is reported, and one no grant covers is the intended state rather than a missing grant.
+        skill = self.root / "skill"
+        write(skill / "scripts" / "start.py", 'RUNS_REPOSITORY_CODE = "starts configured servers"\n')
+        write(skill / "scripts" / "empty.py", 'RUNS_REPOSITORY_CODE = ""\n')
+        write(skill / "scripts" / "nested.py", 'def f() -> None:\n    RUNS_REPOSITORY_CODE = "x"\n')
+        write(skill / "scripts" / "broken.py", "RUNS_REPOSITORY_CODE = (\n")
+        write(self.root / "core" / "scripts" / "sibling.py", 'RUNS_REPOSITORY_CODE = "starts a server"\n')
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        body = (
+            "```bash\n"
+            f'{own}start.py" --root "<repository root>"\n'  # 5
+            f'{own}empty.py"\n'  # 6
+            f'{own}nested.py"\n'  # 7
+            f'{own}broken.py"\n'  # 8
+            f'{own}missing.py"\n'  # 9
+            'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/sibling.py"\n'  # 10
+            "```\n"
+        )
+        narrow = json.dumps([f'Bash({own}empty.py")', f'PowerShell({own}empty.py")'])
+        self.assertEqual(
+            [
+                f'REPOSITORY_CODE Bash 5 {own}start.py" --root "<repository root>"',
+                f'REPOSITORY_CODE PowerShell 5 {own}start.py" --root "<repository root>"',
+            ]
+            + [
+                f'UNGRANTED {tool} {number} {own}{name}.py"'
+                for number, name in ((7, "nested"), (8, "broken"), (9, "missing"))
+                for tool in ("Bash", "PowerShell")
+            ]
+            + [
+                'REPOSITORY_CODE Bash 10 python -B "${CLAUDE_SKILL_DIR}/../core/scripts/sibling.py"',
+                'REPOSITORY_CODE PowerShell 10 python -B "${CLAUDE_SKILL_DIR}/../core/scripts/sibling.py"',
+            ],
+            self.repository_code(narrow, body),
+        )
+        wide = json.dumps(["Bash(python -B *)", "PowerShell(python -B *)"])
+        self.assertEqual(
+            [
+                f'GRANTED_REPOSITORY_CODE Bash 5 {own}start.py" --root "<repository root>"',
+                f'GRANTED_REPOSITORY_CODE PowerShell 5 {own}start.py" --root "<repository root>"',
+                'GRANTED_REPOSITORY_CODE Bash 10 python -B "${CLAUDE_SKILL_DIR}/../core/scripts/sibling.py"',
+                'GRANTED_REPOSITORY_CODE PowerShell 10 python -B "${CLAUDE_SKILL_DIR}/../core/scripts/sibling.py"',
+            ],
+            self.repository_code(wide, body),
+        )
+        # Without a shell grant nothing is pre-approved, so the command prompts as it should.
+        self.assertIn(
+            f'REPOSITORY_CODE Bash 5 {own}start.py" --root "<repository root>"', self.repository_code('["Read"]', body)
+        )
+
+    def repository_code(self, allowed: str, body: str) -> list[str]:
+        text = f"---\nallowed-tools: {allowed}\n---\n{body}"
+        code, lines, error = run("tools", str(write(self.root / "skill" / "SKILL.md", text)))
+        self.assertEqual(0, code, error)
+        return [line for line in lines if line.startswith(("UNGRANTED", "REPOSITORY_CODE", "GRANTED_REPOSITORY"))]
+
     def test_grant_patterns_match_as_claude_code_does(self) -> None:
         # Claude Code compares the command's text, quotes included: `*` matches any text, a pattern without one
         # matches exactly, and the legacy `prefix:*` matches the prefix followed by arguments. Claude Code 2.1.288
