@@ -8,11 +8,19 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
 - **Scenarios** live under `tests/fixtures/skill-evals/<skill>/<scenario>/`, which never ships. Each is a code-review
   fixture ("Fixture canaries" in [code-review-operations.md](code-review-operations.md#fixture-canaries)) and a
   `scenario.json` of expectations; `tools/skill_evals.py`'s docstring defines the format.
+- **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
+  re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
+  at least as severe as the entry: a less severe finding on the same line is about another defect, such as a
+  suggestion beside a still-present must-fix, and passes, while restating the entry at its own severity or higher
+  without the link fails, since that is the double counting the ledger exists to prevent.
 - **A run** is the [`evaluate-skill`](../.claude/skills/evaluate-skill/SKILL.md) repository skill, which runs
   `python -B tools/skill_evals.py <skill> --write`. It deploys the checkout into throwaway homes, one per model,
   sets that model on the home's reviewer agent, and runs each scenario through the skill in a headless Claude Code
-  session on the strongest model, so only the reviewers' model varies. A run whose reviewers did not all run on
-  the model counts for nothing.
+  session on the strongest model, so only the reviewers' model varies. The session gets the home's reviewer agent
+  with `--agents`, its hook pointed at the home's reviewer guard, because Claude Code runs no hook of an agent loaded
+  from a folder whose workspace trust was never accepted, which a headless session's never is. A run whose reviewers
+  did not all run on the model counts for nothing, and so does one whose record shows a reviewer the guard did not
+  hold (`files_read` null).
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
   on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 
