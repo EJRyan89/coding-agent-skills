@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -379,6 +381,8 @@ class ToolsTests(TemporaryTestCase):
         cases = {
             'allowed-tools: ["Bash", "Read"]\nmodel: "haiku"': ["MODEL haiku", "ALLOWED Bash", "ALLOWED Read"],
             "allowed-tools: Bash(git status:*), Bash(git add:*) Read": ["MODEL none", "ALLOWED Bash", "ALLOWED Read"],
+            "allowed-tools: Bash(p), PowerShell(p)": ["MODEL none", "ALLOWED Bash", "ALLOWED PowerShell"],
+            "allowed-tools: Bash(echo $(date) now) Read": ["MODEL none", "ALLOWED Bash", "ALLOWED Read"],
             "allowed-tools:\n  - Grep\n  - mcp__srv__find\nmodel: sonnet": [
                 "MODEL sonnet",
                 "ALLOWED Grep",
@@ -528,6 +532,24 @@ class ToolsTests(TemporaryTestCase):
             self.grants('["Bash(git status)", "Bash(ls *)", "PowerShell(ls *)", "PowerShell(gh auth status)"]'),
         )
 
+    def test_each_parenthesized_entry_of_a_plain_scalar_is_its_own_grant(self) -> None:
+        cases = {
+            "Bash(ls *), PowerShell(ls *)": [],
+            "Bash(ls *) PowerShell(ls *), Read": [],
+            "Bash(ls *), PowerShell(git status)": [
+                "UNPAIRED_ALLOWED Bash(ls *)",
+                "UNPAIRED_ALLOWED PowerShell(git status)",
+                "UNGRANTED PowerShell 5 ls x",
+            ],
+            "Bash(echo $(date) *), PowerShell(echo $(date) *)": [
+                "UNGRANTED Bash 5 ls x",
+                "UNGRANTED PowerShell 5 ls x",
+            ],
+        }
+        for allowed, expected in cases.items():
+            with self.subTest(allowed=allowed):
+                self.assertEqual(expected, self.grants(allowed, "```bash\nls x\n```\n"))
+
     def test_commands_no_pattern_grants_are_reported_per_shell(self) -> None:
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
         allowed = json.dumps([f"Bash({own}*)", f"PowerShell({own}*)", "Bash(git rev-parse:*)"])
@@ -648,6 +670,14 @@ class ToolsTests(TemporaryTestCase):
         self.assertEqual(1, len(lines))
         self.assertTrue(lines[0].startswith("FAILED skill file not found"))
 
+    def test_a_file_that_is_not_utf8_text_fails_instead_of_reading_as_empty(self) -> None:
+        for content in ("---\nallowed-tools: Read\n---\ncaf\xe9\n".encode("cp1252"), b"---\n\0\n---\n"):
+            with self.subTest(content=content):
+                skill = write(self.root / "SKILL.md", content)
+                code, lines, error = run("tools", str(skill))
+                self.assertEqual((1, ""), (code, error))
+                self.assertEqual([f"FAILED cannot read {skill.as_posix()}: not UTF-8 text"], lines)
+
 
 class ScanTests(TemporaryTestCase):
     def test_cues_are_reported_with_lines_and_context(self) -> None:
@@ -705,7 +735,7 @@ class ScanTests(TemporaryTestCase):
         code, lines, error = run("scan", str(skill))
         self.assertEqual(0, code, error)
         self.assertEqual(
-            [(1, "loop"), (1, "per-item-command"), (2, "relayed-output"), (6, "subagent-reply")],
+            [(1, "loop"), (1, "per-item-command"), (2, "relayed-output"), (6, "agent"), (6, "subagent-reply")],
             [(int(line.split()[2]), line.split()[3]) for line in lines if line.startswith("CUE ")],
         )
         self.assertEqual(
@@ -717,7 +747,7 @@ class ScanTests(TemporaryTestCase):
         _, lines, _ = run("scan", str(bounded))
         self.assertEqual(
             [f"RUNTIME_PROMPT {bounded.as_posix()} 1 unknown"],
-            lines,
+            [line for line in lines if " agent " not in line],
             "a bounded reply is not flagged, and no earlier command names the writer",
         )
 
@@ -734,6 +764,49 @@ class ScanTests(TemporaryTestCase):
         self.assertEqual(1, len(lines))
         self.assertTrue(lines[0].startswith("FAILED file not found"))
         self.assertIn("absent.md", lines[0])
+
+    def test_a_file_that_is_not_utf8_text_fails_before_any_output(self) -> None:
+        present = write(self.root / "SKILL.md", "For each item.\n")
+        legacy = write(self.root / "legacy.md", "For each caf\xe9.\n".encode("cp1252"))
+        code, lines, error = run("scan", str(present), str(legacy))
+        self.assertEqual((1, ""), (code, error))
+        self.assertEqual([f"FAILED cannot read {legacy.as_posix()}: not UTF-8 text"], lines)
+
+    def test_a_prose_line_naming_a_subagent_is_an_agent_cue(self) -> None:
+        skill = write(
+            self.root / "SKILL.md",
+            "Start one subagent per file, and reply with DONE.\n"  # 1
+            "Read the subagents' notes.\n"  # 2
+            "```text\nsubagent in a fence\n```\n",
+        )
+        _, lines, _ = run("scan", str(skill))
+        self.assertEqual(
+            [(1, "agent"), (2, "agent")],
+            [(int(line.split()[2]), line.split()[3]) for line in lines if line.split()[3] == "agent"],
+        )
+
+
+class InstructionsTests(unittest.TestCase):
+    def test_every_line_the_script_prints_has_a_stated_handling(self) -> None:
+        # The fact names the script prints: a string, or an f-string's leading text, that starts with an upper-case
+        # name followed by a space or ending there. Tool names are data, not facts.
+        printed: set[str] = set()
+        for node in ast.walk(ast.parse(SCRIPT.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.JoinedStr) and node.values and isinstance(node.values[0], ast.Constant):
+                node = node.values[0]
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                match = re.match(r"([A-Z][A-Z0-9]+(?:_[A-Z0-9]+)*)(?: |$)", node.value)
+                if match and match.group(1) not in skill_inventory.KNOWN_TOOLS:
+                    printed.add(match.group(1))
+        self.assertLess({"FAILED", "NO_MAIN", "DECLARED_UNREADABLE", "NO_ALLOWED_TOOLS", "RUNTIME_PROMPT"}, printed)
+        skill = SCRIPT.parents[1]
+        instructions = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (skill / "SKILL.md", skill / "references" / "delegation-and-model.md")
+        )
+        self.assertEqual(
+            [], sorted(name for name in printed if not re.search(rf"`{name}(?:[ `])", instructions)), "unhandled"
+        )
 
 
 class ExitContractTests(TemporaryTestCase):
@@ -757,6 +830,20 @@ class ExitContractTests(TemporaryTestCase):
                 self.assertEqual(2, completed.returncode)
                 self.assertEqual("", completed.stdout)
                 self.assertIn("usage:", completed.stderr)
+
+    def test_output_survives_a_console_that_cannot_encode_it(self) -> None:
+        # A Windows pipe defaults to a legacy code page, and every fact names its file as it is named.
+        skill = write(self.root / "skill → ✓" / "SKILL.md", "For each item.\n")
+        completed = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "scan", str(skill)],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr.decode("utf-8", "replace"))
+        self.assertEqual(
+            [f"CUE {skill.as_posix()} 1 loop For each item."], completed.stdout.decode("utf-8").splitlines()
+        )
 
 
 if __name__ == "__main__":
