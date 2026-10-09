@@ -462,7 +462,15 @@ class StateAndLockTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(state(value), validate_state(state(value)))
         # A week date and the basic form parse as ISO 8601 dates in Python, but the watermark is YYYY-MM-DD.
-        for value in ("not-a-date", "", "2026-3-10", "2026-02-30", "2026-W10-1", "20260310", "２０２６-03-10"):
+        for value in (
+            "not-a-date",
+            "",
+            "2026-3-10",
+            "2026-02-30",
+            "2026-W10-1",
+            "20260310",
+            "\uff12\uff10\uff12\uff16-03-10",
+        ):
             with (
                 self.subTest(value=value),
                 self.assertRaisesRegex(
