@@ -24,7 +24,7 @@ from github_client import CommandResult
 from review_archive import commit_record
 from review_config import load_config, write_config
 from review_flags import add_flag
-from review_github import GitHubClient
+from review_github import GitHubClient, GitHubError
 from review_records import build_record, validate_adapter_result
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -80,6 +80,9 @@ class FakeGitHub:
         self.pages: dict[str, list[str]] = {}
         self.failures: dict[str, tuple[str, str]] = {}
         self.comparisons: dict[tuple[str, str], str] = {}
+        # Raised, as a failed gh call would be, by every ancestry comparison, or by every other comparison and tree.
+        self.ancestry_failure: GitHubError | None = None
+        self.change_failure: GitHubError | None = None
         self.calls: list[list[str]] = []
 
     def __call__(self, arguments: Sequence[str]) -> CommandResult:
@@ -100,8 +103,12 @@ class FakeGitHub:
             commits = arguments[-1].removesuffix("?per_page=1").rsplit("/compare/", 1)[1]
             earlier, _, later = commits.partition("...")
             status = self.comparisons.get((earlier, later))
+            if self.ancestry_failure is not None:
+                raise self.ancestry_failure
             if status:
                 return CommandResult(0, json.dumps({"status": status}), "")
+        elif self.change_failure is not None:
+            raise self.change_failure
         # Comparisons and trees are unavailable, so any changed head is "unknown" to the change detector.
         return CommandResult(1, "", "HTTP 404: Not Found")
 
@@ -377,6 +384,30 @@ class CollectTests(TrackerPipelineFixture):
                 # The limit was waited out with skill-core's bounded backoff before it stopped the collection.
                 self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0], self.waits)
                 self.waits.clear()
+
+    def test_a_failed_ancestry_comparison_fails_its_repository(self) -> None:
+        review_fixture.commit_fixture(self.archive)
+        reviews = [{"state": "COMMENTED", "commit": {"oid": USER_REVIEWED}}]  # not a review's head, so compared
+        node = pull_node(12, headRefOid=review_fixture.HEADS[3], reviews={"nodes": reviews})
+        self.github.pages = {"example/one": [page([node])], "example/two": [page([])]}
+        for kind, expected in (
+            ("api", ["REPOSITORY_FAILED example/one HTTP 502: Bad Gateway", "REPOSITORY example/two pulls=0"]),
+            ("forbidden", ["REPOSITORY_FAILED example/one HTTP 502: Bad Gateway", "REPOSITORY example/two pulls=0"]),
+            ("network", []),  # stops the collection at once
+            ("timeout", []),
+        ):
+            with self.subTest(kind=kind):
+                self.github.ancestry_failure = GitHubError("HTTP 502: Bad Gateway", kind=kind)
+                code, out, err = self.run_main("collect", "--output", str(self.input))
+                self.assertEqual((1, ""), (code, err))
+                summary = (
+                    "FAILED 1 of 2 repositories could not be collected; no input was written and the dashboard "
+                    "keeps its previous rows"
+                    if expected
+                    else "FAILED HTTP 502: Bad Gateway"
+                )
+                self.assertEqual([*expected, summary], out.splitlines())
+                self.assertFalse(self.input.exists())
 
 
 class ExitContractTests(TrackerPipelineFixture):
@@ -675,6 +706,29 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(0, code, err)
         self.assertEqual([f"UPDATED {self.dashboard} rows=3", "GITHUB_CALLS 3"], out.splitlines())
         self.assertNotIn("example/one/pull/1)", self.dashboard.read_text(encoding="utf-8"))
+
+    def test_a_failed_comparison_fails_the_update_instead_of_marking_its_review_stale(self) -> None:
+        self.collect()
+        before = self.dashboard.read_text(encoding="utf-8")
+        for kind in ("forbidden", "sso_partial", "api", "malformed", "network", "timeout"):
+            with self.subTest(kind=kind):
+                self.github.change_failure = GitHubError("GitHub could not compare the commits", kind=kind)
+                code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+                self.assertEqual((1, ""), (code, err))
+                if kind in ("network", "timeout"):  # every call would fail alike, so the update stops at once
+                    expected = ["FAILED GitHub could not compare the commits"]
+                else:
+                    expected = [
+                        "PULL_FAILED example/one#2 GitHub could not compare the commits",
+                        "FAILED 1 of 4 pull requests could not be compared; the dashboard keeps its previous rows",
+                    ]
+                self.assertEqual(expected, out.splitlines())
+                self.assertNotIn("CANDIDATE", out)
+                self.assertEqual(before, self.dashboard.read_text(encoding="utf-8"))
+        self.github.change_failure = GitHubError("HTTP 404: Not Found", kind="not_found")
+        code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+        self.assertEqual(0, code, err)
+        self.assertIn("CANDIDATE stale example/one#2", out.splitlines(), "a missing commit is still unknown")
 
     def test_failed_update_leaves_the_dashboard_untouched(self) -> None:
         self.collect()

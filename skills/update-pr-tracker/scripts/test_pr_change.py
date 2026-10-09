@@ -18,6 +18,7 @@ from pr_change import (
     UNCHANGED,
     UNKNOWN,
     ChangeDetector,
+    ComparisonError,
     at_or_before,
     contribution_fingerprint,
     tree_modes,
@@ -60,8 +61,16 @@ class FakeClient(GitHubClient):
         else:
             value = self.comparisons[endpoint.rsplit("...", 1)[1]]
         if isinstance(value, GitHubError):
+            if allow_absent and value.kind == "not_found":
+                return None
             raise value
         return value
+
+
+# Failures that say nothing about one pull request's commits, so they stop the run.
+RUN_LEVEL_KINDS = ("prerequisite", "execution", "authentication", "rate_limit", "network", "timeout")
+# Failures of one call that are not a missing commit, so its pull request's comparison fails.
+CALL_LEVEL_KINDS = ("forbidden", "sso_partial", "api", "malformed")
 
 
 def detect(before: object, after: object, trees: Mapping[str, object] | None = None) -> str:
@@ -145,13 +154,40 @@ class ChangeDetectorTests(unittest.TestCase):
         self.assertEqual(UNKNOWN, detect(GitHubError("gone", kind="not_found"), after, trees))
 
     def test_run_level_failures_propagate(self) -> None:
-        for kind in ("prerequisite", "authentication", "rate_limit"):
-            with self.subTest(kind=kind), self.assertRaises(GitHubError):
+        for kind in RUN_LEVEL_KINDS:
+            with self.subTest(kind=kind), self.assertRaises(GitHubError) as raised:
                 detect(
                     GitHubError("stop", kind=kind),
                     comparison(),
                     {REVIEWED: tree(comparison()), HEAD: tree(comparison())},
                 )
+            self.assertNotIsInstance(raised.exception, ComparisonError)
+
+    def test_a_failed_call_fails_its_pull_requests_comparison_instead_of_being_unknown(self) -> None:
+        files = comparison(changed("a.py", "b"))
+        for kind in CALL_LEVEL_KINDS:
+            for failed in ("comparison", "tree"):
+                with self.subTest(kind=kind, failed=failed), self.assertRaises(ComparisonError) as raised:
+                    error = GitHubError("HTTP 502: Bad Gateway", kind=kind)
+                    if failed == "comparison":
+                        detect(error, files)
+                    else:
+                        detect(files, files, {REVIEWED: tree(files), HEAD: error})
+                self.assertEqual("owner/repo#7", raised.exception.pull)
+                self.assertEqual("HTTP 502: Bad Gateway", raised.exception.reason)
+                self.assertEqual("owner/repo#7 HTTP 502: Bad Gateway", str(raised.exception))
+
+    def test_a_failed_read_ahead_is_reported_by_its_detection_alone_and_never_read_again(self) -> None:
+        files = comparison(changed("a.py", "b"))
+        other = "e" * 40
+        client = FakeClient({REVIEWED: GitHubError("HTTP 403", kind="forbidden"), HEAD: files, other: files})
+        detector = ChangeDetector(client)
+        detector.prefetch([("owner/repo", "main", REVIEWED, HEAD), ("owner/repo", "main", other, HEAD)])
+        calls = list(client.calls)
+        self.assertEqual(UNCHANGED, detector.detect("owner/repo", 8, "main", other, HEAD))
+        with self.assertRaisesRegex(ComparisonError, "^owner/repo#7 HTTP 403$"):
+            detector.detect("owner/repo", 7, "main", REVIEWED, HEAD)
+        self.assertEqual(calls, client.calls, "the failure is kept, not read again")
 
     def test_requests_are_url_quoted_and_cached(self) -> None:
         files = comparison(changed("a.py", "1"))
@@ -335,6 +371,8 @@ class AncestryTests(unittest.TestCase):
         def api_json(self, endpoint: str, *, paginate: bool = False, allow_absent: bool = False) -> Any:
             self.calls.append(endpoint)
             if isinstance(self.answer, GitHubError):
+                if allow_absent and self.answer.kind == "not_found":
+                    return None
                 raise self.answer
             return self.answer
 
@@ -353,9 +391,10 @@ class AncestryTests(unittest.TestCase):
                 self.assertIs(expected, at_or_before(client, "owner/repo", REVIEWED, HEAD))
                 self.assertEqual([f"repos/owner/repo/compare/{REVIEWED}...{HEAD}?per_page=1"], client.calls)
 
-    def test_a_fatal_failure_stops_the_run(self) -> None:
-        with self.assertRaises(GitHubError):
-            at_or_before(self.Client(GitHubError("rate limit", kind="rate_limit")), "owner/repo", REVIEWED, HEAD)
+    def test_any_failure_but_a_missing_commit_is_raised(self) -> None:
+        for kind in (*RUN_LEVEL_KINDS, *CALL_LEVEL_KINDS):
+            with self.subTest(kind=kind), self.assertRaises(GitHubError):
+                at_or_before(self.Client(GitHubError("stop", kind=kind)), "owner/repo", REVIEWED, HEAD)
 
 
 if __name__ == "__main__":
