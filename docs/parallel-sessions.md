@@ -121,10 +121,15 @@ With the guard enabled:
 - **File tools.** `Edit`, `Write`, `MultiEdit`, or `NotebookEdit` is refused when its target lies in the hub.
   This applies whichever session asks, so a worktree session that writes to a hub path by absolute path is also
   stopped. Gitignored files, such as `.claude/settings.local.json`, are exempt.
-- **Refused git commands.** Any of the following that would run in the hub:
-  - `add`, `am`, `apply`, `bisect`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
-  - `merge`, `mv`, `pull`, `read-tree`, `rebase`, `reset`, `restore`, `revert`, `rm`
-  - `sparse-checkout`, `stash`, `submodule update`, `switch`, `symbolic-ref`, `update-index`, `update-ref`
+- **Refused git commands.** Any of the following that would run in the hub, because some subcommand or option of
+  each can move `HEAD` or the branch it names, or write the index or tracked files. A command that writes only
+  objects, other refs (`fetch`, `notes`, `replace`, `tag`), or other worktrees (`worktree`) is not refused.
+  - `add`, `am`, `apply`, `bisect`, `branch`, `checkout`, `checkout-index`, `cherry-pick`, `clean`, `commit`
+  - `fast-import`, `filter-branch`, `history`, `merge`, `merge-file`, `merge-index`, `merge-one-file`, `mv`
+  - `pull`, `read-tree`, `rebase`, `replay`, `rerere`, `reset`, `restore`, `revert`, `rm`, `sparse-checkout`
+  - `stage`, `stash`, `submodule`, `switch`, `symbolic-ref`, `update-index`, `update-ref`
+  - the interactive tools `citool`, `difftool`, `gitk`, `gui`, and `mergetool`
+  - the importers `archimport`, `cvsimport`, `p4`, `quiltimport`, and `svn`
 - **Still allowed in the hub.** Only these forms of a refused command, which keep the hub on `main` and current:
   - `switch main` and `checkout main`, optionally with `-q`
   - `merge --ff-only origin/main`, and `pull --ff-only` with no target or with `origin main`; besides
@@ -132,7 +137,10 @@ With the guard enabled:
     any other target is refused with a reason that names it
   - `stash list` and `stash show`
   - `apply --check`
-  - `submodule` with any subcommand other than `update`
+  - `submodule` with no subcommand, `submodule status`, and `submodule summary`; every other subcommand, `foreach`
+    included, is refused
+  - `branch` without `-m`, `-M`, or `--move`, which rename a branch, `HEAD`'s own included; an abbreviated
+    `--move` or a bundle such as `-fm` counts as one
 - **Aliases.** A subcommand that is not refused itself may be one of your git aliases, so the guard reads it
   with `git config --get alias.<name>` in the hub and judges what it runs, through further aliases. A shell
   alias (`!...`) is read as Bash from the top of the hub. An alias that cannot be read, nests more than four

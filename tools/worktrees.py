@@ -38,29 +38,54 @@ GUARD_SETTING = "coding-agent-skills.hubGuard"
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 FILE_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 SEPARATOR_CHARACTERS = set(";&|()\n")
-# Git subcommands that move HEAD, or write the index or working tree, of the checkout they run in.
+# Git subcommands that can move HEAD or the branch it names, or write the index or the tracked files of the
+# checkout they run in, whichever subcommand or option makes them do it: the plumbing and porcelain that do, the
+# interactive tools that can (difftool and mergetool, gitk, gui, citool), and the importers that commit and check
+# out (archimport, cvsimport, p4, quiltimport, svn). A subcommand that writes only objects, refs other than HEAD's
+# branch (fetch, notes, replace, tag), or other worktrees (worktree) is not here; git itself refuses to fetch into
+# the checked-out branch without --update-head-ok, an option it reserves for git pull.
 WRITING_SUBCOMMANDS = {
     "add",
     "am",
     "apply",
+    "archimport",
     "bisect",
+    "branch",
     "checkout",
     "checkout-index",
     "cherry-pick",
+    "citool",
     "clean",
     "commit",
+    "cvsimport",
+    "difftool",
+    "fast-import",
+    "filter-branch",
+    "gitk",
+    "gui",
+    "history",
     "merge",
+    "merge-file",
+    "merge-index",
+    "merge-one-file",
+    "mergetool",
     "mv",
+    "p4",
     "pull",
+    "quiltimport",
     "read-tree",
     "rebase",
+    "replay",
+    "rerere",
     "reset",
     "restore",
     "revert",
     "rm",
     "sparse-checkout",
+    "stage",
     "stash",
     "submodule",
+    "svn",
     "switch",
     "symbolic-ref",
     "update-index",
@@ -69,6 +94,8 @@ WRITING_SUBCOMMANDS = {
 # The only fast-forwards the hub takes: a subcommand's words besides FAST_FORWARD_OPTIONS must be one of these.
 FAST_FORWARD_TARGETS = {"merge": [["origin/main"]], "pull": [[], ["origin", "main"]]}
 FAST_FORWARD_OPTIONS = {"--ff-only", "-q", "--quiet", "-v", "--verbose", "--no-rebase"}
+# The submodule subcommands that only read; no subcommand at all means status. foreach runs any command.
+READ_SUBMODULE = {None, "status", "summary"}
 # git's own options that take the next word as their value.
 GIT_OPTIONS_WITH_VALUE = {"-C", "-c", "--config-env", "--git-dir", "--namespace", "--super-prefix", "--work-tree"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -477,7 +504,26 @@ def allowed_form(subcommand: str, arguments: list[str]) -> bool:
     if subcommand == "apply":
         return "--check" in arguments
     if subcommand == "submodule":
-        return next((argument for argument in arguments if not argument.startswith("-")), None) != "update"
+        return next((argument for argument in arguments if not argument.startswith("-")), None) in READ_SUBMODULE
+    if subcommand == "branch":
+        return not renames_a_branch(arguments)
+    return False
+
+
+def renames_a_branch(arguments: list[str]) -> bool:
+    """Whether git branch is asked to move a branch, which renames HEAD's own when it names none or that one.
+
+    git takes a unique prefix of a long option and a bundle of short ones, so --mov and -fm both move.
+    """
+    for argument in arguments:
+        if argument == "--":
+            return False
+        if argument.startswith("--"):
+            name = argument[2:].split("=", 1)[0]
+            if len(name) >= 2 and "move".startswith(name):
+                return True
+        elif argument.startswith("-") and {"m", "M"} & set(argument[1:]):
+            return True
     return False
 
 
