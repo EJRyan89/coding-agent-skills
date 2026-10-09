@@ -60,7 +60,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. A fix with an addition to the ownership manifest that the previous release still reads: each skill's manifest entry gains `agent_deps`, the agent files it was deployed with, and a deployment that leaves a locally modified skill in place, deselected, skipped, or preserved by an uninstall, keeps those agents and reports them as `KEEP`, as it already kept the skill's shared assets. Before, the agent was removed as `no selected skill needs it` while the preserved skill still started it. `MANIFEST_VERSION` stays 7; a previous release ignores `agent_deps` and drops it when it rewrites the entry.
 - Contract: `deployer/manifest.py`
 - User action: none. An installation updated across this change records a skill's agents at the next deployment that selects the skill and finds it unmodified; until then a preserved skill keeps no agent.
-- Pull request: #270
+- Pull request: #303
 
 ## v0.4.0
 
