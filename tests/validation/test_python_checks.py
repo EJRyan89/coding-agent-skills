@@ -23,6 +23,7 @@ from python_checks import (
     mypy_path_problems,
     mypy_type_check,
     noqa_without_reason,
+    python_suppression_problems,
     ruff_format_check,
     ruff_lint_check,
     type_check_skill_roots,
@@ -238,6 +239,51 @@ class PythonChecksFixtures(unittest.TestCase):
                     "module.py:3 suppresses C901 and PLR0915; split the function instead",
                 ],
                 ceiling_noqa(root, [root / "module.py"]),
+            )
+
+    def test_suppression_scan_refuses_file_and_region_exemptions_and_extra_ruff_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            # Each comment is assembled so this file does not carry the comments it tests.
+            files = {
+                "pyproject.toml": "[tool.ruff]\n",
+                "skills/alpha/scripts/pyproject.toml": "[tool.ruff]\n",
+                "tools/ruff.toml": "line-length = 200\n",
+                "tests/.ruff.toml": "line-length = 200\n",
+                "skills/alpha/scripts/module.py": "\n".join(
+                    [
+                        "# my" + "py: ignore-errors",
+                        "# ru" + "ff: noqa",
+                        "# fla" + "ke8: noqa",
+                        "# is" + "ort: skip_file",
+                        "TABLE = [1,2]  # f" + "mt: skip",
+                        "# f" + "mt: off",
+                        "# ya" + "pf: disable",
+                        "import sys  # no" + "qa: F401 - imported for its effect",
+                        "# the mypy run and a fmt call are described here, not configured",
+                        'TEXT = "# my' + 'py: ignore-errors"',
+                        "",
+                    ]
+                ),
+            }
+            write_fixture_tree(root, files)
+            module = "skills/alpha/scripts/module.py"
+            fix = "; fix each finding at its cause"
+            self.assertEqual(
+                [
+                    f"{module}:1 turns a check off with '# my" + f"py:'{fix}",
+                    f"{module}:2 turns a check off with '# ru" + f"ff: noqa'{fix}",
+                    f"{module}:3 turns a check off with '# fla" + f"ke8: noqa'{fix}",
+                    f"{module}:4 turns a check off with '# is" + f"ort: skip_file'{fix}",
+                    f"{module}:5 turns a check off with '# f" + f"mt: skip'{fix}",
+                    f"{module}:6 turns a check off with '# f" + f"mt: off'{fix}",
+                    f"{module}:7 turns a check off with '# ya" + f"pf: disable'{fix}",
+                    "skills/alpha/scripts/pyproject.toml configures ruff; pyproject.toml at the repository root is its "
+                    "one configuration",
+                    "tests/.ruff.toml configures ruff; pyproject.toml at the repository root is its one configuration",
+                    "tools/ruff.toml configures ruff; pyproject.toml at the repository root is its one configuration",
+                ],
+                python_suppression_problems(root, [root / name for name in files]),
             )
 
     def test_issue_number_scan_reads_comments_and_docstrings_only(self) -> None:

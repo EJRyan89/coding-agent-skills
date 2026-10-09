@@ -406,6 +406,42 @@ def static_markdown_shell_check(root: Path = REPOSITORY_ROOT) -> None:
     markdown_shell_check(root, repository_files(root))
 
 
+# A ShellCheck directive that disables a check. The header deployer/render.py adds to the command examples it
+# extracts is the one sanctioned suppression, and it lives in that Python module, never in a Bash file or fence.
+SHELLCHECK_DISABLE = re.compile(r"^[ \t]*#[ \t]*shellcheck[ \t][^\n]*\bdisable[ \t]*=", re.IGNORECASE | re.MULTILINE)
+# PSScriptAnalyzer's suppression attribute, under any of the names PowerShell resolves to it.
+SUPPRESS_MESSAGE = re.compile(r"\[\s*(?:[\w.]+\.)?SuppressMessage(?:Attribute)?\s*\(", re.IGNORECASE)
+# Configuration files ShellCheck and PSScriptAnalyzer find on their own, which could disable a rule for every file.
+SHELL_CONFIGURATION_FILES = frozenset({".shellcheckrc", "shellcheckrc", "psscriptanalyzersettings.psd1"})
+
+
+def shell_suppression_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each ShellCheck disable directive in a Bash file or a Markdown Bash fence, each SuppressMessageAttribute in a
+    .ps1 file or a Markdown PowerShell fence, and each ShellCheck or PSScriptAnalyzer configuration file."""
+    found: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.name.casefold() in SHELL_CONFIGURATION_FILES:
+            found.append(f"{name} configures {'ShellCheck' if 'shellcheck' in path.name else 'PSScriptAnalyzer'}")
+            continue
+        if path.suffix.casefold() not in {".sh", ".bash", ".ps1", ".md"}:
+            continue
+        for context, start, text in _shell_units(path):
+            pattern, what = (
+                (SHELLCHECK_DISABLE, "a ShellCheck disable directive")
+                if context == "shell"
+                else (SUPPRESS_MESSAGE, "SuppressMessageAttribute")
+            )
+            found += [
+                f"{name}:{start + text.count(chr(10), 0, match.start())} suppresses a rule with {what}"
+                for match in pattern.finditer(text)
+            ]
+    return [f"{problem}; fix the cause instead" for problem in found]
+
+
 class ShellTargetsPolicies(unittest.TestCase):
     def test_shell_tokens_are_quoted_and_executed_by_a_fixture(self) -> None:
         self.assertEqual([], shell_token_problems(REPOSITORY_ROOT))
+
+    def test_repository_suppresses_no_shellcheck_or_psscriptanalyzer_rule(self) -> None:
+        self.assertEqual([], shell_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))

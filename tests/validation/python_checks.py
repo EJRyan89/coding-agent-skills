@@ -85,6 +85,38 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
     return found
 
 
+# A comment that turns a check off for a file or a region instead of one finding on its line: mypy's inline
+# configuration, such as ignore-errors; ruff's file-level noqa, which it also reads in flake8's spelling; an isort
+# skip, which ruff's import rules honor; and the formatter's off and skip markers.
+PYTHON_SUPPRESSION = re.compile(
+    r"#\s*(?:mypy:|(?:ruff|flake8):\s*noqa\b|(?:ruff:\s*)?isort:\s*(?:skip_file|off)\b|fmt:\s*(?:off|skip)\b"
+    r"|yapf:\s*disable\b)",
+    re.IGNORECASE,
+)
+# ruff reads its configuration from the nearest of these to each file, so one anywhere but the root's pyproject.toml
+# would replace the rule set validation pins for every file beneath it.
+RUFF_CONFIGURATION_FILES = frozenset({"ruff.toml", ".ruff.toml", "pyproject.toml"})
+
+
+def python_suppression_problems(root: Path, files: list[Path]) -> list[str]:
+    """Each comment that turns a Python check off beyond one finding on its line, and each ruff configuration file
+    other than the root's pyproject.toml."""
+    found: list[str] = []
+    for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
+        name = path.relative_to(root).as_posix()
+        if path.name in RUFF_CONFIGURATION_FILES and name != "pyproject.toml":
+            found.append(f"{name} configures ruff; pyproject.toml at the repository root is its one configuration")
+        if path.suffix != ".py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        found += [
+            f"{name}:{token.start[0]} turns a check off with {match.group(0)!r}; fix each finding at its cause"
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT and (match := PYTHON_SUPPRESSION.search(token.string))
+        ]
+    return found
+
+
 def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     """Each `# type: ignore` comment that does not name its codes and state its reason after them, as path:line."""
     found: list[str] = []
@@ -308,6 +340,9 @@ class PythonChecksPolicies(unittest.TestCase):
 
     def test_repository_has_no_noqa_without_a_reason(self) -> None:
         self.assertEqual([], noqa_without_reason(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
+
+    def test_repository_turns_no_python_check_off(self) -> None:
+        self.assertEqual([], python_suppression_problems(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
 
     def test_repository_suppresses_neither_ceiling(self) -> None:
         self.assertEqual([], ceiling_noqa(REPOSITORY_ROOT, repository_files(REPOSITORY_ROOT)))
