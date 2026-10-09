@@ -486,6 +486,13 @@ def record_fixtures() -> list[dict[str, Any]]:
     initial = build_record(
         _record_request(
             "initial",
+            adapter={
+                "name": "generic",
+                "scope": "generic",
+                "source": "generic-fallback",
+                "source_commit": None,
+                "source_hashes": {},
+            },
             head_ref="feature/boundary",
             unavailable_sources=["assets/large.txt"],
             uncovered_files=["build/settings.props"],
@@ -555,6 +562,7 @@ def record_fixtures() -> list[dict[str, Any]]:
             adapter={
                 "name": "one-review",
                 "scope": "repository",
+                "source": "default-branch",
                 "source_commit": "c" * 40,
                 "source_hashes": {".claude/skills/review/SKILL.md": "e" * 64},
             },

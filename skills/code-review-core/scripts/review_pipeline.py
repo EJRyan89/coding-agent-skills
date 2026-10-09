@@ -113,7 +113,14 @@ from review_records import (
     validate_adapter_result,
     validate_record,
 )
-from review_reviewers import inspect_configured_skill, manifest_location, repository_files, resolve_reviewer
+from review_reviewers import (
+    MissingSkillError,
+    ResolvedReviewer,
+    inspect_configured_skill,
+    manifest_location,
+    repository_files,
+    resolve_reviewer,
+)
 from review_runtime import (
     MAX_SOURCE_SNAPSHOT_BYTES,
     RUNTIME_CAPABILITIES,
@@ -564,6 +571,105 @@ def _retake_snapshot(
     return snapshot
 
 
+def _generic_reviewer(runtime: str, inline: bool, source: str) -> tuple[str, dict[str, Any], None, None, str]:
+    """The suite's generic reviewer, as `_materialize_reviewer` returns it: `source` is `generic` when the repository
+    is configured with it, and `generic-fallback` when it reviews in place of a repository reviewer."""
+    dispatch = choose_dispatch(runtime, "generic", inline=inline)
+    # The suite's own role needs agent delegation only when a subagent works it.
+    negotiate_capabilities(runtime, ["agent-delegation"] if dispatch == "subagents" else [], dispatch=dispatch)
+    adapter: dict[str, Any] = {
+        "name": "generic",
+        "scope": "generic",
+        "source": source,
+        "source_commit": None,
+        "source_hashes": {},
+    }
+    return "generic", adapter, None, None, dispatch
+
+
+def _default_branch_tip(checkout: Path, services: Services) -> tuple[str, str]:
+    """origin's default branch and the commit at its tip, as origin reports them now.
+
+    The checkout's origin is the configured repository, so its default branch holds only what the repository merged.
+    """
+    result = _git(checkout, services.git, "ls-remote", "--symref", "origin", "HEAD")
+    if result.returncode != 0:
+        reason = result.stderr.strip() or "git ls-remote failed"
+        raise PipelineError(f"Cannot read origin's default branch: {reason}")
+    branch, tip = "", ""
+    for line in result.stdout.splitlines():
+        value, _, ref = line.partition("\t")
+        if ref != "HEAD":
+            continue
+        if value.startswith("ref: refs/heads/"):
+            branch = value.removeprefix("ref: refs/heads/")
+        elif re.fullmatch(r"[0-9a-fA-F]{40,64}", value):
+            tip = value.lower()
+    if not tip:
+        raise PipelineError("Cannot read origin's default branch: origin names no default branch")
+    return branch, tip
+
+
+def _resolve_reviewer_source(
+    reviewer: dict[str, Any],
+    *,
+    checkout: Path,
+    pull: dict[str, Any],
+    config_path: Path,
+    repository: str,
+    services: Services,
+    notes: list[str],
+) -> tuple[str, str, ResolvedReviewer] | None:
+    """Where a repository reviewer is read from: `trusted-ref` or `base`, the commit, and what it resolved to there.
+
+    A configured skill the base predates, with no trusted ref, is read from the default branch's tip instead
+    (`default-branch`). None, with a note, when the tip lacks it too or is the pull request's head: the suite's
+    generic reviewer then reviews the pull request, since the head never supplies its own reviewer.
+    """
+    head, base = pull["headRefOid"].lower(), pull["baseRefOid"]
+    source = "trusted-ref" if reviewer["trusted_ref"] else "base"
+    commit = resolve_reviewer_commit(checkout, reviewer["trusted_ref"] or base, head_sha=head, runner=services.git)
+    resolve = functools.partial(
+        resolve_reviewer,
+        reviewer,
+        checkout=checkout,
+        config_path=config_path,
+        repository=repository,
+        runner=services.git,
+    )
+    try:
+        return source, commit, resolve(commit=commit)
+    except MissingSkillError:
+        if source != "base":
+            raise
+    skill = reviewer["skill"]
+    name, tip = _default_branch_tip(checkout, services)
+    branch = name or "origin's default branch"
+    if tip == head:
+        notes.append(
+            f"The base {commit[:12]} predates the review skill {skill}, and {branch}'s tip is this pull request's "
+            "head, which never supplies its own reviewer, so the suite's generic reviewer reviews this pull request."
+        )
+        return None
+    if tip != commit:
+        ensure_local_commit(checkout, tip, f"refs/heads/{name}" if name else "HEAD", services.git)
+        try:
+            resolved = resolve(commit=tip)
+        except MissingSkillError:
+            pass
+        else:
+            notes.append(
+                f"The base {commit[:12]} predates the review skill {skill}, so the reviewer was read from {branch}'s "
+                f"tip {tip[:12]}."
+            )
+            return "default-branch", tip, resolved
+    notes.append(
+        f"Neither the base {commit[:12]} nor {branch}'s tip {tip[:12]} has the review skill {skill}, so the suite's "
+        "generic reviewer reviews this pull request."
+    )
+    return None
+
+
 def _materialize_reviewer(
     reviewer: dict[str, Any],
     *,
@@ -582,31 +688,22 @@ def _materialize_reviewer(
     entrypoint, and how its roles are dispatched. The suite's generic reviewer has no root and no entrypoint, and
     neither has a specialists manifest."""
     if reviewer["scope"] == "generic":
-        dispatch = choose_dispatch(runtime, "generic", inline=inline)
-        # The suite's own role needs agent delegation only when a subagent works it.
-        negotiate_capabilities(runtime, ["agent-delegation"] if dispatch == "subagents" else [], dispatch=dispatch)
-        return (
-            "generic",
-            {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
-            None,
-            None,
-            dispatch,
-        )
+        return _generic_reviewer(runtime, inline, "generic")
     if checkout is None:  # validate_config requires a checkout for a repository reviewer
         raise PipelineError(f"{repository} has a repository reviewer but no checkout_path")
-    head = pull["headRefOid"]
     ensure_local_commit(checkout, pull["baseRefOid"], f"refs/heads/{pull['baseRefName']}", services.git)
-    reviewer_commit = resolve_reviewer_commit(
-        checkout, reviewer["trusted_ref"] or pull["baseRefOid"], head_sha=head, runner=services.git
-    )
-    resolved = resolve_reviewer(
+    found = _resolve_reviewer_source(
         reviewer,
         checkout=checkout,
-        commit=reviewer_commit,
+        pull=pull,
         config_path=config_path,
         repository=repository,
-        runner=services.git,
+        services=services,
+        notes=notes,
     )
+    if found is None:
+        return _generic_reviewer(runtime, inline, "generic-fallback")
+    source, reviewer_commit, resolved = found
     manifest = resolved.manifest
     if resolved.inspection is not None and resolved.source == "skill" and resolved.inspection.delegates == "unknown":
         notes.append(
@@ -632,6 +729,7 @@ def _materialize_reviewer(
     adapter = {
         "name": manifest["id"],
         "scope": "repository",
+        "source": source,
         "source_commit": reviewer_commit,
         "source_hashes": hashes,
     }

@@ -40,6 +40,7 @@ from review_flags import add_flag
 from review_github import GitHubClient
 from review_operation import ReviewOperationError
 from review_records import build_record, validate_adapter_result
+from review_reviewers import MissingSkillError
 from review_runtime import RuntimeContractError
 from review_specialists import parse_unified_diff, patch_fingerprints
 
@@ -126,8 +127,11 @@ BASE_FILES = {
     # Grants neither, so it starts no subagents.
     "review/plain.md": "---\nname: plain\ntools: Read\n---\n\nReview the change against review/rules.md.\n",
 }
+# A review skill the base predates, which only the trusted ref, standing in for the default branch's tip, holds.
+LATE_SKILL = "---\nname: late\ntools: Read\n---\n\nReview the change against review/rules.md.\n"
 TRUSTED_FILES = {
     "review/rules.md": "Trusted rules\n",
+    "review/late.md": LATE_SKILL,
     "review/python-guide.md": "Trusted guide\n",
     # A specialist whose condition opens review/rules.md under the snapshot, which the pull request leaves unchanged.
     "review/conditional.json": specialists(when="has-rules"),
@@ -903,7 +907,13 @@ READS = [
     ("get_pull", REPOSITORY, NUMBER),
     ("list_open_review_threads", REPOSITORY, NUMBER),
 ]
-GENERIC_ADAPTER: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
+GENERIC_ADAPTER: dict[str, Any] = {
+    "name": "generic",
+    "scope": "generic",
+    "source": "generic",
+    "source_commit": None,
+    "source_hashes": {},
+}
 
 
 def g(*arguments: str) -> tuple[str, ...]:
@@ -1890,6 +1900,7 @@ def specialist_state(**changes: Any) -> dict[str, Any]:
         adapter={
             "name": "fixture-specialists",
             "scope": "repository",
+            "source": "base",
             "source_commit": "<base>",
             "source_hashes": SPECIALIST_HASHES,
         },
@@ -1918,7 +1929,13 @@ def entrypoint_state(
     return state(
         kind="entrypoint",
         reviewer_root="<root>/run/reviewer",
-        adapter={"name": identity, "scope": "repository", "source_commit": "<base>", "source_hashes": hashes},
+        adapter={
+            "name": identity,
+            "scope": "repository",
+            "source": "base",
+            "source_commit": "<base>",
+            "source_hashes": hashes,
+        },
         roles=[
             {"id": identity, "prompt_file": "<root>/run/reviewer.prompt.md", "result_file": "<root>/run/result.json"}
         ],
@@ -2049,6 +2066,7 @@ class RepositoryReviewerTests(PrepareFixture):
             {
                 "name": "fixture-specialists",
                 "scope": "repository",
+                "source": "trusted-ref",
                 "source_commit": "<trusted>",
                 "source_hashes": hashes,
             },
@@ -2256,6 +2274,158 @@ class RepositoryReviewerTests(PrepareFixture):
         result, _ = self.prepare(host="copilot-cli")
         self.assertEqual(("copilot-cli", "generic", "inline"), (result["runtime"], result["kind"], result["dispatch"]))
         self.assertEqual({}, result["dispatched_at"], "next-role hands out and times each inline role")
+
+
+class ReviewerFallbackTests(PrepareFixture):
+    """A review skill the pull request's base predates, with no trusted ref: read from the default branch's tip as
+    origin reports it, or, when the tip lacks it too or is the head itself, replaced by the suite's generic reviewer.
+    The head never supplies it."""
+
+    LS_REMOTE = ("ls-remote", "--symref", "origin", "HEAD")
+
+    def skill(self, path: str, trusted_ref: str | None = None) -> None:
+        self.configure(
+            {**self.repository("unused", trusted_ref=trusted_ref), "id": "team", "manifest_path": None, "skill": path}
+        )
+
+    def tip(self, commit: str) -> None:
+        """origin's default branch is main, at `commit`."""
+        self.git.answers[self.LS_REMOTE] = [GitResult(0, f"ref: refs/heads/main\tHEAD\n{commit}\tHEAD\n", "")]
+
+    def reviewer_calls(self) -> list[tuple[str, ...]]:
+        return self.git.calls[len(LOCAL_SNAPSHOT) :]
+
+    def test_a_skill_the_base_predates_is_read_from_the_default_branch_tip(self) -> None:
+        self.skill("review/late.md")
+        self.tip(self.commits["trusted"])
+        result, printed = self.prepare()
+        note = (
+            "The base <base12> predates the review skill review/late.md, so the reviewer was read from main's tip "
+            "<trusted12>."
+        )
+        hashes = {"review/late.md": sha(LATE_SKILL), "review/rules.md": sha("Trusted rules\n")}
+        expected = entrypoint_state("team", hashes, notes=[LINK_NOTE, note])
+        expected["adapter"] = {**expected["adapter"], "source": "default-branch", "source_commit": "<trusted>"}
+        self.assertEqual(({"status": "ready", "run": "<root>/run", **expected}, ""), (result, printed))
+        self.assertEqual(expected, self.json_file("run.json"))
+        self.assertEqual(LATE_SKILL, self.text_file("reviewer/review/late.md"))
+        self.assertEqual("Trusted rules\n", self.text_file("reviewer/review/rules.md"))
+        self.assertEqual(
+            [
+                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "<base>^{commit}"),
+                g("ls-tree", "-r", "--name-only", "-z", "<base>"),
+                g(*self.LS_REMOTE),
+                g("cat-file", "-e", "<trusted>^{commit}"),
+                g("ls-tree", "-r", "--name-only", "-z", "<trusted>"),
+                g("ls-tree", "<trusted>", "--", "review/late.md"),
+                g("show", "<trusted>:review/late.md"),
+                g("rev-parse", "--verify", "<base>^{commit}"),
+                g("ls-tree", "<trusted>", "--", "review/late.md"),
+                g("show", "<trusted>:review/late.md"),
+                g("ls-tree", "<trusted>", "--", "review/rules.md"),
+                g("show", "<trusted>:review/rules.md"),
+            ],
+            self.reviewer_calls(),
+        )
+
+    def test_a_tip_that_is_not_local_is_fetched_by_its_branch(self) -> None:
+        self.skill("review/late.md")
+        self.tip(self.commits["trusted"])
+        tip = ("cat-file", "-e", "<trusted>^{commit}")
+        fetch = ("fetch", "--no-tags", "--quiet", "origin", "refs/heads/main")
+        self.git.answers.update({tip: [failed(), failed()], fetch: [GitResult(0, "", "")]})
+        result, _ = self.prepare()
+        self.assertEqual(
+            ("default-branch", "<trusted>"), (result["adapter"]["source"], result["adapter"]["source_commit"])
+        )
+        self.assertEqual([g(*tip), g(*tip), g(*fetch), g(*tip)], self.reviewer_calls()[4:8])
+
+    def test_a_skill_neither_the_base_nor_the_tip_has_runs_the_generic_reviewer(self) -> None:
+        self.skill("review/missing.md")
+        self.tip(self.commits["trusted"])
+        result, printed = self.prepare()
+        note = (
+            "Neither the base <base12> nor main's tip <trusted12> has the review skill review/missing.md, so the "
+            "suite's generic reviewer reviews this pull request."
+        )
+        expected = state(adapter={**GENERIC_ADAPTER, "source": "generic-fallback"}, notes=[LINK_NOTE, note])
+        self.assertEqual(({"status": "ready", "run": "<root>/run", **expected}, ""), (result, printed))
+        self.assertEqual(expected, self.json_file("run.json"))
+        self.assertEqual(run_files(), self.files(), "nothing of a repository reviewer is materialized")
+
+    def test_a_tip_at_the_base_is_not_read_again(self) -> None:
+        self.skill("review/late.md")
+        self.tip(self.base)
+        result, _ = self.prepare()
+        self.assertEqual("generic-fallback", result["adapter"]["source"])
+        self.assertEqual(
+            [
+                g("cat-file", "-e", "<base>^{commit}"),
+                g("rev-parse", "--verify", "<base>^{commit}"),
+                g("ls-tree", "-r", "--name-only", "-z", "<base>"),
+                g(*self.LS_REMOTE),
+            ],
+            self.reviewer_calls(),
+        )
+
+    def test_a_skill_only_the_head_holds_is_never_the_reviewer(self) -> None:
+        # CLAUDE.md is in the head alone. Whether origin's tip is another commit or the head itself, the generic
+        # reviewer runs, and no reviewer file is read from the head.
+        for tip, note in (
+            (
+                "trusted",
+                "Neither the base <base12> nor main's tip <trusted12> has the review skill CLAUDE.md, so the suite's "
+                "generic reviewer reviews this pull request.",
+            ),
+            (
+                "head",
+                "The base <base12> predates the review skill CLAUDE.md, and main's tip is this pull request's head, "
+                "which never supplies its own reviewer, so the suite's generic reviewer reviews this pull request.",
+            ),
+        ):
+            with self.subTest(tip=tip):
+                shutil.rmtree(self.run_dir, ignore_errors=True)
+                self.git.calls.clear()
+                self.skill("CLAUDE.md")
+                self.tip(self.commits[tip])
+                result, _ = self.prepare()
+                self.assertEqual(
+                    ("generic", {**GENERIC_ADAPTER, "source": "generic-fallback"}, [LINK_NOTE, note]),
+                    (result["kind"], result["adapter"], result["notes"]),
+                )
+                self.assertEqual([], [call for call in self.reviewer_calls() if "<head>" in " ".join(call)])
+
+    def test_a_trusted_ref_without_the_skill_fails_as_before(self) -> None:
+        self.skill("review/late.md", trusted_ref="refs/heads/main")
+        self.tip(self.commits["trusted"])
+        self.assertEqual(
+            (MissingSkillError, "The configured review skill review/late.md does not exist at <base12>", ""),
+            self.refused(),
+        )
+        self.assertNotIn(g(*self.LS_REMOTE), self.git.calls)
+
+    def test_a_manifest_path_the_base_lacks_fails_as_before(self) -> None:
+        self.configure(self.repository("review/conditional.json"))
+        self.tip(self.commits["trusted"])
+        self.assertEqual(
+            (RuntimeContractError, "Declared reviewer file is missing: review/conditional.json", ""), self.refused()
+        )
+        self.assertNotIn(g(*self.LS_REMOTE), self.git.calls)
+
+    def test_a_default_branch_origin_will_not_name_fails_the_pull_request(self) -> None:
+        self.skill("review/late.md")
+        for answer, reason in (
+            (failed(stderr="fatal: unable to access origin\n"), "fatal: unable to access origin"),
+            (GitResult(0, "", ""), "origin names no default branch"),
+        ):
+            with self.subTest(reason):
+                shutil.rmtree(self.run_dir, ignore_errors=True)
+                self.git.answers[self.LS_REMOTE] = [answer]
+                self.assertEqual(
+                    (rp.PipelineError, f"Cannot read origin's default branch: {reason}", ""), self.refused()
+                )
+                self.assertEqual(["diff.patch", *sorted(SNAPSHOT_FILES)], self.files(), "nothing is materialized")
 
 
 class NoteOrderTests(PrepareFixture):
