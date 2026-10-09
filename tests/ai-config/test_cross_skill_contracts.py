@@ -45,6 +45,17 @@ def literal_int(path: Path, name: str) -> int:
     return value
 
 
+def pinned_models(root: Path) -> dict[str, str]:
+    """Each shipped and repository skill under root that pins a model, by its SKILL.md path, with the model."""
+    paths = [*(root / "skills").glob("**/SKILL.md"), *(root / ".claude/skills").glob("*/SKILL.md")]
+    return {
+        path.relative_to(root).as_posix(): line.split(":", 1)[1].strip()
+        for path in sorted(paths)
+        for line in path.read_text(encoding="utf-8-sig").split("---", 2)[1].splitlines()
+        if re.match(r"model\s*:", line)
+    }
+
+
 def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
     """Each option `<parser>.add_argument` declares, with its keywords as source, however the call is wrapped."""
     options: dict[str, dict[str, str]] = {}
@@ -236,15 +247,30 @@ class CrossSkillContractTests(unittest.TestCase):
         # In Claude Code a skill's `model` applies for the rest of the turn that invoked it (#75), so a code review
         # started in the same turn as `update-coding-agent-skills`, then pinned to Haiku, ran every reviewer on Haiku
         # and missed a must-fix finding. A skill runs on the session's model; pin one only with a measured reason
-        # and an entry here.
+        # and an entry here. Repository skills under .claude/skills are held to the same rule.
         allowed: dict[str, str] = {}
-        pinned = {
-            path.parent.name: line.split(":", 1)[1].strip()
-            for path in sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md"))
-            for line in path.read_text(encoding="utf-8-sig").split("---", 2)[1].splitlines()
-            if re.match(r"model\s*:", line)
-        }
-        self.assertEqual(allowed, pinned)
+        self.assertEqual(allowed, pinned_models(REPOSITORY_ROOT))
+
+    def test_a_model_pin_is_found_under_both_skill_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, model in (
+                ("skills/shipped", "haiku"),
+                ("skills/category/nested", "sonnet"),
+                (".claude/skills/repository", "opus"),
+            ):
+                (root / path).mkdir(parents=True)
+                (root / path / "SKILL.md").write_text(f"---\nname: x\nmodel: {model}\n---\n\n# X\n", encoding="utf-8")
+            (root / ".claude/skills/unpinned").mkdir()
+            (root / ".claude/skills/unpinned/SKILL.md").write_text("---\nname: y\n---\n\n# Y\n", encoding="utf-8")
+            self.assertEqual(
+                {
+                    ".claude/skills/repository/SKILL.md": "opus",
+                    "skills/category/nested/SKILL.md": "sonnet",
+                    "skills/shipped/SKILL.md": "haiku",
+                },
+                pinned_models(root),
+            )
 
     def test_reviewers_run_as_the_deployed_reviewer_agent(self) -> None:
         # A general-purpose reviewer carried about 20,000 tokens of system prompt and tool definitions, plus the

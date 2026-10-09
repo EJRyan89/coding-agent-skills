@@ -58,18 +58,22 @@ def _skill_lines(src: source.Source, owned: manifest.Ownership) -> list[ReportLi
         }
         optional = tool.optional or dormant == set(roots) or name not in required
         named = [f"opt-in {root}" if root in dormant else root for root in roots]
-        used_by = f"used by {', '.join([*named, *tool.other_uses])}"
-        probe = tools.probe(tool)
-        if probe.path is None:
-            missing = ("OPTIONAL", f"not installed; {used_by}") if optional else ("MISSING", used_by)
-            lines.append(ReportLine(tool.label, *missing))
-        elif probe.outdated:
-            minimum = tools.format_version(tool.minimum)
-            lines.append(ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer"))
-        else:
-            found = "OPTIONAL" if optional else "FOUND"
-            lines.append(ReportLine(f"{tool.label}{_version_text(probe)}", found, used_by))
+        lines.append(_tool_line(tool, optional, named))
+    lines.extend(_tool_line(tool, tool.optional, []) for tool in tools.REPORTED_TOOLS)
     return lines
+
+
+def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine:
+    used_by = f"used by {', '.join([*roots, *tool.other_uses])}"
+    probe = tools.probe(tool)
+    if probe.path is None:
+        missing = ("OPTIONAL", f"not installed; {used_by}") if optional else ("MISSING", used_by)
+        return ReportLine(tool.label, *missing)
+    if probe.outdated:
+        minimum = tools.format_version(tool.minimum)
+        return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer")
+    found = "OPTIONAL" if optional else "FOUND"
+    return ReportLine(f"{tool.label}{_version_text(probe)}", found, used_by)
 
 
 def run(arguments: list[str], paths: Paths) -> int:

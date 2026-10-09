@@ -48,6 +48,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none. The pipeline, the commands, and the reviewer guard deploy together with `code-review-core`.
 - Pull request: #227
 
+### deploy.py check also reports Git and Claude Code with their versions
+
+- Level: minor. An addition: `check` lists `Git` (used by every skill; `MISSING` when it is not on `PATH`, which leaves deploying possible) and `Claude Code` (optional) with their versions, so its output is all the bug template asks for besides the model. Neither has a floor, and no other line changes.
+- Contract: `deployer/tools.py`
+- User action: none.
+- Pull request: #231
+
 ### --force-item names an agent without its .md and refuses a name the run does not install
 
 - Level: minor. A deployer flag changes: `--force-item` now accepts an agent's own name, such as `code-review-reviewer`, as well as its file name, and a run given a `--force-item` that matches no item it installs stops before anything changes, listing the names it accepts, where it used to ignore the name and deploy without replacing anything.
