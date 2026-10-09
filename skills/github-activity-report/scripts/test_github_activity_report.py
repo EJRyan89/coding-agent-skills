@@ -27,7 +27,6 @@ from github_activity_report import (
     GitHubSearchClient,
     collect_activity,
     main,
-    month_end,
     months_window,
     render_report,
 )
@@ -104,11 +103,6 @@ class WindowTests(unittest.TestCase):
 
     def test_window_rolls_over_the_year(self) -> None:
         self.assertEqual([date(2025, 11, 1), date(2025, 12, 1), date(2026, 1, 1)], months_window(date(2026, 1, 15), 3))
-
-    def test_month_end_handles_december_leap_years_and_the_partial_current_month(self) -> None:
-        self.assertEqual(date(2025, 12, 31), month_end(date(2025, 12, 1), date(2026, 5, 20)))
-        self.assertEqual(date(2024, 2, 29), month_end(date(2024, 2, 1), date(2026, 5, 20)))
-        self.assertEqual(date(2026, 5, 20), month_end(date(2026, 5, 1), date(2026, 5, 20)))
 
 
 class SearchTests(unittest.TestCase):

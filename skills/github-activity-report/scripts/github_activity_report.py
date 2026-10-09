@@ -275,11 +275,6 @@ def months_window(today: date, months: int) -> list[date]:
     return list(reversed(firsts))
 
 
-def month_end(first: date, today: date) -> date:
-    following = date(first.year + 1, 1, 1) if first.month == 12 else date(first.year, first.month + 1, 1)
-    return min(following - timedelta(days=1), today)
-
-
 def month_label(value: date) -> str:
     return f"{value:%Y-%m}"
 
