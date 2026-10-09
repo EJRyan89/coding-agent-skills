@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -45,10 +46,14 @@ class Lock:
 
 
 def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
-    """Initialize a lock this process just created, removing it again if initialization fails."""
-    pid = platform_support.current_process_id()
-    info = {"pid": pid, "token": token, "start_time": probe(pid).start_time}
+    """Initialize a lock this process just created, removing it again if initialization fails or is interrupted.
+
+    A lock left without its metadata is refused by every later run until it is deleted by hand, since it cannot be
+    told apart from a lock another deployment is still initializing.
+    """
     try:
+        pid = platform_support.current_process_id()
+        info = {"pid": pid, "token": token, "start_time": probe(pid).start_time}
         fsops.write_atomic(paths.lock_dir / "token", token.encode("utf-8"))
         fsops.write_atomic(paths.lock_dir / "info.json", json.dumps(info).encode("utf-8"))
     except OSError as exc:
@@ -61,6 +66,11 @@ def _write_metadata(paths: Paths, token: str, probe: ProcessProbe) -> None:
                 see_recovery(LOCK),
             ) from exc
         raise DeployError(f"ERROR: Failed to initialize deployment lock: {exc}", "Retry the deployment.") from exc
+    except BaseException:
+        # Ctrl+C or an unexpected error: the caller reports it, and the next run must find no half-made lock.
+        with contextlib.suppress(OSError):
+            fsops.remove(paths.lock_dir)
+        raise
 
 
 def _read_info(lock_dir: Path) -> dict[str, Any]:
@@ -115,6 +125,7 @@ def _initialize_reclaimed(paths: Paths, stale: Path, token: str, probe: ProcessP
     """Initialize the lock this process took after a reclaim, deleting the stale lock it moved aside if that fails.
 
     A failure leaves no .deploy.lock.stale.<pid> behind unless it cannot be deleted, and then the error names it.
+    Ctrl+C or an unexpected error deletes it too, when it can, and is raised as it came.
     """
     try:
         _write_metadata(paths, token, probe)
@@ -124,6 +135,10 @@ def _initialize_reclaimed(paths: Paths, stale: Path, token: str, probe: ProcessP
         except OSError as removal:
             lines = [line for line in exc.lines if line != see_recovery(LOCK)]
             raise DeployError(*lines, _undeleted_stale(stale, removal), see_recovery(LOCK)) from exc
+        raise
+    except BaseException:
+        with contextlib.suppress(OSError):
+            fsops.remove(stale)
         raise
 
 

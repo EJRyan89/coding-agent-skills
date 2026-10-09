@@ -552,6 +552,42 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock_dir.exists())
 
+    def test_an_unexpected_error_in_startup_recovery_is_reported_and_the_next_deployment_finishes_it(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "installed by the interrupted run\n")
+        installed = hashing.hash_path(self.skills_dir / "alpha")
+        journal_file = self.write_journal(
+            "20260101-000000-kill", backup_entry("alpha", original), install_entry("alpha", installed)
+        )
+        real_move = fsops.move
+
+        def failing_restore(source: Path, destination: Path) -> None:
+            if source.name == "alpha.deploying-bak":
+                raise RuntimeError("synthetic recovery failure")
+            real_move(source, destination)
+
+        with mock.patch("deployer.fsops.move", side_effect=failing_restore):
+            result = self.deploy_fails("--all", pattern="Unexpected RuntimeError")
+        self.assertEqual(1, result.code)
+        self.assertTrue(
+            result.output.endswith(
+                "\nERROR: Unexpected RuntimeError: synthetic recovery failure\n"
+                "Recovery stopped, so nothing was deployed; the next deployment retries it.\n"
+                f"{SEE_RECOVERY_FAILED}\n\n"
+            ),
+            result.output,
+        )
+        self.assertNotIn("Traceback", result.output)
+        self.assertFalse(self.lock_dir.exists())
+        self.assertTrue(journal_file.is_file())
+        result = self.deploy_ok("--all")
+        self.assertIn("Recovering uncommitted run 20260101-000000-kill (rolling back)...", result.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertFalse(journal_file.parent.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
     def test_an_os_error_while_reconciling_a_failed_deployment_keeps_the_original_error(self) -> None:
         self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))
         self.remove_skill("obsolete")

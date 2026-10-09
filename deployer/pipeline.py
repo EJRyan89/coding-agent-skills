@@ -240,6 +240,7 @@ def _print_source(src: source.Source, home: Path) -> None:
 
 
 RECOVERY_FAILED = "When recovery fails"
+RECOVERY_CANCELLED = "Cancelled during recovery; the next deployment finishes recovering before it deploys."
 
 
 def _stop_for_pending_recovery(paths: Paths) -> bool:
@@ -344,7 +345,11 @@ def execute(
         code = fail(exc, debug, "check the source checkout")
         held.release()
         return code
-    if not journal.recover_incomplete(paths):
+    try:
+        recovered = journal.recover_incomplete(paths)
+    except (Exception, KeyboardInterrupt) as exc:
+        return _stopped_recovery(exc, debug, held)
+    if not recovered:
         _report_failed_recovery()
         held.release()
         return 1
@@ -413,6 +418,25 @@ def _report_failed_recovery() -> None:
         file=sys.stderr,
     )
     print("", file=sys.stderr)
+
+
+def _stopped_recovery(exc: BaseException, debug: bool, held: lock.Lock) -> int:
+    """Report recovery stopped by Ctrl+C or an unexpected error, then release the lock.
+
+    Recovery replays its journal, which stays on disk until a run is reconciled, so the next deployment finishes it.
+    """
+    if isinstance(exc, KeyboardInterrupt):
+        error = DeployError(RECOVERY_CANCELLED, exit_code=130)
+    else:
+        error = DeployError(
+            f"ERROR: Unexpected {type(exc).__name__}: {exc}",
+            "Recovery stopped, so nothing was deployed; the next deployment retries it.",
+            see_recovery(RECOVERY_FAILED),
+        )
+    error.__cause__ = exc
+    print_error(error, debug)
+    held.release()
+    return error.exit_code
 
 
 def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
