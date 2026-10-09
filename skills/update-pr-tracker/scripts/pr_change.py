@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable, Iterable
+from functools import partial
 from pathlib import Path
 from typing import TypeVar, cast
 from urllib.parse import quote
@@ -19,8 +20,10 @@ UNKNOWN = "unknown"
 
 # GitHub's compare API lists at most this many changed files, so a list that long may be incomplete.
 COMPARE_FILE_LIMIT = 300
-# Failures that invalidate the whole run rather than one pull request's evidence.
-FATAL_ERROR_KINDS = {"prerequisite", "execution", "authentication", "rate_limit"}
+# Failures that invalidate the whole run rather than one pull request's comparison: nothing can be asked of GitHub,
+# or every later call would fail the same way. Any other failure but a missing commit fails the comparison that needed
+# the call; only a missing commit, such as one a force-push removed, is evidence that cannot be obtained.
+FATAL_ERROR_KINDS = {"prerequisite", "execution", "authentication", "rate_limit", "network", "timeout"}
 
 Fingerprint = tuple[tuple[str, str, str, str, str], ...]
 # A fingerprint without its modes: each changed file's path, status, previous path, and blob ID.
@@ -29,6 +32,17 @@ ChangedFiles = tuple[tuple[str, str, str, str], ...]
 Query = tuple[str, str, str, str]
 Key = TypeVar("Key")
 Cached = TypeVar("Cached")
+
+
+class ComparisonError(RuntimeError):
+    """A GitHub call that comparing one pull request's commits needed failed for a reason other than a missing
+    commit, so the comparison has no answer, not even unknown: `pull` is its `owner/repo#number` and `reason` the
+    call's error."""
+
+    def __init__(self, pull: str, error: GitHubError) -> None:
+        super().__init__(f"{pull} {error}")
+        self.pull = pull
+        self.reason = str(error)
 
 
 def tree_modes(tree: object) -> dict[str, str] | None:
@@ -117,13 +131,8 @@ def needs_modes(before: ChangedFiles, after: ChangedFiles) -> bool:
 
 def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str) -> bool | None:
     """Whether commit `earlier` is `later` or one of its ancestors; None when GitHub cannot say, such as for a commit
-    a force-push removed. Failures that invalidate the whole run are raised."""
-    try:
-        comparison = client.api_json(f"repos/{repository}/compare/{earlier}...{later}?per_page=1")
-    except GitHubError as exc:
-        if exc.kind in FATAL_ERROR_KINDS:
-            raise
-        return None
+    a force-push removed. Any other failure is raised."""
+    comparison = client.api_json(f"repos/{repository}/compare/{earlier}...{later}?per_page=1", allow_absent=True)
     status = comparison.get("status") if isinstance(comparison, dict) else None
     return (
         {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status)
@@ -137,14 +146,16 @@ class ChangeDetector:
     when `needs_modes` says the comparisons alone cannot decide, and each comparison and tree at most once.
 
     `prefetch` reads what a batch of queries needs, `workers` calls at a time, all through the one client, so its
-    rate-limit backoff governs every call. `detect` reads anything still missing one call at a time.
+    rate-limit backoff governs every call. `detect` reads anything still missing one call at a time. A failure in
+    `FATAL_ERROR_KINDS` is raised at once; any other failed call is kept, never made again, and fails `detect` with
+    a `ComparisonError` for each pull request that needs it.
     """
 
     def __init__(self, client: GitHubClient, *, workers: int = NETWORK_WORKERS) -> None:
         self.client = client
         self.workers = workers
-        self._files: dict[tuple[str, str, str], ChangedFiles | None] = {}
-        self._modes: dict[tuple[str, str], dict[str, str] | None] = {}
+        self._files: dict[tuple[str, str, str], ChangedFiles | GitHubError | None] = {}
+        self._modes: dict[tuple[str, str], dict[str, str] | GitHubError | None] = {}
 
     def prefetch(self, queries: Iterable[Query]) -> None:
         """Read every comparison, and then every tree, that detecting `queries` needs."""
@@ -175,16 +186,21 @@ class ChangeDetector:
     ) -> str:
         if since_sha == head_sha:
             return UNCHANGED
-        before = self._cached(self._files, (repository, base_ref, since_sha), self._read_files)
-        after = self._cached(self._files, (repository, base_ref, head_sha), self._read_files)
+        pull = f"{repository}#{number}"
+        before = _known(pull, self._cached(self._files, (repository, base_ref, since_sha), self._read_files))
+        after = _known(pull, self._cached(self._files, (repository, base_ref, head_sha), self._read_files))
         # Two empty contributions mean the commits already reached the base branch,
         # which proves nothing about whether the pull request changed.
         if before is None or after is None or (not before and not after):
             return UNKNOWN
         if not needs_modes(before, after):
             return UNCHANGED if before == after else CHANGED
-        before_modes = with_modes(before, self._cached(self._modes, (repository, since_sha), self._read_modes))
-        after_modes = with_modes(after, self._cached(self._modes, (repository, head_sha), self._read_modes))
+        before_modes = with_modes(
+            before, _known(pull, self._cached(self._modes, (repository, since_sha), self._read_modes))
+        )
+        after_modes = with_modes(
+            after, _known(pull, self._cached(self._modes, (repository, head_sha), self._read_modes))
+        )
         if before_modes is None or after_modes is None:
             return UNKNOWN
         return UNCHANGED if before_modes == after_modes else CHANGED
@@ -192,18 +208,22 @@ class ChangeDetector:
     def _comparable(self, repository: str, base_ref: str, since_sha: str, head_sha: str) -> bool:
         before = self._files[(repository, base_ref, since_sha)]
         after = self._files[(repository, base_ref, head_sha)]
-        return before is not None and after is not None and needs_modes(before, after)
+        return isinstance(before, tuple) and isinstance(after, tuple) and needs_modes(before, after)
 
-    def _gather(self, cache: dict[Key, Cached], keys: list[Key], read: Callable[[Key], Cached]) -> None:
+    def _gather(self, cache: dict[Key, Cached | GitHubError], keys: list[Key], read: Callable[[Key], Cached]) -> None:
         missing = list(dict.fromkeys(key for key in keys if key not in cache))
-        # Nothing is caught, so every outcome carries its value and any failure is raised here.
-        outcomes = map_in_order(read, missing, workers=self.workers)
-        cache.update((key, cast(Cached, value)) for key, (value, _) in zip(missing, outcomes, strict=True))
+        # Nothing is caught, so every outcome carries its value, a failed call included, and a fatal one is raised.
+        outcomes = map_in_order(partial(_outcome, read), missing, workers=self.workers)
+        cache.update(
+            (key, cast("Cached | GitHubError", value)) for key, (value, _) in zip(missing, outcomes, strict=True)
+        )
 
     @staticmethod
-    def _cached(cache: dict[Key, Cached], key: Key, read: Callable[[Key], Cached]) -> Cached:
+    def _cached(
+        cache: dict[Key, Cached | GitHubError], key: Key, read: Callable[[Key], Cached]
+    ) -> Cached | GitHubError:
         if key not in cache:
-            cache[key] = read(key)
+            cache[key] = _outcome(read, key)
         return cache[key]
 
     def _read_files(self, key: tuple[str, str, str]) -> ChangedFiles | None:
@@ -215,10 +235,22 @@ class ChangeDetector:
         return tree_modes(self._evidence(f"repos/{repository}/git/trees/{sha}?recursive=1"))
 
     def _evidence(self, endpoint: str) -> object:
-        """GitHub's answer, or None when it has none for this commit; failures that invalidate the run are raised."""
-        try:
-            return self.client.api_json(endpoint)
-        except GitHubError as exc:
-            if exc.kind in FATAL_ERROR_KINDS:
-                raise
-            return None
+        """GitHub's answer, or None when it has no such commit or branch; any other failure is raised."""
+        return self.client.api_json(endpoint, allow_absent=True)
+
+
+def _outcome(read: Callable[[Key], Cached], key: Key) -> Cached | GitHubError:
+    """What `read` returns for `key`, or the GitHub call that failed; a failure in `FATAL_ERROR_KINDS` is raised."""
+    try:
+        return read(key)
+    except GitHubError as exc:
+        if exc.kind in FATAL_ERROR_KINDS:
+            raise
+        return exc
+
+
+def _known(pull: str, value: Cached | GitHubError) -> Cached:
+    """A read's value, or the `ComparisonError` its failed call makes of the comparison of `pull` that needed it."""
+    if isinstance(value, GitHubError):
+        raise ComparisonError(pull, value)
+    return value
