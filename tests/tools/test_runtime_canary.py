@@ -28,6 +28,8 @@ from tools.runtime_canary import Completed
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 FIXTURE = "runtime-canary-probe"
+# What a RAN line adds for a Python script that exits 0: the recorder sees a Python script end only from 3.12.
+PYTHON_EXIT = " exit=0" if sys.version_info >= (3, 12) else ""
 # A line Codex 0.160 wrote to stderr when its execution policy refused the canary's first command.
 CODEX_REJECTION = (
     "2026-10-03T22:35:23.161504Z ERROR codex_core::tools::router: error=exec_command failed: CreateProcess { "
@@ -44,7 +46,8 @@ class FakeRuntimes:
     """Answers each runtime's skill listing, through talk, and stands in for its model run, when called."""
 
     def __init__(self) -> None:
-        self.listings: dict[str, list[tuple[str, str]]] = {}
+        # Each copy a runtime lists: the skill's name, its directory, and whether it is enabled.
+        self.listings: dict[str, list[tuple[str, str, bool]]] = {}
         self.actions: dict[str, Callable[[list[str], Path, dict[str, str]], Completed]] = {}
         self.calls: list[tuple[str, list[str], Path, Mapping[str, str]]] = []
 
@@ -62,9 +65,9 @@ class FakeRuntimes:
         self.calls.append(("listing", arguments, cwd, environment))
         skills = self.listings.get(runtime, [])
         if runtime == "codex":
-            entries = [{"name": name, "path": f"{path}/SKILL.md", "enabled": True} for name, path in skills]
+            entries = [{"name": name, "path": f"{path}/SKILL.md", "enabled": on} for name, path, on in skills]
             return [json.dumps({"id": discovery.CODEX_LIST_ID, "result": {"data": [{"skills": entries}]}})]
-        return [json.dumps([{"name": name, "path": path, "enabled": True} for name, path in skills])]
+        return [json.dumps([{"name": name, "path": path, "enabled": on} for name, path, on in skills])]
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Completed:
         runtime = Path(arguments[0]).name
@@ -73,14 +76,15 @@ class FakeRuntimes:
         return action(arguments, cwd, environment) if action else Completed(0, "", "")
 
 
-def run_python(*arguments: str) -> Callable[[list[str], Path, dict[str, str]], Completed]:
-    """A runtime that runs `python -B <arguments>` the way a shell tool would, then exits 0."""
+def run_python(*arguments: str, timed_out: bool = False) -> Callable[[list[str], Path, dict[str, str]], Completed]:
+    """A runtime that runs `python -B <arguments>` the way a shell tool would, then exits 0 or runs out of time."""
 
     def action(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
         process = subprocess.run(
             [sys.executable, "-B", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False
         )
-        return Completed(0, json.dumps({"stdout": process.stdout}) + "\n", process.stderr)
+        stdout = json.dumps({"stdout": process.stdout}) + "\n"
+        return Completed(-1 if timed_out else 0, stdout, process.stderr, timed_out=timed_out)
 
     return action
 
@@ -183,9 +187,11 @@ class RuntimeCanaryTestCase(unittest.TestCase):
                 **options,
             )
         lines = output.getvalue().splitlines()
-        # A deployment that stops exits 1 too, but it prints no MATRIX line, so it fails here.
-        disagrees = any(line.startswith("MATRIX ") and " DISAGREES " in line for line in lines)
-        self.assertEqual(1 if disagrees else 0, code, output.getvalue())
+        # A deployment that stops exits 1 too, but it prints neither line, so it fails here.
+        failed = any(
+            line.startswith("UNDISCOVERED ") or (line.startswith("MATRIX ") and " DISAGREES " in line) for line in lines
+        )
+        self.assertEqual(1 if failed else 0, code, output.getvalue())
         return lines
 
     def skill_dir(self, name: str = FIXTURE) -> str:
@@ -291,7 +297,9 @@ class RunTests(RuntimeCanaryTestCase):
         script = f"{self.skill_dir()}/scripts/canary_probe.py"
         runner.actions["codex"] = run_python(script, "--help")
         lines = self.canary(runner)
-        self.assertIn(f'RUNTIME codex {FIXTURE} RAN "{script}" "{forward(self.home)}" {self.kept("codex")}', lines)
+        self.assertIn(
+            f'RUNTIME codex {FIXTURE} RAN "{script}" "{forward(self.home)}"{PYTHON_EXIT} {self.kept("codex")}', lines
+        )
         transcript = self.home / ".runtime-canary" / "transcripts" / f"codex-{FIXTURE}.jsonl"
         self.assertIn(f'TRANSCRIPT codex {FIXTURE} "{forward(transcript)}"', lines)
         self.assertIn("RUNTIME_CANARY_PROBE RAN", transcript.read_text(encoding="utf-8"))
@@ -303,8 +311,8 @@ class RunTests(RuntimeCanaryTestCase):
             runner, ["alpha"], ("copilot",), sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()]
         )
         self.assertIn(
-            f'RUNTIME copilot alpha RAN "{self.skill_dir("alpha")}/scripts/tool.py" "{forward(self.home)}" '
-            f"{self.kept('copilot')}",
+            f'RUNTIME copilot alpha RAN "{self.skill_dir("alpha")}/scripts/tool.py" "{forward(self.home)}"'
+            f"{PYTHON_EXIT} {self.kept('copilot')}",
             lines,
         )
 
@@ -313,7 +321,9 @@ class RunTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         runner.actions["codex"] = run_python(sibling, "--help")
         lines = self.canary(runner, ["beta", "alpha"], sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()])
-        self.assertIn(f'RUNTIME codex beta RAN "{sibling}" "{forward(self.home)}" {self.kept("codex")}', lines)
+        self.assertIn(
+            f'RUNTIME codex beta RAN "{sibling}" "{forward(self.home)}"{PYTHON_EXIT} {self.kept("codex")}', lines
+        )
         self.assertEqual(
             f'FAILED "ran {sibling} instead of a script under {self.skill_dir()}"',
             runtime_canary.verdict(
@@ -369,6 +379,93 @@ class RunTests(RuntimeCanaryTestCase):
             f'FAILED "ran {self.skill_dir()}/scripts/canary_probe.py but it wrote no marker; was the write denied?"',
             reason,
         )
+
+    def test_a_ran_line_carries_the_recorded_exit_and_a_timeout_and_still_passes(self) -> None:
+        script = f"{self.skill_dir('alpha')}/scripts/tool.py"
+        start = {"argv": [script], "cwd": forward(self.home), "pid": 41}
+        cases: tuple[tuple[list[dict], Completed, str], ...] = (
+            ([start, {**start, "exit": 1}], Completed(0, "", ""), " exit=1"),
+            ([start, {**start, "exit": 1}], Completed(-1, "", "", timed_out=True), " exit=1 timed-out"),
+            # The session ran out of time while the script still ran, so no exit was recorded.
+            ([start], Completed(-1, "", "", timed_out=True), " timed-out"),
+            # An exit pairs only with the start record it repeats.
+            ([start, {**start, "pid": 42, "exit": 1}], Completed(0, "", ""), ""),
+        )
+        for started, completed, suffix in cases:
+            with self.subTest(suffix=suffix):
+                outcome = runtime_canary.verdict(
+                    "alpha", self.home, probes=[], started=started, completed=completed, denials=[], timeout=60
+                )
+                self.assertEqual(f'RAN "{script}" "{forward(self.home)}"{suffix}', outcome)
+                # The pass rule is unchanged: the runtime started the right copy.
+                declared = {"alpha": {"codex": runtime_support.Support("full")}}
+                line = f'RUNTIME codex alpha {outcome} KEPT "k"'
+                self.assertEqual(["MATRIX codex alpha AGREES full"], runtime_canary.compare([line], declared))
+
+    def test_a_bash_script_that_exits_nonzero_before_a_timeout_is_ran_with_both(self) -> None:
+        runner = FakeRuntimes()
+        bash = run_bash(f"{self.skill_dir('gamma')}/scripts/tool.sh", "--help")
+
+        def timed_out(command: list[str], cwd: Path, environment: dict[str, str]) -> Completed:
+            return Completed(-1, bash(command, cwd, environment).stdout, "", timed_out=True)
+
+        runner.actions["codex"] = timed_out
+        lines = self.canary(runner, ["gamma"], sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()])
+        self.assertIn(
+            f'RUNTIME codex gamma RAN "{self.skill_dir("gamma")}/scripts/tool.sh" "{forward(self.home)}" exit=3 '
+            f"timed-out {self.kept('codex')}",
+            lines,
+        )
+        self.assertIn("MATRIX codex gamma AGREES full", lines)
+
+    def test_the_fixture_must_exit_0_beside_its_marker(self) -> None:
+        script = f"{self.skill_dir()}/scripts/canary_probe.py"
+        start = {"argv": [script, "--help"], "cwd": forward(self.home), "pid": 7}
+        for status, outcome in (
+            (2, f'FAILED "ran {script} but it exited with code 2"'),
+            (0, f'RAN "{script}" "{forward(self.home)}" exit=0'),
+            (None, f'RAN "{script}" "{forward(self.home)}"'),
+        ):
+            with self.subTest(status=status):
+                started = [start] if status is None else [start, {**start, "exit": status}]
+                self.assertEqual(
+                    outcome,
+                    runtime_canary.verdict(
+                        FIXTURE,
+                        self.home,
+                        probes=[{"script": script, "cwd": forward(self.home)}],
+                        started=started,
+                        completed=Completed(0, "", ""),
+                        denials=[],
+                        timeout=60,
+                    ),
+                )
+
+    def test_the_python_recorder_records_how_each_script_exited(self) -> None:
+        self.canary(FakeRuntimes(), discovery_only=True)
+        log = self.home / ".runtime-canary" / "scripts" / "direct.jsonl"
+        environment = runtime_canary.environment(dict(os.environ), log, self.home)
+        scripts = {
+            "raises SystemExit(3).py": ("raise SystemExit(3)\n", 3),
+            "fails at import.py": ("import runtime_canary_no_such_module\n", 1),
+            "calls sys.exit(5).py": ("import sys\n\ndef main():\n    sys.exit(5)\n\nmain()\n", 5),
+            "catches its own error.py": ("try:\n    raise KeyError\nexcept KeyError:\n    pass\nprint('ok')\n", 0),
+        }
+        for name, (text, status) in scripts.items():
+            with self.subTest(script=name):
+                log.write_text("", encoding="utf-8")
+                path = self.root / name
+                path.write_text(text, encoding="utf-8")
+                process = subprocess.run(
+                    [sys.executable, "-B", str(path)], cwd=self.root, env=environment, capture_output=True, check=False
+                )
+                self.assertEqual(status, process.returncode)
+                # sys.monitoring, which reports the exit, arrived in Python 3.12; before it the start alone is kept.
+                recorded = status if sys.version_info >= (3, 12) else None
+                self.assertEqual(
+                    [(forward(path), forward(self.root), recorded)],
+                    runtime_canary.recorded_scripts(runtime_canary.read_records(log)),
+                )
 
     def test_a_command_the_codex_policy_refused_is_blocked_not_failed(self) -> None:
         runner = FakeRuntimes()
@@ -644,7 +741,8 @@ class BashTests(RuntimeCanaryTestCase):
         for runtime in runtime_canary.RUNTIMES:
             with self.subTest(runtime=runtime):
                 self.assertIn(
-                    f'RUNTIME {runtime} gamma RAN "{self.tool()}" "{forward(self.home)}" {self.kept(runtime)}', lines
+                    f'RUNTIME {runtime} gamma RAN "{self.tool()}" "{forward(self.home)}" exit=3 {self.kept(runtime)}',
+                    lines,
                 )
                 # The script ran as it would without the recorder: its output, its exit code, no stray errors.
                 transcript = self.home / ".runtime-canary" / "transcripts" / f"{runtime}-gamma.jsonl"
@@ -662,7 +760,8 @@ class BashTests(RuntimeCanaryTestCase):
         runner.actions["codex"] = run_bash(str(script), "--help")
         self.canary(runner, ["gamma"], sources=[runtime_canary.FIXTURE_SOURCE, self.make_source()])
         started = runtime_canary.read_records(self.home / ".runtime-canary" / "scripts" / "codex-gamma.jsonl")
-        self.assertEqual([{"argv": [forward(script)], "cwd": forward(self.home)}], started)
+        start = {"argv": [forward(script)], "cwd": forward(self.home), "pid": started[0].get("pid")}
+        self.assertEqual([start, {**start, "exit": 0}], started)
         self.assertEqual(
             f'FAILED "ran the installed copy {forward(script)}, not the canary copy"',
             runtime_canary.verdict(
@@ -702,7 +801,20 @@ class BashTests(RuntimeCanaryTestCase):
         self.assertEqual((0, "s\n", ""), bash("-s", stdin="echo s\n"))
         self.assertEqual([], runtime_canary.read_records(log))
         self.assertEqual((3, "tool two words (1)\n", ""), bash(self.tool(), "two words", "(1)"))
-        self.assertEqual([{"argv": [self.tool()], "cwd": forward(self.home)}], runtime_canary.read_records(log))
+        started = runtime_canary.read_records(log)
+        start = {"argv": [self.tool()], "cwd": forward(self.home), "pid": started[0].get("pid")}
+        self.assertIsInstance(start["pid"], int)
+        # The EXIT trap records the status the script ended with, after its own output.
+        self.assertEqual([start, {**start, "exit": 3}], started)
+        # A script that sets its own EXIT trap replaces the recorder's, so its end goes unrecorded, and a subshell
+        # inherits no trap to record with.
+        own = self.home / "own trap.sh"
+        own.write_bytes(
+            b"#!/usr/bin/env bash\nset -eu\ninside=$(printf sub)\ntrap 'echo \"own $inside\"' EXIT\nexit 4\n"
+        )
+        log.write_text("", encoding="utf-8")
+        self.assertEqual((4, "own sub\n", ""), bash(str(own)))
+        self.assertEqual([None], [record.get("exit") for record in runtime_canary.read_records(log)])
         # A log it cannot write leaves the script as it was.
         self.assertEqual(
             (3, "tool x\n", ""),
@@ -875,9 +987,9 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         runner = FakeRuntimes()
         adapters = forward(self.home / ".agents" / "skills")
         runner.listings["codex"] = [
-            ("alpha", "C:/Users/YourName/.agents/skills/alpha"),
-            ("alpha", f"{adapters}/alpha"),
-            (FIXTURE, f"{adapters}/{FIXTURE}"),
+            ("alpha", "C:/Users/YourName/.agents/skills/alpha", True),
+            ("alpha", f"{adapters}/alpha", True),
+            (FIXTURE, f"{adapters}/{FIXTURE}", True),
         ]
         lines = self.canary(
             runner,
@@ -899,10 +1011,62 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
         self.assertEqual([[forward(self.root / "bin" / "codex"), "app-server"]], [call[1] for call in listings])
         self.assertEqual(self.home, listings[0][2])
 
+    def test_a_copy_the_runtime_lists_disabled_is_neither_discovered_nor_a_shadow(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        other = "C:/Users/YourName/.agents/skills/alpha"
+        source = self.make_source()
+        for runtime in ("codex", "copilot"):
+            with self.subTest(runtime=runtime):
+                runner = FakeRuntimes()
+                runner.listings[runtime] = [
+                    (FIXTURE, f"{adapters}/{FIXTURE}", False),
+                    ("alpha", f"{adapters}/alpha", True),
+                    ("alpha", other, False),
+                ]
+                lines = self.canary(
+                    runner,
+                    [FIXTURE, "alpha"],
+                    (runtime,),
+                    discovery_only=True,
+                    sources=[runtime_canary.FIXTURE_SOURCE, source],
+                )
+                self.assertEqual(
+                    [
+                        f'DISABLED {runtime} {FIXTURE} "{adapters}/{FIXTURE}"',
+                        f"UNDISCOVERED {runtime} {FIXTURE}",
+                        f'DISCOVERED {runtime} alpha "{adapters}/alpha"',
+                        f'DISABLED {runtime} alpha "{other}"',
+                    ],
+                    lines[3:],
+                )
+
+    def test_a_discovery_only_run_exits_1_on_any_undiscovered_skill(self) -> None:
+        adapters = forward(self.home / ".agents" / "skills")
+        for listing, code in (([], 1), ([(FIXTURE, f"{adapters}/{FIXTURE}", True)], 0)):
+            with self.subTest(listed=len(listing)):
+                runner = FakeRuntimes()
+                runner.listings["codex"] = listing
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    result = runtime_canary.canary(
+                        [],
+                        ["codex"],
+                        self.home,
+                        sources=[runtime_canary.FIXTURE_SOURCE],
+                        runner=runner,
+                        talk=runner.talk,
+                        which=lambda name: forward(self.root / "bin" / name),
+                        base_environment=dict(os.environ),
+                        discovery_only=True,
+                        timeout=60,
+                    )
+                self.assertEqual(code, result, output.getvalue())
+                self.assertEqual(code == 1, f"UNDISCOVERED codex {FIXTURE}" in output.getvalue().splitlines())
+
     def test_both_runtimes_list_a_user_only_skill(self) -> None:
         runner = FakeRuntimes()
         alpha = str(self.home / ".agents" / "skills" / "alpha")
-        runner.listings = {"copilot": [("alpha", alpha)], "codex": [("alpha", alpha)]}
+        runner.listings = {"copilot": [("alpha", alpha, True)], "codex": [("alpha", alpha, True)]}
         lines = self.canary(
             runner,
             ["alpha", "beta"],
