@@ -738,7 +738,12 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "when": None,
             },
         ],
-        "conditions": {"compatibility-window-open": {"script": "tools/review/compatibility_window.py"}},
+        "conditions": {
+            "compatibility-window-open": {
+                "script": "tools/review/compatibility_window.py",
+                "reads": ["db/migrations/**", "global.json"],
+            }
+        },
         "uncovered": "ignore",
         "finding_categories": ["Correctness", "Security", "Style", "Other"],
         "fallback_finding_category": "Other",

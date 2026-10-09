@@ -109,6 +109,9 @@ OPTIONAL_SPECIALIST_KEYS = {"model", "effort"}
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 GENERIC_SPECIALIST = "generic-review"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+# The snapshot paths a condition may declare it reads: glob patterns, bounded as a repository's snapshot_exclude is.
+MAX_CONDITION_READS = 100
+MAX_READ_PATTERN_LENGTH = 200
 
 
 class RuntimeContractError(ValueError):
@@ -295,17 +298,46 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return list(value)
 
 
+def _read_patterns(value: Any, field: str) -> list[str]:
+    """The snapshot paths a condition declares it reads: distinct glob patterns, matched as snapshot_exclude globs are
+    (`glob_matcher`), each repository-relative and unable to name the snapshot's root or leave it: no backslash,
+    control character, or empty (so no leading slash), `.`, or `..` segment."""
+    if not isinstance(value, list):
+        raise RuntimeContractError(f"{field} must be an array of glob patterns")
+    if len(value) > MAX_CONDITION_READS:
+        raise RuntimeContractError(f"{field} holds more than {MAX_CONDITION_READS} patterns")
+    seen: set[str] = set()
+    for index, pattern in enumerate(value):
+        if (
+            not isinstance(pattern, str)
+            or not 0 < len(pattern) <= MAX_READ_PATTERN_LENGTH
+            or "\\" in pattern
+            or re.search(r"[\x00-\x1f\x7f]", pattern)
+            or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
+        ):
+            raise RuntimeContractError(
+                f"{field}[{index}] must be a repository-relative glob pattern of 1 to {MAX_READ_PATTERN_LENGTH} "
+                f"characters, without a backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}"
+            )
+        if pattern.casefold() in seen:
+            raise RuntimeContractError(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
+        seen.add(pattern.casefold())
+    return list(value)
+
+
 def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     conditions = value["conditions"]
     if not isinstance(conditions, dict):
         raise RuntimeContractError("Adapter conditions must be an object")
-    normalized_conditions: dict[str, dict[str, str]] = {}
+    normalized_conditions: dict[str, dict[str, Any]] = {}
     for name, condition in conditions.items():
         if not isinstance(name, str) or not SLUG.fullmatch(name):
             raise RuntimeContractError(f"Adapter condition name is invalid: {name!r}")
-        if not isinstance(condition, dict) or set(condition) != {"script"}:
-            raise RuntimeContractError(f"Adapter condition {name} must declare only a script")
+        if not isinstance(condition, dict) or not {"script"} <= set(condition) <= {"script", "reads"}:
+            raise RuntimeContractError(f"Adapter condition {name} must declare a script and may declare reads")
         normalized_conditions[name] = {"script": _safe_relative_path(condition["script"], f"conditions.{name}.script")}
+        if "reads" in condition:
+            normalized_conditions[name]["reads"] = _read_patterns(condition["reads"], f"conditions.{name}.reads")
     specialists = value["specialists"]
     if not isinstance(specialists, list) or not specialists:
         raise RuntimeContractError("Adapter specialists must be a non-empty array")

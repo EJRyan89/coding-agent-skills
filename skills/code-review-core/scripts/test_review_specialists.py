@@ -223,6 +223,30 @@ class DiffAndRoutingTests(unittest.TestCase):
         )
         self.assertEqual([], rs.uncovered(validate_adapter_manifest(manifest()), ["db/Procs.sql"]))
 
+    def test_the_reads_of_the_conditions_routing_would_run(self) -> None:
+        def declared(**conditions: dict[str, Any]) -> dict[str, Any]:
+            value = manifest()
+            value["specialists"].append({**value["specialists"][2], "id": "props-review", "when": "props"})
+            value["conditions"] = {"window-open": {"script": "tools/window.py"}, "props": {"script": "tools/props.py"}}
+            for name, condition in conditions.items():
+                value["conditions"][name.replace("_", "-")].update(condition)
+            return validate_adapter_manifest(value)
+
+        everything = declared(window_open={"reads": ["**/*.csproj", "global.json"]}, props={"reads": ["Global.json"]})
+        self.assertEqual(
+            ["**/*.csproj", "global.json", "Global.json"],
+            rs.condition_reads(everything, ["src/A.cs"]),
+            "every pattern of every condition a matched specialist names, each once",
+        )
+        self.assertEqual([], rs.condition_reads(everything, ["db/Procs.sql"]), "no condition would run")
+        self.assertEqual([], rs.condition_reads(validate_adapter_manifest(manifest()), ["README.md"]))
+        self.assertIsNone(
+            rs.condition_reads(declared(window_open={"reads": ["global.json"]}), ["src/A.cs"]),
+            "props declares no reads, so it may read any path",
+        )
+        self.assertIsNone(rs.condition_reads(validate_adapter_manifest(manifest()), ["src/A.cs"]))
+        self.assertEqual([], rs.condition_reads(declared(window_open={"reads": []}, props={"reads": []}), ["src/A.cs"]))
+
 
 QUALIFIER_134 = (
     "Verify() calls _serviceControllerHelper.IsRunning() directly with no try/catch, but the identical "
