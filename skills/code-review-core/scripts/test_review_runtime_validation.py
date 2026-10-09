@@ -1256,6 +1256,26 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
             specialists=[{**_specialists_result()["specialists"][0], "profile": "shared/guide.md"}],
         ),
     ),
+    (
+        "a condition that declares the snapshot paths it reads",
+        _specialists_manifest,
+        _put(("conditions", "window", "reads"), ["**/*.csproj", "global.json", "src/[ab]?/*.props"]),
+        _specialists_result(
+            conditions={
+                "window": {
+                    "script": "conditions/window.py",
+                    "reads": ["**/*.csproj", "global.json", "src/[ab]?/*.props"],
+                }
+            }
+        ),
+    ),
+    (
+        # It reads only what the lazy snapshot holds anyway: the changed files and the analyzer settings.
+        "a condition that declares it reads no other path",
+        _specialists_manifest,
+        _put(("conditions", "window", "reads"), []),
+        _specialists_result(conditions={"window": {"script": "conditions/window.py", "reads": []}}),
+    ),
 ]
 
 # Manifests validate_adapter_manifest refuses: (name, build, mutation, error, message).
@@ -1573,6 +1593,55 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("conditions", "window", "script"), "materialization.json"),
         RuntimeContractError,
         RESERVED,
+    ),
+    (
+        "condition reads that are not an array",
+        _specialists_manifest,
+        _put(("conditions", "window", "reads"), "global.json"),
+        RuntimeContractError,
+        "conditions.window.reads must be an array of glob patterns",
+    ),
+    (
+        "condition reads of more than 100 patterns",
+        _specialists_manifest,
+        _put(("conditions", "window", "reads"), [f"p{index}.json" for index in range(101)]),
+        RuntimeContractError,
+        "conditions.window.reads holds more than 100 patterns",
+    ),
+    *[
+        (
+            f"a condition read {label}",
+            _specialists_manifest,
+            _put(("conditions", "window", "reads"), ["global.json", pattern]),
+            RuntimeContractError,
+            "conditions.window.reads[1] must be a repository-relative glob pattern of 1 to 200 characters, without a "
+            f"backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}",
+        )
+        for label, pattern in (
+            ("that is not a string", 7),
+            ("that is empty", ""),
+            ("of 201 characters", "a" * 201),
+            ("with a backslash", "src\\global.json"),
+            ("with a control character", "src/\x01.json"),
+            ("with a leading slash", "/global.json"),
+            ("with an empty segment", "src//global.json"),
+            ("with a '.' segment", "./global.json"),
+            ("with a '..' segment", "../global.json"),
+        )
+    ],
+    (
+        "a condition read listed twice in another case",
+        _specialists_manifest,
+        _put(("conditions", "window", "reads"), ["Global.json", "global.JSON"]),
+        RuntimeContractError,
+        "conditions.window.reads lists 'global.JSON' twice (patterns match ignoring case)",
+    ),
+    (
+        "a condition with a field other than script and reads",
+        _specialists_manifest,
+        _put(("conditions", "window", "writes"), []),
+        RuntimeContractError,
+        "Adapter condition window must declare a script and may declare reads",
     ),
     (
         "a reserved resource in another case",

@@ -150,10 +150,10 @@ from review_specialists import (
     assemble,
     build_plan,
     check,
+    condition_reads,
     describe_link,
     evaluate_condition,
     load_materialized_manifest,
-    needs_conditions,
     parse_unified_diff,
     patch_fingerprints,
     reviewer_models,
@@ -461,7 +461,8 @@ def _snapshot(
     plan take in place of verifying the snapshot again.
 
     A checkout's snapshot is lazy: it holds the changed files and the analyzer settings, and its reviewers fetch the
-    rest through review_source.py. `_complete_snapshot` makes it whole where they cannot."""
+    rest through review_source.py. `_retake_snapshot` makes it whole where they cannot, and adds the paths the
+    run's condition scripts declare they read."""
     fetched = 0.0
     started = services.timer()
     if checkout is not None:
@@ -475,7 +476,7 @@ def _snapshot(
             source,
             runner=services.git,
             changed_paths=changed,
-            upfront=reads_settings,
+            upfront=lazy_upfront(()),
             exclude=exclude,
         )
     else:
@@ -509,21 +510,34 @@ def exclusion_counts(excluded: dict[str, str]) -> dict[str, int]:
     return {reason: counts[reason] for reason in sorted(counts)}
 
 
-def _needs_whole_snapshot(dispatch: str, kind: str, reviewer_root: Path | None, changed: list[str]) -> bool:
-    """Whether a run's reviewers need every file in the snapshot from the start: the Copilot CLI host runs no
-    command, so it cannot fetch one, and a condition script reads the snapshot as it chooses."""
+def lazy_upfront(reads: Sequence[str]) -> Callable[[str], bool]:
+    """The paths a lazy snapshot holds from the start beside the changed files: the analyzer settings, and those the
+    `reads` glob patterns of its condition scripts match."""
+    matchers = [glob_matcher(pattern) for pattern in reads]
+    return lambda path: reads_settings(path) or any(matches(path) for matches in matchers)
+
+
+def _snapshot_reads(
+    snapshot: dict[str, Any], dispatch: str, kind: str, reviewer_root: Path | None, changed: list[str]
+) -> list[str] | None:
+    """The glob patterns of the snapshot paths a run's condition scripts read, which its lazy snapshot must hold from
+    the start; empty when it runs none or the snapshot is already whole. None when its reviewers need every file from
+    the start: the Copilot CLI host runs no command, so it cannot fetch one, and a condition that declares no `reads`
+    reads the snapshot as it chooses."""
+    if SNAPSHOT_FETCHABLE not in snapshot:
+        return []
     if dispatch == "copilot-host":
-        return True
+        return None
     if kind != "specialists" or reviewer_root is None:
-        return False
+        return []
     try:
         manifest = load_materialized_manifest(reviewer_root)[0]
     except SpecialistError as exc:
         raise PipelineError(str(exc)) from exc
-    return needs_conditions(manifest, changed)
+    return condition_reads(manifest, changed)
 
 
-def _complete_snapshot(
+def _retake_snapshot(
     checkout: Path,
     repository: str,
     head: str,
@@ -532,15 +546,24 @@ def _complete_snapshot(
     services: Services,
     stats: dict[str, Any],
     exclude: Sequence[str] = (),
+    reads: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Replace a lazy snapshot with the whole one, adding the time it takes to `stats`, now of a `checkout` snapshot.
-    Returns the manifest materializing it verified."""
+    """Replace a lazy snapshot, adding the time it takes to `stats`: with the whole one, now of a `checkout` snapshot,
+    when `reads` is None, or else with a lazy one that also holds the paths its glob patterns match. Returns the
+    manifest materializing it verified."""
     started = services.timer()
     shutil.rmtree(source)
     snapshot = materialize_source_snapshot(
-        checkout, repository, head, source, runner=services.git, changed_paths=changed, exclude=exclude
+        checkout,
+        repository,
+        head,
+        source,
+        runner=services.git,
+        changed_paths=changed,
+        upfront=None if reads is None else lazy_upfront(reads),
+        exclude=exclude,
     )
-    stats["source"] = "checkout"
+    stats["source"] = "checkout" if reads is None else "checkout-lazy"
     stats["files"] = len(snapshot["source_hashes"])
     stats["bytes"] = snapshot_bytes(source, snapshot)
     stats["excluded"] = exclusion_counts(snapshot["excluded_paths"])
@@ -1045,13 +1068,10 @@ def _prepare_run(
             services=services,
             notes=notes,
         )
-        if (
-            repository_path is not None
-            and SNAPSHOT_FETCHABLE in manifest
-            and _needs_whole_snapshot(dispatch, kind, reviewer_root, list(parsed))
-        ):
-            manifest = _complete_snapshot(
-                repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude
+        reads = _snapshot_reads(manifest, dispatch, kind, reviewer_root, list(parsed))
+        if repository_path is not None and reads != []:
+            manifest = _retake_snapshot(
+                repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude, reads
             )
         lazy = SNAPSHOT_FETCHABLE in manifest
         # The Copilot CLI host starts in a process of its own, so it checks the snapshot against this stamp.
@@ -1273,10 +1293,19 @@ def _route_condition(
     services: Services,
     exclude: Sequence[str] = (),
 ) -> bool:
-    """Evaluate one routing condition on the pull request's source snapshot, taken on first use, and record it."""
+    """Evaluate one routing condition on the pull request's source snapshot, taken on first use as a review takes it,
+    and record it: lazy, holding the paths the conditions routing runs declare they read, when each declares them."""
     if not source.exists():
+        reads = condition_reads(manifest, changed)
         materialize_source_snapshot(
-            checkout, repository, head, source, runner=services.git, changed_paths=changed, exclude=exclude
+            checkout,
+            repository,
+            head,
+            source,
+            runner=services.git,
+            changed_paths=changed,
+            upfront=None if reads is None else lazy_upfront(reads),
+            exclude=exclude,
         )
     work.mkdir(exist_ok=True)
     results[name] = evaluate_condition(reviewer_root, manifest["conditions"][name]["script"], source, work)

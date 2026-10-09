@@ -319,12 +319,20 @@ def uncovered(manifest: dict[str, Any], changed: list[str]) -> list[str]:
     return [path for path in changed if path not in matched]
 
 
-def needs_conditions(manifest: dict[str, Any], changed: list[str]) -> bool:
-    """Whether routing these changed files runs a condition script, as `route` does for a specialist with a `when`
-    that matches any of them. A condition reads the source snapshot as it chooses, so it needs every file there."""
-    return any(
-        specialist["when"] is not None and _matched(specialist, changed) for specialist in manifest["specialists"]
-    )
+def condition_reads(manifest: dict[str, Any], changed: list[str]) -> list[str] | None:
+    """The snapshot paths the condition scripts routing these changed files runs read, as glob patterns, each once:
+    the `reads` of each condition `route` runs for a specialist with a `when` that matches any of them, and empty
+    when it runs none. None when one of them declares no `reads`: it reads the snapshot as it chooses, so it needs
+    every file there."""
+    patterns: list[str] = []
+    for specialist in manifest["specialists"]:
+        if specialist["when"] is None or not _matched(specialist, changed):
+            continue
+        reads = manifest["conditions"][specialist["when"]].get("reads")
+        if reads is None:
+            return None
+        patterns.extend(pattern for pattern in reads if pattern not in patterns)
+    return patterns
 
 
 def route(

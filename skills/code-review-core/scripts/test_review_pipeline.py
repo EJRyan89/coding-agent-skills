@@ -3055,6 +3055,32 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertTrue(any(line.startswith("GENERIC files=2") for line in lines), lines)
         self.assertFalse(any(line.startswith("UNCOVERED ") for line in lines), "the generic reviewer reviews it all")
 
+    def test_a_condition_that_declares_its_reads_decides_on_the_snapshot_a_review_gives_it(self) -> None:
+        # The condition opens review/rules.md, which the pull request leaves unchanged: a lazy snapshot holds it only
+        # when the condition declares it.
+        opens_rules = (
+            "import sys\nfrom pathlib import Path\n"
+            "root = Path(sys.argv[sys.argv.index('--source-root') + 1])\n"
+            "sys.exit(0 if (root / 'review' / 'rules.md').is_file() else 1)\n"
+        )
+        for reads, state, roles in (
+            (["review/*.md"], "open", ["python-reviewer", "generic-review"]),
+            (["docs/**"], "closed", ["generic-review"]),
+        ):
+            with self.subTest(reads=reads):
+                manifest = self.local_manifest()
+                payload = json.loads(manifest.read_text(encoding="utf-8"))
+                payload["conditions"]["window"]["reads"] = reads
+                manifest.write_text(json.dumps(payload), encoding="utf-8")
+                (manifest.parent / "window.py").write_text(opens_rules, encoding="utf-8")
+                self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+                code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+                self.assertEqual(0, code, err)
+                self.assertIn(f"CONDITION window {state}", out.splitlines())
+                ready = self.prepare()
+                self.assertEqual(roles, [role["id"] for role in ready["roles"]], "a review decides the same")
+                self.assertEqual("checkout-lazy", ready["snapshot"]["source"])
+
     def test_validate_reviewer_lists_the_files_no_routed_specialist_covers(self) -> None:
         # The fixture's head changes app/service.py, which the Python specialist takes, and CLAUDE.md, which no
         # specialist covers.

@@ -61,7 +61,11 @@ GENERIC: dict[str, Any] = {
 
 
 def specialists(
-    *, uncovered: str | None = None, supports: tuple[str, ...] = ("initial", "re-review"), when: str | None = None
+    *,
+    uncovered: str | None = None,
+    supports: tuple[str, ...] = ("initial", "re-review"),
+    when: str | None = None,
+    reads: list[str] | None = None,
 ) -> str:
     manifest: dict[str, Any] = {
         "schema_version": 2,
@@ -86,6 +90,8 @@ def specialists(
         ],
         "conditions": {} if when is None else {when: {"script": f"review/{when.replace('-', '_')}.py"}},
     }
+    if when is not None and reads is not None:
+        manifest["conditions"][when]["reads"] = reads
     if uncovered is not None:
         manifest["uncovered"] = uncovered
     return json.dumps(manifest)
@@ -129,6 +135,10 @@ TRUSTED_FILES = {
     "review/python-guide.md": "Trusted guide\n",
     # A specialist whose condition opens review/rules.md under the snapshot, which the pull request leaves unchanged.
     "review/conditional.json": specialists(when="has-rules"),
+    # The same condition, declaring that it reads review/rules.md, and declaring other paths but not that one.
+    "review/declared.json": specialists(when="has-rules", reads=["review/rules.md"]),
+    "review/misdeclared.json": specialists(when="has-rules", reads=["review/python*.md"]),
+    "review/declared-glob.json": specialists(when="has-rules", reads=["review/*.md"]),
     "review/has_rules.py": (
         "import pathlib, sys\n"
         "root = pathlib.Path(sys.argv[sys.argv.index('--source-root') + 1])\n"
@@ -2191,7 +2201,7 @@ class RepositoryReviewerTests(PrepareFixture):
         )
         self.assertEqual(stamp, result["snapshot_stamp"])
 
-    def test_a_condition_a_routed_specialist_names_reads_the_whole_snapshot(self) -> None:
+    def test_a_condition_that_declares_no_reads_reads_the_whole_snapshot(self) -> None:
         # The condition opens a file the pull request does not change, as a condition script may.
         self.configure(self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"))
         result, _ = self.prepare()
@@ -2201,6 +2211,50 @@ class RepositoryReviewerTests(PrepareFixture):
         self.assertNotIn("fetchable", self.json_file("source/source-snapshot.json"))
         for role in roles:
             self.assertNotIn("source-file", self.text_file(f"work/{role}.prompt.md"))
+
+    def test_a_condition_that_declares_its_reads_keeps_the_snapshot_lazy_and_decides_as_on_the_whole_one(self) -> None:
+        self.configure(self.repository("review/declared.json", trusted_ref="refs/heads/reviewers"))
+        result, _ = self.prepare()
+        roles = [role["id"] for role in result["roles"]]
+        self.assertEqual(["python-review", "generic-review"], roles, "the condition opened, as on the whole snapshot")
+        written = len(HEAD_FILES["app/service.py"]) + len(BASE_FILES["review/rules.md"])
+        self.assertEqual({**SNAPSHOT, "files": 2, "bytes": written}, result["snapshot"])
+        self.assertEqual("<root>/checkout", self.normalize(result["source_repository"]))
+        manifest = self.json_file("source/source-snapshot.json")
+        self.assertEqual(["app/service.py", "review/rules.md"], sorted(manifest["source_hashes"]))
+        self.assertEqual(
+            {path: FETCHABLE[path] for path in FETCHABLE if path != "review/rules.md"}, manifest["fetchable"]
+        )
+        self.assertEqual(BASE_FILES["review/rules.md"], self.text_file("source/review/rules.md"))
+        for role in roles:
+            self.assertIn("source-file", self.text_file(f"work/{role}.prompt.md"))
+
+    def test_a_declared_condition_is_not_given_a_path_it_does_not_declare(self) -> None:
+        # It declares review/python.md and review/python-guide.md but opens review/rules.md, which the head holds.
+        self.configure(self.repository("review/misdeclared.json", trusted_ref="refs/heads/reviewers"))
+        result, _ = self.prepare()
+        self.assertEqual(["generic-review"], [role["id"] for role in result["roles"]], "the condition closed")
+        self.assertEqual("checkout-lazy", result["snapshot"]["source"])
+        self.assertFalse((self.run_dir / "source" / "review" / "rules.md").exists())
+        self.assertIn("review/rules.md", self.json_file("source/source-snapshot.json")["fetchable"])
+        self.assertEqual(BASE_FILES["review/python.md"], self.text_file("source/review/python.md"))
+
+    def test_a_declared_read_the_configured_exclusions_match_is_never_written(self) -> None:
+        self.configure(
+            self.repository("review/declared-glob.json", trusted_ref="refs/heads/reviewers"),
+            snapshot_exclude=["review/s*.md"],
+        )
+        result, _ = self.prepare()
+        self.assertEqual(["python-review", "generic-review"], [role["id"] for role in result["roles"]])
+        self.assertEqual("checkout-lazy", result["snapshot"]["source"])
+        self.assertEqual(2, result["snapshot"]["excluded"]["configured"])
+        manifest = self.json_file("source/source-snapshot.json")
+        configured = sorted(path for path, reason in manifest["excluded_paths"].items() if reason == "configured")
+        self.assertEqual(["review/SKILL.md", "review/solo.md"], configured)
+        self.assertEqual([], [path for path in configured if path in manifest["fetchable"]])
+        self.assertEqual([], [path for path in configured if (self.run_dir / "source" / path).exists()])
+        written = sorted(path for path in manifest["source_hashes"] if path.startswith("review/"))
+        self.assertEqual(["review/plain.md", "review/python-guide.md", "review/python.md", "review/rules.md"], written)
 
     def test_the_whole_snapshot_a_condition_needs_leaves_out_the_configured_paths_too(self) -> None:
         self.configure(
