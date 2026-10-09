@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import TextIO
 
 from . import manifest, source
+from .kinds import ItemKind
 from .manifest import Ownership
 from .paths import Paths
 
@@ -45,5 +46,7 @@ class Context:
     def source_id(self) -> str:
         return self.source.source_id
 
-    def forced(self, item: str) -> bool:
-        return self.options.force or item in self.options.force_items
+    def forced(self, kind: ItemKind, item: str) -> bool:
+        """Whether --force, or --force-item with the item's deployed name or its own name, replaces it."""
+        named = self.options.force_items
+        return self.options.force or item in named or kind.item_name(item) in named

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import difflib
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -97,7 +98,7 @@ def _plan_selected(
     def found(state: str, action: str, reason: str = "", diff: list[str] | None = None) -> PlanEntry:
         return PlanEntry(name, kind.label, state, action, reason, existing, staged_hash, tuple(diff or ()))
 
-    forced = context.forced(name)
+    forced = context.forced(kind, name)
     if owned_hash is not None:
         if existing == owned_hash:
             return found("unmodified", "UNCHANGED" if existing == staged_hash else "UPDATE")
@@ -145,16 +146,15 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
     return PlanEntry(name, kind.label, "absent", "DROP", "already absent")
 
 
-def build(
-    context: Context,
-    selected: list[str],
-    adapters: list[str],
-    staged: render.Staged,
-    staged_shared: list[str],
-    agents: list[str],
-) -> list[PlanEntry]:
-    """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out."""
+def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render.Staged) -> list[PlanEntry]:
+    """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out.
+
+    The owned items it releases come first and then the items it installs, each pass in the kinds' order. Skills are
+    planned before the rest because the others depend on them: a skill left in place keeps the shared assets it was
+    deployed with, and a runtime adapter is skipped with its skill.
+    """
     owned = context.owned
+    selected, adapters = wanted[SKILL], wanted[ADAPTER_KIND]
     unselected_skills = [
         _plan_unselected(context, SKILL, name, value)
         for name, value in sorted(owned.skills.items())
@@ -170,8 +170,9 @@ def build(
         for entry in [*unselected_skills, *skills]
         if entry.action in ("SKIP", "PRESERVE") and entry.name in owned.skills
     )
-    retained = _retained_shared(context, survivors, staged_shared)
-    keep = set(staged_shared) | set(retained)
+    retained = _retained_shared(context, survivors, wanted[SHARED])
+    kept = {kind: set(names) for kind, names in wanted.items()}
+    kept[SHARED] |= set(retained)
     skipped_skills = {entry.name for entry in skills if entry.action == "SKIP"}
     adapter_entries: list[PlanEntry] = []
     for name in adapters:
@@ -179,6 +180,19 @@ def build(
         if name in skipped_skills:
             entry = replace(entry, action="SKIP", reason=SKIPPED_WITH_SKILL, diff=())
         adapter_entries.append(entry)
+    # Each kind's rendered content has its own shape in render.Staged, so each hash is read through its own method.
+    installs = {
+        SKILL: skills,
+        SHARED: [
+            _plan_selected(context, SHARED, asset, owned.shared.get(asset), staged.shared_hash(asset))
+            for asset in wanted[SHARED]
+        ],
+        ADAPTER_KIND: adapter_entries,
+        AGENT_KIND: [
+            _plan_selected(context, AGENT_KIND, name, owned.agents.get(name), staged.agent_hash(name))
+            for name in wanted[AGENT_KIND]
+        ],
+    }
     return [
         *unselected_skills,
         *(
@@ -186,31 +200,31 @@ def build(
             for asset, reason in retained.items()
         ),
         *(
-            _plan_unselected(context, SHARED, asset, value)
-            for asset, value in sorted(owned.shared.items())
-            if asset not in keep
+            _plan_unselected(context, kind, name, value)
+            for kind in KINDS
+            if kind is not SKILL
+            for name, value in sorted(owned.of(kind).items())
+            if name not in kept[kind]
         ),
-        *(
-            _plan_unselected(context, ADAPTER_KIND, name, value)
-            for name, value in sorted(owned.adapters.items())
-            if name not in adapters
-        ),
-        *(
-            _plan_unselected(context, AGENT_KIND, name, value)
-            for name, value in sorted(owned.agents.items())
-            if name not in agents
-        ),
-        *skills,
-        *adapter_entries,
-        *(
-            _plan_selected(context, SHARED, asset, owned.shared.get(asset), staged.shared_hash(asset))
-            for asset in sorted(staged.shared)
-        ),
-        *(
-            _plan_selected(context, AGENT_KIND, name, owned.agents.get(name), staged.agent_hash(name))
-            for name in agents
-        ),
+        *(entry for kind in KINDS for entry in installs[kind]),
     ]
+
+
+def check_forced_items(context: Context, wanted: Mapping[ItemKind, list[str]]) -> None:
+    """Refuse a --force-item that names no item this run installs, by its deployed name or its own name."""
+    accepted = {name: kind.item_name(name) for kind, names in wanted.items() for name in names}
+    known = set(accepted) | set(accepted.values())
+    unknown = [f"'{name}'" for name in dict.fromkeys(context.options.force_items) if name not in known]
+    if not unknown:
+        return
+    named = " and ".join(unknown) if len(unknown) < 3 else f"{', '.join(unknown[:-1])}, and {unknown[-1]}"
+    choices = sorted(set(accepted.values()))
+    raise DeployError(
+        f"ERROR: --force-item names {named}, which this run does not install.",
+        f"Name one of: {', '.join(choices)}."
+        if choices
+        else "This run installs nothing, so --force-item has nothing to replace.",
+    )
 
 
 def dry_run(entries: list[PlanEntry]) -> None:
@@ -331,9 +345,7 @@ def _ensure_transient_available(item: str, base: Path) -> None:
         )
 
 
-def check_ownership(
-    context: Context, selected: list[str], adapters: list[str], staged_shared: list[str], agents: list[str]
-) -> None:
+def check_ownership(context: Context, wanted: Mapping[ItemKind, list[str]]) -> None:
     owned, source_id, paths = context.owned, context.source_id, context.paths
     ownership = see_recovery("Ownership held by another source")
 
@@ -364,7 +376,6 @@ def check_ownership(
             ownership,
         )
 
-    wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
     # An owned item under the same root whose name the file system treats as this one's is the same file: another
     # source's copy of this very item is a transfer, and anything else is a collision, such as a skill and a shared
     # asset of one name, or Guide.md and guide.md on Windows.

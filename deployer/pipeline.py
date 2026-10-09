@@ -29,10 +29,10 @@ from . import (
     source_commit,
 )
 from . import selection as selection_module
-from .arguments import USAGE_ERROR, parse_command
+from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
-from .kinds import BY_LABEL, KINDS, SHARED, SKILL
+from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, KINDS, SHARED, SKILL
 from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
@@ -67,22 +67,23 @@ def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
 
 def _apply(context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str) -> None:
     paths = context.paths
+    # Read before anything moves, so git runs while no deployed item is half replaced.
+    commit = source_commit.head_commit(paths.source_dir)
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
     record.create()
-    fsops.make_directories(paths.dest_dir)
-    fsops.make_directories(paths.adapter_dest_dir)
-    fsops.make_directories(paths.agent_dest_dir)
+    for root in dict.fromkeys(kind.root for kind in KINDS):
+        fsops.make_directories(journal.root_directory(paths, root))
     for entry in entries:
         plan.carry_out(record, paths, staging_dir, entry)
-    _commit_manifest(context, entries, run_id)
+    _commit_manifest(context, entries, run_id, commit)
     backups = _finalize(context, record, run_id)
     fsops.remove(staging_dir)
     _summary(context, run_id, entries, backups)
 
 
-def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str) -> None:
+def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, commit: str | None) -> None:
     owned, data = context.owned, context.manifest
     recorded: dict[str, dict[str, dict]] = {
         kind.key: {name: {"hash": value} for name, value in owned.of(kind).items()} for kind in KINDS
@@ -103,7 +104,6 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str) ->
                 details["role"] = "owner"
             recorded[kind.key][entry.name] = details
     data.data["last_run_id"] = run_id
-    commit = source_commit.head_commit(context.paths.source_dir)
     # An entry written before selected_skills was dropped loses it here: nothing reads it (#23).
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
@@ -198,7 +198,7 @@ def _deploy(
             print(f"  - {name} ({platform_support.normalize(paths.copilot_skills_dir / name)})", file=sys.stderr)
         print(
             "The deployer will not modify ~/.copilot/skills. Resolve these paths manually, then check "
-            "which copy Copilot uses with 'python deploy.py verify'.",
+            f"which copy Copilot uses with '{VERIFY_COMMAND_LINE}'.",
             file=sys.stderr,
         )
     selection_module.print_selection(src, selection, selected)
@@ -206,7 +206,9 @@ def _deploy(
     selection_module.require_variables(context, selected)
     staged_shared = plan.shared_to_stage(context, selected, plan.validate_shared_assets(context, selected))
     agents = source.agent_closure(src, selected)
-    plan.check_ownership(context, selected, adapters, staged_shared, agents)
+    wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
+    plan.check_forced_items(context, wanted)
+    plan.check_ownership(context, wanted)
     staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
     render.reject_unexpanded_tokens(staged)
     render.validate_executables(staged)
@@ -216,7 +218,7 @@ def _deploy(
     else:
         print("Rendered and validated.")
     # Planned last, after the slow validation, so the destinations it read are the ones the deployment changes.
-    entries = plan.build(context, selected, adapters, staged, staged_shared, agents)
+    entries = plan.build(context, wanted, staged)
     if run_id is None:
         plan.dry_run(entries)
         return 0
@@ -336,10 +338,10 @@ def execute(
         return fail(exc, debug, "prepare the deployment")
     try:
         _reject_other_checkout(paths, source_id, options.take_over_source)
-    except DeployError as exc:
-        print_error(exc, debug)
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        code = fail(exc, debug, "check the source checkout")
         held.release()
-        return exc.exit_code
+        return code
     if not journal.recover_incomplete(paths):
         _report_failed_recovery()
         held.release()
