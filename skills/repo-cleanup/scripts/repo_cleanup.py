@@ -7,9 +7,10 @@
     force-delete  force-delete branches reported UNMERGED, after the user confirmed
     summary       print the repository's summary from the plan file
 
-Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned. 1 means
-something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or was skipped with an ERROR line,
-or a last line FAILED <reason> when the command could not run at all. 2 is a usage error.
+Every command prints one tab-separated fact per line. Exit status 0 means every repository was cleaned, or every
+confirmed deletion ran. 1 means something needs the agent: a repository that stopped (DIRTY_MAIN, FETCH_FAILED) or
+was skipped with an ERROR line, a deletion Git refused, or a last line FAILED <reason> when the command could not run
+at all. 2 is a usage error.
 """
 
 from __future__ import annotations
@@ -23,10 +24,11 @@ import stat
 import sys
 import tempfile
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -34,13 +36,16 @@ import git_client
 import pr_status
 from console import use_utf8_output
 from git_client import GitClient, GitResult
-from github_client import GitHubClient, GitHubError, subprocess_runner
+from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
 from skill_roots import deployed_skill_roots
 
 # The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
+T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
+# Matched in any letter case: Windows treats Release and release as one directory, and refs stored as files there
+# cannot hold both, so protection errs toward keeping.
 RELEASE_PREFIX = "release/"
 STALE_STATES = ("MERGED", "CLOSED")
 KEPT_STATES = {"OPEN": "pr-open", "UNMATCHED": "pr-unmatched", "UNKNOWN": "pr-unknown"}
@@ -58,11 +63,14 @@ SUMMARY_WIDTH = 25
 SWEEP_WORKERS = 4
 # The lines a sweep passes on: what the agent must act on or report. Everything else is in the summary.
 SWEEP_KINDS = {"DIRTY_MAIN", "FETCH_FAILED", "ERROR", "CONFIRM_LOCAL", "UNMERGED", "SUMMARY"}
+# What sync did to the default branch, passed on only for a repository with no plan summary to carry it.
+SYNC_KINDS = {"CHECKOUT": {"switched"}, "FF_DEFAULT": {"forwarded", "skipped", "diverged", "failed"}}
 # Why the GitHub CLI cannot reach github.com, by GitHubError.kind; other kinds are named as they are.
 ACCESS_FAILURES = {
     "prerequisite": "GitHub CLI not installed",
     "network": "cannot reach github.com",
     "timeout": "github.com did not answer",
+    "rate_limit": "GitHub's rate limit refused the GitHub CLI",
 }
 
 
@@ -86,7 +94,8 @@ class Services:
 
 
 def one_line(value: Any) -> str:
-    return CONTROL.sub(" ", str(value)).rstrip()
+    """`value` on one line, with each byte Git gave that is not UTF-8, such as in a branch name, as U+FFFD."""
+    return CONTROL.sub(" ", replace_undecodable(str(value))[0]).rstrip()
 
 
 _capture = threading.local()
@@ -164,17 +173,22 @@ def same_path(first: str, second: str) -> bool:
     return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))  # noqa: PTH100 - lexical
 
 
-def dirty_count(services: Services, directory: str | Path) -> int:
-    """Number of changed or untracked paths, from `git status --porcelain -z`."""
-    count = 0
-    fields = iter(git_output(services, directory, "status", "--porcelain", "-z").split("\0"))
+def status_codes(services: Services, directory: str | Path, *options: str) -> list[str]:
+    """The two-letter code of each path `git status --porcelain -z` lists, a rename or copy counted once."""
+    codes: list[str] = []
+    fields = iter(git_output(services, directory, "status", "--porcelain", "-z", *options).split("\0"))
     for entry in fields:
         if not entry:
             continue
-        count += 1
+        codes.append(entry[:2])
         if "R" in entry[:2] or "C" in entry[:2]:
             next(fields, None)  # a rename or copy is followed by its original path
-    return count
+    return codes
+
+
+def dirty_count(services: Services, directory: str | Path) -> int:
+    """Number of changed or untracked paths, from `git status --porcelain -z`."""
+    return len(status_codes(services, directory))
 
 
 def uncommitted(services: Services, path: str) -> str:
@@ -211,11 +225,15 @@ def default_branch(services: Services, root: str | Path) -> str:
     raise CleanupError("cannot determine default branch")
 
 
+def is_release(branch: str) -> bool:
+    return branch.casefold().startswith(RELEASE_PREFIX)
+
+
 def is_protected(branch: str, path: str) -> bool:
-    """A release branch, or a worktree with a directory named release anywhere in its path."""
-    if branch.startswith(RELEASE_PREFIX):
+    """A release branch, or a worktree with a directory named release anywhere in its path, in any letter case."""
+    if is_release(branch):
         return True
-    return "/release/" in f"/{path.replace(chr(92), '/').removeprefix('/')}/"
+    return "/release/" in f"/{path.replace(chr(92), '/').removeprefix('/')}/".casefold()
 
 
 def pull_state(
@@ -289,15 +307,18 @@ def discover(target: str | None, repos_root: str, services: Services) -> list[st
 def access_failure(error: GitHubError) -> str:
     if error.kind == "authentication":
         return "GitHub CLI not authenticated — run 'gh auth login'"
-    label = ACCESS_FAILURES.get(error.kind, f"GitHub CLI could not reach github.com ({error.kind})")
+    label = ACCESS_FAILURES.get(error.kind, f"GitHub CLI access check failed ({error.kind})")
     return f"{label} — {one_line(error)}"
 
 
 # sync -----------------------------------------------------------------------------------------------------------
 
 
-def sync(root: str, skip_checkout: bool, services: Services) -> bool:
-    """Switch to the default branch, fetch and prune, and fast-forward it; False when it stopped for the user."""
+def sync(root: str, skip_checkout: bool, services: Services) -> dict[str, Any] | None:
+    """Switch to the default branch, fetch and prune, and fast-forward it.
+
+    None when it stopped for the user; otherwise what it did to the default branch, for the repository's summary.
+    """
     require_repository(root)
     default = default_branch(services, root)
     emit("DEFAULT", default)
@@ -305,42 +326,44 @@ def sync(root: str, skip_checkout: bool, services: Services) -> bool:
     if dirty:
         emit("DIRTY_MAIN", dirty)
         if not skip_checkout:
-            return False
+            return None
     if skip_checkout:
-        emit("CHECKOUT", "skipped")
+        checkout = "skipped"
+        emit("CHECKOUT", checkout)
     elif git(services, root, "symbolic-ref", "--quiet", "HEAD").stdout.strip() == f"refs/heads/{default}":
-        emit("CHECKOUT", "current")
+        checkout = "current"
+        emit("CHECKOUT", checkout)
     else:
         switched = git(services, root, "switch", "--quiet", default)
-        if switched.returncode == 0:
-            emit("CHECKOUT", "switched")
-        else:
-            emit("CHECKOUT", "failed", reason(switched))
+        checkout = "switched" if switched.returncode == 0 else "failed"
+        emit("CHECKOUT", checkout, *([] if switched.returncode == 0 else [reason(switched)]))
     fetched = git(services, root, "fetch", "--all", "--prune", "--quiet")
     if fetched.returncode != 0:
         error = reason(fetched)
         emit("FETCH_FAILED", error)
         for line in fetch_failed_summary(Path(root).name, error):
             emit("SUMMARY", line)
-        return False
+        return None
     git_output(services, root, "worktree", "prune")
-    emit("FF_DEFAULT", *fast_forward_default(services, root, default))
-    return True
+    outcome, behind = fast_forward_default(services, root, default)
+    emit("FF_DEFAULT", *outcome)
+    return {"checkout": checkout, "fast_forward": [one_line(field) for field in outcome], "behind": behind}
 
 
-def fast_forward_default(services: Services, root: str, default: str) -> tuple[Any, ...]:
+def fast_forward_default(services: Services, root: str, default: str) -> tuple[tuple[Any, ...], int]:
+    """The FF_DEFAULT outcome, and how far the default branch was behind origin before it."""
     local = branch_tip(services, root, default)
     target = resolve(services, root, f"refs/remotes/origin/{default}")
     if local is None or target is None:
-        return ("skipped", f"no {'local branch' if local is None else 'origin/' + default}")
+        return ("skipped", f"no {'local branch' if local is None else 'origin/' + default}"), 0
     ahead, behind = ahead_behind(services, root, local, target)
     if behind == 0:
-        return ("ok",)
+        return ("current",), 0
     if ahead:
-        return ("diverged", ahead, behind)
+        return ("diverged", ahead, behind), behind
     tree = checkouts(services, root).get(default)
     error = fast_forward(services, root, default, local, target, tree.path if tree else None)
-    return ("ok",) if not error else ("failed", error)
+    return (("forwarded", target) if not error else ("failed", error)), behind
 
 
 def fetch_failed_summary(name: str, error: str) -> list[str]:
@@ -415,7 +438,7 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
         category = "local" if not upstream else "gone" if track == "[gone]" else "tracking"
         tree, entry = located.get(name), linked.get(name)
         state, error = "-", ""
-        if name.startswith(RELEASE_PREFIX):
+        if is_release(name):
             action, detail = "keep", "release"
         else:
             if category != "tracking" or (entry is not None and entry["action"] == "candidate"):
@@ -548,43 +571,45 @@ def in_default(services: Services, plan: dict[str, Any], sha: str) -> bool:
     )
 
 
-def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> None:
+def delete_merged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> bool:
     """Delete an unchanged branch the default branch contains, and hand any other to unmerged.
 
     git branch -d judges a branch against its upstream, or against HEAD when that is gone or unset, and HEAD is not
     the default branch after --skip-checkout or a failed switch. So the default branch decides, and -D deletes a
-    branch -d refused only because HEAD lacks it.
+    branch -d refused only because HEAD lacks it. False when Git refused the deletion.
     """
     if not in_default(services, plan, sha):
-        unmerged(services, plan, name, sha, pr)
-        return
+        return unmerged(services, plan, name, sha, pr)
     result = git(services, plan["repo_root"], "branch", "-d", name)
     if result.returncode == 0:
         record(plan, "DELETED", name)
     elif branch_tip(services, plan["repo_root"], name) == sha:
-        force_delete(services, plan, name)
+        return force_delete(services, plan, name)
     else:
         record(plan, "PRESERVED", name, "moved")
+    return True
 
 
-def force_delete(services: Services, plan: dict[str, Any], name: str) -> None:
+def force_delete(services: Services, plan: dict[str, Any], name: str) -> bool:
+    """git branch -D; False when Git refused it."""
     result = git(services, plan["repo_root"], "branch", "-D", name)
     if result.returncode == 0:
         record(plan, "DELETED", name)
-    else:
-        record(plan, "PRESERVED", name, reason(result))
+        return True
+    record(plan, "PRESERVED", name, reason(result))
+    return False
 
 
-def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> None:
+def unmerged(services: Services, plan: dict[str, Any], name: str, sha: str, pr: str) -> bool:
     """Force-delete an unchanged branch Git calls unmerged only when its pull request merged at this exact tip.
 
     That is a squash or rebase merge: GitHub proved the work landed although no commit of the branch is on the
-    default branch. Any other unmerged branch waits for the user's confirmation.
+    default branch. Any other unmerged branch waits for the user's confirmation. False when Git refused a deletion.
     """
     if pr != "MERGED":
         record(plan, "UNMERGED", name, sha)
-        return
-    force_delete(services, plan, name)
+        return True
+    return force_delete(services, plan, name)
 
 
 def unchanged(
@@ -642,8 +667,29 @@ def prune_empty_parents(removed: str, boundaries: list[str]) -> list[str]:
     return pruned
 
 
+def ignored_paths(services: Services, path: str) -> str:
+    """Why a worktree's ignored files keep it, or an empty string when it has none.
+
+    git worktree remove counts a worktree holding only ignored files, such as a .env, as clean and deletes them.
+    """
+    try:
+        count = status_codes(services, path, "--ignored").count("!!")
+    except CleanupError as exc:
+        return str(exc)
+    if not count:
+        return ""
+    return f"worktree {path} holds {count} ignored path{'' if count == 1 else 's'} git worktree remove would delete"
+
+
 def remove_worktree(services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str) -> bool:
-    """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch."""
+    """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch.
+
+    A worktree with ignored files is kept, since Git would delete them with it.
+    """
+    held = ignored_paths(services, entry["path"])
+    if held:
+        record(plan, "PRESERVED", entry["branch"], held)
+        return False
     removed = git(services, plan["repo_root"], "worktree", "remove", entry["path"])
     if removed.returncode != 0:
         record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
@@ -658,11 +704,24 @@ def apply(plan_path: str, services: Services) -> None:
     if plan["applied"]:
         raise CleanupError("this plan was already applied; run plan again")
     plan["applied"] = True
+    run_and_report(plan_path, plan, lambda: apply_plan(plan, services))
+
+
+def run_and_report(plan_path: str, plan: dict[str, Any], action: Callable[[], T]) -> T:
+    """Run `action` on the plan, then save the plan and print its summary, also when the action failed partway.
+
+    Every branch deleted and worktree removed before a failure is then in the summary, printed ahead of the failure.
+    """
     try:
-        apply_plan(plan, services)
+        return action()
+    except Exception as exc:
+        plan["stopped"] = one_line(exc) or type(exc).__name__
+        raise
     finally:
-        save_plan(plan_path, plan)
-    print_summary(plan)
+        try:
+            save_plan(plan_path, plan)
+        finally:
+            print_summary(plan)
 
 
 def apply_plan(plan: dict[str, Any], services: Services) -> None:
@@ -704,7 +763,8 @@ def apply_plan(plan: dict[str, Any], services: Services) -> None:
                 record(plan, "PRESERVED", branch["name"], "moved")
 
 
-def confirm(plan_path: str, names: list[str], services: Services, force: bool) -> None:
+def confirm(plan_path: str, names: list[str], services: Services, force: bool) -> bool:
+    """Delete the confirmed branches the plan offered; False when Git refused any deletion."""
     plan = load_plan(plan_path)
     if not plan["applied"]:
         raise CleanupError("run apply with this plan first")
@@ -715,19 +775,21 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
     else:
         eligible = {branch["name"]: branch["sha"] for branch in plan["branches"] if branch["action"] == "ask-delete"}
         refusal = "not a local-only branch offered by this plan"
-    try:
+
+    def delete() -> bool:
         located = checkouts(services, plan["repo_root"])
+        succeeded = True
         for name in dict.fromkeys(names):
             if name not in eligible or name in deleted(plan):
                 record(plan, "PRESERVED", name, refusal)
             elif unchanged(services, plan, name, eligible[name], located, None):
                 if force:
-                    force_delete(services, plan, name)
+                    succeeded = force_delete(services, plan, name) and succeeded
                 else:
-                    delete_merged(services, plan, name, eligible[name], states[name])
-    finally:
-        save_plan(plan_path, plan)
-    print_summary(plan)
+                    succeeded = delete_merged(services, plan, name, eligible[name], states[name]) and succeeded
+        return succeeded
+
+    return run_and_report(plan_path, plan, delete)
 
 
 # summary --------------------------------------------------------------------------------------------------------
@@ -758,17 +820,18 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         if branch["pr"] == "UNKNOWN"
     ]
     unmatched = [branch["name"] for branch in plan["branches"] if branch["pr"] == "UNMATCHED"]
-    open_gone = [
-        branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN" and branch["category"] == "gone"
+    synced = plan.get("sync") or {}  # absent from a plan built outside a sweep
+    skipped = [
+        f"{entry['branch']} (behind {entry['behind']}; {entry['reason']})"
+        for entry in plan.get("fastforward_skipped", [])  # absent from a plan an earlier version wrote
     ]
+    if synced.get("fast_forward", [""])[0] == "failed":
+        skipped.insert(0, f"{plan['default']['name']} (behind {synced['behind']}; {synced['fast_forward'][1]})")
     return {
         "Branches deleted": [fields[0] for fields in events(plan, "DELETED")],
         "Worktrees removed": [f"{path} ({branch})" for path, branch in events(plan, "REMOVED")],
         "Branches fast-forwarded": [fields[0] for fields in events(plan, "FF")],
-        "Fast-forward skipped": [
-            f"{entry['branch']} (behind {entry['behind']}; {entry['reason']})"
-            for entry in plan.get("fastforward_skipped", [])  # absent from a plan an earlier version wrote
-        ],
+        "Fast-forward skipped": skipped,
         "Diverged (manual)": [
             f"{name} (ahead {ahead}, behind {behind})" for name, ahead, behind in events(plan, "DIVERGED")
         ],
@@ -778,7 +841,7 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         "Unmerged (kept)": unmerged,
         "Local-only (kept)": local,
         "Preserved": [f"{name}: {why}" for name, why in events(plan, "PRESERVED")],
-        "Gone with open PR": open_gone,
+        "Open PR (kept)": [branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN"],
         "Empty directories removed": [fields[0] for fields in events(plan, "PRUNED_DIR")],
     }
 
@@ -786,9 +849,11 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
 def summary_lines(plan: dict[str, Any]) -> list[str]:
     items = summary_items(plan)
     protected = [entry for entry in plan["worktrees"] if entry["action"] == "protected"]
+    stopped = plan.get("stopped")
+    heading = f"cleanup stopped partway ({stopped}); done before it" if stopped else "cleanup complete"
     lines = [
-        f"{plan['repo_name']} cleanup complete:",
-        f"  {'Default branch:'.ljust(SUMMARY_WIDTH - 1)} {plan['default']['name']} ({plan['default']['status']})",
+        f"{plan['repo_name']} {heading}:",
+        f"  {'Default branch:'.ljust(SUMMARY_WIDTH - 1)} {plan['default']['name']} ({default_notes(plan)})",
         summary_row("Branches deleted", items["Branches deleted"]),
         summary_row("Worktrees removed", items["Worktrees removed"]),
         summary_row("Branches fast-forwarded", items["Branches fast-forwarded"]),
@@ -803,7 +868,7 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         "Unmerged (kept)",
         "Local-only (kept)",
         "Preserved",
-        "Gone with open PR",
+        "Open PR (kept)",
         "Empty directories removed",
     ):
         if items[label]:
@@ -811,9 +876,22 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
     return lines
 
 
+def default_notes(plan: dict[str, Any]) -> str:
+    """The default branch's status, then what the sweep's sync did to it."""
+    synced = plan.get("sync") or {}
+    notes = [plan["default"]["status"]]
+    if synced.get("fast_forward", [""])[0] == "forwarded":
+        notes.append("fast-forwarded")
+    if synced.get("checkout") == "switched":
+        notes.append("switched to it")
+    elif synced.get("checkout") == "failed":
+        notes.append("switch to it failed")
+    return "; ".join(notes)
+
+
 def is_quiet(plan: dict[str, Any]) -> bool:
     """Nothing changed and nothing needs the user: its summary would only say the default branch is up to date."""
-    return plan["default"]["status"] == "up to date" and not any(summary_items(plan).values())
+    return default_notes(plan) == "up to date" and not plan.get("stopped") and not any(summary_items(plan).values())
 
 
 def print_summary(plan: dict[str, Any]) -> None:
@@ -824,14 +902,14 @@ def print_summary(plan: dict[str, Any]) -> None:
 # sweep ----------------------------------------------------------------------------------------------------------
 
 
-def plans_directory(explicit: str | None) -> Path:
-    """Where a sweep keeps its plan files: `explicit`, or a new temporary directory.
+def plans_location(explicit: str | None) -> Path | None:
+    """The explicit directory for a sweep's plan files, or None for a new temporary directory.
 
     A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
     explicit directory inside any skills directory is refused before anything runs.
     """
     if explicit is None:
-        return Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
+        return None
     target = Path(explicit).resolve()
     for root in (SKILLS_ROOT, *deployed_skill_roots()):
         if target.is_relative_to(root.resolve()):
@@ -842,46 +920,83 @@ def plans_directory(explicit: str | None) -> Path:
     return Path(explicit)
 
 
+def applied_plan(path: Path | None) -> str | None:
+    """The plan file of a repository whose apply started, so its summary and confirmations stay usable."""
+    if path is None:
+        return None
+    try:
+        return path.as_posix() if load_plan(path)["applied"] else None
+    except CleanupError:
+        return None
+
+
 def sweep_repository(
     root: str, repos_root: str, plans: str, services: Services, skip_checkout: bool = False
 ) -> dict[str, Any]:
     """sync, plan, and apply one repository, capturing its lines. Runs on a sweep worker thread."""
     lines: list[str] = []
     _capture.lines = lines
-    result: dict[str, Any] = {"root": root, "lines": lines, "plan": None}
+    plan_path: Path | None = None
     try:
-        if not sync(root, skip_checkout, services):
+        synced = sync(root, skip_checkout, services)
+        if synced is None:
             dirty = any(line.split("\t")[0] == "DIRTY_MAIN" for line in lines)
-            return {**result, "state": "dirty" if dirty else "fetch-failed"}
-        plan_path = Path(plans) / f"{Path(root).name}.json"
-        save_plan(plan_path, build_plan(root, repos_root, services))
-        apply(str(plan_path), services)
-        state = "quiet" if is_quiet(load_plan(plan_path)) else "cleaned"
-        return {**result, "state": state, "plan": plan_path.as_posix()}
+            state = "dirty" if dirty else "fetch-failed"
+        else:
+            plan = build_plan(root, repos_root, services)
+            plan["sync"] = synced
+            plan_path = Path(plans) / f"{Path(root).name}.json"
+            save_plan(plan_path, plan)
+            apply(str(plan_path), services)
+            state = "quiet" if is_quiet(load_plan(plan_path)) else "cleaned"
     except (CleanupError, OSError) as exc:
         emit("ERROR", exc)
-        return {**result, "state": "error"}
+        state = "error"
     except GitError as exc:
         emit("ERROR", exc)
-        return {**result, "state": "git-failed"}
+        state = "git-failed"
     except Exception as exc:  # a defect in one repository's run must not discard every other repository's report
         emit("ERROR", f"unexpected {type(exc).__name__}: {exc}")
-        return {**result, "state": "error"}
+        state = "error"
     finally:
         _capture.lines = None
+    return {"root": root, "lines": lines, "state": state, "plan": applied_plan(plan_path)}
 
 
-def sweep(target: str | None, repos_root: str, plans: str, services: Services, skip_checkout: bool = False) -> int:
+def passed_on(line: str, result: dict[str, Any]) -> bool:
+    """Whether the sweep prints a repository's line: what the agent acts on or reports, without the step chatter.
+
+    What sync did to the default branch is in the plan's summary, so its lines are printed only when no plan summary
+    follows; a failed checkout is always printed.
+    """
+    kind, *fields = line.split("\t")
+    if kind == "SUMMARY":
+        return result["state"] != "quiet"
+    if kind == "CHECKOUT" and fields[0] == "failed":
+        return True
+    if kind in SYNC_KINDS:
+        return result["plan"] is None and fields[0] in SYNC_KINDS[kind]
+    return kind in SWEEP_KINDS
+
+
+def sweep(
+    target: str | None, repos_root: str, plans: Path | None, services: Services, skip_checkout: bool = False
+) -> int:
     """Clean every repository at once; print each one's decisions, failures, and summary in discovery order.
 
-    Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip. A failure in one
-    repository never stops the others: every result is reported, and the sweep exits 1 when any repository needs
-    the agent. skip_checkout cleans a dirty main worktree without switching its branch.
+    The GitHub CLI's access is checked before the plans directory is created, so a sweep that cannot start leaves
+    nothing behind. Each repository is synced, planned, and applied in turn, re-checking every recorded branch tip.
+    A failure in one repository never stops the others: every result is reported, and the sweep exits 1 when any
+    repository needs the agent. skip_checkout cleans a dirty main worktree without switching its branch.
     """
     repositories = discover(target, repos_root, services)
+    directory = plans or Path(tempfile.mkdtemp(prefix="repo-cleanup-plans-"))
+    emit("PLANS", directory.as_posix())
     with ThreadPoolExecutor(max_workers=max(1, min(SWEEP_WORKERS, len(repositories)))) as pool:
         results = list(
-            pool.map(lambda root: sweep_repository(root, repos_root, plans, services, skip_checkout), repositories)
+            pool.map(
+                lambda root: sweep_repository(root, repos_root, str(directory), services, skip_checkout), repositories
+            )
         )
     states: dict[str, int] = {}
     for result in results:
@@ -890,10 +1005,7 @@ def sweep(target: str | None, repos_root: str, plans: str, services: Services, s
         if result["plan"]:
             emit("PLAN", result["plan"])
         for line in result["lines"]:
-            kind = line.split("\t")[0]
-            if (kind in SWEEP_KINDS and not (kind == "SUMMARY" and result["state"] == "quiet")) or (
-                kind == "CHECKOUT" and line.split("\t")[1] == "failed"
-            ):
+            if passed_on(line, result):
                 print(line)
     emit(
         "SWEPT",
@@ -934,13 +1046,12 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
     services = services or Services()
     try:
         if options.command == "sweep":
-            plans = plans_directory(options.plans)
-            emit("PLANS", plans.as_posix())
-            return sweep(options.target, options.repos_root, str(plans), services, options.skip_checkout)
+            plans = plans_location(options.plans)
+            return sweep(options.target, options.repos_root, plans, services, options.skip_checkout)
         if options.command == "summary":
             print_summary(load_plan(options.plan))
-        else:
-            confirm(options.plan, options.branches, services, force=options.command == "force-delete")
+        elif not confirm(options.plan, options.branches, services, force=options.command == "force-delete"):
+            return 1
     except (CleanupError, GitError, OSError, ValueError) as exc:
         emit("FAILED", exc)
         return 1

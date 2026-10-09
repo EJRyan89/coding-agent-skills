@@ -18,9 +18,7 @@ Pass the user's argument as the target, or omit it to sweep every repository:
 python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" sweep --repos-root "{{REPOS_ROOT}}" "<target>"
 ```
 
-It first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file.
-
-A last line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran: report it and stop. Otherwise it prints one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
+A single line `FAILED <reason>` (for example, the GitHub CLI is not signed in) means nothing ran and nothing was created: report it and stop. Otherwise it first prints `PLANS <directory>`, the new temporary directory that holds each repository's plan file, then one block per repository, starting with `REPO <path> <state>`, then `PLAN <plan file>` once a plan was applied, then only the lines that need you, and ends with `SWEPT <n>` and a count per state. Act on the blocks, not the exit status.
 
 ## 2. Each repository's state
 
@@ -28,9 +26,9 @@ A last line `FAILED <reason>` (for example, the GitHub CLI is not signed in) mea
 - `quiet`: nothing changed and nothing needs the user. List these repositories together on one line instead of showing a summary.
 - `dirty`: a `DIRTY_MAIN <n>` line; handle it in step 3.
 - `fetch-failed`: relay its `SUMMARY` lines.
-- `error` or `git-failed`: report its `ERROR` line; nothing more runs for it.
+- `error` or `git-failed`: report its `ERROR` line; nothing more runs for it. With a `PLAN` line, it failed partway through cleaning: first show its `SUMMARY` lines, which say what was done before the failure, and ask the step 4 questions for its `CONFIRM_LOCAL` and `UNMERGED` lines.
 
-A `CHECKOUT failed <reason>` line means the switch to the default branch failed; report it with that repository's summary.
+A `CHECKOUT failed <reason>` line means the switch to the default branch failed; report it with that repository's summary. A repository with no `PLAN` line may show a `CHECKOUT switched` or `FF_DEFAULT` line, what was already done to its default branch; report it with the repository.
 
 ## 3. Dirty main worktrees
 
@@ -58,7 +56,7 @@ python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" delete-local --plan "<pl
 python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" force-delete --plan "<plan file>" --branch "<branch>"
 ```
 
-Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>`, or a single `FAILED <reason>` when the plan cannot be used.
+Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deletion Git refused, its reason, and the command exits 1), or a last line `FAILED <reason>` when the plan cannot be used or Git could not run; `SUMMARY` lines before it say what was done.
 
 ## 5. Summary
 

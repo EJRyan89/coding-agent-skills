@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import Finished
-from github_client import CommandResult
+from github_client import CommandResult, GitHubError
 from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
 
 TIP = "a" * 40
@@ -166,6 +166,16 @@ class ClassifyTests(unittest.TestCase):
         ):
             classify("owner/repo", "topic", TIP, runner=run)
         self.assertEqual(6, len(run.calls))
+
+    def test_a_rate_limit_refused_without_a_run_names_the_query_not_a_missing_gh(self) -> None:
+        def refused(command: Sequence[str]) -> CommandResult:
+            raise GitHubError("GitHub asked to wait 400s before retrying; rerun later", kind="rate_limit")
+
+        with self.assertRaises(QueryError) as caught:
+            classify("owner/repo", "topic", TIP, runner=refused)
+        self.assertEqual(
+            "gh pr list failed: GitHub asked to wait 400s before retrying; rerun later", str(caught.exception)
+        )
 
     def test_output_that_is_not_utf8_is_replaced_instead_of_failing(self) -> None:
         # A pull request field gh prints can hold any bytes; strict decoding used to end the sweep with a traceback.
