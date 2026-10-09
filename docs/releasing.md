@@ -45,6 +45,7 @@ A change to a contract file is what raises the level, and validation holds that 
    `YourName` is the documented placeholder in test fixtures. The CI private-reference check matches only generic patterns, and adding a specific name to it would publish the name, so the list never enters the repository. Any hit is a prompt to read the line, not a verdict; fix a real one through a pull request before tagging.
 4. **Statements that carry a version.** The README's supported-runtimes table names the versions tested and where they were tested; `SECURITY.md` names `main` as the supported line and releases as checkpoints. Confirm both still describe the truth for this release.
 5. **Security settings.** The `python tools/branch_protection.py` run in step 1 also confirms that secret scanning, push protection, private vulnerability reporting, and Dependabot security updates are enabled and that the default workflow token is read-only, and prints each setting as it found it; `PROTECTED` covers them.
+6. **Release audit.** Run the [`audit-repository`](../.claude/skills/audit-repository/SKILL.md) repository skill's `release` mode, which writes one brief per area changed since the last tag for a read-only reader. It asks whether the release keeps what it says: each change matches its issue and its upgrade note, no contract or document contradicts the code, every changed behavior has its test, and every grant a changed skill declares is used. A confirmed defect is fixed before the tag. Drift and polish are filed into the next milestone, and the release notes name each as deferred. A trust-boundary finding goes to a private security advisory, as [SECURITY.md](../SECURITY.md) says, never to a public issue.
 
 ## Tagging
 
@@ -66,6 +67,7 @@ A release-note obligation that a pull request or a milestone records belongs in 
 
 1. Deploy from the hub on `main` and confirm `python deploy.py verify` finds every adapter.
 2. Start `update-coding-agent-skills` from a runtime and confirm it reports `UP_TO_DATE`, which exercises the rendered source path and the fetch together. A release that raised the breaking component makes the skill stop at `MAJOR_UPDATE` on every installation behind it until the user passes `--cross-major`, so its notes must say what the user has to do.
-3. Retire any worktree the release work used.
+3. **Rotation audit.** Run the `audit-repository` skill's `rotation` mode, which names the area its rotation record shows read whole least recently (the deployer, the code review skills, the other skills, or the repository's infrastructure and documents) and writes that area's whole-area brief, so no area goes unread for more than four releases. Its findings, with the issues the new milestone carries, feed the next milestone; it holds nothing. Record the area for the new tag with `rotation --record`, through a pull request, and note on the milestone which areas both audits read.
+4. Retire any worktree the release work used.
 
 The first release, `v0.1.0`, was tagged on 2026-10-04; the history of how the repository was prepared for publication is in the Git history before that tag.

@@ -76,7 +76,7 @@ Two repository skills carry the procedure. Claude Code loads them from `.claude/
 - `implement-change` takes any change from the worktree and the plan to the pull request. It reads every repository-specific fact, such as the size gate, the contract files, the validation to run, and which document owns what, from [Implementing changes](docs/implementing-changes.md), which is worth reading without an agent too.
 - `change-skill` adds or changes a skill, shipped or repository-only. It builds on `implement-change` and applies [Adding a skill](docs/adding-a-skill.md), the skill contract.
 
-The other two, `runtime-canary` and `evaluate-skill`, are gates; see [Gates the maintainer runs](#gates-the-maintainer-runs).
+Two more, `runtime-canary` and `evaluate-skill`, are gates; see [Gates the maintainer runs](#gates-the-maintainer-runs). The last, `audit-repository`, runs the maintainer's two audits of each release, one before the tag and one after; [Releasing](docs/releasing.md#before-tagging) says when.
 
 ## Making changes
 
