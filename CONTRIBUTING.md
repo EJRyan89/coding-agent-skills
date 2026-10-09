@@ -2,6 +2,30 @@
 
 Thank you for helping improve Coding Agent Skills. Keep changes focused, preserve the safety model, and include regression coverage for behavioral changes.
 
+This page is the whole path from a clone to a merged pull request: getting the source, the tools, the worktree each task works in, the repository skills that carry the procedure, validation, upgrade notes, the pull request, and the gates the maintainer runs.
+
+## Getting the source
+
+Clone this repository, so that `origin` is this repository and `origin/main` and its release tags are what validation compares with:
+
+```bash
+git clone https://github.com/EJRyan89/coding-agent-skills.git
+```
+
+Without push access, fork it on GitHub and add the fork as a second remote to push branches to. `origin` stays this repository, so every instruction below that names `origin/main` holds as written:
+
+```bash
+git remote add fork 'https://github.com/<your-user>/coding-agent-skills.git'
+```
+
+Keep a full clone, and fetch `main` and the tags before validating:
+
+```bash
+git fetch origin main --tags
+```
+
+Validation reads both: the runner compares with `origin/main` to find a documentation-only change, and the upgrade-notes check compares the contract files at the last tag reachable from `origin/main` with the working tree. A missing `origin/main` or a shallow clone fails that check with the command that fixes it. A clone whose `origin` is a fork without this repository's tags passes it silently, because with no tag it treats nothing as released; cloning this repository and pushing to the fork avoids that.
+
 ## Development environment
 
 Development and deployment are currently supported on Windows only. Contributors need:
@@ -30,9 +54,29 @@ pwsh -Command 'Install-Module PSScriptAnalyzer -Scope CurrentUser -Force'
 
 Validation runs `Invoke-ScriptAnalyzer -Severity Warning,Error` on every `.ps1` under `tools/`, `tests/`, `skills/`, and `.claude/skills/` and on every PowerShell fence in Markdown outside `tests/`. Fix each finding at its cause: no rule is suppressed, never with a `SuppressMessageAttribute` or a settings file that disables rules, and a PowerShell fence changed to satisfy a rule must stay the same command. It also runs ShellCheck on every Bash fence in Markdown outside `skills/` and `tests/`; write a placeholder there quoted, as in `'<file>'`, so the fence still parses.
 
-[Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md).
+[Installation](docs/installation.md#installing-the-tools) lists install commands for the other tools. After installing a tool, open a new terminal so it is on `PATH`; `tests/run_validation.py` stops before running any test and lists every missing tool and every tool older than its floor in [Dependency updates](docs/dependency-updates.md). `python deploy.py check` is read-only and reports, as `FOUND`, `MISSING`, `OUTDATED`, or `OPTIONAL`, the tools a deployment needs (Python, Git Bash, ShellCheck, and PowerShell) and the ones the skills run, such as `gh`; it does not check `ruff`, `mypy`, or PSScriptAnalyzer, which only validation needs.
 
 Run the validation entry point from PowerShell or Git Bash, and use Git Bash for Bash scripts. Follow `.editorconfig` and `.gitattributes`; do not commit generated build, test, Python-cache, IDE, deployment, or personal configuration artifacts.
+
+## Working in a worktree
+
+Each task gets its own git worktree, so agent sessions working in parallel never share a working tree. The main checkout, the hub, stays on `main`, stays clean, and is never edited. From the hub, bring `main` up to date and create the task's worktree, with `feat` or `fix` as the kind:
+
+```bash
+git pull --ff-only origin main
+python tools/worktrees.py new feat '<name>'
+```
+
+That creates `.claude/worktrees/feat-<name>` on the branch `feat/<name>`; edit, commit, validate, and push from there (in Claude Code, move the session in with `EnterWorktree`). [Parallel sessions](docs/parallel-sessions.md) explains the layout, the optional hub guard, and how to retire a worktree after its pull request merges.
+
+## The repository skills
+
+Two repository skills carry the procedure. Claude Code loads them from `.claude/skills/` when a session starts in this repository, and Codex and Copilot CLI find them through the shims in `.agents/skills/`:
+
+- `implement-change` takes any change from the worktree and the plan to the pull request. It reads every repository-specific fact, such as the size gate, the contract files, the validation to run, and which document owns what, from [Implementing changes](docs/implementing-changes.md), which is worth reading without an agent too.
+- `change-skill` adds or changes a skill, shipped or repository-only. It builds on `implement-change` and applies [Adding a skill](docs/adding-a-skill.md), the skill contract.
+
+The other two, `runtime-canary` and `evaluate-skill`, are gates; see [Gates the maintainer runs](#gates-the-maintainer-runs).
 
 ## Making changes
 
@@ -45,6 +89,10 @@ Run the validation entry point from PowerShell or Git Bash, and use Git Bash for
 
 For the complete skill template and metadata contract, see [Adding a skill](docs/adding-a-skill.md). For pinned dependency maintenance, see [Dependency updates](docs/dependency-updates.md).
 
+### Upgrade notes
+
+A change to a contract, such as a skill directory name, a `required_vars` list, a tool floor, the manifest version, or a code-review record format, adds an entry under `## Unreleased` in [Upgrade notes](docs/upgrade-notes.md) in the same pull request, in the format that page states. The [Versioning](docs/releasing.md#versioning) section of Releasing lists the contracts and the levels. Validation's upgrade-notes check compares those contract files at the last tag with the working tree and fails, naming the item and what the entry must say, while a changed item has no new entry. Skill arguments, status lines, and deployer flags have no contract file, so add their entry without being asked. A change that touches no contract needs no entry.
+
 ## Validation
 
 Run the complete validation sequence from the repository root:
@@ -52,6 +100,8 @@ Run the complete validation sequence from the repository root:
 ```powershell
 python -B tests/run_validation.py
 ```
+
+Fetch `main` and the tags first, as in [Getting the source](#getting-the-source). A full run took about three minutes on a recent workstation, and the `validate` job takes about six to eleven minutes in CI. When every changed file is documentation, such as `docs/`, `README.md`, or this file, the runner itself runs only the policy checks, the suites that name a changed file, and the Markdown fence checks, which took about a minute; `--full` runs everything.
 
 The runner reports each failing suite by path. When diagnosing a failure, run that suite directly, as in `python -B tests/deployer/test_recovery_migration.py`, or narrow the runner with `-k <pattern>`, as in `-k deployer`. Suites run in parallel, with large ones split into shards; set `VALIDATION_JOBS` to change the worker count.
 
@@ -74,19 +124,38 @@ Branch protection and these settings are live repository settings, not tracked f
 
 ## Issues and pull requests
 
-Open issues and pull requests from the templates in `.github/`: an enhancement, bug, or documentation issue template, and the pull request template, whose Validation checklist mirrors the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
+Open issues and pull requests from the templates in `.github/`: an enhancement, bug, or documentation issue template, and the pull request template, whose Validation checklist is the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
 
-Open a pull request current with `main`: rebase the branch onto `origin/main` before opening it, and merge `origin/main` into it, rather than rebasing, before pushing to it once it is open. Rerun the validation sequence whenever that brings in commits.
+To open a pull request from the task's worktree:
 
-Before requesting review:
+1. Commit the change, and run the validation sequence until it passes.
+2. Bring the branch current with `main`: run `git fetch origin main --tags` and `git rebase origin/main`. The branch is unpublished, so the rebase rewrites nothing anyone has. Rerun validation if it brought in commits.
+3. Push the branch, to `origin` or, without push access, to `fork`, as in `git push -u fork '<kind>/<name>'`. With two remotes, run `gh repo set-default EJRyan89/coding-agent-skills` once, so `gh` opens pull requests here.
+4. Write the body from `.github/pull_request_template.md` to a file, keeping its headings, name the issue with `Closes #<number>`, fill in its two model lines, and open it with `gh pr create --body-file '<file>'`.
+5. While it is open, merge `origin/main` into the branch before pushing more commits, never rebase or force-push it, and rerun validation whenever the merge brings in commits. If a push is rejected, fetch and inspect the remote branch first: the maintainer may have updated it.
 
-- describe the problem and the chosen behavior;
-- identify user-visible, compatibility, or security implications;
-- add or update tests and documentation;
-- confirm the complete validation sequence passes without skipped prerequisites;
-- for a change to skill paths, `allowed-tools`, runtime adapters, or agents, run the `runtime-canary` repository skill and include its lines, with each runtime's version and any `SKIPPED` reason;
-- for a skill change, audit each changed skill from the source tree with `analyze-skill-cost`, leave no MUST FIX, and name any SUGGESTION left with why;
-- review the diff for private references and generated artifacts; and
-- report any validation that could not be run and why.
+The maintainer merges; the repository squash-merges only, so the pull request lands as one commit.
+
+The template's sections ask for the problem and the chosen behavior, the user-visible, compatibility, or security implications, and the models that planned and implemented the change. Before requesting review, check each item of its Validation checklist:
+
+- `python -B tests/run_validation.py` passes in full, with no skipped prerequisites;
+- regression coverage is added or updated for every behavior change;
+- for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` reason;
+- for a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
+- for a skill change, `analyze-skill-cost` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;
+- for a contract change, an entry under `## Unreleased` in `docs/upgrade-notes.md` names each changed contract item;
+- documentation is updated in the same change; and
+- the diff is reviewed for personal paths, organization names, credentials, and generated artifacts.
+
+Under the checklist, name anything that could not be run, and why.
+
+## Gates the maintainer runs
+
+Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging:
+
+- `runtime-canary`, for a change to skill paths, `allowed-tools`, runtime adapters, or agents. It needs Claude Code, Codex, and Copilot CLI installed and signed in, and each run calls a model.
+- `evaluate-skill`, for a change to a skill's prompt, model guidance, or reviewer instructions when the skill has scenarios under `tests/fixtures/skill-evals/`. It runs headless Claude Code sessions, so it needs Claude Code signed in, and each run calls models.
+- `analyze-skill-cost`, for a skill change. It is a shipped skill, so it runs from a deployment of this suite into your own profile ([Installation](docs/installation.md)); run from the worktree, it audits the source tree, not the deployed copy. Without a deployment, leave it to the maintainer.
+- The `deployable` workflow, which deploys onto a fresh GitHub-hosted runner. It is dispatched by hand before each release ([Releasing](docs/releasing.md#before-tagging)), not for each pull request.
 
 By contributing, you agree that your contribution is licensed under the repository's [MIT License](LICENSE).
