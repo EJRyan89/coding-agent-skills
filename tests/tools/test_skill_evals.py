@@ -8,6 +8,7 @@ import datetime
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -19,11 +20,13 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
+import review_guard
 import review_pipeline
 from review_config import write_config
 from review_github import GitHubClient
 from review_records import validate_record
 
+from deployer import platform_support
 from tools import skill_evals
 from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 
@@ -34,10 +37,11 @@ def finding(path: str, line: int, severity: str, identifier: str = "F001", **ext
     return {"id": identifier, "path": path, "line": line, "severity": severity, **extra}
 
 
-def entry(version: int, identifier: str, *dispositions: tuple[int, str]) -> dict[str, Any]:
+def entry(version: int, identifier: str, *dispositions: tuple[int, str], severity: str = "MUST_FIX") -> dict[str, Any]:
     return {
         "version": version,
         "id": identifier,
+        "severity": severity,
         "dispositions": [{"version": judged, "disposition": value} for judged, value in dispositions],
     }
 
@@ -336,16 +340,20 @@ class RepeatsTests(unittest.TestCase):
     spec: ClassVar[dict[str, Any]] = {"kind": "repeats", "path": "store.go", "lines": [44, 45], "entry": "v1:F001"}
     link: ClassVar[dict[str, Any]] = {"version": 1, "id": "F001"}
 
+    def reviewed(self, found: Sequence[dict[str, Any]], severity: str = "MUST_FIX") -> dict[str, Any]:
+        """A re-review whose ledger holds v1:F001 at this severity, judged still present."""
+        return record(found, version=2, ledger=[entry(1, "F001", (2, "still_present"), severity=severity)])
+
     def test_a_linked_repeat_passes(self) -> None:
         found = [
             finding("store.go", 45, "MUST_FIX", "F001", repeats=self.link),
             finding("store.go", 70, "MUST_FIX", "F002"),
         ]
-        self.assertIsNone(check(self.spec, record(found, version=2)))
+        self.assertIsNone(check(self.spec, self.reviewed(found)))
         self.assertEqual("repeats store.go:44,45 v1:F001", skill_evals.expectation(self.spec, "re-review").label)
 
     def test_raising_nothing_there_passes(self) -> None:
-        self.assertIsNone(check(self.spec, record([finding("labels.go", 44, "SUGGESTION")], version=2)))
+        self.assertIsNone(check(self.spec, self.reviewed([finding("labels.go", 44, "SUGGESTION")])))
 
     def test_an_unlinked_or_wrongly_linked_finding_fails(self) -> None:
         found = [
@@ -353,8 +361,39 @@ class RepeatsTests(unittest.TestCase):
             finding("store.go", 45, "MUST_FIX", "F002", repeats={"version": 1, "id": "F003"}),
         ]
         self.assertEqual(
-            "F001 at line 44, F002 at line 45 not linked to v1:F001", check(self.spec, record(found, version=2))
+            "F001 at line 44, F002 at line 45 not linked to v1:F001", check(self.spec, self.reviewed(found))
         )
+
+    def test_a_less_severe_finding_on_a_repeated_line_is_another_defect_and_passes(self) -> None:
+        # The LIKE-wildcard suggestion beside the still-present injection: a different, lesser problem.
+        found = [finding("store.go", 45, "SUGGESTION", "F001"), finding("store.go", 44, "SHOULD_FIX", "F002")]
+        self.assertIsNone(check(self.spec, self.reviewed(found)))
+        self.assertIsNone(check(self.spec, self.reviewed(found[:1], severity="SHOULD_FIX")))
+
+    def test_a_restatement_at_the_entrys_severity_or_higher_fails(self) -> None:
+        cases = {
+            "MUST_FIX": [finding("store.go", 45, "MUST_FIX", "F002"), finding("store.go", 44, "SUGGESTION", "F003")],
+            "SHOULD_FIX": [finding("store.go", 45, "MUST_FIX", "F002"), finding("store.go", 44, "SUGGESTION", "F003")],
+            "SUGGESTION": [finding("store.go", 45, "SUGGESTION", "F002")],
+        }
+        for severity, found in cases.items():
+            with self.subTest(severity=severity):
+                self.assertEqual(
+                    "F002 at line 45 not linked to v1:F001", check(self.spec, self.reviewed(found, severity))
+                )
+
+    def test_the_entry_must_be_in_the_ledger_with_a_severity(self) -> None:
+        found = [finding("store.go", 45, "MUST_FIX", "F002")]
+        cases = {
+            "the record's ledger has no v1:F001": record(found, version=2, ledger=[entry(1, "F002")]),
+            "the record's ledger gives v1:F001 no severity": record(
+                found, version=2, ledger=[{**entry(1, "F001"), "severity": None}]
+            ),
+            "the record has no ledger": record(found, version=2),
+        }
+        for reason, value in cases.items():
+            with self.subTest(reason=reason), self.assertRaisesRegex(RecordError, reason):
+                check(self.spec, value)
 
 
 class RecordShapeTests(unittest.TestCase):
@@ -578,7 +617,12 @@ class ReviewPrsScenarioTests(unittest.TestCase):
         prior = prior_of(self.scenarios[name])
         judged = {item["entry"]: item["disposition"] for item in expectations if item["kind"] == "disposition"}
         ledger = [
-            entry(item["version"], item["id"], (2, judged[f"v{item['version']}:{item['id']}"]))
+            entry(
+                item["version"],
+                item["id"],
+                (2, judged[f"v{item['version']}:{item['id']}"]),
+                severity=item["severity"],
+            )
             for item in prior["ledger"]
         ]
         repeats = [item for item in expectations if item["kind"] == "repeats"]
@@ -664,13 +708,16 @@ class Pipeline:
         self.test.assertEqual(0, status, lines)
         return lines
 
-    def review(self, prepare: Sequence[str]) -> Path:
-        """Prepare, review, check, and finalize one fixture; return the record JSON finalize wrote."""
+    def review(self, prepare: Sequence[str], guarded: bool = False) -> Path:
+        """Prepare, review, check, and finalize one fixture; return the record JSON finalize wrote. With `guarded`,
+        each role's read log is started as the reviewer guard's claim starts it."""
         prepared = self("prepare", "--host", "claude-code", *prepare)
         run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
         fixture = Path(prepare[list(prepare).index("--fixture") + 1])
         spec = json.loads((fixture / "scenario.json").read_text(encoding="utf-8"))
         for role in review_pipeline.load_run(run)["roles"]:
+            if guarded:
+                review_guard.read_log(run, role["id"]).touch()
             Path(role["result_file"]).write_text(json.dumps(stub_result(spec)), encoding="utf-8")
         self.test.assertEqual(["ALL_VALID example/inventory#1"], self("check", "--run", str(run)))
         finalized = self("finalize", "--run", str(run))
@@ -732,11 +779,21 @@ REVIEWER_AGENT_SOURCE = skill_evals.REPOSITORY_ROOT / "agents" / "code-review-re
 
 
 def fake_deploy(home: Path, _source: Path) -> tuple[int, str]:
-    """What the deployment puts where a run reads it: the reviewer agent."""
+    """What the deployment puts where a run reads it: the reviewer agent, and in place of the guard its hook runs, a
+    script that prints its own path."""
     agents = home / ".claude" / "agents"
     agents.mkdir(parents=True)
     (agents / "code-review-reviewer.md").write_bytes(REVIEWER_AGENT_SOURCE.read_bytes())
+    guard = home / ".claude" / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+    guard.parent.mkdir(parents=True)
+    guard.write_text('print("GUARD", __file__)\n', encoding="utf-8")
     return 0, ""
+
+
+def reviewer_of(arguments: Sequence[str]) -> dict[str, Any]:
+    """The reviewer definition a session command passes with --agents."""
+    agents = json.loads(Path(arguments[list(arguments).index("--agents") + 1]).read_text(encoding="utf-8"))
+    return agents["code-review-reviewer"]
 
 
 def scenario_of(mode: str) -> Scenario:
@@ -756,15 +813,18 @@ class RunPieceTests(unittest.TestCase):
         )
 
     def test_the_command_pins_the_session_and_isolates_the_run(self) -> None:
-        command = skill_evals.claude_command("claude.exe", self.initial)
+        agents = self.root / "agents.json"
+        command = skill_evals.claude_command("claude.exe", self.initial, agents)
         self.assertEqual(["claude.exe", "-p", skill_evals.prompt(self.initial)], command[:3])
         pairs = {command[index]: command[index + 1] for index in range(3, len(command) - 1)}
         self.assertEqual("opus", pairs["--model"])
         self.assertEqual("project,local", pairs["--setting-sources"])
+        self.assertEqual(str(agents), pairs["--agents"])
         self.assertEqual("Workflow", pairs["--disallowedTools"])
         self.assertEqual("acceptEdits", pairs["--permission-mode"])
         self.assertEqual("stream-json", pairs["--output-format"])
-        for flag in ("--verbose", "--forward-subagent-text", "--strict-mcp-config", "--no-session-persistence"):
+        flags = ("--verbose", "--forward-subagent-text", "--include-hook-events", "--strict-mcp-config")
+        for flag in (*flags, "--no-session-persistence"):
             self.assertIn(flag, command)
         self.assertEqual(
             [
@@ -816,6 +876,92 @@ class RunPieceTests(unittest.TestCase):
 
     def test_a_missing_reviewer_agent_is_a_reason(self) -> None:
         self.assertIn("has no frontmatter line", skill_evals.set_reviewer_model(self.root, "haiku") or "")
+
+    def test_the_session_gets_the_deployed_agent_with_its_hook_on_the_homes_guard(self) -> None:
+        fake_deploy(self.root, self.root)
+        self.assertIsNone(skill_evals.set_reviewer_model(self.root, "haiku"))
+        agents = skill_evals.reviewer_agents(self.root)
+        self.assertEqual(["code-review-reviewer"], list(agents))
+        definition = agents["code-review-reviewer"]
+        self.assertEqual({"description", "prompt", "tools", "model", "omitClaudeMd", "hooks"}, set(definition))
+        self.assertTrue(definition["description"].startswith("Internal to the code-review-core pipeline. Started"))
+        self.assertTrue(definition["prompt"].startswith("You run one reviewer role of a code review"))
+        self.assertTrue(REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8").rstrip("\n").endswith(definition["prompt"]))
+        self.assertEqual(["Read", "Grep", "Glob", "Write", "Edit", "Bash"], definition["tools"])
+        self.assertEqual("haiku", definition["model"])
+        self.assertIs(True, definition["omitClaudeMd"])
+        self.assertEqual(["PreToolUse"], list(definition["hooks"]))
+        [group] = definition["hooks"]["PreToolUse"]
+        self.assertEqual("Read|Grep|Glob|Write|Edit|Bash", group["matcher"])
+        [hook] = group["hooks"]
+        self.assertEqual({"type", "command", "timeout"}, set(hook))
+        self.assertEqual(("command", 30), (hook["type"], hook["timeout"]))
+        guard = (self.root / ".claude/skills/code-review-core/scripts/review_guard.py").as_posix()
+        self.assertIn(f"runpy.run_path(os.path.expanduser('{guard}'),", hook["command"])
+        self.assertNotIn("~/", hook["command"])
+        self.assertTrue(hook["command"].startswith('python -I -B -c "import json, os, runpy, sys; sys.excepthook ='))
+
+    def test_the_hook_command_runs_the_homes_guard_with_spaces_in_its_path(self) -> None:
+        bash = platform_support.find_bash()
+        self.assertIsNotNone(bash, "Git Bash is required")
+        self.assertIn(" ", str(self.root))
+        fake_deploy(self.root, self.root)
+        hook = skill_evals.reviewer_agents(self.root)["code-review-reviewer"]["hooks"]["PreToolUse"][0]["hooks"][0]
+        ran = platform_support.run_tool([str(bash), "-c", hook["command"]])
+        self.assertEqual(0, ran.returncode, ran.output)
+        self.assertEqual(f"GUARD {(self.root / skill_evals.GUARD).as_posix()}", ran.output.strip())
+
+    def test_an_agent_the_definition_cannot_carry_is_refused(self) -> None:
+        source = REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8")
+        profile_guard = "'~/.claude/skills/code-review-core/scripts/review_guard.py'"
+        cases = {
+            "the evaluation does not pass color with --agents": source.replace(
+                "model: inherit", "model: inherit\ncolor: red"
+            ),
+            "it is named other, not code-review-reviewer": source.replace("name: code-review-reviewer", "name: other"),
+            "its hook does not name ~/.claude/skills/code-review-core/scripts/review_guard.py once": source.replace(
+                profile_guard, "'~/elsewhere.py'"
+            ),
+            "its hooks are not one PreToolUse command hook": source.replace("  PreToolUse:", "  PostToolUse:"),
+            "its hooks name type 2 times, not once": source.replace(
+                "          timeout: 30", "          timeout: 30\n        - type: command\n          command: echo"
+            ),
+            "it has no hooks": re.sub(r"hooks:\n(?: .*\n)+", "", source),
+            "it has no frontmatter": "No frontmatter here.\n",
+        }
+        for number, (reason, text) in enumerate(cases.items()):
+            with self.subTest(reason=reason):
+                home = self.root / str(number)
+                fake_deploy(home, home)
+                (home / skill_evals.REVIEWER_AGENT).write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(skill_evals.AgentError, re.escape(reason)):
+                    skill_evals.reviewer_agents(home)
+
+    def test_a_home_without_the_guard_or_with_an_unquotable_path_is_refused(self) -> None:
+        fake_deploy(self.root, self.root)
+        (self.root / skill_evals.GUARD).unlink()
+        with self.assertRaisesRegex(skill_evals.AgentError, "the home has no .claude/skills/code-review-core/"):
+            skill_evals.reviewer_agents(self.root)
+        home = self.root / "it's"
+        fake_deploy(home, home)
+        with self.assertRaisesRegex(skill_evals.AgentError, "its hook cannot quote the home's path"):
+            skill_evals.reviewer_agents(home)
+
+    def test_a_record_a_reviewer_no_guard_held_is_told(self) -> None:
+        def reviewed(*reviewers: Any) -> dict[str, Any]:
+            value = record()
+            value["review"]["reviewers"] = list(reviewers)
+            return value
+
+        held = {"id": "generic-review", "files_read": 0, "bytes_read": 0}
+        self.assertIsNone(skill_evals.unguarded(reviewed(held, {**held, "id": "security", "files_read": 3})))
+        self.assertEqual(
+            "no reviewer guard held generic-review, security: its files_read is null",
+            skill_evals.unguarded(reviewed({**held, "files_read": None}, {"id": "security"}, {**held, "id": "tests"})),
+        )
+        self.assertEqual("the record names no reviewer", skill_evals.unguarded(reviewed()))
+        self.assertEqual("the record names no reviewer", skill_evals.unguarded(record()))
+        self.assertEqual("the record has no review version and verdict", skill_evals.unguarded({}))
 
     def test_stream_models_tells_the_session_from_its_subagents(self) -> None:
         output = "\n".join(
@@ -954,22 +1100,26 @@ def frontmatter_model(path: Path) -> str:
 
 class StubClaude:
     """Claude Code as a run starts it: `--version`, or a review of the prompt's fixture through the pipeline in this
-    process, with stream-json naming the session's model and the reviewer model the home's agent sets."""
+    process, with stream-json naming the session's model and the reviewer model the --agents definition sets, and,
+    unless `guarded` is false, each role's read log started as the reviewer guard's claim starts it."""
 
-    def __init__(self, test: unittest.TestCase, *, review: bool = True, reviewer: str | None = None) -> None:
-        self.test, self.review, self.reviewer = test, review, reviewer
+    def __init__(
+        self, test: unittest.TestCase, *, review: bool = True, reviewer: str | None = None, guarded: bool = True
+    ) -> None:
+        self.test, self.review, self.reviewer, self.guarded = test, review, reviewer, guarded
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
         self.calls.append((arguments, cwd, environment))
         if arguments[1:] == ["--version"]:
             return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
-        model = frontmatter_model(cwd / skill_evals.REVIEWER_AGENT)
+        model = reviewer_of(arguments)["model"]
+        self.test.assertEqual(model, frontmatter_model(cwd / skill_evals.REVIEWER_AGENT))
         if self.review:
             prepare = [word.strip('"') for word in arguments[2].split(" ")[1:]]
             files = {key: environment[key] for key in ("CODE_REVIEW_STATE", "CODE_REVIEW_FLAGS")}
             with mock.patch.object(tempfile, "tempdir", environment["TMPDIR"]), mock.patch.dict(os.environ, files):
-                Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare)
+                Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, self.guarded)
         reviewer = self.reviewer or f"claude-{model}-0-0"
         return skill_evals.Completed(0, f"{assistant('claude-opus-5-5')}\n{assistant(reviewer, subagent=True)}", "")
 
@@ -983,10 +1133,6 @@ class EvaluateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.root = temporary_root(self)
-        self.profile = self.root / "profile"
-        guard = self.profile / skill_evals.INSTALLED_GUARD
-        guard.parent.mkdir(parents=True)
-        guard.write_text("", encoding="utf-8")
         self.results = self.root / "skill-evaluations.md"
         self.results.write_text(RESULTS_TEXT, encoding="utf-8")
         self.homes = self.root / "homes"
@@ -1000,7 +1146,7 @@ class EvaluateTests(unittest.TestCase):
             "runner": runner,
             "which": lambda name: f"{name}.exe",
             "deploy": fake_deploy,
-            "environment": {"USERPROFILE": str(self.profile), "PATH": "kept"},
+            "environment": {"PATH": "kept"},
             "make_home": self.make_home,
             "today": lambda: datetime.date(2026, 10, 8),
             "results": self.results,
@@ -1026,6 +1172,15 @@ class EvaluateTests(unittest.TestCase):
         scenarios = ["clean-change", "planted-defects", "re-review"]
         self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals.MODELS], ended)
         self.assertIn("REVIEWER haiku claude-haiku-0-0", lines)
+        guarded = [line for line in lines if line.startswith("GUARDED ")]
+        self.assertEqual(
+            [
+                f"GUARDED {scenario} {model} generic-review files_read=0"
+                for scenario in scenarios
+                for model in skill_evals.MODELS
+            ],
+            guarded,
+        )
         self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
         self.assertIn("PASS review-prs re-review haiku ledger addressed=1 still_present=2", lines)
         self.assertEqual(f"REMOVED {forward(self.homes)}", lines[-1])
@@ -1042,6 +1197,29 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(self.homes, cwd.parent)
                 self.assertEqual("kept", environment["PATH"])
                 self.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals.STATE))
+                agents = arguments[arguments.index("--agents") + 1]
+                self.assertEqual(str(cwd / skill_evals.STATE / "agents.json"), agents)
+
+    def test_a_record_no_guard_held_fails_the_run(self) -> None:
+        claude = StubClaude(self, guarded=False)
+        status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
+        self.assertEqual(1, status)
+        reason = "no reviewer guard held generic-review: its files_read is null"
+        self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
+        self.assertFalse(any(line.startswith(("PASS", "GUARDED")) for line in lines))
+
+    def test_an_agent_that_cannot_be_passed_stops_the_run(self) -> None:
+        def no_guard(home: Path, source: Path) -> tuple[int, str]:
+            fake_deploy(home, source)
+            (home / skill_evals.GUARD).unlink()
+            return 0, ""
+
+        claude = StubClaude(self)
+        status, lines = self.evaluate([], self.seams(claude, deploy=no_guard))
+        self.assertEqual(1, status)
+        self.assertTrue(lines[-1].startswith('DEPLOY_FAILED haiku "'), lines)
+        self.assertIn("cannot be passed with --agents: the home has no", lines[-1])
+        self.assertEqual([], claude.calls)
 
     def test_a_run_without_a_record_fails_its_expectations_keeps_the_home_and_records_not_run(self) -> None:
         status, lines = self.evaluate(["--write", "--jobs", "2"], self.seams(StubClaude(self, review=False)))
@@ -1067,12 +1245,11 @@ class EvaluateTests(unittest.TestCase):
         reason = "reviewers ran on claude-opus-5-5, not haiku"
         self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
 
-    def test_nothing_runs_without_claude_code_the_guard_or_the_results_table(self) -> None:
+    def test_nothing_runs_without_claude_code_or_the_results_table(self) -> None:
         no_table = self.root / "empty.md"
         no_table.write_text("# Skill evaluations\n", encoding="utf-8")
         cases: dict[str, tuple[list[str], dict[str, Any]]] = {
             "Claude Code (claude) is not on PATH": ([], {"which": lambda _: None}),
-            "review_guard.py, which is missing": ([], {"environment": {"USERPROFILE": str(self.root / "nobody")}}),
             "needs one": (["--write"], {"results": no_table}),
         }
         for reason, (argv, changes) in cases.items():
