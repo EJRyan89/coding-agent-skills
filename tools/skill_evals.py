@@ -26,8 +26,9 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
   {"kind": "disposition", "entry": "v1:F001", "disposition": D}     re-review only
       this review's disposition of that ledger entry
   {"kind": "repeats", "path": P, "lines": [N, ...], "entry": "v1:F001"}     re-review only
-      every finding this review raised at P on those lines repeats that entry, so the problem counts once; raising
-      none there also passes, since the ledger then carries the entry alone
+      every finding this review raised at P on those lines at least as severe as that ledger entry repeats the entry,
+      so the problem counts once; raising none there also passes, since the ledger then carries the entry alone, and
+      so does a less severe finding there, which is about another defect
 
 An unknown kind, or a field a kind does not take, fails the whole run before anything is judged.
 
@@ -39,33 +40,44 @@ Without --records, it runs the scenarios. For each model it makes a fresh home u
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model
 in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
 session's model: a fixture's generic reviewer has no MODEL line, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
+The session gets that agent with `--agents`, which outranks the same agent loaded from the home's .claude/agents:
+Claude Code runs a project agent's hooks only in a folder whose workspace trust was accepted, which a `-p` session
+never is, so loaded from the home the reviewer guard would never run. The definition is the home's agent file, its
+frontmatter and body, with one change: its hook runs the home's review_guard.py in place of the profile folder's,
+so the guard checks the home's prompts against the home's copy of the pipeline that wrote them.
 Then, for each scenario and model, up to --jobs at once, it starts Claude Code headless with the model's home as
 its working directory, so the deployed skills and agent load as project ones, and the prompt
 `/<skill> <prepare_arguments>`. The session, which orchestrates the skill, stays on SESSION_MODEL. It has no
 Workflow tool, so reviewers start as native subagents, whose messages --forward-subagent-text puts in the
-transcript with the model each ran on. A run counts only if every one of those messages names that model's family;
-a run with no subagent, or one on another model, fails every expectation, since the model was not the one judged.
+transcript with the model each ran on, and --include-hook-events puts each guard decision beside them. A run counts
+only if every one of those messages names that model's family; a run with no subagent, or one on another model,
+fails every expectation, since the model was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
 rest. Each
 run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every system,
 so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
-highest review version in that canary root. The code-review configuration the runs read is written there too.
+highest review version in that canary root. The code-review configuration the runs read is written there too. A
+record any of whose reviewers has a null `files_read` counts for nothing either: the guard's claim starts a role's
+read log, so a reviewer the guard held has a count, if only 0, and null means the boundary was never exercised.
 
 What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
-canary, and the reviewer agent's guard: its hook finds review_guard.py in the profile folder's
-.claude/skills/code-review-core, so the installed copy runs, and the run refuses to start without one.
+canary.
 
 Output, one fact per line:
   HOME "<dir>"                                    the throwaway directory, one home per model inside it
-  DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run
+  DEPLOYED <model> <source id>                    or DEPLOY_FAILED <model> "<reason>", which stops the run, also
+                                                  when the home's reviewer agent cannot be passed with --agents
   RUNTIME claude <version>
   TRANSCRIPT <scenario> <model> "<path>"          a run finished; its stream-json output, in the order runs end
   REVIEWER <model> <model ID>[,<model ID>]        the models the reviewers ran on, or `none`
+  GUARDED <scenario> <model> <role> files_read=<n>
+                                                  a reviewer of a run that counts, which the guard held, and the
+                                                  snapshot files the guard counted it reading
   PASS <skill> <scenario> <model> <expectation>
   FAIL <skill> <scenario> <model> <expectation> "<reason>"
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
-                                                  or Claude Code or the installed guard is missing
+                                                  or Claude Code is missing
 then a Markdown table, one row per scenario and one column per model, each cell the expectations passed of those
 checked, then `WROTE <file>` when --write replaced the skill's rows in docs/skill-evaluations.md, and `REMOVED
 "<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. It exits 1 on any
@@ -80,6 +92,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime
+import itertools
 import json
 import os
 import re
@@ -109,9 +122,17 @@ MODELS = ("haiku", "sonnet", "opus")
 SESSION_MODEL = MODELS[-1]
 DEFAULT_TIMEOUT = 1800
 DEFAULT_JOBS = 3
-# The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs from the profile.
+# The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs: the hook names
+# the profile folder's copy, and the definition the session gets names the home's.
 REVIEWER_AGENT = Path(".claude") / "agents" / "code-review-reviewer.md"
-INSTALLED_GUARD = Path(".claude") / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+GUARD = Path(".claude") / "skills" / "code-review-core" / "scripts" / "review_guard.py"
+PROFILE_GUARD = f"~/{GUARD.as_posix()}"
+# The file in each home holding the reviewer definition the session gets with --agents, and the frontmatter keys
+# that definition carries over; an agent with any other key is refused, since its definition would drop it.
+AGENTS = "agents.json"
+AGENT_KEYS = frozenset({"name", "description", "tools", "model", "omitClaudeMd", "hooks"})
+# What the home's path may not hold: the hook command quotes it for Python inside a Bash double quote.
+UNQUOTABLE = re.compile(r"[\\'\"`$!]")
 # The commands a reviewer runs besides its file tools: its self-check, which review_pipeline.py writes as
 # python -B "<script>" validate-result --run "<run>" --role "<role>", and a lazy snapshot's two source commands, which
 # review_source.py writes as python -B "<script>" source-file --run "<run>" --role "<role>" --path="<path>", and the
@@ -313,11 +334,14 @@ def repeats_expectation(spec: Mapping[str, Any]) -> Expectation:
     version, identifier = _entry(spec["entry"])
 
     def check(record: Record) -> str | None:
+        # Only a finding at least as severe as the entry can restate it; a less severe one there is another defect.
+        floor = _rank(entry_severity(record, (version, identifier)))
         unlinked = [
             f"{finding.get('id', 'a finding')} at line {finding['line']}"
             for finding in findings(record)
             if finding["path"] == path
             and finding["line"] in lines
+            and _rank(finding["severity"]) >= floor
             and finding.get("repeats") != {"version": version, "id": identifier}
         ]
         return f"{', '.join(unlinked)} not linked to {spec['entry']}" if unlinked else None
@@ -427,13 +451,10 @@ def findings(record: Record) -> list[Mapping[str, Any]]:
     return value
 
 
-def judgments(record: Record) -> dict[tuple[int, str], str]:
-    """This review's disposition of each ledger entry it judged, keyed by the entry's version and ID."""
-    version = review(record)["version"]
+def ledger_entries(record: Record) -> list[Mapping[str, Any]]:
     ledger = record.get("ledger")
     if not isinstance(ledger, list):
         raise RecordError("the record has no ledger")
-    judged: dict[tuple[int, str], str] = {}
     for entry in ledger:
         if (
             not isinstance(entry, dict)
@@ -443,6 +464,24 @@ def judgments(record: Record) -> dict[tuple[int, str], str]:
             or any(not isinstance(item, dict) for item in entry["dispositions"])
         ):
             raise RecordError("the record's ledger is malformed")
+    return ledger
+
+
+def entry_severity(record: Record, key: tuple[int, str]) -> str:
+    """The severity of the ledger entry with this version and ID."""
+    entry = next((item for item in ledger_entries(record) if (item["version"], item["id"]) == key), None)
+    if entry is None:
+        raise RecordError(f"the record's ledger has no v{key[0]}:{key[1]}")
+    if entry.get("severity") not in SEVERITIES:
+        raise RecordError(f"the record's ledger gives v{key[0]}:{key[1]} no severity")
+    return str(entry["severity"])
+
+
+def judgments(record: Record) -> dict[tuple[int, str], str]:
+    """This review's disposition of each ledger entry it judged, keyed by the entry's version and ID."""
+    version = review(record)["version"]
+    judged: dict[tuple[int, str], str] = {}
+    for entry in ledger_entries(record):
         for item in entry["dispositions"]:
             if item.get("version") == version:
                 judged[(entry["version"], entry["id"])] = str(item.get("disposition"))
@@ -506,9 +545,10 @@ def prompt(scenario: Scenario) -> str:
     return " ".join([f"/{scenario.skill}", *arguments])
 
 
-def claude_command(executable: str, scenario: Scenario) -> list[str]:
-    # Project settings only, so the installed skills and agents do not load beside the home's, and no Workflow tool,
-    # so reviewers start as native subagents whose messages the transcript carries with their model.
+def claude_command(executable: str, scenario: Scenario, agents: Path) -> list[str]:
+    # Project settings only, so the installed skills and agents do not load beside the home's; the reviewer agent from
+    # the file of --agents, so its guard hook runs; and no Workflow tool, so reviewers start as native subagents whose
+    # messages the transcript carries with their model.
     return [
         executable,
         "-p",
@@ -519,8 +559,11 @@ def claude_command(executable: str, scenario: Scenario) -> list[str]:
         "stream-json",
         "--verbose",
         "--forward-subagent-text",
+        "--include-hook-events",
         "--setting-sources",
         "project,local",
+        "--agents",
+        str(agents),
         "--strict-mcp-config",
         "--no-session-persistence",
         "--disallowedTools",
@@ -555,6 +598,87 @@ def set_reviewer_model(home: Path, model: str) -> str | None:
     lines[at] = f"model: {model}"
     path.write_text("\n".join(lines), encoding="utf-8")
     return None if frontmatter.read(path).string("model") == model else f"the reviewer agent does not read as {model}"
+
+
+class AgentError(Exception):
+    """The home's reviewer agent cannot be given to the session with --agents as it is."""
+
+
+def _nested(lines: Sequence[str], key: str) -> str:
+    """The scalar of the one `key:` among the hook lines, read by the frontmatter reader: its line and the lines
+    indented below it, moved to the top level."""
+    starts = [index for index, line in enumerate(lines) if line.lstrip(" -").startswith(f"{key}:")]
+    if len(starts) != 1:
+        raise AgentError(f"its hooks name {key} {len(starts)} times, not once")
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip(" -"))
+    block = [lines[start][indent:]]
+    for line in lines[start + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip(" ")) <= indent:
+            break
+        block.append(line[indent:])
+    try:
+        value = frontmatter.parse("\n".join(["---", *block, "---"])).string(key)
+    except frontmatter.FrontmatterError as exc:
+        raise AgentError(f"its hook's {key} cannot be read: {exc}") from exc
+    if not value:
+        raise AgentError(f"its hook's {key} is empty")
+    return value
+
+
+def _guard_hook(lines: Sequence[str], home: Path) -> dict[str, Any]:
+    """The agent's one PreToolUse command hook, running the home's guard in place of the profile folder's."""
+    events = [line.strip() for line in lines if line.strip() and len(line) - len(line.lstrip(" ")) == 2]
+    if events != ["PreToolUse:"] or _nested(lines, "type") != "command":
+        raise AgentError("its hooks are not one PreToolUse command hook")
+    command = _nested(lines, "command")
+    if command.count(PROFILE_GUARD) != 1:
+        raise AgentError(f"its hook does not name {PROFILE_GUARD} once")
+    guard = home / GUARD
+    if not guard.is_file():
+        raise AgentError(f"the home has no {GUARD.as_posix()} for its hook to run")
+    if UNQUOTABLE.search(runtime_canary.forward(home)):
+        raise AgentError(f"its hook cannot quote the home's path {runtime_canary.forward(home)}")
+    timeout = _nested(lines, "timeout")
+    if not timeout.isdigit():
+        raise AgentError(f"its hook's timeout {timeout} is not a whole number of seconds")
+    hook = {"type": "command", "command": command.replace(PROFILE_GUARD, runtime_canary.forward(guard))}
+    return {"matcher": _nested(lines, "matcher"), "hooks": [{**hook, "timeout": int(timeout)}]}
+
+
+def reviewer_agents(home: Path) -> dict[str, Any]:
+    """The --agents definition of the home's reviewer agent: its frontmatter and body, its hook running the home's
+    guard. Raise AgentError when the agent has anything the definition would drop or cannot carry."""
+    path = home / REVIEWER_AGENT
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        found = frontmatter.split(lines)
+        if found is None:
+            raise AgentError("it has no frontmatter")
+        head, body = found
+        values = frontmatter.Frontmatter(head)
+        extra = sorted(set(values.keys()) - AGENT_KEYS)
+        if extra:
+            raise AgentError(f"the evaluation does not pass {', '.join(extra)} with --agents")
+        name = values.string("name")
+        if name != path.stem:
+            raise AgentError(f"it is named {name}, not {path.stem}")
+        if "hooks:" not in head:
+            raise AgentError("it has no hooks")
+        after = head[head.index("hooks:") + 1 :]
+        hook_lines = list(itertools.takewhile(lambda line: not line or line[0] == " ", after))
+        definition: dict[str, Any] = {
+            "description": values.string("description"),
+            "prompt": "\n".join(lines[body:]).strip("\n"),
+            "tools": [tool.strip() for tool in (values.string("tools") or "").split(",")],
+            "model": values.string("model"),
+            "hooks": {"PreToolUse": [_guard_hook(hook_lines, home)]},
+        }
+        if values.string("omitClaudeMd") == "true":
+            definition["omitClaudeMd"] = True
+    except (OSError, ValueError) as exc:
+        raise AgentError(str(exc)) from exc
+    return {path.stem: definition}
 
 
 def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
@@ -618,6 +742,23 @@ def run_failure(model: str, completed: Completed, timeout: float, skill: str, mi
     return None
 
 
+def unguarded(record: Record) -> str | None:
+    """Why the record shows a reviewer the reviewer guard did not hold, or None. The guard's claim starts the role's
+    read log, so a held reviewer's files_read is a count, if only 0; null means no guard ran."""
+    try:
+        reviewers = review(record).get("reviewers")
+    except RecordError as exc:
+        return str(exc)
+    if not isinstance(reviewers, list) or not reviewers:
+        return "the record names no reviewer"
+    loose = [
+        str(reviewer.get("id")) if isinstance(reviewer, dict) else "a reviewer"
+        for reviewer in reviewers
+        if not isinstance(reviewer, dict) or reviewer.get("files_read") is None
+    ]
+    return f"no reviewer guard held {', '.join(loose)}: its files_read is null" if loose else None
+
+
 def run_scenario(
     scenario: Scenario, model: str, home: Path, executable: str, base: Mapping[str, str], runner: Runner, timeout: float
 ) -> tuple[Run, Path]:
@@ -625,7 +766,7 @@ def run_scenario(
     run = home / STATE / scenario.name
     (run / "tmp").mkdir(parents=True)
     environment = run_environment(base, run, home / STATE / "config.json")
-    completed = runner(claude_command(executable, scenario), home, environment, timeout)
+    completed = runner(claude_command(executable, scenario, home / STATE / AGENTS), home, environment, timeout)
     transcript = run / "transcript.jsonl"
     transcript.write_text(completed.stdout, encoding="utf-8")
     if completed.stderr:
@@ -637,12 +778,25 @@ def run_scenario(
     except RecordError as exc:
         missing = str(exc)
     failure = run_failure(model, completed, timeout, scenario.skill, missing)
+    if failure is None and record is not None:
+        failure = unguarded(record)
     session, reviewers = stream_models(completed.stdout)
     return Run(None if failure else record, failure, reviewers, session), transcript
 
 
+def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
+    """One line per reviewer of a run that counts, which `unguarded` found the guard held, with its count."""
+    if run.record is None:
+        return []
+    return [
+        f"GUARDED {scenario} {model} {reviewer['id']} files_read={reviewer['files_read']}"
+        for reviewer in review(run.record)["reviewers"]
+    ]
+
+
 def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[int, str]]) -> str | None:
-    """Deploy the checkout into the model's home and set its reviewer model; return why that failed, or None."""
+    """Deploy the checkout into the model's home, set its reviewer model, and write the reviewer definition the
+    session gets with --agents; return why that failed, or None."""
     home.mkdir(parents=True)
     code, log = deploy(home, REPOSITORY_ROOT)
     if code != 0:
@@ -653,7 +807,12 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
     reason = set_reviewer_model(home, model)
     if reason:
         return reason
+    try:
+        agents = reviewer_agents(home)
+    except AgentError as exc:
+        return f"{runtime_canary.forward(home / REVIEWER_AGENT)} cannot be passed with --agents: {exc}"
     (home / STATE).mkdir(exist_ok=True)
+    (home / STATE / AGENTS).write_text(json.dumps(agents, indent=2), encoding="utf-8")
     (home / STATE / "config.json").write_text(json.dumps(review_config(home / STATE), indent=2), encoding="utf-8")
     return None
 
@@ -838,18 +997,12 @@ class Seams:
     results: Path = RESULTS
 
 
-def preflight(write: bool, seams: Seams, base: Mapping[str, str]) -> tuple[str, str | None]:
+def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     """Claude Code's path and, with --write, the results file's text; raise ScenarioError before any run when
     something a run needs is missing."""
     executable = seams.which("claude")
     if executable is None:
         raise ScenarioError("Claude Code (claude) is not on PATH")
-    guard = platform_support.home_directory(base) / INSTALLED_GUARD
-    if not guard.is_file():
-        raise ScenarioError(
-            f"the reviewer agent's hook runs {runtime_canary.forward(guard)}, which is missing; "
-            "deploy code-review-core from the hub first"
-        )
     if not write:
         return executable, None
     try:
@@ -865,7 +1018,7 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namesp
     models = list(dict.fromkeys(options.model or MODELS))
     base = dict(os.environ if seams.environment is None else seams.environment)
     try:
-        executable, results_text = preflight(options.write, seams, base)
+        executable, results_text = preflight(options.write, seams)
     except ScenarioError as exc:
         print(f"FAILED {quote(str(exc))}")
         return 1
@@ -884,6 +1037,10 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namesp
     for model in models:
         used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
         print(f"REVIEWER {model} {','.join(used) or 'none'}")
+    for scenario in scenarios:
+        for model in models:
+            for line in guarded_lines(scenario.name, model, runs[(scenario.name, model)]):
+                print(line)
     outcomes = judge(scenarios, models, runs_source(runs))
     failed = report(skill, scenarios, models, outcomes)
     if results_text is not None:
