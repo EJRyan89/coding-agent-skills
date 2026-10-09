@@ -1261,5 +1261,21 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(2, rc.dirty_count(rc.Services(), root))
 
 
+class ConsoleTests(unittest.TestCase):
+    def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()
+        self.addCleanup(remove_tree, root)
+        plan = root / "plan → ✓.json"
+        plan.write_text(json.dumps({"schema_version": 0}), encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-B", rc.__file__, "summary", "--plan", str(plan)],
+            capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+            check=False,
+        )
+        self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
+        self.assertEqual([f"FAILED\t{plan} is not a repo-cleanup plan"], result.stdout.decode("utf-8").splitlines())
+
+
 if __name__ == "__main__":
     unittest.main()

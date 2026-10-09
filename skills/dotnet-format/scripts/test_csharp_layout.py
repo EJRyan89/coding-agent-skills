@@ -75,6 +75,37 @@ class LexerTests(unittest.TestCase):
         text = source('var s = $$$"""{{ {{{x}}} }}""";', "{")
         self.assertEqual([(1, "open")], [(event.line, event.kind) for event in layout.Lexer(text).lex().events])
 
+    def test_edge_case_literals_end_where_csharp_ends_them(self) -> None:
+        # Each literal holds braces or directive-like lines that would add events if lexed as code, and the brace after
+        # it is recorded only if the literal ended in the right place: (text, that brace's line, continuation lines).
+        cases: tuple[tuple[str, int, list[int]], ...] = (
+            # Verbatim strings: a backslash is literal, and a doubled quote is one quote.
+            (r'var a = @"C:\"; {', 0, []),
+            ('var a = @"a ""{"" }"; {', 0, []),
+            ('var a = @"""#region"""; {', 0, []),
+            ('var a = $@"{{ {b} }}"; {', 0, []),
+            ('var a = @$"{{ {b} }}"; {', 0, []),
+            ('var a = @"\n}\n#endregion\n"; {', 3, [1, 2, 3]),
+            ('var a = $@"{new { B = @"}""}" }.B}"; {', 0, []),
+            # Raw strings: closed only by a run of at least the opening quotes.
+            ('var a = """b "" { c"""; {', 0, []),
+            ('var a = """"b """ } c""""; {', 0, []),
+            ('var a = """\n    }\n#endregion\n    """; {', 3, [1, 2, 3]),
+            ('var a = $$"""{b} {{c}}"""; {', 0, []),
+            ('var a = $$"""{{new { B = "}" }.B}}"""; {', 0, []),
+            # Nested braces in interpolation holes: only the brace that closes the hole ends it.
+            ('var a = $"{new { B = 1 }.B}"; {', 0, []),
+            ('var a = $"{b switch { 1 => "}", _ => "{" }}"; {', 0, []),
+            ('var a = $"{F(() => { return "}"; })}"; {', 0, []),
+            ('var a = $"{$"{new { B = $"{c}" }}"}"; {', 0, []),
+            ('var a = $"{\n    new[] { 1 }[0]\n}"; {', 2, [1, 2]),
+        )
+        for text, line, continuation in cases:
+            with self.subTest(text=text):
+                scan = layout.Lexer(text).lex()
+                self.assertEqual([(line, "open")], [(event.line, event.kind) for event in scan.events])
+                self.assertEqual(continuation, sorted(scan.continuation))
+
 
 # Where Lexer.code stopped, its line, its events as (kind, line, name), and its continuation lines.
 Lexed = tuple[int, int, list[tuple[str, int, str]], list[int]]
@@ -667,6 +698,43 @@ class ConfigTests(unittest.TestCase):
             ("[.cs", "[.cs", True),
             ("{.cs", "{.cs", True),
             ("*.CS", "A.cs", False),
+        )
+        for section, path, expected in cases:
+            with self.subTest(section=section, path=path):
+                self.assertEqual(expected, layout.section_matches(section, path))
+
+    def test_double_star_and_negated_bracket_globs(self) -> None:
+        cases = (
+            # `**/` matches zero or more whole directories; `**` elsewhere matches across separators.
+            ("**/*.cs", "A.cs", True),
+            ("**/*.cs", "x/y/A.cs", True),
+            ("**/*.cs", "x/y/A.vb", False),
+            ("/**/A.cs", "x/A.cs", True),
+            ("src/**/A.cs", "srcx/A.cs", False),
+            ("src/**/A.cs", "x/src/A.cs", False),
+            ("a/**/b/**/c.cs", "a/b/c.cs", True),
+            ("a/**/b/**/c.cs", "a/x/b/y/z/c.cs", True),
+            ("a/**/b/**/c.cs", "a/x/c.cs", False),
+            ("a**b.cs", "a/x/b.cs", True),
+            ("src/**", "src/a/b.cs", True),
+            ("*/**/A.cs", "A.cs", False),
+            ("*/**/A.cs", "x/y/A.cs", True),
+            ("{**/A,B}.cs", "x/y/A.cs", True),
+            ("{**/A,B}.cs", "x/B.cs", False),
+            # `[!seq]` matches one character outside seq, never a separator.
+            ("[!a-c].cs", "d.cs", True),
+            ("[!a-c].cs", "b.cs", False),
+            ("x[!a]y", "xby", True),
+            ("x[!a]y", "x/y", False),
+            (r"[!\]].cs", "a.cs", True),
+            (r"[!\]].cs", "].cs", False),
+            ("[!!].cs", "a.cs", True),
+            ("[!!].cs", "!.cs", False),
+            (r"[\!a].cs", "!.cs", True),  # an escaped `!` is a member, not a negation
+            (r"[\!a].cs", "b.cs", False),
+            ("[!].cs", "[!].cs", True),  # an empty bracket is literal
+            ("[!].cs", "a.cs", False),
+            ("[!/]x", "y/[!/]x", True),  # a negated bracket holding a separator is literal too
         )
         for section, path, expected in cases:
             with self.subTest(section=section, path=path):

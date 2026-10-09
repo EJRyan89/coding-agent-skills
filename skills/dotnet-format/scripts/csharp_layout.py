@@ -89,7 +89,8 @@ class Lexer:
     """Find code braces and preprocessor directives, skipping comments, strings, and character literals.
 
     Handles regular, verbatim, interpolated, and raw (including multi-dollar interpolated) string literals, so
-    braces and '#' inside them are never mistaken for code.
+    braces and '#' inside them are never mistaken for code. It is hand-rolled by decision: skills use only the
+    standard library, which has no C# lexer, so its edge cases are pinned by fixtures in test_csharp_layout.py.
     """
 
     def __init__(self, text: str) -> None:
@@ -496,6 +497,8 @@ def check_files(root: Path, names: list[str], fix: bool, emit: Callable[[str], N
 # ------------------------------------------------------------------------------------------ configuration
 
 
+# The EditorConfig glob engine below is hand-rolled by decision: skills use only the standard library, whose fnmatch
+# and glob lack EditorConfig's braces, numeric ranges, and separator rules, so test_csharp_layout.py pins its cases.
 NUMERIC_RANGE = re.compile(r"([+-]?[0-9]+)\.\.([+-]?[0-9]+)")
 
 
