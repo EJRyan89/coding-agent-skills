@@ -10,11 +10,15 @@
 #                    major is 0) above local main's, and --cross-major was not given; <current> is
 #                    untagged, counted as 0.0.0, when no release tag reaches local main
 #   CHECKOUT_FAILED  followed by Git's error from switching to main
-#   NOT_FAST_FORWARD followed by Git's error; main has commits origin/main lacks
+#   NOT_FAST_FORWARD followed by the commits main has that origin/main lacks, found before switching branches;
+#                    or by Git's error when Git refuses the fast-forward itself, after which the clone is
+#                    switched back to the branch it was found on, or a "still on main:" line says why not
 #   UP_TO_DATE <sha> or UPDATED <old>..<new> followed by the pulled commits, and by
 #                    CROSSED <current>..<target> when --cross-major accepted a release boundary,
 #                    then the deploy output and DEPLOYED or DEPLOY_FAILED <code>
 #   FAILED <reason>  alone: the clone is not a repository with deploy.py, or a step failed outright
+# A stop leaves the clone on the branch it was found on unless a "still on main:" line says otherwise; an update
+# switches it to main and leaves it there.
 # Exit: 0 deployed; 1 any other status line, or FAILED; 2 usage (the wrong arguments, on stderr).
 set -uo pipefail
 
@@ -114,6 +118,19 @@ if [ -n "$TARGET" ] && [ "$CURRENT" != "$TARGET" ]; then
   fi
 fi
 
+# A diverged main stops before the checkout, so the clone stays on the branch it was found on. Any other answer,
+# such as no local main yet, leaves the decision to the checkout and the fast-forward below.
+ANCESTOR=0
+git -C "$CLONE" merge-base --is-ancestor main origin/main >/dev/null 2>&1 || ANCESTOR=$?
+if [ "$ANCESTOR" -eq 1 ]; then
+  echo "NOT_FAST_FORWARD"
+  git -C "$CLONE" log --oneline --no-decorate origin/main..main | tr -d '\r'
+  exit 1
+fi
+
+# The branch or, when HEAD is detached, the commit the clone was found on, to return to if the fast-forward fails.
+FOUND_ON=$(git -C "$CLONE" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$CLONE" rev-parse --verify --quiet HEAD)
+FOUND_ON=$(printf '%s' "$FOUND_ON" | tr -d '\r')
 if ! OUTPUT=$(git -C "$CLONE" checkout --quiet main 2>&1); then
   echo "CHECKOUT_FAILED"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
@@ -123,6 +140,10 @@ BEFORE=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
 if ! OUTPUT=$(git -C "$CLONE" merge --ff-only --quiet origin/main 2>&1); then
   echo "NOT_FAST_FORWARD"
   printf '%s\n' "$OUTPUT" | tr -d '\r'
+  if [ -n "$FOUND_ON" ] && [ "$FOUND_ON" != "main" ] &&
+    ! OUTPUT=$(git -C "$CLONE" checkout --quiet "$FOUND_ON" 2>&1); then
+    echo "still on main: cannot switch back to $FOUND_ON: $(one_line "$OUTPUT")"
+  fi
   exit 1
 fi
 AFTER=$(git -C "$CLONE" rev-parse --short HEAD | tr -d '\r')
