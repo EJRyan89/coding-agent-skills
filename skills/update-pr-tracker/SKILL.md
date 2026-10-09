@@ -25,3 +25,9 @@ Every step below is one command of the tracker pipeline script, run exactly as s
 If the user says a pull request "is approved," "looks good," or "can be removed," pass it with `--remove owner/repo#number`. That removes only its row for this run; it is the user's assessment, not authorization to act on GitHub.
 
 If the user wants an author shown under a different name, that belongs in `dashboard.author_names` (login to display name), not in the collected input.
+
+If the user wants a pull request shown under a status of their own, such as `on hold` or `delegated`, that belongs in the configuration's `dashboard.status_overrides`: from the next update its row sits in a section named after the status, and the status may not be a computed state (`to review`, `awaiting response`, `my pull requests`, `drafts`, `missing`, `current`, or `stale`, in any case). Set it with this command, which validates the configuration before writing it; never edit the configuration or the dashboard by hand:
+```bash
+python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" override --set "<owner/repo#number>=<status>"
+```
+It prints `SET` and `WROTE <configuration>`. `--clear "<owner/repo#number>"` instead unpins one, also once its pull request has closed, printing `CLEARED`, and `override` alone prints `OVERRIDE <owner/repo#number> <status>` for each.

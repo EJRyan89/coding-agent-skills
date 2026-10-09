@@ -88,6 +88,15 @@ def replayed_skills(text: str, own: str, names: set[str]) -> list[str]:
     return sorted(replayed)
 
 
+def computed_states_named(text: str) -> list[str]:
+    """The backticked states in the parentheses after "computed" on the one line of text that describes
+    `status_overrides`."""
+    lines = [line for line in text.splitlines() if "status_overrides`" in line and "computed" in line]
+    if len(lines) != 1:
+        raise AssertionError(f"{len(lines)} lines describe status_overrides and its computed states, not one")
+    return re.findall(r"`([^`]+)`", lines[0].split("computed", 1)[1].split(")", 1)[0])
+
+
 class CrossSkillContractTests(unittest.TestCase):
     def test_runtime_compatibility_keeps_skill_tool_mapping(self) -> None:
         contract = (REPOSITORY_ROOT / "skills/runtime-compatibility.md").read_text(encoding="utf-8-sig")
@@ -462,6 +471,30 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("When a `MODEL` line names that role, start its subagent on that model", skill)
         self.assertIn("on the model of any `MODEL` line that follows it", skill)
         self.assertIn("...(role.model ? {{ model: role.model }} : {{}})", pipeline)
+
+    def test_the_tracker_and_the_contract_name_the_computed_states_the_configuration_refuses(self) -> None:
+        # An override set to a computed state is refused, so the states a user is told to avoid must be those.
+        refused = literal_assignment(
+            REPOSITORY_ROOT / "skills/code-review-core/scripts/review_config.py", "COMPUTED_DASHBOARD_STATES"
+        )
+        if not isinstance(refused, set):
+            self.fail("COMPUTED_DASHBOARD_STATES is not a set literal")
+        for path in (
+            "skills/update-pr-tracker/SKILL.md",
+            "docs/code-review-operations-contract.md",
+            "docs/skills.md",
+        ):
+            with self.subTest(path=path):
+                named = computed_states_named((REPOSITORY_ROOT / path).read_text(encoding="utf-8-sig"))
+                self.assertEqual(len(named), len(set(named)), named)
+                self.assertEqual(sorted(refused), sorted(named))
+
+    def test_a_computed_state_list_is_read_from_its_one_line(self) -> None:
+        line = "- `dashboard.status_overrides`: `on hold`, not a computed state (`drafts` or `stale`); see `--remove`."
+        self.assertEqual(["drafts", "stale"], computed_states_named(f"intro `drafts`\n{line}\nafter `missing`"))
+        for text in ("no such line", f"{line}\n{line}"):
+            with self.subTest(text=text), self.assertRaises(AssertionError):
+                computed_states_named(text)
 
     def test_the_tracker_reviews_its_candidates_in_one_review_prs_pass(self) -> None:
         # One invocation per candidate made each pull request wait for the previous one's slowest reviewer.

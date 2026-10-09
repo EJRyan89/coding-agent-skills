@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### update-pr-tracker sets and clears status overrides with a validated command
+
+- Level: minor. An addition: `tracker_pipeline.py override` lists the configuration's `dashboard.status_overrides` (`OVERRIDE <owner/repo#N> <status>`, then `OVERRIDES <n>`), and with `--set owner/repo#N=STATUS` or `--clear owner/repo#N` changes them in one validated write, printing `SET`, `CLEARED`, and `WROTE <configuration>`. It changes nothing else in the file and fills in no default. It refuses a computed state, a malformed key, or clearing an override that is not set, and clears an override whose pull request has closed. `update-pr-tracker` now tells the agent to use it when you ask for a pull request to be shown under a status of your own.
+- Contract: none
+- User action: none
+- Pull request: #244
+
 ### The Copilot CLI host re-reads the source snapshot only as far as it changed since prepare
 
 - Level: patch. Faster with the same guarantee: for a run the Copilot CLI host reviews, `prepare` stamps the source snapshot in `run.json` (one SHA-256 over the manifest's bytes and each written file's path, size, and modification time), and the host, before it starts Copilot, checks the structure and the stamp and re-hashes only the files a time cannot vouch for and any fetched file. A stamp that no longer matches, or a run prepared before this release, has every file re-hashed as before. At 25,000 files the host's check went from minutes to about a second, and `prepare` spends about a second taking the stamp.

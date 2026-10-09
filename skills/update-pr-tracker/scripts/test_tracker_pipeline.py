@@ -22,7 +22,7 @@ import review_fixture
 import tracker_pipeline as tp
 from github_client import CommandResult
 from review_archive import commit_record
-from review_config import write_config
+from review_config import load_config, write_config
 from review_flags import add_flag
 from review_github import GitHubClient
 from review_records import build_record, validate_adapter_result
@@ -406,7 +406,7 @@ class ExitContractTests(TrackerPipelineFixture):
         self.assertIn("absent.json", result.stdout)
 
     def test_a_usage_error_exits_2(self) -> None:
-        for arguments in ((), ("unknown",), ("update",)):
+        for arguments in ((), ("unknown",), ("update",), ("override", "--set")):
             with self.subTest(arguments=arguments):
                 result = self.execute(*arguments)
                 self.assertEqual((2, ""), (result.returncode, result.stdout))
@@ -712,6 +712,101 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [f"UPDATED {self.dashboard} rows=0", "GITHUB_CALLS 0"], result.stdout.decode("utf-8").splitlines()
         )
+
+
+class OverrideTests(TrackerPipelineFixture):
+    """`override` lists, sets, and clears `dashboard.status_overrides` without GitHub, validating the whole file."""
+
+    def written(self) -> dict[str, Any]:
+        value = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertIsInstance(value, dict)
+        return value
+
+    def test_override_alone_lists_each_override_as_the_tracker_matches_it(self) -> None:
+        self.configure(overrides={"example/two#5": "on hold", "Example/One#2": " delegated "})
+        code, out, err = self.run_main("override")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["OVERRIDE example/one#2 delegated", "OVERRIDE example/two#5 on hold", "OVERRIDES 2"], out.splitlines()
+        )
+        self.assertEqual([], self.github.calls)
+
+    def test_set_and_clear_change_only_the_overrides_and_keep_the_rest_as_written(self) -> None:
+        raw = {
+            "schema_version": 1,
+            "default_repository_set": "primary",
+            "repository_sets": {"primary": ["example/one"]},
+            "repositories": {"example/one": {"reviewer": {"id": "generic", "protocol_version": 1, "scope": "generic"}}},
+            "archive_root": str(self.archive),
+            "summary_root": str(self.root / "summaries"),
+            "dashboard_file": str(self.dashboard),
+            "dashboard": {"status_overrides": {"example/one#1": "waiting"}, "author_names": {"bob": "Robert"}},
+        }
+        self.config_path.write_text(json.dumps(raw), encoding="utf-8")
+        code, out, err = self.run_main("override", "--set", "Example/One#2= on hold ", "--clear", "example/one#1")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(
+            ["SET example/one#2 on hold", "CLEARED example/one#1", f"WROTE {self.config_path}"], out.splitlines()
+        )
+        expected = json.loads(json.dumps(raw))
+        expected["dashboard"]["status_overrides"] = {"example/one#2": "on hold"}
+        self.assertEqual(expected, self.written(), "no default is filled in")
+        self.assertEqual({"example/one#2": "on hold"}, load_config(self.config_path)["dashboard"]["status_overrides"])
+        self.assertEqual([], self.github.calls)
+
+    def test_set_replaces_the_override_of_the_same_pull_request_whatever_its_case(self) -> None:
+        self.configure(overrides={"Example/One#2": "waiting", "example/two#5": "on hold"})
+        code, out, err = self.run_main("override", "--set", "example/one#2=delegated")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["SET example/one#2 delegated", f"WROTE {self.config_path}"], out.splitlines())
+        self.assertEqual(
+            {"example/one#2": "delegated", "example/two#5": "on hold"}, self.written()["dashboard"]["status_overrides"]
+        )
+
+    def test_an_override_whose_pull_request_is_gone_clears_like_any_other(self) -> None:
+        self.github.pages["example/one"] = [page([pull_node(1)])]
+        self.github.pages["example/two"] = [page([])]
+        self.configure(overrides={"example/two#99": "on hold"})
+        code, _, err = self.run_main("collect", "--output", str(self.input))
+        self.assertEqual(0, code, err)
+        calls = len(self.github.calls)
+        code, out, err = self.run_main("override", "--clear", "example/two#99")
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual(["CLEARED example/two#99", f"WROTE {self.config_path}"], out.splitlines())
+        self.assertEqual(calls, len(self.github.calls), "clearing reads nothing from GitHub")
+        self.assertEqual({}, self.written()["dashboard"]["status_overrides"])
+
+    def test_a_refused_change_writes_nothing(self) -> None:
+        self.configure(overrides={"example/one#2": "waiting"})
+        original = self.config_path.read_bytes()
+        # Every computed tracker state, in another case, as the configuration's validator refuses it.
+        computed = ["to review", "awaiting response", "my pull requests", "drafts", "missing", "current", "stale"]
+        cases: list[tuple[list[str], str]] = [
+            (["--set", f"example/one#3={state.title()}"], "duplicates a computed tracker state") for state in computed
+        ]
+        cases += [
+            (["--set", "example/one#3=  "], "must be non-empty"),
+            (["--set", "example/one#3"], "must be owner/repo#number=status"),
+            (["--set", "example/one=on hold"], "Invalid override pull-request identity"),
+            (["--clear", "example/one#9"], "No status override for example/one#9"),
+            (["--set", "example/one#3=on hold", "--clear", "Example/One#3"], "example/one#3 is named more than once"),
+            (["--set", "example/one#3=on hold", "--set", "example/one#4=drafts"], "duplicates a computed tracker"),
+        ]
+        for arguments, reason in cases:
+            with self.subTest(arguments=arguments):
+                code, out, err = self.run_main("override", *arguments)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(1, len(out.splitlines()), out)
+                self.assertTrue(out.startswith("FAILED "), out)
+                self.assertIn(reason, out)
+                self.assertEqual(original, self.config_path.read_bytes())
+
+    def test_an_invalid_configuration_is_refused_before_any_change(self) -> None:
+        self.config_path.write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+        code, out, _ = self.run_main("override", "--set", "example/one#3=on hold")
+        self.assertEqual(1, code)
+        self.assertTrue(out.startswith("FAILED "), out)
+        self.assertEqual({"schema_version": 1}, self.written())
 
 
 if __name__ == "__main__":
