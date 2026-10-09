@@ -54,9 +54,13 @@ cannot determine what a particular historical review actually loaded.
 
 ## Frontmatter is read as simple YAML
 
-Skill and agent frontmatter is read line by line so that each finding names its line. Single-line values and block
-scalars are read as YAML reads them; quoted values are kept with their quotes, and nested mappings and block lists,
-such as the Agent Skills specification's `metadata`, are reported as entries the audit cannot read.
+Skill and agent frontmatter is read line by line so that each finding names its line. Quoted scalars, lists, block
+scalars, and scalars continued on indented lines are read as YAML reads them, through the repository's shared reader
+for all but block scalars, and a nested mapping such as the Agent Skills specification's `metadata` is accepted
+without checking its entries. Values are text without YAML type resolution, so a quoted `"true"` counts as a boolean.
+A one-line plain value is kept as written, even one YAML would refuse, such as `*bold* text`, and a flow list the
+shared reader cannot read, such as `[pr-number] [priority]`, is kept as text. A double-quoted value with an escape
+JSON lacks, such as `\x41`, is reported as unreadable.
 
 ## Copilot projections are only provenance-checked
 

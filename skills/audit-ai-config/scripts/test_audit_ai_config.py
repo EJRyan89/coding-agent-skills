@@ -1079,15 +1079,26 @@ class CopilotConfigurationTests(unittest.TestCase):
         self.assertTrue(any(f.check == "copilot-agent" and "tools must" in f.message for f in result.findings))
 
     def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
-        # Pinned while _frontmatter is kept instead of skill-core's frontmatter.py; see the comment above it.
-        single_line = "Frontmatter must use single-line key: value entries or block scalars"
+        # Pinned while _frontmatter keeps its own line walk beside skill-core's reader; see the comment above it.
+        unreadable = "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings"
         mismatch = "Skill name must be lowercase hyphenated and match its directory"
         cases = {
-            '---\nname: "demo"\ndescription: d\n---\n': [(None, mismatch)],
+            '---\nname: "demo"\ndescription: d\n---\n': [],
+            "---\nname: 'demo' # quoted\ndescription: 'it''s'\n---\n": [],
+            '---\nname: "dem\ndescription: d\n---\n': [
+                (2, "Frontmatter entry cannot be read as YAML: name: a double-quoted value is not closed"),
+                (None, mismatch),
+            ],
             "---\nname: demo\ndescription: >-\n  long\n  text\n---\n": [],
-            "---\nname: demo\ndescription: d\nmetadata:\n  author: x\n---\n": [(5, single_line)],
+            "---\nname: demo\ndescription: d\nmetadata:\n  author: x\n  tags:\n    - a\n---\n": [],
+            "---\nname: demo\ndescription: d\nmetadata:\n    author: x\n  version: 1\n---\n": [(6, unreadable)],
+            "---\nname: demo\ndescription: d\nlicense:\n  MIT\n---\n": [],
+            "---\nname: demo\ndescription: d\n  more\n---\n": [],
+            "---\nname: demo\ndescription: d\nlicense: MIT\n- x\n---\n": [(5, unreadable)],
             "---\nname: demo\ndescription: *bold* text\n---\n": [],
             "---\nname: demo\nname: demo\ndescription: d\n---\n": [(3, "Duplicate frontmatter key 'name'")],
+            "---\nname: demo\ndescription: d\nallowed-tools: []\n---\n": [],
+            "---\nname: demo\ndescription: d\nargument-hint: [pr] [flag]\n---\n": [],
         }
         skill = self.root / ".github/skills/demo/SKILL.md"
         skill.parent.mkdir(parents=True)
@@ -1098,9 +1109,25 @@ class CopilotConfigurationTests(unittest.TestCase):
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
         tools_shape = "tools must be a non-empty string list or comma-separated string"
         agents = {
-            "---\ndescription: d\ntools: [read, edit]\n---\n": [(None, tools_shape)],
+            "---\ndescription: d\ntools: [read, edit]\n---\n": [],
             '---\ndescription: d\ntools: ["read", "edit"]\n---\n': [],
-            "---\ndescription: d\ntools:\n  - read\n---\n": [(4, single_line), (None, "tools must not be empty")],
+            "---\ndescription: d\ntools: ['read', 'custom-mcp/tool-1']\n---\n": [],
+            "---\ndescription: d\ntools: [read, [edit]]\n---\n": [(None, tools_shape)],
+            "---\ndescription: d\ntools:\n  - read\n  - 'edit'\n---\n": [],
+            "---\ndescription: d\ntools:\n- read\n- edit\n---\n": [],
+            "---\ndescription: d\ntools:\n  - read\n  edit\n---\n": [(5, unreadable), (None, tools_shape)],
+            "---\ndescription: d\ntools:\n  - read: x\n---\n": [(None, tools_shape)],
+            "---\ndescription: d\ntools:\n  - 'read\n---\n": [
+                (3, "Frontmatter entry cannot be read as YAML: tools: a single-quoted value is not closed"),
+                (None, tools_shape),
+            ],
+            "---\ndescription: d\ntools:\n  read: x\n---\n": [(None, tools_shape)],
+            "---\ndescription: d\ntools:\n---\n": [(None, "tools must not be empty")],
+            "---\ndescription: d\ntarget: [vscode]\ninfer: [true]\n---\n": [
+                (None, "target must be 'vscode' or 'github-copilot'"),
+                (None, "infer must be a boolean"),
+            ],
+            "---\ndescription: d\nmcp-servers:\n  custom:\n    type: 'local'\n    tools: ['*']\n---\n": [],
         }
         agent = self.root / ".github/agents/demo.agent.md"
         agent.parent.mkdir(parents=True)
@@ -1109,6 +1136,28 @@ class CopilotConfigurationTests(unittest.TestCase):
                 agent.write_text(text, encoding="utf-8")
                 found = audit._validate_agent(agent, self.root)
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
+    def test_quoted_scalars_lists_and_nested_mappings_are_read_as_yaml_reads_them(self) -> None:
+        cases = {
+            '---\nname: "de\\"mo"\n---\n': 'de"mo',
+            "---\nname: 'it''s' # comment\n---\n": "it's",
+            "---\nname: [a, 'b', \"c\"]\n---\n": ["a", "b", "c"],
+            "---\nname: [a] [b]\n---\n": "[a] [b]",
+            "---\nname:\n  - a\n\n  - 'b'\n---\n": ["a", "b"],
+            "---\nname:\n- a\n# note\n- b\n---\n": ["a", "b"],
+            "---\nname:\n  author: x\n  tags:\n    - a\n---\n": audit.NESTED,
+            "---\nname:\n  - a: x\n    b: y\n---\n": audit.NESTED,
+            "---\nname: d\n  more\n---\n": "d more",
+            "---\nname:\n---\n": "",
+        }
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                values, found = audit._frontmatter(skill)
+                self.assertEqual(expected, values["name"])
+                self.assertEqual([], found)
 
     def test_block_scalars_are_read_as_yaml_reads_them(self) -> None:
         # Copilot's skill documentation and the Agent Skills specification define the frontmatter as YAML.
@@ -1122,7 +1171,7 @@ class CopilotConfigurationTests(unittest.TestCase):
             "---\ndescription: >-\nname: demo\n---\n": ("", []),
             "---\ndescription: >-\n  long\nnot an entry\n---\n": (
                 "long",
-                [(4, "Frontmatter must use single-line key: value entries or block scalars")],
+                [(4, "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings")],
             ),
         }
         skill = self.root / ".github/skills/demo/SKILL.md"
@@ -1153,6 +1202,18 @@ class CopilotConfigurationTests(unittest.TestCase):
         path.write_text("---\nname: bad\n---\n", encoding="utf-8")
         result = audit.audit(self.root)
         self.assertTrue(any(f.check == "copilot-agent" and f.severity == "ERROR" for f in result.findings))
+
+    def test_a_conforming_repository_with_yaml_frontmatter_forms_has_no_errors(self) -> None:
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text(
+            '---\nname: "demo"\ndescription: Demo.\nmetadata:\n  author: x\n  version: "1.0"\n---\n', encoding="utf-8"
+        )
+        agent = self.root / ".github/agents/demo.agent.md"
+        agent.parent.mkdir(parents=True)
+        agent.write_text("---\ndescription: Demo.\ntools:\n  - read\n  - edit\n---\n", encoding="utf-8")
+        result = audit.audit(self.root)
+        self.assertEqual([], [f for f in result.findings if f.severity == "ERROR"])
 
     def test_code_review_collisions_are_errors(self) -> None:
         skill = self.root / ".github/skills/code-review/SKILL.md"
@@ -3273,7 +3334,7 @@ class ReportSchemaReferenceTests(unittest.TestCase):
                     "copilot-config",
                     ".github/skills/demo/SKILL.md",
                     4,
-                    "Frontmatter must use single-line key: value entries or block scalars",
+                    "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings",
                 ),
             ],
         )
