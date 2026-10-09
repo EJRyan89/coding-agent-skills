@@ -69,6 +69,17 @@ def duplicated_definition_problems(root: Path) -> list[str]:
         for module in modules:
             copied.setdefault(module, set()).add(definition)
         if all(definition in allowances[module] for module in modules):
+            # Each reason names the other copies, so a reader of one copy finds every place a change must reach.
+            problems += [
+                f"{module}: {DUPLICATION_ALLOWANCE} gives a reason for {definition} that does not name "
+                f"every other copy: {_joined(missing)}"
+                for module in modules
+                if (
+                    missing := [
+                        other for other in modules if other != module and other not in allowances[module][definition]
+                    ]
+                )
+            ]
             continue
         places = _joined([f"{module}:{line}" for module, line, _ in group])
         found.append(
