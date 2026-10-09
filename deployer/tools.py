@@ -126,6 +126,19 @@ SKILL_TOOLS = {
 # Codex CLI, so only this catalogue names it.
 VERIFY_TOOLS = {tool.name: tool for tool in (CODEX, COPILOT)}
 
+# Tools `deploy.py check` reports so that its output alone answers a bug report: Git, which every skill runs, and
+# Claude Code, which no deployment needs. Neither has a floor.
+REPORTED_TOOLS = (
+    Tool("git", "Git", lambda: platform_support.find_executable("git"), other_uses=("every skill",)),
+    Tool(
+        "claude",
+        "Claude Code",
+        lambda: platform_support.find_executable("claude"),
+        optional=True,
+        other_uses=("every skill run in Claude Code",),
+    ),
+)
+
 
 def parse_version(text: str) -> tuple[int, ...] | None:
     match = VERSION.search(text)

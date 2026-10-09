@@ -46,4 +46,8 @@ One success is evidence; one failure is a question. Explain each failure from it
 
 ## 4. Record the result
 
-Copy the `RUNTIME`, `MATRIX`, `DISCOVERED`, `UNDISCOVERED`, `SHADOWED`, `SUPPLIED`, and `SKIPPED` lines into the pull request's Validation section, with each runtime's version and your reading of any failure. Then delete the `HOME` directory, unless the user wants its transcripts.
+Copy the `RUNTIME`, `MATRIX`, `DISCOVERED`, `UNDISCOVERED`, `SHADOWED`, `SUPPLIED`, and `SKIPPED` lines into the pull request's Validation section, with each runtime's version and your reading of any failure. Then delete the `HOME` directory, unless the user wants its transcripts. The script deletes only a home it made, and prints `REMOVED` or `FAILED` with the reason:
+
+```bash
+python -B tools/runtime_canary.py --remove-home "<dir>"
+```
