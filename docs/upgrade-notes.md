@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### The reviewer guard refuses a self-check whose script or run ends in a backslash
+
+- Level: patch. A fix: in Claude Code, the reviewer guard now holds a `code-review-reviewer`'s self-check command to the rule its source commands already followed, so no quoted script or run may end in a backslash, which would escape its closing quote. The self-check the pipeline writes is allowed as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #262
+
 ## v0.4.0
 
 ### A specialist condition may declare the snapshot paths it reads, so its review keeps the lazy snapshot
