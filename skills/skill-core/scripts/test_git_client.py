@@ -206,7 +206,8 @@ class StreamTests(unittest.TestCase):
             with client.stream(["cat-file", "--batch"], directory=repository) as stream:
                 stream.stdin.write(f"{object_id}\n".encode("ascii"))
                 stream.stdin.close()
-                self.assertEqual(f"{object_id} blob {len(content)}\n".encode("ascii"), stream.readline())
+                self.assertEqual(object_id.encode("ascii"), stream.readline(len(object_id)))
+                self.assertEqual(f" blob {len(content)}\n".encode("ascii"), stream.readline())
                 self.assertEqual(content, stream.read(len(content)))
                 self.assertEqual(b"\n", stream.read(1))
                 self.assertEqual(b"", stream.read(1))
