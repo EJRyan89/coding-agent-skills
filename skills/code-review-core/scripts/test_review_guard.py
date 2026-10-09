@@ -246,17 +246,24 @@ class WriteTests(GuardFixture):
 
 
 class BashTests(GuardFixture):
-    def test_bash_runs_only_the_self_check_of_its_own_role_and_run(self) -> None:
+    def test_bash_runs_only_the_self_check_of_its_own_role_and_run_with_every_value_kept_in_quotes(self) -> None:
         command = rp.self_check_command(self.run_directory, "csharp-review")
         self.assert_denied(self.decide("Bash", command=command), "read the prompt file your task names first")
         self.claim()
         self.assertIsNone(self.decide("Bash", command=command))
+        script = str(rp.Path(rp.__file__).resolve())
         for bad in (
+            # The run or the script ending in a backslash, which would shift every quote after it.
+            command.replace(f'--run "{self.run_directory}"', f'--run "{self.run_directory}\\"'),
+            command.replace(f'"{script}"', f'"{script}\\"'),
+            command.replace(f'"{script}"', f'"{script}\\"').replace(
+                f'--run "{self.run_directory}"', f'--run "{self.run_directory}\\x & whoami & \\..\\"'
+            ),
             "cat source/app/Service.cs",
             f"{command} && git log",
             f"{command}; rm -rf /",
             command.replace("validate-result", "finalize"),
-            command.replace(str(rp.Path(rp.__file__).resolve()), str(self.root / "review_pipeline.py")),
+            command.replace(script, str(self.root / "review_pipeline.py")),
             rp.self_check_command(self.checkout, "csharp-review"),
             rp.self_check_command(self.run_directory / "work", "csharp-review"),
             command.replace('"csharp-review"', '"$(whoami)"'),
