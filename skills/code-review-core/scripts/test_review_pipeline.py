@@ -3955,7 +3955,7 @@ class BatchTests(PipelineFixture):
             with self.subTest(case=case):
                 strip_artifacts(self.archive, case)
                 code, out, err = self.run_main("enumerate", "--output", str(self.root / "batch.json"))
-                self.assertEqual((0, ""), (code, err))
+                self.assertEqual((1, ""), (code, err))
                 self.assertIn("REPOSITORY_FAILED example/one Review record has no artifact hashes\n", out)
 
     def test_enumerate_writes_its_batch_under_a_new_temporary_directory_by_default(self) -> None:
@@ -3995,8 +3995,9 @@ class BatchTests(PipelineFixture):
     def test_failed_enumeration_keeps_the_watermark(self) -> None:
         batch_path = self.root / "batch.json"
         code, out, _ = self.run_main("enumerate", "--output", str(batch_path))
-        self.assertEqual(0, code)
+        self.assertEqual(1, code)
         self.assertIn("REPOSITORY_FAILED example/one", out)
+        self.assertEqual(f"BATCH {batch_path}", out.splitlines()[-1])
         code, out, _ = self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("WATERMARK example/one unchanged: enumeration failed\n", out)
         self.assertFalse(self.state_path.exists())

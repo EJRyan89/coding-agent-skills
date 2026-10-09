@@ -13,9 +13,10 @@ through the code-review core, finds each table's objects in them, and checks the
   rejected;
 - an unlisted field is rejected.
 
-The adapter request has no validator, so its tables are checked against what `build_adapter_request` writes. The
-adapter result is described by `review-adapter.schema.json`, which reviewers read, and its objects get the same
-checks from the schema's `properties`, `required`, `type`, and `enum`.
+The adapter request has no validator, so its tables are checked against what `build_adapter_request` writes. A
+specialist result is judged by `load_role_result` against the role each fixture names. The adapter result is described
+by `review-adapter.schema.json`, which an entrypoint reviewer's author reads, and its objects get the same checks from
+the schema's `properties`, `required`, `type`, and `enum`.
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ from review_flags import validate_store
 from review_operation import legacy_index
 from review_records import build_record, carried_findings, validate_adapter_result, validate_record
 from review_runtime import build_adapter_request, validate_adapter_manifest
+from review_specialists import load_role_result
+from review_state import validate_state
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = REPOSITORY_ROOT / "docs" / "code-review-operations-contract.md"
@@ -820,6 +823,99 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
     return [pull, {**pull, "threads": []}]
 
 
+def state_fixtures() -> list[dict[str, Any]]:
+    """A state with one repository's advanced watermark and one not yet advanced, and an empty state."""
+    advanced = {"merged_since": "2026-03-10", "updated_at": "2026-03-11"}
+    return [
+        {"schema_version": 1, "repositories": {"example/one": advanced, "example/two": {}}},
+        {"schema_version": 1, "repositories": {}},
+    ]
+
+
+def specialist_fixtures(scratch: Path) -> list[Fixture]:
+    """A re-review role's result under declared finding categories, with review comments, every severity spelling,
+    each analyzer coverage, and a repeat of each kind; and an initial review role's result with neither categories
+    nor comments. Each is judged by writing it to its role's result file and loading it as `check` does."""
+    added = {"src/app.py": {str(line): f"line {line}" for line in range(1, 7)}}
+    common = {"files": ["src/app.py"], "dispositions_only": False, "category": "App"}
+    rereview = {
+        **common,
+        "id": "app-review",
+        "result_file": str(scratch / "app-review.json"),
+        "prior_ids": ["v1:F001"],
+        "prior_severities": {"v1:F001": "MUST_FIX"},
+        "comment_ids": ["C1"],
+        "finding_categories": ["Correctness", "Style"],
+    }
+    initial = {
+        **common,
+        "id": "generic-review",
+        "result_file": str(scratch / "generic-review.json"),
+        "prior_ids": [],
+        "comment_ids": [],
+    }
+
+    def judge(role: dict[str, Any]) -> Accepts:
+        def accepts(value: Any) -> bool:
+            Path(role["result_file"]).write_text(json.dumps(value), encoding="utf-8")
+            try:
+                load_role_result(role, added, ["ruff"])
+            except ValueError:
+                return False
+            return True
+
+        return accepts
+
+    def finding(line: int, severity: str, **extra: Any) -> dict[str, Any]:
+        return {"path": "src/app.py", "line": line, "severity": severity, "title": f"Defect {line}", **extra}
+
+    rereview_result = {
+        "model": "claude-opus-5-5",
+        "summary": "Two defects, one carried from v1.",
+        "findings": [
+            finding(
+                1,
+                "MUST_FIX",
+                category="Correctness",
+                body="Divides by zero.",
+                analyzer={"coverage": "available", "tool": "Ruff", "rule": "B008"},
+            ),
+            finding(
+                2,
+                "SHOULD FIX",
+                category="style",
+                body="The same division.",
+                repeats=0,
+                analyzer={"coverage": "known", "tool": "pylint", "rule": "W0102"},
+            ),
+            finding(
+                3,
+                "SUGGESTION",
+                category="Style",
+                body="Still the v1 problem.",
+                repeats="v1:F001",
+                analyzer={"coverage": "custom-candidate", "tool": "ruff", "rule": "unchecked-divisor"},
+            ),
+            finding(4, "MUST FIX", category="Correctness", body="Leaks a handle."),
+            finding(5, "SHOULD_FIX", category="Correctness", body="Ignores the result."),
+        ],
+        "prior_dispositions": [
+            {"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Line 3 still divides."}
+        ],
+        "comment_dispositions": [{"comment_id": "C1", "disposition": "addressed", "rationale": "Now guarded."}],
+    }
+    initial_result = {
+        "model": "unknown",
+        "summary": "One defect.",
+        "findings": [finding(6, "SUGGESTION", body="Unused import.")],
+        "prior_dispositions": [],
+    }
+    return [
+        Fixture("re-review specialist result", rereview_result, judge(rereview)),
+        Fixture("initial specialist result", initial_result, judge(initial)),
+    ]
+
+
 def legacy_accepts(scratch: Path) -> Callable[[Any], bool]:
     def accepts(value: Any) -> bool:
         with tempfile.TemporaryDirectory(dir=scratch) as temporary:
@@ -973,6 +1069,10 @@ class FormatContractTest(unittest.TestCase):
                 )
             ],
             "flag-store": [Fixture(f"flag store {index}", value, flags) for index, value in enumerate(flag_fixtures())],
+            "state": [
+                Fixture(f"state {index}", value, _judge(validate_state)) for index, value in enumerate(state_fixtures())
+            ],
+            "specialist-result": specialist_fixtures(scratch),
             "legacy-index": [Fixture("legacy index", LEGACY_INDEX, legacy_accepts(scratch))],
             "fixture-pull": [
                 Fixture(f"fixture pull {index}", value, _judge(validate_fixture_pull))
