@@ -15,12 +15,17 @@ temporary file, and prints `REPORT <path>`. It refuses an --output inside the sk
 from, ~/.claude/skills, or ~/.agents/skills, before writing anything. It searches the user's Claude
 configuration directory (CLAUDE_CONFIG_DIR, else ~/.claude) unless --user-dir names another.
 
+reindex and delete change only a memory store: a directory holding MEMORY.md, outside the skills
+directory this script runs from, ~/.claude/skills, and ~/.agents/skills. Given any other directory,
+they print one `FAILED <dir> ...` line, change nothing, and exit 1.
+
 reindex rebuilds MEMORY.md from the memory files' frontmatter, one line per memory:
 `- [Title](file.md) — hook`. It writes only MEMORY.md, only with --write, and never deletes
 or changes a memory file. Existing lines keep their place: other lines (headings, notes) stay
 as written, an entry is dropped when its file is gone or it repeats an earlier entry, and
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
+read whole when it is a `>` or `|` block scalar,
 else the existing entry's hook, else the first line of the body; a derived hook is collapsed to
 one line of at most 150 characters. It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
@@ -45,6 +50,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import itertools
 import json
 import os
 import re
@@ -72,6 +78,9 @@ INDEX_ENTRY = re.compile(r"^\s*-\s*\[(?P<title>[^\]]*)\]\((?P<file>[^)]+)\)")
 # The separator before a hook may be an em dash, an en dash, a colon, or a hyphen, as people write index lines.
 INDEX_HOOK = re.compile(r"^\s*-\s*\[[^\]]*\]\([^)]+\)\s*(?:[—–:-]\s*)?(?P<hook>.*?)\s*$")  # noqa: RUF001 - the en dash is meant
 HOOK_LIMIT = 150
+FRONTMATTER_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*)\s*:\s*(?P<value>.*)$")
+# A literal or folded block scalar header: chomping and an indentation digit in either order, then a comment.
+BLOCK_SCALAR = re.compile(r"^(?P<style>[|>])(?:[+-]?(?P<indent>[1-9])?|(?P<first>[1-9])[+-])\s*(?:#.*)?$")
 WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
 BACKTICKED = re.compile(r"`([^`\n]+)`")
 PATH_LIKE = re.compile(r"^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])?[\w.@()\- ]+(?:[\\/][\w.@()\- ]+)+[\\/]?$")
@@ -175,20 +184,61 @@ class Memory:
     overlaps: list[Overlap] = field(default_factory=list)
 
 
-# Kept instead of skill-core's frontmatter.py, which cannot read the nested metadata type and refuses memories this
-# reads, recorded for decision in https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
+def indentation(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def block_scalar(header: re.Match[str], key_indent: int, following: list[str]) -> tuple[str, int]:
+    """The value of a `|` or `>` block scalar and how many following lines it spans.
+
+    Its lines are those indented past the key, and blank lines between them. `>` folds a line break into a space
+    and keeps a blank line as a line break, `|` keeps every line; the value is stripped, so chomping changes nothing.
+    """
+    count = 0
+    while count < len(following) and (not following[count].strip() or indentation(following[count]) > key_indent):
+        count += 1
+    lines = following[:count]
+    content = [line for line in lines if line.strip()]
+    if not content:
+        return "", count
+    explicit = header.group("indent") or header.group("first")
+    indent = key_indent + int(explicit) if explicit else min(indentation(line) for line in content)
+    body = [line[indent:] if line.strip() else "" for line in lines]
+    if header.group("style") == "|":
+        return "\n".join(body).strip(), count
+    paragraphs = " ".join(line.strip() if line.strip() else "\n" for line in body)
+    return re.sub(r" ?\n ?", "\n", paragraphs).strip(), count
+
+
+# Kept for good instead of skill-core's frontmatter.py, by the decision recorded in
+# https://github.com/EJRyan89/coding-agent-skills/issues/27: memories nest their type in a `metadata:` mapping, which
+# the shared reader does not give, and the audit must read every memory however it is written.
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting."""
+    """Parse the simple key: value frontmatter Claude Code writes, tolerating nesting and reading block scalars."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return {}, text
     values: dict[str, str] = {}
-    for index, line in enumerate(lines[1:], start=1):
+    index = 1
+    while index < len(lines):
+        line = lines[index]
+        index += 1
         if line.strip() == "---":
-            return values, "\n".join(lines[index + 1 :])
-        match = re.match(r"^\s*([A-Za-z_][\w-]*)\s*:\s*(.*)$", line)
-        if match and match.group(2):
-            values.setdefault(match.group(1), match.group(2).strip().strip("\"'"))
+            return values, "\n".join(lines[index:])
+        match = FRONTMATTER_KEY.match(line)
+        if not match or not match.group("value"):
+            continue
+        value = match.group("value").strip()
+        header = BLOCK_SCALAR.match(value)
+        if header:
+            # A block scalar's lines are never read as keys, and the closing --- is never indented past a key.
+            following = list(itertools.takewhile(lambda rest: rest.strip() != "---", lines[index:]))
+            value, spanned = block_scalar(header, indentation(line), following)
+            index += spanned
+        else:
+            value = value.strip("\"'")
+        if value:
+            values.setdefault(match.group("key"), value)
     return {}, text
 
 
@@ -534,6 +584,9 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
     notes = [
         "A --settings file passed when Claude Code starts can also set autoMemoryDirectory; this audit cannot see it."
     ]
+    # Claude Code reads autoMemoryDirectory from every settings scope, in their precedence order, and honors a
+    # project's settings.json or settings.local.json under workspace trust (https://code.claude.com/docs/en/memory,
+    # "Storage location", checked 2026-10-08); the --settings scope between managed and local is in the note above.
     scopes = (
         ("managed", managed),
         ("local", repo / ".claude" / "settings.local.json"),
@@ -601,16 +654,37 @@ def describe(exc: OSError) -> str:
 SKILLS_ROOT = Path(__file__).resolve().parents[2]
 
 
+def skills_directory_holding(path: Path) -> Path | None:
+    """The skills directory path lies inside, this script's own or a deployed one, or None."""
+    target = path.resolve()
+    return next(
+        (root for root in (SKILLS_ROOT, *deployed_skill_roots()) if target.is_relative_to(root.resolve())), None
+    )
+
+
 def output_refusal(explicit: Path) -> str | None:
     """Why the audit report must not be written to explicit, or None when it may be.
 
     A file left inside a skill directory makes the deployer see that skill as modified and stop updating it, so an
     explicit path inside any skills directory is refused before anything is written.
     """
-    target = explicit.resolve()
-    for root in (SKILLS_ROOT, *deployed_skill_roots()):
-        if target.is_relative_to(root.resolve()):
-            return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    root = skills_directory_holding(explicit)
+    if root:
+        return f"{explicit} is inside the skills directory {root}; omit --output to write a new temporary file"
+    return None
+
+
+def store_refusal(memory_dir: Path) -> str | None:
+    """Why delete and reindex must not change memory_dir, or None when it is a memory store.
+
+    A deletion is permanent, so both change only a directory holding the MEMORY.md index Claude Code keeps beside its
+    memories, and never one inside a skills directory, where a SKILL.md would pass for a memory.
+    """
+    root = skills_directory_holding(memory_dir)
+    if root:
+        return f"{memory_dir} is inside the skills directory {root}; name the memory directory resolve printed"
+    if not (memory_dir / INDEX_NAME).is_file():
+        return f"{memory_dir} is not a memory directory: it holds no {INDEX_NAME}"
     return None
 
 
@@ -682,6 +756,10 @@ def run(args: argparse.Namespace) -> tuple[int, list[str]]:
         return 0, resolve_lines(repo, resolve(repo, args.home, dict(os.environ), managed_settings_path()))
     if not args.memory_dir.is_dir():
         return 1, [f"FAILED memory directory not found: {args.memory_dir}"]
+    if args.command in ("reindex", "delete"):
+        refused = store_refusal(args.memory_dir)
+        if refused:
+            return 1, [f"FAILED {refused}"]
     if args.command == "reindex":
         return reindex_lines(args.memory_dir, args.write)
     if args.command == "delete":
