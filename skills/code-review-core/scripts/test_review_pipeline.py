@@ -4060,6 +4060,44 @@ class BatchTests(PipelineFixture):
         self.assertEqual("WATERMARK example/one unchanged: enumeration failed\n", out)
         self.assertFalse(self.state_path.exists())
 
+    def test_enumerate_refuses_a_state_whose_watermark_is_not_a_date(self) -> None:
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "not-a-date"}}}),
+            encoding="utf-8",
+        )
+        code, out, err = self.run_main("enumerate", "--output", str(self.root / "batch.json"))
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            "FAILED State example/one.merged_since must begin with a YYYY-MM-DD date, not 'not-a-date'\n", out
+        )
+        self.assertEqual([], self.github.calls)
+
+    def test_a_watermark_that_cannot_be_read_fails_only_its_repository(self) -> None:
+        # A state that reaches enumerate without passing validate_state: its repository fails, the others list.
+        other = "example/two"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repository_sets"]["primary"].append(other)
+        config["repositories"][other] = config["repositories"][REPOSITORY]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        state = {"schema_version": 1, "repositories": {other: {"merged_since": "not-a-date"}}}
+        self.github.listing = [rest_pull(12, self.head, self.base)]
+        batch_path = self.root / "batch.json"
+        with mock.patch.object(rp, "load_state", return_value=state):
+            code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertIn(
+            "REPOSITORY_FAILED example/two State example/two.merged_since must begin with a YYYY-MM-DD date, "
+            "not 'not-a-date'",
+            lines,
+        )
+        self.assertIn("PULL example/one#12", lines)
+        self.assertEqual(f"BATCH {batch_path}", lines[-1])
+        code, out, _ = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual(0, code)
+        self.assertIn("WATERMARK example/two unchanged: enumeration failed\n", out)
+
     def test_one_call_covers_several_pulls_and_each_fails_alone(self) -> None:
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
         code, out, err = self.run_main(

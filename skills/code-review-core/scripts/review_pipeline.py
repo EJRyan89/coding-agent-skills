@@ -2181,12 +2181,8 @@ def enumerate_batch(
     batch: dict[str, Any] = {"schema_version": BATCH_SCHEMA_VERSION, "today": today.isoformat(), "repositories": {}}
 
     def listing(repository: str) -> dict[str, Any]:
-        recorded = recorded_watermark(state, repository)
-        # A repository without a watermark starts today, so its first batch run reviews only open pull requests
-        # instead of every merged pull request in its history.
-        watermark = today if recorded is None else recorded
         entry: dict[str, Any] = {
-            "previous_watermark": watermark.isoformat(),
+            "previous_watermark": None,  # until the recorded watermark is read
             "complete": False,
             "error": None,
             "eligible": [],
@@ -2199,6 +2195,11 @@ def enumerate_batch(
             return latest_reviewed_heads(archive_root, repository, numbers)
 
         try:
+            recorded = recorded_watermark(state, repository)
+            # A repository without a watermark starts today, so its first batch run reviews only open pull requests
+            # instead of every merged pull request in its history.
+            watermark = today if recorded is None else recorded
+            entry["previous_watermark"] = watermark.isoformat()
             if recorded is None:
                 # No watermark yet: list the whole history once; `advance` then records one.
                 listings = [services.github.list_pulls(repository, state="all")]
@@ -2219,7 +2220,7 @@ def enumerate_batch(
                 "read": len(read),
             }
             entry["complete"] = True
-        except (GitHubError, ReviewOperationError, ArchiveError, PersistenceError, RecordError) as exc:
+        except (GitHubError, ReviewOperationError, ArchiveError, PersistenceError, RecordError, StateError) as exc:
             entry["error"] = str(exc)
         return entry
 
@@ -2229,10 +2230,13 @@ def enumerate_batch(
     return batch
 
 
-def advance_watermarks(batch_path: Path, *, config_path: Path | None = None) -> dict[str, tuple[str, str | None]]:
+def advance_watermarks(
+    batch_path: Path, *, config_path: Path | None = None
+) -> dict[str, tuple[str | None, str | None]]:
     """Advance each fully enumerated repository past the merged pull requests whose heads are now reviewed.
 
-    A repository whose enumeration failed keeps its watermark (None in the result), so no work is skipped.
+    A repository whose enumeration failed keeps its watermark (None in the result), so no work is skipped; its
+    previous watermark is None when that watermark could not be read.
     """
     batch = read_json(batch_path)
     if not isinstance(batch, dict) or batch.get("schema_version") != BATCH_SCHEMA_VERSION:
@@ -2240,12 +2244,12 @@ def advance_watermarks(batch_path: Path, *, config_path: Path | None = None) -> 
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])
     today = date.fromisoformat(batch["today"])
-    changes: dict[str, tuple[str, str | None]] = {}
+    changes: dict[str, tuple[str | None, str | None]] = {}
     for repository, entry in batch["repositories"].items():
-        previous = date.fromisoformat(entry["previous_watermark"])
         if not entry["complete"]:
-            changes[repository] = (previous.isoformat(), None)
+            changes[repository] = (entry["previous_watermark"], None)
             continue
+        previous = date.fromisoformat(entry["previous_watermark"])
         eligible = [validate_pull(pull) for pull in entry["eligible"]]
         merged = [pull for pull in eligible if pull["state"] == "MERGED"]
         heads = latest_reviewed_heads(archive_root, repository, [pull["number"] for pull in merged])
