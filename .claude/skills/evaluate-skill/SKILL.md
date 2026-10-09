@@ -26,7 +26,7 @@ From the worktree, in the background, since it outlasts a command's time limit, 
 python -B tools/skill_evals.py review-prs --write
 ```
 
-The first line is `HOME "<dir>"`. A `FAILED` line instead means nothing ran: report what it names, such as a missing installed `code-review-core`, whose reviewer guard the runs use.
+The first line is `HOME "<dir>"`. A `FAILED` line instead means nothing ran: report what it names, such as Claude Code missing from `PATH`.
 
 ## 3. Say what each failure means
 
@@ -35,10 +35,11 @@ Every `FAIL` line ends with its reason, from the record or from the run. Explain
 - **A judgment the record shows**, such as `no finding at least MUST_FIX on those lines`, `found SHOULD_FIX at ...`, `verdict is APPROVED`, or a ledger count or disposition: this is the evaluation's result for that model. One run is one sample, so rerun that scenario on that model once before calling it a regression, and report both runs.
 - **`the run recorded no review; ...`**: the session ended before `finalize`. The reason says whether it timed out, exited with an error, did not list the skill, or had a command denied, naming the tool. That is a run problem, not a judgment of the model.
 - **`no reviewer subagent ran ...` or `reviewers ran on <id>, not <model>`**: the reviewers did not run on the model, for example because the session worked the roles itself, so the record does not count.
-- **`DEPLOY_FAILED <model> "<reason>"`**: the throwaway home could not be prepared; its log or reason says why.
+- **`no reviewer guard held <role>: its files_read is null`**: that reviewer ran without the reviewer guard, so the run never exercised the boundary real reviews have, and the record does not count. Search the `TRANSCRIPT` for its `hook_response` events, which say whether the guard ran, rather than judging the model.
+- **`DEPLOY_FAILED <model> "<reason>"`**: the throwaway home could not be prepared, or its reviewer agent cannot be passed to the session with `--agents`; its log or reason says why.
 
 When a reason is not enough, search the run's `TRANSCRIPT` file, which is stream-json, for the failing step or for `permission_denials`, rather than reading it whole.
 
 ## 4. Record the result
 
-`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. A model whose reviewers never ran stays recorded as `not run`, with the reason. In the pull request's Validation section, cite the run with its table and the `REVIEWER` and `RUNTIME` lines, and your reading of each `FAIL`. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
+`--write` replaced the skill's rows in `docs/skill-evaluations.md`, which the `WROTE` line names: commit it with the change. A model whose reviewers never ran stays recorded as `not run`, with the reason. In the pull request's Validation section, cite the run with its table and the `REVIEWER`, `GUARDED`, and `RUNTIME` lines, and your reading of each `FAIL`. Without a `REMOVED` line, the `HOME` directory keeps the transcripts; give the user its path to delete when they are done with it.
