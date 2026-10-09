@@ -29,10 +29,9 @@ Each finding contains:
 |---|---|---|
 | `severity` | enum | `ERROR`, `WARNING`, or `INFO` |
 | `check` | string | Which audit check produced this finding (e.g., `parity`, `orphan`, `mcp`, or `limitation` for an applicable known limitation) |
-| `path` | string | File path relative to repo root (when applicable) |
-| `line` | int | Line number (when applicable, 1-indexed) |
+| `path` | string | File path relative to repo root (when applicable; JSON `null` and an empty Markdown cell otherwise) |
+| `line` | int | Line number (when applicable, 1-indexed; JSON `null` and an empty Markdown cell otherwise) |
 | `message` | string | Human-readable description of the finding |
-| `detail` | string | Additional context (diff, expected vs actual, etc.) |
 
 ## Severities
 
@@ -69,7 +68,7 @@ Deterministic: sorted by severity (ERROR first), then by file path, then by line
 ```markdown
 ## AI Config Audit — {repo_name}
 
-Authority: **Conforming** (manifest found)
+Authority: **conforming**
 Scope: **independently-derived**
 
 RESULT ERRORS
@@ -80,12 +79,15 @@ SUMMARY INFO inventory 1
 
 ### Findings
 
-| Severity | Check | Path | Message |
-|---|---|---|---|
-| ERROR | parity | .github/copilot-instructions.md | Content drift from CLAUDE.md |
-| WARNING | mcp | (repository settings) | Copilot repository MCP cannot be validated statically |
-| INFO | inventory | CLAUDE.md | Found at repository root |
+| Severity | Check | Path | Line | Message |
+|---|---|---|---|---|
+| ERROR | copilot-config | .github/skills/demo/SKILL.md | 4 | Frontmatter must use single-line key: value entries or block scalars |
+| WARNING | mcp |  |  | Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically |
+| INFO | inventory | CLAUDE.md |  | Found CLAUDE.md |
 ```
+
+`Authority` and `Scope` print the same lowercase values as the JSON `authority` and `scopeStatus`. A finding with no
+path or line leaves that cell empty.
 
 The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
 printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON
@@ -102,11 +104,24 @@ output has no summary; count its `findings` instead.
   "findings": [
     {
       "severity": "ERROR",
-      "check": "parity",
-      "path": ".github/copilot-instructions.md",
+      "check": "copilot-config",
+      "path": ".github/skills/demo/SKILL.md",
+      "line": 4,
+      "message": "Frontmatter must use single-line key: value entries or block scalars"
+    },
+    {
+      "severity": "WARNING",
+      "check": "mcp",
+      "path": null,
       "line": null,
-      "message": "Content drift from CLAUDE.md",
-      "detail": "--- .github/copilot-instructions.md\n+++ expected/..."
+      "message": "Copilot repository MCP (cloud agent/code review) configured via repository settings — cannot validate statically"
+    },
+    {
+      "severity": "INFO",
+      "check": "inventory",
+      "path": "CLAUDE.md",
+      "line": null,
+      "message": "Found CLAUDE.md"
     }
   ]
 }

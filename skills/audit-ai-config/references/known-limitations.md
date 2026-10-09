@@ -52,6 +52,12 @@ and actual skill or agent selection remain manual verification items. Copilot co
 review's documented PR-head loading is reported as a trust warning, but the audit
 cannot determine what a particular historical review actually loaded.
 
+## Frontmatter is read as simple YAML
+
+Skill and agent frontmatter is read line by line so that each finding names its line. Single-line values and block
+scalars are read as YAML reads them; quoted values are kept with their quotes, and nested mappings and block lists,
+such as the Agent Skills specification's `metadata`, are reported as entries the audit cannot read.
+
 ## Copilot projections are only provenance-checked
 
 For manifest-owned or marker-bearing `.github/skills` and `.github/agents`
@@ -75,7 +81,7 @@ The CLI checks `args.root / ".git"` exists (not equivalent to `git rev-parse --s
 
 ## Read-only contract
 
-The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `is_file()`, `is_dir()`, `glob()`, `rglob()`, `json.loads()`, and `tomllib.load()` in read-binary mode.
+The audit engine is verified read-only: no writes, no execution, no modifications, no subprocess, no tempfile, no network access. All file access uses `read_text()`, `is_file()`, `is_dir()`, `glob()`, `rglob()`, `os.walk()`, `json.loads()`, and `tomllib.load()` in read-binary mode.
 
 ## Behavioral checks are heuristics
 

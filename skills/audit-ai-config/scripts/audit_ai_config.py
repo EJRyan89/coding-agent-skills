@@ -29,6 +29,7 @@ import ast
 import contextlib
 import hashlib
 import json
+import os
 import re
 import sys
 import tomllib
@@ -83,7 +84,6 @@ class Finding:
     path: str | None = None
     line: int | None = None
     message: str = ""
-    detail: str = ""
 
     def sort_key(self) -> tuple[int, str, int]:
         return (
@@ -124,6 +124,29 @@ class AuditResult:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def read_text_or_none(path: Path) -> str | None:
+    """The file's text, or None when it cannot be read or decoded; the caller has reported that, or ignores it."""
+    try:
+        return read_text(path)
+    except (OSError, UnicodeError):
+        return None
+
+
+# Directories no repository author writes agent configuration into: version control and installed dependencies.
+SKIPPED_DIRECTORIES: frozenset[str] = frozenset(
+    {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".nox"}
+)
+
+
+def named_files(root: Path, *names: str) -> list[Path]:
+    """Every file below the root with one of these names, outside SKIPPED_DIRECTORIES, in a stable order."""
+    found: list[Path] = []
+    for directory, subdirectories, files in os.walk(root):
+        subdirectories[:] = sorted(name for name in subdirectories if name not in SKIPPED_DIRECTORIES)
+        found.extend(Path(directory, name) for name in sorted(files) if name in names)
+    return found
 
 
 def content_hash(content: str) -> str:
@@ -297,14 +320,11 @@ def _inventory_fixed_files(root: Path) -> list[Finding]:
 
 
 def _inventory_recursive_files(root: Path) -> list[Finding]:
-    findings: list[Finding] = []
-    for name in RECURSIVE_INVENTORY_NAMES:
-        for found in root.rglob(name):
-            if ".git" in found.parts:
-                continue
-            rel = found.relative_to(root).as_posix()
-            findings.append(_inventory_finding(rel, f"Found {rel}"))
-    return findings
+    return [
+        _inventory_finding(rel, f"Found {rel}")
+        for name in RECURSIVE_INVENTORY_NAMES
+        for rel in (found.relative_to(root).as_posix() for found in named_files(root, name))
+    ]
 
 
 def _inventory_skill_directories(root: Path) -> list[Finding]:
@@ -371,10 +391,14 @@ def _inventory_parity_workflows(root: Path) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-# Kept instead of skill-core's frontmatter.py: this audit reports, by line, forms that reader accepts, and accepts some
-# it refuses, recorded for decision in https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710
+# Kept instead of skill-core's frontmatter.py by decision
+# (https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710): this audit is a lint policy that
+# reports each frontmatter problem at its line number, which the shared reader does not give.
 def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
-    """Read simple YAML frontmatter without executing or loading YAML tags."""
+    """Read simple YAML frontmatter without executing or loading YAML tags.
+
+    A value is one line, or a block scalar (| or >) whose indented lines follow it, read as YAML reads it.
+    """
     rel = path.as_posix()
     try:
         lines = read_text(path).splitlines()
@@ -388,20 +412,103 @@ def _frontmatter(path: Path) -> tuple[dict[str, str], list[Finding]]:
         return {}, [Finding("ERROR", "copilot-config", rel, message="Unterminated YAML frontmatter")]
     values: dict[str, str] = {}
     findings: list[Finding] = []
-    for offset, line in enumerate(lines[1:end], 2):
+    index = 1
+    while index < end:
+        line = lines[index]
+        index += 1
+        number = index
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):\s*(.*?)\s*$", line)
         if not match:
             findings.append(
-                Finding("ERROR", "copilot-config", rel, offset, "Frontmatter must use single-line key: value entries")
+                Finding(
+                    "ERROR",
+                    "copilot-config",
+                    rel,
+                    number,
+                    "Frontmatter must use single-line key: value entries or block scalars",
+                )
             )
             continue
         key, value = match.groups()
+        header = BLOCK_SCALAR_HEADER.fullmatch(value)
+        if header:
+            body = _block_scalar_lines(lines[index:end], header)
+            index += len(body)
+            value = _block_scalar_value(body, header)
         if key in values:
-            findings.append(Finding("ERROR", "copilot-config", rel, offset, f"Duplicate frontmatter key '{key}'"))
+            findings.append(Finding("ERROR", "copilot-config", rel, number, f"Duplicate frontmatter key '{key}'"))
         values[key] = value
     return values, findings
+
+
+# A block scalar header: | (literal) or > (folded), then a chomping and an indentation indicator in either order.
+BLOCK_SCALAR_HEADER = re.compile(
+    r"(?P<style>[|>])(?:(?P<chomp>[+-])?(?P<indent>[1-9])?|(?P<indent2>[1-9])(?P<chomp2>[+-]))"
+)
+
+
+def _block_scalar_indent(lines: list[str], header: re.Match[str]) -> int:
+    """The block's content indentation: the indicator's, or the first non-blank line's."""
+    explicit = header.group("indent") or header.group("indent2")
+    if explicit:
+        return int(explicit)
+    for line in lines:
+        if line.strip():
+            return len(line) - len(line.lstrip(" "))
+    return 0
+
+
+def _block_scalar_lines(lines: list[str], header: re.Match[str]) -> list[str]:
+    """The lines a block scalar spans: blank lines and lines indented at least as far as its content."""
+    indent = _block_scalar_indent(lines, header)
+    body: list[str] = []
+    if indent == 0:
+        return body
+    for line in lines:
+        if line.strip() and not line.startswith(" " * indent):
+            break
+        body.append(line)
+    return body
+
+
+def _block_scalar_value(body: list[str], header: re.Match[str]) -> str:
+    """The value YAML gives a block scalar, with its chomping applied."""
+    indent = _block_scalar_indent(body, header)
+    content = [line[indent:] if line.strip() else "" for line in body]
+    trailing = len(content)
+    while trailing and not content[trailing - 1]:
+        trailing -= 1
+    text = "\n".join(content[:trailing]) if header.group("style") == "|" else _fold(content[:trailing])
+    chomp = header.group("chomp") or header.group("chomp2")
+    if not text or chomp == "-":
+        return text
+    if chomp == "+":
+        return text + "\n" * (len(content) - trailing + 1)
+    return text + "\n"
+
+
+def _fold(content: list[str]) -> str:
+    """Folded style: a break between two lines of text becomes a space, each blank line a newline, and the breaks
+    around a more-indented line are kept."""
+    text = ""
+    previous: str | None = None
+    blank = 0
+    for line in content:
+        if not line:
+            blank += 1
+            continue
+        if previous is None:
+            text += "\n" * blank
+        elif previous.startswith((" ", "\t")) or line.startswith((" ", "\t")):
+            text += "\n" * (blank + 1)
+        else:
+            text += "\n" * blank if blank else " "
+        text += line
+        previous = line
+        blank = 0
+    return text
 
 
 def _identifier_from_agent_filename(path: Path) -> str:
@@ -491,11 +598,29 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     return findings
 
 
+def _provenance(path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
+    """A Copilot projection carries the ownership marker exactly when the manifest owns it.
+
+    An unreadable file is skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
+    """
+    content = read_text_or_none(path)
+    if content is None:
+        return []
+    marked = has_ownership_marker(content)
+    if marked and rel not in manifest_paths:
+        message = f"Generated Copilot {kind} projection is not owned by the manifest"
+    elif rel in manifest_paths and not marked:
+        message = f"Manifest-owned Copilot {kind} projection lacks an ownership marker"
+    else:
+        return []
+    return [Finding("ERROR", "provenance", rel, message=message)]
+
+
 def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     """Statically validate Copilot-discovered repository skills and agents."""
     findings: list[Finding] = []
     manifest_paths = {
-        artifact.get("path")
+        artifact["path"]
         for artifact in manifest.get("artifacts", [])
         if isinstance(artifact, dict) and isinstance(artifact.get("path"), str)
     }
@@ -505,53 +630,15 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
             continue
         for path in sorted(directory.rglob("SKILL.md")):
             findings.extend(_validate_skill(path, root))
-            rel = path.relative_to(root).as_posix()
-            if skill_dir == ".github/skills" and (has_ownership_marker(read_text(path)) or rel in manifest_paths):
-                if rel not in manifest_paths:
-                    findings.append(
-                        Finding(
-                            "ERROR",
-                            "provenance",
-                            rel,
-                            message="Generated Copilot skill projection is not owned by the manifest",
-                        )
-                    )
-                elif not has_ownership_marker(read_text(path)):
-                    findings.append(
-                        Finding(
-                            "ERROR",
-                            "provenance",
-                            rel,
-                            message="Manifest-owned Copilot skill projection lacks an ownership marker",
-                        )
-                    )
+            if skill_dir == ".github/skills":
+                findings.extend(_provenance(path, path.relative_to(root).as_posix(), "skill", manifest_paths))
     for agent_dir in (".github/agents", ".claude/agents"):
         directory = root / agent_dir
         if not directory.is_dir():
             continue
         for path in sorted(p for p in directory.iterdir() if p.is_file()):
             findings.extend(_validate_agent(path, root))
-            rel = path.relative_to(root).as_posix()
-            content = read_text(path)
-            if has_ownership_marker(content) or rel in manifest_paths:
-                if rel not in manifest_paths:
-                    findings.append(
-                        Finding(
-                            "ERROR",
-                            "provenance",
-                            rel,
-                            message="Generated Copilot agent projection is not owned by the manifest",
-                        )
-                    )
-                elif not has_ownership_marker(content):
-                    findings.append(
-                        Finding(
-                            "ERROR",
-                            "provenance",
-                            rel,
-                            message="Manifest-owned Copilot agent projection lacks an ownership marker",
-                        )
-                    )
+            findings.extend(_provenance(path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
 
 
@@ -563,7 +650,7 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
             continue
         try:
             tree = ast.parse(read_text(path), filename=candidate)
-        except (SyntaxError, OSError, UnicodeError):
+        except (SyntaxError, ValueError, OSError):  # ValueError covers UnicodeError and, before 3.12, a null byte
             return None, "generator-scope-unreadable"
         values: dict[str, list[str]] = {}
         for node in tree.body:
@@ -1307,7 +1394,7 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     try:
         with path.open("rb") as handle:
             config = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as e:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         message = f"Invalid TOML: {e}"
     except OSError as e:
         message = f"Error reading config: {e}"
@@ -1494,8 +1581,8 @@ def _instruction_sources(root: Path) -> InstructionSources:
 
 
 def _nested_files(root: Path, name: str) -> list[Path]:
-    """Every file with this name below the repository root, outside .git."""
-    return [path for path in root.rglob(name) if ".git" not in path.parts and path != root / name]
+    """Every file with this name below the repository root, outside SKIPPED_DIRECTORIES."""
+    return [path for path in named_files(root, name) if path != root / name]
 
 
 def _layering_codex(sources: InstructionSources) -> list[Finding]:
@@ -1994,9 +2081,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
     instructions = root / ".github/instructions"
     if instructions.is_dir() and any(instructions.rglob("*.instructions.md")):
         note(".github/instructions", "Path-specific instructions are not checked for contradictions or overlap")
-    for nested in sorted(root.rglob(".mcp.json")):
-        if ".git" in nested.parts or nested == root / ".mcp.json":
-            continue
+    for nested in _nested_files(root, ".mcp.json"):
         note(nested.relative_to(root).as_posix(), "Nested .mcp.json files are not validated")
     return findings
 
@@ -2008,6 +2093,7 @@ def check_limitations(root: Path, manifest: dict[str, Any]) -> list[Finding]:
 
 def audit(root: Path) -> AuditResult:
     """Run all audit checks and return the result."""
+    root = root.resolve()  # a relative root such as "." has no name of its own
     result = AuditResult(repository=root.name)
 
     # Step 1: Inventory
@@ -2092,25 +2178,11 @@ def format_markdown(result: AuditResult) -> str:
 
     lines.append("### Findings")
     lines.append("")
-    lines.append("| Severity | Check | Path | Message |")
-    lines.append("|---|---|---|---|")
-
+    lines.append("| Severity | Check | Path | Line | Message |")
+    lines.append("|---|---|---|---|---|")
     for f in sorted_findings:
-        path = f.path or ""
-        lines.append(f"| {f.severity} | {f.check} | {path} | {f.message} |")
-
-    # Append details for findings that have them
-    details = [f for f in sorted_findings if f.detail]
-    if details:
-        lines.append("")
-        lines.append("### Details")
-        lines.append("")
-        for f in details:
-            lines.append(f"**{f.path or f.check}**: {f.message}")
-            lines.append("")
-            lines.append(f"```\n{f.detail}\n```")
-            lines.append("")
-
+        line = "" if f.line is None else str(f.line)
+        lines.append(f"| {f.severity} | {f.check} | {f.path or ''} | {line} | {f.message} |")
     return "\n".join(lines) + "\n"
 
 
