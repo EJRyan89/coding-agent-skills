@@ -176,31 +176,6 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def atomic_write_bytes(path: Path, content: bytes, *, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-        temporary = Path(temporary_name)
-        try:
-            temporary.chmod(mode)
-            with os.fdopen(descriptor, "wb") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-            raise
-        temporary.replace(path)
-        temporary = None
-    except OSError as exc:
-        raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def atomic_write_json(
     path: Path,
     value: Any,

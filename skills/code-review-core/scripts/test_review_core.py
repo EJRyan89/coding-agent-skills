@@ -31,7 +31,14 @@ import review_io
 import review_runtime
 from git_client import GitResult
 from github_client import CommandResult
-from review_archive import ArchiveError, commit_record, latest_record, list_versions, pull_directory
+from review_archive import (
+    ArchiveError,
+    commit_record,
+    latest_record,
+    list_versions,
+    pull_directory,
+    record_files,
+)
 from review_config import (
     ConfigurationError,
     default_manifest_path,
@@ -426,7 +433,7 @@ class ParallelCallTests(unittest.TestCase):
 
 
 class StateAndLockTests(unittest.TestCase):
-    def test_state_update_checks_expected_snapshot(self) -> None:
+    def test_state_update_writes_the_validated_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
             initial = empty_state()
@@ -439,10 +446,13 @@ class StateAndLockTests(unittest.TestCase):
                 }
                 return replacement
 
-            updated = update_state(path, advance, expected=initial)
+            self.assertEqual(initial, load_state(path))
+            updated = update_state(path, advance)
             self.assertEqual(updated, load_state(path))
-            with self.assertRaisesRegex(StateError, "changed"):
-                update_state(path, advance, expected=initial)
+            self.assertNotEqual(initial, updated)
+            with self.assertRaisesRegex(StateError, "only schema_version and repositories"):
+                update_state(path, lambda state: {**state, "extra": True})
+            self.assertEqual(updated, load_state(path), "a refused replacement leaves the state as it was")
 
     def test_contended_lock_fails_without_removing_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1325,6 +1335,30 @@ class ArchiveTests(unittest.TestCase):
             for name in names:
                 (directory / name).write_text("{}", encoding="utf-8")
             self.assertEqual([*range(1, 12), 100], list_versions(directory))
+
+    def test_record_files_are_every_pair_of_a_repository_beside_its_version_chains(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertEqual([], record_files(root, "example/one"), "a repository with no reviews has none")
+            pulls = pull_directory(root, "Example/One", 7).parent
+            for name in ("7/review.json", "7/review-v2.json", "7/review-imported.json", "12/review.json"):
+                (pulls / name).parent.mkdir(parents=True, exist_ok=True)
+                (pulls / name).write_text("{}", encoding="utf-8")
+            (pulls / "7" / "review.md").write_text("", encoding="utf-8")
+            (pulls / "7" / "notes.json").write_text("{}", encoding="utf-8")
+            other = pull_directory(root, "example/other", 7)
+            other.mkdir(parents=True)
+            (other / "review.json").write_text("{}", encoding="utf-8")
+            self.assertEqual(
+                [
+                    pulls / "12/review.json",
+                    pulls / "7/review-imported.json",
+                    pulls / "7/review-v2.json",
+                    pulls / "7/review.json",
+                ],
+                record_files(root, "EXAMPLE/one"),
+            )
+            self.assertEqual([1, 2], list_versions(pulls / "7"), "the chain leaves the imported pair out")
 
     def test_eleventh_review_follows_the_tenth(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

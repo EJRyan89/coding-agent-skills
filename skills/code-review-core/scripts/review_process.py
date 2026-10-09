@@ -2,11 +2,12 @@
 
 A process is identified by its PID and its start time, as the deployer's lock does in
 deployer/platform_support.py; a deployed skill cannot import the deployer, so this is its own copy. Every
-operating-system-specific step of the host's lifecycle lives here.
+operating-system-specific step of the host's lifecycle lives here, and so does where WinGet installs Copilot CLI.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import warnings
 from collections.abc import Sequence
@@ -119,3 +120,10 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
         warnings.simplefilter("ignore", ResourceWarning)
         del process
     return pid
+
+
+def winget_copilot() -> Path | None:
+    """Copilot CLI in the folder WinGet links the commands it installs into, which PATH may not include; None when it
+    is not there."""
+    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
+    return candidate if candidate.is_file() else None

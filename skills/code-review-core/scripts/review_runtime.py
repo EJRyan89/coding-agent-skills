@@ -27,6 +27,7 @@ from git_client import GitClient, GitError, GitResult, GitStream, Runner, subpro
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
+from review_process import winget_copilot
 
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
@@ -535,8 +536,7 @@ def resolve_runtime(configured: str, host: str | None = None) -> str:
     ):
         if shutil.which(command):
             return runtime
-    winget_copilot = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
-    if winget_copilot.is_file():
+    if winget_copilot() is not None:
         return "copilot-cli"
     raise RuntimeContractError("No supported local runtime host is available")
 

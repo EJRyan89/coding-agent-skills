@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_json
-from review_process import ProcessStatus, hidden_window, same_process
+from review_process import ProcessStatus, hidden_window, same_process, winget_copilot
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
@@ -227,8 +227,8 @@ def find_copilot() -> str:
     executable = shutil.which("copilot")
     if executable:
         return executable
-    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
-    if candidate.is_file():
+    candidate = winget_copilot()
+    if candidate is not None:
         return str(candidate)
     raise RuntimeContractError("GitHub Copilot CLI is not available")
 

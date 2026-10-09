@@ -9,10 +9,11 @@ import time
 import unittest
 from ctypes import wintypes
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_process import ProcessStatus, process_status, same_process, start_detached
+from review_process import ProcessStatus, process_status, same_process, start_detached, winget_copilot
 
 # Prints a line, then sleeps until it is terminated, so its liveness can be probed from outside.
 SLEEPER = (
@@ -107,6 +108,17 @@ class ProcessStatusTests(unittest.TestCase):
         process.wait()
         # The Popen handle keeps the exited process queryable, so this reads its exit code, not a missing PID.
         self.assertFalse(process_status(process.pid).alive)
+
+
+class WingetCopilotTests(unittest.TestCase):
+    def test_copilot_is_found_only_where_winget_links_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(os.environ, {"LOCALAPPDATA": temporary}):
+            self.assertIsNone(winget_copilot())
+            link = Path(temporary) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
+            link.parent.mkdir(parents=True)
+            self.assertIsNone(winget_copilot(), "the Links folder alone is not an installation")
+            link.write_bytes(b"fixture")
+            self.assertEqual(link, winget_copilot())
 
 
 class StartDetachedTests(unittest.TestCase):

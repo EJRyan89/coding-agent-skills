@@ -295,8 +295,7 @@ def _validate_result_repeats(
     prior_severities: dict[str, str],
     prior_ids: set[str],
 ) -> None:
-    """Each `repeats` names exactly one finding that is at least as severe and not itself a repeat. A prior finding
-    it repeats must have been judged still present, at least in part."""
+    """Each `repeats` names one finding by its candidate key or prior finding ID, as validate_repeat requires."""
     keys = {finding["candidate_key"]: finding for finding in findings}
     judged = {disposition["finding_id"]: disposition["disposition"] for disposition in dispositions}
     for finding in findings:
@@ -305,27 +304,44 @@ def _validate_result_repeats(
         key, target = finding["candidate_key"], finding["repeats"]
         if not isinstance(target, str) or not target:
             raise RecordError(f"Finding {key}.repeats must be a candidate key or prior finding ID")
-        if target == key:
-            raise RecordError(f"Finding {key} cannot repeat itself")
-        if target in keys and target in prior_ids:
+        linked = keys.get(target)
+        # A finding that names its own key is refused for repeating itself, ahead of the key being ambiguous.
+        if linked is not None and linked is not finding and target in prior_ids:
             raise RecordError(f"Finding {key}.repeats is ambiguous: {target} is a candidate key and a prior finding ID")
-        if target in keys:
-            if "repeats" in keys[target]:
-                raise RecordError(f"Finding {key} repeats a repeat: link it to what {target} repeats instead")
-            severity = keys[target]["severity"]
-        elif target in prior_ids:
-            if judged.get(target) not in OPEN_DISPOSITIONS:
-                raise RecordError(
-                    f"Finding {key} repeats prior finding {target}, so that finding's disposition must "
-                    "be still_present or partially_addressed"
-                )
-            severity = prior_severities.get(target)
-            if severity not in SEVERITY_RANK:
-                raise RecordError(f"Finding {key} repeats prior finding {target}, whose severity is unknown")
-        else:
+        if linked is None and target not in prior_ids:
             raise RecordError(f"Finding {key} repeats an unknown finding: {target}")
-        if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
-            raise RecordError(f"Finding {key} repeats a less severe finding: {target}")
+        validate_repeat(key, finding, linked, judged, prior_severities)
+
+
+def validate_repeat(
+    label: object,
+    finding: dict[str, Any],
+    linked: dict[str, Any] | None,
+    judged: dict[str, str],
+    prior_severities: dict[str, str],
+) -> None:
+    """One reviewer finding's `repeats` link, once its reference is resolved: `linked` is the finding of the same
+    result it names, or None for a prior finding ID. A finding of the result must be another one and not itself a
+    repeat; a prior finding must have been judged still present, at least in part, and have a known severity; either
+    must be at least as severe. `label` names the finding in the message."""
+    target = finding["repeats"]
+    if linked is not None:
+        if linked is finding:
+            raise RecordError(f"Finding {label} cannot repeat itself")
+        if "repeats" in linked:
+            raise RecordError(f"Finding {label} repeats a repeat: link it to what {target} repeats instead")
+        severity = linked["severity"]
+    else:
+        if judged.get(target) not in OPEN_DISPOSITIONS:
+            raise RecordError(
+                f"Finding {label} repeats prior finding {target}, so that finding's disposition must "
+                "be still_present or partially_addressed"
+            )
+        severity = prior_severities.get(target)
+        if severity not in SEVERITY_RANK:
+            raise RecordError(f"Finding {label} repeats prior finding {target}, whose severity is unknown")
+    if SEVERITY_RANK[severity] < SEVERITY_RANK[finding["severity"]]:
+        raise RecordError(f"Finding {label} repeats a less severe finding: {target}")
 
 
 def assign_finding_ids(findings: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
