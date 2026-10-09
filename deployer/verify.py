@@ -24,6 +24,8 @@ FSOPS_ALLOWED = {
 }
 VERIFY_ACTIONS = ("NOT FOUND", "DISABLED", "SHADOWED", "FOUND")
 SUPPORT = {"codex": "docs/codex-support.md", "copilot": "docs/copilot-support.md"}
+# The line that names each runtime verify failed for, which the deployable workflow's report reads back.
+FAILED_FOR = "Verification failed for "
 
 
 def _section(label: str, text: str) -> None:
@@ -125,7 +127,7 @@ def _verify(names: list[str], paths: Paths, environment: dict[str, str]) -> int:
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     if problems:
-        print(f"Verification failed for {' and '.join(discovery.LABELS[runtime] for runtime in problems)}.")
+        print(f"{FAILED_FOR}{' and '.join(discovery.LABELS[runtime] for runtime in problems)}.")
         print(f"See {' and '.join(SUPPORT[runtime] for runtime in problems)}.")
         print("")
         return 1

@@ -186,7 +186,7 @@ jobs:
         run: |
           python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-first.log')
           $deployVerify = $LASTEXITCODE
-          python tools/deployable_report.py verify --label 'first deploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
+          python tools/deployable_report.py verify --label 'first deploy' --deploy-verify-exit $deployVerify --deploy-verify-log (Join-Path $env:LOGS 'verify-first.log') --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Claude Code has no skill listing and no adapter, so check its files instead; no session is started.
@@ -229,7 +229,7 @@ jobs:
         run: |
           python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-second.log')
           $deployVerify = $LASTEXITCODE
-          python tools/deployable_report.py verify --label 'after uninstall and redeploy' --deploy-verify-exit $deployVerify --results $env:RESULTS
+          python tools/deployable_report.py verify --label 'after uninstall and redeploy' --deploy-verify-exit $deployVerify --deploy-verify-log (Join-Path $env:LOGS 'verify-second.log') --results $env:RESULTS
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check the Claude Code file layout after the second deployment

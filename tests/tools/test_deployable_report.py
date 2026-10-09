@@ -27,6 +27,13 @@ HASH = "sha256:" + "0" * 64
 ADAPTERS = ("alpha", "beta")
 AGENT = "reviewer.md"
 SIGN_IN = "it exited before answering with exit code 1: You are not logged in. Run `copilot login` to sign in."
+# What `deploy.py verify` prints when it fails, pinned here as literals.
+CODEX_FAILED = "Verification failed for Codex CLI.\nSee docs/codex-support.md.\n"
+COPILOT_FAILED = "Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n"
+BYTE_ORDER_MARK = chr(0xFEFF)
+BOTH_FAILED = (
+    "Verification failed for Codex CLI and Copilot CLI.\nSee docs/codex-support.md and docs/copilot-support.md.\n"
+)
 
 
 class FakeRuntimes:
@@ -101,13 +108,24 @@ class DeployableReportTests(unittest.TestCase):
             code = report.main(list(arguments))
         return code, output.getvalue()
 
-    def verify(self, deploy_exit: int = 0, label: str = "first deploy") -> tuple[int, str]:
+    def verify(
+        self, deploy_exit: int = 0, label: str = "first deploy", verify_output: str | None = ""
+    ) -> tuple[int, str]:
+        """Run the report's verify command after a deploy.py verify that exited deploy_exit and printed verify_output,
+        or left no log when it is None."""
+        log = self.results_file.parent / "verify.log"
+        if verify_output is None:
+            log.unlink(missing_ok=True)
+        else:
+            log.write_text(verify_output, encoding="utf-8")
         return self.run_main(
             "verify",
             "--label",
             label,
             "--deploy-verify-exit",
             str(deploy_exit),
+            "--deploy-verify-log",
+            str(log),
             "--results",
             str(self.results_file),
             "--home",
@@ -124,7 +142,7 @@ class DeployableReportTests(unittest.TestCase):
             {"codex": report.PASSED, "copilot": report.PASSED},
             {runtime: result.status for runtime, result in results.items()},
         )
-        self.assertEqual(0, report.exit_code(list(results.values()), 0))
+        self.assertEqual(0, report.exit_code(list(results.values()), 0, ""))
 
     def test_a_missing_adapter_fails_that_runtime_and_names_it(self) -> None:
         self.fake.listed["copilot"] = ["alpha"]
@@ -133,7 +151,7 @@ class DeployableReportTests(unittest.TestCase):
         self.assertEqual(report.FAILED, results["copilot"].status)
         self.assertIn("beta", results["copilot"].detail)
         self.assertIn("NOT FOUND", results["copilot"].detail)
-        self.assertEqual(1, report.exit_code(list(results.values()), 1))
+        self.assertEqual(1, report.exit_code(list(results.values()), 1, COPILOT_FAILED))
 
     def test_a_refusal_that_asks_for_sign_in_is_skipped_with_its_reason(self) -> None:
         self.fake.errors["copilot"] = SIGN_IN
@@ -142,14 +160,14 @@ class DeployableReportTests(unittest.TestCase):
         self.assertIn("not logged in", results["copilot"].detail)
         self.assertEqual(report.PASSED, results["codex"].status)
         # deploy.py verify exits 1 for the runtime that cannot list; the skip explains it.
-        self.assertEqual(0, report.exit_code(list(results.values()), 1))
+        self.assertEqual(0, report.exit_code(list(results.values()), 1, COPILOT_FAILED))
 
     def test_any_other_listing_error_fails(self) -> None:
         self.fake.errors["codex"] = "no answer within 120 seconds"
         results = self.check()
         self.assertEqual(report.FAILED, results["codex"].status)
         self.assertIn("no answer within 120 seconds", results["codex"].detail)
-        self.assertEqual(1, report.exit_code(list(results.values()), 1))
+        self.assertEqual(1, report.exit_code(list(results.values()), 1, CODEX_FAILED))
 
     def test_only_a_request_to_sign_in_is_a_sign_in_problem(self) -> None:
         for message in (
@@ -173,11 +191,30 @@ class DeployableReportTests(unittest.TestCase):
         self.fake.errors.update({"codex": SIGN_IN, "copilot": SIGN_IN})
         results = list(self.check().values())
         self.assertEqual([report.SKIPPED, report.SKIPPED], [result.status for result in results])
-        self.assertEqual(1, report.exit_code(results, 1))
+        self.assertEqual(1, report.exit_code(results, 1, BOTH_FAILED))
 
     def test_a_failing_deploy_verify_with_nothing_skipped_fails_even_if_the_script_passed(self) -> None:
         results = list(self.check().values())
-        self.assertEqual(1, report.exit_code(results, 1))
+        self.assertEqual(1, report.exit_code(results, 1, COPILOT_FAILED))
+
+    def test_a_skip_explains_only_a_verify_failure_for_the_runtime_it_skipped(self) -> None:
+        # Codex asks for a sign-in here and Copilot finds every adapter, but deploy.py verify, a separate run, may
+        # still fail Copilot: an outdated version, or a listing that failed or differed that time.
+        self.fake.errors["codex"] = SIGN_IN
+        results = list(self.check().values())
+        self.assertEqual([report.SKIPPED, report.PASSED], [result.status for result in results])
+        self.assertEqual(0, report.exit_code(results, 1, "Adapters: 2\n" + CODEX_FAILED))
+        self.assertEqual(0, report.exit_code(results, 0, ""))
+        for output in (
+            COPILOT_FAILED,
+            BOTH_FAILED,
+            # A failure that names no runtime, such as an error before any was checked, is not explained by a skip.
+            "ERROR: Cannot read the manifest.\n",
+            "",
+            "Verification failed for Some Other CLI.\n",
+        ):
+            with self.subTest(output=output):
+                self.assertEqual(1, report.exit_code(results, 1, output))
 
     def test_a_shadowed_adapter_fails(self) -> None:
         original = self.fake.talk
@@ -207,7 +244,7 @@ class DeployableReportTests(unittest.TestCase):
     def test_verify_prints_a_line_per_runtime_and_records_the_pass(self) -> None:
         self.fake.errors["copilot"] = SIGN_IN
         self.use_fake_runtimes()
-        code, output = self.verify(deploy_exit=1)
+        code, output = self.verify(deploy_exit=1, verify_output=COPILOT_FAILED)
         self.assertEqual(0, code, output)
         self.assertIn("PASSED codex", output)
         self.assertIn("SKIPPED copilot", output)
@@ -217,6 +254,15 @@ class DeployableReportTests(unittest.TestCase):
             {"codex": "PASSED", "copilot": "SKIPPED"},
             {item["runtime"]: item["status"] for item in recorded[0]["results"]},
         )
+
+    def test_verify_fails_a_verify_failure_its_log_does_not_explain(self) -> None:
+        self.fake.errors["copilot"] = SIGN_IN
+        self.use_fake_runtimes()
+        self.assertEqual(1, self.verify(deploy_exit=1, verify_output=CODEX_FAILED)[0])
+        # Without the log, nothing shows which runtime verify failed for.
+        self.assertEqual(1, self.verify(deploy_exit=1, verify_output=None)[0])
+        # A log written by PowerShell may start with a byte order mark.
+        self.assertEqual(0, self.verify(deploy_exit=1, verify_output=BYTE_ORDER_MARK + COPILOT_FAILED)[0])
 
     def test_a_second_pass_is_appended_to_the_results(self) -> None:
         self.results_file.write_text(json.dumps([{"label": "first deploy", "results": []}]), encoding="utf-8")

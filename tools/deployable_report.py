@@ -1,7 +1,8 @@
 """Judge runtime discovery for the deployable workflow, and write its step summary.
 
 Usage:
-  python tools/deployable_report.py verify --label NAME --deploy-verify-exit CODE --results FILE
+  python tools/deployable_report.py verify --label NAME --deploy-verify-exit CODE --deploy-verify-log FILE
+                                            --results FILE
   python tools/deployable_report.py layout --label NAME --results FILE
   python tools/deployable_report.py summary --results FILE [--note TEXT ...] [--summary FILE]
 
@@ -9,8 +10,9 @@ Usage:
 each runtime: PASSED when it finds every adapter, SKIPPED when it refuses to list skills until someone signs in,
 FAILED otherwise, a runtime that is not installed included, because the workflow installed both. It exits 1 when any
 runtime FAILED, when every runtime was SKIPPED (nothing was checked), or when `deploy.py verify` failed for a reason
-no skip explains. It appends the pass to the results file. `summary` renders the tool versions and every recorded
-pass as Markdown, appended to the step summary file (GITHUB_STEP_SUMMARY by default) and printed.
+no skip explains: a skip explains only a failure verify's saved output names for runtimes SKIPPED here. It appends the
+pass to the results file. `summary` renders the tool versions and every recorded pass as Markdown, appended to the
+step summary file (GITHUB_STEP_SUMMARY by default) and printed.
 
 `layout` is the Claude Code check. Claude Code reads ~/.claude/skills directly, with no adapter, and has no command
 that lists skills without a session, so this checks the files instead: Claude Code is installed, every skill the
@@ -144,12 +146,35 @@ def check_layout(paths: Paths, find: Find | None = None) -> RuntimeResult:
     )
 
 
-def exit_code(results: list[RuntimeResult], deploy_verify_exit: int) -> int:
+def verify_failures(output: str) -> set[str]:
+    """The runtimes `deploy.py verify` names on its line saying which it failed for, by the names discovery uses; a
+    name it does not know stays as printed."""
+    runtimes = {label: runtime for runtime, label in discovery.LABELS.items()}
+    for line in output.splitlines():
+        if line.startswith(verify.FAILED_FOR):
+            return {runtimes.get(name, name) for name in line[len(verify.FAILED_FOR) :].rstrip(".").split(" and ")}
+    return set()
+
+
+def exit_code(results: list[RuntimeResult], deploy_verify_exit: int, deploy_verify_output: str) -> int:
     statuses = [result.status for result in results]
     if FAILED in statuses or all(status == SKIPPED for status in statuses):
         return 1
-    # deploy.py verify also fails for a runtime that cannot list, which a skip already explains.
-    return 1 if deploy_verify_exit != 0 and SKIPPED not in statuses else 0
+    if deploy_verify_exit == 0:
+        return 0
+    # deploy.py verify also fails for a runtime that cannot list, which a skip here explains. A failure it names for a
+    # runtime that passed here, or one that names no runtime, is a failure of its own.
+    failed = verify_failures(deploy_verify_output)
+    skipped = {result.runtime for result in results if result.status == SKIPPED}
+    return 0 if failed and failed <= skipped else 1
+
+
+def _verify_log(path: str) -> str:
+    """The saved output of deploy.py verify, or "" when there is none to read; PowerShell may start it with a BOM."""
+    try:
+        return Path(path).read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return ""
 
 
 def _run_version(arguments: list[str]) -> tuple[int, str]:
@@ -224,7 +249,7 @@ def _verify(arguments: argparse.Namespace) -> int:
     for result in results:
         print(f"{result.status} {result.runtime} {result.detail}".rstrip())
     _record(Path(arguments.results), arguments.label, results)
-    return exit_code(results, arguments.deploy_verify_exit)
+    return exit_code(results, arguments.deploy_verify_exit, _verify_log(arguments.deploy_verify_log))
 
 
 def _layout(arguments: argparse.Namespace) -> int:
@@ -266,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("verify", "layout"):
         commands.choices[name].add_argument("--label", required=True)
     commands.choices["verify"].add_argument("--deploy-verify-exit", type=int, required=True)
+    commands.choices["verify"].add_argument(
+        "--deploy-verify-log", required=True, help="the saved output of python deploy.py verify"
+    )
     commands.choices["summary"].add_argument("--note", action="append", default=[])
     commands.choices["summary"].add_argument("--summary", default="")
     commands.choices["summary"].add_argument("--no-probe", action="store_true", help=argparse.SUPPRESS)
