@@ -24,6 +24,14 @@ ENVIRONMENT_PROGRAM = (
     "'GH_PROMPT_DISABLED', 'KEPT')}}))"
 )
 
+# The streaming tests read a command's first output under STARTUP_SECONDS, which covers starting interpreters on a
+# loaded machine, and only then lower the idle limit to IDLE_SECONDS, the short limit under test, so how long start-up
+# takes never decides whether the limit holds. A read that must raise may do so up to IDLE_MARGIN_SECONDS past it,
+# which covers a loaded machine scheduling the reader late, and still shows the read ended by the limit.
+STARTUP_SECONDS = 60.0
+IDLE_SECONDS = 0.5
+IDLE_MARGIN_SECONDS = 10.0
+
 
 class BoundedProcessTests(unittest.TestCase):
     def test_the_command_reads_no_stdin_and_sees_every_prompt_turned_off(self) -> None:
@@ -197,8 +205,11 @@ class StreamingTests(unittest.TestCase):
             "for _ in range(40):\n"
             "    sys.stdout.buffer.write(b'x' * 4096); sys.stdout.flush(); time.sleep(0.05)\n"
         )
-        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5) as running:
-            self.assertEqual(b"x" * 4096 * 40, running.read(4096 * 40))
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=STARTUP_SECONDS) as running:
+            first = running.read(4096)
+            running.idle_timeout = IDLE_SECONDS
+            self.assertEqual(b"x" * 4096 * 40, first + running.read(4096 * 39))
+            running.idle_timeout = STARTUP_SECONDS  # the wait bounds the interpreter's exit, which is not under test
             self.assertEqual(0, running.wait())
 
     def test_a_read_that_waits_too_long_raises_even_while_a_child_holds_the_pipe(self) -> None:
@@ -209,11 +220,14 @@ class StreamingTests(unittest.TestCase):
             f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
             "print('ready'); sys.stdout.flush(); time.sleep(60)\n"
         )
-        started = time.monotonic()
-        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=0.5, exit_wait=0.5) as running:
+        command = [sys.executable, "-c", program]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, exit_wait=0.5) as running:
             self.assertEqual(b"ready\n", running.readline().replace(b"\r", b""))
+            running.idle_timeout = IDLE_SECONDS
+            started = time.monotonic()
             with self.assertRaises(subprocess.TimeoutExpired):
                 running.readline()
+            self.assertLess(time.monotonic() - started, IDLE_SECONDS + IDLE_MARGIN_SECONDS)
         self.assertLess(time.monotonic() - started, 25)
 
     def test_leaving_early_lets_a_command_still_writing_exit_by_itself(self) -> None:
