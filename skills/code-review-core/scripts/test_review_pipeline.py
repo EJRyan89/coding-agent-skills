@@ -2820,9 +2820,9 @@ class CopilotHostTests(PipelineFixture):
 class ProfileModelTests(PipelineFixture):
     """A specialist profile's `model` is applied when its reviewer starts, natively and in a Workflow."""
 
-    def trusted_profile(self, header: str, **settings: str) -> str:
+    def trusted_profile(self, header: str, **settings: str | None) -> str:
         """A trusted commit, off the base, whose specialist profile carries this frontmatter and whose manifest gives
-        the specialist these optional settings (model, effort)."""
+        the specialist these optional settings (model, effort), null included."""
         git(self.checkout, "switch", "-c", "trusted", self.base)
         manifest = json.loads(json.dumps(SPECIALIST_MANIFEST))
         manifest["specialists"][0].update(settings)
@@ -2863,6 +2863,49 @@ class ProfileModelTests(PipelineFixture):
         self.assertEqual(0, code, err)
         self.assertIn("ROUTE python-review files=1 model=haiku effort=low", out.splitlines())
 
+    def test_null_settings_leave_the_profile_configuration_and_session_to_decide(self) -> None:
+        # A maintainer keeps the keys in the manifest to edit them on the fly; null means no setting, as an absent
+        # key does: the profile's model, else the session's, and the configured reviewer_effort, else the session's.
+        self.trusted_profile("model: sonnet\n", model=None, effort=None)
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "reviewer_effort": "high"}, self.config_path)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertIn(f"MODEL {SELECTOR} python-review sonnet", out.splitlines())
+        run = Path(out.splitlines()[0].removeprefix(f"RUN {SELECTOR} "))
+        state = json.loads((run / "run.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [("python-review", "sonnet", None), ("generic-review", None, None)],
+            [(role["id"], role["model"], role["effort"]) for role in state["roles"]],
+            "the run records no specialist effort, so the configuration's applies when a reviewer starts",
+        )
+        code, out, err = self.run_main("workflow", "--run", str(run))
+        self.assertEqual(0, code, err)
+        _, _, roles = workflow_output(out)
+        self.assertEqual(
+            [(f"{SELECTOR} python-review", "sonnet", "high"), (f"{SELECTOR} generic-review", None, "high")],
+            [(role["label"], role["model"], role["effort"]) for role in roles],
+        )
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1 model=sonnet effort=high", out.splitlines())
+        self.assertNotIn("None", out)
+
+    def test_null_model_with_no_profile_model_uses_the_session_model(self) -> None:
+        self.trusted_profile("", model=None, effort=None)
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual(0, code, err)
+        self.assertNotIn("MODEL ", out)
+        run = out.splitlines()[0].removeprefix(f"RUN {SELECTOR} ")
+        _, _, roles = workflow_output(self.run_main("workflow", "--run", run)[1])
+        self.assertEqual(
+            [(f"{SELECTOR} python-review", None, None), (f"{SELECTOR} generic-review", None, None)],
+            [(role["label"], role["model"], role["effort"]) for role in roles],
+        )
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("ROUTE python-review files=1", out.splitlines())
+
     def test_inherit_in_the_manifest_ignores_the_profile_model(self) -> None:
         self.trusted_profile("model: claude-sonnet-5\n", model="inherit")
         code, out, err = self.run_main("prepare", "--pull", SELECTOR)
@@ -2879,9 +2922,13 @@ class ProfileModelTests(PipelineFixture):
     def test_invalid_manifest_model_or_effort_is_rejected(self) -> None:
         specialist = SPECIALIST_MANIFEST["specialists"][0]
         for settings, message in (
-            ({"model": "claude-sonnet-5"}, "model must be inherit or one of fable, haiku, opus, sonnet"),
-            ({"model": None}, "model must be inherit or one of"),
-            ({"effort": "fast"}, "effort must be one of high, low, max, medium, xhigh"),
+            ({"model": "claude-sonnet-5"}, "model must be null, inherit, or one of fable, haiku, opus, sonnet"),
+            ({"model": ["opus"]}, "model must be null, inherit, or one of"),
+            ({"model": 1}, "model must be null, inherit, or one of"),
+            ({"effort": "fast"}, "effort must be null or one of high, low, max, medium, xhigh"),
+            ({"effort": ["high"]}, "effort must be null or one of"),
+            ({"effort": {"level": "high"}}, "effort must be null or one of"),
+            ({"effort": ""}, "effort must be null or one of"),
             ({"temperature": 0}, "fields do not match the protocol"),
         ):
             with self.subTest(settings=settings), self.assertRaisesRegex(Exception, message):
@@ -2895,6 +2942,26 @@ class ProfileModelTests(PipelineFixture):
             validate_adapter_manifest(SPECIALIST_MANIFEST)["specialists"][0],
             "a manifest without the settings validates as before",
         )
+
+    def test_absent_null_inherit_and_explicit_settings_validate(self) -> None:
+        # Null is a placeholder for no setting: it validates to exactly what an absent key does, so the planner,
+        # the MODEL and ROUTE lines, and the Workflow script see no difference.
+        specialist = SPECIALIST_MANIFEST["specialists"][0]
+        absent = validate_adapter_manifest(SPECIALIST_MANIFEST)["specialists"][0]
+        for settings, expected in (
+            ({}, {}),
+            ({"model": None}, {}),
+            ({"effort": None}, {}),
+            ({"model": None, "effort": None}, {}),
+            ({"model": "inherit"}, {"model": "inherit"}),
+            ({"model": "opus", "effort": None}, {"model": "opus"}),
+            ({"model": None, "effort": "max"}, {"effort": "max"}),
+        ):
+            with self.subTest(settings=settings):
+                validated = validate_adapter_manifest(
+                    {**SPECIALIST_MANIFEST, "specialists": [{**specialist, **settings}]}
+                )
+                self.assertEqual({**absent, **expected}, validated["specialists"][0])
 
     def test_prepare_names_the_profile_model_and_workflow_and_retries_carry_it(self) -> None:
         self.trusted_profile("model: Sonnet\ntools: Read, Grep\n")
