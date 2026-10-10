@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from fsops_platform import _platform_allowance
-from validation_support import REPOSITORY_ROOT, is_test_script, scripts_put_on_path
+from validation_support import REPOSITORY_ROOT, is_test_script, module_imports, scripts_put_on_path
 
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
 # every module holding the copy states it. Nothing sanctions a whole module: shared code lives in skill-core. An
@@ -149,13 +149,7 @@ def _skill_core_statement_lines(tree: ast.Module) -> list[int]:
 
 def _imported_modules(tree: ast.Module) -> list[tuple[int, str]]:
     """Each absolute import in the module, as its line and the dotted module name it imports."""
-    found: list[tuple[int, str]] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            found += [(node.lineno, alias.name) for alias in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            found.append((node.lineno, node.module))
-    return sorted(found)
+    return sorted({(found.line, found.module) for found in module_imports(tree)})
 
 
 def skill_core_import_problems(root: Path) -> list[str]:

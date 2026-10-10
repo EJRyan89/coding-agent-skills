@@ -1,5 +1,5 @@
 """What every policy module shares: the repository's roots, how a regression suite and a skill script are
-recognized, the Markdown fence and section readers, and the fixture-tree writer.
+recognized, the reader of a module's imports, the Markdown fence and section readers, and the fixture-tree writer.
 
 The modules of tests/validation import the deployer, so whatever imports them first puts the repository root on
 sys.path: tests/run_validation.py, or a fixture suite beside them.
@@ -12,6 +12,7 @@ import fnmatch
 import re
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from deployer import render
@@ -33,6 +34,49 @@ PYTHON_ENTRY_POINT = 'if __name__ == "__main__":'
 SKILL_GUIDE = "docs/adding-a-skill.md"
 TEMPLATE_TOKEN = re.compile(r"\{\{([A-Z][A-Z0-9_]*)\}\}")
 SHELL_FENCES = {"bash", "sh", "shell"}
+
+
+@dataclass(frozen=True)
+class ModuleImport:
+    """One module an import statement imports, and what it binds each name to: `import a.b as c` imports a.b and
+    binds c to a.b, `import a.b` binds a to a, and `from a import b as c` imports a and binds c to a.b."""
+
+    line: int
+    module: str
+    bindings: tuple[tuple[str, str], ...]
+
+
+def module_imports(tree: ast.AST) -> list[ModuleImport]:
+    """Every absolute import anywhere in a module, in the order ast.walk meets it. Every policy that reads what a
+    module imports reads it here; a relative import names no module these policies can find, so it is left out."""
+    found: list[ModuleImport] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                binding = (alias.asname, alias.name) if alias.asname else (top, top)
+                found.append(ModuleImport(node.lineno, alias.name, (binding,)))
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            bindings = tuple((alias.asname or alias.name, f"{node.module}.{alias.name}") for alias in node.names)
+            found.append(ModuleImport(node.lineno, node.module, bindings))
+    return found
+
+
+def import_aliases(tree: ast.AST) -> dict[str, str]:
+    """What each name a module binds by import stands for, anywhere in it: `import shutil as sh` binds sh to shutil,
+    `from tempfile import TemporaryFile as T` binds T to tempfile.TemporaryFile, and `import os.path` binds os."""
+    return {name: target for found in module_imports(tree) for name, target in found.bindings}
+
+
+def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
+    """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
+    after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        base = qualified_name(node.value, aliases)
+        return f"{base}.{node.attr}" if base else ""
+    return ""
 
 
 def fence_holders(lines: list[str]) -> list[render.Fence | None]:
