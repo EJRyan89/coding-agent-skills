@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import copy
 import json
+import re
+import shutil
 import sys
+import tempfile
 import unittest
+from datetime import date
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
@@ -427,7 +432,7 @@ class RecordTests(SynthesisFixture):
             ),
             "a large category listing findings": (
                 changed("Docs", findings=[{"ref": "owner/repo#8 v1 F001", "assessment": "x"}]),
-                "must be empty for a category of more than five findings",
+                "must be empty for a category of more than 5 findings",
             ),
             "no topics": (changed("Style", topics=[]), "must be a list of 1 to 5 topics"),
             "too many topics": (changed("Style", topics=by_name["Style"]["topics"] * 6), "at most 5 items"),
@@ -683,6 +688,203 @@ class RenderTests(SynthesisFixture):
             ),
             section,
         )
+
+
+class StageTests(unittest.TestCase):
+    """The synthesis stage's own choices, without a report around them."""
+
+    def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> tuple[dict, dict, tuple]:
+        record = {"repository": "owner/repo", "pull_request": {"number": 1}, "review": {"version": 1}}
+        finding = {
+            "id": f"F{index:03d}",
+            "category": "Style",
+            "severity": severity,
+            "source": "fixture",
+            "path": "a.cs",
+            "line": 1,
+            "body": body,
+        }
+        return record, finding, ("owner/repo", 1, 1, finding["id"])
+
+    def test_groups_rank_by_size_then_flags_then_findings_still_present_then_severity_then_headline(self) -> None:
+        pairs = [
+            self.pair(1, "Echo big"),
+            self.pair(2, "Echo big"),
+            self.pair(3, "Delta flagged"),
+            self.pair(4, "Charlie partly"),
+            self.pair(5, "Able still"),
+            self.pair(6, "Bravo severe", "MUST_FIX"),
+            self.pair(7, "Alpha plain"),
+        ]
+        outcomes = {pairs[3][2]: "partially_addressed", pairs[4][2]: "still_present", pairs[6][2]: "addressed"}
+        lines = rs.group_findings(pairs, outcomes, {pairs[2][2]})
+        self.assertEqual(
+            # A finding judged partly addressed counts as still present, so Charlie ties Able and sorts by headline.
+            ["Echo big", "Delta flagged", "Able still", "Charlie partly", "Bravo severe", "Alpha plain"],
+            [line["headline"] for line in lines],
+        )
+
+    def test_guidance_is_the_latest_record_of_each_repository_scoped_reviewer(self) -> None:
+        def reviewed(name: str, scope: str, stamp: str, files: list[str]) -> dict[str, Any]:
+            adapter = {"name": name, "scope": scope, "source_hashes": dict.fromkeys(files, "b" * 64)}
+            return {"repository": "Owner/Repo", "review": {"reviewed_at": stamp, "adapter": adapter}}
+
+        records = {
+            Path("b.json"): reviewed("reviewer", "repository", "2026-01-01T00:00:00+00:00", ["old.md"]),
+            Path("a.json"): reviewed("reviewer", "repository", "2026-02-01T00:00:00+00:00", ["new.md"]),
+            Path("c.json"): reviewed("other", "repository", "2025-01-01T00:00:00+00:00", ["other.md"]),
+            Path("d.json"): reviewed("generic", "generic", "2026-03-01T00:00:00+00:00", ["generic.md"]),
+        }
+        self.assertEqual(
+            {"owner/repo": ["new.md", "other.md"], "owner/empty": []},
+            rs.guidance_files(["owner/repo", "Owner/Empty"], records),
+        )
+
+    def test_the_previous_period_ends_at_most_seven_days_before_this_one_starts(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        set_root = Path(temporary.name)
+
+        def period(name: str) -> Path:
+            (set_root / name).mkdir()
+            path = set_root / name / "insights.json"
+            path.write_text("{}", encoding="utf-8")
+            return path
+
+        def load(path: Path) -> dict[str, Any]:
+            start, end = path.parent.name.split("--")
+            return {
+                "start_date": start,
+                "end_date": end,
+                "category_counts": {},
+                "synthesis": None,
+                "recommendations": [],
+            }
+
+        period("2025-12-01--2025-12-24")  # eight days before 2026-01-01
+        period("2026-01-01--2026-01-31")  # this period itself
+        self.assertIsNone(rs.previous_period(set_root, date(2026, 1, 1), load))
+        week = period("2025-12-01--2025-12-25")
+        found = rs.previous_period(set_root, date(2026, 1, 1), load)
+        self.assertEqual((week, "2025-12-25"), (found[0], found[1]["end"]) if found else None)
+
+    def test_a_context_larger_than_synthesize_reads_is_never_written(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name)
+        with mock.patch.object(rs, "MAXIMUM_BYTES", 10), self.assertRaises(rs.PersistenceError) as raised:
+            rs.write_inputs(directory, [{"kind": "totals"}], {"refs": ["owner/repo#1 v1 F001"]})
+        self.assertIn("would exceed 10 bytes", str(raised.exception))
+        self.assertEqual([], list(directory.iterdir()))
+
+
+class ClaimTests(SynthesisFixture):
+    """What the skill and the operations document say of the synthesis, each held by a fixture."""
+
+    def decide_synthesized(self, json_path: Path, identifier: str, title: str) -> tuple[int, str, str]:
+        return self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            identifier,
+            "--synthesized",
+            title,
+            "--flags",
+            self.unlinked,
+            "rejected",
+        )
+
+    def test_a_flag_on_a_finding_outside_the_range_names_it_and_may_be_cited(self) -> None:
+        json_path, _ = self.run_report("2026-02-01", "2026-02-28")  # only the re-review, which raised nothing
+        flags = {item["id"]: item for item in _lines(json_path.parent / rs.INPUT_NAME) if item["kind"] == "flag"}
+        self.assertEqual("owner/repo#7 v1 F002", flags[self.linked]["finding"])
+        self.assertIsNone(flags[self.unlinked]["finding"], "null only for a flag that names no finding")
+        context = json.loads((json_path.parent / rs.CONTEXT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(["owner/repo#7 v1 F002"], context["refs"])
+        recommendation = {
+            **self.valid_result(json_path)["recommendations"][0],
+            "evidence": ["owner/repo#7 v1 F002"],
+            "flags": [self.linked],
+        }
+        result = self.valid_result(json_path, themes=[], mistakes=[], recommendations=[recommendation])
+        result_path = self.write_result(json_path, result)
+        self.assertEqual((0, f"VALID {result_path}\n", ""), self.synthesize(json_path, result_path, "--check"))
+
+    def test_a_check_refuses_a_recorded_synthesis_as_recording_does(self) -> None:
+        json_path, _ = self.run_report()
+        result_path = self.write_result(json_path, self.valid_result(json_path))
+        self.assertEqual(0, self.synthesize(json_path, result_path)[0])
+        self.assertFailed(self.synthesize(json_path, result_path, "--check"), "already has a recorded synthesis")
+
+    def test_a_synthesized_title_is_matched_without_regard_to_case(self) -> None:
+        json_path, _ = self.run_report()
+        self.synthesize(json_path, self.write_result(json_path, self.valid_result(json_path)))
+        code, out, err = self.decide_synthesized(json_path, "REC-003", TITLE.upper())
+        self.assertEqual((0, ["DECIDED REC-003 rejected"]), (code, out.splitlines()), err)
+
+    def test_at_most_twenty_problems_are_printed(self) -> None:
+        json_path, _ = self.run_report()
+        broken = {**self.valid_result(json_path)["recommendations"][0], "type": "rewrite", "priority": "urgent"}
+        result = self.valid_result(json_path, recommendations=[broken] * rs.LIMITS["recommendations"])
+        code, out, _ = self.synthesize(json_path, self.write_result(json_path, result), "--check")
+        lines = out.splitlines()
+        self.assertEqual(1, code)
+        self.assertEqual(20, sum(line.startswith("PROBLEM ") for line in lines))
+        failed = re.fullmatch(r"FAILED (\d+) problem\(s\) in the synthesis result: .*", lines[-1])
+        self.assertGreater(int(failed[1]) if failed else 0, 20, lines[-1])
+
+    def test_synthesized_lines_print_highest_priority_first(self) -> None:
+        json_path, _ = self.run_report()
+        first = self.valid_result(json_path)["recommendations"][0]
+        recommendations = [
+            {**first, "priority": "low", "title": "Low one"},
+            {**first, "priority": "high", "title": TITLE},
+            {**first, "priority": "medium", "title": "Medium one"},
+        ]
+        result_path = self.write_result(json_path, self.valid_result(json_path, recommendations=recommendations))
+        code, out, err = self.synthesize(json_path, result_path)
+        self.assertEqual(0, code, err)
+        self.assertEqual(
+            [
+                "REC-004 type=strengthen-rule priority=high",
+                "REC-005 type=strengthen-rule priority=medium",
+                "REC-003 type=strengthen-rule priority=low",
+            ],
+            [" ".join(line.split()[1:4]) for line in out.splitlines() if line.startswith("SYNTHESIZED ")],
+        )
+
+    def test_a_synthesis_after_a_dropped_subject_gives_its_id_to_nothing(self) -> None:
+        json_path, lines = self.run_report()
+        self.assertIn(f"RECOMMENDATION REC-002 Style findings=1 decision=deferred flags={self.linked}", lines)
+        shutil.rmtree(self.archive / "owner" / "repo" / "pulls" / "7")
+        json_path, lines = self.run_report()
+        self.assertEqual(
+            ["RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags=none"],
+            [line for line in lines if line.startswith("RECOMMENDATION ")],
+        )
+        recommendation = {
+            **self.valid_result(json_path)["recommendations"][0],
+            "target": {"repository": "owner/repo", "path": None},
+            "evidence": ["owner/other#3 v1 F001"],
+        }
+        result = self.valid_result(json_path, themes=[], recommendations=[recommendation])
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual(0, code, err)
+        self.assertIn("SYNTHESIZED REC-003 type=strengthen-rule", out)
+
+    def test_the_prompt_states_the_limits_the_check_holds(self) -> None:
+        json_path, _ = self.run_report()
+        prompt = " ".join((json_path.parent / rs.PROMPT_NAME).read_text(encoding="utf-8").split())
+        for phrase in (
+            "A category of 5 findings or fewer also lists every finding in full",
+            "at most 3 examples and 10 evidence items",
+            "`title` is one line of at most 120 characters",
+            "`topics` names 1 to 5 concrete patterns",
+            "into at most 15 patterns",
+            "At most 10 themes",
+            "and 12 recommendations",
+        ):
+            self.assertIn(phrase, prompt)
 
 
 if __name__ == "__main__":
