@@ -349,6 +349,7 @@ def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[
         return (
             qualified_name(node.args[0], aliases) == "sys"
             and isinstance(stream, ast.Constant)
+            and isinstance(stream.value, str)
             and f"sys.{stream.value}" in STANDARD_STREAMS
         )
     wrapper = qualified_name(function, aliases) in STREAM_WRAPPERS or (
