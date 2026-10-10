@@ -8,7 +8,7 @@ each leg gets about the same seconds of work. This script rewrites that table fr
 every leg through `gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed, and sums a suite's
 shards under the suite's path. A job a run reports more than once, as a weekly run's second interpreter and second
 validation step do, counts at its mean. RUN_ID defaults to the latest successful push run of validate.yml on main, and
-a run that is not a completed, successful run of the Validate workflow is refused, since a failed or cancelled run
+a run that is not a completed, successful run of the Validation workflow is refused, since a failed or cancelled run
 leaves jobs out. The release procedure in docs/releasing.md runs it before tagging, so the legs are rebalanced once a
 release and never by a pull request's live timings. It exits 0 when it wrote the table and 2 when it could not read
 the run.
@@ -34,7 +34,7 @@ from github_client import GitHubClient, GitHubError, subprocess_runner
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TABLE = REPOSITORY_ROOT / "tests" / "validation" / "job_seconds.json"
 WORKFLOW_FILE = "validate.yml"
-WORKFLOW_NAME = "Validate"
+WORKFLOW_NAME = "Validation"
 # What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line.
 OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
 SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
@@ -84,7 +84,7 @@ def latest_run(client: GitHubClient) -> int:
 
 
 def run_log(client: GitHubClient, run: int) -> str:
-    """The run's logs, once it is known to be a completed, successful run of the Validate workflow."""
+    """The run's logs, once it is known to be a completed, successful run of the Validation workflow."""
     state = client.json(["run", "view", str(run), "--json", "workflowName,status,conclusion"])
     found = (state.get("workflowName"), state.get("status"), state.get("conclusion"))
     if found != (WORKFLOW_NAME, "completed", "success"):

@@ -18,9 +18,9 @@ from github_client import CommandResult, GitHubClient
 
 from tools import record_job_seconds
 
-LEG_1 = "Validate (Python 3.11, shard 1/4)\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
-LEG_2 = "Validate (Python 3.11, shard 2/4)\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
-LATEST = "Validate (Python 3.x, shard 1/4)\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
+LEG_1 = "Shard 1/4 on Python 3.11\tRun repository validation\t2026-10-10T06:17:04.4226827Z "
+LEG_2 = "Shard 2/4 on Python 3.11\tUNKNOWN STEP\t2026-10-10T06:17:05.0000000Z "
+LATEST = "Shard 1/4 on Python 3.x\tUNKNOWN STEP\t2026-10-10T06:17:06.0000000Z "
 # Lines as gh prints them: the leg, the step, then the timestamp before each line the runner wrote.
 LOG = "\n".join(
     [
@@ -60,7 +60,7 @@ class Stub:
         raise AssertionError(f"unexpected command: {joined}")
 
 
-SUCCESS = json.dumps({"workflowName": "Validate", "status": "completed", "conclusion": "success"})
+SUCCESS = json.dumps({"workflowName": "Validation", "status": "completed", "conclusion": "success"})
 
 
 class ParseTests(unittest.TestCase):
@@ -136,15 +136,17 @@ class MainTests(unittest.TestCase):
 
     def test_a_run_that_did_not_pass_or_is_another_workflow_is_refused_and_the_table_is_left_alone(self) -> None:
         for state in (
-            {"workflowName": "Validate", "status": "completed", "conclusion": "failure"},
-            {"workflowName": "Validate", "status": "in_progress", "conclusion": ""},
-            {"workflowName": "Deployable", "status": "completed", "conclusion": "success"},
+            {"workflowName": "Validation", "status": "completed", "conclusion": "failure"},
+            {"workflowName": "Validation", "status": "in_progress", "conclusion": ""},
+            {"workflowName": "Deployment Smoke Test", "status": "completed", "conclusion": "success"},
+            # A run from before the workflow was renamed carries its old name.
+            {"workflowName": "Validate", "status": "completed", "conclusion": "success"},
         ):
             with self.subTest(state=state):
                 stub = Stub({"gh run view 9 --json": json.dumps(state)})
                 code, _, errors, table = self.run_main(["9"], stub)
                 self.assertEqual(2, code)
-                self.assertIn("record from a completed, successful Validate run", errors)
+                self.assertIn("record from a completed, successful Validation run", errors)
                 self.assertFalse(table.exists())
                 self.assertFalse(any("--log" in command for command in stub.commands))
 

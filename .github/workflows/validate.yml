@@ -1,4 +1,4 @@
-name: Validate
+name: Validation
 
 on:
   # `edited` reruns validation when the body changes, since the upgrade-notes check reads the body's `## Upgrade note`.
@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   suite:
-    name: Validate (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
+    name: Shard ${{ matrix.shard }} on Python ${{ matrix.python-version }}
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
