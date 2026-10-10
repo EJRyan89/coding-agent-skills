@@ -818,6 +818,20 @@ class OverrideTests(TrackerPipelineFixture):
         self.assertEqual({"example/one#2": "on hold"}, load_config(self.config_path)["dashboard"]["status_overrides"])
         self.assertEqual([], self.github.calls)
 
+    def test_the_skill_names_every_line_the_command_prints(self) -> None:
+        # The agent reads only SKILL.md, so a line it does not name is output the agent has to guess at.
+        self.configure(overrides={"example/one#2": "waiting"})
+        printed: set[str] = set()
+        for arguments in ([], ["--set", "example/one#3=on hold"], ["--clear", "example/one#2"]):
+            code, out, err = self.run_main("override", *arguments)
+            self.assertEqual((0, ""), (code, err))
+            printed |= {line.split()[0] for line in out.splitlines()}
+        self.assertEqual({"OVERRIDE", "OVERRIDES", "SET", "CLEARED", "WROTE"}, printed)
+        skill = (SCRIPT_DIRECTORY.parent / "SKILL.md").read_text(encoding="utf-8")
+        for word in sorted(printed):
+            with self.subTest(line=word):
+                self.assertTrue(f"`{word}`" in skill or f"`{word} <" in skill, word)
+
     def test_set_replaces_the_override_of_the_same_pull_request_whatever_its_case(self) -> None:
         self.configure(overrides={"Example/One#2": "waiting", "example/two#5": "on hold"})
         code, out, err = self.run_main("override", "--set", "example/one#2=delegated")
