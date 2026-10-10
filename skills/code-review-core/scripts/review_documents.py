@@ -12,8 +12,9 @@ a line points back into the document. Tracked changes stay in the line of the pa
 The standard library cannot read a PDF's text, so a `.pdf` is read by `pdftotext`, an optional tool: absent, the
 document is refused with a reason that names it, so the review is incomplete rather than silently partial. It is given
 the bytes as a throwaway file under the system temporary directory, no stdin, and a time limit, and its output is
-read no further than the extraction limit. Each line starts with `[p<page> l<line>]`, the line counted among the
-page's lines that hold text.
+read no further than the extraction limit, and asked to keep the text in the order the PDF draws it, so the two
+families that ship it, Xpdf and Poppler, give the same lines. Each line starts with `[p<page> l<line>]`, the line
+counted among the page's lines that hold text.
 """
 
 from __future__ import annotations
@@ -71,9 +72,9 @@ EXTRACTED_NOTES = {
         "and [-deleted-]"
     ),
     "pdf": (
-        "extracted: the text of this PDF as pdftotext reads it, one line per line of text, each starting with its "
-        "place in the document: [p<page> l<line>], counting the page's lines that hold text; the snapshot holds it "
-        "at {held}, since a file named .pdf is read as a PDF"
+        "extracted: the text of this PDF as pdftotext reads it, one line per line of text in the order the PDF draws "
+        "it, each starting with its place in the document: [p<page> l<line>], counting the page's lines that hold "
+        "text; the snapshot holds it at {held}, since a file named .pdf is read as a PDF"
     ),
 }
 UNCHANGED_NOTE = "; no line of its text differs, so the change is to formatting, images, or parts not extracted"
@@ -150,7 +151,9 @@ def _pdftotext(content: bytes) -> bytes:
     """What `pdftotext` writes for a PDF's bytes, read no further than the extraction limit.
 
     The bytes go to a throwaway file in a folder of their own under the system temporary directory, which is removed
-    afterwards. Layout is off, its default, so the lines follow the reading order it finds, and its messages are off.
+    afterwards. Its messages are off, and `-raw` keeps the text in the order the PDF draws it, which both families
+    accept: without it, Xpdf joins a paragraph's evenly set lines into one where Poppler keeps one line per line of
+    text, so a finding's line would depend on which of them is first on PATH.
     """
     executable = shutil.which(PDFTOTEXT)
     if executable is None:
@@ -158,7 +161,7 @@ def _pdftotext(content: bytes) -> bytes:
     with tempfile.TemporaryDirectory(prefix="code-review-pdf-", ignore_cleanup_errors=True) as folder:
         document = Path(folder) / "document.pdf"
         document.write_bytes(content)
-        command = [executable, "-q", "-enc", "UTF-8", "-eol", "unix", str(document), "-"]
+        command = [executable, "-q", "-enc", "UTF-8", "-eol", "unix", "-raw", str(document), "-"]
         try:
             with streaming(
                 command, idle_timeout=PDF_EXTRACTION_SECONDS, timeout=PDF_EXTRACTION_SECONDS, exit_wait=PDF_EXIT_SECONDS
