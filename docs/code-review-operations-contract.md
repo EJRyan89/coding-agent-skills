@@ -102,7 +102,7 @@ The model does not cover these, by design:
 
 ## Formats
 
-These tables are the single statement of every structured file the suite keeps between operations or takes from a reviewer, but one. That one is `review-insights`' own versioned report, `insights.json`, with the synthesis files `report` writes beside it: that skill alone writes them, and `load_report` in `review_insights.py` alone reads the report back, upgrading a report of any earlier version (1 to 7) to the current one, 8. "Synthesis" in [Code-review operations](code-review-operations.md#synthesis) describes them. Each format names the function that validates it, and `tests/code-review/test_format_contract.py` fails when a table and that function disagree on the suite's fixtures. The adapter result, which a repository's entrypoint reviewer writes and the core assembles from specialist results, is stated instead by `skills/code-review-core/references/review-adapter.schema.json`, because an entrypoint's author reads that file; the same suite checks it against `validate_adapter_result` in `review_records.py`. A file one operation writes and reads before it ends, such as a run's `run.json`, plan, prompts, and work files, the batch file, and the tracker input, is not stated here: the script that writes it is the only reader. How to write and use each file is in [Code-review operations](code-review-operations.md).
+These tables are the single statement of every structured file the suite keeps between operations or takes from a reviewer, `review-insights`' report and the synthesis files beside it included. The report is stated here rather than in a document of its own because it is durable user data like the records and the flag store: this section's tables are what a release compares to decide whether a change needs an upgrade note, and this suite of checks already holds them. Each format names the function that validates it, and `tests/code-review/test_format_contract.py` fails when a table and that function disagree on the suite's fixtures. The adapter result, which a repository's entrypoint reviewer writes and the core assembles from specialist results, is stated instead by `skills/code-review-core/references/review-adapter.schema.json`, because an entrypoint's author reads that file; the same suite checks it against `validate_adapter_result` in `review_records.py`. A file one operation writes and reads before it ends, such as a run's `run.json`, plan, prompts, and work files, the batch file, and the tracker input, is not stated here: the script that writes it is the only reader. How to write and use each file is in [Code-review operations](code-review-operations.md).
 
 How to read a table:
 
@@ -469,7 +469,7 @@ A review version's JSON record, the archive's source of truth, validated by `val
 | `analyzer` | object | no | How a diagnostic analyzer could catch it instead. |
 | `repeats` | object | no | The finding it repeats, which it is counted with: one in this review, or the first finding of an earlier ledger entry. At least as severe, and not itself a repeat. |
 
-#### Analyzer coverage (`record.findings[].analyzer`, `specialist-result.findings[].analyzer`)
+#### Analyzer coverage (`record.findings[].analyzer`, `specialist-result.findings[].analyzer`, `synthesis-result.recommendations[].target.analyzer`, `insights.recommendations[].target.analyzer`, `insights.synthesis.superseded[].recommendations[].target.analyzer`)
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
@@ -631,3 +631,396 @@ A fixture canary, `prepare --canary --fixture <directory>`, reviews a fixture di
 | `outdated` | boolean | yes | Whether the code it was on has changed since. |
 | `body` | string | yes | The thread's first comment. Not blank. |
 | `url` | string | yes | Its web address. Not blank. |
+
+### Insights report
+
+The report `review-insights report` writes to `<summary_root>/<set>/<start>--<end>/insights.json`, with a Markdown projection beside it, and that `synthesize`, `decide`, and `decide-custom` record into. `load_report` in `review_insights.py` reads it back. It upgrades a report of any earlier version, 1 to 7, to the current one, 8, and refuses any other version, but it checks only the fields it uses and rejects no unlisted field. So these tables are checked against the reports `create_report`, `synthesize`, `decide`, and `decide-custom` write, as the adapter request's are against what its writer writes, and not against a validator. A change to the report's shape raises `SCHEMA_VERSION`, adds the step that upgrades the version before it, and records the new shape in `tests/code-review/test_format_contract.py`, which fails while the report's tables differ from the shape recorded for the current version. "Review insights" and "Synthesis" in [Code-review operations](code-review-operations.md#review-insights) describe how the report is built.
+
+#### Report (`insights`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema_version` | integer | yes | One of `8`. |
+| `repository_set` | string | yes | The set the report summarizes, or `repositories-<digest>` for an explicit repository list. |
+| `repositories` | array | yes | The `owner/repo` identities analyzed, sorted. |
+| `start_date` | string | yes | The first day of the range, as `YYYY-MM-DD`. |
+| `end_date` | string | yes | The last day of the range, as `YYYY-MM-DD`. |
+| `record_count` | integer | yes | The review records reviewed in the range. |
+| `finding_count` | integer | yes | The findings analyzed, each counted once across the reviews that carry it. |
+| `severity_counts` | object | yes | The analyzed findings keyed by severity, each a count. |
+| `category_counts` | object | yes | The analyzed findings keyed by category, each a count. |
+| `recommendations` | array | yes | The category recommendations, then the analyzer recommendations, then the synthesized ones. |
+| `next_recommendation_number` | integer | yes | The first `REC-` number the report has never given, so a subject a regeneration drops never has its ID given again. |
+| `records` | array | yes | Every review record the report analyzed. |
+| `synthesis` | object or null | yes | The synthesis of this range; null in a report upgraded from before version 7 until it is regenerated. |
+
+#### Analyzed record (`insights.records[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `path` | string | yes | The record's JSON file. |
+| `repository` | string | yes | Its repository. |
+| `pull_number` | integer | yes | Its pull request. |
+| `review_version` | integer | yes | Its review version. |
+| `payload_sha256` | string | yes | The record's payload hash, from its `artifacts`. |
+
+#### Recommendation (`insights.recommendations[]`, `insights.synthesis.superseded[].recommendations[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | `REC-` and at least three digits; a subject keeps its ID when the report is regenerated. |
+| `kind` | string | yes | One of `category`, `analyzer`, or `synthesized`. |
+| `finding_count` | integer | yes | The findings it covers, or for a synthesized one, its evidence references. |
+| `decision` | string | yes | One of `accepted`, `rejected`, or `deferred`: the latest decision, `deferred` until one is recorded. |
+| `decision_history` | array | yes | Every decision recorded, oldest first. |
+| `linked_flags` | array | yes | The open flag IDs linked when the report was written: for a category or analyzer recommendation, the flags naming one of its findings; for a synthesized one, the flags its synthesis named. |
+| `reviewers` | array | yes | Its findings counted by the reviewer and model that raised them; empty for a synthesized one. |
+| `category` | string | no | A category recommendation's finding category. |
+| `recommendation` | string | no | A category or analyzer recommendation's suggested action. |
+| `coverage` | string | no | An analyzer recommendation's coverage. One of `available`, `known`, or `custom-candidate`. |
+| `tool` | string | no | An analyzer recommendation's analyzer, in its first spelling in review order. |
+| `rule` | string | no | An analyzer recommendation's rule, spelled as `tool` is. |
+| `repositories` | array | no | The repositories an analyzer recommendation's findings came from. |
+| `evidence` | array | no | An analyzer recommendation's findings, each an object, or a synthesized one's finding references, each a string. |
+| `type` | string | no | A synthesized recommendation's kind of change. One of `new-rule`, `strengthen-rule`, `remove-rule`, `stop-flagging`, `start-flagging`, `new-analyzer`, or `flagged`. |
+| `priority` | string | no | A synthesized recommendation's priority. One of `high`, `medium`, or `low`. |
+| `target` | object | no | What a synthesized recommendation changes. |
+| `title` | string | no | A synthesized recommendation's title, one line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
+| `change` | string | no | A synthesized recommendation's change, exactly what to add, change, or remove. |
+| `rationale` | string | no | Why a synthesized recommendation is made. |
+
+#### Reviewer count (`insights.recommendations[].reviewers[]`, `insights.synthesis.superseded[].recommendations[].reviewers[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `reviewer` | string | yes | The reviewer that raised the findings. |
+| `model` | string | yes | The model it ran on, or `unknown` when its record names none. |
+| `findings` | integer | yes | The recommendation's findings it raised. |
+| `flagged_findings` | integer | yes | How many of them an open flag names. |
+| `addressed` | integer or null | yes | How many of them a later review judged addressed; null in a report upgraded from before version 6 until it is regenerated. |
+| `still_present` | integer or null | yes | How many of them a later review judged still present; null as `addressed` is. |
+
+#### Covered finding (`insights.recommendations[].evidence[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `repository` | string | yes | The finding's repository, lowercase. |
+| `pull_number` | integer | yes | Its pull request. |
+| `review_version` | integer | yes | The review it was raised in. |
+| `finding_id` | string | yes | Its ID in that review. |
+| `path` | string | yes | Its file. |
+| `line` | integer | yes | Its line. |
+| `title` | string or null | yes | Its headline, or null when the record gives none. |
+
+#### Decision (`insights.recommendations[].decision_history[]`, `insights.synthesis.superseded[].recommendations[].decision_history[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `decision` | string | yes | One of `accepted`, `rejected`, or `deferred`. |
+| `decided_at` | string | yes | When it was recorded, as an ISO 8601 time. |
+| `note` | string or null | yes | The user's reason, or null. |
+| `resolved_flags` | array | yes | The flags this decision resolved. A decision is written before its flags are resolved, and rewritten to list only those resolved when the flag store fails partway. |
+
+#### Recommendation target (`insights.recommendations[].target`, `insights.synthesis.superseded[].recommendations[].target`, `synthesis-result.recommendations[].target`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `repository` | string | with `path` | The repository whose guidance changes, one of the scope's; absent for a `new-analyzer` recommendation. |
+| `path` | string or null | with `repository` | The guidance file to change, one of the repository's guidance files, or null when none fits and the change says where the guidance belongs. |
+| `analyzer` | object | no | A `new-analyzer` recommendation's rule, with no other field. |
+
+#### Synthesis (`insights.synthesis`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `status` | string | yes | One of `pending`, `complete`, or `skipped`: the input is written and no result recorded, a result is recorded, or the range has no findings and no open flags in scope and nothing was written. |
+| `input_sha256` | string or null | yes | The hash that seals the input and the context; null when skipped. |
+| `input` | string or null | yes | The input file; null when skipped. |
+| `prompt` | string or null | yes | The prompt file; null when skipped. |
+| `result` | string or null | yes | The one result file `synthesize` records; null when skipped. |
+| `previous_report` | string or null | yes | The previous period's report the input compares with, or null. |
+| `recorded_at` | string or null | yes | When the result was recorded, as an ISO 8601 time; null until then. |
+| `themes` | array | yes | The recorded result's themes; empty until one is recorded. |
+| `mistakes` | array | yes | The recorded result's mistakes. |
+| `persistent_patterns` | array | yes | The recorded result's persistent patterns. |
+| `reviewer_effectiveness` | object or null | yes | The recorded result's reviewer effectiveness; null until one is recorded. |
+| `comparison` | object or null | yes | The recorded result's comparison with the previous period, or null. |
+| `categories` | array | yes | The recorded result's commentary on each category. |
+| `custom_rule_patterns` | array | yes | The recorded result's custom-rule patterns. |
+| `superseded` | array | yes | Each recorded synthesis a changed input replaced, oldest first. |
+
+#### Superseded synthesis (`insights.synthesis.superseded[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `recorded_at` | string | yes | When it was recorded. |
+| `input_sha256` | string | yes | The input it was recorded against. |
+| `recommendations` | array | yes | Its synthesized recommendations, with their decisions; their IDs are never given again. |
+
+### Synthesis result
+
+The result the analyst agent writes to the file the report's `synthesis.result` names, validated by `check_result` in `review_synthesis.py` against the context the report sealed, both by `synthesize --check` and when it is recorded. Its analysis is recorded in the report's `synthesis`, so the tables of its parts below state the report's too.
+
+#### Result (`synthesis-result`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `schema_version` | integer | yes | One of `1`. |
+| `input_sha256` | string | yes | The input's seal, copied from its `seal` line. |
+| `themes` | array | yes | At most 10 high-level patterns. |
+| `mistakes` | array | yes | At most 15 specific recurring mistakes. |
+| `persistent_patterns` | array | yes | At most 5 patterns of findings later reviews judged still present. |
+| `reviewer_effectiveness` | object | yes | Which reviewers helped most and least. |
+| `comparison` | object or null | yes | The comparison with the previous period: null exactly when the input has no `previous` line. |
+| `recommendations` | array | yes | At most 12 recommendations, titles distinct ignoring case. |
+| `categories` | array | yes | One entry for each analyzed category, no more. |
+| `custom_rule_patterns` | array | yes | At most 15 patterns that place every custom-candidate rule in exactly one; empty when there are none. |
+
+#### Synthesized recommendation (`synthesis-result.recommendations[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | yes | One of `new-rule`, `strengthen-rule`, `remove-rule`, `stop-flagging`, `start-flagging`, `new-analyzer`, or `flagged`. |
+| `priority` | string | yes | One of `high`, `medium`, or `low`. |
+| `target` | object | yes | An analyzer rule for `new-analyzer`, a repository and guidance file for every other type. |
+| `title` | string | yes | One line of at most 120 characters without quotes, backticks, `$`, backslashes, or control characters. |
+| `change` | string | yes | Exactly what to add, change, or remove, at most 2000 characters. |
+| `rationale` | string | yes | Why, at most 1500 characters. |
+| `evidence` | array | yes | At most 10 finding references from the input. |
+| `flags` | array | yes | The distinct open flags it addresses; a `flagged` one names at least one, and every other names evidence, flags, or both. |
+
+#### Theme (`synthesis-result.themes[]`, `insights.synthesis.themes[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `theme` | string | yes | The pattern, at most 300 characters. |
+| `count` | integer | yes | How many findings show it, at least 1. |
+| `examples` | array | yes | 1 to 3 finding references. |
+| `areas` | array | yes | The paths or domains it touches. May be empty. |
+
+#### Mistake (`synthesis-result.mistakes[]`, `insights.synthesis.mistakes[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `mistake` | string | yes | The mistake, at most 300 characters. |
+| `count` | integer | yes | How many findings show it, at least 1. |
+| `severity` | object | yes | Its findings keyed by severity, each a positive count. |
+| `examples` | array | yes | 1 to 3 finding references. |
+
+#### Persistent pattern (`synthesis-result.persistent_patterns[]`, `insights.synthesis.persistent_patterns[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `pattern` | string | yes | The pattern, at most 300 characters. |
+| `count` | integer | yes | How many findings show it, at least 1. |
+| `likely_reason` | string | yes | Why the findings are likely left, at most 1500 characters. |
+| `examples` | array | yes | 1 to 3 finding references. |
+
+#### Reviewer effectiveness (`synthesis-result.reviewer_effectiveness`, `insights.synthesis.reviewer_effectiveness`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `most_useful` | string | yes | The reviewer whose findings helped most. |
+| `least_useful` | string | yes | The reviewer whose findings helped least. |
+| `false_positive_candidates` | array | yes | Findings or rules that may be noise. May be empty. |
+
+#### Comparison (`synthesis-result.comparison`, `insights.synthesis.comparison`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `persistent` | array | yes | Themes in both periods. |
+| `new` | array | yes | Themes only in this one. |
+| `resolved` | array | yes | Themes only in the previous one. |
+| `previous_recommendations` | array | yes | An assessment of previous recommendations. |
+
+#### Previous recommendation assessed (`synthesis-result.comparison.previous_recommendations[]`, `insights.synthesis.comparison.previous_recommendations[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | A previous period's synthesized recommendation the input lists. |
+| `assessment` | string | yes | Whether this period's findings suggest it worked, at most 1500 characters. |
+
+#### Category commentary (`synthesis-result.categories[]`, `insights.synthesis.categories[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `category` | string | yes | An analyzed category, given once. |
+| `topics` | array | yes | 1 to 5 concrete topics within it. |
+| `assessment` | string | yes | What its findings show and what should change, at most 1500 characters. |
+| `addressed_by` | array | yes | Titles of the result's recommendations that act on it. May be empty. |
+| `findings` | array | yes | For a category of five findings or fewer, an assessment of exactly each of its findings; empty for a larger one. |
+
+#### Topic (`synthesis-result.categories[].topics[]`, `insights.synthesis.categories[].topics[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `topic` | string | yes | The topic, at most 300 characters. |
+| `count` | integer | yes | How many findings it covers, at least 1. |
+| `examples` | array | yes | 1 to 3 finding references. |
+
+#### Finding assessment (`synthesis-result.categories[].findings[]`, `insights.synthesis.categories[].findings[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `ref` | string | yes | One of the category's findings, as `owner/repo#pull vN F001`. |
+| `assessment` | string | yes | Whether it is valid, noise, or a gap, and what follows, at most 1500 characters. |
+
+#### Custom-rule pattern (`synthesis-result.custom_rule_patterns[]`, `insights.synthesis.custom_rule_patterns[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `pattern` | string | yes | The pattern, at most 300 characters. |
+| `rules` | array | yes | The custom-candidate rules it groups, as `<tool> <rule>`, matched ignoring case; at least one. |
+| `assessment` | string | yes | Whether a custom rule is worth writing for it, at most 1500 characters. |
+| `addressed_by` | array | yes | Titles of the result's recommendations that act on it. May be empty. |
+
+### Synthesis input
+
+The analyst agent's input, `synthesis-input.jsonl` beside the report: JSON Lines, one object per line, each naming what it is in `kind`, a `seal` line first. `prepare` in `review_synthesis.py` writes it with its context and prompt whenever the report is written with a synthesis to run, and no reader validates it: the agent reads it, and `synthesize` checks only that it still matches the seal. Each table below states one kind of line, under the heading path `synthesis-input:<kind>`, and is checked against the inputs the reports above wrote. The prompt beside it, `synthesis-prompt.md`, is the agent's task as Markdown and holds no fields.
+
+#### Seal line (`synthesis-input:seal`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `seal`. |
+| `input_sha256` | string | yes | The hash of every line after this one and of the context, which the result repeats. |
+
+#### Totals line (`synthesis-input:totals`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `totals`. |
+| `start` | string | yes | The range's first day. |
+| `end` | string | yes | Its last day. |
+| `repositories` | array | yes | The repositories analyzed. |
+| `records` | integer | yes | The records reviewed in the range. |
+| `findings` | integer | yes | The findings analyzed. |
+| `severity` | object | yes | The findings keyed by severity, each a count. |
+| `categories` | object | yes | The findings keyed by category, each a count. |
+| `sources` | object | yes | The findings keyed by the reviewer source that raised them, each a count. |
+
+#### Guidance line (`synthesis-input:guidance`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `guidance`. |
+| `repositories` | object | yes | Keyed by repository, each the sorted guidance files its repository-scoped reviewers were built from, empty for one only a generic reviewer reviews. |
+
+#### Previous period line (`synthesis-input:previous`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `previous`. |
+| `start` | string | yes | The previous period's first day. |
+| `end` | string | yes | Its last day, at most seven days before this range starts. |
+| `category_counts` | object | yes | Its findings keyed by category, each a count. |
+| `themes` | array | yes | Its recorded themes. |
+| `recommendations` | array | yes | Its synthesized recommendations with their decisions. |
+
+#### Previous recommendation (`synthesis-input:previous.recommendations[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `id` | string | yes | Its ID. |
+| `type` | string | yes | Its type. |
+| `target` | string | yes | Its target, as `owner/repo:<file>` or `analyzer <coverage> <tool> <rule>`. |
+| `title` | string | yes | Its title. |
+| `decision` | string | yes | Its latest decision. |
+
+#### Category line (`synthesis-input:category`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `category`. |
+| `category` | string | yes | An analyzed finding category. |
+| `count` | integer | yes | Its findings. |
+| `findings` | array | no | Every one of its findings, given only for a category of five findings or fewer. |
+
+#### Category finding (`synthesis-input:category.findings[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `ref` | string | yes | The finding, as `owner/repo#pull vN F001`. |
+| `severity` | string | yes | Its severity. |
+| `headline` | string | yes | Its title, or its body, on one line of at most 120 characters. |
+| `path` | string | yes | Its file. |
+| `line` | integer | yes | Its line. |
+| `source` | string | yes | The reviewer source that raised it. |
+| `outcome` | string | yes | The latest disposition a later review gave it, or `unjudged`. |
+| `body` | string | yes | Its body on one line of at most 600 characters. |
+
+#### Custom-rule line (`synthesis-input:custom-rule`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `custom-rule`. |
+| `rule` | string | yes | A custom-candidate rule, as `<tool> <rule>` in its first spelling in review order. |
+| `count` | integer | yes | Its findings. |
+| `examples` | array | yes | Up to two findings, each its reference and headline. |
+
+#### Group line (`synthesis-input:group`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `group`. |
+| `group` | string | yes | The group's number in rank order, `G001` first. |
+| `repository` | string | yes | The repository its findings share. |
+| `category` | string | yes | The category they share. |
+| `headline` | string | yes | Its first finding's headline, which its findings share ignoring case and everything but letters. |
+| `count` | integer | yes | Its findings. |
+| `severity` | object | yes | Its findings keyed by severity, each a count. |
+| `sources` | object | yes | Its findings keyed by the reviewer source that raised them, the five most common, each a count. |
+| `outcomes` | object | yes | Its findings keyed by their latest later disposition, or `unjudged`, each a count. |
+| `flagged` | integer | yes | How many of its findings an open flag names. |
+| `paths` | array | yes | Its three most common files, each with its count. |
+| `analyzers` | array | yes | The analyzer rules reviewers said could catch its findings, as `<coverage> <tool> <rule>`. May be empty. |
+| `examples` | array | yes | Its first two findings. |
+
+#### Group example (`synthesis-input:group.examples[]`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `ref` | string | yes | The finding's reference. |
+| `line` | integer | yes | Its line. |
+| `body` | string | yes | Its body on one line of at most 240 characters. |
+
+#### Remaining groups line (`synthesis-input:remaining`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `remaining`. |
+| `repository` | string | yes | The repository of the groups beyond the 150 shown in full. |
+| `category` | string | yes | Their category. |
+| `groups` | integer | yes | How many groups it summarizes. |
+| `findings` | integer | yes | Their findings. |
+| `severity` | object | yes | Their findings keyed by severity, each a count. |
+| `headlines` | array | yes | The first eight groups' headlines, each cut to 80 characters. |
+
+#### Flag line (`synthesis-input:flag`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `kind` | string | yes | One of `flag`. |
+| `id` | string | yes | An open flag on the scope's repositories or on none. |
+| `category` | string | yes | Its category. |
+| `created` | string | yes | The day it was recorded, as `YYYY-MM-DD`. |
+| `in_range` | boolean | yes | Whether it was recorded within the range. |
+| `repository` | string or null | yes | The repository it names, lowercase, or null. |
+| `pull_number` | integer or null | yes | The pull request it names, or null. |
+| `finding` | string or null | yes | The reference of the finding it names, in the range or not, or null when it names none. |
+| `body` | string | yes | Its body on one line of at most 1500 characters. |
+
+### Synthesis context
+
+What `synthesize` checks a result against, `synthesis-context.json` beside the report, written with the input and sealed with it. The agent never reads it, and no reader validates it beyond the seal.
+
+#### Context (`synthesis-context`)
+
+| Field | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| `refs` | array | yes | Every finding reference the input gives: each analyzed finding's, and each one an open flag names. |
+| `open_flags` | array | yes | The IDs of the input's flag lines. |
+| `guidance` | object | yes | Keyed by repository, each its guidance files, as the guidance line gives them. |
+| `previous_recommendations` | array or null | yes | The previous period's synthesized recommendation IDs, or null without a previous line. |
+| `categories` | object | yes | Keyed by analyzed category, each its findings' references when it has five or fewer, otherwise null. |
+| `custom_rules` | array | yes | The custom-rule lines' rules, sorted. |

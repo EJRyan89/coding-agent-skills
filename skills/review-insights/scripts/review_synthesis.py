@@ -863,9 +863,10 @@ class _Checker:
                 )
             return
         if not isinstance(findings, list) or any(
-            not isinstance(entry, dict) or set(entry) != {"ref", "assessment"} for entry in findings
+            not isinstance(entry, dict) or set(entry) != {"ref", "assessment"} or not isinstance(entry["ref"], str)
+            for entry in findings
         ):
-            self.problem(f"{where}.findings", "must be a list of {ref, assessment}")
+            self.problem(f"{where}.findings", "must be a list of {ref, assessment}, each ref a finding reference")
             return
         for entry in findings:
             self.field(f"{where}.findings", entry["assessment"], "long")
