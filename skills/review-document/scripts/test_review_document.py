@@ -1,5 +1,6 @@
-"""review_document.py: the one-file fixture it builds for a document in a checkout and for a loose file, the base it
-chooses, the reviewer it routes to, the output path it refuses, and the report it copies."""
+"""review_document.py: the one-file fixture it builds for a document in a checkout and for a loose file, a Word
+document, and a PDF, the base it chooses, the reviewer it routes to, the output path it refuses, and the report it
+copies."""
 
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
 from review_runtime import validate_adapter_manifest
-from test_review_documents import paragraph, word_document
+from test_review_documents import StubPdftotext, paragraph, pdf_document, without_pdftotext, word_document
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
@@ -201,13 +202,11 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual((1, ["FAILED --base committed needs a file inside a git checkout"]), (code, lines))
 
     def test_binary_empty_and_missing_files_are_refused(self) -> None:
-        binary, pdf, empty = self.root / "design.bin", self.root / "design.PDF", self.root / "empty.md"
+        binary, empty = self.root / "design.bin", self.root / "empty.md"
         binary.write_bytes(b"%PDF-1.7\n\0\0rest")
-        pdf.write_bytes(b"%PDF-1.7\nno NUL byte, so it reads as text\n")
         empty.write_bytes(b" \r\n")
         for path, reason in (
-            (binary, "is not a text file or a Word document; a PDF needs its text extracted first"),
-            (pdf, "is a PDF, which review-document does not review; a pull request's review does"),
+            (binary, "is not a text file, a Word document, or a PDF"),
             (empty, "is empty"),
             (self.root / "missing.md", "is not a file"),
         ):
@@ -231,8 +230,9 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual(output / "fixture", Path(facts(lines)["FIXTURE"]))
 
 
-class WordDocumentTests(DocumentTestCase):
-    """A Word document is written to the fixture as its exact bytes, and the fixture canary's snapshot extracts it."""
+class ExtractedDocumentTests(DocumentTestCase):
+    """A Word document or a PDF is written to the fixture as its exact bytes, and the fixture canary's snapshot
+    extracts it."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -401,6 +401,80 @@ class WordDocumentTests(DocumentTestCase):
         )
         self.assertFalse(self.output.exists())
         self.assertEqual("none the whole document was asked for", self.build(document, "--base", "none")["BASE"])
+
+    def test_a_pdf_draft_is_reviewed_by_the_design_reviewer_and_its_finding_gives_its_page_and_line(self) -> None:
+        stub = StubPdftotext(self, output="Scope\n\nKeep one queue.\n\fRetry forever.\n\f")
+        draft = self.root / "drafts" / "Queue Design.PDF"
+        draft.parent.mkdir()
+        content = pdf_document(["Scope", "Keep one queue."], ["Retry forever."])
+        draft.write_bytes(content)
+        result = self.build(draft)
+        self.assertEqual(
+            ("Queue Design.PDF", "none the file is outside any git checkout", "design-review"),
+            (result["DOCUMENT"], result["BASE"], result["ROUTE"]),
+        )
+        fixture = self.output / "fixture"
+        # The exact bytes, so the snapshot extracts the PDF as it is; build ran the tool once, to find text in it.
+        self.assertEqual(content, (fixture / "head" / "Queue Design.PDF").read_bytes())
+        self.assertEqual([content.hex()], [call["document"] for call in stub.calls()])
+        manifest = json.loads((fixture / "base" / ".review-document" / "specialists.json").read_text("utf-8"))
+        self.assertEqual(["^Queue\\ Design\\.PDF$"], manifest["specialists"][0]["include"])
+
+        diff, record = self.review("Queue Design.PDF", 3)
+        self.assertEqual(
+            ["1 | [p1 l1] Scope", "2 | [p1 l2] Keep one queue.", "3 | [p2 l1] Retry forever."], added(diff)
+        )
+        [finding] = record["findings"]
+        self.assertEqual("page 2, line 1", finding["location"])
+        report = (self.output / "report.md").read_text(encoding="utf-8")
+        self.assertIn("**Line 3 (page 2, line 1):** `[p2 l1] Retry forever.`", report)
+
+    def test_a_pdf_whose_text_is_not_extracted_or_unchanged_is_refused_before_any_fixture(self) -> None:
+        draft = self.root / "queue.pdf"
+        draft.write_bytes(pdf_document(["Keep one queue."]))
+        without_pdftotext(self)
+        code, lines = run_main("build", str(draft), "--output", str(self.output))
+        reason = (
+            "is a document whose text could not be extracted: pdftotext, which extracts a PDF's text, is not installed"
+        )
+        self.assertEqual((1, [f"FAILED {draft} {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+        StubPdftotext(
+            self,
+            {"marker": b"(rejected)", "status": 1},
+            {"marker": b"(Keep one queue.)", "output": "Keep one queue.\n\f"},
+            output="\f",
+        )
+        rejected, blank = self.root / "rejected.pdf", self.root / "blank.pdf"
+        rejected.write_bytes(pdf_document(["rejected"]))
+        blank.write_bytes(pdf_document([]))
+        for path, reason in (
+            (rejected, "is a document whose text could not be extracted: pdftotext could not read it (exit status 1)"),
+            (blank, "holds no text to review"),
+        ):
+            with self.subTest(path.name):
+                code, lines = run_main("build", str(path), "--output", str(self.output))
+                self.assertEqual((1, [f"FAILED {path} {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+        checkout = self.checkout()
+        document = checkout / "queue.pdf"
+        document.write_bytes(pdf_document(["Keep one queue."]))
+        git(checkout, "add", ".")
+        git(checkout, "commit", "--quiet", "--no-gpg-sign", "-m", "queue")
+        # Other bytes that read as the same text.
+        document.write_bytes(pdf_document(["Keep one queue.", ""]))
+        code, lines = run_main("build", str(document), "--output", str(self.output))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [
+                "FAILED queue.pdf has no uncommitted change to its text, only to formatting, images, or parts whose "
+                "text is not extracted; pass --base none to review the whole document"
+            ],
+            lines,
+        )
+        self.assertFalse(self.output.exists())
 
 
 class OutputTests(DocumentTestCase):

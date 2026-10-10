@@ -1,0 +1,43 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+5 0 obj
+<< /Length 1706 >>
+stream
+BT /F1 15 Tf 1 0 0 1 72 708 Tm (Retention for report exports) Tj /F1 11 Tf 1 0 0 1 72 688 Tm (Status: proposed) Tj /F1 15 Tf 1 0 0 1 72 656 Tm (Context) Tj /F1 13 Tf 1 0 0 1 72 636 Tm (The export worker writes each report export to object storage as a CSV file.) Tj /F1 11 Tf 1 0 0 1 72 616 Tm (Nothing deletes them, so storage holds every export since launch.) Tj /F1 15 Tf 1 0 0 1 72 584 Tm (Requirements) Tj /F1 13 Tf 1 0 0 1 72 564 Tm (R1. An export is deleted when its retention period ends.) Tj /F1 11 Tf 1 0 0 1 72 544 Tm (The period depends on the account plan, as the table below gives it.) Tj /F1 13 Tf 1 0 0 1 72 524 Tm (R2. A customer can download an export until it is deleted.) Tj /F1 11 Tf 1 0 0 1 72 504 Tm (R3. Every deletion is written to the audit log before the export is removed.) Tj /F1 13 Tf 1 0 0 1 72 484 Tm (Plan Retention) Tj /F1 11 Tf 1 0 0 1 72 464 Tm (Free 30 days) Tj /F1 13 Tf 1 0 0 1 72 444 Tm (Team 90 days) Tj /F1 11 Tf 1 0 0 1 72 424 Tm (Enterprise 365 days) Tj /F1 15 Tf 1 0 0 1 72 392 Tm (Design) Tj /F1 13 Tf 1 0 0 1 72 372 Tm (A nightly sweep selects the exports whose retention period has ended.) Tj /F1 11 Tf 1 0 0 1 72 352 Tm (For each, it writes an audit entry, deletes the object, then deletes the row.) Tj /F1 13 Tf 1 0 0 1 72 332 Tm (A row whose object is already gone is deleted without an error.) Tj /F1 11 Tf 1 0 0 1 72 312 Tm (So a sweep that stops partway and runs again leaves the same state.) Tj /F1 13 Tf 1 0 0 1 72 292 Tm (Enterprise exports are kept for 90 days, the same as Team.) Tj /F1 11 Tf 1 0 0 1 72 272 Tm (So the sweep needs only two retention periods.) Tj /F1 13 Tf 1 0 0 1 72 252 Tm (The sweep skips every account with a legal hold.) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 3 0 R >> >> >>
+endobj
+7 0 obj
+<< /Length 752 >>
+stream
+BT /F1 15 Tf 1 0 0 1 72 708 Tm (Alternatives considered) Tj /F1 11 Tf 1 0 0 1 72 688 Tm (Object storage lifecycle rules, which expire objects by age. Rejected.) Tj /F1 15 Tf 1 0 0 1 72 656 Tm (Rollout) Tj /F1 13 Tf 1 0 0 1 72 636 Tm (The sweep ships disabled behind the export_retention setting.) Tj /F1 11 Tf 1 0 0 1 72 616 Tm (It runs one week in report-only mode, logging what it would delete.) Tj /F1 13 Tf 1 0 0 1 72 596 Tm (Then it is enabled for deletion; turning the setting off stops it.) Tj /F1 15 Tf 1 0 0 1 72 564 Tm (Open questions) Tj /F1 11 Tf 1 0 0 1 72 544 Tm (Should a deleted export stay recoverable for 7 days in a holding bucket?) Tj /F1 13 Tf 1 0 0 1 72 524 Tm (This decides whether the sweep deletes objects or moves them.) Tj ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000002075 00000 n 
+0000002201 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+3004
+%%EOF

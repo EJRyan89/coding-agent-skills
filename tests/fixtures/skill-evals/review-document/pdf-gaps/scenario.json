@@ -1,0 +1,12 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "export-retention.pdf",
+  "expectations": [
+    {"kind": "finding", "path": "export-retention.pdf", "lines": [14, 20], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "finding", "path": "export-retention.pdf", "lines": [7, 8, 22], "severity": "SHOULD_FIX", "category": "requirement-gap"},
+    {"kind": "finding", "path": "export-retention.pdf", "lines": [30, 31], "severity": "SHOULD_FIX", "category": "open-question"},
+    {"kind": "finding", "path": "export-retention.pdf", "lines": [24], "severity": "SUGGESTION", "category": "alternative-unstated"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}
