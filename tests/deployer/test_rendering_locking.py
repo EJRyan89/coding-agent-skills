@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest import mock
 
-from harness import REPOSITORY_ROOT, DeployerTestCase, forward
+from harness import REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
 
 from deployer import fsops, lock, platform_support
 from deployer.paths import Paths
@@ -488,7 +488,10 @@ class LockTests(DeployerTestCase):
 
         with mock.patch("deployer.fsops.make_directory", side_effect=contended):
             self.deploy_fails(
-                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+                "--all",
+                pattern="Failed to acquire lock after stale reclaim",
+                probe=probe_returning(False, None),
+                changes_home=TAKES_THE_LOCK,
             )
         self.assertEqual([], list((self.home / ".claude" / "deployer").glob(".deploy.lock.stale.*")))
         self.assertTrue(lock_dir.is_dir())
@@ -519,7 +522,10 @@ class LockTests(DeployerTestCase):
         lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
         with mock.patch("deployer.fsops.move", side_effect=self.reclaimed_before_the_move(lock_dir)):
             result = self.deploy_fails(
-                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+                "--all",
+                pattern="Failed to acquire lock after stale reclaim",
+                probe=probe_returning(False, None),
+                changes_home=TAKES_THE_LOCK,
             )
         self.assertIn(
             "ERROR: Failed to acquire lock after stale reclaim (contention).\n"
@@ -537,7 +543,10 @@ class LockTests(DeployerTestCase):
         move = self.reclaimed_before_the_move(lock_dir, fail_move_back=True)
         with mock.patch("deployer.fsops.move", side_effect=move):
             result = self.deploy_fails(
-                "--all", pattern="Failed to acquire lock after stale reclaim", probe=probe_returning(False, None)
+                "--all",
+                pattern="Failed to acquire lock after stale reclaim",
+                probe=probe_returning(False, None),
+                changes_home=TAKES_THE_LOCK,
             )
         stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
         self.assertIn(
@@ -606,7 +615,10 @@ class LockTests(DeployerTestCase):
         lock_dir = self.write_lock({"pid": 4242, "token": "stale-token", "start_time": 1})
         with self.failing_metadata_write():
             result = self.deploy_fails(
-                "--all", pattern="Failed to initialize deployment lock", probe=probe_returning(False, None)
+                "--all",
+                pattern="Failed to initialize deployment lock",
+                probe=probe_returning(False, None),
+                changes_home=TAKES_THE_LOCK,
             )
         self.assertIn(
             "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\nRetry the deployment.\n",
@@ -625,7 +637,10 @@ class LockTests(DeployerTestCase):
         stale = self.home / ".claude" / "deployer" / f".deploy.lock.stale.{os.getpid()}"
         with self.failing_metadata_write(), self.denied_at(stale):
             result = self.deploy_fails(
-                "--all", pattern="Failed to initialize deployment lock", probe=probe_returning(False, None)
+                "--all",
+                pattern="Failed to initialize deployment lock",
+                probe=probe_returning(False, None),
+                changes_home=TAKES_THE_LOCK,
             )
         self.assertIn(
             "ERROR: Failed to initialize deployment lock: synthetic metadata write failure\n"
@@ -672,7 +687,11 @@ class LockTests(DeployerTestCase):
             return real_acquire(paths, probe)
 
         with mock.patch("deployer.lock.acquire", side_effect=acquire_after_competitor):
-            self.deploy_fails("--all", pattern="owned by source 'test/source-a'")
+            self.deploy_fails(
+                "--all",
+                pattern="owned by source 'test/source-a'",
+                changes_home="a competing deployment installs alpha while this one waits for the lock",
+            )
         self.assertIn("alpha", self.owned("skills", "test/source-a"))
         self.assertNotIn("alpha", self.owned("skills", "test/source-b"))
 

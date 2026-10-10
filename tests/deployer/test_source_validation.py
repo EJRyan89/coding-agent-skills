@@ -13,9 +13,8 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import cli, config, names, pipeline, source
+from deployer import cli, config, names, source
 from deployer.errors import DeployError
-from deployer.paths import Paths
 
 
 def make_junction(link, target) -> None:
@@ -45,12 +44,6 @@ class ConfigValidationTests(DeployerTestCase):
         shutil.copy2(self.config_file(), home / self.config_file().relative_to(self.home))
         return home
 
-    def deploy_into(self, home: Path, source: Path | None = None) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(["--all"], Paths(source or self.source, home), stdin=io.StringIO(""))
-        return Result(code, captured.getvalue())
-
     def test_a_home_path_outside_the_derived_allowlist_is_refused_before_any_change(self) -> None:
         # Rendering escapes only the contexts it knows, so the allowlist guards derived values as it guards
         # configured ones.
@@ -59,7 +52,7 @@ class ConfigValidationTests(DeployerTestCase):
         for name, character in (("O'Neil", "'"), ("Tom & Jerry", "&")):
             with self.subTest(home=name):
                 home = self.other_home(name)
-                result = self.deploy_into(home)
+                result = self.deploy_fails("--all", home=home, pattern="contains disallowed character")
                 self.assertEqual(1, result.code, result.output)
                 position = forward(home).index(character)
                 self.assertIn(
@@ -77,7 +70,7 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Source {{SOURCE_ROOT}}", ["SOURCE_ROOT"])
         self.make_config()
         checkout = self.snapshot_source("checkout #2")
-        result = self.deploy_into(self.home, checkout)
+        result = self.deploy_fails("--all", source=checkout, pattern="contains disallowed character")
         self.assertEqual(1, result.code, result.output)
         self.assertIn(
             "ERROR: SOURCE_ROOT (the source checkout) contains disallowed character '#' at position "
@@ -92,7 +85,7 @@ class ConfigValidationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Home {{HOME}}", ["HOME"])
         home = self.other_home("José Łukasz (home)")
-        result = self.deploy_into(home)
+        result = self.deploy("--all", home=home)
         self.assertEqual(0, result.code, result.output)
         self.assertIn(
             f"Home {forward(home)}", (home / ".claude" / "skills" / "alpha" / "SKILL.md").read_text(encoding="utf-8")
@@ -536,11 +529,7 @@ class LinkedWorktreeTestCase(DeployerTestCase):
         return linked
 
     def deploy_fails_from(self, directory: Path, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), Paths(directory, self.home), stdin=io.StringIO(""))
-        self.assertNotEqual(0, code, captured.getvalue())
-        return Result(code, captured.getvalue())
+        return self.deploy_fails(*arguments, source=directory, pattern="ERROR: ")
 
 
 class SourceCheckoutTests(LinkedWorktreeTestCase):
@@ -745,10 +734,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         self.canary.mkdir()
 
     def run_from(self, directory: Path, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), Paths(directory, self.home), stdin=io.StringIO(""))
-        return Result(code, captured.getvalue())
+        return self.deploy(*arguments, source=directory)
 
     def assert_untouched(self, result: Result, pattern: str) -> None:
         self.assertNotEqual(0, result.code, result.output)
