@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. A new skill in the `code-review-operations` bundle: `review-document <path> [--base none|committed] [--output DIR]` reviews a Markdown or other text document that is not in a pull request as a one-file fixture canary, sending a Markdown or plain-text document to the design-review specialist and any other text file to the generic reviewer. A file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged; any other file is reviewed whole. It needs the code-review configuration, reads nothing from GitHub, and posts nothing. A `.docx` or PDF is refused until text extraction exists. An installation that has the bundle gets it on its next update. "Document reviews" in `docs/code-review-operations.md` describes it.
 - Contract: `skills/review-document`
 - User action: none
-- Pull request: #255
+- Pull request: #321
 
 ### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
 
