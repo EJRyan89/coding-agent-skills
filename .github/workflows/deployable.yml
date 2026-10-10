@@ -1,4 +1,4 @@
-name: Deployable
+name: Deployment Smoke Test
 
 # A signal, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It also runs
 # weekly, the day after validate.yml's weekly run, once on the README's versions and once on the latest release of
