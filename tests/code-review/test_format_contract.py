@@ -13,8 +13,11 @@ through the code-review core, finds each table's objects in them, and checks the
   rejected;
 - an unlisted field is rejected.
 
-The adapter request has no validator, so its tables are checked against what `build_adapter_request` writes. A
-specialist result is judged by `load_role_result` against the role each fixture names. The adapter result is described
+The adapter request has no validator, so its tables are checked against what `build_adapter_request` writes, and the
+review-insights report, synthesis input, and synthesis context against what `create_report`, `synthesize`, `decide`,
+and `decide-custom` write; the report's shape is also pinned per schema version, so a change to it needs a new
+version. The synthesis result is judged by `check_result` against the context it was written for. A specialist result
+is judged by `load_role_result` against the role each fixture names. The adapter result is described
 by `review-adapter.schema.json`, which an entrypoint reviewer's author reads, and its objects get the same checks from
 the schema's `properties`, `required`, `type`, and `enum`.
 """
@@ -22,6 +25,7 @@ the schema's `properties`, `required`, `type`, and `enum`.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import sys
@@ -29,16 +33,21 @@ import tempfile
 import unittest
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "review-insights" / "scripts"))
 
+import review_insights
 import review_runtime
+import review_synthesis
+from review_archive import commit_record, current_ledger
 from review_canary import validate_fixture_pull
 from review_config import validate_config
-from review_flags import validate_store
+from review_flags import add_flag, load_store, validate_store
 from review_operation import legacy_index
 from review_records import build_record, carried_findings, validate_adapter_result, validate_record
 from review_runtime import build_adapter_request, validate_adapter_manifest
@@ -847,6 +856,318 @@ def state_fixtures() -> list[dict[str, Any]]:
     ]
 
 
+INSIGHTS_ADAPTER = {
+    "name": "repository-reviewer",
+    "scope": "repository",
+    "source_commit": None,
+    "source_hashes": {"docs/guide.md": "c" * 64},
+}
+INSIGHTS_REPOSITORY = "example/one"
+POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
+
+
+def _insights_record(
+    number: int, version: int, reviewed_at: str, findings: list[dict[str, Any]], archive: Path, **request: Any
+) -> None:
+    """Commit one review of example/one to `archive`; a re-review carries its prior ledger and dispositions, as
+    `finalize` assembles it, so only an initial review's result is validated as an adapter's."""
+    head = f"{version:x}" * 40
+    mode = request.pop("mode", "initial")
+    result = {**_result(findings, request.pop("dispositions", [])), "pull_number": number, "head_sha": head}
+    if mode == "initial":
+        result = validate_adapter_result(
+            result, expected_repository=INSIGHTS_REPOSITORY, expected_number=number, expected_head_sha=head
+        )
+    built = build_record(
+        {
+            "repository": INSIGHTS_REPOSITORY,
+            "pull_number": number,
+            "pull_url": f"https://github.com/{INSIGHTS_REPOSITORY}/pull/{number}",
+            "title": "Fixture",
+            "base_ref": "main",
+            "base_sha": "a" * 40,
+            "head_sha": head,
+            "mode": mode,
+            "adapter": INSIGHTS_ADAPTER,
+            **request,
+        },
+        result,
+        version=version,
+        policy=POLICY,
+        reviewed_at=reviewed_at,
+        prior_ledger=current_ledger(archive, INSIGHTS_REPOSITORY, number) if version > 1 else None,
+    )
+    commit_record(archive, INSIGHTS_REPOSITORY, number, built, expected_latest_version=version - 1 or None)
+
+
+def _insights_finding(index: int, category: str, *, analyzer: dict[str, str] | None = None, **extra: Any) -> dict:
+    """A finding with its own headline, so each groups apart; one with analyzer coverage has a title."""
+    finding = _finding(f"k{index}", "SHOULD_FIX", index + 1, category=category, body=f"Problem {chr(65 + index)} here.")
+    if analyzer is not None:
+        finding.update(analyzer=analyzer, title=f"Headline {index}")
+    return {**finding, **extra}
+
+
+def _insights_result(context: dict[str, Any], sha: str, recommendations: list[dict[str, Any]], **extra: Any) -> dict:
+    """A result `check_result` accepts against `context`: every category, each small one's findings, and every
+    custom-candidate rule in one pattern."""
+    example = context["refs"][0]
+    titles = [item["title"] for item in recommendations]
+    return {
+        "schema_version": 1,
+        "input_sha256": sha,
+        "themes": [{"theme": "Time handling", "count": 2, "examples": [example], "areas": ["scheduling"]}],
+        "mistakes": [
+            {
+                "mistake": "Local time where UTC is needed",
+                "count": 1,
+                "severity": {"SHOULD_FIX": 1},
+                "examples": [example],
+            }
+        ],
+        "persistent_patterns": [
+            {"pattern": "Unchecked input", "count": 1, "likely_reason": "Owners disagree.", "examples": [example]}
+        ],
+        "reviewer_effectiveness": {"most_useful": "security", "least_useful": "style", "false_positive_candidates": []},
+        "comparison": None,
+        "recommendations": recommendations,
+        "categories": [
+            {
+                "category": category,
+                "topics": [{"topic": f"{category} topic", "count": 1, "examples": [(refs or [example])[0]]}],
+                "assessment": f"What the {category} findings show.",
+                "addressed_by": titles[:1],
+                "findings": [{"ref": ref, "assessment": "Valid."} for ref in refs or []],
+            }
+            for category, refs in sorted(context["categories"].items())
+        ],
+        "custom_rule_patterns": [
+            {"pattern": "Retries", "rules": context["custom_rules"], "assessment": "Worth a rule.", "addressed_by": []}
+        ]
+        if context["custom_rules"]
+        else [],
+        **extra,
+    }
+
+
+def _synthesized(kind: str, priority: str, title: str, evidence: list[str], **extra: Any) -> dict[str, Any]:
+    return {
+        "type": kind,
+        "priority": priority,
+        "target": {"repository": INSIGHTS_REPOSITORY, "path": "docs/guide.md"},
+        "title": title,
+        "change": "Add the rule.",
+        "rationale": "The findings show it.",
+        "evidence": evidence,
+        "flags": [],
+        **extra,
+    }
+
+
+@dataclass
+class InsightsRun:
+    """A throwaway archive, flag store, and summary root, and the review-insights steps over them."""
+
+    root: Path
+    services: Any = None
+
+    def __post_init__(self) -> None:
+        self.archive, self.summary = self.root / "archive", self.root / "summary"
+        self.flags_path = self.root / "flags" / "flags.json"
+        moment = datetime(2026, 2, 3, 9, 30, tzinfo=UTC)
+        self.services = review_insights.Services(now=lambda: moment, flags_path=lambda: self.flags_path)
+
+    def report(self, start: str, end: str, *, repositories: tuple[str, ...] = (INSIGHTS_REPOSITORY,), **extra: Any):
+        flags = extra.pop("flags", load_store(self.flags_path)["flags"])
+        json_path, _, _ = review_insights.create_report(
+            archive_root=self.archive,
+            summary_root=self.summary,
+            repository_set=extra.pop("repository_set", "primary"),
+            repositories=list(repositories),
+            start=date.fromisoformat(start),
+            end=date.fromisoformat(end),
+            flags=flags,
+            services=self.services,
+        )
+        return json_path
+
+    def synthesize(self, json_path: Path, build: Callable[[dict[str, Any], str], dict[str, Any]]) -> Fixture:
+        """Record a result `build` makes from the report's context; the fixture judges a copy against that context."""
+        synthesis = json.loads(json_path.read_text(encoding="utf-8"))["synthesis"]
+        context = json.loads((json_path.parent / review_synthesis.CONTEXT_NAME).read_text(encoding="utf-8"))
+        result = build(context, synthesis["input_sha256"])
+        Path(synthesis["result"]).write_text(json.dumps(result), encoding="utf-8")
+        review_insights.synthesize(json_path, Path(synthesis["result"]), services=self.services)
+        sha = synthesis["input_sha256"]
+        return Fixture(
+            f"synthesis result {json_path.parent.name}",
+            result,
+            _judge(lambda value: review_synthesis.check_result(value, context, sha)),
+        )
+
+    def decide(self, json_path: Path, kind: str, decision: str, note: str | None = None, **match: str) -> None:
+        """Decide the first recommendation of `kind` whose fields have the values `match` gives."""
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        item = next(
+            item
+            for item in report["recommendations"]
+            if item["kind"] == kind and all(item.get(key) == value for key, value in match.items())
+        )
+        subject = {
+            "category": {"category": item.get("category")},
+            "analyzer": {"category": None, "analyzer": (item.get("coverage"), item.get("tool"), item.get("rule"))},
+            "synthesized": {"category": None, "synthesized": item.get("title")},
+        }[kind]
+        review_insights.decide(
+            json_path,
+            item["id"],
+            flags=item["linked_flags"],
+            decision=decision,
+            note=note,
+            services=self.services,
+            **subject,
+        )
+
+
+def insights_fixtures(scratch: Path) -> dict[str, list[Fixture]]:
+    """The review-insights report in each synthesis state, upgraded from an older version too, with each synthesis
+    input line, context, and result the runs wrote. Written by `create_report`, `synthesize`, and `decide`; only the
+    result has a validator."""
+    run = InsightsRun(scratch / "insights")
+    available = {"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515"}
+    known = {"coverage": "known", "tool": "Roslynator.Analyzers", "rule": "RCS1001"}
+    custom = {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unbounded-retry-loop"}
+    _insights_record(5, 1, "2025-12-20T12:00:00+00:00", [_insights_finding(0, "Correctness")], run.archive)
+    _insights_record(
+        7,
+        1,
+        "2026-01-15T12:00:00+00:00",
+        [
+            *(_insights_finding(index, "Correctness") for index in range(6)),
+            _insights_finding(6, "Style", analyzer=available),
+            _insights_finding(7, "Security", analyzer=known),
+            # An analyzer finding without a headline: its evidence has a null title.
+            {**_insights_finding(9, "Security"), "analyzer": known},
+            _insights_finding(8, "Reliability", analyzer=custom),
+        ],
+        run.archive,
+    )
+    _insights_record(
+        7,
+        2,
+        "2026-01-20T12:00:00+00:00",
+        [],
+        run.archive,
+        mode="re-review",
+        dispositions=[_disposition("v1:F001", "addressed"), _disposition("v1:F002", "still_present")],
+    )
+    linked = add_flag(
+        run.flags_path,
+        category="noise",
+        body="Asked for a check the caller makes.",
+        repository=INSIGHTS_REPOSITORY,
+        pull_number=7,
+        review_version=1,
+        finding_id="F007",
+    )["id"]
+    pull_only = add_flag(
+        run.flags_path, category="missed", body="Missed a retry.", repository=INSIGHTS_REPOSITORY, pull_number=7
+    )["id"]
+    add_flag(run.flags_path, category="heuristic", body="Prefer analyzers.")
+    with mock.patch.object(review_synthesis, "GROUPS_IN_FULL", 3):
+        december = run.report("2025-12-01", "2025-12-31")
+        december_result = run.synthesize(
+            december,
+            lambda context, sha: _insights_result(
+                context, sha, [_synthesized("strengthen-rule", "high", "Name the timezone", context["refs"][:1])]
+            ),
+        )
+        run.decide(december, "synthesized", "rejected", "Covered elsewhere")
+        january = run.report("2026-01-01", "2026-01-31")
+        pending_input = (january.parent / review_synthesis.INPUT_NAME).read_text(encoding="utf-8")
+
+        def january_result(context: dict[str, Any], sha: str) -> dict[str, Any]:
+            refs = context["refs"]
+            analyzer_target = {"analyzer": {**custom, "rule": "retry-without-backoff"}}
+            recommendations = [
+                _synthesized("strengthen-rule", "high", "Strengthen the rule", refs[:1]),
+                _synthesized("new-rule", "medium", "Add a rule", [], flags=[pull_only]),
+                _synthesized("remove-rule", "low", "Remove a rule", refs[:1]),
+                _synthesized("stop-flagging", "low", "Stop flagging", refs[:1]),
+                _synthesized(
+                    "start-flagging",
+                    "medium",
+                    "Start flagging",
+                    refs[:1],
+                    target={"repository": INSIGHTS_REPOSITORY, "path": None},
+                ),
+                _synthesized("new-analyzer", "high", "Adopt a rule", refs[:1], target=analyzer_target),
+                _synthesized("flagged", "low", "Answer the flag", [], flags=[linked]),
+            ]
+            comparison = {
+                "persistent": ["Time handling"],
+                "new": [],
+                "resolved": [],
+                "previous_recommendations": [
+                    {"id": context["previous_recommendations"][0], "assessment": "Findings continued."}
+                ],
+            }
+            return _insights_result(context, sha, recommendations, comparison=comparison)
+
+        january_fixture = run.synthesize(january, january_result)
+        run.decide(january, "category", "accepted", "Add a rule", category="Style")
+        run.decide(january, "analyzer", "deferred")
+        review_insights.decide_custom(january, [], "rejected", services=run.services)
+        complete = json.loads(january.read_text(encoding="utf-8"))
+        add_flag(run.flags_path, category="later", body="A new observation.", repository=INSIGHTS_REPOSITORY)
+        run.report("2026-01-01", "2026-01-31")
+    superseded = json.loads(january.read_text(encoding="utf-8"))
+    skipped = run.report("2025-06-01", "2025-06-30", flags=[], repository_set="quiet")
+    # A version 5 report, read and written back by a decision: its outcome counts are null and it has no synthesis.
+    older = json.loads(december.read_text(encoding="utf-8"))
+    older["schema_version"] = 5
+    del older["synthesis"], older["next_recommendation_number"]
+    older["recommendations"] = [item for item in older["recommendations"] if item["kind"] != "synthesized"]
+    for item in older["recommendations"]:
+        for row in item["reviewers"]:
+            del row["addressed"], row["still_present"]
+    upgraded_path = run.summary / "upgraded" / "insights.json"
+    upgraded_path.parent.mkdir(parents=True)
+    upgraded_path.write_text(json.dumps(older), encoding="utf-8")
+    run.decide(upgraded_path, "category", "deferred")
+    reports = {
+        "december report": json.loads(december.read_text(encoding="utf-8")),
+        "complete report": complete,
+        "superseding report": superseded,
+        "skipped report": json.loads(skipped.read_text(encoding="utf-8")),
+        "upgraded report": json.loads(upgraded_path.read_text(encoding="utf-8")),
+    }
+    lines: dict[str, list[Fixture]] = {}
+    for name, text in (
+        ("december input", (december.parent / review_synthesis.INPUT_NAME).read_text(encoding="utf-8")),
+        ("january input", pending_input),
+    ):
+        for index, line in enumerate(text.splitlines()):
+            value = json.loads(line)
+            lines.setdefault(f"synthesis-input:{value['kind']}", []).append(
+                Fixture(f"{name} line {index}", value, None)
+            )
+    contexts = [
+        Fixture(
+            f"{name} context",
+            json.loads((path.parent / review_synthesis.CONTEXT_NAME).read_text(encoding="utf-8")),
+            None,
+        )
+        for name, path in (("december", december), ("january", january))
+    ]
+    return {
+        "insights": [Fixture(name, value, None) for name, value in reports.items()],
+        **lines,
+        "synthesis-context": contexts,
+        "synthesis-result": [december_result, january_fixture],
+    }
+
+
 def specialist_fixtures(scratch: Path) -> list[Fixture]:
     """A re-review role's result under declared finding categories, with review comments, every severity spelling,
     each analyzer coverage, and a repeat of each kind; and an initial review role's result with neither categories
@@ -1021,6 +1342,27 @@ def adapter_fixtures() -> list[Fixture]:
     ]
 
 
+def report_shape(tables: list[Table]) -> str:
+    """A digest of what the tables say of the insights report's fields: each path under `insights` with its rows'
+    names, types, Required values, and listed values. Wording is left out, so only a change of shape changes it."""
+    shape = {
+        path: sorted(
+            [row.name, sorted(row.types) if row.types is not None else "any", row.required, row.partner, row.values]
+            for row in table.rows.values()
+        )
+        for table in tables
+        for path in table.paths
+        if path.split(".")[0] == "insights"
+    }
+    return hashlib.sha256(json.dumps(shape, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+# The report's shape at each schema version since its tables were written. A change to the tables' fields changes the
+# digest: raise review_insights.SCHEMA_VERSION, add the upgrade step from the version before, and add the new
+# version's digest here, keeping the earlier ones.
+REPORT_SHAPES = {8: "3a9bce3e9fde46c775a13037c77f33d0c52f9c244dfd33fc9b5cdba9496a9458"}
+
+
 def schema_tables(schema: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Each object the adapter result schema describes, with its path."""
     findings = schema["properties"]["findings"]["items"]
@@ -1094,6 +1436,7 @@ class FormatContractTest(unittest.TestCase):
                 for index, value in enumerate(fixture_pull_fixtures())
             ],
             "adapter-result": adapter_fixtures(),
+            **insights_fixtures(scratch),
         }
 
     @classmethod
@@ -1178,6 +1521,52 @@ class FormatContractTest(unittest.TestCase):
             "record.github_comments[]: line documents array, which no fixture has or accepts",
             check_table("record.github_comments[]", narrow, comments),
         )
+
+    def test_the_report_shape_is_the_one_recorded_for_its_schema_version(self) -> None:
+        self.assertEqual(8, max(REPORT_SHAPES), "a new report version records its shape here")
+        self.assertEqual(max(REPORT_SHAPES), review_insights.SCHEMA_VERSION)
+        self.assertEqual(set(range(1, review_insights.SCHEMA_VERSION + 1)), review_insights.READABLE_SCHEMA_VERSIONS)
+        self.assertEqual(
+            REPORT_SHAPES[review_insights.SCHEMA_VERSION],
+            report_shape(self.tables),
+            "the insights report's tables changed: raise SCHEMA_VERSION in review_insights.py, add an upgrade step "
+            "in load_report, and record the new shape in REPORT_SHAPES",
+        )
+        text = CONTRACT.read_text(encoding="utf-8")
+        row = "| `next_recommendation_number` | integer | yes |"
+        self.assertIn(row, text)
+        changed = parse_tables(text.replace(row, "| `next_recommendation_number` | integer | no |"))
+        self.assertNotEqual(report_shape(self.tables), report_shape(changed), "a Required value is part of the shape")
+        reworded = parse_tables(text.replace("The first `REC-` number the report has never given", "The next number"))
+        self.assertEqual(report_shape(self.tables), report_shape(reworded), "wording is not")
+
+    def test_a_doctored_report_table_disagrees_with_what_the_report_writer_wrote(self) -> None:
+        text = CONTRACT.read_text(encoding="utf-8")
+        row = re.search(r"^\| `next_recommendation_number` \|.*\n", text, flags=re.MULTILINE)
+        if row is None:
+            self.fail("the report table lists next_recommendation_number")
+        unwritten = row.group(0) + "| `retired` | array | no | Not written. |\n"
+        for name, doctored, expected in (
+            (
+                "missing row",
+                text.replace(row.group(0), ""),
+                "next_recommendation_number occurs in a fixture but has no row",
+            ),
+            (
+                "unlisted value",
+                text.replace("| One of `8`. |", "| One of `7`. |"),
+                "schema_version has the unlisted value 8",
+            ),
+            ("unwritten row", text.replace(row.group(0), unwritten), "retired occurs in no fixture"),
+        ):
+            with self.subTest(doctored=name):
+                problems = [
+                    problem
+                    for table in parse_tables(doctored)
+                    if table.paths[0] == "insights"
+                    for problem in check_table(table.heading, table.rows, instances(table.paths, self.fixtures))
+                ]
+                self.assertTrue(any(expected in problem for problem in problems), problems)
 
     def test_rows_parse_their_required_value_and_listed_values(self) -> None:
         row = parse_row(
