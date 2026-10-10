@@ -434,6 +434,11 @@ class RecordTests(SynthesisFixture):
                 changed("Docs", findings=[{"ref": "owner/repo#8 v1 F001", "assessment": "x"}]),
                 "must be empty for a category of more than 5 findings",
             ),
+            # A reference that is not text is a problem to fix, never a crash of the check.
+            "a finding assessment without a reference": (
+                changed("Style", findings=[{"ref": None, "assessment": "Valid."}]),
+                "each ref a finding reference",
+            ),
             "no topics": (changed("Style", topics=[]), "must be a list of 1 to 5 topics"),
             "too many topics": (changed("Style", topics=by_name["Style"]["topics"] * 6), "at most 5 items"),
             "an unknown recommendation": (changed("Style", addressed_by=["Another title"]), "titles of this result"),
