@@ -314,8 +314,8 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertEqual(
             [
                 "name: code-review-reviewer",
-                "description: Internal to the code-review-core pipeline. Started only by review-prs, with a prepared "
-                "prompt file for one reviewer role. Do not use it for anything else.",
+                "description: Internal to the code-review-core pipeline. Started only by that pipeline, with a "
+                "prepared prompt file for one reviewer role. Do not use it for anything else.",
                 "tools: Read, Grep, Glob, Write, Edit, Bash",
                 "model: inherit",
                 "omitClaudeMd: true",
