@@ -17,6 +17,13 @@ from .names import safe_name_problem
 from .paths import Paths
 from .render import ADAPTER_STAGING, AGENT_STAGING
 
+# The journal records each change by root, which skills and shared assets share, in its on-disk format, so these name
+# roots by the strings a journal holds rather than through the kinds table.
+KINDS_ALLOWED = {
+    "ROOT_PREFIXES": "a journal entry's paths begin with its root's prefix, part of the on-disk format",
+    "LEGACY_STAGING": "a journal an earlier version wrote names these staging roots, and still recovers",
+    "root_directory": "maps each root a journal entry may name to its directory",
+}
 ROOT_PREFIXES = {
     "claude": ("skills", "staging"),
     "agents": ("agents", f"staging/{ADAPTER_STAGING}"),
@@ -25,6 +32,15 @@ ROOT_PREFIXES = {
 # Earlier versions labeled staging roots that did not exist: "staging-wrappers" before runtime adapters were called
 # adapters, then "staging-adapters" and "staging-claude-agents". A run interrupted under any of them still recovers.
 LEGACY_STAGING = {"agents": ("staging-adapters", "staging-wrappers"), "claude-agents": ("staging-claude-agents",)}
+
+
+# The skills root, which an entry for it leaves unrecorded, as every entry did before other roots were journaled.
+DEFAULT_ROOT = "claude"
+
+
+def entry_root(entry: dict[str, Any]) -> str:
+    """The root an entry names, or the skills root for one that names none."""
+    return entry.get("root", DEFAULT_ROOT)
 
 
 def root_directory(paths: Paths, root: str) -> Path:
@@ -48,7 +64,7 @@ class Journal:
     def backup(self, root: str, item: str, backup_hash: str, retain: bool) -> None:
         prefix = ROOT_PREFIXES[root][0]
         entry: dict[str, Any] = {"op": "backup"}
-        if root != "claude":
+        if root != DEFAULT_ROOT:
             entry["root"] = root
         entry.update(
             {
@@ -66,7 +82,7 @@ class Journal:
     def install(self, root: str, item: str, staged_hash: str) -> None:
         destination, staging = ROOT_PREFIXES[root]
         entry: dict[str, Any] = {"op": "install"}
-        if root != "claude":
+        if root != DEFAULT_ROOT:
             entry["root"] = root
         entry.update(
             {
@@ -94,7 +110,7 @@ class Journal:
 def valid_entry(entry: Any, run_id: str) -> bool:
     if not isinstance(entry, dict):
         return False
-    root = entry.get("root", "claude")
+    root = entry_root(entry)
     if root not in ROOT_PREFIXES:
         return False
     destination, staging = ROOT_PREFIXES[root]
@@ -201,7 +217,7 @@ def _guarded(run_id: str, path: Path, step: Callable[[], bool]) -> bool:
 
 
 def _item_path(paths: Paths, entry: dict[str, Any], suffix: str = "") -> Path:
-    return root_directory(paths, entry.get("root", "claude")) / f"{entry['item']}{suffix}"
+    return root_directory(paths, entry_root(entry)) / f"{entry['item']}{suffix}"
 
 
 def _verify_install(paths: Paths, entry: dict[str, Any]) -> bool:
@@ -227,7 +243,7 @@ def backup_unchanged(paths: Paths, entry: dict[str, Any]) -> bool:
 
 def _finish_backup(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     """Delete an unchanged transient backup the committed run did not keep, or move it to permanent storage."""
-    root = entry.get("root", "claude")
+    root = entry_root(entry)
     item = entry["item"]
     transient = _item_path(paths, entry, ".deploying-bak")
     kept_at = f".backups/{run_id}/{item}"
@@ -328,7 +344,7 @@ def _restore_backup(paths: Paths, entry: dict[str, Any]) -> bool:
 def _undo_preserve(paths: Paths, run_id: str, entry: dict[str, Any]) -> bool:
     """Move a backup the run had already preserved back beside its item, so the backup entry can restore it."""
     try:
-        destination = prepare_backup_destination(paths, run_id, entry["item"], entry.get("root", "claude"))
+        destination = prepare_backup_destination(paths, run_id, entry["item"], entry_root(entry))
     except DeployError as exc:
         _report(exc)
         return False
@@ -342,14 +358,12 @@ def _roll_back(paths: Paths, run_id: str, entries: list[dict[str, Any]]) -> bool
     print(f"Recovering uncommitted run {run_id} (rolling back)...")
     reconciled = True
     replaced = {
-        (entry.get("root", "claude"), entry["item"]): entry["backup_hash"]
-        for entry in entries
-        if entry["op"] == "backup"
+        (entry_root(entry), entry["item"]): entry["backup_hash"] for entry in entries if entry["op"] == "backup"
     }
     for entry in reversed(entries):
         step: Callable[[], bool]
         if entry["op"] == "install":
-            backup_hash = replaced.get((entry.get("root", "claude"), entry["item"]))
+            backup_hash = replaced.get((entry_root(entry), entry["item"]))
             step = functools.partial(_undo_install, paths, entry, backup_hash)
         elif entry["op"] == "backup":
             step = functools.partial(_restore_backup, paths, entry)

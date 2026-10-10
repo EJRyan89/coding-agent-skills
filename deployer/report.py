@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import manifest, platform_support, source
-from .kinds import ADAPTER, AGENT, DIFFERS, DIFFERS_FROM_SKILL, MODIFIED, SHARED_ASSET
+from .kinds import ADAPTER, DIFFERS, DIFFERS_FROM_SKILL, KINDS, MODIFIED
+
+KINDS_ALLOWED = {
+    "_fold_adapters.repeats_skill": "a runtime adapter is a thin pointer to its skill, so only its lines fold into "
+    "its skill's",
+}
 
 
 @dataclass(frozen=True)
@@ -25,7 +30,8 @@ class ReportLine:
         return f"  {self.name}{f' ({detail})' if detail else ''}"
 
 
-KIND_ORDER = {"": 0, ADAPTER: 1, SHARED_ASSET: 2, AGENT: 3}
+# Lines naming one item are ordered by kind, in the table's order.
+KIND_ORDER = {kind.label: index for index, kind in enumerate(KINDS)}
 
 
 def _detail(*parts: str) -> str:

@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import FAILS_PARTWAY, RECOVERS, DeployerTestCase, forward
 
-from deployer import fsops, hashing, journal, manifest, platform_support, render
+from deployer import fsops, hashing, journal, platform_support, render
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -771,7 +771,7 @@ class RecoveryBranchTests(RecoveryTestCase):
         self.assertEqual(
             ["alpha (deselected or absent from source)", "beta (runtime adapter, obsolete)"], deployed["REMOVED"]
         )
-        for kind in ("skills", "shared", manifest.ADAPTERS, "agents"):
+        for kind in ("skills", "shared", "wrappers", "agents"):
             self.assertEqual({}, self.manifest()["sources"]["test/skills"].get(kind, {}), kind)
 
     def test_an_unexpected_exception_is_named_and_the_run_rolled_back(self) -> None:
@@ -1083,7 +1083,7 @@ class MigrationTests(DeployerTestCase):
         result = self.deploy_ok("--migrate-from", "test/old")
         # The adapter moves with its skill, so the report folds its line into the skill's, as every report does.
         self.assertEqual(["alpha", "reviewer.md (agent)"], self.report_groups(result.output, "MIGRATED")["MIGRATED"])
-        self.assertIn("alpha", self.owned(manifest.ADAPTERS))
+        self.assertIn("alpha", self.owned("wrappers"))
         self.assertIn("reviewer.md", self.owned("agents"))
         self.assertNotIn("test/old", self.manifest()["sources"])
         deployed = self.report_groups(self.deploy_ok("--all").output, "DEPLOYED")

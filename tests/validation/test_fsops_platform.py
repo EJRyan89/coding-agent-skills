@@ -372,6 +372,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
             (28, "cygpath"),
             (29, "LOCALAPPDATA"),
             (29, "ProgramFiles"),
+            (29, "localappdata"),
             (30, "APPDATA"),
             (43, "cygpath"),
         ]
@@ -383,6 +384,28 @@ class FsopsPlatformFixtures(unittest.TestCase):
             [*common_head, (10, "cygpath"), (11, "USERPROFILE"), (11, "cygpath"), *common_tail],
             _platform_names(ast.parse(source), set()),
         )
+
+    def test_platform_policy_matches_environment_names_in_any_case(self) -> None:
+        # Windows compares environment names ignoring case, so each spelling reads the same variable.
+        reads = (
+            "import os\n"
+            "\n"
+            "\n"
+            "def locations():\n"
+            '    return os.environ.get("PROGRAMFILES"), os.environ["git_bash"], os.getenv("UserProfile")\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, {"deployer/strayed.py": reads, "deployer/platform_support.py": reads})
+            move = "; move it behind deployer/platform_support.py"
+            self.assertEqual(
+                [
+                    f"deployer/strayed.py:5 names PROGRAMFILES{move}",
+                    f"deployer/strayed.py:5 names UserProfile{move}",
+                    f"deployer/strayed.py:5 names git_bash{move}",
+                ],
+                platform_code_problems(root),
+            )
 
     def test_platform_code_policy_detects_each_token_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

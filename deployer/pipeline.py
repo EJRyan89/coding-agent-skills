@@ -37,6 +37,12 @@ from .paths import Paths, canary_home, claim_canary_home, validate_managed_roots
 from .plan import INSTALLING, RELEASING, PlanEntry
 from .report import DEPLOY_ACTIONS, DEPLOYED
 
+KINDS_ALLOWED = {
+    "_commit_manifest": "a skill entry also records the items it depends on, and a shared asset entry its role",
+    "_deploy": "each kind's wanted items come from their own step (the selected skills, the shared assets staged for "
+    "them, their runtime adapters, and the agents they need), and plan.build plans each kind its own way",
+}
+
 TAKE_OVER_SOURCE = "--take-over-source"
 
 
@@ -121,7 +127,7 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
         if not entry["retain"] and journal.backup_unchanged(context.paths, entry):
             unkept.append(entry)
             continue
-        root = entry.get("root", "claude")
+        root = journal.entry_root(entry)
         item = entry["item"]
         transient = journal.root_directory(context.paths, root) / f"{item}.deploying-bak"
         try:
@@ -147,7 +153,7 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
                 )
     for entry in unkept:
         fsops.remove(
-            journal.root_directory(context.paths, entry.get("root", "claude")) / f"{entry['item']}.deploying-bak"
+            journal.root_directory(context.paths, journal.entry_root(entry)) / f"{entry['item']}.deploying-bak"
         )
     return backups
 
