@@ -18,7 +18,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: patch. A fix: each reviewer prompt now gives its self-check, `source-file`, and `source-search` commands with the script path spelled as the session started `prepare`, `${CLAUDE_SKILL_DIR}/../code-review-core/scripts/` filled in, instead of the resolved path. In Claude Code, an inline role's commands now match `review-prs`'s grant rather than asking each time. Writing a role's result still asks, because no skill grant can name the system temporary directory. "Inline reviews" in the operations guide gives the allow rule a headless session needs.
 - Contract: none
 - User action: none
-- Pull request: #311
+- Pull request: #316
 
 ### validate-reviewer measures the snapshot route prepare takes and reads the reviewer where prepare does
 
