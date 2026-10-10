@@ -379,7 +379,11 @@ def fetch_failed_summary(name: str, error: str) -> list[str]:
 def decide(
     category: str, state: str, error: str, tree: Worktree | None, linked: dict[str, Any] | None
 ) -> tuple[str, str]:
-    """The planned action for one non-release branch, mirroring the cleanup rules."""
+    """The planned action for one non-release branch, mirroring the cleanup rules.
+
+    A clean linked worktree of a stale branch is removed. Its branch is deleted with it unless its pull request closed
+    without merging: that work was set aside rather than landed, so the branch is kept and the user is asked.
+    """
     if state in KEPT_STATES:
         return "keep", f"{KEPT_STATES[state]}: {error}" if error else KEPT_STATES[state]
     stale = state in STALE_STATES or (category == "gone" and state == "NONE")
@@ -387,7 +391,9 @@ def decide(
         return "keep", "checked-out-main" if stale or category == "local" else ""
     if linked is not None:
         if linked["action"] == "candidate":
-            return ("remove-worktree", "") if stale else ("keep", "in-worktree")
+            if not stale:
+                return "keep", "in-worktree"
+            return ("remove-worktree-ask", "") if state == "CLOSED" else ("remove-worktree", "")
         return "keep", f"worktree-{linked['action'].split(':')[0]}"
     if category == "gone" and stale:
         return "delete", ""
@@ -445,8 +451,9 @@ def build_plan(root: str, repos_root: str, services: Services) -> dict[str, Any]
                 state, error = pull_state(services, root, nwo, default, name, sha)
             action, detail = decide(category, state, error, tree, entry)
         if entry is not None and entry["action"] == "candidate":
-            entry["action"] = "remove" if action == "remove-worktree" else "keep"
-            entry["detail"] = "" if action == "remove-worktree" else detail
+            removing = action in ("remove-worktree", "remove-worktree-ask")
+            entry["action"] = "remove" if removing else "keep"
+            entry["detail"] = "" if removing else detail
         branches.append(
             {
                 "name": name,
@@ -557,6 +564,11 @@ def events(plan: dict[str, Any], kind: str) -> list[list[str]]:
 
 def deleted(plan: dict[str, Any]) -> set[str]:
     return {fields[0] for fields in events(plan, "DELETED")}
+
+
+def closed_branches(plan: dict[str, Any]) -> set[str]:
+    """Branches whose worktree is removed but which are kept and asked about, since their pull request closed."""
+    return {branch["name"] for branch in plan["branches"] if branch["action"] == "remove-worktree-ask"}
 
 
 # apply and confirmations ----------------------------------------------------------------------------------------
@@ -681,10 +693,13 @@ def ignored_paths(services: Services, path: str) -> str:
     return f"worktree {path} holds {count} ignored path{'' if count == 1 else 's'} git worktree remove would delete"
 
 
-def remove_worktree(services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str) -> bool:
+def remove_worktree(
+    services: Services, plan: dict[str, Any], entry: dict[str, Any], sha: str, pr: str, ask: bool = False
+) -> bool:
     """git worktree remove, which refuses a locked worktree or one with changes, then delete_merged on its branch.
 
-    A worktree with ignored files is kept, since Git would delete them with it.
+    With `ask`, the branch is kept and offered for the user's confirmation instead. A worktree with ignored files is
+    kept, since Git would delete them with it.
     """
     held = ignored_paths(services, entry["path"])
     if held:
@@ -695,7 +710,10 @@ def remove_worktree(services: Services, plan: dict[str, Any], entry: dict[str, A
         record(plan, "PRESERVED", entry["branch"], f"Git refused to remove worktree {entry['path']}: {reason(removed)}")
         return False
     record(plan, "REMOVED", entry["path"], entry["branch"])
-    delete_merged(services, plan, entry["branch"], sha, pr)
+    if ask:
+        record(plan, "CONFIRM_LOCAL", entry["branch"])
+    else:
+        delete_merged(services, plan, entry["branch"], sha, pr)
     return True
 
 
@@ -711,7 +729,9 @@ def run_and_report(plan_path: str, plan: dict[str, Any], action: Callable[[], T]
     """Run `action` on the plan, then save the plan and print its summary, also when the action failed partway.
 
     Every branch deleted and worktree removed before a failure is then in the summary, printed ahead of the failure.
+    The stopped marker describes the last run on the plan, so a later run that completes clears it.
     """
+    plan.pop("stopped", None)
     try:
         return action()
     except Exception as exc:
@@ -735,9 +755,10 @@ def apply_plan(plan: dict[str, Any], services: Services) -> None:
     for entry in plan["worktrees"]:
         if entry["action"] != "remove":
             continue
-        sha, pr = branches[entry["branch"]]["sha"], branches[entry["branch"]]["pr"]
+        branch = branches[entry["branch"]]
+        sha, ask = branch["sha"], branch["action"] == "remove-worktree-ask"
         if unchanged(services, plan, entry["branch"], sha, located, entry["path"]) and remove_worktree(
-            services, plan, entry, sha, pr
+            services, plan, entry, sha, branch["pr"], ask
         ):
             removed.append(entry["path"])
     boundaries = [plan["worktree_area"], root]
@@ -773,8 +794,14 @@ def confirm(plan_path: str, names: list[str], services: Services, force: bool) -
         eligible = {fields[0]: fields[1] for fields in events(plan, "UNMERGED")}
         refusal = "not reported UNMERGED by this plan"
     else:
-        eligible = {branch["name"]: branch["sha"] for branch in plan["branches"] if branch["action"] == "ask-delete"}
-        refusal = "not a local-only branch offered by this plan"
+        # A closed pull request's branch is offered only once its worktree is gone.
+        closed = {fields[0] for fields in events(plan, "CONFIRM_LOCAL")} & closed_branches(plan)
+        eligible = {
+            branch["name"]: branch["sha"]
+            for branch in plan["branches"]
+            if branch["action"] == "ask-delete" or branch["name"] in closed
+        }
+        refusal = "not a local-only or closed branch offered by this plan"
 
     def delete() -> bool:
         located = checkouts(services, plan["repo_root"])
@@ -804,7 +831,8 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
     """Every list the summary reports, by label; all empty means nothing happened and nothing was kept."""
     removed_branches = deleted(plan)
     unmerged = [fields[0] for fields in events(plan, "UNMERGED") if fields[0] not in removed_branches]
-    local = [
+    closed = closed_branches(plan)
+    offered = [
         fields[0]
         for fields in events(plan, "CONFIRM_LOCAL")
         if fields[0] not in removed_branches and fields[0] not in unmerged
@@ -839,7 +867,8 @@ def summary_items(plan: dict[str, Any]) -> dict[str, list[str]]:
         "PR status unverified": unknown,
         "PR history unmatched": unmatched,
         "Unmerged (kept)": unmerged,
-        "Local-only (kept)": local,
+        "Local-only (kept)": [name for name in offered if name not in closed],
+        "Closed PR (kept)": [name for name in offered if name in closed],
         "Preserved": [f"{name}: {why}" for name, why in events(plan, "PRESERVED")],
         "Open PR (kept)": [branch["name"] for branch in plan["branches"] if branch["pr"] == "OPEN"],
         "Empty directories removed": [fields[0] for fields in events(plan, "PRUNED_DIR")],
@@ -867,6 +896,7 @@ def summary_lines(plan: dict[str, Any]) -> list[str]:
         "Fast-forward skipped",
         "Unmerged (kept)",
         "Local-only (kept)",
+        "Closed PR (kept)",
         "Preserved",
         "Open PR (kept)",
         "Empty directories removed",
