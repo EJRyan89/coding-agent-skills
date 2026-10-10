@@ -437,6 +437,18 @@ class DiffTests(unittest.TestCase):
         self.assertIn("no line of its text differs", same)
         self.assertEqual(list(parse_unified_diff(same)), ["docs/design.docx"])
 
+    def test_texts_whose_lines_differ_only_in_their_labels_are_unlabeled_alike_and_have_no_hunk(self) -> None:
+        for base, head in (
+            ("[P1] # Scope\n[P2] Keep one queue.\n", "[P1] # Scope\n[P3] Keep one queue.\n"),
+            ("[P1] Keep one queue.\n", "[P2] Keep one queue.\n"),
+            ("[p1 l1] Keep one queue.\n", "[p2 l1] Keep one queue.\n"),
+        ):
+            with self.subTest(head=head):
+                self.assertEqual(documents.unlabeled(base), documents.unlabeled(head))
+                self.assertNotIn("@@", document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", base, head))
+        self.assertEqual(["# Scope", "Keep one queue."], documents.unlabeled("[P1] # Scope\n[P2] Keep one queue.\n"))
+        self.assertNotEqual(documents.unlabeled("[P1] Keep one queue.\n"), documents.unlabeled("[P1] Keep two.\n"))
+
     def test_a_base_that_could_not_be_extracted_shows_the_head_as_added_and_says_why(self) -> None:
         diff = document_diff(self.HEADER, "d.docx", "d.docx", "[P1] old\n", "[P1] new\n", base_refused="it is broken")
 

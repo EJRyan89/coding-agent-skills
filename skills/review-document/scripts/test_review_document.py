@@ -28,12 +28,16 @@ from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
 from review_github import GitHubClient
 from review_runtime import validate_adapter_manifest
-from test_review_documents import StubPdftotext, paragraph, pdf_document, without_pdftotext, word_document
+from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
 IDENTITY = ("-c", "user.name=Document Test", "-c", "user.email=document@example.invalid")
 COMMITTED = b"# Retention\n\nExports are kept 30 days.\n\nOwners: storage.\n"
+UNCHANGED_TEXT = (
+    "has no uncommitted change to its text, only to formatting, layout, images, or parts whose text is not extracted; "
+    "pass --base none to review the whole document"
+)
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -391,16 +395,41 @@ class ExtractedDocumentTests(DocumentTestCase):
         # A new style changes the package and leaves the text as it was.
         document.write_bytes(word_document(paragraph("Keep one queue."), extra={"word/theme.xml": b"<theme/>"}))
         code, lines = run_main("build", str(document), "--output", str(self.output))
-        self.assertEqual(1, code)
-        self.assertEqual(
-            [
-                "FAILED queue.docx has no uncommitted change to its text, only to formatting, images, or parts whose "
-                "text is not extracted; pass --base none to review the whole document"
-            ],
-            lines,
-        )
+        self.assertEqual((1, [f"FAILED queue.docx {UNCHANGED_TEXT}"]), (code, lines))
         self.assertFalse(self.output.exists())
         self.assertEqual("none the whole document was asked for", self.build(document, "--base", "none")["BASE"])
+
+    def test_an_edit_that_only_renumbers_the_same_lines_of_text_is_refused_as_the_diff_would_show_none(self) -> None:
+        # The diff matches lines without their labels, so a change that only moves labels leaves it no hunk.
+        checkout = self.checkout()
+        # The stub reads the edited PDF as a first page with no text, such as a picture, before the same line.
+        StubPdftotext(self, {"marker": b"(Cover)", "output": "\fKeep one queue.\n\f"}, output="Keep one queue.\n\f")
+        for name, committed, edited in (
+            (
+                "empty paragraph.docx",
+                word_document(paragraph("Keep one queue.")),
+                word_document(paragraph(), paragraph("Keep one queue.")),
+            ),
+            (
+                "moved row.docx",
+                word_document(paragraph("Scope"), table(("Owner", "storage"))),
+                word_document(paragraph("Scope"), paragraph(), paragraph(), table(("Owner", "storage"))),
+            ),
+            ("page.pdf", pdf_document(["Keep one queue."]), pdf_document(["Cover"], ["Keep one queue."])),
+        ):
+            with self.subTest(name):
+                document = checkout / name
+                document.write_bytes(committed)
+                git(checkout, "add", ".")
+                git(checkout, "commit", "--quiet", "--no-gpg-sign", "-m", name)
+                document.write_bytes(edited)
+                code, lines = run_main("build", str(document), "--output", str(self.output))
+                self.assertEqual((1, [f"FAILED {name} {UNCHANGED_TEXT}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+        # One changed line of text is reviewed, though every label after it moves too.
+        document = checkout / "empty paragraph.docx"
+        document.write_bytes(word_document(paragraph(), paragraph("Keep two queues.")))
+        self.assertEqual("design-review", self.build(document)["ROUTE"])
 
     def test_a_pdf_draft_is_reviewed_by_the_design_reviewer_and_its_finding_gives_its_page_and_line(self) -> None:
         stub = StubPdftotext(self, output="Scope\n\nKeep one queue.\n\fRetry forever.\n\f")
@@ -466,14 +495,7 @@ class ExtractedDocumentTests(DocumentTestCase):
         # Other bytes that read as the same text.
         document.write_bytes(pdf_document(["Keep one queue.", ""]))
         code, lines = run_main("build", str(document), "--output", str(self.output))
-        self.assertEqual(1, code)
-        self.assertEqual(
-            [
-                "FAILED queue.pdf has no uncommitted change to its text, only to formatting, images, or parts whose "
-                "text is not extracted; pass --base none to review the whole document"
-            ],
-            lines,
-        )
+        self.assertEqual((1, [f"FAILED queue.pdf {UNCHANGED_TEXT}"]), (code, lines))
         self.assertFalse(self.output.exists())
 
 
@@ -496,14 +518,26 @@ class OutputTests(DocumentTestCase):
                     self.assertTrue(lines[0].startswith(f"FAILED {target} is inside the skills directory "), lines)
                     self.assertFalse(target.exists())
 
-    def test_an_output_that_already_holds_a_fixture_is_refused(self) -> None:
+    def test_an_output_that_is_not_a_new_or_empty_directory_is_refused_before_anything_is_read(self) -> None:
         document = self.root / "plan.md"
         document.write_bytes(b"# Plan\n")
         self.build(document)
-        code, lines = run_main("build", str(document), "--output", str(self.output))
-        self.assertEqual(
-            (1, [f"FAILED {self.output} already holds a fixture; name a new or empty directory"]), (code, lines)
-        )
+        unrelated = self.root / "unrelated"
+        unrelated.mkdir()
+        (unrelated / "notes.txt").write_bytes(b"mine\n")
+        (self.root / "empty folder").mkdir()
+        a_file = self.root / "a file"
+        a_file.write_bytes(b"mine\n")
+        missing = self.root / "missing.md"  # never read: the output is refused first
+        for target in (self.output, unrelated, a_file):
+            with self.subTest(target=target.name):
+                code, lines = run_main("build", str(missing), "--output", str(target))
+                reason = "exists and is not an empty directory; name a new or empty directory"
+                self.assertEqual((1, [f"FAILED {target} {reason}"]), (code, lines))
+        self.assertEqual(["notes.txt"], [entry.name for entry in unrelated.iterdir()])
+        self.assertEqual(b"mine\n", a_file.read_bytes())
+        code, lines = run_main("build", str(document), "--output", str(self.root / "empty folder"))
+        self.assertEqual((0, str(self.root / "empty folder")), (code, facts(lines)["OUTPUT"]))
 
     def test_report_copies_the_recorded_report_beside_the_fixture(self) -> None:
         document = self.root / "plan.md"
@@ -519,6 +553,15 @@ class OutputTests(DocumentTestCase):
         self.assertEqual(0, code, lines)
         self.assertEqual([f"REPORT {self.output / 'report.md'}", f"RECORD {canary / 'review.json'}"], lines)
         self.assertEqual("# Code Review\n", (self.output / "report.md").read_text(encoding="utf-8"))
+
+        # A report.md already there is never replaced; the reason names where the recorded report stays.
+        (self.output / "report.md").write_text("mine\n", encoding="utf-8")
+        code, lines = run_main(
+            "report", "--fixture", str(self.output / "fixture"), "--report", str(canary / "review.md")
+        )
+        reason = f"already exists, and is not replaced; the report is at {canary / 'review.md'}"
+        self.assertEqual((1, [f"FAILED {self.output / 'report.md'} {reason}"]), (code, lines))
+        self.assertEqual("mine\n", (self.output / "report.md").read_text(encoding="utf-8"))
 
     def test_report_refuses_a_file_that_is_not_a_recorded_report(self) -> None:
         document = self.root / "plan.md"
