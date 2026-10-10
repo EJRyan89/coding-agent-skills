@@ -393,7 +393,7 @@ The suite's `design-review` specialist reviews design documents as designs rathe
 }
 ```
 
-The categories are `requirement-gap`, `alternative-unstated`, `risk`, `open-question`, `inconsistency`, and `rollout`, with `other` as the `fallback_finding_category`; a manifest whose other specialists review code lists its own categories beside them. Every other changed file keeps its own route, or the generic reviewer. Only Markdown routes today: a `.docx` or `.pdf` design document has no text a reviewer can anchor a finding to until the suite extracts it. The `design-gaps` and `design-clean` scenarios under `tests/fixtures/skill-evals/review-prs/` measure it ([Skill evaluations](skill-evaluations.md)).
+The categories are `requirement-gap`, `alternative-unstated`, `risk`, `open-question`, `inconsistency`, and `rollout`, with `other` as the `fallback_finding_category`; a manifest whose other specialists review code lists its own categories beside them. Every other changed file keeps its own route, or the generic reviewer. A Word or PDF design document is reviewed as the text the snapshot extracts from it ([Word documents](#word-documents)), so a pattern may name `.docx` and `.pdf` paths too. The `design-gaps` and `design-clean` scenarios under `tests/fixtures/skill-evals/review-prs/` measure it ([Skill evaluations](skill-evaluations.md)).
 
 ### Analyzer coverage
 
