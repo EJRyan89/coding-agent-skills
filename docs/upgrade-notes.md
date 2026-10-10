@@ -18,14 +18,14 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. Before `1.0.0` this carries what would later be major: a specialists manifest is refused with `Adapter declares a file more than once` when one repository file has two roles (a top-level resource, a specialist's profile, a specialist's own resource, or a condition script), such as a guideline listed both at the top level, where it is read from the trusted ref, and by a specialist, where it is read from the pull request's base, or when a specialist's `resources` list a file twice. Before, only a file listed twice in the top-level `resources` was refused, and the record silently took one source. Several specialists may still share a profile or a guideline, and several conditions a script. An entrypoint manifest is checked as before.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: if `validate-reviewer` or a review now fails with `Adapter declares a file more than once`, keep the file in one role: a guideline the specialists apply in their own `resources`, a file every specialist may read in the top-level `resources`.
-- Pull request: #280
+- Pull request: #324
 
 ### files_read no longer counts the snapshot's manifest, and the contract states the category check and adapter.name as they are
 
 - Level: patch. A fix: a reviewer's `files_read` and `bytes_read` no longer count `source-snapshot.json` when the reviewer reads it, since the contract counts files of the snapshot and `review.snapshot.files` leaves the manifest out; earlier records may count it. The contract now says that a specialist finding's `category` must be a string even without `finding_categories`, as it has been checked since the specialist result was stated, and that `review.adapter.name` is `generic` whenever the suite's generic reviewer ran, a fallback included, and otherwise the manifest's `id`. The operations guide no longer says `snapshot_exclude` saves the tarball's download: GitHub's whole tarball is still downloaded and hashed, and exclusion saves the write.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: none
-- Pull request: #280
+- Pull request: #324
 
 ### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
 
