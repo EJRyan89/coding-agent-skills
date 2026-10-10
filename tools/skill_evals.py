@@ -4,14 +4,23 @@ Usage:
   python -B tools/skill_evals.py SKILL [--write] [--timeout SECONDS] [--jobs N]
   python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--records DIR]
 
-A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships. It is a code-review
-fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews in place of a pull request: the
-change as two trees, base/ and head/, and the pull request in pull.json (see review_canary.py in code-review-core). A
-re-review scenario's run adds `--re-review --prior <scenario>/<prior>`. Beside them is a scenario.json:
+A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
+A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
+in place of a pull request: the change as two trees, base/ and head/, and the pull request in pull.json (see
+review_canary.py in code-review-core). A re-review scenario's run adds `--re-review --prior <scenario>/<prior>`. A
+document scenario names a document instead, for a skill started on one file's path, as review-document is: the run
+writes it under its own file name into a new folder in the run's folder and starts the skill with that path alone.
+With a base, that folder is a new git checkout whose one commit holds the base under the same name, and the document
+is written over it uncommitted, so the skill reviews only the edit; without one, nothing encloses it and the skill
+reviews it whole. A finding's path is then the document's file name. The scenario.json:
 
   {"skill": "<skill>", "mode": "initial" | "re-review",
    "prior": "<prior record file in the scenario>"  (re-review only),
+   "document": "<path>",  "base": "<path>"  (a document scenario, initial only; base optional),
    "expectations": [<expectation>, ...]}
+
+A document or base path leads from the scenario's folder to a file, which may be another scenario's under the same
+scenarios root, so a document serves several skills' scenarios without a copy.
 
 Each expectation is a statement over the record, checked here by script and never by reading the report. Severities
 rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding may be anchored at, any of them:
@@ -21,6 +30,8 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
       `category` is given; a scenario whose manifest declares finding_categories names one of them
   {"kind": "no_finding_above", "severity": S, "paths": [P, ...]}
       no finding more severe than S on the paths, or on any path when `paths` is left out
+  {"kind": "only_at", "path": P, "lines": [N, ...]}
+      every finding, whatever its severity, is at P on one of the lines, as a review of one edited line should be
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}
   {"kind": "ledger", "addressed": N, "still_present": N}     re-review only
       exactly that many ledger entries this review judged addressed, and still present
@@ -50,16 +61,16 @@ frontmatter and body, with one change: its hook runs the home's review_guard.py 
 so the guard checks the home's prompts against the home's copy of the pipeline that wrote them.
 Then, for each scenario and model, up to --jobs at once, it starts Claude Code headless with the model's home as
 its working directory, so the deployed skills and agent load as project ones, and the prompt
-`/<skill> <prepare_arguments>`. The session, which orchestrates the skill, stays on SESSION_MODEL. It has no
-Workflow tool, so reviewers start as native subagents, whose messages --forward-subagent-text puts in the
-transcript with the model each ran on, and --include-hook-events puts each guard decision beside them. A run counts
-only if every one of those messages names that model's family; a run with no subagent, or one on another model,
-fails every expectation, since the model was not the one judged.
+`/<skill> <prepare_arguments>`, or `/<skill> "<document>"` with the path of a document scenario's document, staged in
+the run's folder; a document that cannot be staged fails the run before any session starts. The session, which
+orchestrates the skill, stays on SESSION_MODEL. It has no Workflow tool, so reviewers start as native subagents, whose
+messages --forward-subagent-text puts in the transcript with the model each ran on, and --include-hook-events puts
+each guard decision beside them. A run counts only if every one of those messages names that model's family; a run
+with no subagent, or one on another model, fails every expectation, since the model was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
-rest. Each
-run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every system,
-so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
+rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every
+system, so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
 highest review version in that canary root. The code-review configuration the runs read is written there too. A
 record any of whose reviewers has a null `files_read` counts for nothing either: the guard's claim starts a role's
 read log, so a reviewer the guard held has a count, if only 0, and null means the boundary was never exercised.
@@ -103,7 +114,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -112,6 +123,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 
 import frontmatter
 from console import use_utf8_output
+from git_client import GitClient, GitError
 
 from deployer import fsops, tools
 from tools import runtime_canary
@@ -158,6 +170,11 @@ VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
 DISPOSITIONS = ("addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify")
 MODES = ("initial", "re-review")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
+# The folder in a run's own folder where a document scenario's document is written for the skill to review.
+DOCUMENT_FOLDER = "document"
+# The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded;
+# no hook or signing configured for the user runs on it.
+COMMIT = ["-c", "user.name=skill-evals", "-c", "user.email=skill-evals@example.invalid", "-c", "commit.gpgsign=false"]
 ENTRY = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 
 Record = Mapping[str, Any]
@@ -186,6 +203,9 @@ class Scenario:
     mode: str
     prior: Path | None
     expectations: tuple[Expectation, ...]
+    # A document scenario's document, and the version committed before it, if any; None for a fixture scenario.
+    document: Path | None = None
+    base: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -311,6 +331,21 @@ def no_finding_above_expectation(spec: Mapping[str, Any]) -> Expectation:
     return Expectation(f"no_finding_above {severity} {','.join(paths) if paths else '*'}", check)
 
 
+def only_at_expectation(spec: Mapping[str, Any]) -> Expectation:
+    _fields(spec, {"kind", "path", "lines"})
+    path, lines = _path(spec["path"]), _lines(spec["lines"])
+
+    def check(record: Record) -> str | None:
+        elsewhere = [
+            f"{finding['severity']} at {finding['path']}:{finding['line']}"
+            for finding in findings(record)
+            if finding["path"] != path or finding["line"] not in lines
+        ]
+        return f"found {', '.join(elsewhere)}" if elsewhere else None
+
+    return Expectation(f"only_at {_where(path, lines)}", check)
+
+
 def verdict_expectation(spec: Mapping[str, Any]) -> Expectation:
     _fields(spec, {"kind", "verdict"})
     verdict = _choice(spec["verdict"], VERDICTS, "verdict")
@@ -373,6 +408,7 @@ def repeats_expectation(spec: Mapping[str, Any]) -> Expectation:
 KINDS: dict[str, Callable[[Mapping[str, Any]], Expectation]] = {
     "finding": finding_expectation,
     "no_finding_above": no_finding_above_expectation,
+    "only_at": only_at_expectation,
     "verdict": verdict_expectation,
     "ledger": ledger_expectation,
     "disposition": disposition_expectation,
@@ -392,6 +428,28 @@ def expectation(spec: Any, mode: str) -> Expectation:
     return KINDS[kind](spec)
 
 
+def _document(directory: Path, value: Any, what: str) -> Path:
+    """A file a document scenario names by its path from the scenario's folder. The path may lead to another
+    scenario's file under the same scenarios root, so one document serves several skills' scenarios uncopied."""
+    if not isinstance(value, str) or not value or "\\" in value or value.startswith("/") or Path(value).anchor:
+        raise ScenarioError(f"{what} must be a relative path, not {quote(str(value))}")
+    root = directory.parents[1].resolve()
+    path = (directory / value).resolve()
+    if not path.is_relative_to(root):
+        raise ScenarioError(f"{what} {value} is outside the scenarios under {root}")
+    if not path.is_file():
+        raise ScenarioError(f"{what} {value} is missing")
+    return path
+
+
+def _fixture(directory: Path) -> None:
+    for tree in ("base", "head"):
+        if not (directory / tree).is_dir():
+            raise ScenarioError(f"has no {tree}/ tree")
+    if not (directory / "pull.json").is_file():
+        raise ScenarioError("has no pull.json")
+
+
 def load_scenario(skill: str, directory: Path) -> Scenario:
     try:
         spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
@@ -402,15 +460,21 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
             raise ScenarioError("scenario.json must hold an object")
         mode = _choice(spec.get("mode"), MODES, "mode")
         allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
+        if "document" in spec:
+            allowed |= {"document"} | ({"base"} if "base" in spec else set())
         if set(spec) != allowed:
             raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
         if spec["skill"] != skill:
             raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
-        for tree in ("base", "head"):
-            if not (directory / tree).is_dir():
-                raise ScenarioError(f"has no {tree}/ tree")
-        if not (directory / "pull.json").is_file():
-            raise ScenarioError("has no pull.json")
+        document: Path | None = None
+        base: Path | None = None
+        if "document" in spec:
+            if mode != "initial":
+                raise ScenarioError("a document scenario is an initial review: its mode is initial")
+            document = _document(directory, spec["document"], "document")
+            base = _document(directory, spec["base"], "base") if "base" in spec else None
+        else:
+            _fixture(directory)
         prior = None
         if mode == "re-review":
             prior = directory / _path(spec["prior"])
@@ -421,16 +485,41 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
         expectations = tuple(expectation(item, mode) for item in spec["expectations"])
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
-    return Scenario(skill, directory.name, directory, mode, prior, expectations)
+    return Scenario(skill, directory.name, directory, mode, prior, expectations, document, base)
 
 
 def prepare_arguments(scenario: Scenario) -> list[str]:
-    """The arguments that prepare a run of the scenario, which `review_pipeline.py prepare` and review-prs both take:
-    a fixture canary, and for a re-review its prior record."""
+    """The arguments that prepare a run of a fixture scenario, which `review_pipeline.py prepare` and review-prs both
+    take: a fixture canary, and for a re-review its prior record."""
     arguments = ["--canary", "--fixture", str(scenario.directory)]
     if scenario.prior is not None:
         arguments += ["--re-review", "--prior", str(scenario.prior)]
     return arguments
+
+
+def stage_document(scenario: Scenario, folder: Path, git: GitClient) -> Path:
+    """Write a document scenario's document into a new folder under its own file name, and return its path there.
+    Without a base it stands alone, so the skill reviews it whole; with one, the folder is a new git checkout whose
+    one commit holds the base under that name, and the document is written over it as an uncommitted edit."""
+    if scenario.document is None:
+        raise ScenarioError(f"{scenario.name} is a fixture scenario, with no document")
+    folder.mkdir(parents=True)
+    staged = folder / scenario.document.name
+    if scenario.base is not None:
+        git.output(["init", "--quiet"], directory=folder)
+        staged.write_bytes(scenario.base.read_bytes())
+        git.output(["add", "--", staged.name], directory=folder)
+        git.output([*COMMIT, "commit", "--quiet", "--no-verify", "--message", "The committed base"], directory=folder)
+    staged.write_bytes(scenario.document.read_bytes())
+    return staged
+
+
+def skill_arguments(scenario: Scenario, run: Path, git: GitClient) -> list[str]:
+    """What the skill is started with: a fixture scenario's prepare arguments, or the path of a document scenario's
+    document, staged in the run's folder."""
+    if scenario.document is None:
+        return prepare_arguments(scenario)
+    return [str(stage_document(scenario, run / DOCUMENT_FOLDER, git))]
 
 
 def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_ROOT) -> list[Scenario]:
@@ -561,20 +650,19 @@ def review_config(directory: Path) -> dict[str, Any]:
     }
 
 
-def prompt(scenario: Scenario) -> str:
-    """The skill started by name with the scenario's prepare arguments, each path quoted."""
-    arguments = [item if item.startswith("--") else f'"{item}"' for item in prepare_arguments(scenario)]
-    return " ".join([f"/{scenario.skill}", *arguments])
+def prompt(skill: str, arguments: Sequence[str]) -> str:
+    """The skill started by name with its arguments, each path quoted."""
+    return " ".join([f"/{skill}", *(item if item.startswith("--") else f'"{item}"' for item in arguments)])
 
 
-def claude_command(executable: str, scenario: Scenario, agents: Path) -> list[str]:
+def claude_command(executable: str, request: str, agents: Path) -> list[str]:
     # Project settings only, so the installed skills and agents do not load beside the home's; the reviewer agent from
     # the file of --agents, so its guard hook runs; and no Workflow tool, so reviewers start as native subagents whose
     # messages the transcript carries with their model.
     return [
         executable,
         "-p",
-        prompt(scenario),
+        request,
         "--model",
         SESSION_MODEL,
         "--output-format",
@@ -781,15 +869,31 @@ def unguarded(record: Record) -> str | None:
     return f"no reviewer guard held {', '.join(loose)}: its files_read is null" if loose else None
 
 
-def run_scenario(
-    scenario: Scenario, model: str, home: Path, executable: str, base: Mapping[str, str], runner: Runner, timeout: float
-) -> tuple[Run, Path]:
+@dataclass(frozen=True)
+class Session:
+    """What every run starts its session with: Claude Code, the user's environment, the runner, its time limit, and
+    the git client a document scenario's checkout is made with."""
+
+    executable: str
+    base: Mapping[str, str]
+    runner: Runner
+    timeout: float
+    git: GitClient
+
+
+def run_scenario(scenario: Scenario, model: str, home: Path, session: Session) -> tuple[Run, Path]:
     """Run the scenario once in the model's home; return what it gave and its transcript."""
     run = home / STATE / scenario.name
     (run / "tmp").mkdir(parents=True)
-    environment = run_environment(base, run, home / STATE / "config.json")
-    completed = runner(claude_command(executable, scenario, home / STATE / AGENTS), home, environment, timeout)
     transcript = run / "transcript.jsonl"
+    try:
+        arguments = skill_arguments(scenario, run, session.git)
+    except (GitError, OSError) as exc:
+        transcript.write_text("", encoding="utf-8")
+        return Run(None, f"the document could not be staged: {exc}", frozenset(), frozenset()), transcript
+    environment = run_environment(session.base, run, home / STATE / "config.json")
+    command = claude_command(session.executable, prompt(scenario.skill, arguments), home / STATE / AGENTS)
+    completed = session.runner(command, home, environment, session.timeout)
     transcript.write_text(completed.stdout, encoding="utf-8")
     if completed.stderr:
         transcript.with_suffix(".stderr.txt").write_text(completed.stderr, encoding="utf-8")
@@ -799,11 +903,11 @@ def run_scenario(
         record = find_record(run / "tmp")
     except RecordError as exc:
         missing = str(exc)
-    failure = run_failure(model, completed, timeout, scenario.skill, missing)
+    failure = run_failure(model, completed, session.timeout, scenario.skill, missing)
     if failure is None and record is not None:
         failure = unguarded(record)
-    session, reviewers = stream_models(completed.stdout)
-    return Run(None if failure else record, failure, reviewers, session), transcript
+    orchestrators, reviewers = stream_models(completed.stdout)
+    return Run(None if failure else record, failure, reviewers, orchestrators), transcript
 
 
 def guarded_lines(scenario: str, model: str, run: Run) -> list[str]:
@@ -840,13 +944,7 @@ def prepare_home(home: Path, model: str, deploy: Callable[[Path, Path], tuple[in
 
 
 def run_all(
-    scenarios: Sequence[Scenario],
-    homes: Mapping[str, Path],
-    executable: str,
-    base: Mapping[str, str],
-    runner: Runner,
-    timeout: float,
-    jobs: int,
+    scenarios: Sequence[Scenario], homes: Mapping[str, Path], session: Session, jobs: int
 ) -> dict[tuple[str, str], Run]:
     """Every scenario on every model with a home, up to `jobs` at once, printing each transcript as its run ends. One
     job runs in this thread, in order."""
@@ -859,11 +957,11 @@ def run_all(
 
     if jobs == 1:
         for scenario, model, home in pairs:
-            ended(scenario, model, run_scenario(scenario, model, home, executable, base, runner, timeout))
+            ended(scenario, model, run_scenario(scenario, model, home, session))
         return runs
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         pending = {
-            pool.submit(run_scenario, scenario, model, home, executable, base, runner, timeout): (scenario, model)
+            pool.submit(run_scenario, scenario, model, home, session): (scenario, model)
             for scenario, model, home in pairs
         }
         for future in concurrent.futures.as_completed(pending):
@@ -1017,6 +1115,7 @@ class Seams:
     make_home: Callable[[], Path] = new_home
     today: Callable[[], datetime.date] = datetime.date.today
     results: Path = RESULTS
+    git: GitClient = field(default_factory=GitClient)
 
 
 def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
@@ -1055,7 +1154,8 @@ def evaluate(skill: str, scenarios: Sequence[Scenario], options: argparse.Namesp
         print(f"DEPLOYED {model} {runtime_canary.source_id(REPOSITORY_ROOT)}", flush=True)
     version = claude_version(executable, seams.runner, base, root)
     print(f"RUNTIME claude {version}", flush=True)
-    runs = run_all(scenarios, homes, executable, base, seams.runner, options.timeout, options.jobs)
+    session = Session(executable, base, seams.runner, options.timeout, seams.git)
+    runs = run_all(scenarios, homes, session, options.jobs)
     for model in models:
         used = sorted({name for scenario in scenarios for name in runs[(scenario.name, model)].reviewers})
         print(f"REVIEWER {model} {','.join(used) or 'none'}")

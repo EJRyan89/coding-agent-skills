@@ -1,0 +1,11 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "base": "../../review-prs/design-clean/head/docs/design/export-download-links.md",
+  "document": "export-download-links.md",
+  "expectations": [
+    {"kind": "finding", "path": "export-download-links.md", "lines": [17], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "only_at", "path": "export-download-links.md", "lines": [17]},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}

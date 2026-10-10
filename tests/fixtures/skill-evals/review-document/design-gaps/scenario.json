@@ -1,0 +1,12 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "../../review-prs/design-gaps/head/docs/design/export-retention.md",
+  "expectations": [
+    {"kind": "finding", "path": "export-retention.md", "lines": [19, 25], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "finding", "path": "export-retention.md", "lines": [11, 27], "severity": "SHOULD_FIX", "category": "requirement-gap"},
+    {"kind": "finding", "path": "export-retention.md", "lines": [39], "severity": "SHOULD_FIX", "category": "open-question"},
+    {"kind": "finding", "path": "export-retention.md", "lines": [31], "severity": "SUGGESTION", "category": "alternative-unstated"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}

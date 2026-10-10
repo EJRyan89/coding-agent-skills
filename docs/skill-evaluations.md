@@ -5,9 +5,14 @@ against the scenario's expectations, by script and never from the report. It ans
 prompt, model guidance, or reviewer instructions still does the task, and on which models. It calls models, so it
 is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKILL.md), never part of validation or CI.
 
-- **Scenarios** live under `tests/fixtures/skill-evals/<skill>/<scenario>/`, which never ships. Each is a code-review
-  fixture ("Fixture canaries" in [code-review-operations.md](code-review-operations.md#fixture-canaries)) and a
-  `scenario.json` of expectations; `tools/skill_evals.py`'s docstring defines the format.
+- **Scenarios** live under `tests/fixtures/skill-evals/<skill>/<scenario>/`, which never ships. Each is a
+  `scenario.json` of expectations beside a code-review fixture ("Fixture canaries" in
+  [code-review-operations.md](code-review-operations.md#fixture-canaries)), or, for a skill started on one document's
+  path such as `review-document`, a `scenario.json` that names the document. The run writes that document into a
+  folder of its own and starts the skill on its path; with a base, the folder is a throwaway git checkout where the
+  base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A document may be
+  another scenario's file, so `review-document` reviews the `review-prs` design documents without copies.
+  `tools/skill_evals.py`'s docstring defines the format.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double

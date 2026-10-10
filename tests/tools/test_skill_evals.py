@@ -1,5 +1,6 @@
 """tools/skill_evals.py: the scenario loader, every expectation kind against literal records, the output, the table,
-the review-prs scenarios themselves, and the run step with a stub Claude Code. No model is called."""
+the review-prs and review-document scenarios themselves, the staging of a document scenario's document, and the run
+step with a stub Claude Code. No model is called."""
 
 from __future__ import annotations
 
@@ -14,16 +15,20 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "review-document" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import review_document
 import review_guard
 import review_pipeline
 import review_specialists
+from git_client import GitClient, GitResult
 from review_config import write_config
 from review_github import GitHubClient
 from review_records import validate_record
@@ -34,6 +39,7 @@ from tools import skill_evals
 from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
+REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
 SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
 
 
@@ -233,6 +239,54 @@ class LoaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ScenarioError, "case: cannot read scenario.json"):
             skill_evals.load_scenarios("demo", root=self.root)
 
+    def test_a_document_scenario_names_its_document_and_base_and_needs_no_fixture(self) -> None:
+        shared = self.root / "other" / "shared" / "draft.md"
+        shared.parent.mkdir(parents=True)
+        shared.write_text("# Draft\n", encoding="utf-8")
+        for name, fields in {
+            "edit": {"document": "draft.md", "base": "../../other/shared/draft.md"},
+            "whole": {"document": "../../other/shared/draft.md"},
+        }.items():
+            directory = self.root / "demo" / name
+            directory.mkdir(parents=True)
+            (directory / "draft.md").write_text("# Draft, edited\n", encoding="utf-8")
+            (directory / "scenario.json").write_text(json.dumps(scenario_spec(**fields)), encoding="utf-8")
+        loaded = {scenario.name: scenario for scenario in skill_evals.load_scenarios("demo", root=self.root)}
+        edited = (self.root / "demo" / "edit" / "draft.md").resolve()
+        self.assertEqual((edited, shared.resolve()), (loaded["edit"].document, loaded["edit"].base))
+        self.assertEqual((shared.resolve(), None), (loaded["whole"].document, loaded["whole"].base))
+        self.assertEqual("initial", loaded["whole"].mode)
+
+    def test_a_fixture_scenario_names_no_document(self) -> None:
+        write_scenario(self.root, "case", scenario_spec())
+        (scenario,) = skill_evals.load_scenarios("demo", root=self.root)
+        self.assertEqual((None, None), (scenario.document, scenario.base))
+
+    def test_a_document_is_a_file_among_the_scenarios_and_reviewed_once(self) -> None:
+        cases: list[tuple[dict[str, Any], str]] = [
+            ({"document": "../../../elsewhere.md"}, "document ../../../elsewhere.md is outside the scenarios"),
+            ({"document": "missing.md"}, "document missing.md is missing"),
+            ({"document": "draft.md", "base": "gone.md"}, "base gone.md is missing"),
+            ({"document": "/draft.md"}, "document must be a relative path"),
+            ({"document": "C:/draft.md"}, "document must be a relative path"),
+            ({"document": "sub\\draft.md"}, "document must be a relative path"),
+            ({"document": 3}, "document must be a relative path"),
+            ({"document": ""}, "document must be a relative path"),
+            ({"base": "draft.md"}, "must have exactly"),
+            (
+                {"document": "draft.md", "mode": "re-review", "prior": "prior.json"},
+                "a document scenario is an initial review",
+            ),
+        ]
+        for number, (fields, message) in enumerate(cases):
+            with self.subTest(fields=fields):
+                directory = write_scenario(self.root, f"case{number}", scenario_spec(**fields))
+                (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+                (directory / "prior.json").write_text("{}", encoding="utf-8")
+                with self.assertRaises(ScenarioError) as raised:
+                    skill_evals.load_scenarios("demo", [f"case{number}"], root=self.root)
+                self.assertIn(message, str(raised.exception))
+
 
 class FindingTests(unittest.TestCase):
     spec: ClassVar[dict[str, Any]] = {
@@ -303,6 +357,25 @@ class NoFindingAboveTests(unittest.TestCase):
         failure = check(spec, record([finding("a.go", 1, "MUST_FIX"), finding("b.go", 2, "SHOULD_FIX")]))
         self.assertEqual("found MUST_FIX at a.go:1, SHOULD_FIX at b.go:2", failure)
         self.assertEqual("no_finding_above SUGGESTION *", skill_evals.expectation(spec, "initial").label)
+
+
+class OnlyAtTests(unittest.TestCase):
+    spec: ClassVar[dict[str, Any]] = {"kind": "only_at", "path": "draft.md", "lines": [17]}
+
+    def test_every_finding_of_any_severity_must_be_there(self) -> None:
+        there = [finding("draft.md", 17, "MUST_FIX"), finding("draft.md", 17, "SUGGESTION", "F002")]
+        self.assertIsNone(check(self.spec, record(there), "initial"))
+        self.assertIsNone(check(self.spec, record(), "initial"))
+        elsewhere = [finding("draft.md", 3, "SUGGESTION", "F003"), finding("other.md", 17, "SHOULD_FIX", "F004")]
+        self.assertEqual(
+            "found SUGGESTION at draft.md:3, SHOULD_FIX at other.md:17",
+            check(self.spec, record([*there, *elsewhere]), "initial"),
+        )
+
+    def test_label_and_fields(self) -> None:
+        self.assertEqual("only_at draft.md:17", skill_evals.expectation(self.spec, "initial").label)
+        self.assertIn("only_at expectation does not take severity", refusal({**self.spec, "severity": "MUST_FIX"}, "x"))
+        self.assertIn("distinct positive line", refusal({**self.spec, "lines": []}, "initial"))
 
 
 class VerdictTests(unittest.TestCase):
@@ -717,6 +790,122 @@ class ReviewPrsScenarioTests(unittest.TestCase):
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
+def document_of(scenario: Scenario) -> Path:
+    if scenario.document is None:
+        raise AssertionError(f"{scenario.name} names no document")
+    return scenario.document
+
+
+def base_of(scenario: Scenario) -> Path:
+    if scenario.base is None:
+        raise AssertionError(f"{scenario.name} names no base")
+    return scenario.base
+
+
+def design_document(scenario: str) -> Path:
+    """The design document a review-prs design scenario's change adds."""
+    (path,) = (REVIEW_PRS / scenario / "head" / "docs" / "design").glob("*.md")
+    return path.resolve()
+
+
+class ReviewDocumentScenarioTests(unittest.TestCase):
+    """The review-document scenarios review the review-prs design documents, which they name rather than copy, and
+    one edit of the clean one; an ideal run of each passes."""
+
+    def setUp(self) -> None:
+        self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
+        self.specs = {
+            name: json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
+            for name, scenario in self.scenarios.items()
+        }
+
+    def test_the_three_scenarios_and_their_documents(self) -> None:
+        clean = design_document("design-clean")
+        self.assertEqual(
+            {
+                "design-gaps": (design_document("design-gaps"), None),
+                "design-clean": (clean, None),
+                "committed-edit": ((REVIEW_DOCUMENT / "committed-edit" / clean.name).resolve(), clean),
+            },
+            {name: (scenario.document, scenario.base) for name, scenario in self.scenarios.items()},
+        )
+        self.assertEqual({"initial"}, {scenario.mode for scenario in self.scenarios.values()})
+
+    def test_a_whole_document_is_expected_to_get_what_its_review_prs_change_gets(self) -> None:
+        for name in ("design-gaps", "design-clean"):
+            with self.subTest(scenario=name):
+                theirs = json.loads((REVIEW_PRS / name / "scenario.json").read_text(encoding="utf-8"))["expectations"]
+                # Reviewed alone, outside any checkout, the document's path is its file name.
+                alone = [
+                    {**item, "path": PurePosixPath(item["path"]).name} if "path" in item else item for item in theirs
+                ]
+                self.assertEqual(alone, self.specs[name]["expectations"])
+
+    def test_the_edit_changes_one_line_and_the_expectations_name_only_it(self) -> None:
+        scenario = self.scenarios["committed-edit"]
+        base, head = lines_of(base_of(scenario)), lines_of(document_of(scenario))
+        changed = [number for number, pair in enumerate(zip(base, head, strict=True), 1) if pair[0] != pair[1]]
+        self.assertEqual([17], changed)
+        located = [item for item in self.specs["committed-edit"]["expectations"] if "lines" in item]
+        self.assertEqual(["finding", "only_at"], [item["kind"] for item in located])
+        for item in located:
+            self.assertEqual((document_of(scenario).name, changed), (item["path"], item["lines"]))
+
+    def test_an_ideal_run_passes_every_expectation(self) -> None:
+        for name, scenario in self.scenarios.items():
+            expectations = self.specs[name]["expectations"]
+            found = [
+                finding(item["path"], item["lines"][0], item["severity"], f"F{index:03}", category=item["category"])
+                for index, item in enumerate(expectations, 1)
+                if item["kind"] == "finding"
+            ]
+            verdict = next(item["verdict"] for item in expectations if item["kind"] == "verdict")
+            with self.subTest(scenario=name):
+                outcomes = skill_evals.judge([scenario], ["opus"], constant(record(found, verdict)))
+                self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
+
+
+class DocumentStagingTests(unittest.TestCase):
+    """A document scenario's document is written into the run's folder for the skill to find by its path."""
+
+    def setUp(self) -> None:
+        self.root = temporary_root(self)
+        self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
+        self.git = GitClient()
+
+    def test_a_whole_document_is_staged_alone_outside_any_checkout(self) -> None:
+        scenario = self.scenarios["design-gaps"]
+        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        self.assertEqual(self.root / "document" / "export-retention.md", staged)
+        self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
+        self.assertEqual(["export-retention.md"], [path.name for path in staged.parent.iterdir()])
+        self.assertNotEqual(0, self.git.run(["rev-parse", "--show-toplevel"], directory=staged.parent).returncode)
+
+    def test_an_edit_is_staged_uncommitted_over_its_base_committed_in_a_new_checkout(self) -> None:
+        scenario = self.scenarios["committed-edit"]
+        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        folder = staged.parent
+        self.assertEqual(self.root / "document" / "export-download-links.md", staged)
+        self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
+        top = self.git.output(["rev-parse", "--show-toplevel"], directory=folder).strip()
+        self.assertEqual(folder.resolve(), Path(top).resolve())
+        self.assertEqual("1", self.git.output(["rev-list", "--count", "HEAD"], directory=folder).strip())
+        committed = self.git.run(["show", f"HEAD:{staged.name}"], directory=folder).output_bytes()
+        self.assertEqual(base_of(scenario).read_bytes(), committed)
+        self.assertEqual(f" M {staged.name}", self.git.output(["status", "--porcelain"], directory=folder).rstrip())
+
+    def test_the_skill_starts_on_the_staged_document_and_a_fixture_scenario_on_its_fixture(self) -> None:
+        run = self.root / "run"
+        arguments = skill_evals.skill_arguments(self.scenarios["design-clean"], run, self.git)
+        self.assertEqual([str(run / "document" / "export-download-links.md")], arguments)
+        self.assertEqual(f'/review-document "{arguments[0]}"', skill_evals.prompt("review-document", arguments))
+        fixture = scenario_of("initial")
+        self.assertEqual(
+            skill_evals.prepare_arguments(fixture), skill_evals.skill_arguments(fixture, self.root / "other", self.git)
+        )
+        self.assertFalse((self.root / "other").exists())
+
+
 class NoGitHub:
     """A gh runner that fails the test on any call."""
 
@@ -786,13 +975,13 @@ class Pipeline:
         self.test.assertEqual(0, status, lines)
         return lines
 
-    def review(self, prepare: Sequence[str], guarded: bool = False) -> Path:
-        """Prepare, review, check, and finalize one fixture; return the record JSON finalize wrote. With `guarded`,
-        each role's read log is started as the reviewer guard's claim starts it."""
+    def review(self, prepare: Sequence[str], spec: dict[str, Any], guarded: bool = False) -> Path:
+        """Prepare, review, check, and finalize one fixture, each reviewer doing what the scenario `spec` expects;
+        return the record JSON finalize wrote. With `guarded`, each role's read log is started as the reviewer guard's
+        claim starts it."""
         prepared = self("prepare", "--host", "claude-code", *prepare)
         run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
         fixture = Path(prepare[list(prepare).index("--fixture") + 1])
-        spec = json.loads((fixture / "scenario.json").read_text(encoding="utf-8"))
         pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
         for role in review_pipeline.load_run(run)["roles"]:
             if guarded:
@@ -804,6 +993,19 @@ class Pipeline:
         return Path(
             next(line.split(" ", 2)[2] for line in finalized if line.startswith("SHA256 ") and line.endswith(".json"))
         )
+
+
+def spec_of(scenario: Scenario) -> dict[str, Any]:
+    return json.loads((scenario.directory / "scenario.json").read_text(encoding="utf-8"))
+
+
+def build_document(path: Path) -> list[str]:
+    """What review-document's build step prints for the document, as the skill's first step runs it."""
+    return review_document.build(path, None, None, GitClient())
+
+
+def fixture_of(built: Sequence[str]) -> str:
+    return next(line.removeprefix("FIXTURE ") for line in built if line.startswith("FIXTURE "))
 
 
 def temporary_root(test: unittest.TestCase) -> Path:
@@ -841,7 +1043,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
     def test_every_scenario_runs_as_a_fixture_canary_and_its_record_passes_the_checker(self) -> None:
         for scenario in skill_evals.load_scenarios("review-prs"):
             with self.subTest(scenario=scenario.name):
-                written = self.pipeline.review(skill_evals.prepare_arguments(scenario))
+                written = self.pipeline.review(skill_evals.prepare_arguments(scenario), spec_of(scenario))
                 written_record = json.loads(written.read_text(encoding="utf-8"))
                 self.assertEqual(scenario.mode, written_record["review"]["mode"])
                 outcomes = skill_evals.judge([scenario], ["opus"], constant(written_record))
@@ -850,7 +1052,8 @@ class FixtureCanaryRunTests(unittest.TestCase):
 
     def test_a_design_scenario_is_reviewed_by_the_suites_design_specialist_from_its_base_commit(self) -> None:
         scenario = next(item for item in skill_evals.load_scenarios("review-prs") if item.name == "design-gaps")
-        written = json.loads(self.pipeline.review(skill_evals.prepare_arguments(scenario)).read_text(encoding="utf-8"))
+        reviewed = self.pipeline.review(skill_evals.prepare_arguments(scenario), spec_of(scenario))
+        written = json.loads(reviewed.read_text(encoding="utf-8"))
         adapter = written["review"]["adapter"]
         self.assertEqual(
             ("reports-review", "repository", "base"), (adapter["name"], adapter["scope"], adapter["source"])
@@ -862,6 +1065,29 @@ class FixtureCanaryRunTests(unittest.TestCase):
             {"inconsistency", "requirement-gap", "open-question", "alternative-unstated"},
             {item["category"] for item in written["findings"]},
         )
+
+    def test_every_document_scenario_is_built_by_review_document_and_its_record_passes_the_checker(self) -> None:
+        bases = {
+            "committed-edit": "BASE committed ",
+            "design-clean": "BASE none the file is outside any git checkout",
+            "design-gaps": "BASE none the file is outside any git checkout",
+        }
+        for scenario in skill_evals.load_scenarios("review-document"):
+            with self.subTest(scenario=scenario.name):
+                (staged,) = skill_evals.skill_arguments(scenario, self.root / scenario.name, GitClient())
+                built = build_document(Path(staged))
+                self.assertEqual(f"DOCUMENT {Path(staged).name}", built[0])
+                self.assertTrue(built[1].startswith(bases[scenario.name]), built)
+                self.assertEqual("ROUTE design-review", built[2])
+                fixture = Path(fixture_of(built))
+                document = review_document.normalized(Path(staged).read_bytes())
+                self.assertEqual(document, (fixture / "head" / Path(staged).name).read_bytes())
+                prepare = ["--canary", "--fixture", str(fixture)]
+                written = json.loads(self.pipeline.review(prepare, spec_of(scenario)).read_text(encoding="utf-8"))
+                self.assertEqual(["design-review"], [reviewer["id"] for reviewer in written["review"]["reviewers"]])
+                outcomes = skill_evals.judge([scenario], ["opus"], constant(written))
+                self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
+        self.assertEqual([], self.pipeline.github.calls)
 
 
 def assistant(model: str, subagent: bool = False) -> str:
@@ -901,16 +1127,19 @@ class RunPieceTests(unittest.TestCase):
         self.initial, self.re_review = scenario_of("initial"), scenario_of("re-review")
 
     def test_the_prompt_starts_the_skill_with_the_prepare_arguments_quoted(self) -> None:
-        self.assertEqual(f'/review-prs --canary --fixture "{self.initial.directory}"', skill_evals.prompt(self.initial))
+        def prompt(scenario: Scenario) -> str:
+            return skill_evals.prompt(scenario.skill, skill_evals.prepare_arguments(scenario))
+
+        self.assertEqual(f'/review-prs --canary --fixture "{self.initial.directory}"', prompt(self.initial))
         self.assertEqual(
             f'/review-prs --canary --fixture "{self.re_review.directory}" --re-review --prior "{self.re_review.prior}"',
-            skill_evals.prompt(self.re_review),
+            prompt(self.re_review),
         )
 
     def test_the_command_pins_the_session_and_isolates_the_run(self) -> None:
         agents = self.root / "agents.json"
-        command = skill_evals.claude_command("claude.exe", self.initial, agents)
-        self.assertEqual(["claude.exe", "-p", skill_evals.prompt(self.initial)], command[:3])
+        command = skill_evals.claude_command("claude.exe", '/review-prs "fixture"', agents)
+        self.assertEqual(["claude.exe", "-p", '/review-prs "fixture"'], command[:3])
         pairs = {command[index]: command[index + 1] for index in range(3, len(command) - 1)}
         self.assertEqual("opus", pairs["--model"])
         self.assertEqual("project,local", pairs["--setting-sources"])
@@ -1194,15 +1423,18 @@ def frontmatter_model(path: Path) -> str:
 
 
 class StubClaude:
-    """Claude Code as a run starts it: `--version`, or a review of the prompt's fixture through the pipeline in this
-    process, with stream-json naming the session's model and the reviewer model the --agents definition sets, and,
-    unless `guarded` is false, each role's read log started as the reviewer guard's claim starts it."""
+    """Claude Code as a run starts it: `--version`, or a review through the pipeline in this process of the prompt's
+    fixture, or of the fixture review-document's build step writes for the prompt's document, with stream-json naming
+    the session's model and the reviewer model the --agents definition sets, and, unless `guarded` is false, each
+    role's read log started as the reviewer guard's claim starts it. Each reviewer does what the scenario the run's
+    folder is named for expects."""
 
     def __init__(
         self, test: unittest.TestCase, *, review: bool = True, reviewer: str | None = None, guarded: bool = True
     ) -> None:
         self.test, self.review, self.reviewer, self.guarded = test, review, reviewer, guarded
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
+        self.built: dict[str, list[str]] = {}
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
         self.calls.append((arguments, cwd, environment))
@@ -1211,10 +1443,17 @@ class StubClaude:
         model = reviewer_of(arguments)["model"]
         self.test.assertEqual(model, frontmatter_model(cwd / skill_evals.REVIEWER_AGENT))
         if self.review:
-            prepare = [word.strip('"') for word in arguments[2].split(" ")[1:]]
+            words = [quoted or bare for quoted, bare in re.findall(r'"([^"]*)"|(\S+)', arguments[2])]
+            skill, prepare = words[0].removeprefix("/"), words[1:]
+            run = Path(environment["TMPDIR"]).parent
+            scenario = skill_evals.SCENARIO_ROOT / skill / run.name / "scenario.json"
+            spec = json.loads(scenario.read_text(encoding="utf-8"))
             files = {key: environment[key] for key in ("CODE_REVIEW_STATE", "CODE_REVIEW_FLAGS")}
             with mock.patch.object(tempfile, "tempdir", environment["TMPDIR"]), mock.patch.dict(os.environ, files):
-                Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, self.guarded)
+                if skill == "review-document":
+                    built = self.built[f"{run.name} {model}"] = build_document(Path(*prepare))
+                    prepare = ["--canary", "--fixture", fixture_of(built)]
+                Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, spec, self.guarded)
         reviewer = self.reviewer or f"claude-{model}-0-0"
         return skill_evals.Completed(0, f"{assistant('claude-opus-5-5')}\n{assistant(reviewer, subagent=True)}", "")
 
@@ -1249,10 +1488,12 @@ class EvaluateTests(unittest.TestCase):
         }
         return skill_evals.Seams(**values)
 
-    def evaluate(self, argv: Sequence[str], seams: skill_evals.Seams) -> tuple[int, list[str]]:
+    def evaluate(
+        self, argv: Sequence[str], seams: skill_evals.Seams, skill: str = "review-prs"
+    ) -> tuple[int, list[str]]:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            status = skill_evals.main(["review-prs", *argv], seams=seams)
+            status = skill_evals.main([skill, *argv], seams=seams)
         return status, output.getvalue().splitlines()
 
     def test_every_scenario_runs_on_every_model_and_the_result_is_recorded(self) -> None:
@@ -1296,6 +1537,65 @@ class EvaluateTests(unittest.TestCase):
                 self.assertTrue(Path(environment["TMPDIR"]).is_relative_to(cwd / skill_evals.STATE))
                 agents = arguments[arguments.index("--agents") + 1]
                 self.assertEqual(str(cwd / skill_evals.STATE / "agents.json"), agents)
+
+    def test_a_document_scenario_runs_the_skill_on_its_staged_document(self) -> None:
+        claude = StubClaude(self)
+        status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-document")
+        self.assertEqual(0, status, lines)
+        scenarios = {
+            "committed-edit": "export-download-links.md",
+            "design-clean": "export-download-links.md",
+            "design-gaps": "export-retention.md",
+        }
+        prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
+        self.assertEqual(
+            [
+                f'/review-document "{self.homes / model / skill_evals.STATE / scenario / "document" / name}"'
+                for scenario, name in scenarios.items()
+                for model in skill_evals.MODELS
+            ],
+            prompts,
+        )
+        # The edit is reviewed against its committed base, and a whole document against nothing.
+        self.assertEqual(
+            {
+                f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
+                for scenario in scenarios
+                for model in skill_evals.MODELS
+            },
+            {key: built[1].split(" ")[1] for key, built in claude.built.items()},
+        )
+        guarded = [line for line in lines if line.startswith("GUARDED ")]
+        self.assertEqual(
+            [
+                f"GUARDED {scenario} {model} design-review files_read=0"
+                for scenario in scenarios
+                for model in skill_evals.MODELS
+            ],
+            guarded,
+        )
+        self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
+        self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
+        written = self.results.read_text(encoding="utf-8")
+        self.assertIn(
+            "| review-document | haiku | claude-haiku-0-0 | 10/10 | committed-edit 3/3, design-clean 2/2, "
+            "design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            written,
+        )
+        self.assertIn("| review-prs | opus | old |", written)
+
+    def test_a_document_that_cannot_be_staged_fails_its_run(self) -> None:
+        def broken(_command: Sequence[str], _timeout: float) -> GitResult:
+            return GitResult(128, "", "fatal: cannot create a repository here\n")
+
+        claude = StubClaude(self)
+        argv = ["--model", "haiku", "--scenario", "committed-edit"]
+        status, lines = self.evaluate(argv, self.seams(claude, git=GitClient(runner=broken)), "review-document")
+        self.assertEqual(1, status)
+        reason = "the document could not be staged: fatal: cannot create a repository here"
+        self.assertIn(f'FAIL review-document committed-edit haiku verdict CHANGES_REQUESTED "{reason}"', lines)
+        self.assertIn("REVIEWER haiku none", lines)
+        self.assertEqual([["claude.exe", "--version"]], [arguments for arguments, _, _ in claude.calls])
 
     def test_a_record_no_guard_held_fails_the_run(self) -> None:
         claude = StubClaude(self, guarded=False)

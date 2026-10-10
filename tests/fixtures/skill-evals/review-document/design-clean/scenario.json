@@ -1,0 +1,9 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "../../review-prs/design-clean/head/docs/design/export-download-links.md",
+  "expectations": [
+    {"kind": "no_finding_above", "severity": "SUGGESTION"},
+    {"kind": "verdict", "verdict": "APPROVED"}
+  ]
+}
