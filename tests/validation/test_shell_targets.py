@@ -273,8 +273,15 @@ class ShellTargetsFixtures(unittest.TestCase):
                 "    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]\n"
                 "    param()\n}\n",
                 "skills/alpha/scripts/short.ps1": "[SuppressMessage('PSAvoidGlobalVars', '')]\nparam()\n",
+                # An attribute list holds the attribute after another one, on the same line or the next.
+                "skills/alpha/scripts/listed.ps1": "[CmdletBinding(), "
+                "Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '')]\nparam()\n",
+                "skills/alpha/scripts/wrapped.ps1": "[CmdletBinding(SupportsShouldProcess),\n"
+                " SuppressMessage('PSAvoidGlobalVars', '')]\nparam()\n",
+                "skills/alpha/scripts/plain.ps1": "[CmdletBinding(), OutputType([string])]\nparam()\n",
                 "docs/guide.md": f"Text naming {directive} in prose.\n\n```bash\n\n{directive}\necho $1\n```\n\n"
-                "```powershell\n[System.Diagnostics.CodeAnalysis.SuppressMessage('X', '')]\nparam()\n```\n",
+                "```powershell\n[System.Diagnostics.CodeAnalysis.SuppressMessage('X', '')]\nparam()\n```\n\n"
+                "```powershell\n[CmdletBinding(), SuppressMessageAttribute('X', '')]\nparam()\n```\n",
                 "docs/clean.md": '```bash\necho "$1"\n```\n',
                 ".shellcheckrc": "disable=SC2086\n",
                 "tools/PSScriptAnalyzerSettings.psd1": "@{ ExcludeRules = @('PSAvoidUsingWriteHost') }\n",
@@ -288,10 +295,13 @@ class ShellTargetsFixtures(unittest.TestCase):
                     f".shellcheckrc configures ShellCheck{fix}",
                     f"docs/guide.md:5 suppresses a rule with a ShellCheck disable directive{fix}",
                     f"docs/guide.md:10 suppresses a rule with SuppressMessageAttribute{fix}",
+                    f"docs/guide.md:15 suppresses a rule with SuppressMessageAttribute{fix}",
                     f"skills/alpha/scripts/combined.bash:1 suppresses a rule with a ShellCheck disable directive{fix}",
+                    f"skills/alpha/scripts/listed.ps1:1 suppresses a rule with SuppressMessageAttribute{fix}",
                     f"skills/alpha/scripts/run.ps1:2 suppresses a rule with SuppressMessageAttribute{fix}",
                     f"skills/alpha/scripts/run.sh:3 suppresses a rule with a ShellCheck disable directive{fix}",
                     f"skills/alpha/scripts/short.ps1:1 suppresses a rule with SuppressMessageAttribute{fix}",
+                    f"skills/alpha/scripts/wrapped.ps1:2 suppresses a rule with SuppressMessageAttribute{fix}",
                     f"tools/PSScriptAnalyzerSettings.psd1 configures PSScriptAnalyzer{fix}",
                 ],
                 shell_targets.shell_suppression_problems(root, [root / name for name in files]),
