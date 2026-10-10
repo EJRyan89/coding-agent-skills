@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### An inline review's self-check and source commands match review-prs's grant
+
+- Level: patch. A fix: each reviewer prompt now gives its self-check, `source-file`, and `source-search` commands with the script path spelled as the session started `prepare`, `${CLAUDE_SKILL_DIR}/../code-review-core/scripts/` filled in, instead of the resolved path. In Claude Code, an inline role's commands now match `review-prs`'s grant rather than asking each time. Writing a role's result still asks, because no skill grant can name the system temporary directory. "Inline reviews" in the operations guide gives the allow rule a headless session needs.
+- Contract: none
+- User action: none
+- Pull request: #316
+
 ### source-search judges binary files by their bytes, not by the checkout's attributes
 
 - Level: patch. A fix: on a lazy snapshot, `source-search` let the configured checkout's `.gitattributes`, `.git/info/attributes`, or `core.attributesFile` decide what was binary, so a text file one marked `-diff` or `binary` was never searched and a binary file one marked `diff` was. It now searches every file of the head as text and keeps a match only in a file the snapshot's own test (no NUL byte in the first 8,000 bytes) finds text, testing a file it lists to fetch the first time that file matches. Its output is unchanged, and no Git floor is added.

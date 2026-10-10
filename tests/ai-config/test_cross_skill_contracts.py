@@ -12,12 +12,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
 import frontmatter as skill_frontmatter
+import review_pipeline
+import review_source
 from review_config import COMPUTED_DASHBOARD_STATES
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -97,6 +100,14 @@ def computed_states_named(text: str) -> list[str]:
     if len(lines) != 1:
         raise AssertionError(f"{len(lines)} lines describe status_overrides and its computed states, not one")
     return re.findall(r"`([^`]+)`", lines[0].split("computed", 1)[1].split(")", 1)[0])
+
+
+def claude_code_grants(pattern: str, command: str, skill: Path) -> bool:
+    """Whether a skill's Bash or PowerShell grant matches a command as Claude Code documents its matching:
+    `${CLAUDE_SKILL_DIR}` filled in with the skill's directory, then the command's whole text compared, quotes and all,
+    with `*` standing for any text and no path normalized."""
+    filled = pattern.replace("${CLAUDE_SKILL_DIR}", str(skill))
+    return re.fullmatch(".*".join(re.escape(part) for part in filled.split("*")), command, re.DOTALL) is not None
 
 
 class CrossSkillContractTests(unittest.TestCase):
@@ -599,6 +610,44 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn('commands.add_parser("next-role")', source)
         for line in ("f\"INLINE {result['run']}\"", 'f"INLINE_ROLE {selector} ', 'f"INLINE_DONE {selector}"'):
             self.assertIn(line, source)
+
+    def test_an_inline_role_s_commands_match_the_grant_review_prs_started_the_pipeline_under(self) -> None:
+        # An inline role runs its prompt's commands in the session review-prs runs in, under the skill's grant, which
+        # Claude Code matches as text: the resolved path of the same script, with no `..`, never matches it.
+        skill = REPOSITORY_ROOT / "skills/review-prs"
+        value = skill_frontmatter.read(skill / "SKILL.md").value("allowed-tools")
+        if not isinstance(value, list):
+            self.fail(f"review-prs grants no list of tools: {value!r}")
+        grants = [
+            entry.removeprefix(f"{shell}(").removesuffix(")")
+            for entry in value
+            for shell in ("Bash", "PowerShell")
+            if entry.startswith(f"{shell}(")
+        ]
+        self.assertEqual(2, len(grants), value)
+        body = (skill / "SKILL.md").read_text(encoding="utf-8-sig").split("---", 2)[2]
+        started = re.search(r'python -B "(\$\{CLAUDE_SKILL_DIR\}[^"]+)" prepare ', body)
+        if started is None:
+            self.fail("review-prs names no prepare command")
+        run = Path(tempfile.gettempdir()) / "code-review-run-example"
+
+        def commands(argv: list[str]) -> list[str]:
+            with mock.patch.object(sys, "argv", argv):
+                fetch, search = review_source.source_commands(
+                    run, "generic-review", script=review_pipeline.command_script("review_source.py")
+                )
+                check = review_pipeline.self_check_command(run, "generic-review")
+            return [check, fetch.replace("<path>", "src/app.py"), search.replace("<pattern>", "def main")]
+
+        spelled = commands([started.group(1).replace("${CLAUDE_SKILL_DIR}", str(skill)), "prepare"])
+        resolved = commands(["review_pipeline.py", "prepare"])
+        for grant in grants:
+            for command in spelled:
+                with self.subTest(grant=grant, command=command):
+                    self.assertTrue(claude_code_grants(grant, command, skill))
+            for command in resolved:
+                with self.subTest(grant=grant, resolved=command):
+                    self.assertFalse(claude_code_grants(grant, command, skill))
 
     def test_review_prs_states_its_runtime_instead_of_leaving_it_to_path(self) -> None:
         # PATH says which CLIs are installed, not which one is orchestrating, so review-prs names its host.
