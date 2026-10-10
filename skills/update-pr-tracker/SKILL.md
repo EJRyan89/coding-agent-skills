@@ -30,4 +30,4 @@ If the user wants a pull request shown under a status of their own, such as `on 
 ```bash
 python -B "${CLAUDE_SKILL_DIR}/scripts/tracker_pipeline.py" override --set "<owner/repo#number>=<status>"
 ```
-It prints `SET` and `WROTE <configuration>`. `--clear "<owner/repo#number>"` instead unpins one, also once its pull request has closed, printing `CLEARED`, and `override` alone prints `OVERRIDE <owner/repo#number> <status>` for each.
+It prints `SET` and `WROTE <configuration>`. `--clear "<owner/repo#number>"` instead unpins one, printing `CLEARED`; nothing else clears an override, even once its pull request has closed. `override` alone prints `OVERRIDE <owner/repo#number> <status>` for each, then `OVERRIDES <count>`.

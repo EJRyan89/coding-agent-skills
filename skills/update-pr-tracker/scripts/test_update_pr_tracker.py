@@ -186,9 +186,10 @@ class LayoutTests(unittest.TestCase):
         content, _ = run([pinned], overrides={"owner/repo#4": "on hold"}, config_path="D:/AgentData/config.json")
         # A line starting with <summary> opens a CommonMark HTML block, so the summary is HTML, not Markdown.
         self.assertIn(
-            "### On Hold (1)\n\n<details>\n<summary>Manually managed — edit <code>dashboard.status_overrides</code> "
-            'in <a href="vscode://file/D:/AgentData/config.json">the code-review configuration</a> to add or remove '
-            "entries.</summary>\n",
+            "### On Hold (1)\n\n<details>\n<summary>Pinned by a status override in "
+            '<a href="vscode://file/D:/AgentData/config.json">the code-review configuration</a>. Set or clear one '
+            "through update-pr-tracker, which runs <code>tracker_pipeline.py override</code>; do not edit the file "
+            "by hand.</summary>\n",
             content,
         )
 
@@ -201,15 +202,16 @@ class LayoutTests(unittest.TestCase):
             '<a href="vscode://file/D:/Agent%20Data/R%26D%20%3Cx%3E/config.json">the code-review configuration</a>',
             content,
         )
-        summary = next(line for line in content.splitlines() if "status_overrides" in line)
+        summary = next(line for line in content.splitlines() if line.startswith("<summary>Pinned"))
         self.assertNotIn("&", summary.replace("%26", ""))
         self.assertNotIn("`", summary)
 
     def test_without_a_configuration_path_the_pinned_summary_names_it_without_a_link(self) -> None:
         content, _ = run([item(number=4)], overrides={"owner/repo#4": "on hold"})
         self.assertIn(
-            "<summary>Manually managed — edit <code>dashboard.status_overrides</code> in the code-review "
-            "configuration to add or remove entries.</summary>",
+            "<summary>Pinned by a status override in the code-review configuration. Set or clear one through "
+            "update-pr-tracker, which runs <code>tracker_pipeline.py override</code>; do not edit the file by "
+            "hand.</summary>",
             content,
         )
 

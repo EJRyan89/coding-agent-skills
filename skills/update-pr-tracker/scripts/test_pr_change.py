@@ -20,8 +20,9 @@ from pr_change import (
     ChangeDetector,
     ComparisonError,
     at_or_before,
-    contribution_fingerprint,
+    changed_files,
     tree_modes,
+    with_modes,
 )
 from review_github import GitHubClient, GitHubError
 
@@ -124,7 +125,7 @@ class ChangeDetectorTests(unittest.TestCase):
 
     def test_comparisons_at_the_file_limit_are_unknown(self) -> None:
         full = comparison(*(changed(f"f{n}.py", "blob") for n in range(COMPARE_FILE_LIMIT)))
-        self.assertIsNone(contribution_fingerprint(full, tree_modes(tree(full))))
+        self.assertIsNone(changed_files(full))
         self.assertEqual(UNKNOWN, detect(full, full))
 
     def test_truncated_or_incomplete_trees_are_unknown(self) -> None:
@@ -210,8 +211,8 @@ def full_detect(before: object, after: object, before_tree: object, after_tree: 
     """The decision from both commits' complete fingerprints, comparison and tree alike, as detection made it before
     it learned to skip the trees."""
     fingerprints = [
-        contribution_fingerprint(before, tree_modes(before_tree)),
-        contribution_fingerprint(after, tree_modes(after_tree)),
+        with_modes(changed_files(before), tree_modes(before_tree)),
+        with_modes(changed_files(after), tree_modes(after_tree)),
     ]
     if None in fingerprints or not any(fingerprints):
         return UNKNOWN

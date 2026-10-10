@@ -333,12 +333,14 @@ def _add_change(changes: dict[str, str | None], key: str, status: str | None) ->
 def change_overrides(
     sets: list[str], clears: list[str], *, config_path: Path | None = None
 ) -> tuple[Path, dict[str, str | None]]:
-    """Set and clear status overrides in one validated write, changing nothing else in the configuration file.
+    """Set and clear status overrides in one validated write, changing no other value in the configuration file.
 
-    The file is rewritten as the user wrote it rather than in `write_config`'s normalized form, which would fill in
-    every default, but it is validated exactly as `review_config.py write` validates it, before and after it is
-    serialized. A change that fails, such as a computed state, a malformed key, or clearing an override that is not
-    set, writes nothing."""
+    Every other value is kept as the user wrote it rather than in `write_config`'s normalized form, which would fill
+    in every default, and it is validated exactly as `review_config.py write` validates it, before and after it is
+    serialized. The layout is normalized, keys sorted and indented two spaces as that command writes them, so a file it
+    wrote changes only in its overrides; keeping an arbitrary hand layout would need an indentation guess in the
+    shared writer, and JSON holds no comments to lose. A change that fails, such as a computed state, a malformed key,
+    or clearing an override that is not set, writes nothing."""
     path = config_path or default_config_path()
     changes = override_changes(sets, clears)
     raw = read_json(path)
