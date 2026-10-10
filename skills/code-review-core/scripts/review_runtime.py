@@ -105,6 +105,8 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # Optional per-specialist settings a manifest may give. `model` takes the aliases every way of starting a Claude
 # subagent accepts (the Agent tool takes no other value; on Bedrock a bare model name can be silently ignored), or
 # `inherit` to use the session's model whatever the profile says. `effort` reaches reviewers the Workflow tool starts.
+# Either may be null, which validates to an absent key, so a maintainer can keep both keys in the manifest and set or
+# clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
 OPTIONAL_SPECIALIST_KEYS = {"model", "effort"}
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
@@ -370,10 +372,12 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
         ):
             raise RuntimeContractError(f"{field} fields do not match the protocol")
         model, effort = specialist.get("model"), specialist.get("effort")
-        if "model" in specialist and model not in MODEL_ALIASES | {"inherit"}:
-            raise RuntimeContractError(f"{field}.model must be inherit or one of {', '.join(sorted(MODEL_ALIASES))}")
-        if "effort" in specialist and effort not in REVIEWER_EFFORTS:
-            raise RuntimeContractError(f"{field}.effort must be one of {', '.join(sorted(REVIEWER_EFFORTS))}")
+        if model is not None and (not isinstance(model, str) or model not in MODEL_ALIASES | {"inherit"}):
+            raise RuntimeContractError(
+                f"{field}.model must be null, inherit, or one of {', '.join(sorted(MODEL_ALIASES))}"
+            )
+        if effort is not None and (not isinstance(effort, str) or effort not in REVIEWER_EFFORTS):
+            raise RuntimeContractError(f"{field}.effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}")
         identity = specialist["id"]
         if not isinstance(identity, str) or not SLUG.fullmatch(identity) or identity in seen | {GENERIC_SPECIALIST}:
             raise RuntimeContractError(f"{field}.id is invalid or duplicated")
