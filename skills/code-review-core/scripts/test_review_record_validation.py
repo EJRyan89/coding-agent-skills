@@ -1580,6 +1580,22 @@ ACCEPTED_LEDGERS: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
             ),
         ),
     ),
+    (
+        # A repeat may not be more severe than what it repeats, so a finding restating a still-present entry at a
+        # higher severity is recorded unlinked, as a new finding with its own entry beside the open one.
+        "finding more severe than a still-present entry, recorded as new",
+        _ledger_record,
+        _chain(
+            _set(("findings",), [_finding("F001", "MUST_FIX")]),
+            _set(
+                ("ledger",),
+                [
+                    _entry(1, "F001", "SHOULD_FIX", judged_in=2, dispositions=((2, "still_present"),)),
+                    _entry(2, "F001"),
+                ],
+            ),
+        ),
+    ),
     ("earlier entry not judged in this review", _ledger_record, _insert(("ledger",), 1, _entry(1, "F002"))),
     (
         "entries ordered by the number in the finding ID",

@@ -26,9 +26,10 @@ rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding 
   {"kind": "disposition", "entry": "v1:F001", "disposition": D}     re-review only
       this review's disposition of that ledger entry
   {"kind": "repeats", "path": P, "lines": [N, ...], "entry": "v1:F001"}     re-review only
-      every finding this review raised at P on those lines at least as severe as that ledger entry repeats the entry,
-      so the problem counts once; raising none there also passes, since the ledger then carries the entry alone, and
-      so does a less severe finding there, which is about another defect
+      every finding this review raised at P on those lines at that ledger entry's severity repeats the entry, so the
+      problem counts once; raising none there also passes, since the ledger then carries the entry alone, and so does
+      a finding there of another severity: a less severe one is about another defect, and a more severe one is a new
+      finding, since a repeat may not be more severe than what it repeats
 
 An unknown kind, or a field a kind does not take, fails the whole run before anything is judged.
 
@@ -335,14 +336,15 @@ def repeats_expectation(spec: Mapping[str, Any]) -> Expectation:
     version, identifier = _entry(spec["entry"])
 
     def check(record: Record) -> str | None:
-        # Only a finding at least as severe as the entry can restate it; a less severe one there is another defect.
-        floor = _rank(entry_severity(record, (version, identifier)))
+        # Only a finding at the entry's severity must restate it. A less severe one there is another defect, and the
+        # record contract refuses a link from a more severe one, which a review must record as a new finding.
+        severity = _rank(entry_severity(record, (version, identifier)))
         unlinked = [
             f"{finding.get('id', 'a finding')} at line {finding['line']}"
             for finding in findings(record)
             if finding["path"] == path
             and finding["line"] in lines
-            and _rank(finding["severity"]) >= floor
+            and _rank(finding["severity"]) == severity
             and finding.get("repeats") != {"version": version, "id": identifier}
         ]
         return f"{', '.join(unlinked)} not linked to {spec['entry']}" if unlinked else None
