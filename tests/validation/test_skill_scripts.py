@@ -351,8 +351,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "deploy-meta/core.json": json.dumps({"tools": ["gh"], "selectable": False}),
                 "deploy-meta/aliased.json": json.dumps({"skill_deps": ["core"]}),
                 "deploy-meta/quoted.json": json.dumps({"skill_deps": ["core"]}),
-                "skills/core/SKILL.md": "# core\n",
-                "skills/core/scripts/github.py": 'run(["gh", "api"])\n',
+                # A dependency in a category is reached as well.
+                "skills/shared/core/SKILL.md": "# core\n",
+                "skills/shared/core/scripts/github.py": 'run(["gh", "api"])\n',
                 "skills/aliased/SKILL.md": "# aliased\n",
                 "skills/aliased/scripts/run.py": "import json, github as api\n",
                 # Text that reads like an import is not one.
@@ -361,7 +362,7 @@ class SkillScriptsFixtures(unittest.TestCase):
             }
             write_fixture_tree(root, files)
             self.assertEqual(
-                ["skill aliased runs gh through skills/core/scripts/github.py without declaring it in tools"],
+                ["skill aliased runs gh through skills/shared/core/scripts/github.py without declaring it in tools"],
                 skill_command_problems(root, {"gh"}, {"git", "python"}),
             )
 

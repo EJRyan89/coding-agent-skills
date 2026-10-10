@@ -22,6 +22,7 @@ from validation_support import (
     module_imports,
     qualified_name,
     skill_script_directories,
+    skills_by_name,
 )
 
 from deployer import platform_support, render
@@ -365,8 +366,10 @@ def _skill_dependencies(root: Path, skill: str) -> list[str]:
 def _reached_dependency_scripts(root: Path, skill: str, own: list[Path]) -> list[Path]:
     """The dependency scripts a skill runs: those its own files import or name, and what those import in turn."""
     scripts: dict[str, Path] = {}
+    skills = skills_by_name(root)
     for dependency in _skill_dependencies(root, skill):
-        for path in sorted((root / "skills" / dependency / "scripts").glob("*.py")):
+        found = sorted((skills[dependency] / "scripts").glob("*.py")) if dependency in skills else []
+        for path in found:
             if not is_test_script(path):
                 scripts.setdefault(path.stem, path)
     own_modules = {path.stem for path in own if path.suffix.casefold() == ".py"}
@@ -389,13 +392,11 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     skill declares them too, so a skill that reaches skill-core's GitHub client declares gh.
     """
     skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
+    directories = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         document = json.loads(metadata.read_text(encoding="utf-8"))
         declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
-        directories = [root / "skills" / metadata.stem, *sorted((root / "skills").glob(f"*/{metadata.stem}"))]
-        own = [
-            path for directory in directories if (directory / "SKILL.md").is_file() for path in _skill_files(directory)
-        ]
+        own = _skill_files(directories[metadata.stem]) if metadata.stem in directories else []
         skills.append((metadata.stem, declared, own, _reached_dependency_scripts(root, metadata.stem, own)))
     # PowerShell reads every source in one start, which costs far more than reading one.
     sources = sorted(
