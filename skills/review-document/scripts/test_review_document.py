@@ -10,8 +10,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -19,9 +20,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_document
+import review_pipeline as rp
 from git_client import subprocess_runner
+from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
+from review_config import write_config
+from review_github import GitHubClient
 from review_runtime import validate_adapter_manifest
+from test_review_documents import paragraph, word_document
 
 SCRIPT = Path(review_document.__file__).resolve()
 SKILLS_ROOT = SCRIPT.parents[2]
@@ -47,6 +53,11 @@ def run_main(*arguments: str) -> tuple[int, list[str]]:
 
 def facts(lines: list[str]) -> dict[str, str]:
     return {line.split(" ", 1)[0]: line.split(" ", 1)[1] for line in lines}
+
+
+def added(diff: str) -> list[str]:
+    """The added lines of a diff a reviewer reads, each as its line number and text."""
+    return [line[1:].lstrip() for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
 
 
 class DocumentTestCase(unittest.TestCase):
@@ -190,11 +201,11 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual((1, ["FAILED --base committed needs a file inside a git checkout"]), (code, lines))
 
     def test_binary_empty_and_missing_files_are_refused(self) -> None:
-        binary, empty = self.root / "design.docx", self.root / "empty.md"
-        binary.write_bytes(b"PK\x03\x04\0\0rest")
+        binary, empty = self.root / "design.pdf", self.root / "empty.md"
+        binary.write_bytes(b"%PDF-1.7\n\0\0rest")
         empty.write_bytes(b" \r\n")
         for path, reason in (
-            (binary, "is not a text file; a .docx or PDF needs its text extracted first"),
+            (binary, "is not a text file or a Word document; a PDF needs its text extracted first"),
             (empty, "is empty"),
             (self.root / "missing.md", "is not a file"),
         ):
@@ -216,6 +227,178 @@ class LooseFileTests(DocumentTestCase):
         self.assertTrue(output.name.startswith("review-document-"), output)
         self.assertEqual(self.root, output.parent)
         self.assertEqual(output / "fixture", Path(facts(lines)["FIXTURE"]))
+
+
+class WordDocumentTests(DocumentTestCase):
+    """A Word document is written to the fixture as its exact bytes, and the fixture canary's snapshot extracts it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        environment = mock.patch.dict(
+            os.environ,
+            {
+                "CODE_REVIEW_STATE": str(self.root / "state" / "state.json"),
+                "CODE_REVIEW_FLAGS": str(self.root / "flags" / "flags.json"),
+            },
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        # Each run and canary root goes under this test's own folder.
+        self.temporary = self.root / "tmp"
+        self.temporary.mkdir()
+        temporary = mock.patch.object(tempfile, "tempdir", str(self.temporary))
+        temporary.start()
+        self.addCleanup(temporary.stop)
+        self.config = self.root / "config.json"
+        write_config(
+            {
+                "schema_version": 1,
+                "default_repository_set": "primary",
+                "repository_sets": {"primary": ["example/one"]},
+                "repositories": {
+                    "example/one": {
+                        "reviewer": {
+                            "id": "generic",
+                            "protocol_version": 1,
+                            "trusted_ref": None,
+                            "scope": "generic",
+                            "manifest_path": None,
+                        },
+                        "checkout_path": None,
+                    }
+                },
+                "archive_root": str(self.root / "archive"),
+                "local_mirror_root": None,
+                "summary_root": str(self.root / "summaries"),
+                "dashboard_file": str(self.root / "dashboard.md"),
+                "github_login": "reviewer",
+                "runtime": "auto",
+                "verdict_policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+                "dashboard": {},
+            },
+            self.config,
+        )
+
+    def pipeline(self, *arguments: str) -> list[str]:
+        """Run the review pipeline as the skill does, with no GitHub; returns its lines once it succeeds."""
+
+        def no_github(command: object) -> CommandResult:
+            raise AssertionError(f"a document review called gh: {command}")
+
+        services = rp.Services(
+            github=GitHubClient(runner=no_github), resolve_runtime=lambda configured, host: "claude-code"
+        )
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            code = rp.main(["--config", str(self.config), *arguments], services=services)
+        self.assertEqual((0, ""), (code, errors.getvalue()), output.getvalue())
+        return output.getvalue().splitlines()
+
+    def review(self, document: str, line: int) -> tuple[str, dict[str, Any]]:
+        """Prepare the fixture `build` wrote, have the design reviewer report one finding on `line` of `document`'s
+        extracted text, and finalize. Returns the diff the reviewer read and the record."""
+        fixture = self.output / "fixture"
+        prepared = self.pipeline("prepare", "--host", "claude-code", "--canary", "--fixture", str(fixture))
+        run = Path(next(fact for fact in prepared if fact.startswith("RUN ")).split(" ", 2)[2])
+        roles = rp.load_run(run)["roles"]
+        self.assertEqual(["design-review"], [role["id"] for role in roles])
+        diff = (run / "work" / "design-review.diff").read_text(encoding="utf-8")
+        finding = {
+            "path": document,
+            "line": line,
+            "severity": "SHOULD_FIX",
+            "title": "Retries have no bound",
+            "category": "requirement-gap",
+            "body": "Retrying forever never gives up on a poisoned message.",
+        }
+        result = {"model": "fixture-model", "summary": "One gap.", "findings": [finding], "prior_dispositions": []}
+        Path(roles[0]["result_file"]).write_text(json.dumps(result), encoding="utf-8")
+        recorded = next(fact for fact in self.pipeline("finalize", "--run", str(run)) if fact.startswith("RECORDED "))
+        code, lines = run_main("report", "--fixture", str(fixture), "--report", recorded.split(" ", 4)[4])
+        self.assertEqual(0, code, lines)
+        record = json.loads(Path(facts(lines)["RECORD"]).read_text(encoding="utf-8"))
+        return diff, record
+
+    def test_a_word_draft_is_reviewed_by_the_design_reviewer_and_its_finding_says_where_it_is(self) -> None:
+        draft = self.root / "drafts" / "Queue Design.DOCX"
+        draft.parent.mkdir()
+        content = word_document(
+            paragraph("Scope", style="Titre1"), paragraph(), paragraph("Keep one queue."), paragraph("Retry forever.")
+        )
+        draft.write_bytes(content)
+        result = self.build(draft)
+        self.assertEqual(
+            ("Queue Design.DOCX", "none the file is outside any git checkout", "design-review"),
+            (result["DOCUMENT"], result["BASE"], result["ROUTE"]),
+        )
+        fixture = self.output / "fixture"
+        # The exact bytes, never a line-ending conversion, so the snapshot extracts the document as it is.
+        self.assertEqual(content, (fixture / "head" / "Queue Design.DOCX").read_bytes())
+        manifest = json.loads((fixture / "base" / ".review-document" / "specialists.json").read_text("utf-8"))
+        self.assertEqual(["^Queue\\ Design\\.DOCX$"], manifest["specialists"][0]["include"])
+
+        diff, record = self.review("Queue Design.DOCX", 3)
+        self.assertEqual(["1 | [P1] # Scope", "2 | [P3] Keep one queue.", "3 | [P4] Retry forever."], added(diff))
+        [finding] = record["findings"]
+        self.assertEqual('paragraph 4, under the heading "Scope"', finding["location"])
+        report = (self.output / "report.md").read_text(encoding="utf-8")
+        self.assertIn('**Line 3 (paragraph 4, under the heading "Scope"):** `[P4] Retry forever.`', report)
+
+    def test_a_committed_word_document_is_reviewed_by_the_paragraphs_its_edit_changes(self) -> None:
+        checkout = self.checkout()
+        document = checkout / "docs" / "design" / "queue.docx"
+        committed = word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue."))
+        document.write_bytes(committed)
+        git(checkout, "add", ".")
+        git(checkout, "commit", "--quiet", "--no-gpg-sign", "-m", "queue")
+        edited = word_document(
+            paragraph("Scope", style="Titre1"), paragraph("Retry forever."), paragraph("Keep one queue.")
+        )
+        document.write_bytes(edited)
+        result = self.build(document)
+        self.assertEqual(f"committed {git(checkout, 'rev-parse', 'HEAD')}", result["BASE"])
+        self.assertEqual("design-review", result["ROUTE"])
+        fixture = self.output / "fixture"
+        self.assertEqual(committed, (fixture / "base" / "docs" / "design" / "queue.docx").read_bytes())
+        self.assertEqual(edited, (fixture / "head" / "docs" / "design" / "queue.docx").read_bytes())
+
+        diff, record = self.review("docs/design/queue.docx", 2)
+        # Only the inserted paragraph is added: the one after it holds the same text, though its label moves.
+        self.assertEqual(["2 | [P2] Retry forever."], added(diff))
+        self.assertEqual('paragraph 2, under the heading "Scope"', record["findings"][0]["location"])
+
+    def test_a_word_document_whose_text_is_not_extracted_or_unchanged_is_refused_before_any_fixture(self) -> None:
+        hostile = self.root / "hostile.docx"
+        hostile.write_bytes(word_document(paragraph("x"), extra={"../../evil.xml": b"x"}))
+        blank = self.root / "blank.docx"
+        blank.write_bytes(word_document(paragraph()))
+        for path, reason in (
+            (hostile, "is a document whose text could not be extracted: a member's path leaves the package"),
+            (blank, "holds no text to review"),
+        ):
+            with self.subTest(path.name):
+                code, lines = run_main("build", str(path), "--output", str(self.output))
+                self.assertEqual((1, [f"FAILED {path} {reason}"]), (code, lines))
+        self.assertFalse(self.output.exists())
+
+        checkout = self.checkout()
+        document = checkout / "queue.docx"
+        document.write_bytes(word_document(paragraph("Keep one queue.")))
+        git(checkout, "add", ".")
+        git(checkout, "commit", "--quiet", "--no-gpg-sign", "-m", "queue")
+        # A new style changes the package and leaves the text as it was.
+        document.write_bytes(word_document(paragraph("Keep one queue."), extra={"word/theme.xml": b"<theme/>"}))
+        code, lines = run_main("build", str(document), "--output", str(self.output))
+        self.assertEqual(1, code)
+        self.assertEqual(
+            [
+                "FAILED queue.docx has no uncommitted change to its text, only to formatting, images, or parts whose "
+                "text is not extracted; pass --base none to review the whole document"
+            ],
+            lines,
+        )
+        self.assertFalse(self.output.exists())
+        self.assertEqual("none the whole document was asked for", self.build(document, "--base", "none")["BASE"])
 
 
 class OutputTests(DocumentTestCase):

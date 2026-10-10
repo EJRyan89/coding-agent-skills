@@ -10,9 +10,12 @@ A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
 The head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a git checkout
 and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the base has no
-such file and the whole document is reviewed. A Markdown or plain-text document (DESIGN_SUFFIXES) goes to the suite's
-design-review specialist, through a specialists manifest in the fixture's base tree; any other text file goes to the
-generic reviewer. Nothing here calls GitHub, and nothing is written to the checkout.
+such file and the whole document is reviewed. A Word document, a format `review_documents.document_format` names, is
+written to the fixture as its exact bytes, so the fixture canary's snapshot extracts its text as it does a pull
+request's; one whose text would not be extracted, or whose text the change leaves as it was, is refused here first.
+A Markdown, plain-text, or Word document (DESIGN_SUFFIXES, or a document format) goes to the suite's design-review
+specialist, through a specialists manifest in the fixture's base tree; any other text file goes to the generic
+reviewer. Nothing here calls GitHub, and nothing is written to the checkout.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import use_utf8_output
 from git_client import GitClient, GitError
+from review_documents import ExtractionRefused, document_format, extract
 from review_io import PersistenceError, working_path
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
@@ -69,19 +73,32 @@ class Location:
     checkout: Path | None
 
 
-def text_bytes(path: Path) -> bytes:
-    """The document's bytes, refused when they are not a non-empty text file."""
+def document_bytes(path: Path, form: str | None) -> bytes:
+    """The document's bytes: a text file's with its line endings as LF, or a Word document's exactly, once its text
+    extracts to something to review. Refused when it is empty, binary, or a document whose text is not extracted."""
     if not path.is_file():
         raise DocumentError(f"{path} is not a file")
     content = path.read_bytes()
     if not content.strip():
         raise DocumentError(f"{path} is empty")
+    if form is not None:
+        if not document_text(path, form, content).strip():
+            raise DocumentError(f"{path} holds no text to review")
+        return content
     if b"\0" in content[:BINARY_PROBE]:
         raise DocumentError(
-            f"{path} is not a text file; a .docx or PDF needs its text extracted first, which review-document "
-            "does not do yet"
+            f"{path} is not a text file or a Word document; a PDF needs its text extracted first, which "
+            "review-document does not do"
         )
-    return content
+    return normalized(content)
+
+
+def document_text(path: Path, form: str, content: bytes) -> bytes:
+    """A document's text as the snapshot extracts it, refused for the reason the snapshot would give."""
+    try:
+        return extract(form, content)
+    except ExtractionRefused as exc:
+        raise DocumentError(f"{path} is a document whose text could not be extracted: {exc}") from exc
 
 
 def normalized(content: bytes) -> bytes:
@@ -104,8 +121,9 @@ def locate(path: Path, git: GitClient) -> Location:
     return Location(relative.as_posix(), checkout)
 
 
-def committed_base(relative: str, checkout: Path, git: GitClient) -> Base:
-    """The document as committed at HEAD, or no base when it has never been committed."""
+def committed_base(relative: str, checkout: Path, git: GitClient, *, text: bool) -> Base:
+    """The document as committed at HEAD, a text file's with its line endings as LF, or no base when it has never
+    been committed."""
     head = git.run(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], directory=checkout)
     if head.returncode != 0:
         return Base(None, None, "the checkout has no commit yet")
@@ -113,17 +131,18 @@ def committed_base(relative: str, checkout: Path, git: GitClient) -> Base:
     blob = git.run(["cat-file", "blob", f"{commit}:{relative}"], directory=checkout)
     if blob.returncode != 0:
         return Base(None, None, "the file is not committed")
-    return Base(normalized(blob.output_bytes()), commit, "committed")
+    content = blob.output_bytes()
+    return Base(normalized(content) if text else content, commit, "committed")
 
 
-def choose_base(requested: str | None, location: Location, git: GitClient) -> Base:
+def choose_base(requested: str | None, location: Location, git: GitClient, *, text: bool) -> Base:
     if requested == "none":
         return Base(None, None, "the whole document was asked for")
     if location.checkout is None:
         if requested == "committed":
             raise DocumentError("--base committed needs a file inside a git checkout")
         return Base(None, None, "the file is outside any git checkout")
-    base = committed_base(location.relative, location.checkout, git)
+    base = committed_base(location.relative, location.checkout, git, text=text)
     if requested == "committed" and base.content is None:
         raise DocumentError(f"--base committed has nothing to compare with: {base.reason}")
     return base
@@ -165,6 +184,15 @@ def specialists_manifest(relative: str) -> dict[str, Any]:
     }
 
 
+def same_text(form: str, base: bytes, head: bytes) -> bool:
+    """Whether a document's committed version extracts to the text its version on disk does. A base whose text is
+    not extracted is never the same: the review then reads the whole head, and its report says why."""
+    try:
+        return extract(form, base) == extract(form, head)
+    except ExtractionRefused:
+        return False
+
+
 def write_file(root: Path, relative: str, content: bytes) -> None:
     target = root.joinpath(*PurePosixPath(relative).parts)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -185,16 +213,22 @@ def output_directory(output: Path | None) -> Path | None:
 def build(path: Path, requested: str | None, output: Path | None, git: GitClient) -> list[str]:
     directory = output_directory(output)
     path = path.resolve()
-    content = normalized(text_bytes(path))
+    form = document_format(path.name)
+    content = document_bytes(path, form)
     location = locate(path, git)
     if location.relative.startswith(MANIFEST_PATH.split("/")[0] + "/"):
         raise DocumentError(f"{location.relative} is where the fixture keeps its reviewer manifest")
-    base = choose_base(requested, location, git)
+    base = choose_base(requested, location, git, text=form is None)
     if base.content == content:
         raise DocumentError(
             f"{location.relative} has no uncommitted change; pass --base none to review the whole document"
         )
-    design = path.suffix.lower() in DESIGN_SUFFIXES
+    if form is not None and base.content is not None and same_text(form, base.content, content):
+        raise DocumentError(
+            f"{location.relative} has no uncommitted change to its text, only to formatting, images, or parts whose "
+            "text is not extracted; pass --base none to review the whole document"
+        )
+    design = form is not None or path.suffix.lower() in DESIGN_SUFFIXES
     fixture = (directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()) / "fixture"
     for tree in ("base", "head"):
         (fixture / tree).mkdir(parents=True)
