@@ -82,9 +82,15 @@ class ThreatModelPolicy(unittest.TestCase):
     TABLE = (
         "# Contract\n\n## Threat model\n\n"
         "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
-        "| Diff text | Data only. | `test_a.py::test_held`, `test_a.py::test_in_a_class` |\n"
-        "| Paths | Excluded. | `test_a.py::test_gone`, `test_missing.py::test_held` |\n"
-        "| Links | Excluded. | the snapshot tests |\n\n## Formats\n\n| `not_cited.py::test_x` |\n"
+        "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, `test_a.py::test_in_a_class` |\n"
+        "| Paths | Excluded. | `test_adversarial_inputs.py::test_gone`, `test_missing.py::test_held` |\n"
+        "| Links | Excluded. | the snapshot tests |\n"
+        "| Blobs | Exact bytes. | `test_a.py::test_in_a_class` |\n\n## Formats\n\n| `not_cited.py::test_x` |\n"
+    )
+    ADVERSARIAL = (
+        "import unittest\n\n\ndef test_held() -> None:\n    pass\n\n\n"
+        "class Tests(unittest.TestCase):\n    def test_in_a_class(self) -> None:\n        pass\n\n\n"
+        "# test_gone is only a comment\n"
     )
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -93,20 +99,41 @@ class ThreatModelPolicy(unittest.TestCase):
             write_fixture_tree(root, files)
             return threat_model_test_problems(root)
 
-    def test_a_missing_test_a_missing_suite_and_a_row_without_a_test_fail(self) -> None:
-        suite = (
-            "import unittest\n\n\ndef test_held() -> None:\n    pass\n\n\n"
-            "class Tests(unittest.TestCase):\n    def test_in_a_class(self) -> None:\n        pass\n\n\n"
-            "# test_gone is only a comment\n"
-        )
+    def test_a_missing_test_a_missing_suite_and_a_row_without_an_adversarial_test_fail(self) -> None:
         self.assertEqual(
             [
-                f"{THREAT_MODEL_DOC} names test_a.py::test_gone, which test_a.py does not define",
+                f"{THREAT_MODEL_DOC} names test_adversarial_inputs.py::test_gone, which test_adversarial_inputs.py "
+                "does not define",
                 f"{THREAT_MODEL_DOC} names test_missing.py::test_held, but {THREAT_MODEL_SUITES}/test_missing.py does "
                 "not exist",
-                f"{THREAT_MODEL_DOC}: the threat-model row 'Links' names no test",
+                f"{THREAT_MODEL_DOC}: the threat-model row 'Links' names no test in test_adversarial_inputs.py",
+                f"{THREAT_MODEL_DOC}: the threat-model row 'Blobs' names no test in test_adversarial_inputs.py",
             ],
-            self.problems({THREAT_MODEL_DOC: self.TABLE, f"{THREAT_MODEL_SUITES}/test_a.py": suite}),
+            self.problems(
+                {
+                    THREAT_MODEL_DOC: self.TABLE,
+                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
+                    f"{THREAT_MODEL_SUITES}/test_a.py": self.ADVERSARIAL,
+                }
+            ),
+        )
+
+    def test_rows_that_each_name_an_adversarial_test_that_exists_pass(self) -> None:
+        table = (
+            "# Contract\n\n## Threat model\n\n"
+            "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"
+            "| Diff text | Data only. | `test_adversarial_inputs.py::test_held`, `test_a.py::test_in_a_class` |\n"
+            "| Blobs | Exact bytes. | `test_a.py::test_held`, `test_adversarial_inputs.py::test_in_a_class` |\n"
+        )
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    THREAT_MODEL_DOC: table,
+                    f"{THREAT_MODEL_SUITES}/test_adversarial_inputs.py": self.ADVERSARIAL,
+                    f"{THREAT_MODEL_SUITES}/test_a.py": self.ADVERSARIAL,
+                }
+            ),
         )
 
     def test_a_contract_without_the_table_fails(self) -> None:

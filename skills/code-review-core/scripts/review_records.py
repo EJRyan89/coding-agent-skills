@@ -1347,6 +1347,16 @@ def _cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
+# The characters Markdown, GitHub's math, or HTML reads as markup within a line; a backslash makes each literal.
+MARKUP = re.compile(r"([\\`*_\[\]<>&|~$])")
+
+
+def _text(text: str) -> str:
+    """Single-line Markdown table cell content that renders as written: untrusted text, such as a pull request's title
+    or a review comment, never becomes a link, an image, emphasis, or an HTML tag."""
+    return MARKUP.sub(r"\\\1", " ".join(text.split()))
+
+
 def _html(text: str) -> str:
     return " ".join(text.split()).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -1537,7 +1547,7 @@ def render_markdown(
         "",
         "| | |",
         "|---|---|",
-        f"| **Title** | {_cell(pull['title'])} |",
+        f"| **Title** | {_text(pull['title'])} |",
         (
             f"| **Branch** | {_cell(_code(pull['head_ref']))} → {_cell(_code(pull['base_ref']))} |"
             if pull.get("head_ref")
@@ -1589,7 +1599,7 @@ def render_markdown(
             outdated = " (outdated)" if comment["outdated"] else ""
             lines.append(
                 f"| [{comment['id']}]({comment['url']}) | @{_cell(comment['author'])} on "
-                f"{_cell(_code(location))}{outdated}: {_cell(excerpt)} | {_label(disposition['disposition'])} "
+                f"{_cell(_code(location))}{outdated}: {_text(excerpt)} | {_label(disposition['disposition'])} "
                 f"| {_cell(disposition['rationale'])} |"
             )
         lines.extend(["", _addressed(record["comment_dispositions"]), ""])
