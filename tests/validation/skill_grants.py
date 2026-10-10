@@ -172,6 +172,13 @@ class SkillGrantsPolicies(unittest.TestCase):
 
         self.assertEqual([], skill_reference.problems(REPOSITORY_ROOT))
 
+    def test_runtime_prompt_samples_match_what_the_skills_render(self) -> None:
+        # analyze-skill-cost measures the prompt a skill's script writes for a subagent from its rendered sample, so a
+        # prompt change that does not rerun tools/runtime_prompts.py --write has the audit measure a prompt no run sees.
+        from tools import runtime_prompts
+
+        self.assertEqual([], runtime_prompts.problems(REPOSITORY_ROOT))
+
     def test_repository_skills_have_matching_shims(self) -> None:
         self.assertEqual([], repository_skill_problems(REPOSITORY_ROOT))
 
