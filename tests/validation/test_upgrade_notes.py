@@ -246,7 +246,26 @@ class UpgradeNotesPolicy(unittest.TestCase):
         cases = {
             "breaking": (
                 self.entry("`deployer/manifest.py`", level="breaking"),
-                "starts its Level with 'breaking', not one of the levels in the Versioning section of "
+                "names 'breaking' as its Level, not one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
+            # A value with no leading word at all was accepted silently: the pattern matched
+            # a leading run of letters, and '0.5.0', '1' and '-patch' have none, so there was
+            # no match to report against. A version number is the field a writer reaches for
+            # instead of a level, so it is the one that must not pass.
+            "a version number": (
+                self.entry("`deployer/manifest.py`", level="0.5.0"),
+                "does not open its Level with one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
+            "a bare number": (
+                self.entry("`deployer/manifest.py`", level="1"),
+                "does not open its Level with one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
+            "a leading punctuation mark": (
+                self.entry("`deployer/manifest.py`", level="-patch"),
+                "does not open its Level with one of the levels in the Versioning section of "
                 "docs/releasing.md: patch, minor, or major",
             ),
             "action": (

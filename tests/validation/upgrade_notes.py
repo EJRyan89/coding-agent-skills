@@ -212,10 +212,26 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     problems = [
         f"{where} is missing '- {field}:' or leaves it empty" for field in fields if not entry.fields.get(field)
     ]
-    level = re.match(r"[A-Za-z]+", entry.fields.get("Level", ""))
+    # A level opens the field: the notes in this repository are written 'minor. Additive:
+    # ...' and 'patch. A fix: ...', so the level is the first word and the rest is the
+    # sentence's own explanation. The field must not be read whole, or every real entry
+    # fails.
+    #
+    # What was wrong is that the word was allowed to be missing entirely: the pattern
+    # matched a leading run of letters and a value with none (a version number, a bare
+    # number, a leading punctuation mark) produced no match, so it was accepted with no
+    # problem reported. The field now has to open with a word, and that word has to be one
+    # of the section's levels.
+    level = re.match(r"[A-Za-z]+", entry.fields.get("Level", "").strip())
     if level and level.group(0).lower() not in levels:
         problems.append(
-            f"{where} starts its Level with '{level.group(0)}', not one of the levels in the Versioning section of "
+            f"{where} names '{level.group(0)}' as its Level, not one of the levels in the Versioning section of "
+            f"{RELEASING_DOC}: {_either(levels)}"
+        )
+    elif not level:
+        # The wording the writer typed, so the message shows a version number as itself.
+        problems.append(
+            f"{where} does not open its Level with one of the levels in the Versioning section of "
             f"{RELEASING_DOC}: {_either(levels)}"
         )
     contract = entry.fields.get("Contract")
