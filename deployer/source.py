@@ -57,16 +57,25 @@ class Source:
 
 
 def _load_json(path: Path) -> Any:
+    """A JSON file's content, or None when it is not JSON; an OSError while reading is raised, never read as None."""
     try:
         return json.loads(path.read_text(encoding="utf-8-sig"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except (UnicodeError, json.JSONDecodeError):
         return None
+
+
+def _load_source_document(paths: Paths) -> Any:
+    """source.json's content, as _load_json reads it, with a read failure reported as unreadable, not malformed."""
+    try:
+        return _load_json(paths.source_file)
+    except OSError as exc:
+        raise os_error(exc, "read source.json") from exc
 
 
 def load_source_id(paths: Paths) -> str:
     if not paths.source_file.is_file():
         raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.source_dir)}")
-    document = _load_json(paths.source_file)
+    document = _load_source_document(paths)
     source_id = document.get("id") if isinstance(document, dict) else None
     shown = source_id if isinstance(source_id, str) else "null"
     if not isinstance(source_id, str) or not SOURCE_ID_PATTERN.fullmatch(source_id):
@@ -111,7 +120,7 @@ def _source_name(document: dict[str, Any]) -> str:
 
 
 def load_source_name(paths: Paths) -> str:
-    document = _load_json(paths.source_file)
+    document = _load_source_document(paths)
     return _source_name(document) if isinstance(document, dict) else ""
 
 
@@ -404,7 +413,7 @@ def _discover(paths: Paths, source_id: str) -> Source:
     for meta_file in sorted(paths.meta_dir.glob("*.json")):
         if meta_file.is_file():
             source.skills[meta_file.stem] = _load_skill(paths, meta_file.stem, directories)
-    document = _load_json(paths.source_file)
+    document = _load_source_document(paths)
     document = document if isinstance(document, dict) else {}
     source.name = _source_name(document)
     _load_bundles(document, source)

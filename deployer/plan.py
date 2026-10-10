@@ -12,7 +12,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from . import fsops, hashing, journal, platform_support, render
-from .arguments import PROG
+from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
@@ -214,7 +214,7 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
 
 
 def check_forced_items(context: Context, wanted: Mapping[ItemKind, list[str]]) -> None:
-    """Refuse a --force-item that names no item this run installs, by its deployed name or its own name."""
+    """Refuse, as a usage error, a --force-item that names no item this run installs, by either of its names."""
     accepted = {name: kind.item_name(name) for kind, names in wanted.items() for name in names}
     known = set(accepted) | set(accepted.values())
     unknown = [f"'{name}'" for name in dict.fromkeys(context.options.force_items) if name not in known]
@@ -222,8 +222,8 @@ def check_forced_items(context: Context, wanted: Mapping[ItemKind, list[str]]) -
         return
     named = " and ".join(unknown) if len(unknown) < 3 else f"{', '.join(unknown[:-1])}, and {unknown[-1]}"
     choices = sorted(set(accepted.values()))
-    raise DeployError(
-        f"ERROR: --force-item names {named}, which this run does not install.",
+    raise usage_error(
+        f"--force-item names {named}, which this run does not install.",
         f"Name one of: {', '.join(choices)}."
         if choices
         else "This run installs nothing, so --force-item has nothing to replace.",

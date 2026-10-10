@@ -85,5 +85,80 @@ class RoutingTests(DeployerTestCase):
                 self.assertIn("Traceback (most recent call last):", result.output)
 
 
+class DeployUsageErrorTests(DeployerTestCase):
+    """A deploy command line that cannot run is refused before anything changes, as every usage error is: exit 2."""
+
+    HELP = "Run 'python deploy.py --help' for usage."
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+
+    def run_cli(self, *arguments: str) -> Result:
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
+            code = cli.main(list(arguments), self.paths, io.StringIO(""))
+        return Result(code, captured.getvalue())
+
+    def assert_usage_error(self, arguments: tuple[str, ...], *lines: str) -> None:
+        result = self.run_cli(*arguments)
+        self.assertEqual(2, result.code, result.output)
+        self.assertIn("\n".join(("", *lines, self.HELP, "")), result.output)
+        self.assertNotIn("Traceback", result.output)
+        self.assertFalse(self.manifest_file.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+
+    def test_options_that_cannot_run_together_are_usage_errors(self) -> None:
+        canary = str(self.root)
+        for arguments, message in (
+            (("--include", "alpha"), "ERROR: --include can only be used with --all"),
+            (("--take-over-source", "--dry-run"), "ERROR: --take-over-source cannot be combined with --dry-run"),
+            (("--canary-home", canary, "--dry-run"), "ERROR: --canary-home cannot be combined with --dry-run"),
+            (
+                ("--canary-home", canary, "--migrate-from", "old/source"),
+                "ERROR: --canary-home cannot be combined with --migrate-from",
+            ),
+            (
+                ("--canary-home", canary, "--take-over-source"),
+                "ERROR: --canary-home cannot be combined with --take-over-source",
+            ),
+        ):
+            with self.subTest(arguments=arguments):
+                self.assert_usage_error(arguments, message)
+
+    def test_migration_refuses_every_option_it_would_ignore(self) -> None:
+        for extra, message in (
+            (("--dry-run",), "ERROR: --migrate-from cannot be combined with --dry-run"),
+            (("--all",), "ERROR: --migrate-from cannot be combined with --all"),
+            (("--all", "--include", "alpha"), "ERROR: --migrate-from cannot be combined with --all"),
+            (("--force",), "ERROR: --migrate-from cannot be combined with --force"),
+            (("--force-item", "alpha"), "ERROR: --migrate-from cannot be combined with --force-item"),
+            (("--force-item", "unknown"), "ERROR: --migrate-from cannot be combined with --force-item"),
+        ):
+            with self.subTest(extra=extra):
+                self.assert_usage_error(("--migrate-from", "old/source", *extra), message)
+
+    def test_migration_still_takes_over_the_source(self) -> None:
+        result = self.run_cli("--migrate-from", "old/source", "--take-over-source")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn("ERROR: Cannot migrate without an existing manifest.", result.output)
+        self.assertNotIn(self.HELP, result.output)
+
+    def test_a_migration_source_id_this_source_cannot_take_over_from_is_a_usage_error(self) -> None:
+        self.assert_usage_error(("--migrate-from", "Not Valid"), "ERROR: Invalid migration source ID: Not Valid")
+        self.assert_usage_error(("--migrate-from", "test/skills"), "ERROR: --migrate-from must name a different source")
+
+    def test_a_force_item_the_run_does_not_install_is_a_usage_error(self) -> None:
+        for arguments in (("--dry-run",), ()):
+            with self.subTest(arguments=arguments):
+                self.assert_usage_error(
+                    ("--all", *arguments, "--force-item", "gamma"),
+                    "ERROR: --force-item names 'gamma', which this run does not install.",
+                    "Name one of: alpha.",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

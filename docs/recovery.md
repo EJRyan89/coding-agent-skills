@@ -70,7 +70,7 @@ When the other source is an earlier ID of the same repository, or a clone you no
 python deploy.py --migrate-from '<source-id>'
 ```
 
-This changes nothing on disk. It moves ownership in the manifest of every item both sources deploy, provided each still matches the hash the old source recorded, and prints them under `MIGRATED`. Then deploy as usual. If an item is missing or has been changed since the old source deployed it, migration refuses without moving anything; restore that copy, for example by deploying from the old source again, and rerun it. `--migrate-from` cannot be combined with `--dry-run`, and the source IDs the manifest knows are listed under `sources` in `~/.claude/skills/.deploy-manifest.json`.
+This changes nothing on disk. It moves ownership in the manifest of every item both sources deploy, provided each still matches the hash the old source recorded, and prints them under `MIGRATED`. Then deploy as usual. If an item is missing or has been changed since the old source deployed it, migration refuses without moving anything; restore that copy, for example by deploying from the old source again, and rerun it. `--migrate-from` deploys nothing, so it refuses `--dry-run`, `--all`, `--include`, `--force`, `--force-item`, and `--canary-home` as a command-line error (exit 2), rather than ignoring them; give those to the deployment that follows. The source IDs the manifest knows are listed under `sources` in `~/.claude/skills/.deploy-manifest.json`.
 
 When both sources are still in use, do not migrate: the other source's next deployment would refuse in turn. Deploy the item from only one of them, by deselecting it in the other and redeploying that one.
 

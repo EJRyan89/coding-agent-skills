@@ -114,6 +114,42 @@ class SourceRemedyTests(RemedyTestCase):
         )
 
 
+class UnreadableFileTests(RemedyTestCase):
+    """A file the deployer cannot read is reported as unreadable, with its path and the reason, never as malformed."""
+
+    CHECK_THE_PATH = "Check that the path exists and that you can read it, then retry."
+    DEBUG_HINT = "Rerun with --debug to see the traceback."
+
+    def assert_unreadable(self, path: Path, message: str, remedy: str, malformed: str) -> None:
+        with self.unreadable(path):
+            result = self.deploy("--all", "--dry-run")
+        self.assertEqual(1, result.code, result.output)
+        self.assert_lines(result.output, f"ERROR: {message}: {path}: Permission denied", remedy, self.DEBUG_HINT)
+        self.assertNotIn(malformed, result.output)
+
+    def test_an_unreadable_manifest_is_not_reported_as_malformed(self) -> None:
+        self.fixture()
+        self.deploy_ok("--all")
+        self.assert_unreadable(
+            self.manifest_file, "Could not read the manifest", self.CHECK_THE_PATH, "Manifest is malformed"
+        )
+
+    def test_an_unreadable_source_json_is_not_reported_as_an_invalid_source_id(self) -> None:
+        self.fixture()
+        self.assert_unreadable(
+            self.source / "source.json", "Could not read source.json", self.CHECK_THE_PATH, "Invalid source ID"
+        )
+
+    def test_unreadable_metadata_is_not_reported_as_an_invalid_shape(self) -> None:
+        self.fixture()
+        self.assert_unreadable(
+            self.source / "deploy-meta" / "alpha.json",
+            "Could not read the skill source",
+            "Check that this checkout is complete and that you can read it, then retry.",
+            "invalid metadata shape",
+        )
+
+
 class ConfigurationRemedyTests(RemedyTestCase):
     def test_source_id_mismatch_names_configure_reset_which_clears_it(self) -> None:
         self.make_source_json("real/source")

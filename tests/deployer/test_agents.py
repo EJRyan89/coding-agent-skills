@@ -183,7 +183,7 @@ class AgentDeploymentTests(DeployerTestCase):
             with self.subTest(arguments=arguments):
                 result = self.deploy_fails("--all", *arguments, *forced, pattern="--force-item names")
                 self.assertIn(refusal, result.output)
-                self.assertEqual(1, result.code)
+                self.assertEqual(2, result.code)
                 self.assertFalse(self.manifest_file.exists())
                 self.assertFalse((self.skills_dir / "alpha").exists())
                 self.assertEqual("my own reviewer\n", self.agent.read_text(encoding="utf-8"))

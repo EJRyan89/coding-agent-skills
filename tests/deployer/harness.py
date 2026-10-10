@@ -274,6 +274,17 @@ class DeployerTestCase(unittest.TestCase):
 
         return mock.patch("deployer.fsops.append_line", side_effect=append_line)
 
+    def unreadable(self, path: Path) -> mock._patch:
+        """Make reading one file fail as a file another process holds does, leaving every other read alone."""
+        read_text = Path.read_text
+
+        def read(candidate: Path, *arguments: Any, **keywords: Any) -> str:
+            if candidate == path:
+                raise PermissionError(13, "Permission denied", str(candidate))
+            return read_text(candidate, *arguments, **keywords)
+
+        return mock.patch.object(Path, "read_text", read)
+
     def selection_number(self, name: str, bundle: bool = False) -> str:
         output = self.deploy("--dry-run", stdin="\n").output
         match = re.search(rf"^  \[[ *]\] ([0-9]+)\. {re.escape(name)}(?: \(([^)]*)\))?$", output, re.MULTILINE)
