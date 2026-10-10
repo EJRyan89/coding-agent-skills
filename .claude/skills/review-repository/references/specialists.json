@@ -1,0 +1,101 @@
+{
+  "schema_version": 2,
+  "id": "review-repository",
+  "protocol_version": 1,
+  "kind": "specialists",
+  "supports": ["initial", "re-review"],
+  "required_capabilities": ["read-diff", "write-result"],
+  "resources": ["docs/design.md", "docs/adding-a-skill.md", "skills/skill-core/scripts/console.py"],
+  "finding_categories": [
+    "Correctness",
+    "Code-document drift",
+    "Documents disagree",
+    "Unheld invariant",
+    "Grant mismatch",
+    "Missing upgrade note",
+    "Unstated trust boundary",
+    "Test coverage",
+    "Other"
+  ],
+  "fallback_finding_category": "Other",
+  "specialists": [
+    {
+      "id": "deployer",
+      "category": "Deployer",
+      "profile": ".claude/skills/review-repository/references/deployer.md",
+      "include": ["^deployer/", "^deploy\\.py$"],
+      "exclude": [],
+      "resources": [],
+      "when": null
+    },
+    {
+      "id": "skill-contract",
+      "category": "Skill contract",
+      "profile": ".claude/skills/review-repository/references/skill-contract.md",
+      "include": [
+        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$",
+        "^agents/",
+        "^deploy-meta/",
+        "^source\\.json$",
+        "^\\.claude/skills/[^/]+/SKILL\\.md$",
+        "^\\.agents/skills/"
+      ],
+      "exclude": [],
+      "resources": [],
+      "when": null
+    },
+    {
+      "id": "validation-policy",
+      "category": "Validation",
+      "profile": ".claude/skills/review-repository/references/validation-policy.md",
+      "include": ["^tests/validation/", "^tests/run_validation\\.py$", "^tests/run_shard\\.py$", "^pyproject\\.toml$"],
+      "exclude": [],
+      "resources": ["CLAUDE.md"],
+      "when": null
+    },
+    {
+      "id": "trust-boundary",
+      "category": "Trust boundary",
+      "profile": ".claude/skills/review-repository/references/trust-boundary.md",
+      "include": [
+        "^docs/code-review-operations-contract\\.md$",
+        "^skills/code-review-core/scripts/review_(?:guard|runtime|source)\\.py$",
+        "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$"
+      ],
+      "exclude": [],
+      "resources": ["docs/code-review-operations-contract.md"],
+      "when": null
+    },
+    {
+      "id": "documentation",
+      "category": "Documentation",
+      "profile": ".claude/skills/review-repository/references/documentation.md",
+      "include": ["^docs/.+\\.md$", "^[^/]+\\.md$", "^\\.github/pull_request_template\\.md$", "^\\.github/ISSUE_TEMPLATE/"],
+      "exclude": [],
+      "resources": ["docs/implementing-changes.md"],
+      "when": null
+    },
+    {
+      "id": "upgrade-notes",
+      "category": "Upgrade notes",
+      "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
+      "include": [
+        "^deployer/(?:manifest|tools|arguments)\\.py$",
+        "^deploy-meta/[^/]+\\.json$",
+        "^skills/code-review-core/references/[^/]+\\.schema\\.json$",
+        "^docs/code-review-operations-contract\\.md$",
+        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$",
+        "^docs/upgrade-notes\\.md$"
+      ],
+      "exclude": [],
+      "resources": ["docs/releasing.md"],
+      "when": "upgrade-notes-kept"
+    }
+  ],
+  "conditions": {
+    "upgrade-notes-kept": {
+      "script": ".claude/skills/review-repository/scripts/upgrade_notes_kept.py",
+      "reads": ["docs/upgrade-notes.md"]
+    }
+  }
+}
