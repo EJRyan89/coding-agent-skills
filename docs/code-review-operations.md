@@ -1,6 +1,6 @@
 # Code-review operations
 
-The `code-review-operations` bundle installs four public workflows and the hidden `code-review-core` dependency. Development and tests do not modify installed skills, live review archives, dashboards, or GitHub state. The promises those workflows and their archive keep are listed in the [behavior contract](code-review-operations-contract.md).
+The `code-review-operations` bundle installs five public workflows and the hidden `code-review-core` dependency. Development and tests do not modify installed skills, live review archives, dashboards, or GitHub state. The promises those workflows and their archive keep are listed in the [behavior contract](code-review-operations-contract.md).
 
 ## Prerequisites
 
@@ -60,6 +60,18 @@ The directory holds the change as two trees, `base/` and `head/`, and the pull r
 - **Re-review**: `--re-review --prior <record>` adds a review record of the same pull request, its first review, such as one an initial fixture canary wrote. The re-review carries that record's open findings and ledger as a real re-review carries the archive's and covers the full scope. `finalize` archives the prior record in the new canary root first and records the re-review as version 2 on top of it, so the record has a real re-review's dispositions, ledger, and `repeats` links.
 
 Both are canaries in every other way: nothing configured or in a flag store is read or written, and `check`, `finalize`, and the result contract are those of every review.
+
+### Document reviews
+
+`review-document <path>` reviews one document that is not in a pull request, such as a draft on disk or a document in a checkout with uncommitted edits, as a fixture canary. Its script, `review-document/scripts/review_document.py`, builds a one-file fixture and `review-document` runs `prepare --canary --fixture`, the reviewer, `check`, and `finalize` on it as `review-prs` does, so the reviewer guard, the inline path, result validation, and the record are those of every fixture canary, and nothing new is trusted. It reads nothing from GitHub and writes nothing to the checkout.
+
+- **Head**: the file as it is on disk.
+- **Base**: when the file lies in a git checkout and is committed at `HEAD`, its committed version, so the review covers only the uncommitted change; otherwise, or with `--base none`, no file, so the whole document is reviewed. Both sides have their line endings read as LF, so a checkout that converts them on checkout does not make every line a change. The fixture's `pull.json` records the base used as `base_ref`, `committed <commit>` or `none`, and its title says which; the record keeps both, and the report's **Branch** row shows `working tree` → the base.
+- **Path**: the file's path in its checkout, or its file name outside one. The fixture's repository is `review-document.local/<checkout folder>`, or `review-document.local/document` for a file outside a checkout: no GitHub account name holds a dot, so the pull request URL the record must carry names nobody's repository.
+- **Reviewer**: a file whose suffix is `.md`, `.markdown`, `.txt`, `.rst`, or `.adoc`, ignoring case, goes to the [design-review specialist](#design-documents) through a specialists manifest the script writes at `.review-document/specialists.json` in both trees, so the manifest is never part of the change. The manifest routes exactly the document's path to `suite:design-review` with the design finding categories and leaves `agent-delegation` out of `required_capabilities`, so a runtime that cannot start subagents reviews it inline. Any other text file has no manifest and gets the generic reviewer.
+- **Refused**: a file that is empty, binary (a NUL byte in its first 8,000 bytes, git's test, which refuses a `.docx` or PDF until text extraction exists), or committed with no change and no `--base none`; `--base committed` for a file outside a checkout or never committed; and a path under `.review-document/`.
+
+The fixture goes in `<output>/fixture`, where `<output>` is `--output` or a new `review-document-*` temporary directory; an `--output` inside a skills directory, or one that already holds a fixture, is refused before anything is read. After `finalize`, `review_document.py report` copies the Markdown report to `<output>/report.md` and prints `REPORT <copy>` and `RECORD <record>`. The record stays under the new `code-review-canary-*` root `finalize` names, like every canary's, where `tools/skill_evals.py --records` and `review-insights` can read it. Every file is left for inspection.
 
 ## Posting findings
 
