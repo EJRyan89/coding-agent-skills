@@ -13,7 +13,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result
 
-from deployer import cli, fsops, hashing, pipeline, platform_support
+from deployer import cli, fsops, hashing, platform_support
 
 CANCELLED = "Cancelled; nothing was changed."
 RECOVERY_CANCELLED = "Cancelled during recovery; the next deployment finishes recovering before it deploys."
@@ -139,11 +139,7 @@ class CancellationTests(DeployerTestCase):
 
     def deploy_with_dead_holder(self, *arguments: str) -> Result:
         """Deploy as `python deploy.py` does, judging any lock it finds as held by a process that has exited."""
-        captured = io.StringIO()
-        probe = mock.Mock(return_value=platform_support.ProcessStatus(False, None))
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), self.paths, probe=probe, stdin=io.StringIO(""))
-        return Result(code, captured.getvalue())
+        return self.deploy(*arguments, probe=mock.Mock(return_value=platform_support.ProcessStatus(False, None)))
 
     def test_ctrl_c_in_a_dry_run_cancels_it(self) -> None:
         with mock.patch("deployer.plan.build", side_effect=interrupt):

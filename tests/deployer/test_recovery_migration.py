@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import DeployerTestCase, forward
+from harness import FAILS_PARTWAY, RECOVERS, DeployerTestCase, forward
 
 from deployer import fsops, hashing, journal, manifest, platform_support, render
 
@@ -490,7 +490,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         alpha = self.skills_dir / "alpha"
         with failing_at("remove", alpha):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, alpha)
         self.assert_lines(result.output, "  WARNING: Both alpha and alpha.deploying-bak exist during rollback")
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
@@ -500,7 +500,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         alpha = self.skills_dir / "alpha"
         with failing_at("hash_path", alpha, "deployer.hashing"):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, alpha)
 
     def test_a_held_transient_backup_fails_finalization_of_a_committed_run(self) -> None:
@@ -508,7 +508,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         transient = self.skills_dir / "alpha.deploying-bak"
         with failing_at("remove", transient):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, transient, committed=True)
         self.assertTrue((transient / "SKILL.md").is_file())
 
@@ -517,7 +517,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         backups = self.skills_dir / ".backups" / self.HELD
         with failing_at("make_directories", backups):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, backups, committed=True)
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
 
@@ -525,7 +525,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         journal_file = self.rolled_back_fixture()
         self.later_run()
         with path_method_failing_at("read_text", journal_file):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, journal_file)
         self.assertIn("installed by the interrupted run", self.skill_text("alpha"))
 
@@ -535,7 +535,7 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.later_run()
         run = self.staging_run(self.HELD)
         with failing_at("remove", run):
-            result = self.deploy_fails("--all", pattern="Recovery failed")
+            result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=RECOVERS)
         self.assert_recovery_failed(result.output, run)
 
     def test_an_unlistable_staging_root_fails_recovery_and_releases_the_lock(self) -> None:
@@ -569,7 +569,7 @@ class RecoveryFailureTests(RecoveryTestCase):
             real_move(source, destination)
 
         with mock.patch("deployer.fsops.move", side_effect=failing_restore):
-            result = self.deploy_fails("--all", pattern="Unexpected RuntimeError")
+            result = self.deploy_fails("--all", pattern="Unexpected RuntimeError", changes_home=RECOVERS)
         self.assertEqual(1, result.code)
         self.assertTrue(
             result.output.endswith(
@@ -604,7 +604,7 @@ class RecoveryFailureTests(RecoveryTestCase):
             mock.patch("deployer.fsops.move", side_effect=failing_move),
             failing_at("hash_path", transient, "deployer.hashing"),
         ):
-            result = self.deploy_fails("--all", pattern="Immediate recovery failed")
+            result = self.deploy_fails("--all", pattern="Immediate recovery failed", changes_home=FAILS_PARTWAY)
         self.assertIn("synthetic install move failure", result.output)
         self.assertRegex(result.output, rf"  ERROR: Recovery of run \S+ failed at {re.escape(forward(transient))}: ")
         self.assertNotIn("Traceback", result.output)
@@ -634,8 +634,8 @@ class RecoveryBranchTests(RecoveryTestCase):
         )
         return journal_file, self.skills_dir / ".backups" / self.RUN / "alpha"
 
-    def assert_completion_stopped(self, journal_file: Path, warning: str) -> None:
-        result = self.deploy_fails("--all", pattern="Recovery failed")
+    def assert_completion_stopped(self, journal_file: Path, warning: str, changes_home: str = "") -> None:
+        result = self.deploy_fails("--all", pattern="Recovery failed", changes_home=changes_home)
         self.assert_lines(
             result.output,
             f"Recovering committed run {self.RUN} (completing finalization)...",
@@ -687,13 +687,13 @@ class RecoveryBranchTests(RecoveryTestCase):
     def test_a_missing_backup_stops_completion(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         shutil.rmtree(self.skills_dir / "alpha.deploying-bak")
-        self.assert_completion_stopped(journal_file, "  WARNING: Cannot find backup for alpha")
+        self.assert_completion_stopped(journal_file, "  WARNING: Cannot find backup for alpha", RECOVERS)
         self.assertFalse(destination.exists())
 
     def test_a_changed_transient_backup_stops_completion(self) -> None:
         journal_file, destination = self.committed_with_kept_backup()
         self.write(self.skills_dir / "alpha.deploying-bak" / "SKILL.md", "changed after the run\n")
-        self.assert_completion_stopped(journal_file, "  WARNING: Backup hash mismatch for alpha")
+        self.assert_completion_stopped(journal_file, "  WARNING: Backup hash mismatch for alpha", RECOVERS)
         self.assertTrue((self.skills_dir / "alpha.deploying-bak" / "SKILL.md").is_file())
         self.assertFalse(destination.exists())
 
@@ -812,7 +812,9 @@ class RecoveryBranchTests(RecoveryTestCase):
             real_move(source, destination)
 
         with mock.patch("deployer.fsops.move", side_effect=failing_move):
-            result = self.deploy_fails("--all", "--force-item", "alpha", pattern="synthetic backup move failure")
+            result = self.deploy_fails(
+                "--all", "--force-item", "alpha", pattern="synthetic backup move failure", changes_home=FAILS_PARTWAY
+            )
         run_id = self.manifest()["last_run_id"]
         self.assert_lines(
             result.output,

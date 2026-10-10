@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -18,7 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import configure, fsops, pipeline
+from deployer import configure, fsops, pipeline, platform_support
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -29,10 +30,36 @@ SOURCE_ID = "test/skills"
 OWN_SCRIPTS = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
 ALLOWED_TOOLS = json.dumps([f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})"])
 REPORT_GROUP = re.compile(r"([A-Z][A-Z ]*[A-Z]) \(([0-9]+)\):")
+# Why a failure the deployer reports after it began changing the home is expected to change it; see deploy_fails.
+RECOVERS = "recovery of an earlier run changes what it can before it stops"
+FAILS_PARTWAY = "the deployment fails after it began changing the home and keeps its evidence"
+TAKES_THE_LOCK = "the lock is taken, or a stale one reclaimed, before the failure"
 
 
 def forward(path: Path) -> str:
     return str(path).replace("\\", "/")
+
+
+def tree_state(root: Path) -> dict[str, str]:
+    """Each directory, file, and link under root by relative path: a file by a hash of its bytes, a link by its target.
+
+    A link, a junction included, is recorded and not followed, so a change through it is not counted twice.
+    """
+    state: dict[str, str] = {}
+    for directory, directories, files in os.walk(root):
+        base = Path(directory)
+        followed = []
+        for name in sorted([*directories, *files]):
+            path = base / name
+            if platform_support.is_reparse_point(path) or path.is_symlink():
+                state[path.relative_to(root).as_posix()] = f"link {path.readlink()}"
+            elif name in files:
+                state[path.relative_to(root).as_posix()] = f"file {hashlib.sha256(path.read_bytes()).hexdigest()}"
+            else:
+                state[path.relative_to(root).as_posix()] = "directory"
+                followed.append(name)
+        directories[:] = followed
+    return state
 
 
 @dataclass
@@ -156,10 +183,25 @@ class DeployerTestCase(unittest.TestCase):
         path.write_bytes(f"_source_id={source_id}\nREPOS_ROOT={forward(repos)}\n{extra}".encode())
         return path
 
-    def deploy(self, *arguments: str, stdin: str = "", **options: Any) -> Result:
+    def deploy(
+        self,
+        *arguments: str,
+        stdin: str = "",
+        source: Path | None = None,
+        home: Path | None = None,
+        **options: Any,
+    ) -> Result:
+        """Deploy from source (the fixture source by default) into home, failing the test if the source changed.
+
+        Templates are immutable: the deployer renders in memory and writes only under the home, so the source tree is
+        compared, file by file and byte for byte, before and after every deployment a test runs.
+        """
+        source = source or self.source
+        before = tree_state(source)
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), self.paths, stdin=io.StringIO(stdin), **options)
+            code = pipeline.run(list(arguments), Paths(source, home or self.home), stdin=io.StringIO(stdin), **options)
+        self.assertEqual(before, tree_state(source), f"the deployment changed its source:\n{captured.getvalue()}")
         return Result(code, captured.getvalue())
 
     def repository_source(self) -> Path:
@@ -182,11 +224,7 @@ class DeployerTestCase(unittest.TestCase):
         return destination
 
     def deploy_from(self, source: Path, *arguments: str, stdin: str = "") -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), Paths(source, self.home), stdin=io.StringIO(stdin))
-        self.assertEqual(0, code, captured.getvalue())
-        return Result(code, captured.getvalue())
+        return self.deploy_ok(*arguments, stdin=stdin, source=source)
 
     def remove_skill(self, name: str) -> None:
         shutil.rmtree(self.source / "skills" / name)
@@ -203,10 +241,28 @@ class DeployerTestCase(unittest.TestCase):
         self.assertEqual(0, result.code, result.output)
         return result
 
-    def deploy_fails(self, *arguments: str, pattern: str, stdin: str = "", **options: Any) -> Result:
-        result = self.deploy(*arguments, stdin=stdin, **options)
+    def deploy_fails(
+        self,
+        *arguments: str,
+        pattern: str,
+        stdin: str = "",
+        home: Path | None = None,
+        changes_home: str = "",
+        **options: Any,
+    ) -> Result:
+        """Deploy, expecting a failure whose output matches pattern and, unless changes_home says why, no change.
+
+        The deployer finds every reason to stop before it changes a file, so the home is compared, file by file and
+        byte for byte, before and after a refusal. changes_home states why a failure is expected to change it: one that
+        comes after the deployment began, such as a recovery, a lock reclaim, or a run that fails partway.
+        """
+        home = home or self.home
+        before = tree_state(home)
+        result = self.deploy(*arguments, stdin=stdin, home=home, **options)
         self.assertNotEqual(0, result.code, result.output)
         self.assertRegex(result.output, pattern)
+        if not changes_home:
+            self.assertEqual(before, tree_state(home), f"the refusal changed the home:\n{result.output}")
         return result
 
     def report_groups(self, output: str, title: str) -> dict[str, list[str]]:
