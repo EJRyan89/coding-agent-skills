@@ -5,6 +5,8 @@
                 and the synthesis input, context, and prompt
     synthesize  check or record an analyst agent's synthesis result in its report
     decide      record one recommendation's decision in a report; an accepted one resolves its linked flags
+    decide-custom
+                record one decision for every custom-candidate analyzer recommendation of a report together
 
 Every command prints machine-readable lines and exits 0 on success. Expected failures print
 `FAILED <reason>` as the last line and exit 1; only a usage error, such as a malformed date, exits 2.
@@ -21,8 +23,14 @@ repeat counts with the finding it repeats, from the earliest review in range tha
 
 A flag is linked to a recommendation when the flag is open, names a repository, pull request, review version,
 and finding, and that finding, or the finding it repeats or one that repeats it, is among the recommendation's
-findings. Finding IDs restart in every review, so a flag is never matched against another review's finding. Links
-are computed when the report is written, so `decide` resolves exactly the flags it listed.
+findings. Finding IDs restart in every review, so a flag is never matched against another review's finding. A
+synthesized recommendation links instead the open flags its synthesis named, whether or not they name a finding. Links
+are computed when the report is written, so `decide` resolves exactly the flags it listed. A decision is recorded in
+the report before any flag is resolved, so a flag store that fails partway leaves the decision recorded with the flags
+it did resolve, and deciding again resolves the rest.
+
+Every command that writes a report holds its directory's lock from reading it to writing it, so two runs at once never
+lose each other's decisions.
 
 Each recommendation also counts its findings by the reviewer that raised them and the model that reviewer ran on,
 read from the review record: a finding raised by several reviewers counts for each, and a reviewer whose record
@@ -35,11 +43,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
+import json
 import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -50,6 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_synthesis as synthesis_stage
 from console import use_utf8_output
+from flat_text import flat_text
 from git_client import GitClient, GitError
 from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
@@ -60,8 +70,9 @@ from review_config import (
     validate_repository_identity,
 )
 from review_flags import FlagError, default_flags_path, load_store, resolve_flag
-from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_json
+from review_io import SKILLS_ROOT, PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
+from skill_roots import deployed_skill_roots
 
 # Version 2 adds each recommendation's decision_history and linked_flags. Version 3 links a flag only to the
 # finding in the review version it names; earlier reports linked it to whatever finding had its ID in the latest
@@ -72,8 +83,10 @@ from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, vali
 # until it is regenerated.
 # Version 7 adds the report's synthesis and its synthesized recommendations; an earlier report has no synthesis until
 # it is regenerated.
-SCHEMA_VERSION = 7
-READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7}
+# Version 8 adds next_recommendation_number, the first REC- number the report has never given, so a subject a
+# regeneration drops never has its ID given to another; an earlier report gains the number after every ID it holds.
+SCHEMA_VERSION = 8
+READABLE_SCHEMA_VERSIONS = {1, 2, 3, 4, 5, 6, 7, 8}
 UNKNOWN_MODEL = "unknown"
 REVIEWER_FIELDS = {"reviewer", "model", "findings", "flagged_findings", "addressed", "still_present"}
 OUTCOMES = ("addressed", "still_present")
@@ -118,6 +131,9 @@ class Services:
     flags_path: Callable[[], Path] = default_flags_path
     cwd: Callable[[], Path] = Path.cwd
     git_common_dir: Callable[[Path], Path | None] = lambda directory: _git_common_dir(directory)
+    report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
+        json_path.parent / ".locks" / "insights.lock"
+    )
 
 
 def _git_common_dir(directory: Path) -> Path | None:
@@ -128,11 +144,6 @@ def _git_common_dir(directory: Path) -> Path | None:
         return None
     value = completed.stdout.strip()
     return Path(value) if completed.returncode == 0 and value else None
-
-
-def _within(path: Path, root: Path) -> bool:
-    child, parent = os.path.normcase(str(path.resolve())), os.path.normcase(str(root.resolve()))
-    return child == parent or child.startswith(parent.rstrip("\\/") + os.sep)
 
 
 def current_repository(config: dict[str, Any], services: Services) -> str | None:
@@ -146,7 +157,8 @@ def current_repository(config: dict[str, Any], services: Services) -> str | None
     matches = [
         (len(str(Path(entry["checkout_path"]).resolve())), identity)
         for identity, entry in config["repositories"].items()
-        if entry.get("checkout_path") and any(_within(item, Path(entry["checkout_path"])) for item in candidates)
+        if entry.get("checkout_path")
+        and any(item.resolve().is_relative_to(Path(entry["checkout_path"]).resolve()) for item in candidates)
     ]
     return max(matches)[1] if matches else None
 
@@ -393,10 +405,12 @@ def analyze(
     flags: list[dict[str, Any]] | None = None,
     previous: dict[tuple[str, ...], dict[str, Any]] | None = None,
     ledgers: Ledgers | None = None,
+    first_number: int = 1,
 ) -> dict[str, Any]:
     """Recommendations by category, then by analyzer rule; a subject already in `previous` keeps its decision and
     history. `ledgers` gives each finding's ledger entry, so a finding and its repeats count once, from the earliest
-    review in range that carries one, and each entry's outcome (see read_ledgers)."""
+    review in range that carries one, and each entry's outcome (see read_ledgers). A new subject's number is at least
+    `first_number`, the earlier report's next_recommendation_number."""
     ledgers = ledgers or Ledgers({}, {})
     category_counts: Counter[str] = Counter()
     severity_counts: Counter[str] = Counter()
@@ -417,7 +431,7 @@ def analyze(
     earlier = previous or {}
     # A subject keeps the ID it had when the report was regenerated, so an ID the user was shown never comes to
     # name another subject; a new subject gets a number no earlier recommendation used.
-    next_number = next_rec_number(earlier.values())
+    next_number = max(next_rec_number(earlier.values()), first_number)
     categories = sorted(
         (key for key in groups if key[0] == "category"), key=lambda key: (-len(groups[key]), key[1].casefold())
     )
@@ -477,6 +491,7 @@ def analyze(
         "severity_counts": dict(sorted(severity_counts.items())),
         "category_counts": dict(sorted(category_counts.items())),
         "recommendations": recommendations,
+        "next_recommendation_number": next_number,
     }
 
 
@@ -664,10 +679,10 @@ def _upgrade_recommendation(item: Any, version: int, path: Path) -> None:
 def load_report(path: Path) -> dict[str, Any]:
     """A report in the current schema; a version 1 report gains an empty history, a version 1 or 2 report's links
     are dropped because they may name a finding from another review, a report before version 4 gains an empty
-    reviewers breakdown, every recommendation in a report before version 5 is a category one, and a report before
-    version 7 has no synthesis."""
+    reviewers breakdown, every recommendation in a report before version 5 is a category one, a report before
+    version 7 has no synthesis, and a report before version 8 gains the next number after every ID it holds."""
     try:
-        report = read_json(path)
+        report = read_json(path, maximum_bytes=synthesis_stage.MAXIMUM_BYTES)
     except PersistenceError as exc:
         raise InsightError(f"Cannot read insights report {path}: {exc}") from exc
     if not isinstance(report, dict) or report.get("schema_version") not in READABLE_SCHEMA_VERSIONS:
@@ -687,15 +702,46 @@ def load_report(path: Path) -> dict[str, Any]:
         report["synthesis"] is not None and not synthesis_stage.valid_synthesis(report["synthesis"])
     ):
         raise InsightError(f"{path} has an invalid synthesis")
+    used = next_rec_number(_given(report))
+    if report["schema_version"] < 8:
+        report["next_recommendation_number"] = used
+    number = report.get("next_recommendation_number")
+    if type(number) is not int or number < used:
+        raise InsightError(f"{path}.next_recommendation_number must be a number after every recommendation ID")
     report["schema_version"] = SCHEMA_VERSION
     return report
 
 
+def _given(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every recommendation a report holds, its superseded synthesized ones included."""
+    synthesis = report["synthesis"]
+    superseded = synthesis["superseded"] if synthesis else []
+    return [*report["recommendations"], *(item for run in superseded for item in run["recommendations"])]
+
+
 def write_report(json_path: Path, report: dict[str, Any]) -> Path:
+    """Write the report and its Markdown. A report larger than `load_report` reads is refused before anything is
+    written, so the script never writes a report it would then refuse."""
+    content = json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    if len(content.encode("utf-8")) > synthesis_stage.MAXIMUM_BYTES:
+        raise InsightError(
+            f"The report would exceed {synthesis_stage.MAXIMUM_BYTES} bytes, more than it could be read back with; "
+            "report a shorter range"
+        )
     markdown_path = json_path.with_suffix(".md")
-    atomic_write_json(json_path, report)
+    atomic_write_text(json_path, content)
     atomic_write_text(markdown_path, render(report))
     return markdown_path
+
+
+def outside_skill_directories(summary_root: Path) -> Path:
+    """`summary_root`, refused when it is inside a skills directory: a file left inside a skill directory makes the
+    deployer see that skill as modified and stop updating it."""
+    target = summary_root.resolve()
+    for root in (SKILLS_ROOT, *deployed_skill_roots()):
+        if target.is_relative_to(root.resolve()):
+            raise InsightError(f"summary_root {summary_root} is inside the skills directory {root}; configure another")
+    return summary_root
 
 
 def create_report(
@@ -707,58 +753,61 @@ def create_report(
     start: date,
     end: date,
     flags: list[dict[str, Any]] | None = None,
+    services: Services | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     """Write insights for the range and the input of its synthesis. Regenerating keeps each subject's decision and
     decision history, and a recorded synthesis while its input is unchanged; a changed input supersedes it."""
     if not SET_NAME.fullmatch(repository_set):
         raise InsightError("Repository-set name is invalid")
+    set_root = outside_skill_directories(summary_root) / repository_set
+    json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
     pairs = RecordPairs()
     records = collect_records(archive_root, repositories, start, end, pairs)
-    set_root = summary_root / repository_set
-    json_path = set_root / f"{start.isoformat()}--{end.isoformat()}" / "insights.json"
-    earlier = load_report(json_path) if json_path.exists() else None
-    previous = {subject_key(item): item for item in earlier["recommendations"]} if earlier else {}
-    # A superseded recommendation keeps its ID, so no later subject is given it.
-    prior_synthesis = earlier["synthesis"] if earlier else None
-    for run in prior_synthesis["superseded"] if prior_synthesis else []:
-        previous.update({("superseded", item["id"]): item for item in run["recommendations"]})
-    ledgers = read_ledgers(archive_root, records, pairs)
-    report = {
-        "schema_version": SCHEMA_VERSION,
-        "repository_set": repository_set,
-        "repositories": sorted(validate_repository_identity(value) for value in repositories),
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        **analyze(records, flags=flags, previous=previous, ledgers=ledgers),
-        "records": [
-            {
-                "path": str(path),
-                "repository": record["repository"],
-                "pull_number": record["pull_request"]["number"],
-                "review_version": record["review"]["version"],
-                "payload_sha256": record["artifacts"]["payload_sha256"],
-            }
-            for path, record in records
-        ],
-    }
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    analyzed = synthesis_stage.Analyzed(
-        report=report,
-        records=[record for _, record in records],
-        pairs=counted_pairs(records, ledgers),
-        outcomes=ledgers.outcomes,
-        flagged=set(flags_by_entry(flags or [], ledgers)),
-    )
-    fresh = synthesis_stage.prepare(
-        json_path.parent,
-        analyzed,
-        flags=flags or [],
-        guidance=synthesis_stage.guidance_files(report["repositories"], pairs.validated),
-        previous=synthesis_stage.previous_period(set_root, start, load_report),
-        script=SCRIPT,
-    )
-    _carry_synthesis(report, fresh, earlier)
-    return json_path, write_report(json_path, report), report
+    with (services or Services()).report_lock(json_path):
+        earlier = load_report(json_path) if json_path.exists() else None
+        previous = {subject_key(item): item for item in earlier["recommendations"]} if earlier else {}
+        # A superseded recommendation keeps its ID, so no later subject is given it.
+        prior_synthesis = earlier["synthesis"] if earlier else None
+        for run in prior_synthesis["superseded"] if prior_synthesis else []:
+            previous.update({("superseded", item["id"]): item for item in run["recommendations"]})
+        ledgers = read_ledgers(archive_root, records, pairs)
+        first_number = earlier["next_recommendation_number"] if earlier else 1
+        report = {
+            "schema_version": SCHEMA_VERSION,
+            "repository_set": repository_set,
+            "repositories": sorted(validate_repository_identity(value) for value in repositories),
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            **analyze(records, flags=flags, previous=previous, ledgers=ledgers, first_number=first_number),
+            "records": [
+                {
+                    "path": str(path),
+                    "repository": record["repository"],
+                    "pull_number": record["pull_request"]["number"],
+                    "review_version": record["review"]["version"],
+                    "payload_sha256": record["artifacts"]["payload_sha256"],
+                }
+                for path, record in records
+            ],
+        }
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        analyzed = synthesis_stage.Analyzed(
+            report=report,
+            records=[record for _, record in records],
+            pairs=counted_pairs(records, ledgers),
+            outcomes=ledgers.outcomes,
+            flagged=set(flags_by_entry(flags or [], ledgers)),
+        )
+        fresh = synthesis_stage.prepare(
+            json_path.parent,
+            analyzed,
+            flags=flags or [],
+            guidance=synthesis_stage.guidance_files(report["repositories"], pairs.validated),
+            previous=synthesis_stage.previous_period(set_root, start, load_report),
+            script=SCRIPT,
+        )
+        _carry_synthesis(report, fresh, earlier)
+        return json_path, write_report(json_path, report), report
 
 
 def _carry_synthesis(report: dict[str, Any], fresh: dict[str, Any], earlier: dict[str, Any] | None) -> None:
@@ -809,6 +858,7 @@ def report_from_config(
         start=start,
         end=end,
         flags=load_store(services.flags_path())["flags"],
+        services=services,
     )
 
 
@@ -816,43 +866,54 @@ def synthesize(
     report_path: Path, result_path: Path, *, check: bool = False, services: Services | None = None
 ) -> list[dict[str, Any]]:
     """Record a synthesis result in its report, or with `check` only test that it could be recorded. Returns the
-    recommendations it adds. A result is refused, and the report left unchanged, unless it is the result file the
-    report named, its input is still what the report sealed, and it passes every check."""
+    recommendations it adds. A result is refused, and the report left unchanged, unless the report's synthesis is
+    still pending, it is the result file the report named, its input is still what the report sealed, and it passes
+    every check."""
     services = services or Services()
-    report = load_report(report_path)
-    synthesis = report["synthesis"]
-    if synthesis is None or synthesis["status"] == "skipped":
-        raise InsightError(f"{report_path} has no synthesis to record; run report again")
-    if synthesis["status"] == "complete" and not check:
-        raise InsightError(f"{report_path} already has a recorded synthesis; it is replaced when its input changes")
-    if result_path.resolve() != Path(synthesis["result"]).resolve():
-        raise InsightError(f"The synthesis result must be {synthesis['result']}")
-    try:
-        context = synthesis_stage.load_context(synthesis)
-        result = synthesis_stage.check_result(read_json(result_path), context, synthesis["input_sha256"])
-    except PersistenceError as exc:
-        raise InsightError(f"Cannot read the synthesis result: {exc}") from exc
-    if check:
-        return []
-    taken = [*report["recommendations"], *(item for run in synthesis["superseded"] for item in run["recommendations"])]
-    added = [
-        synthesis_stage.recorded_recommendation(item, f"REC-{number:03d}")
-        for number, item in enumerate(result["recommendations"], start=next_rec_number(taken))
-    ]
-    report["recommendations"].extend(added)
-    synthesis.update(
-        {
-            "status": "complete",
-            "recorded_at": services.now().isoformat(),
-            **{key: result[key] for key in ("themes", "mistakes", "persistent_patterns")},
-            "reviewer_effectiveness": result["reviewer_effectiveness"],
-            "comparison": result["comparison"],
-            "categories": result["categories"],
-            "custom_rule_patterns": result["custom_rule_patterns"],
-        }
-    )
-    write_report(report_path, report)
-    return added
+    with _existing_report_lock(report_path, services):
+        report = load_report(report_path)
+        synthesis = report["synthesis"]
+        if synthesis is None or synthesis["status"] == "skipped":
+            raise InsightError(f"{report_path} has no synthesis to record; run report again")
+        if synthesis["status"] == "complete":
+            raise InsightError(f"{report_path} already has a recorded synthesis; it is replaced when its input changes")
+        if result_path.resolve() != Path(synthesis["result"]).resolve():
+            raise InsightError(f"The synthesis result must be {synthesis['result']}")
+        try:
+            context = synthesis_stage.load_context(synthesis)
+            result = synthesis_stage.check_result(read_json(result_path), context, synthesis["input_sha256"])
+        except PersistenceError as exc:
+            raise InsightError(f"Cannot read the synthesis result: {exc}") from exc
+        if check:
+            return []
+        first = report["next_recommendation_number"]
+        added = [
+            synthesis_stage.recorded_recommendation(item, f"REC-{number:03d}")
+            for number, item in enumerate(result["recommendations"], start=first)
+        ]
+        report["recommendations"].extend(added)
+        report["next_recommendation_number"] = first + len(added)
+        synthesis.update(
+            {
+                "status": "complete",
+                "recorded_at": services.now().isoformat(),
+                **{key: result[key] for key in ("themes", "mistakes", "persistent_patterns")},
+                "reviewer_effectiveness": result["reviewer_effectiveness"],
+                "comparison": result["comparison"],
+                "categories": result["categories"],
+                "custom_rule_patterns": result["custom_rule_patterns"],
+            }
+        )
+        write_report(report_path, report)
+        return added
+
+
+def _existing_report_lock(report_path: Path, services: Services) -> AbstractContextManager[Any]:
+    """The lock of a report that exists: a lock is a directory beside the report, so a mistyped report path fails
+    instead of creating directories there."""
+    if not report_path.is_file():
+        raise InsightError(f"Cannot read insights report {report_path}: no such file")
+    return services.report_lock(report_path)
 
 
 def decide(
@@ -872,8 +933,8 @@ def decide(
     The subject (a category, an analyzer's coverage, tool, and rule, or a synthesized recommendation's title) and
     linked flags the user was shown must still match, so a decision never lands on a different recommendation or
     resolves a flag linked after the user saw it (a report regenerated in between keeps the ID but can gain flags).
-    The subject matches as the report's line printed it, screened, or as recorded. Only an accepted recommendation
-    resolves flags.
+    The subject matches as the report's line printed it, screened, or as recorded, a synthesized title without regard
+    to case. Only an accepted recommendation resolves flags, after its decision is recorded (see _resolve_recorded).
     """
     services = services or Services()
     if decision not in DECISIONS:
@@ -882,37 +943,35 @@ def decide(
         raise InsightError("Name exactly one subject: a category, an analyzer, or a synthesized title")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
-    report = load_report(report_path)
-    matching = [item for item in report["recommendations"] if item["id"] == recommendation_id]
-    if len(matching) != 1:
-        raise InsightError(f"Unknown recommendation: {recommendation_id}")
-    item = matching[0]
-    shown_kind, shown, wanted = _shown_subject(category, analyzer, synthesized)
-    if _as_printed(subject_key(item)) != _as_printed(wanted):
-        raise InsightError(
-            f"{recommendation_id} is now {item['kind']} {describe(item)!r}, not {shown_kind} {shown!r}; run report "
-            "again and confirm the decision with the user"
-        )
-    if sorted(item["linked_flags"]) != sorted(set(flags)):
-        shown_flags = ",".join(sorted(set(flags))) or "none"
-        current = ",".join(sorted(item["linked_flags"])) or "none"
-        raise InsightError(
-            f"{recommendation_id} now links flags {current}, not {shown_flags}; run report again and confirm the "
-            "decision with the user"
-        )
-    resolution = f"Accepted review-insights recommendation {item['id']} ({describe(item)}) in {report_path}"
-    resolved, skipped = (
-        _resolve_flags(item["linked_flags"], resolution, note, services) if decision == "accepted" else ([], [])
-    )
-    _record_decision(item, decision, note, resolved, services)
-    write_report(report_path, report)
-    return resolved, skipped
+    with _existing_report_lock(report_path, services):
+        report = load_report(report_path)
+        matching = [item for item in report["recommendations"] if item["id"] == recommendation_id]
+        if len(matching) != 1:
+            raise InsightError(f"Unknown recommendation: {recommendation_id}")
+        item = matching[0]
+        shown_kind, shown, wanted = _shown_subject(category, analyzer, synthesized)
+        if _as_printed(subject_key(item)) != _as_printed(wanted):
+            raise InsightError(
+                f"{recommendation_id} is now {item['kind']} {describe(item)!r}, not {shown_kind} {shown!r}; run "
+                "report again and confirm the decision with the user"
+            )
+        if sorted(item["linked_flags"]) != sorted(set(flags)):
+            shown_flags = ",".join(sorted(set(flags))) or "none"
+            current = ",".join(sorted(item["linked_flags"])) or "none"
+            raise InsightError(
+                f"{recommendation_id} now links flags {current}, not {shown_flags}; run report again and confirm "
+                "the decision with the user"
+            )
+        resolution = f"Accepted review-insights recommendation {item['id']} ({describe(item)}) in {report_path}"
+        pending, skipped = _open_flags(item["linked_flags"], services) if decision == "accepted" else ([], [])
+        entry = _record_decision(item, decision, note, pending, services)
+        write_report(report_path, report)
+        _resolve_recorded(report_path, report, [entry], _resolution_text(resolution, note), services)
+        return pending, skipped
 
 
-def _resolve_flags(
-    flag_ids: list[str], resolution: str, note: str | None, services: Services
-) -> tuple[list[str], list[str]]:
-    """Resolve the flags still open; returns those resolved and those already resolved."""
+def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:
+    """The flags among `flag_ids` still open, and those already resolved; every one must be in the store."""
     if not flag_ids:
         return [], []
     flags_path = services.flags_path()
@@ -920,25 +979,43 @@ def _resolve_flags(
     missing = [flag for flag in flag_ids if flag not in status]
     if missing:
         raise InsightError(f"Linked flags are not in the flag store {flags_path}: {', '.join(missing)}")
-    text = f"{resolution}: {note}" if note else resolution
+    return [flag for flag in flag_ids if status[flag] == "open"], [flag for flag in flag_ids if status[flag] != "open"]
+
+
+def _resolution_text(resolution: str, note: str | None) -> str:
+    return f"{resolution}: {note}" if note else resolution
+
+
+def _resolve_recorded(
+    report_path: Path, report: dict[str, Any], entries: list[dict[str, Any]], text: str, services: Services
+) -> None:
+    """Resolve the flags the written decision entries list. The decision is recorded first, so a resolved flag
+    always points at a decision the report holds; when the store fails partway, the entries are rewritten to list
+    only the flags resolved, and deciding again resolves the rest."""
+    wanted = list(dict.fromkeys(flag for entry in entries for flag in entry["resolved_flags"]))
     resolved: list[str] = []
-    skipped: list[str] = []
-    for flag_id in flag_ids:
-        if status[flag_id] != "open":
-            skipped.append(flag_id)
-            continue
-        resolve_flag(flags_path, flag_id, text)
-        resolved.append(flag_id)
-    return resolved, skipped
+    try:
+        for flag_id in wanted:
+            resolve_flag(services.flags_path(), flag_id, text)
+            resolved.append(flag_id)
+    except (FlagError, PersistenceError, OSError) as exc:
+        for entry in entries:
+            entry["resolved_flags"] = [flag for flag in entry["resolved_flags"] if flag in resolved]
+        write_report(report_path, report)
+        left = ", ".join(flag for flag in wanted if flag not in resolved)
+        raise InsightError(
+            f"The decision is recorded in {report_path}, but flags {left} could not be resolved: {exc}; decide "
+            "again to resolve them"
+        ) from exc
 
 
 def _record_decision(
     item: dict[str, Any], decision: str, note: str | None, resolved: list[str], services: Services
-) -> None:
+) -> dict[str, Any]:
+    entry = {"decision": decision, "decided_at": services.now().isoformat(), "note": note, "resolved_flags": resolved}
     item["decision"] = decision
-    item["decision_history"].append(
-        {"decision": decision, "decided_at": services.now().isoformat(), "note": note, "resolved_flags": resolved}
-    )
+    item["decision_history"].append(entry)
+    return entry
 
 
 def decide_custom(
@@ -952,22 +1029,26 @@ def decide_custom(
         raise InsightError(f"Decision must be one of: {', '.join(DECISIONS)}")
     if note is not None and not note.strip():
         raise InsightError("A decision note must not be blank")
-    report = load_report(report_path)
-    items = custom_candidates(report)
-    if not items:
-        raise InsightError(f"{report_path} has no custom-candidate recommendations")
-    linked = sorted({flag for item in items for flag in item["linked_flags"]})
-    if linked != sorted(set(flags)):
-        raise InsightError(
-            f"The custom-candidate recommendations now link flags {','.join(linked) or 'none'}, not "
-            f"{','.join(sorted(set(flags))) or 'none'}; run report again and confirm the decision with the user"
-        )
-    resolution = f"Accepted the custom-candidate analyzer recommendations in {report_path}"
-    resolved, skipped = _resolve_flags(linked, resolution, note, services) if decision == "accepted" else ([], [])
-    for item in items:
-        _record_decision(item, decision, note, [flag for flag in item["linked_flags"] if flag in resolved], services)
-    write_report(report_path, report)
-    return resolved, skipped, len(items)
+    with _existing_report_lock(report_path, services):
+        report = load_report(report_path)
+        items = custom_candidates(report)
+        if not items:
+            raise InsightError(f"{report_path} has no custom-candidate recommendations")
+        linked = sorted({flag for item in items for flag in item["linked_flags"]})
+        if linked != sorted(set(flags)):
+            raise InsightError(
+                f"The custom-candidate recommendations now link flags {','.join(linked) or 'none'}, not "
+                f"{','.join(sorted(set(flags))) or 'none'}; run report again and confirm the decision with the user"
+            )
+        resolution = f"Accepted the custom-candidate analyzer recommendations in {report_path}"
+        pending, skipped = _open_flags(linked, services) if decision == "accepted" else ([], [])
+        entries = [
+            _record_decision(item, decision, note, [flag for flag in item["linked_flags"] if flag in pending], services)
+            for item in items
+        ]
+        write_report(report_path, report)
+        _resolve_recorded(report_path, report, entries, _resolution_text(resolution, note), services)
+        return pending, skipped, len(items)
 
 
 def _as_printed(key: tuple[str, ...]) -> tuple[str, ...]:
@@ -1015,14 +1096,10 @@ def _print_synthesized(item: dict[str, Any]) -> None:
     )
     print(f"TITLE {item['id']} {item['title']}")
     print(f"TARGET {item['id']} {target}")
-    print(f"CHANGE {item['id']} {_flat(item['change'])}")
-    print(f"RATIONALE {item['id']} {_flat(item['rationale'])}")
+    print(f"CHANGE {item['id']} {flat_text(item['change'])}")
+    print(f"RATIONALE {item['id']} {flat_text(item['rationale'])}")
     for ref in item["evidence"][:EXAMPLES_PRINTED]:
         print(f"EXAMPLE {item['id']} {ref}")
-
-
-def _flat(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def custom_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1094,7 +1171,7 @@ def _run_synthesize(args: argparse.Namespace, services: Services | None) -> int:
         added = synthesize(args.report, args.result, check=args.check, services=services)
     except synthesis_stage.SynthesisError as exc:
         for problem in exc.problems[: synthesis_stage.PROBLEMS_SHOWN]:
-            print(f"PROBLEM {_flat(problem)}")
+            print(f"PROBLEM {flat_text(problem)}")
         print(f"FAILED {exc}")
         return 1
     if args.check:

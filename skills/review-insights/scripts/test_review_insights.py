@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -253,7 +254,7 @@ class ReportTests(InsightFixture):
             lines,
         )
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(7, report["schema_version"])
+        self.assertEqual(8, report["schema_version"])
         self.assertEqual(3, report["record_count"], "the out-of-range review is excluded")
         self.assertEqual([], report["recommendations"][0]["decision_history"])
         markdown = json_path.with_suffix(".md").read_text(encoding="utf-8")
@@ -820,7 +821,7 @@ class DecideTests(InsightFixture):
         code, out, err = self.decide(json_path, "REC-001", "Style", "none", "accepted")
         self.assertEqual((0, "DECIDED REC-001 accepted\n"), (code, out), err)
         report = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(7, report["schema_version"])
+        self.assertEqual(8, report["schema_version"])
         self.assertEqual([], report["recommendations"][0]["linked_flags"])
         self.assertEqual([], report["recommendations"][0]["reviewers"])
         self.assertEqual(1, len(report["recommendations"][0]["decision_history"]))
@@ -838,7 +839,7 @@ class DecideTests(InsightFixture):
         self.assertEqual([f"FLAG_RESOLVED {flag}", "DECIDED REC-001 accepted"], out.splitlines())
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (7, [], "category"),
+            (8, [], "category"),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"],
@@ -867,7 +868,7 @@ class DecideTests(InsightFixture):
         self.assertEqual(0, code, err)
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
         self.assertEqual(
-            (7, None, None),
+            (8, None, None),
             (
                 upgraded["schema_version"],
                 upgraded["recommendations"][0]["reviewers"][0]["addressed"],
@@ -922,7 +923,7 @@ class DecideTests(InsightFixture):
         self.assertEqual((0, f"DECIDED {recommendation} accepted\n"), (code, out), err)
         self.assertEqual({"open"}, {flag["status"] for flag in load_store(self.flags)["flags"]})
         upgraded = json.loads(json_path.read_text(encoding="utf-8"))
-        self.assertEqual(7, upgraded["schema_version"])
+        self.assertEqual(8, upgraded["schema_version"])
         self.assertEqual([[], []], [item["linked_flags"] for item in upgraded["recommendations"]])
 
     def test_failures_leave_report_and_flags_unchanged(self) -> None:
@@ -945,6 +946,9 @@ class DecideTests(InsightFixture):
         self.assertFailed(
             self.decide(json_path.with_name("absent.json"), "REC-001", "Style", "none", "rejected"), "absent.json"
         )
+        mistyped = self.root / "no such directory" / "insights.json"
+        self.assertFailed(self.decide(mistyped, "REC-001", "Style", "none", "rejected"), "no such file")
+        self.assertFalse(mistyped.parent.exists(), "the report's lock is never made beside a missing report")
 
 
 class AnalyzerTests(InsightFixture):
@@ -1187,6 +1191,185 @@ class AnalyzerTests(InsightFixture):
             json_path.write_text(json.dumps(tampered), encoding="utf-8")
             with self.assertRaisesRegex(ri.InsightError, message):
                 ri.load_report(json_path)
+
+    def test_custom_candidates_decided_apart_print_a_mixed_decision(self) -> None:
+        self.commit_covered()
+        self.commit("owner/repo", 9, [covered("custom-candidate", "Roslyn", "missing-cancellation")])
+        json_path, lines = self.report()
+        self.assertIn("CUSTOM_CANDIDATES rules=2 findings=3 decision=deferred flags=none", lines)
+        identifier = next(
+            item["id"]
+            for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]
+            if item.get("rule") == "missing-cancellation"
+        )
+        code, _, err = self.run_main(
+            "decide",
+            "--report",
+            str(json_path),
+            identifier,
+            "--analyzer",
+            "custom-candidate",
+            "Roslyn",
+            "missing-cancellation",
+            "--flags",
+            "none",
+            "rejected",
+        )
+        self.assertEqual(0, code, err)
+        _, lines = self.report()
+        self.assertIn("CUSTOM_CANDIDATES rules=2 findings=3 decision=mixed flags=none", lines)
+
+
+class RecordingTests(InsightFixture):
+    """How a report is written: the order of a decision and its flags, the report's lock, its IDs, and its size."""
+
+    def decide(self, json_path: Path, identifier: str, category: str, flags: str) -> tuple[int, str, str]:
+        return self.run_main(
+            "decide", "--report", str(json_path), identifier, "--category", category, "--flags", flags, "accepted"
+        )
+
+    def test_a_store_failure_partway_leaves_the_decision_recorded_and_deciding_again_resolves_the_rest(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        first, second = self.flag("guideline"), self.flag("noise")
+        json_path, _ = self.report()
+        resolve = ri.resolve_flag
+
+        def fail_on_second(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
+            if flag_id == second:
+                raise ri.PersistenceError("the store is locked by another process")
+            return resolve(path, flag_id, resolution)
+
+        with mock.patch.object(ri, "resolve_flag", fail_on_second):
+            self.assertFailed(
+                self.decide(json_path, "REC-001", "Correctness", f"{first},{second}"),
+                f"The decision is recorded in {json_path}, but flags {second} could not be resolved",
+            )
+        status = {flag["id"]: flag["status"] for flag in load_store(self.flags)["flags"]}
+        self.assertEqual({first: "resolved", second: "open"}, status)
+        item = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][0]
+        self.assertEqual("accepted", item["decision"])
+        self.assertEqual([[first]], [entry["resolved_flags"] for entry in item["decision_history"]])
+        self.assertIn(f"accepted (resolved {first})", json_path.with_suffix(".md").read_text(encoding="utf-8"))
+        code, out, err = self.decide(json_path, "REC-001", "Correctness", f"{first},{second}")
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {second}", f"FLAG_ALREADY_RESOLVED {first}", "DECIDED REC-001 accepted"]),
+            (code, out.splitlines()),
+            err,
+        )
+        item = json.loads(json_path.read_text(encoding="utf-8"))["recommendations"][0]
+        self.assertEqual([[first], [second]], [entry["resolved_flags"] for entry in item["decision_history"]])
+
+    def test_a_flag_is_resolved_only_after_its_decision_is_written(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        flag = self.flag("guideline")
+        json_path, _ = self.report()
+        resolve = ri.resolve_flag
+        seen: list[list[str]] = []
+
+        def record_then_resolve(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
+            report = json.loads(json_path.read_text(encoding="utf-8"))
+            seen.append(report["recommendations"][0]["decision_history"][-1]["resolved_flags"])
+            return resolve(path, flag_id, resolution)
+
+        with mock.patch.object(ri, "resolve_flag", record_then_resolve):
+            self.assertEqual(0, self.decide(json_path, "REC-001", "Correctness", flag)[0])
+        self.assertEqual([[flag]], seen)
+
+    def test_every_report_write_reads_the_report_only_once_it_holds_the_lock(self) -> None:
+        # Another run's decision, recorded while this run waits for the lock, is in the report this run reads, so
+        # neither run's write loses the other's.
+        self.commit("owner/repo", 7, ["Correctness", "Style"])
+        json_path, _ = self.report()
+        lock = ri.Services().report_lock(json_path)
+        self.assertIsInstance(lock, ri.ResourceLock)
+        self.assertEqual(json_path.parent / ".locks" / "insights.lock", getattr(lock, "directory", None))
+        services = self.services
+
+        class Interloper(contextlib.AbstractContextManager[None]):
+            def __init__(self, path: Path) -> None:
+                self.path = path
+
+            def __enter__(self) -> None:
+                ri.decide(self.path, "REC-002", "Style", [], "rejected", note="Meanwhile", services=services)
+
+            def __exit__(self, *exc: object) -> None:
+                return None
+
+        self.services = dataclasses.replace(services, report_lock=Interloper)
+        for command in ("decide", "report"):
+            with self.subTest(command):
+                if command == "decide":
+                    self.assertEqual(0, self.decide(json_path, "REC-001", "Correctness", "none")[0])
+                else:
+                    self.report()
+                history = {
+                    item["id"]: [entry["note"] for entry in item["decision_history"]]
+                    for item in json.loads(json_path.read_text(encoding="utf-8"))["recommendations"]
+                }
+                self.assertEqual("Meanwhile", history["REC-002"][-1])
+                self.assertEqual([None], history["REC-001"])
+
+    def test_a_subject_a_regeneration_drops_never_has_its_id_given_again(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        self.commit("owner/repo", 8, ["Style"])
+        json_path, lines = self.report()
+        self.assertIn("RECOMMENDATION REC-002 Style findings=1 decision=deferred flags=none", lines)
+        shutil.rmtree(self.archive / "owner" / "repo" / "pulls" / "8")
+        _, lines = self.report()
+        self.assertEqual(["RECOMMENDATION REC-001 Correctness findings=1 decision=deferred flags=none"], lines)
+        self.commit("owner/repo", 9, ["Security"])
+        _, lines = self.report()
+        self.assertIn("RECOMMENDATION REC-003 Security findings=1 decision=deferred flags=none", lines)
+        self.assertEqual(4, json.loads(json_path.read_text(encoding="utf-8"))["next_recommendation_number"])
+
+    def test_a_version_seven_report_gains_the_number_after_every_id_it_holds(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness", "Style"])
+        json_path, _ = self.report()
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        report["schema_version"] = 7
+        del report["next_recommendation_number"]
+        json_path.write_text(json.dumps(report), encoding="utf-8")
+        self.assertEqual(0, self.decide(json_path, "REC-001", "Correctness", "none")[0])
+        upgraded = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual((8, 3), (upgraded["schema_version"], upgraded["next_recommendation_number"]))
+        for broken in (2, "3", None):
+            with self.subTest(number=broken):
+                json_path.write_text(json.dumps({**upgraded, "next_recommendation_number": broken}), encoding="utf-8")
+                self.assertFailed(
+                    self.decide(json_path, "REC-001", "Correctness", "none"),
+                    "next_recommendation_number must be a number after every recommendation ID",
+                )
+
+    def test_a_report_is_written_only_when_it_could_be_read_back(self) -> None:
+        # Analyzer recommendations keep every finding they cover as evidence, so a report can grow large; the cap it
+        # is written under is the cap it is read with.
+        self.commit("owner/repo", 7, ["Correctness"])
+        json_path, _ = self.report()
+        size = json_path.stat().st_size
+        report = ri.load_report(json_path)
+        with mock.patch.object(review_synthesis, "MAXIMUM_BYTES", size):
+            self.assertEqual(report, ri.load_report(json_path), "a report at the cap is read")
+            ri.write_report(json_path, report)
+        self.assertEqual(size, json_path.stat().st_size, "and written")
+        before = json_path.read_text(encoding="utf-8")
+        with mock.patch.object(review_synthesis, "MAXIMUM_BYTES", size - 1):
+            self.assertFailed(self.decide(json_path, "REC-001", "Correctness", "none"), f"exceeds {size - 1} bytes")
+            with self.assertRaises(ri.InsightError) as raised:
+                ri.write_report(json_path, report)
+        self.assertIn(f"would exceed {size - 1} bytes", str(raised.exception))
+        self.assertEqual(before, json_path.read_text(encoding="utf-8"))
+
+    def test_a_summary_root_inside_a_skills_directory_is_refused_before_anything_is_written(self) -> None:
+        deployed = self.root / "deployed skills"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        write_config({**config, "summary_root": str(deployed / "insights")}, self.config_path)
+        self.commit("owner/repo", 7, ["Correctness"])
+        with mock.patch.object(ri, "deployed_skill_roots", return_value=(deployed,)):
+            self.assertFailed(
+                self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
+                f"is inside the skills directory {deployed}",
+            )
+        self.assertFalse(deployed.exists())
 
 
 class ScopeTests(InsightFixture):
