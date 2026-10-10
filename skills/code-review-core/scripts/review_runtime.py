@@ -1753,11 +1753,13 @@ def search_source(
     `git cat-file --batch` and tested the first time it matches. No textconv applies. Each line is read only as far
     as a match can show, so a long line of a binary file is never held whole, and its text is read as UTF-8 with
     U+FFFD for any other byte, cut at MAX_MATCH_CHARACTERS. A path the snapshot excludes, such as an agent
-    instruction file, is left out.
+    instruction file, is left out, and so is a document the snapshot holds as its extracted text, wherever it holds
+    that text: the commit holds the document's own bytes, not the text a reviewer reads.
     """
     metadata = _verify_snapshot(root, expected_repository=repository, expected_commit=commit, contents=False)[0]
     fetchable: dict[str, str] = metadata.get(SNAPSHOT_FETCHABLE, {})
     text = dict.fromkeys(metadata["source_hashes"], True)  # path -> whether the snapshot's test finds it text
+    text.update(dict.fromkeys(metadata.get(SNAPSHOT_EXTRACTED, {}), False))
     prefix = f"{commit}:".encode("ascii")
     # The commit, the longest path, two NULs, a line number, and enough bytes of text to run past
     # MAX_MATCH_CHARACTERS however they decode.
