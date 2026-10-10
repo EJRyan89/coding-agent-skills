@@ -560,8 +560,8 @@ def document_diff(
     lines = [*header, note]
     lines.append("--- " + ("/dev/null" if old is None else quoted_path("a/", old)))
     lines.append("+++ " + ("/dev/null" if new is None else quoted_path("b/", new)))
-    matcher = difflib.SequenceMatcher(
-        None, [split_label(line)[1] for line in base_lines], [split_label(line)[1] for line in head_lines]
+    matcher = _AnchoredMatcher(
+        [split_label(line)[1] for line in base_lines], [split_label(line)[1] for line in head_lines]
     )
     hunks = 0
     for group in matcher.get_grouped_opcodes(DIFF_CONTEXT):
@@ -577,6 +577,41 @@ def document_diff(
         lines[len(header)] += UNCHANGED_NOTE
         del lines[len(header) + 1 :]
     return "\n".join(lines) + "\n"
+
+
+class _AnchoredMatcher(difflib.SequenceMatcher[str]):
+    """A line matcher that matches the longest common start and end of two texts before matching what lies between.
+
+    Matched in one pass, a run of identical paragraphs pairs its longest stretch first, wherever that falls, so one
+    paragraph inserted among them shows as every line on one side of it removed and added again, and above 200 lines
+    the popular-line heuristic leaves a repeated paragraph unmatched altogether. With the ends anchored, one change
+    anywhere leaves nothing else between them. What lies between keeps the heuristic: without it, matching a long
+    run of identical lines takes time that grows with the cube of its length, minutes for a two-thousand-row table.
+    """
+
+    def __init__(self, base: list[str], head: list[str]) -> None:
+        super().__init__(None, base, head)
+        self.base, self.head = base, head
+
+    def get_matching_blocks(self) -> list[difflib.Match]:
+        base, head = self.base, self.head
+        shorter = min(len(base), len(head))
+        start = 0
+        while start < shorter and base[start] == head[start]:
+            start += 1
+        end = 0
+        while end < shorter - start and base[-1 - end] == head[-1 - end]:
+            end += 1
+        middle = difflib.SequenceMatcher(None, base[start : len(base) - end], head[start : len(head) - end])
+        blocks = [difflib.Match(0, 0, start)] if start else []
+        blocks.extend(
+            difflib.Match(first + start, second + start, size)
+            for first, second, size in middle.get_matching_blocks()[:-1]
+        )
+        if end:
+            blocks.append(difflib.Match(len(base) - end, len(head) - end, end))
+        blocks.append(difflib.Match(len(base), len(head), 0))
+        return blocks
 
 
 def _range(start: int, stop: int) -> str:
