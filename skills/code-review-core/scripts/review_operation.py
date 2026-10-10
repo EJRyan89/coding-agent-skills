@@ -250,7 +250,11 @@ def commit_adapter_result(
     flags: list[dict[str, Any]] | None = None,
     dispatch: str | None = None,
     snapshot: dict[str, Any] | None = None,
+    documents: dict[str, list[str]] | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
+    """Archive a validated reviewer result as the pull request's next review record. `documents` holds, for each
+    changed document whose extracted text the reviewers read, each line's place in the document, which a finding on
+    that line records as its `location`."""
     request = read_json(request_path)
     result_value = read_json(result_path)
     prior_ids = _ids(request.get("prior_findings", []), "prior finding")
@@ -266,6 +270,10 @@ def commit_adapter_result(
     )
     if result["status"] != "complete":
         raise ReviewOperationError(f"Reviewer result status is {result['status']}; incomplete results are not archived")
+    for finding in result["findings"]:
+        places = (documents or {}).get(finding["path"], [])
+        if finding["line"] <= len(places) and places[finding["line"] - 1]:
+            finding["location"] = places[finding["line"] - 1]
     repository = validate_repository_identity(request["repository"])
     number = request["pull_number"]
     current, ledger = archive_head(archive_root, repository, number)

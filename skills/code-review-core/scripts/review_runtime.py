@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
+from review_documents import DOCUMENT_FORMATS, ExtractionRefused, document_format, extract
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
 
@@ -36,6 +37,9 @@ SOURCE_SNAPSHOT_FIELDS = frozenset({"schema_version", "repository", "source_comm
 # A lazy snapshot's manifest also lists, by blob id, each path it can hold that prepare did not write; review_source.py
 # writes one when a reviewer asks for it.
 SNAPSHOT_FETCHABLE = "fetchable"
+# The changed documents the snapshot holds as extracted text rather than their committed bytes, with their format.
+SNAPSHOT_EXTRACTED = "extracted"
+SNAPSHOT_OPTIONAL_FIELDS = frozenset({SNAPSHOT_FETCHABLE, SNAPSHOT_EXTRACTED})
 MAX_SOURCE_SNAPSHOT_FILES = 50_000
 MAX_SOURCE_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 1024 * 1024
@@ -53,6 +57,7 @@ SNAPSHOT_EXCLUSION_REASONS = {
     "unsafe-path",
     "symbolic-link",
     "non-regular",
+    "unextractable",
 }
 WINDOWS_UNSAFE = re.compile(r'[:<>"|?*\x00-\x1f]')
 # Names Windows opens as a device rather than a file, alone or before any extension: `nul.txt` and `COM1.tar.gz` too.
@@ -1071,6 +1076,7 @@ def _verify_snapshot(
     expected_files, total_bytes = _verify_snapshot_files(tree, hashes, contents=contents)
     for relative, reason in excluded.items():
         _validate_snapshot_exclusion(relative, reason, hashes)
+    _validate_extracted(metadata.get(SNAPSHOT_EXTRACTED, {}), hashes)
     total_bytes = _verify_fetched_files(tree, fetchable, metadata, total_bytes, contents=contents)
     if contents:  # the reads took time, so the file set is checked against a walk made after them
         tree = _walk_snapshot(root)
@@ -1087,7 +1093,7 @@ def _read_snapshot_metadata(root: Path) -> tuple[Any, str]:
         metadata = json.loads(content.decode("utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
-    if not isinstance(metadata, dict) or set(metadata) - {SNAPSHOT_FETCHABLE} != SOURCE_SNAPSHOT_FIELDS:
+    if not isinstance(metadata, dict) or set(metadata) - SNAPSHOT_OPTIONAL_FIELDS != SOURCE_SNAPSHOT_FIELDS:
         raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
     if metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
@@ -1208,6 +1214,15 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
 
 
+def _validate_extracted(extracted: Any, hashes: dict[str, Any]) -> None:
+    """The documents held as extracted text: each one a file the snapshot holds, in a format it extracts."""
+    if not isinstance(extracted, dict):
+        raise RuntimeContractError("Source snapshot extracted documents must be an object")
+    for relative, form in extracted.items():
+        if relative not in hashes or form not in DOCUMENT_FORMATS.values():
+            raise RuntimeContractError(f"Source snapshot extracted document is invalid: {relative!r}")
+
+
 def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str], fetchable: set[str]) -> None:
     """The snapshot holds exactly the files its manifest lists, and any of those it lists as fetchable, none of them
     a reparse point or other non-regular file."""
@@ -1252,15 +1267,35 @@ def _entry_exclusion(
     return relative, None
 
 
-def _content_exclusion(relative: str, content: bytes, written: dict[str, str]) -> str | None:
-    """The binary exclusion for a file with a NUL byte near its start, else None once `written` records the file.
+@dataclass
+class _Documents:
+    """The changed documents a snapshot reads: each one it holds as extracted text, with its format, and why each
+    one it could not extract was refused."""
 
-    Raises for two kept paths a case-insensitive filesystem would merge.
+    changed: frozenset[str]
+    extracted: dict[str, str] = field(default_factory=dict)
+    refused: dict[str, str] = field(default_factory=dict)
+
+
+def _kept_content(relative: str, content: bytes, written: dict[str, str], documents: _Documents) -> bytes | str:
+    """What the snapshot writes for a file it reads, once `written` records it, or why it leaves the file out.
+
+    A file with a NUL byte near its start is `binary`, unless the pull request changes it and it is a document whose
+    text the snapshot extracts: then the text is written in its place, or the file is `unextractable` when the
+    extraction is refused. Raises for two kept paths a case-insensitive filesystem would merge.
     """
     if _binary(content):
-        return "binary"
+        form = document_format(relative) if relative in documents.changed else None
+        if form is None:
+            return "binary"
+        try:
+            content = extract(form, content)
+        except ExtractionRefused as exc:
+            documents.refused[relative] = str(exc)
+            return "unextractable"
+        documents.extracted[relative] = form
     _claim_name(relative, written)
-    return None
+    return content
 
 
 def _binary(content: bytes) -> bool:
@@ -1346,8 +1381,10 @@ def _commit_members(
     upfront: Callable[[str], bool] | None = None,
     fetchable: dict[str, str] | None = None,
     configured: Exclusion = _never_excluded,
+    documents: _Documents | None = None,
 ) -> Generator[SnapshotMember, None, None]:
     """Each path of the commit's tree, as (path, content bytes) when the snapshot keeps it or (path, reason) when not.
+    A changed document's content is its extracted text, which `documents` records (see `_kept_content`).
 
     The paths come from `git ls-tree` and the bytes from the object store, never from `git archive` or a working
     tree, so no .gitattributes entry (export-ignore, export-subst, eol, a filter) and no line-ending setting can leave
@@ -1381,6 +1418,7 @@ def _commit_members(
         else:
             yield relative, reason
     written: dict[str, str] = {}
+    documents = documents or _Documents(changed_paths)
     if upfront is not None and fetchable is not None:
         names: dict[str, str] = {}
         for relative, _, _ in pending:
@@ -1397,7 +1435,7 @@ def _commit_members(
                 raise RuntimeContractError("git cat-file returned fewer blobs than the commit's tree lists")
             if len(content) != length:
                 raise RuntimeContractError(f"Source blob size changed: {relative}")
-            yield relative, _content_exclusion(relative, content, written) or content
+            yield relative, _kept_content(relative, content, written, documents)
     finally:
         close = getattr(blobs, "close", None)
         if close is not None:  # a generator reader ends its git process
@@ -1405,11 +1443,17 @@ def _commit_members(
 
 
 def _tarball_members(
-    archive: Path, changed_paths: frozenset[str], room: PathRoom, configured: Exclusion = _never_excluded
+    archive: Path,
+    changed_paths: frozenset[str],
+    room: PathRoom,
+    configured: Exclusion = _never_excluded,
+    documents: _Documents | None = None,
 ) -> Generator[SnapshotMember, None, None]:
     """Each entry of GitHub's tarball below its top folder, as (path, content bytes) when the snapshot keeps it or
-    (path, reason) when not. The count and size limits are the caller's to apply."""
+    (path, reason) when not, a changed document's content being its extracted text, which `documents` records. The
+    count and size limits are the caller's to apply."""
     written: dict[str, str] = {}
+    documents = documents or _Documents(changed_paths)
     with tarfile.open(archive, mode="r:gz") as source:
         for member in source:
             parts = PurePosixPath(member.name).parts[1:]
@@ -1427,7 +1471,7 @@ def _tarball_members(
             content = extracted.read()
             if len(content) != member.size:
                 raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
-            yield relative, _content_exclusion(relative, content, written) or content
+            yield relative, _kept_content(relative, content, written, documents)
 
 
 def _populate_snapshot(
@@ -1437,9 +1481,10 @@ def _populate_snapshot(
     repository: str,
     commit: str,
     fetchable: dict[str, str] | None = None,
+    extracted: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Write the members and the manifest, which lists `fetchable` when it is given, once the members have filled it:
-    the snapshot is then lazy."""
+    the snapshot is then lazy. It lists `extracted` too, once the members have filled it, when it names a document."""
     hashes: dict[str, str] = {}
     excluded: dict[str, str] = {}
     total_bytes = 0
@@ -1479,6 +1524,8 @@ def _populate_snapshot(
         if len(hashes) + len(fetchable) > MAX_SOURCE_SNAPSHOT_FILES:
             raise RuntimeContractError("Source snapshot exceeds the file-count limit")
         metadata[SNAPSHOT_FETCHABLE] = fetchable
+    if extracted:
+        metadata[SNAPSHOT_EXTRACTED] = dict(sorted(extracted.items()))
     atomic_write_json(destination / SOURCE_SNAPSHOT_MANIFEST, metadata)
     # The hashes were computed from the bytes just written, in this process; re-reading them proves nothing more.
     return verify_source_snapshot(destination, expected_repository=repository, expected_commit=commit, contents=False)
@@ -1506,12 +1553,15 @@ def materialize_source_snapshot(
     blob_reader: BlobReader = git_blob_reader,
     upfront: Callable[[str], bool] | None = None,
     exclude: Sequence[str] = (),
+    refused: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Snapshot the exact commit from a local checkout's object store (no worktree or branch change).
 
     With `upfront`, the snapshot is lazy: it holds the changed files and the paths `upfront` accepts, and its
     manifest lists every other path it would hold, with its blob id, under `fetchable`, for `fetch_source_file`.
-    A path one of the `exclude` globs matches is a `configured` exclusion, never written or fetchable.
+    A path one of the `exclude` globs matches is a `configured` exclusion, never written or fetchable. A changed
+    document is held as its extracted text, which the manifest lists under `extracted`, and `refused` is given why
+    each one whose extraction was refused is `unextractable`.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -1524,6 +1574,7 @@ def materialize_source_snapshot(
     try:
         room = path_room(destination)
         fetchable: dict[str, str] | None = None if upfront is None else {}
+        documents = _Documents(frozenset(changed_paths))
         members = _commit_members(
             checkout,
             commit,
@@ -1534,12 +1585,46 @@ def materialize_source_snapshot(
             upfront=upfront,
             fetchable=fetchable,
             configured=configured_exclusion(exclude),
+            documents=documents,
         )
         with closing(members):
-            return _populate_snapshot(members, destination, repository=repository, commit=commit, fetchable=fetchable)
+            snapshot = _populate_snapshot(
+                members,
+                destination,
+                repository=repository,
+                commit=commit,
+                fetchable=fetchable,
+                extracted=documents.extracted,
+            )
+        if refused is not None:
+            refused.update(documents.refused)
+        return snapshot
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise
+
+
+ABBREVIATED_OBJECT_ID = re.compile(r"[0-9a-f]{7,64}")
+
+
+def blob_matches(blob: str, content: bytes) -> bool:
+    """Whether `content` hashes to the full git blob id `blob`."""
+    return bool(GIT_OBJECT_ID.fullmatch(blob)) and _git_blob_id(_blob_algorithm(blob), len(content), [content]) == blob
+
+
+def read_blob(checkout: Path, abbreviation: str, runner: Runner = subprocess_runner) -> bytes:
+    """The exact bytes of the blob a diff's `index` line names by its abbreviated id, from the checkout's object store,
+    once the id resolves to exactly one blob and the bytes hash to it."""
+    if not ABBREVIATED_OBJECT_ID.fullmatch(abbreviation):
+        raise RuntimeContractError(f"Not an abbreviated blob id: {abbreviation!r}")
+    blob = _run_git(checkout, runner, "rev-parse", "--verify", f"{abbreviation}^{{blob}}").lower()
+    if not blob.startswith(abbreviation) or not GIT_OBJECT_ID.fullmatch(blob):
+        raise RuntimeContractError(f"Blob {abbreviation} did not resolve exactly")
+    result = git_in(checkout, runner, "cat-file", "blob", blob)
+    content = result.output_bytes()
+    if result.returncode != 0 or not blob_matches(blob, content):
+        raise RuntimeContractError(f"The checkout did not return blob {blob}")
+    return content
 
 
 def fetch_source_file(
@@ -1863,11 +1948,13 @@ def materialize_source_snapshot_from_github(
     fetcher: Callable[[str, str, Path], None] = github_tarball_fetcher,
     changed_paths: Iterable[str] = (),
     exclude: Sequence[str] = (),
+    refused: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Snapshot the exact commit from GitHub's tarball, for repositories without a configured checkout.
 
     The fetcher is responsible for the tarball being the exact commit; `github_tarball_fetcher` checks it against
-    the commit's tree. A path one of the `exclude` globs matches is a `configured` exclusion, never written.
+    the commit's tree. A path one of the `exclude` globs matches is a `configured` exclusion, never written. Changed
+    documents are extracted as `materialize_source_snapshot` extracts them, and `refused` is given the same reasons.
     """
     repository = validate_repository_identity(repository)
     if not GIT_OBJECT_ID.fullmatch(commit):
@@ -1877,11 +1964,17 @@ def materialize_source_snapshot_from_github(
         with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
+            documents = _Documents(frozenset(changed_paths))
             members = _tarball_members(
-                archive, frozenset(changed_paths), path_room(destination), configured_exclusion(exclude)
+                archive, documents.changed, path_room(destination), configured_exclusion(exclude), documents
             )
             with closing(members):
-                return _populate_snapshot(members, destination, repository=repository, commit=commit)
+                snapshot = _populate_snapshot(
+                    members, destination, repository=repository, commit=commit, extracted=documents.extracted
+                )
+        if refused is not None:
+            refused.update(documents.refused)
+        return snapshot
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise
@@ -1981,12 +2074,13 @@ def build_adapter_request(
     }
 
 
-COVERAGE_GAP_REASONS = {"configured", "file-size-limit", "unsafe-path"}
+COVERAGE_GAP_REASONS = {"configured", "file-size-limit", "unsafe-path", "unextractable"}
 
 
 def unavailable_sources(diff_path: Path, snapshot: dict[str, Any]) -> list[str]:
-    """Changed files whose source the snapshot could not provide (too large, an unsafe name, or left out by the
-    repository's snapshot_exclude, which the pull request's author cannot hide a change behind).
+    """Changed files whose source the snapshot could not provide (too large, an unsafe name, a document whose text
+    could not be extracted, or left out by the repository's snapshot_exclude, which the pull request's author cannot
+    hide a change behind).
 
     Binary, agent-instruction, symbolic-link, and non-regular exclusions are deliberate and reviewed from the diff
     alone.

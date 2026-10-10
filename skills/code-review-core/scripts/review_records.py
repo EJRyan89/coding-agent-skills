@@ -44,6 +44,9 @@ DISPOSITIONS = {
 }
 FINDING_FIELDS = frozenset({"candidate_key", "severity", "category", "path", "line", "body", "evidence", "source"})
 OPTIONAL_FINDING_FIELDS = frozenset({"title", "analyzer", "repeats"})
+# A record's finding may also say where in a changed document its line is, which the suite adds and no reviewer gives.
+RECORD_OPTIONAL_FINDING_FIELDS = OPTIONAL_FINDING_FIELDS | {"location"}
+MAX_LOCATION_CHARACTERS = 200
 # The finding ledger: one entry per problem raised on a pull request since its latest initial review, identified by
 # the version and finding ID where it first appeared. A repeat is linked to the finding it repeats, never counted
 # twice, so a repeat needs a target at least as severe. A disposition of a prior finding judges its entry.
@@ -1237,9 +1240,11 @@ def _validate_adapter(adapter: Any) -> None:
 def _validate_finding(finding: Any) -> None:
     # Records written before findings carried titles or analyzer coverage remain valid.
     if not isinstance(finding, dict) or not (
-        FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | OPTIONAL_FINDING_FIELDS
+        FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | RECORD_OPTIONAL_FINDING_FIELDS
     ):
         raise RecordError("Review finding fields are malformed")
+    if "location" in finding and not valid_location(finding["location"]):
+        raise RecordError(f"Review finding {finding['id']}.location {LOCATION_RULE}")
     if not _one_of(finding["severity"], SEVERITIES):
         raise RecordError(f"Review finding {finding['id']} severity is invalid")
     if "title" in finding and not valid_title(finding["title"]):
@@ -1253,6 +1258,14 @@ def _validate_finding(finding: Any) -> None:
         raise RecordError(f"Review finding {finding['id']}.path is unsafe")
     if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
         raise RecordError(f"Review finding {finding['id']}.line is invalid")
+
+
+LOCATION_RULE = f"must be one trimmed line of at most {MAX_LOCATION_CHARACTERS} characters"
+
+
+def valid_location(value: Any) -> bool:
+    """A finding's place in a changed document: one trimmed, non-blank line within the limit."""
+    return _one_line(value, MAX_LOCATION_CHARACTERS)
 
 
 def _validate_findings(findings: Any) -> list[dict[str, Any]]:
@@ -1432,14 +1445,16 @@ def _finding_block(
     # A specialist's evidence is the added line itself, so it joins the line number instead of
     # repeating the location on a line of its own; other evidence stays after the body.
     added_prefix = f"{finding['path']}:{finding['line']} adds: "
+    # A line of a changed document's extracted text also says where in the document it is.
+    place = f" ({_html(finding['location'])})" if "location" in finding else ""
     if finding["evidence"].startswith(added_prefix):
         location = [
-            f"> **Line {finding['line']}:** {_code(finding['evidence'][len(added_prefix) :])} "
+            f"> **Line {finding['line']}{place}:** {_code(finding['evidence'][len(added_prefix) :])} "
             f"| **Source:** {_html(finding['source'])}"
         ]
         evidence = []
     else:
-        location = [f"> **Line:** {finding['line']} | **Source:** {_html(finding['source'])}"]
+        location = [f"> **Line:** {finding['line']}{place} | **Source:** {_html(finding['source'])}"]
         evidence = [">", f"> **Evidence:** {_code(finding['evidence'])}"]
     if "analyzer" in finding:
         evidence.extend([">", f"> **Analyzer:** {_analyzer_note(finding['analyzer'])}"])
@@ -1588,8 +1603,10 @@ def render_markdown(
     if unavailable:
         lines.extend(
             [
-                "> **Not reviewed in full:** these changed files were too large or could not be represented safely, "
-                "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
+                "> **Not reviewed in full:** these changed files were too large, could not be represented safely, or "
+                "were documents whose text could not be extracted, so reviewers saw only their diff: "
+                + ", ".join(_code(path) for path in unavailable)
+                + ".",
                 "",
             ]
         )
