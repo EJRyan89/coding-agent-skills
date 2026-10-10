@@ -210,8 +210,15 @@ class ToolchainPolicies(unittest.TestCase):
 
     def test_ci_exercises_each_floor(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        self.assertIn("choco install shellcheck --version 0.9.0 ", workflow)
-        self.assertIn("Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force", workflow)
+        # The workflow pins each tool once in its env, which the install command and the cache key both read.
+        self.assertRegex(
+            workflow, r"(?m)^env:\n  SHELLCHECK_VERSION: '0\.9\.0'\n  PSSCRIPTANALYZER_VERSION: '1\.25\.0'$"
+        )
+        self.assertIn("choco install shellcheck --version $env:SHELLCHECK_VERSION ", workflow)
+        self.assertIn(
+            "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force",
+            workflow,
+        )
         # The floor runs on every event; the latest release only on the schedule, where it cannot block a pull request.
         self.assertIn(
             "python-version: ${{ github.event_name == 'schedule' && fromJSON('[\"3.11\", \"3.x\"]') "

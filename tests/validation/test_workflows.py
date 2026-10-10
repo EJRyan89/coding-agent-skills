@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from workflows import WorkflowSyntaxError, read_workflow, workflow_guard_problems
+from workflows import WorkflowSyntaxError, leg_problems, read_workflow, tool_cache_problems, workflow_guard_problems
 
 
 class WorkflowsFixtures(unittest.TestCase):
@@ -96,6 +96,51 @@ class WorkflowsFixtures(unittest.TestCase):
             "  other:\n    permissions: read-all\n    steps:\n      - run: echo done\n"
         )
         self.assertEqual([], workflow_guard_problems(workflow, ["workflow_dispatch"], set()))
+
+
+LEGS = (
+    "env:\n  TOOL_VERSION: '1.2.3'\n\njobs:\n  suite:\n    runs-on: windows-latest\n    strategy:\n      matrix:\n"
+    "        shard: ['1/2', '2/2']\n    steps:\n"
+    "      - uses: actions/setup-python@SHA # v1\n        with:\n          cache: pip\n"
+    "          cache-dependency-path: requirements-dev.txt\n"
+    "      - uses: actions/cache@SHA # v1\n        with:\n          key: tool-${{ env.TOOL_VERSION }}\n"
+    "      - run: install tool --version $env:TOOL_VERSION --quiet\n"
+    "      - name: Validate\n        env:\n          SHARD: ${{ matrix.shard }}\n"
+    "        run: python tests/run_validation.py --shard $env:SHARD\n"
+    "  validate:\n    needs: suite\n"
+)
+
+
+class LegFixtures(unittest.TestCase):
+    def test_each_leg_runs_its_own_shard_and_the_aggregate_needs_every_leg(self) -> None:
+        self.assertEqual([], leg_problems(LEGS, 2))
+        for drifted, problem in (
+            (LEGS, "expected ['1/3', '2/3', '3/3']"),
+            (LEGS.replace("['1/2', '2/2']", "['1/2', '1/2']"), "shards"),
+            (LEGS.replace("runs-on: windows-latest", "runs-on: ubuntu-latest"), "not windows-latest"),
+            (LEGS.replace(" --shard $env:SHARD", ""), "does not run its leg's --shard"),
+            (LEGS.replace("SHARD: ${{ matrix.shard }}", "SHARD: 1/2"), "does not run its leg's --shard"),
+            (LEGS.replace("tests/run_validation.py", "tests/other.py"), "no step runs"),
+            (LEGS.replace("    needs: suite\n", "    needs: other\n"), "does not need the suite"),
+        ):
+            with self.subTest(problem=problem):
+                count = 3 if problem.startswith("expected") else 2
+                problems = leg_problems(drifted, count)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+    def test_each_tool_cache_is_keyed_on_a_workflow_pin_its_install_reads(self) -> None:
+        caches = {"tool-${{ env.TOOL_VERSION }}": "install tool --version $env:TOOL_VERSION "}
+        self.assertEqual([], tool_cache_problems(LEGS, caches))
+        for drifted, problem in (
+            (LEGS.replace("key: tool-${{ env.TOOL_VERSION }}", "key: tool-1.2.3"), "the cache keys are"),
+            (LEGS.replace("env:\n  TOOL_VERSION: '1.2.3'\n", "env:\n  OTHER: '1'\n"), "does not pin"),
+            (LEGS.replace("--version $env:TOOL_VERSION", "--version 1.2.3"), "no step runs"),
+            (LEGS.replace("          cache: pip\n", ""), "setup-python does not cache pip"),
+            (LEGS.replace("requirements-dev.txt", "requirements.txt"), "setup-python does not cache pip"),
+        ):
+            with self.subTest(problem=problem):
+                problems = tool_cache_problems(drifted, caches)
+                self.assertTrue(any(problem in found for found in problems), problems)
 
 
 class WorkflowReaderFixtures(unittest.TestCase):

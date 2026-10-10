@@ -40,14 +40,16 @@ def step_summary(
     seconds: float,
     failed: list[str],
     tracebacks: Mapping[str, str] | None = None,
+    shard: str | None = None,
 ) -> str:
-    """The Markdown GitHub Actions shows on the run's summary page, with the traceback of each job that raised."""
+    """The Markdown GitHub Actions shows on the run's summary page, with the traceback of each job that raised, and
+    the shard, as `<index>/<count>`, of a run split across runners."""
     found = [f"Python {tools.format_version(python)}"] + [
         f"{label} {tools.format_version(version) if version else 'unknown'}" for label, version in versions.items()
     ]
     result = "**validation FAILED**" if failed else "**validation passed**"
     lines = [
-        "## Repository validation",
+        f"## Repository validation, shard {shard}" if shard else "## Repository validation",
         "",
         f"- {', '.join(found)}",
         f"- {mode}",
