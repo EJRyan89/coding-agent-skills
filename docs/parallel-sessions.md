@@ -90,8 +90,8 @@ Worktrees isolate files. These are still shared:
   second deploy fails at once with "Another deployment is running". Deploying records its source path in the
   manifest and in the rendered `update-coding-agent-skills` skill, so `deploy.py` refuses to deploy from a
   linked worktree, whose path disappears when the task ends. Deploy from the hub on `main`. `--dry-run` is
-  allowed anywhere, and so is `--canary-home`, which deploys into an empty directory under the temporary
-  directory that is thrown away with the source path it records.
+  allowed anywhere, and so is `--canary-home`, which deploys into a directory under the temporary directory,
+  empty or one an earlier canary deployment marked, that is thrown away with the source path it records.
 - **Nothing in validation.** Every suite isolates its own temporary home and fixtures, and the suites that
   deploy this repository deploy a temporary copy of it, or into a `--canary-home`. Any number of worktrees can run
   `tests/run_validation.py` at once.

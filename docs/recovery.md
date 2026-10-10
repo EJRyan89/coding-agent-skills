@@ -88,7 +88,7 @@ If you deployed from the wrong clone, deploy from the recorded one instead. If t
 python deploy.py --all --take-over-source
 ```
 
-It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose home starts empty. A linked worktree is refused whatever the flag; deploy from the main checkout.
+It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag; deploy from the main checkout.
 
 ## Configuration that no longer reads
 
