@@ -639,6 +639,9 @@ def build_record(
     }
     if request.get("head_ref"):
         record["pull_request"]["head_ref"] = request["head_ref"]
+    if request.get("body_characters") is not None:
+        record["pull_request"]["body_characters"] = request["body_characters"]
+        record["pull_request"]["body_given"] = request["body_given"]
     uncovered = sorted(request.get("uncovered_files", []))
     if unavailable or uncovered:
         record["review"]["coverage"] = {"unavailable_sources": unavailable}
@@ -1127,10 +1130,16 @@ RECORD_FIELDS = frozenset(
 
 def _validate_pull_request(pull: dict[str, Any]) -> None:
     pull_fields = {"number", "url", "title", "base_ref", "base_sha", "head_sha"}
-    if set(pull) not in (pull_fields, pull_fields | {"head_ref"}):
+    body = {"body_characters", "body_given"}
+    if not pull_fields <= set(pull) or set(pull) - pull_fields not in ({"head_ref"} | body, body, {"head_ref"}, set()):
         raise RecordError("Review pull-request fields are malformed")
     if "head_ref" in pull and (not isinstance(pull["head_ref"], str) or not pull["head_ref"].strip()):
         raise RecordError("Review pull_request.head_ref is invalid")
+    characters, given = pull.get("body_characters", 0), pull.get("body_given", 0)
+    if not all(isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in (characters, given)):
+        raise RecordError("Review pull_request.body_characters or body_given is invalid")
+    if given > characters:
+        raise RecordError("Review pull_request.body_given is more than body_characters")
     if not isinstance(pull.get("number"), int) or isinstance(pull["number"], bool) or pull["number"] < 1:
         raise RecordError("Review pull number is invalid")
     for field in ("url", "title", "base_ref"):
@@ -1390,6 +1399,21 @@ def _reviewed_at(value: str) -> str:
     return moment.astimezone(UTC).strftime("%d-%b-%Y %H:%M UTC")
 
 
+def _description_row(pull: dict[str, Any]) -> list[str]:
+    """The report's row saying how much of the pull request's description its reviewers were given; none for a record
+    written before reviewers were given it."""
+    if "body_characters" not in pull:
+        return []
+    characters, given = pull["body_characters"], pull["body_given"]
+    if characters == 0:
+        stated = "none"
+    elif given == characters:
+        stated = f"{characters:,} characters, given to reviewers whole"
+    else:
+        stated = f"{characters:,} characters, of which reviewers were given the first {given:,}"
+    return [f"| **Description** | {stated} |"]
+
+
 def _display_id(version: int, identifier: str) -> str:
     """A finding's ID as reports show it, `v1 F001`, since finding IDs restart in every review."""
     return f"v{version} {identifier}"
@@ -1554,6 +1578,7 @@ def render_markdown(
             else f"| **Base** | {_cell(_code(pull['base_ref']))} |"
         ),
         f"| **URL** | {_cell(pull['url'])} |",
+        *_description_row(pull),
         f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
         f"| **Verdict** | {_label(review['verdict'])}{', ' + ledger.counts() if re_review else ''} |",
         *([f"| **Scope** | {_cell(describe_scope(review['scope']))} |"] if "scope" in review else []),

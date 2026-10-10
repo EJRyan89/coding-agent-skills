@@ -83,6 +83,11 @@ class PullTests(unittest.TestCase):
         self.assertEqual(PULL["threads"], pull["threads"])
         self.assertNotIn("manifest_path", pull)
 
+    def test_a_description_may_be_given_and_may_be_empty(self) -> None:
+        for body in ("## Upgrade note\n\nNone\n", ""):
+            with self.subTest(body=body):
+                self.assertEqual(body, validate_fixture_pull({**copy.deepcopy(PULL), "body": body})["body"])
+
     def test_a_reviewer_manifest_in_the_base_tree_is_named_by_a_safe_relative_path(self) -> None:
         pull = validate_fixture_pull({**copy.deepcopy(PULL), "manifest_path": "./review//specialists.json"})
         self.assertEqual("review/specialists.json", pull["manifest_path"])
@@ -98,7 +103,8 @@ class PullTests(unittest.TestCase):
         cases = {
             "not an object": ([], "must have exactly"),
             "a missing field": ({key: value for key, value in PULL.items() if key != "head_ref"}, "must have exactly"),
-            "an extra field": (changed(body="Text."), "must have exactly"),
+            "an extra field": (changed(description="Text."), "must have exactly"),
+            "a body that is not text": (changed(body=None), "body must be a string"),
             "a later schema": (changed(schema_version=2), "schema_version must be 1"),
             "a boolean schema": (changed(schema_version=True), "schema_version must be 1"),
             "a short repository": (changed(repository="inventory"), "repository"),
@@ -150,7 +156,8 @@ class FixtureChangeTests(unittest.TestCase):
             pull = change.pull
             self.assertTrue(repository.is_relative_to(self.temporary))
             self.assertEqual("example/inventory", change.name)
-            self.assertEqual(PULL_FIELDS, set(pull))
+            self.assertEqual(PULL_FIELDS | {"body"}, set(pull))
+            self.assertEqual("", pull["body"], "a fixture without a description has an empty one")
             self.assertEqual(pull, validate_canary_pull(pull, repository=change.name, number=7))
             self.assertEqual(
                 ("https://github.com/example/inventory/pull/7", "main", "ship", "OPEN"),

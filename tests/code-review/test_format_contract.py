@@ -503,6 +503,8 @@ def record_fixtures() -> list[dict[str, Any]]:
                 "source_hashes": {},
             },
             head_ref="feature/boundary",
+            body_characters=30_000,
+            body_given=24_000,
             unavailable_sources=["assets/large.txt"],
             uncovered_files=["build/settings.props"],
             github_comments=COMMENTS,
@@ -844,7 +846,11 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
         "head_ref": "totals",
         "threads": [thread, {**thread, "line": None, "outdated": True}],
     }
-    return [pull, {**pull, "threads": []}, {**pull, "manifest_path": "review/specialists.json"}]
+    return [
+        pull,
+        {**pull, "threads": []},
+        {**pull, "manifest_path": "review/specialists.json", "body": "## Upgrade note\n\nNone\n"},
+    ]
 
 
 def state_fixtures() -> list[dict[str, Any]]:
@@ -1282,9 +1288,17 @@ def request_fixtures(scratch: Path, prior: list[dict[str, Any]]) -> list[dict[st
         "diff_path": diff,
         "source_snapshot_root": scratch / "snapshot",
     }
+    body = scratch / "pull-request-body.md"
+    body.write_text("## Upgrade note\n\nNone\n", encoding="utf-8")
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value=snapshot):
         full = build_adapter_request(
-            mode="re-review", prior_findings=prior, github_comments=COMMENTS, head_ref="feature/boundary", **common
+            mode="re-review",
+            prior_findings=prior,
+            github_comments=COMMENTS,
+            head_ref="feature/boundary",
+            body_file=body,
+            body_characters=22,
+            **common,
         )
     with mock.patch.object(review_runtime, "verify_source_snapshot", return_value={"excluded_paths": {}}):
         plain = build_adapter_request(mode="initial", **common)

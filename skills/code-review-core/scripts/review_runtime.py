@@ -1887,6 +1887,21 @@ def materialize_source_snapshot_from_github(
         raise
 
 
+# A pull request's description is written by its author and runs to GitHub's 65,536 characters; prepare gives
+# reviewers this many, room for any description the pull request template asks for, so one cannot fill their context.
+PULL_REQUEST_BODY_CHARACTERS = 24_000
+# The run's file of the description reviewers are given.
+PULL_REQUEST_BODY_FILE = "pull-request-body.md"
+# A lone surrogate, which a JSON string can spell but no UTF-8 file can hold.
+LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def given_body(body: str) -> str:
+    """The part of a pull request's description reviewers are given: its first PULL_REQUEST_BODY_CHARACTERS, with each
+    lone surrogate replaced by U+FFFD."""
+    return LONE_SURROGATE.sub("�", body[:PULL_REQUEST_BODY_CHARACTERS])
+
+
 def build_adapter_request(
     *,
     mode: str,
@@ -1903,10 +1918,13 @@ def build_adapter_request(
     github_comments: list[dict[str, Any]] | None = None,
     head_ref: str | None = None,
     snapshot: dict[str, Any] | None = None,
+    body_file: Path | None = None,
+    body_characters: int | None = None,
 ) -> dict[str, Any]:
     """`snapshot` is for a caller that materialized the snapshot itself, moments earlier: the manifest its
     materialization verified, which is only checked to name this request's repository and head. Without it the
-    snapshot is verified here, contents included."""
+    snapshot is verified here, contents included. `body_file` and `body_characters`, given together, name the file
+    holding the description reviewers are given and the description's full length."""
     if mode not in {"initial", "re-review"}:
         raise RuntimeContractError("Review request mode is invalid")
     repository = validate_repository_identity(repository)
@@ -1917,6 +1935,12 @@ def build_adapter_request(
             raise RuntimeContractError(f"{name} is invalid")
     if not diff_path.is_absolute() or not diff_path.is_file():
         raise RuntimeContractError("diff_path must name an existing absolute file")
+    if (body_file is None) != (body_characters is None):
+        raise RuntimeContractError("body_file and body_characters are given together")
+    if body_file is not None and not (body_file.is_absolute() and body_file.is_file()):
+        raise RuntimeContractError("body_file must name an existing absolute file")
+    if body_characters is not None and (isinstance(body_characters, bool) or body_characters < 0):
+        raise RuntimeContractError("body_characters must be a count")
     if snapshot is None:
         snapshot = verify_source_snapshot(
             source_snapshot_root, expected_repository=repository, expected_commit=head_sha, contents=True
@@ -1935,6 +1959,15 @@ def build_adapter_request(
             "base_sha": base_sha,
             "head_sha": head_sha,
             **({"head_ref": head_ref} if head_ref else {}),
+            **(
+                {
+                    "body_file": str(body_file),
+                    "body_characters": body_characters,
+                    "body_given": min(body_characters, PULL_REQUEST_BODY_CHARACTERS),
+                }
+                if body_file is not None and body_characters is not None
+                else {}
+            ),
         },
         "diff_path": str(diff_path),
         "source_snapshot": {

@@ -13,6 +13,7 @@
     "Unheld invariant",
     "Grant mismatch",
     "Missing upgrade note",
+    "Misstated upgrade note",
     "Unstated trust boundary",
     "Test coverage",
     "Other"

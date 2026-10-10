@@ -346,6 +346,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     ("pull field unknown", _set((*PULL, "extra"), 1), R, "Review pull-request fields are malformed"),
     ("head_ref blank", _set((*PULL, "head_ref"), " "), R, "Review pull_request.head_ref is invalid"),
     ("head_ref not a string", _set((*PULL, "head_ref"), 1), R, "Review pull_request.head_ref is invalid"),
+    ("body_characters alone", _set((*PULL, "body_characters"), 1), R, "Review pull-request fields are malformed"),
+    ("body_given alone", _set((*PULL, "body_given"), 1), R, "Review pull-request fields are malformed"),
     ("number true", _set((*PULL, "number"), True), R, "Review pull number is invalid"),
     ("number zero", _set((*PULL, "number"), 0), R, "Review pull number is invalid"),
     ("number string", _set((*PULL, "number"), "7"), R, "Review pull number is invalid"),

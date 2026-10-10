@@ -66,6 +66,7 @@ from review_operation import (
     safe_watermark,
     select_eligible_pulls,
     validate_canary_pull,
+    validate_pull,
 )
 from review_process import ProcessStatus
 from review_records import (
@@ -1297,6 +1298,36 @@ class RecordTests(unittest.TestCase):
         with self.assertRaisesRegex(RecordError, "head_ref is invalid"):
             validate_record(broken)
 
+    def test_the_record_keeps_how_much_of_the_description_reviewers_were_given_and_the_report_says_so(self) -> None:
+        rows = {
+            (0, 0): "| **Description** | none |",
+            (1234, 1234): "| **Description** | 1,234 characters, given to reviewers whole |",
+            (70_000, 24_000): "| **Description** | 70,000 characters, of which reviewers were given the first 24,000 |",
+        }
+        for (characters, given), row in rows.items():
+            with self.subTest(characters=characters):
+                request = {**valid_request(), "body_characters": characters, "body_given": given}
+                record = build_record(request, valid_adapter_result(), version=1, policy={})
+                validate_record(record)
+                self.assertEqual(
+                    (characters, given),
+                    (record["pull_request"]["body_characters"], record["pull_request"]["body_given"]),
+                )
+                markdown = render_markdown(record, record_payload_hash="0" * 64)
+                self.assertEqual(
+                    [row], [line for line in markdown.splitlines() if line.startswith("| **Description**")]
+                )
+        older = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
+        self.assertNotIn("body_characters", older["pull_request"])
+        self.assertNotIn("**Description**", render_markdown(older, record_payload_hash="0" * 64))
+        faults: list[tuple[Any, Any]] = [(5, 6), (-1, 0), (True, 0), (5, "5")]
+        for characters, given in faults:
+            with self.subTest(characters=characters, given=given):
+                broken = copy.deepcopy(older)
+                broken["pull_request"].update(body_characters=characters, body_given=given)
+                with self.assertRaisesRegex(RecordError, "body_"):
+                    validate_record(broken)
+
 
 class ArchiveTests(unittest.TestCase):
     def _record(self, repository: str, number: int, version: int) -> dict:
@@ -1711,6 +1742,25 @@ class GitHubTests(unittest.TestCase):
         malformed = GitHubClient(lambda arguments: CommandResult(0, json.dumps([]), ""))
         with self.assertRaisesRegex(GitHubError, "unexpected shape"):
             malformed.get_pull("example/one", 42)
+
+    def test_the_pull_a_review_reads_carries_its_description_and_a_null_one_is_empty(self) -> None:
+        for body, expected in (("## Upgrade note\n\nNone\n", "## Upgrade note\n\nNone\n"), (None, ""), ("", "")):
+            with self.subTest(body=body):
+                value = {**self._api_pull(42), "body": body}
+                served = CommandResult(0, json.dumps(value), "")
+
+                def serve(arguments: Sequence[str], served: CommandResult = served) -> CommandResult:
+                    return served
+
+                client = GitHubClient(serve)
+                pull = client.get_pull("example/one", 42)
+                self.assertEqual(expected, pull["body"])
+                self.assertEqual(pull, validate_pull(pull))
+        value = {**self._api_pull(42), "body": ["not", "text"]}
+        with self.assertRaisesRegex(GitHubError, "unexpected shape"):
+            GitHubClient(lambda arguments: CommandResult(0, json.dumps(value), "")).get_pull("example/one", 42)
+        with self.assertRaisesRegex(ReviewOperationError, "body must be text"):
+            validate_pull({**pull, "body": None})
 
     def test_closed_unmerged_pulls_are_ineligible(self) -> None:
         closed = self._api_pull(42, state="closed")

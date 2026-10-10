@@ -270,7 +270,13 @@ class GitHubClient:
         repository = validate_repository_identity(repository)
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             raise GitHubError("Pull number must be positive", kind="input")
-        pull = _normalize_pull(self.api_json(f"repos/{repository}/pulls/{number}"))
+        value = self.api_json(f"repos/{repository}/pulls/{number}")
+        pull = _normalize_pull(value)
         if pull is None:
             raise GitHubError("Pull request is closed without being merged", kind="ineligible")
-        return pull
+        # Only the pull request a review reads carries its description: a listing's pulls are kept in the batch file,
+        # where an author's text has no place.
+        body = value.get("body")
+        if body is not None and not isinstance(body, str):
+            raise GitHubError("Pull response has an unexpected shape", kind="malformed")
+        return {**pull, "body": body or ""}
