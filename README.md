@@ -13,7 +13,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 | [`github-activity-report`](docs/skills.md#github-activity-report) | Reports one user's pull requests, commits, and reviews in one GitHub organization, month by month. |
 | [`repo-cleanup`](docs/skills.md#repo-cleanup) | Performs guarded Git repository housekeeping. |
 | [`update-coding-agent-skills`](docs/skills.md#update-coding-agent-skills) | Fast-forwards the clone the skills were deployed from to `origin/main` and redeploys them. |
-| [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-tracker`](docs/skills.md#update-pr-tracker), [`review-insights`](docs/skills.md#review-insights), and [`flag-review-finding`](docs/skills.md#flag-review-finding). |
+| [`code-review-operations`](docs/code-review-operations.md) | A bundle installed together: [`review-prs`](docs/skills.md#review-prs), [`update-pr-tracker`](docs/skills.md#update-pr-tracker), [`review-insights`](docs/skills.md#review-insights), [`flag-review-finding`](docs/skills.md#flag-review-finding), and [`review-document`](docs/skills.md#review-document). |
 
 [Skills](docs/skills.md) explains how to start each skill, its arguments with examples, and what it needs installed. Most skills run fully on Claude Code, Codex CLI, and GitHub Copilot CLI; [Runtime support](docs/skills.md#runtime-support) lists the exceptions and what each one loses: the code reviews on Codex and Copilot, and user-only skills in a headless Copilot session.
 
