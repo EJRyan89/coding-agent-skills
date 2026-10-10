@@ -48,6 +48,10 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
             "exclusion"
         ): 13,
     },
+    "skills/repo-cleanup/scripts/test_repo_cleanup.py": {
+        # Pushes nine branches to a local remote, deletes them there, and plans and applies a cleanup of each with git.
+        "PlanApplyTests.test_gone_branches_are_deleted_only_when_their_pull_request_proves_them_stale": 13,
+    },
 }
 TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
 
