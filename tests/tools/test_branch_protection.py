@@ -23,9 +23,10 @@ from tools import branch_protection
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
-# The shape and values `gh api` returned for main on 2026-10-07, trimmed to the fields the check reads.
+# The shape and values `gh api` returned for main on 2026-10-07, trimmed to the fields the check reads, with the
+# required context renamed from `validate` to `Validation` when the gating job was named.
 PROTECTION = {
-    "required_status_checks": {"strict": True, "contexts": ["validate"]},
+    "required_status_checks": {"strict": True, "contexts": ["Validation"]},
     "required_pull_request_reviews": {"required_approving_review_count": 0},
     "enforce_admins": {"enabled": True},
     "required_linear_history": {"enabled": True},
@@ -119,7 +120,7 @@ class ProtectionProblemsTests(unittest.TestCase):
     def test_each_drift_is_reported_by_name(self) -> None:
         cases: list[tuple[tuple[str, ...], object, str, str]] = [
             (("required_status_checks", "strict"), False, "protection", "strict"),
-            (("required_status_checks", "contexts"), [], "protection", "validate"),
+            (("required_status_checks", "contexts"), [], "protection", "Validation"),
             (("required_linear_history", "enabled"), False, "protection", "linear history"),
             (("enforce_admins", "enabled"), False, "protection", "administrators"),
             (("required_conversation_resolution", "enabled"), False, "protection", "conversation resolution"),
@@ -213,8 +214,17 @@ class ProtectionProblemsTests(unittest.TestCase):
             branch_protection.security_settings({}, {"enabled": False}, {}),
         )
 
-    def test_validate_need_not_be_the_only_required_check(self) -> None:
-        self.assertEqual([], drifted(("required_status_checks", "contexts"), ["validate", "other"]))
+    def test_validation_need_not_be_the_only_required_check(self) -> None:
+        self.assertEqual([], drifted(("required_status_checks", "contexts"), ["Validation", "other"]))
+
+    def test_the_job_id_is_not_the_required_context(self) -> None:
+        self.assertEqual(
+            ["the `Validation` check is not required"], drifted(("required_status_checks", "contexts"), ["validate"])
+        )
+
+    def test_the_gating_job_reports_the_required_context(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github" / "workflows" / "validate.yml").read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"(?m)^  validate:\n    name: Validation\n")
 
 
 class MainTests(unittest.TestCase):
@@ -282,7 +292,7 @@ class DocumentationTests(unittest.TestCase):
         self.assertIn("## How `main` is protected", text)
         section = text.split("## How `main` is protected", 1)[1].split("\n## ", 1)[0]
         for phrase in (
-            "`validate`",
+            "`Validation`",
             "up to date",
             "linear history",
             "squash",
