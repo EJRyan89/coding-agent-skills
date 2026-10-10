@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import graphlib
 import json
 import os
 import re
@@ -355,23 +356,15 @@ def _validate_dependencies(source: Source) -> None:
             if dependency in seen:
                 raise DeployError(f"ERROR: Skill '{name}' contains duplicate skill dependency '{dependency}'")
             seen.add(dependency)
-    state: dict[str, int] = {}
-    stack: list[str] = []
-
-    def visit(name: str) -> None:
-        if state.get(name) == 1:
-            raise DeployError(f"ERROR: Skill dependency cycle detected: {' '.join(stack)} {name}")
-        if state.get(name) == 2:
-            return
-        state[name] = 1
-        stack.append(name)
-        for dependency in source.skills[name].skill_deps:
-            visit(dependency)
-        stack.pop()
-        state[name] = 2
-
+    graph: graphlib.TopologicalSorter[str] = graphlib.TopologicalSorter()
     for name in sorted(source.skills):
-        visit(name)
+        graph.add(name, *source.skills[name].skill_deps)
+    try:
+        graph.prepare()
+    except graphlib.CycleError as exc:
+        # graphlib lists each skill before the one that depends on it; reversed, each depends on the next.
+        cycle = " ".join(reversed(exc.args[1]))
+        raise DeployError(f"ERROR: Skill dependency cycle detected: {cycle}") from exc
 
 
 def _discover_agents(paths: Paths) -> dict[str, Path]:

@@ -72,7 +72,7 @@ def execute(namespace: argparse.Namespace, paths: Paths, stdin: TextIO | None = 
         lines += [f"{key}={values[key]}" for key in config.CONFIGURED_VARIABLES if values.get(key)]
         content = "\n".join(lines) + "\n"
         config.validate_directories(config.parse(content, source_id))
-        fsops.write_private(config_file, content.encode("utf-8"))
+        fsops.write_atomic(config_file, content.encode("utf-8"))
     except KeyboardInterrupt:
         print_error(Cancelled(CANCELLED), debug)
         return 130

@@ -133,6 +133,23 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.deploy_fails("--all", pattern="Skill dependency cycle detected: alpha beta alpha")
         self.assertFalse((self.skills_dir / "alpha").exists())
 
+    def test_a_dependency_cycle_is_named_in_dependency_order(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"])
+        self.make_skill("beta", "Beta", skill_deps=["gamma"], selectable=False)
+        self.make_skill("gamma", "Gamma", skill_deps=["alpha"], selectable=False)
+        self.make_config()
+        self.deploy_fails("--all", pattern="Skill dependency cycle detected: alpha beta gamma alpha\n")
+
+    def test_a_dependency_cycle_names_only_the_skills_in_the_cycle(self) -> None:
+        self.make_source_json()
+        self.make_skill("aardvark", "Aardvark", skill_deps=["beta"])
+        self.make_skill("beta", "Beta", skill_deps=["gamma"], selectable=False)
+        self.make_skill("gamma", "Gamma", skill_deps=["beta"], selectable=False)
+        self.make_config()
+        result = self.deploy_fails("--all", pattern="Skill dependency cycle detected: beta gamma beta\n")
+        self.assertNotIn("aardvark", result.output)
+
     def test_invalid_bundles_fail_before_mutation(self) -> None:
         cases: dict[str, dict[str, Any]] = {
             "contains duplicate member 'alpha'": {"operations": {"members": ["alpha", "alpha"]}},
