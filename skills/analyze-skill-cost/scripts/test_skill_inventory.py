@@ -702,6 +702,41 @@ class ToolsTests(TemporaryTestCase):
         self.assertEqual([], self.grants('["Read"]', "```bash\nls\n```\n"))
         self.assertEqual(["UNSCOPED_ALLOWED Bash"], self.grants('["Bash"]', "```bash\nls\n```\n"))
 
+    def idle(self, front: str, body: str) -> list[str]:
+        lines = self.tools(f"---\n{front}\n---\n{body}")
+        return [line for line in lines if line.startswith(("IDLE_ALLOWED", "HIDDEN_ALLOWED"))]
+
+    def test_a_scoped_shell_pattern_no_command_or_code_span_matches_is_reported(self) -> None:
+        # A pattern pre-approves only what it matches, so one that matches nothing the skill shows approves a
+        # command the skill never asks for, such as one a repository leaves to prompt.
+        allowed = json.dumps(["Bash(git status)", "PowerShell(git status)", "Bash(gh pr view *)", "Bash", "Read"])
+        self.assertEqual(
+            ["IDLE_ALLOWED Bash(git status)", "IDLE_ALLOWED PowerShell(git status)", "IDLE_ALLOWED Bash(gh pr view *)"],
+            self.idle(f"allowed-tools: {allowed}", "```bash\ngit log\n```\n"),
+        )
+        conforming = {
+            "a fence command": "```powershell\ngit status\n```\nThen `gh pr view 7`.\n",
+            "code spans": "Run `git status`, then ` gh pr view 7 `.\n",
+        }
+        for case, body in conforming.items():
+            with self.subTest(case=case):
+                self.assertEqual([], self.idle(f"allowed-tools: {allowed}", body))
+        # A span inside a fence is fence text, not a command the prose shows.
+        self.assertIn(
+            "IDLE_ALLOWED Bash(git status)", self.idle(f"allowed-tools: {allowed}", "```text\n`git status`\n```\n")
+        )
+
+    def test_any_grant_in_a_hidden_skill_is_reported_once(self) -> None:
+        # No turn starts a hidden skill, so its grants approve nothing, and each idle pattern would only repeat that.
+        hidden = "disable-model-invocation: true\nuser-invocable: false"
+        self.assertEqual(
+            ["HIDDEN_ALLOWED"], self.idle(f'{hidden}\nallowed-tools: ["Read", "Bash(git status)"]', "Use `Read`.\n")
+        )
+        self.assertEqual([], self.idle(hidden, "Imported by other skills.\n"))
+        self.assertEqual([], self.idle(f"{hidden}\nallowed-tools: []", "Imported by other skills.\n"))
+        user_only = 'disable-model-invocation: true\nallowed-tools: ["Read"]'
+        self.assertEqual([], self.idle(user_only, "Use `Read`.\n"))
+
     def test_without_allowed_tools_nothing_is_missing_or_unused(self) -> None:
         lines = self.tools("Use the `Read` tool.\n")
         self.assertEqual(

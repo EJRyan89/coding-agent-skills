@@ -18,9 +18,7 @@ from deployer import render
 # The analyze-skill-cost inventory owns the grant rules, so the audit and this policy cannot disagree. It stays in that
 # skill rather than skill-core because it is the audit program the deployed skill runs, and the rules are its subject;
 # the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
-# The deployer's import above has put skill-core's scripts, and so the one frontmatter reader, on the path.
 sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
-import frontmatter
 import skill_inventory
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
@@ -44,48 +42,12 @@ def repository_skill_files(root: Path) -> list[Path]:
     return sorted((root / REPOSITORY_SKILLS).glob("*/SKILL.md"), key=lambda path: path.parent.name)
 
 
-def idle_grant_problems(name: str, skill_md: Path, inventory: list[str]) -> list[str]:
-    """Report the grants of a skill nothing starts, and each scoped shell pattern no command the skill shows matches.
-
-    allowed-tools pre-approves for the turn that starts the skill, so a hidden skill's grants approve nothing, and a
-    pattern that matches no command in a shell fence or a code span pre-approves a command the skill never names,
-    such as one a repository profile names, which a generic skill must leave to prompt.
-    """
-    if "INVOCATION hidden" in inventory:
-        if any(line.startswith("ALLOWED ") for line in inventory):
-            return [f"{name} is hidden, so no turn starts it and its allowed-tools approve nothing; see {GRANTS_DOC}"]
-        return []
-    lines = skill_md.read_text(encoding="utf-8").splitlines()
-    split = frontmatter.split(lines)
-    if split is None:
-        return []
-    entries = skill_inventory.allowed_entries(frontmatter.Frontmatter(split[0]).value("allowed-tools"))
-    body = lines[split[1] :]
-    languages, _ = skill_inventory.parse_fences(body)
-    commands = [command for _, command in skill_inventory.fence_commands(body, languages, split[1])]
-    commands += [
-        span.strip()
-        for line, language in zip(body, languages, strict=True)
-        if language is None
-        for span in skill_inventory.CODE_SPAN.findall(line)
-    ]
-    return [
-        f"{name} grants {skill_inventory.entry_text(tool, pattern)}, which matches no command in its fences or code "
-        f"spans; see {GRANTS_DOC}"
-        for tool, pattern in entries
-        if tool in skill_inventory.SHELL_TOOLS
-        and pattern is not None
-        and pattern.strip() not in skill_inventory.UNSCOPED_PATTERNS
-        and not any(skill_inventory.grants(pattern, command) for command in commands)
-    ]
-
-
 def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
     """Report shell grants that cover every command or one shell only, grants no step uses, own-script commands
-    left ungranted, grants that pre-approve a script that starts code from the target repository, and grants that
-    cover nothing the skill runs.
+    left ungranted, grants that pre-approve a script that starts code from the target repository, shell patterns that
+    match no command the skill shows, and any grant in a hidden skill, which no turn starts.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -94,10 +56,17 @@ def skill_grant_problems(
     for skill_md in shipped_skill_files(root) if skill_files is None else skill_files:
         name = skill_md.relative_to(root).as_posix()
         found = skill_inventory.tools(skill_md)
-        problems += idle_grant_problems(name, skill_md, found)
         for line in found:
             kind, _, detail = line.partition(" ")
-            if kind == "UNSCOPED_ALLOWED":
+            if kind == "HIDDEN_ALLOWED":
+                problems.append(
+                    f"{name} is hidden, so no turn starts it and its allowed-tools approve nothing; see {GRANTS_DOC}"
+                )
+            elif kind == "IDLE_ALLOWED":
+                problems.append(
+                    f"{name} grants {detail}, which matches no command in its fences or code spans; see {GRANTS_DOC}"
+                )
+            elif kind == "UNSCOPED_ALLOWED":
                 problems.append(f"{name} grants {detail} for every command; see {GRANTS_DOC}")
             elif kind == "UNPAIRED_ALLOWED":
                 problems.append(f"{name} grants {detail} in one shell only; see {GRANTS_DOC}")

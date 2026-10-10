@@ -50,6 +50,9 @@ reverse. UNGRANTED <tool> <line> <command> is a fence command that no pattern of
 matches, so running it through that tool prompts. A pattern matches the command's text, quotes included,
 with * for any text. EXPANDS <line> <command> is a fence command that expands a shell variable or command
 substitution other than ${CLAUDE_SKILL_DIR} or $ARGUMENTS, which prompts in both shells whatever is granted.
+IDLE_ALLOWED <entry> is a scoped Bash or PowerShell pattern that matches no fence command and no code span outside
+a fence, so it pre-approves a command the skill never asks for. HIDDEN_ALLOWED is a hidden skill with any grant:
+no turn starts it, so its grants approve nothing, and it takes the place of its IDLE_ALLOWED lines.
 A script that starts code the target repository configures declares a module-level RUNS_REPOSITORY_CODE string
 saying so, and its command must keep prompting. A fence command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
@@ -468,6 +471,31 @@ def grant_findings(
     return output
 
 
+def idle_findings(entries: list[tuple[str, str | None]], commands: list[str]) -> list[str]:
+    """Scoped shell patterns that match none of the commands the skill shows, so they pre-approve one it never asks
+    for. It is apart from grant_findings, which a scaffold calls before the skill shows any command.
+    """
+    return [
+        f"IDLE_ALLOWED {entry_text(name, pattern)}"
+        for name, pattern in entries
+        if name in SHELL_TOOLS
+        and pattern is not None
+        and pattern.strip() not in UNSCOPED_PATTERNS
+        and not any(grants(pattern, command) for command in commands)
+    ]
+
+
+def shown_commands(body: list[str], languages: list[str | None], start: int) -> list[str]:
+    """Every command the body shows: each shell or PowerShell fence command, and each code span outside a fence."""
+    commands = [command for _, command in fence_commands(body, languages, start)]
+    return commands + [
+        span.strip()
+        for line, language in zip(body, languages, strict=True)
+        if language is None
+        for span in CODE_SPAN.findall(line)
+    ]
+
+
 # --- locate ---------------------------------------------------------------------------------------
 
 
@@ -860,6 +888,10 @@ def tools(path: Path) -> list[str]:
         output += [f"MISSING_ALLOWED {name} {line}" for name, line in used if name not in allowed]
         commands = fence_commands(body, languages, start)
         output += grant_findings(entries, commands, repository_code_commands(path.parent, commands))
+        if "INVOCATION hidden" in listed:
+            output += ["HIDDEN_ALLOWED"] if allowed else []
+        else:
+            output += idle_findings(entries, shown_commands(body, languages, start))
     return output
 
 
