@@ -225,8 +225,8 @@ A repository reviewer's manifest, validated by `validate_adapter_manifest` in `r
 | `exclude` | array | yes | Regular expressions for changed paths it skips even when included. |
 | `resources` | array | yes | Its guideline files, read from the pull request's base commit when that commit has them. |
 | `when` | string or null | yes | A key of `conditions` that must hold for it to run, or null to run whenever files match. |
-| `model` | string | no | One of `inherit`, `sonnet`, `opus`, `haiku`, or `fable`. Its reviewer's model, over its profile's; `inherit` uses the session's. |
-| `effort` | string | no | One of `low`, `medium`, `high`, `xhigh`, or `max`. Its reviewer's reasoning effort when the Workflow tool starts it, over the configuration's `reviewer_effort`. |
+| `model` | string or null | no | One of `inherit`, `sonnet`, `opus`, `haiku`, or `fable`. Its reviewer's model, over its profile's; `inherit` uses the session's; null or absent keeps the profile's, else the session's. |
+| `effort` | string or null | no | One of `low`, `medium`, `high`, `xhigh`, or `max`. Its reviewer's reasoning effort when the Workflow tool starts it, over the configuration's `reviewer_effort`; null or absent keeps the configuration's `reviewer_effort`, else the session's effort. |
 
 #### Condition (`specialists-manifest.conditions.<condition>`)
 
