@@ -8,8 +8,9 @@ repository squash-merges with the body as the commit message, so every merged ch
 history. This script reads the entries of the commits between two refs (merge commits left out), newest first: the
 `###` entries of each message's `## Upgrade note` section, and, for a commit made while entries were still written
 by hand, the entries it added under `## Unreleased` in docs/upgrade-notes.md. An entry whose heading a newer commit
-already gave is the older text of that entry and is left out. Each entry keeps its text and gains
-`- Pull request: #N` from the commit's squash title when it names none.
+already gave is the older text of that entry and is left out. An entry is read with each hard-wrapped heading, list
+item, or paragraph joined into one line, since a squash commit's message may be wrapped. Each entry keeps that text
+and gains `- Pull request: #N` from the commit's squash title when it names none.
 
 --from defaults to the last tag before --to, and --to to HEAD. It prints the `## VERSION` section, or with --write
 inserts it into docs/upgrade-notes.md above the newest version's section, refusing a version the file already has.
@@ -40,6 +41,10 @@ VERSION_HEADING = re.compile(r"^## v\d+\.\d+\.\d+[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# A line that starts a Markdown block of its own, which no wrapped line continues: a heading, a list item, a quote, a
+# table row, or a fence.
+BLOCK_START = re.compile(r"^\s*(?:#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\|)")
+FENCE = re.compile(r"^\s*(?:`{3,}|~{3,})")
 SQUASH_TITLE_NUMBER = re.compile(r"\(#(\d+)\)\s*$")
 # Separators git log writes between a commit's fields and between commits; neither occurs in a commit message.
 FIELD_END, RECORD_END = "\x1f", "\x1e"
@@ -94,15 +99,32 @@ def markdown_section(text: str, heading: str) -> str | None:
     return "\n".join(lines[start:end])
 
 
+def unwrapped(block: str) -> list[str]:
+    """The block's lines with each hard-wrapped heading, list item, or paragraph joined back into one line.
+
+    A squash merge may carry a body wrapped as git and GitHub wrap commit messages, so a line that starts no block
+    of its own continues the line above it, unless that line is blank or the two are inside a code fence.
+    """
+    lines: list[str] = []
+    fenced = False
+    for line in (line.rstrip() for line in block.strip().split("\n")):
+        starts_fence = bool(FENCE.match(line))
+        if lines and lines[-1] and line and not fenced and not starts_fence and not BLOCK_START.match(line):
+            lines[-1] = f"{lines[-1]} {line.strip()}"
+        else:
+            lines.append(line)
+        fenced ^= starts_fence
+    return lines
+
+
 def notes_entries(text: str | None) -> list[NotesEntry]:
-    """The upgrade-notes entries: each ### heading with its field lines."""
+    """The upgrade-notes entries: each ### heading with its field lines, read with wrapped lines joined."""
     entries: list[NotesEntry] = []
     for block in NOTES_ENTRY_START.split(text or ""):
         if block.startswith("### "):
-            heading, _, body = block.partition("\n")
-            fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer(body)}
-            normalized = "\n".join(line.rstrip() for line in block.strip().split("\n"))
-            entries.append(NotesEntry(heading[4:].strip(), fields, normalized))
+            heading, *body = unwrapped(block)
+            fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer("\n".join(body))}
+            entries.append(NotesEntry(heading[4:].strip(), fields, "\n".join([heading, *body])))
     return entries
 
 
