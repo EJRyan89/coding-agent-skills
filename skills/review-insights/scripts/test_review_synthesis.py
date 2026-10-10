@@ -30,6 +30,10 @@ REPOSITORY_ADAPTER = {
     "source_hashes": {GUIDE: "b" * 64, ".agents/review.md": "c" * 64},
 }
 TITLE = "Name the timezone in every scheduling rule"
+# A reviewer whose manifest routes a specialist to the profile the suite ships records it under its reference, which
+# names no file of the reviewed repository.
+SUITE_PROFILE = "suite:design-review"
+SUITE_SOURCES = ["docs/design.md", SUITE_PROFILE]
 
 
 def _lines(path: Path) -> list[dict[str, Any]]:
@@ -745,6 +749,13 @@ class StageTests(unittest.TestCase):
             rs.guidance_files(["owner/repo", "Owner/Empty"], records),
         )
 
+    def test_a_suite_profile_a_reviewer_was_built_from_is_no_guidance_file(self) -> None:
+        adapter = {"name": "reviewer", "scope": "repository", "source_hashes": dict.fromkeys(SUITE_SOURCES, "b" * 64)}
+        records = {
+            Path("a.json"): {"repository": "owner/repo", "review": {"reviewed_at": "2026-01-01", "adapter": adapter}}
+        }
+        self.assertEqual({"owner/repo": ["docs/design.md"]}, rs.guidance_files(["owner/repo"], records))
+
     def test_the_previous_period_ends_at_most_seven_days_before_this_one_starts(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -781,6 +792,42 @@ class StageTests(unittest.TestCase):
             rs.write_inputs(directory, [{"kind": "totals"}], {"refs": ["owner/repo#1 v1 F001"]})
         self.assertIn("would exceed 10 bytes", str(raised.exception))
         self.assertEqual([], list(directory.iterdir()))
+
+
+class SuiteProfileTests(SynthesisFixture):
+    """A reviewer built partly from the profile the suite ships: the synthesis offers only the repository's files."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        adapter = {
+            "name": "design-reviewer",
+            "scope": "repository",
+            "source_commit": None,
+            "source_hashes": dict.fromkeys(SUITE_SOURCES, "d" * 64),
+        }
+        self.commit("owner/repo", 8, ["Correctness"], adapter=adapter)
+
+    def test_the_input_and_context_list_no_suite_profile_as_a_guidance_file(self) -> None:
+        json_path, _ = self.run_report()
+        directory = json_path.parent
+        guidance = next(item for item in _lines(directory / rs.INPUT_NAME) if item["kind"] == "guidance")
+        expected = {"owner/other": [], "owner/repo": [".agents/review.md", "docs/design.md", GUIDE]}
+        self.assertEqual(expected, guidance["repositories"])
+        context = json.loads((directory / rs.CONTEXT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(expected, context["guidance"])
+
+    def test_a_recommendation_targeting_the_suite_profile_is_refused(self) -> None:
+        json_path, _ = self.run_report()
+        result = self.valid_result(json_path)
+        result["recommendations"][0]["target"] = {"repository": "owner/repo", "path": SUITE_PROFILE}
+        before = json_path.read_text(encoding="utf-8")
+        code, out, err = self.synthesize(json_path, self.write_result(json_path, result))
+        self.assertEqual((1, ""), (code, err))
+        lines = out.splitlines()
+        self.assertTrue(lines[-1].startswith("FAILED "), lines)
+        problem = f"path '{SUITE_PROFILE}' is not a guidance file of owner/repo"
+        self.assertTrue(any(line.startswith("PROBLEM ") and problem in line for line in lines), lines)
+        self.assertEqual(before, json_path.read_text(encoding="utf-8"))
 
 
 class ClaimTests(SynthesisFixture):
