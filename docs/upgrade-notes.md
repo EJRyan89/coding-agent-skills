@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### review-document reviews one text document from its file path
+
+- Level: minor. A new skill in the `code-review-operations` bundle: `review-document <path> [--base none|committed] [--output DIR]` reviews a Markdown or other text document that is not in a pull request as a one-file fixture canary, sending a Markdown or plain-text document to the design-review specialist and any other text file to the generic reviewer. A file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged; any other file is reviewed whole. It needs the code-review configuration, reads nothing from GitHub, and posts nothing. A `.docx` or PDF is refused until text extraction exists. An installation that has the bundle gets it on its next update. "Document reviews" in `docs/code-review-operations.md` describes it.
+- Contract: `skills/review-document`
+- User action: none
+- Pull request: #255
+
 ### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
 
 - Level: minor. Additive: a specialist's `profile` in a specialists manifest may now be `suite:design-review`, a profile the suite ships for design documents, read from `code-review-core`'s deployed references rather than the repository. A record whose reviewer used one names it in `review.adapter.source_hashes` under `suite:design-review`, with the SHA-256 of the file that ran; an earlier release reads such a record, but refuses a manifest that names a suite profile. A fixture's `pull.json` may name a `manifest_path` in its `base/` tree, which a fixture canary then reviews with, read from the base commit; without it the generic reviewer reviews the fixture as before. "Design documents" under "Specialist reviewers" in `docs/code-review-operations.md` shows the route and the finding categories.
