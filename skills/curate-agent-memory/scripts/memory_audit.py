@@ -25,9 +25,10 @@ or changes a memory file. Existing lines keep their place: other lines (headings
 as written, an entry is dropped when its file is gone or it repeats an earlier entry, and
 memories without an entry are appended in file-name order. The title is the existing entry's
 title, else the frontmatter name, else the file stem. The hook is the frontmatter description,
-read whole when it is a `>` or `|` block scalar,
-else the existing entry's hook, else the first line of the body; a derived hook is collapsed to
-one line of at most 150 characters. It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
+all of a `>` or `|` block scalar's lines, else the existing entry's hook, kept as written, else
+the first line of the body; a description or a body line is collapsed to one line of at most 150
+characters, because Claude Code loads the index into every session and stops at its load limit.
+It prints `INDEX_LINE`, `ADDED`, and `DROPPED` lines, then
 `NEAR_LIMIT` or `OVER_LIMIT` when the index nears or passes Claude Code's load limit, then
 `UNCHANGED`, `WOULD_WRITE <path>`, or `WROTE <path>`. OVER_LIMIT is a finding: it exits 1.
 

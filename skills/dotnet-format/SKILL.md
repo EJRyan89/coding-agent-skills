@@ -14,7 +14,7 @@ Check the C# files changed on the current branch with the `dotnet-format` global
    python -B "${CLAUDE_SKILL_DIR}/scripts/dotnet_format_targets.py" resolve
    ```
 
-   `STOP <reason>` means there is nothing to format: report the reason and stop. Report a `FETCH_FAILED <reason>` line (the base is origin as last fetched, so it may be stale) and go on. Report each `SKIPPED_ASPNET <file> <project>` line (ASP.NET projects crash the formatter) and each `OUTSIDE_SOLUTION <file>` line (no project of the chosen solution owns it, so the formatter skips it; only the layout checker sees it). Keep `REPO_ROOT`, `SOLUTION`, and `FILE_LIST` for the next steps.
+   `STOP <reason>` means there is nothing to format: report the reason and stop. Report a `FETCH_FAILED <reason>` line (the base is origin as last fetched, so it may be stale) and go on. Report each `SKIPPED_ASPNET <file> <project>` line (ASP.NET projects crash the formatter) and each `OUTSIDE_SOLUTION <file>` line (no project of the chosen solution owns it, so the formatter skips it; only the layout checker sees it). Keep the path from the `REPO_ROOT <path>` line, the solution from the `SOLUTION <solution> <score>` line (the score counts the changed files its projects own and is not passed on), and the path from the `FILE_LIST <path>` line as `<REPO_ROOT>`, `<SOLUTION>`, and `<FILE_LIST>` in the next steps.
 
 2. **Check the layout analyzer configuration:**
 

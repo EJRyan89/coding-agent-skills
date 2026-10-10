@@ -428,6 +428,16 @@ class ReindexTests(unittest.TestCase):
         self.assertLessEqual(len(hook), 150)
         self.assertTrue(hook.endswith("word..."), hook)
 
+    def test_a_long_block_scalar_description_is_cut_like_any_other(self) -> None:
+        lines = "".join(f"  line {number} of a long literal hook\n" for number in range(12))
+        write(self.memory_dir / "literal.md", f"---\nname: literal\ndescription: |\n{lines}---\nBody.\n")
+        self.reindex("--write")
+        hook = self.index.read_text(encoding="utf-8").split(" — ", 1)[1].rstrip("\n")
+        self.assertTrue(hook.startswith("line 0 of a long literal hook line 1 of"), hook)
+        self.assertLessEqual(len(hook), 150)
+        self.assertTrue(hook.endswith("..."), hook)
+        self.assertNotIn("line 11", hook)
+
     def test_index_size_against_the_load_limit_is_reported(self) -> None:
         for number in range(181):
             write(self.memory_dir / f"m{number:03}.md", memory(f"m{number}", "Body."))

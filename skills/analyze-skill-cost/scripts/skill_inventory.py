@@ -34,7 +34,7 @@ Tool references: a tool counts as used on a line when its exact, case-sensitive 
   - the start of an inline code span (`Read`, `Grep -l`, `Glob("*")`), outside fenced blocks;
   - followed by "(" (call syntax) or by the word tool(s), call(s), or invocation(s); or
   - a multi-word tool name that is not an English word (AskUserQuestion, WebFetch, mcp__*), anywhere.
-A bash, sh, shell, or PowerShell fence uses each of Bash and PowerShell that is allowed, else Bash: on
+A bash, sh, shell, console, or PowerShell fence uses each of Bash and PowerShell that is allowed, else Bash: on
 Windows, Claude Code may run a fence's command through either tool.
 Sentence-initial verbs such as "Read the file" or lowercase "read and apply" never count as USED,
 so they never produce MISSING_ALLOWED. They do produce IMPLIED for an allowed tool whose action the
