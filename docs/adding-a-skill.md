@@ -124,6 +124,8 @@ Never leave the path to the agent. Given a placeholder such as `--output "<file>
 
 ### Metadata
 
+`deploy-meta/<name>.json` is the skill's deployment metadata: what the deployer needs to know to install the skill, which the runtime never sees. It lives outside the skill directory because the deployer renders, installs, and hashes only what is under `skills/<name>/`, so a deployed skill carries no deployer-specific file, and a change to how a skill is deployed never touches its template or its hash.
+
 `deploy-meta/<name>.json` declares the variables and shared files needed by the skill:
 
 ```json
