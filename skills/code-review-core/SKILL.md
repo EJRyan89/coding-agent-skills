@@ -1,7 +1,6 @@
 ---
 name: code-review-core
 description: Internal support for the code-review operations bundle. Not intended for direct invocation.
-allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)"]
 disable-model-invocation: true
 user-invocable: false
 ---

@@ -34,7 +34,10 @@ class SkillGrantsFixtures(unittest.TestCase):
                 (root / relative).parent.mkdir(parents=True, exist_ok=True)
                 (root / relative).write_text(text, encoding="utf-8")
 
-            pointer = "Read and follow `../../../.claude/skills/{}/SKILL.md`.\n"
+            pointer = (
+                "Read and follow `../../../.claude/skills/{0}/SKILL.md` as the authoritative workflow.\n"
+                "Resolve all relative paths and supporting resources from `../../../.claude/skills/{0}/`.\n"
+            )
             write(".claude/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\nBody.\n")
             write(
                 ".agents/skills/good/SKILL.md", "---\nname: good\ndescription: Good.\n---\n\n" + pointer.format("good")
@@ -50,13 +53,17 @@ class SkillGrantsFixtures(unittest.TestCase):
                 ".agents/skills/astray/SKILL.md",
                 "---\nname: astray\ndescription: Astray.\n---\n\n" + pointer.format("other"),
             )
+            write(".claude/skills/bare/SKILL.md", "# No frontmatter\n")
             write(".agents/skills/stray/SKILL.md", "---\nname: stray\ndescription: Stray.\n---\n")
+            differs = "differs from what python tools/skill_shims.py --write writes; run it"
             self.assertEqual(
                 [
-                    ".agents/skills/stray/SKILL.md has no .claude/skills/stray/SKILL.md",
-                    ".agents/skills/astray/SKILL.md does not point to ../../../.claude/skills/astray/SKILL.md",
-                    ".agents/skills/drifted/SKILL.md frontmatter differs from .claude/skills/drifted/SKILL.md",
-                    ".claude/skills/missing/SKILL.md has no .agents/skills/missing/SKILL.md shim",
+                    ".agents/skills/stray/SKILL.md has no .claude/skills/stray/SKILL.md; delete it",
+                    f".agents/skills/astray/SKILL.md {differs}",
+                    ".claude/skills/bare/SKILL.md has no closed frontmatter for its shim to carry",
+                    f".agents/skills/drifted/SKILL.md {differs}",
+                    ".claude/skills/missing/SKILL.md has no .agents/skills/missing/SKILL.md shim; "
+                    "run python tools/skill_shims.py --write",
                 ],
                 repository_skill_problems(root),
             )
@@ -68,7 +75,7 @@ class SkillGrantsFixtures(unittest.TestCase):
             "bare": ('["Bash"]', own),
             "unpaired": (json.dumps([f"Bash({own}*)"]), own),
             # gh acts outside the conversation, so it may keep prompting; tools/b.py is the repository's own.
-            "ungranted": (twin, 'python -B tools/b.py\ngh pr create --body-file "<file>"'),
+            "ungranted": (twin, f'{own}\npython -B tools/b.py\ngh pr create --body-file "<file>"'),
             "good": (twin, f'{own} "<skill>"'),
         }
         with tempfile.TemporaryDirectory() as temporary:
@@ -85,8 +92,8 @@ class SkillGrantsFixtures(unittest.TestCase):
             self.assertEqual(
                 [
                     f".claude/skills/bare/SKILL.md grants Bash for every command; see {GRANTS_DOC}",
-                    f".claude/skills/ungranted/SKILL.md:7 no Bash grant covers python -B tools/b.py; see {GRANTS_DOC}",
-                    ".claude/skills/ungranted/SKILL.md:7 no PowerShell grant covers python -B tools/b.py; "
+                    f".claude/skills/ungranted/SKILL.md:8 no Bash grant covers python -B tools/b.py; see {GRANTS_DOC}",
+                    ".claude/skills/ungranted/SKILL.md:8 no PowerShell grant covers python -B tools/b.py; "
                     f"see {GRANTS_DOC}",
                     f".claude/skills/unpaired/SKILL.md grants Bash({own}*) in one shell only; see {GRANTS_DOC}",
                 ],
@@ -131,7 +138,7 @@ class SkillGrantsFixtures(unittest.TestCase):
                 "unpaired": (json.dumps([f"Bash({own}*)"]), f'{own}x.py"'),
                 "ungranted": (
                     json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
-                    'python -B "${CLAUDE_SKILL_DIR}/../core/scripts/y.py"\ngit status',
+                    f'{own}x.py"\npython -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"\ngit status',
                 ),
                 "none": ('["Read"]', f'{own}x.py"'),
                 "unused": (json.dumps([f"Bash({own}*)", f"PowerShell({own}*)", "Glob"]), f'{own}x.py"'),
@@ -155,12 +162,47 @@ class SkillGrantsFixtures(unittest.TestCase):
                     f"see {GRANTS_DOC}",
                     f"skills/none/SKILL.md grants Read, which no step uses; see {GRANTS_DOC}",
                     f"skills/none/SKILL.md:6 runs a command without a shell grant; see {GRANTS_DOC}",
-                    f"skills/ungranted/SKILL.md:7 no Bash grant covers "
+                    f"skills/ungranted/SKILL.md:8 no Bash grant covers "
                     f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"; see {GRANTS_DOC}',
-                    f"skills/ungranted/SKILL.md:7 no PowerShell grant covers "
+                    f"skills/ungranted/SKILL.md:8 no PowerShell grant covers "
                     f'python -B "${{CLAUDE_SKILL_DIR}}/../core/scripts/y.py"; see {GRANTS_DOC}',
                     f"skills/unpaired/SKILL.md grants Bash({own}*) in one shell only; see {GRANTS_DOC}",
                     f"skills/unused/SKILL.md grants Glob, which no step uses; see {GRANTS_DOC}",
+                ],
+                skill_grant_problems(root),
+            )
+
+    def test_grant_policy_fails_grants_that_approve_nothing_the_skill_runs(self) -> None:
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        hidden = "disable-model-invocation: true\nuser-invocable: false\n"
+        skills = {
+            "hidden": (f'{hidden}allowed-tools: ["Read"]\n', "Use the `Read` tool."),
+            "quiet": (hidden, "Imported by other skills."),
+            "idle": (
+                "allowed-tools: " + json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]) + "\n",
+                "```bash\ngit status\n```",
+            ),
+            "spanned": (
+                'allowed-tools: ["Bash(git rev-parse --show-toplevel)", "PowerShell(git rev-parse --show-toplevel)"]\n',
+                "Confirm the target is a repository: run `git rev-parse --show-toplevel`.",
+            ),
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files: dict[str, str] = {}
+            for skill, (front, body) in skills.items():
+                files[f"deploy-meta/{skill}.json"] = "{}"
+                files[f"skills/{skill}/SKILL.md"] = f"---\nname: {skill}\n{front}---\n\n{body}\n"
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                [
+                    f"skills/hidden/SKILL.md is hidden, so no turn starts it and its allowed-tools approve nothing; "
+                    f"see {GRANTS_DOC}",
+                    *(
+                        f"skills/idle/SKILL.md grants {tool}({own}*), which matches no command in its fences or code "
+                        f"spans; see {GRANTS_DOC}"
+                        for tool in ("Bash", "PowerShell")
+                    ),
                 ],
                 skill_grant_problems(root),
             )

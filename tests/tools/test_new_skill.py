@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import frontmatter as fm
 
-from tools import new_skill, skill_reference
+from tools import new_skill, skill_reference, skill_shims
 
 README = (
     "# Fixture\n\n## Included skills\n\n| Skill | What it does |\n|---|---|\n"
@@ -31,7 +31,9 @@ FULL = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 DESCRIPTION = 'Report "widgets" in a repository with spaces — use it when asked about them.'
 
 
-class NewSkillTestCase(unittest.TestCase):
+class FixtureRepositoryTestCase(unittest.TestCase):
+    """A fixture source with two shipped skills, one in a bundle, and a current skill reference."""
+
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="new-skill-test.")
         self.root = Path(self._temporary.name).resolve() / "Repo With Spaces"
@@ -68,6 +70,8 @@ class NewSkillTestCase(unittest.TestCase):
             path.relative_to(self.root).as_posix(): path.read_bytes() for path in self.root.rglob("*") if path.is_file()
         }
 
+
+class NewSkillTestCase(FixtureRepositoryTestCase):
     def test_it_writes_frontmatter_metadata_and_the_generated_reference_section(self) -> None:
         remaining = new_skill.scaffold(self.root, "widget-report", DESCRIPTION, argument_hint="ORG [--months N]")
 
@@ -227,6 +231,86 @@ class NewSkillTestCase(unittest.TestCase):
         code, stdout, stderr = run("widget-report", "--description", DESCRIPTION)
         self.assertEqual((2, ""), (code, stdout))
         self.assertIn("FAILED 'widget-report' is already a skill", stderr)
+
+
+class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
+    def run_main(self, *arguments: str) -> tuple[int, str, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = new_skill.main(["--root", str(self.root), "--repository", *arguments])
+        return code, stdout.getvalue(), stderr.getvalue()
+
+    def test_it_writes_the_skill_and_its_shim_and_nothing_a_shipped_skill_needs(self) -> None:
+        before = self.snapshot()
+        written = new_skill.scaffold_repository(self.root, "widget-check", DESCRIPTION, argument_hint="TARGET")
+
+        self.assertEqual(
+            [Path(".claude/skills/widget-check/SKILL.md"), Path(".agents/skills/widget-check/SKILL.md")], written
+        )
+        frontmatter = (
+            "---\nname: widget-check\n"
+            'description: "Report \\"widgets\\" in a repository with spaces — use it when asked about them."\n'
+            'argument-hint: "TARGET"\n---\n'
+        )
+        self.assertEqual(
+            frontmatter + "\n# Widget check\n",
+            (self.root / ".claude/skills/widget-check/SKILL.md").read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            frontmatter + "\nRead and follow `../../../.claude/skills/widget-check/SKILL.md` as the authoritative "
+            "workflow.\nResolve all relative paths and supporting resources from "
+            "`../../../.claude/skills/widget-check/`.\n",
+            (self.root / ".agents/skills/widget-check/SKILL.md").read_text(encoding="utf-8"),
+        )
+        self.assertEqual([], skill_shims.problems(self.root))
+        after = self.snapshot()
+        self.assertEqual(before, {path: data for path, data in after.items() if path in before})
+        self.assertEqual(2, len(after) - len(before))
+
+    def test_given_grants_and_user_only_reach_the_skill_and_its_shim(self) -> None:
+        grants = ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]
+        new_skill.scaffold_repository(self.root, "widget-check", "Check widgets.", user_only=True, allowed_tools=grants)
+
+        expected = (
+            'allowed-tools: ["Bash(python -B tools/widgets.py*)", "PowerShell(python -B tools/widgets.py*)"]\n'
+            "disable-model-invocation: true\n---\n"
+        )
+        for path in (".claude/skills/widget-check/SKILL.md", ".agents/skills/widget-check/SKILL.md"):
+            with self.subTest(path=path):
+                self.assertIn(expected, (self.root / path).read_text(encoding="utf-8"))
+
+    def test_refusals_change_nothing(self) -> None:
+        (self.root / ".claude/skills/taken").mkdir(parents=True)
+        (self.root / ".agents/skills/shimmed").mkdir(parents=True)
+        before = self.snapshot()
+        cases: tuple[tuple[str, dict[str, Any], str], ...] = (
+            ("Bad_Name", {}, "not a valid skill name"),
+            ("claude-helper", {}, "reserved word 'claude'"),
+            ("alpha", {}, "already a shipped or repository skill"),
+            ("taken", {}, "already a shipped or repository skill"),
+            ("shimmed", {}, ".agents/skills/shimmed already exists"),
+            ("fresh", {"description": "Fresh."}, "say what it does, then when to use it"),
+            ("fresh", {"allowed_tools": ["Bash"]}, "grants Bash for every command"),
+            ("fresh", {"allowed_tools": ["Bash(git status)"]}, r"Bash\(git status\) has no PowerShell twin"),
+        )
+        for name, arguments, message in cases:
+            with self.subTest(name=name, arguments=arguments):
+                description = arguments.pop("description", "Fresh. Use it when testing.")
+                with self.assertRaisesRegex(new_skill.ScaffoldError, message):
+                    new_skill.scaffold_repository(self.root, name, description, **arguments)
+                self.assertEqual(before, self.snapshot())
+        for option in (["--tool", "gh"], ["--opt-in"]):
+            with self.subTest(option=option):
+                code, stdout, stderr = self.run_main("fresh", "--description", "Fresh. Use it when testing.", *option)
+                self.assertEqual((2, ""), (code, stdout))
+                self.assertIn("FAILED a repository skill has no deploy metadata", stderr)
+                self.assertEqual(before, self.snapshot())
+
+    def test_the_command_reports_what_it_wrote(self) -> None:
+        self.assertEqual(
+            (0, "CREATED .claude/skills/widget-check/SKILL.md\nCREATED .agents/skills/widget-check/SKILL.md\n", ""),
+            self.run_main("widget-check", "--description", DESCRIPTION),
+        )
 
 
 if __name__ == "__main__":

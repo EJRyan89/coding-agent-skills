@@ -15,7 +15,7 @@ It is a manual gate, never part of `tests/run_validation.py`: each run calls a m
 
 ## 1. Choose the skills
 
-Name the shipped skills the change touched: a changed `SKILL.md`, script, frontmatter, `deploy-meta` entry, or `agent_deps`. For a change to how adapters are rendered (`deployer/render.py`), name one model-invocable skill and one user-only skill, such as `repo-cleanup`; Copilot reports the user-only one as `UNSUPPORTED` without a run. The fixture always runs first. Never name every skill: the cost is one model run per runtime per skill. If you would name more than three, ask the user which to keep.
+Name the shipped skills the change touched: a changed `SKILL.md`, script, frontmatter, `deploy-meta` entry, or `agent_deps`. For a change to how adapters are rendered (`deployer/render.py`), name one model-invocable skill and one user-only skill, such as `repo-cleanup`; Copilot reports the user-only one as `UNSUPPORTED` without a run. The fixture always runs first. Never name every skill: the cost is one model run per runtime per skill. For a pull request, if you would name more than three, ask the user which to keep. For a release, name every shipped skill changed since the last tag ("Before tagging" in `docs/releasing.md`) without asking, at most three to a run.
 
 ## 2. Run it
 
