@@ -291,6 +291,71 @@ def workflow_guard_problems(
     return problems
 
 
+def _mapping(node: Node, *keys: str) -> dict[str, Node]:
+    """The mapping at `keys` below `node`, or an empty one when any step of the way is not a mapping."""
+    for key in keys:
+        node = node.get(key) if isinstance(node, dict) else None
+    return node if isinstance(node, dict) else {}
+
+
+def _steps(job: dict[str, Node]) -> list[dict[str, Node]]:
+    steps = job.get("steps")
+    return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
+
+
+def leg_problems(workflow: str, legs: int) -> list[str]:
+    """Report how validate.yml's `suite` job departs from `legs` legs on windows-latest, each running its own shard
+    of the validation run, every one of them required through the `validate` job."""
+    tree = read_workflow(workflow)
+    suite = _mapping(tree, "jobs", "suite")
+    problems: list[str] = []
+    expected = [f"{index}/{legs}" for index in range(1, legs + 1)]
+    shards = _mapping(suite, "strategy", "matrix").get("shard")
+    if shards != expected:
+        problems.append(f"the suite matrix's shards are {shards}, expected {expected}")
+    if suite.get("runs-on") != "windows-latest":
+        problems.append(f"the suite runs on {suite.get('runs-on')}, not windows-latest")
+    runs = [step for step in _steps(suite) if "tests/run_validation.py" in str(step.get("run", ""))]
+    if not runs:
+        problems.append("no step runs tests/run_validation.py")
+    for step in runs:
+        if _mapping(step, "env").get("SHARD") != "${{ matrix.shard }}" or "$env:SHARD" not in str(step.get("run")):
+            problems.append(f"the step {step.get('name')} does not run its leg's --shard from matrix.shard")
+    if _mapping(tree, "jobs", "validate").get("needs") != "suite":
+        problems.append("the validate job does not need the suite job, so a leg could fail without failing it")
+    return problems
+
+
+def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
+    """Report how validate.yml's tool caches depart from `caches`: each `actions/cache` key, mapped to the install
+    command that runs when it misses. Every version a key names is a workflow-level `env` pin, so the install and
+    the key read one declaration, and pip's cache is keyed on requirements-dev.txt."""
+    tree = read_workflow(workflow)
+    steps = _steps(_mapping(tree, "jobs", "suite"))
+    keys = [
+        str(_mapping(step, "with").get("key"))
+        for step in steps
+        if str(step.get("uses", "")).startswith("actions/cache@")
+    ]
+    problems: list[str] = []
+    if sorted(keys) != sorted(caches):
+        problems.append(f"the cache keys are {keys}, expected {sorted(caches)}")
+    pins = _mapping(tree, "env")
+    scripts = "\n".join(str(step.get("run", "")) for step in steps)
+    for key, command in caches.items():
+        for name in re.findall(r"\$\{\{ env\.(\w+) \}\}", key):
+            if name not in pins:
+                problems.append(f"the cache key {key} reads {name}, which the workflow's env does not pin")
+        if command not in scripts:
+            problems.append(f"no step runs {command!r} when the cache keyed {key} misses")
+    python = [_mapping(step, "with") for step in steps if str(step.get("uses", "")).startswith("actions/setup-python@")]
+    if [{"cache": item.get("cache"), "path": item.get("cache-dependency-path")} for item in python] != [
+        {"cache": "pip", "path": "requirements-dev.txt"}
+    ]:
+        problems.append("setup-python does not cache pip keyed on requirements-dev.txt")
+    return problems
+
+
 class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_workflow_is_a_dispatched_and_weekly_pinned_check_without_secrets(self) -> None:
         workflows = REPOSITORY_ROOT / ".github/workflows"
@@ -325,7 +390,7 @@ class WorkflowsPolicies(unittest.TestCase):
             workflow_guard_problems(
                 workflow,
                 ["pull_request", "push", "schedule", "workflow_dispatch"],
-                {"actions/checkout", "actions/setup-python"},
+                {"actions/checkout", "actions/setup-python", "actions/cache"},
                 ("23 6 * * 1",),
             ),
         )
@@ -342,6 +407,26 @@ class WorkflowsPolicies(unittest.TestCase):
         )
         self.assertIn("[System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)", workflow)
         self.assertIn("$arguments += @('--pr-body', $bodyFile)", workflow)
+
+    def test_validate_workflow_runs_four_legs_and_restores_the_pinned_tools_from_caches(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+        # Four four-core runners take a run of about 1,450 job-seconds to about three minutes; the count changes
+        # here and in the workflow together.
+        self.assertEqual([], leg_problems(workflow, 4))
+        self.assertEqual(
+            [],
+            tool_cache_problems(
+                workflow,
+                {
+                    "shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}": (
+                        "choco install shellcheck --version $env:SHELLCHECK_VERSION "
+                    ),
+                    "psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}": (
+                        "Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION "
+                    ),
+                },
+            ),
+        )
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")

@@ -1,6 +1,6 @@
 """Run the complete repository validation suite.
 
-Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE]
+Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE] [--shard INDEX/COUNT]
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
@@ -16,6 +16,10 @@ file; anything else, or a change it cannot determine, runs everything. --full al
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
 notes in the commit messages since that tag on HEAD, the branch's own included.
+
+--shard 2/4 runs the second of four legs, as CI's runners do: once -k or the documentation path has selected the
+policy checks and suite jobs, tests/validation/job_selection.py deals them across the legs the same way on every leg,
+so the legs together run exactly what one run would, each once.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import contextlib
 import fnmatch
 import io
 import os
+import re
 import sys
 import time
 import unittest
@@ -47,13 +52,15 @@ import suite_discovery
 import toolchain
 import upgrade_notes
 import workflows
-from job_pool import OUTPUT_LOCK, append_step_summary, run_beside, step_summary, worker_count
+from job_pool import OUTPUT_LOCK, Job, append_step_summary, run_beside, step_summary, worker_count
 from job_selection import (
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
     all_jobs,
     changed_paths,
     documentation_jobs,
+    leg_jobs,
+    leg_policies,
     name_patterns,
 )
 from suite_discovery import regression_suites
@@ -174,6 +181,48 @@ class PullRequestBodyOption(unittest.TestCase):
         versions.assert_not_called()
 
 
+class ShardOption(unittest.TestCase):
+    def test_a_shard_is_an_index_from_one_up_to_its_count(self) -> None:
+        self.assertEqual((1, 1), shard_option("1/1"))
+        self.assertEqual((2, 4), shard_option("2/4"))
+        self.assertEqual((4, 4), shard_option("4/4"))
+        for text in ("0/4", "5/4", "2/0", "2", "2/4/8", "-1/4", " 2/4", "a/b", "02/4"):
+            with self.subTest(text=text), self.assertRaises(argparse.ArgumentTypeError):
+                shard_option(text)
+
+    def test_a_shard_outside_its_count_is_a_usage_error_before_any_check_runs(self) -> None:
+        with (
+            mock.patch(f"{__name__}.tool_versions") as versions,
+            contextlib.redirect_stderr(io.StringIO()) as error,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            main(["--shard", "5/4"])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("argument --shard: expected <index>/<count>", error.getvalue())
+        versions.assert_not_called()
+
+
+def shard_option(text: str) -> tuple[int, int]:
+    """--shard's `<index>/<count>`, the index counted from 1."""
+    match = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", text)
+    if match is None or int(match.group(1)) > int(match.group(2)):
+        raise argparse.ArgumentTypeError(f"expected <index>/<count> with 1 <= index <= count, found {text!r}")
+    return int(match.group(1)), int(match.group(2))
+
+
+def deal_to_leg(
+    policies: unittest.TestSuite, jobs: list[Job], shard: tuple[int, int]
+) -> tuple[unittest.TestSuite, list[Job], str]:
+    """This leg's policy checks and jobs, and the line that says what share of the selection it runs."""
+    index, count = shard
+    leg_checks, leg_suites = leg_policies(policies, index - 1, count), leg_jobs(jobs, index - 1, count)
+    line = (
+        f"Shard {index}/{count}: {leg_checks.countTestCases()} of {policies.countTestCases()} policy checks and "
+        f"{len(leg_suites)} of {len(jobs)} suite jobs."
+    )
+    return leg_checks, leg_suites, line
+
+
 def run_policies(policies: unittest.TestSuite, verbose: bool) -> unittest.TestResult:
     """Run the policy checks into a buffer and print their report in one block once they finish."""
     report = io.StringIO()
@@ -183,7 +232,7 @@ def run_policies(policies: unittest.TestSuite, verbose: bool) -> unittest.TestRe
     return result
 
 
-def main(argv: list[str] | None = None) -> int:
+def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the repository's policy checks and regression suites.")
     parser.add_argument(
         "-k",
@@ -201,9 +250,20 @@ def main(argv: list[str] | None = None) -> int:
         metavar="FILE",
         help="a file holding the pull request body, whose ## Upgrade note the upgrade-notes check reads",
     )
+    parser.add_argument(
+        "--shard",
+        type=shard_option,
+        metavar="INDEX/COUNT",
+        help="run leg INDEX of COUNT: a share of the selected policy checks and suites, dealt alike on every leg",
+    )
     arguments = parser.parse_args(argv)
     if arguments.pr_body is not None and not arguments.pr_body.is_file():
         parser.error(f"--pr-body is not a file: {arguments.pr_body}")
+    return arguments
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = parse_arguments(argv)
     upgrade_notes.pull_request_body = arguments.pr_body
     versions = tool_versions()
     if report_prerequisite_problems(versions):
@@ -239,6 +299,11 @@ def main(argv: list[str] | None = None) -> int:
     if not policies.countTestCases() and not jobs:
         print(f"No policy check or suite matches {' '.join(arguments.patterns)}.", file=sys.stderr)
         return 2
+    leg = f"{arguments.shard[0]}/{arguments.shard[1]}" if arguments.shard else None
+    if arguments.shard:
+        policies, jobs, share = deal_to_leg(policies, jobs, arguments.shard)
+        mode = f"{mode} {share}"
+        print(share, flush=True)
 
     workers = worker_count()
     print(
@@ -253,14 +318,15 @@ def main(argv: list[str] | None = None) -> int:
     passed = policy_result.wasSuccessful() and not failures
     seconds = time.perf_counter() - started
     print(
-        f"\n{policy_result.testsRun} policy checks and {len(jobs)} suite jobs in {seconds:.0f}s: "
+        f"\n{f'Shard {leg}: ' if leg else ''}{policy_result.testsRun} policy checks and {len(jobs)} suite jobs in "
+        f"{seconds:.0f}s: "
         + ("validation passed." if passed else f"validation FAILED ({len(failures)} suite jobs failed).")
     )
     failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
     failed += [failure.job.label for failure in failures]
     tracebacks = {failure.job.label: failure.report for failure in failures if failure.raised}
     summary = step_summary(
-        tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed, tracebacks
+        tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed, tracebacks, leg
     )
     append_step_summary(os.environ, summary)
     return 0 if passed else 1

@@ -15,8 +15,82 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from job_selection import MARKDOWN_SHELL_JOB, POWERSHELL_JOB, changed_paths, documentation_jobs, suites_naming
+from job_pool import UNSPLIT_SUITE_WEIGHT, Job
+from job_selection import (
+    MARKDOWN_SHELL_JOB,
+    POWERSHELL_JOB,
+    changed_paths,
+    documentation_jobs,
+    leg_jobs,
+    leg_policies,
+    suites_naming,
+)
 from validation_support import REPOSITORY_ROOT
+
+
+def fixture_job(label: str, weight: float) -> Job:
+    return Job(label, label.split(" [")[0], weight, lambda: None)
+
+
+class LegFixtures(unittest.TestCase):
+    JOBS = (
+        fixture_job("static shell checks", UNSPLIT_SUITE_WEIGHT),
+        fixture_job("skills/a/scripts/test_a.sh", UNSPLIT_SUITE_WEIGHT),
+        fixture_job("tests/test_big.py [shard 1/3]", 9),
+        fixture_job("tests/test_big.py [shard 2/3]", 9),
+        fixture_job("tests/test_big.py [shard 3/3]", 9),
+        fixture_job("tests/test_small.py", 4),
+        fixture_job("tests/test_one.py", 1),
+        fixture_job("tests/test_two.py", 2),
+    )
+
+    def test_the_legs_together_run_every_job_once_whatever_the_order_given(self) -> None:
+        labels = sorted(job.label for job in self.JOBS)
+        for count in range(1, len(self.JOBS) + 2):
+            with self.subTest(count=count):
+                legs = [sorted(job.label for job in leg_jobs(list(self.JOBS), index, count)) for index in range(count)]
+                self.assertEqual(labels, sorted(label for leg in legs for label in leg))
+                # The same leg gets the same jobs from any order, so every leg of a run agrees on the dealing.
+                shuffled = [*self.JOBS[3:], *reversed(self.JOBS[:3])]
+                self.assertEqual(
+                    legs, [sorted(job.label for job in leg_jobs(shuffled, index, count)) for index in range(count)]
+                )
+
+    def test_the_heaviest_job_goes_onto_the_lightest_leg_and_an_unsplit_job_counts_as_a_few_tests(self) -> None:
+        # An unsplit job's weight of 1,000 only starts it first in the pool; dealt at that weight it would fill a leg
+        # alone. At its leg cost the 12-test job goes first, the unsplit job onto the other leg, then the 6-test jobs
+        # each onto the lighter leg, the lower index on a tie.
+        jobs = [
+            fixture_job("static lint check", UNSPLIT_SUITE_WEIGHT),
+            fixture_job("tests/test_twelve.py", 12),
+            fixture_job("tests/test_six.py [shard 1/2]", 6),
+            fixture_job("tests/test_six.py [shard 2/2]", 6),
+        ]
+        self.assertEqual(
+            [
+                ["tests/test_twelve.py", "tests/test_six.py [shard 2/2]"],
+                ["static lint check", "tests/test_six.py [shard 1/2]"],
+            ],
+            [[job.label for job in leg_jobs(jobs, index, 2)] for index in range(2)],
+        )
+
+    def test_policy_checks_are_dealt_one_each_in_turn_by_id(self) -> None:
+        checks = {f"test_{name}": lambda self: None for name in "edcba"}
+        # Nested as the runner loads them, a suite per module holding a suite per class.
+        policies = unittest.TestSuite(
+            [unittest.defaultTestLoader.loadTestsFromTestCase(type("Policies", (unittest.TestCase,), checks))]
+        )
+        legs = [
+            [
+                test.id().rsplit(".", 1)[-1]
+                for test in leg_policies(policies, index, 2)
+                if isinstance(test, unittest.TestCase)
+            ]
+            for index in range(2)
+        ]
+        self.assertEqual([["test_a", "test_c", "test_e"], ["test_b", "test_d"]], legs)
+        self.assertEqual([3, 2], [leg_policies(policies, index, 2).countTestCases() for index in range(2)])
+        self.assertEqual([], list(leg_policies(policies, 5, 6)))
 
 
 class JobSelectionFixtures(unittest.TestCase):

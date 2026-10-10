@@ -40,6 +40,12 @@ class JobPoolFixtures(unittest.TestCase):
             text,
         )
         self.assertIn("**validation passed**", step_summary((3, 14, 7), {}, "Mode.", 1, 1, 1.0, []))
+        # A leg of a run split across runners names its shard, since each leg writes its own summary.
+        self.assertEqual(
+            "## Repository validation, shard 2/4\n\n- Python 3.11.9\n- Mode.\n"
+            "- 1 policy checks and 1 suite jobs in 1s: **validation passed**\n",
+            step_summary((3, 11, 9), {}, "Mode.", 1, 1, 1.0, [], shard="2/4"),
+        )
 
     def test_any_exception_fails_only_its_job_and_reports_its_traceback(self) -> None:
         def check_fails() -> None:

@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+# The validation tools' pins, which docs/dependency-updates.md owns: the install commands and the cache keys read them
+# here, so a raised pin installs and caches the new release together.
+env:
+  SHELLCHECK_VERSION: '0.9.0'
+  PSSCRIPTANALYZER_VERSION: '1.25.0'
+
 # A newer push to a pull request cancels its older run; every commit on main keeps its own result.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +27,7 @@ concurrency:
 
 jobs:
   suite:
-    name: Validate (Python ${{ matrix.python-version }})
+    name: Validate (Python ${{ matrix.python-version }}, shard ${{ matrix.shard }})
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -30,6 +36,9 @@ jobs:
         # The floor in deployer/tools.py on every run. The latest stable release runs on the weekly schedule only, so
         # a new interpreter is a signal there and never blocks a pull request through the required `validate` check.
         python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.x"]') || fromJSON('["3.11"]') }}
+        # One run's jobs dealt across four runners, so a leg's four cores run a quarter of them; each interpreter runs
+        # every leg. The count is the second number of each entry.
+        shard: ['1/4', '2/4', '3/4', '4/4']
 
     steps:
       - name: Check out source
@@ -43,13 +52,43 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      # Each leg installs the same tools, so a leg after the first restores them; a raised pin changes the key.
+      - name: Restore ShellCheck
+        id: shellcheck
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}\shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      - name: Restore PSScriptAnalyzer
+        id: psscriptanalyzer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~\Documents\PowerShell\Modules\PSScriptAnalyzer
+          key: psscriptanalyzer-${{ runner.os }}-${{ env.PSSCRIPTANALYZER_VERSION }}
 
       - name: Install validation tools
         shell: pwsh
+        env:
+          SHELLCHECK_CACHED: ${{ steps.shellcheck.outputs.cache-hit }}
+          PSSCRIPTANALYZER_CACHED: ${{ steps.psscriptanalyzer.outputs.cache-hit }}
         run: |
-          choco install shellcheck --version 0.9.0 --yes --no-progress
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Scope CurrentUser -Force -ErrorAction Stop
+          # ShellCheck is one executable, kept in its own folder ahead of everything else on PATH.
+          $shellcheck = Join-Path $env:RUNNER_TEMP 'shellcheck'
+          if ($env:SHELLCHECK_CACHED -ne 'true') {
+            choco install shellcheck --version $env:SHELLCHECK_VERSION --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $installed = Get-ChildItem (Join-Path $env:ChocolateyInstall 'lib\shellcheck') -Recurse -Filter shellcheck.exe
+            New-Item -ItemType Directory -Path $shellcheck -Force | Out-Null
+            Copy-Item -LiteralPath ($installed | Select-Object -First 1).FullName -Destination $shellcheck -ErrorAction Stop
+          }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $shellcheck
+          if ($env:PSSCRIPTANALYZER_CACHED -ne 'true') {
+            Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSCRIPTANALYZER_VERSION -Scope CurrentUser -Force -ErrorAction Stop
+          }
 
       # ruff and mypy at their pins, which docs/dependency-updates.md owns and Dependabot reviews.
       - name: Install development dependencies
@@ -79,9 +118,11 @@ jobs:
 
       - name: Run repository validation
         shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           # Outside a pull request there is no base to compare with, so run every suite.
-          $arguments = @('-B', 'tests/run_validation.py', '-v')
+          $arguments = @('-B', 'tests/run_validation.py', '-v', '--shard', $env:SHARD)
           if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
           else {
             # The body is the author's text, so it goes from the event payload to a file the upgrade-notes check
@@ -98,23 +139,28 @@ jobs:
       - name: Validate with the latest ShellCheck
         if: github.event_name == 'schedule' && matrix.python-version == '3.x'
         shell: pwsh
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
           choco upgrade shellcheck --yes --no-progress
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Chocolatey's release ahead of the pinned one, which the install step put first on PATH.
+          $env:PATH = "$(Join-Path $env:ChocolateyInstall 'bin');$env:PATH"
           shellcheck --version
-          python -B tests/run_validation.py --full -v
+          python -B tests/run_validation.py --full -v --shard $env:SHARD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # Branch protection requires the single check named `validate`, so the Python legs report through this job.
+  # Branch protection requires the single check named `validate`, so every leg reports through this job: a matrix job's
+  # result is success only when every one of its legs succeeded.
   validate:
     if: ${{ !cancelled() }}
     needs: suite
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require every Python leg to pass
+      - name: Require every leg to pass
         env:
           RESULT: ${{ needs.suite.result }}
         run: |
-          echo "Python legs: $RESULT"
+          echo "Validation legs: $RESULT"
           test "$RESULT" = success
