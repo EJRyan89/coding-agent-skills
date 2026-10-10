@@ -66,6 +66,10 @@ WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main "
 FALLBACK = "http://schemas.openxmlformats.org/markup-compatibility/2006 Fallback"
 LABEL = re.compile(r"\[(?:P(\d+)(?: R(\d+))?|p(\d+) l(\d+))\] ")
 HEADING_STYLE = re.compile(r"heading ([1-9])")
+# A heading's line as `_Body` writes it: a `#` for each level, then one space. Body text that would start with `#` is
+# escaped with a backslash, as Markdown escapes it, so this shape is a heading's alone.
+HEADING_MARKER = re.compile(r"#{1,6} ")
+HASH_FIRST = re.compile(r"\\*#")
 XML_ENCODING = re.compile(r"""<\?xml[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
 DECLARATION = re.compile(rb"<!(?:doctype|entity)", re.IGNORECASE)
 # Every C0 control, DEL, and the characters Python's `splitlines` also breaks on: none may split or reshape a line.
@@ -460,6 +464,8 @@ class _Body:
             text = "#" * min(level, 6) + " " + text
         elif block.list_level is not None:
             text = "  " * min(block.list_level, 8) + "- " + text
+        elif HASH_FIRST.match(text):
+            text = "\\" + text
         self.lines.append((block.label, text))
 
     def text(self, data: str) -> None:
@@ -511,8 +517,9 @@ def locations(text: str) -> list[str]:
             continue
         place = f"paragraph {match.group(1)}" + (f", table row {match.group(2)}" if match.group(2) else "")
         body = line[match.end() :]
-        if match.group(2) is None and body.startswith("#"):
-            heading = body.lstrip("#").strip()
+        marker = HEADING_MARKER.match(body) if match.group(2) is None else None
+        if marker is not None:
+            heading = body[marker.end() :]
             if len(heading) > MAX_HEADING_CHARACTERS:
                 heading = heading[: MAX_HEADING_CHARACTERS - 3].rstrip() + "..."
             places.append(place)
