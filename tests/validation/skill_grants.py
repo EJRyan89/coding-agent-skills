@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from skill_layout import embedded_program_problems, output_placeholder_problems
-from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT
+from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT, skills_by_name
 
 from deployer import render
 
@@ -25,9 +25,10 @@ PROCESS_MODULES = frozenset({"subprocess", "bounded_process"})
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
-    """Each shipped skill's SKILL.md: a skills/ folder with deploy-meta, which a shared asset lacks."""
-    found = (root / "skills" / metadata.stem / "SKILL.md" for metadata in (root / "deploy-meta").glob("*.json"))
-    return sorted((path for path in found if path.is_file()), key=lambda path: path.parent.name)
+    """Each shipped skill's SKILL.md, a skill in a category included: a skill directory with deploy-meta."""
+    skills = skills_by_name(root)
+    found = (skills[metadata.stem] for metadata in (root / "deploy-meta").glob("*.json") if metadata.stem in skills)
+    return sorted((directory / "SKILL.md" for directory in found), key=lambda path: path.parent.name)
 
 
 def repository_skill_files(root: Path) -> list[Path]:

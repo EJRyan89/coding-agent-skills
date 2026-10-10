@@ -7,7 +7,6 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
-import re
 import sys
 import unittest
 from collections.abc import Mapping
@@ -33,6 +32,8 @@ from validation_support import (
     skill_script_directories,
 )
 
+from tests import run_shard as shard_runner
+
 SHARD_RUNNER = REPOSITORY_ROOT / "tests" / "run_shard.py"
 # A Python suite is split into one shard per this many tests, up to MAXIMUM_SHARDS. Smaller shards spread a long
 # suite further, at the cost of one more process start and suite import each. A recorded test counts as its seconds.
@@ -41,7 +42,8 @@ MAXIMUM_SHARDS = 8
 # The seconds a test takes run alone, recorded for a test that costs many times a typical one, by suite and then by
 # Class.test; any other test counts as one. The suite gets shards for its total, and run_shard.py packs the heaviest
 # test first onto the lightest shard, so a recorded test runs on a shard of its own instead of lengthening a shared
-# one. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run alone.
+# one, as long as the suite's other tests fit on its other shards; recorded_shard_problems holds that, which can fail
+# once a suite outgrows MAXIMUM_SHARDS. Measured on 2026-10-08 on a 24-CPU Windows machine, each test run alone.
 RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
     "skills/code-review-core/scripts/test_adversarial_inputs.py": {
         # Writes and reads back a path at this machine's limit, which with long paths enabled is 32,507 units.
@@ -55,7 +57,6 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
         "PlanApplyTests.test_gone_branches_are_deleted_only_when_their_pull_request_proves_them_stale": 13,
     },
 }
-TEST_DEFINITION = re.compile(r"^[ \t]+def test_\w+", re.MULTILINE)
 
 
 def _needs_a_test(name: str, scripts: list[str]) -> bool:
@@ -155,7 +156,7 @@ def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
 
 def suite_cost(suite: Path, recorded: Mapping[str, float]) -> float:
     """A Python suite's cost in typical tests: one for each test, or its recorded seconds."""
-    tests = len(TEST_DEFINITION.findall(suite.read_text(encoding="utf-8")))
+    tests = len(defined_tests(suite.read_text(encoding="utf-8")))
     return tests + sum(seconds - 1 for seconds in recorded.values())
 
 
@@ -199,15 +200,16 @@ def suite_jobs(
     return jobs
 
 
-def _defined_tests(source: str) -> set[str]:
-    """Each Class.test the source defines directly in a class body."""
-    return {
+def defined_tests(source: str) -> list[str]:
+    """Each Class.test the source defines directly in a class body, named test* as unittest's loader finds them: the
+    one reader of a suite's tests, for its cost, its shards, and the tests its recorded seconds name."""
+    return sorted(
         f"{node.name}.{item.name}"
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.ClassDef)
         for item in node.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+        if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef) and item.name.startswith("test")
+    )
 
 
 def recorded_cost_problems(
@@ -221,12 +223,36 @@ def recorded_cost_problems(
         if not (path.is_file() and is_test_script(path) and path.suffix == ".py"):
             problems.append(f"{name} records test costs but is not a regression suite")
             continue
-        defined = _defined_tests(path.read_text(encoding="utf-8"))
+        defined = defined_tests(path.read_text(encoding="utf-8"))
         for test, seconds in tests.items():
             if test not in defined:
                 problems.append(f"{name} records {test}, which it does not define")
             elif seconds <= 1:
                 problems.append(f"{name} records {test} at {seconds} seconds; record only tests that cost more than 1")
+    return problems
+
+
+def recorded_shard_problems(
+    root: Path, recorded: Mapping[str, Mapping[str, float]] = RECORDED_TEST_SECONDS
+) -> list[str]:
+    """Report a recorded test that run_shard.py would deal onto a shard beside another test.
+
+    The heaviest test goes first onto an empty shard, and another test joins it only once every other shard carries as
+    much. Below MAXIMUM_SHARDS a suite's shard count grows with its tests, so the others fit around a recorded test; at
+    the cap a growing suite fills them, and the recorded test would lengthen a shared shard again.
+    """
+    problems: list[str] = []
+    for name, seconds in recorded.items():
+        path = root / name
+        if not (path.is_file() and path.suffix == ".py"):
+            continue
+        shards = shard_runner.deal(defined_tests(path.read_text(encoding="utf-8")), shard_count(path, seconds), seconds)
+        for test in sorted(set(seconds) & set(shards)):
+            if list(shards.values()).count(shards[test]) > 1:
+                problems.append(
+                    f"{name} deals {test} onto a shard beside other tests, since the suite fills its "
+                    f"{MAXIMUM_SHARDS} shards; raise MAXIMUM_SHARDS or split the suite"
+                )
     return problems
 
 
@@ -302,6 +328,9 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
 
     def test_recorded_test_costs_name_tests_that_exist(self) -> None:
         self.assertEqual([], recorded_cost_problems(REPOSITORY_ROOT))
+
+    def test_each_recorded_test_runs_on_a_shard_of_its_own(self) -> None:
+        self.assertEqual([], recorded_shard_problems(REPOSITORY_ROOT))
 
     def test_every_module_is_named_by_a_test(self) -> None:
         self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))

@@ -13,7 +13,7 @@ import re
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from deployer import render
 
@@ -159,12 +159,25 @@ def relative(path: Path) -> str:
     return path.relative_to(REPOSITORY_ROOT).as_posix()
 
 
+def is_skill_file(relative_path: PurePath) -> bool:
+    """Whether a path relative to the repository is a shipped skill's SKILL.md, found as deployer/source.py finds it:
+    skills/<name>/SKILL.md or skills/<category>/<name>/SKILL.md."""
+    parts = relative_path.parts
+    return len(parts) in (3, 4) and parts[0] == "skills" and parts[-1] == "SKILL.md"
+
+
 def skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:
-    """Each shipped skill's directory, found as deployer/source.py finds it: skills/<name> or skills/<category>/<name>,
-    holding SKILL.md. skill_tree_problems reports any other directory under skills/."""
+    """Each shipped skill's directory: skills/<name> or skills/<category>/<name>, holding SKILL.md.
+    skill_tree_problems reports any other directory under skills/."""
     skills = root / "skills"
-    found = (path.parent for path in skills.rglob("SKILL.md") if len(path.relative_to(skills).parts) in (2, 3))
+    found = (path.parent for path in skills.rglob("SKILL.md") if is_skill_file(path.relative_to(root)))
     return sorted(found, key=lambda path: path.relative_to(skills).as_posix().casefold())
+
+
+def skills_by_name(root: Path = REPOSITORY_ROOT) -> dict[str, Path]:
+    """Each shipped skill's directory by its name, a skill in a category included: the one lookup every policy that
+    starts from a skill's name, in deploy-meta or skill_deps, uses to find its files."""
+    return {path.name: path for path in skill_directories(root)}
 
 
 def repository_skill_directories(root: Path = REPOSITORY_ROOT) -> list[Path]:

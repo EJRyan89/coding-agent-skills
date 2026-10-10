@@ -66,8 +66,10 @@ class SkillReferenceTestCase(unittest.TestCase):
     def write_json(self, relative: str, document: object) -> None:
         (self.root / relative).write_text(json.dumps(document), encoding="utf-8")
 
-    def add_skill(self, name: str, frontmatter: str, metadata: dict[str, object], body: str = "Body.\n") -> None:
-        directory = self.root / "skills" / name
+    def add_skill(
+        self, name: str, frontmatter: str, metadata: dict[str, object], body: str = "Body.\n", category: str = ""
+    ) -> None:
+        directory = self.root / "skills" / category / name
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "SKILL.md").write_text(f"---\nname: {name}\n{frontmatter}\n---\n\n{body}", encoding="utf-8")
         (self.root / "deploy-meta").mkdir(exist_ok=True)
@@ -198,6 +200,19 @@ class SkillReferenceTestCase(unittest.TestCase):
 
         self.assertEqual(
             ["skills/beta/SKILL.md reads $ARGUMENTS but declares no argument-hint"],
+            skill_reference.problems(self.root),
+        )
+
+    def test_a_skill_in_a_category_is_read_where_it_is(self) -> None:
+        # The deployer finds a skill under skills/<category>/<name> too, so the reference reads its SKILL.md there.
+        self.add_skill(
+            "delta", "description: Delta. Use it when testing.", {}, body="Use $ARGUMENTS.\n", category="tools"
+        )
+        self.written_and_explained()
+        self.add_prose("delta", "Delta explained.")
+
+        self.assertIn(
+            "skills/tools/delta/SKILL.md reads $ARGUMENTS but declares no argument-hint",
             skill_reference.problems(self.root),
         )
 

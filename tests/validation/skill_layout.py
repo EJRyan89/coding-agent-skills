@@ -25,6 +25,7 @@ from validation_support import (
     is_test_script,
     scripts_put_on_path,
     skill_directories,
+    skills_by_name,
 )
 
 from deployer import render
@@ -103,12 +104,13 @@ def deploy_variable_problems(
 
     required_anywhere: set[str] = set()
     used_anywhere: set[str] = set()
+    skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
         required = set(json.loads(metadata.read_text(encoding="utf-8")).get("required_vars", []))
         required_anywhere |= required
-        directories = [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]
-        used = set().union(*(_template_tokens(path) for path in directories if (path / "SKILL.md").is_file()))
+        directory = skills.get(skill)
+        used = _template_tokens(directory) if directory is not None else set()
         used_anywhere |= used
         for key in sorted(used - required):
             problems.append(f"skill {skill} uses {{{{{key}}}}} without declaring it in required_vars")
@@ -151,11 +153,6 @@ def metadata_format_problems(root: Path) -> list[str]:
 INVOKED_SKILL = re.compile(r"`([a-z0-9-]+)[` ]")
 
 
-def _skill_file(root: Path, name: str) -> Path | None:
-    candidates = [root / "skills" / name, *sorted((root / "skills").glob(f"*/{name}"))]
-    return next((path / "SKILL.md" for path in candidates if (path / "SKILL.md").is_file()), None)
-
-
 def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> set[str]:
     """The runtime capabilities a skill's frontmatter shows it needs, with those of each skill it invokes.
 
@@ -166,9 +163,10 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
 
     from deployer import runtime_support
 
-    skill_md = _skill_file(root, name)
-    if skill_md is None:
+    skills = skills_by_name(root)
+    if name not in skills:
         return set()
+    skill_md = skills[name] / "SKILL.md"
     document = frontmatter.read(skill_md)
     granted = document.value("allowed-tools") or []
     user_only = (document.string("disable-model-invocation") or "").casefold() == "true"
@@ -178,7 +176,7 @@ def derived_needs(root: Path, name: str, seen: frozenset[str] = frozenset()) -> 
         for line in skill_md.read_text(encoding="utf-8-sig").splitlines()
         if "invoke" in line
         for match in INVOKED_SKILL.findall(line)
-        if match != name and match not in seen and _skill_file(root, match) is not None
+        if match != name and match not in seen and match in skills
     }
     for other in sorted(invoked):
         # Starting an invoked skill is the invoker's step, so only what the invoked skill does carries over.
@@ -277,12 +275,11 @@ def _path_documents(root: Path) -> list[tuple[Path, set[str] | None, Path | None
     documents: list[tuple[Path, set[str] | None, Path | None]] = [
         (path, None, None) for path in sorted((root / "agents").glob("*.md"))
     ]
+    skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        skill = metadata.stem
         declared: set[str] = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        for skill_directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
-            if (skill_directory / "SKILL.md").is_file():
-                documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
+        if (skill_directory := skills.get(metadata.stem)) is not None:
+            documents += [(path, declared, skill_directory) for path in sorted(skill_directory.rglob("*.md"))]
     return documents
 
 
@@ -361,18 +358,19 @@ def script_dependency_problems(root: Path) -> list[str]:
     wherever the skill is deployed without it, and the import fails at run time.
     """
     problems: list[str] = []
+    skills = skills_by_name(root)
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
         skill = metadata.stem
         declared = set(json.loads(metadata.read_text(encoding="utf-8")).get("skill_deps", []))
-        for directory in [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]:
-            for path in sorted((directory / "scripts").glob("*.py")):
-                if is_test_script(path):
-                    continue
-                for name in sorted(set(scripts_put_on_path(path.read_text(encoding="utf-8"))) - declared - {skill}):
-                    problems.append(
-                        f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
-                        f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
-                    )
+        scripts = sorted((skills[skill] / "scripts").glob("*.py")) if skill in skills else []
+        for path in scripts:
+            if is_test_script(path):
+                continue
+            for name in sorted(set(scripts_put_on_path(path.read_text(encoding="utf-8"))) - declared - {skill}):
+                problems.append(
+                    f"{path.relative_to(root).as_posix()} puts {name}'s scripts on sys.path without declaring "
+                    f"{name} in skill_deps; see {SKILL_PATHS_DOC}"
+                )
     return problems
 
 
