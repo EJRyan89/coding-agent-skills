@@ -252,9 +252,13 @@ def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
 
 
 def _mode_argument(call: ast.Call, position: int) -> ast.expr | None:
-    if len(call.args) > position:
-        return call.args[position]
-    return next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+    """The argument that gives a call's mode, or None when it gives none. A `*` unpacking at or before the mode's
+    position, or a `**` unpacking without a mode keyword, may hold the mode, so it is returned as the mode."""
+    for index, argument in enumerate(call.args):
+        if index == position or isinstance(argument, ast.Starred):
+            return argument
+    named = next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+    return named or next((keyword.value for keyword in call.keywords if keyword.arg is None), None)
 
 
 def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None]) -> bool:
@@ -288,14 +292,16 @@ def _os_open_writes(call: ast.Call, aliases: dict[str, str]) -> bool:
 
 
 def _replaces_a_path(call: ast.Call) -> bool:
-    """Whether a .replace() call is Path.replace(target): one argument, where str.replace takes two."""
-    return (
-        isinstance(call.func, ast.Attribute)
-        and call.func.attr == "replace"
-        and len(call.args) == 1
-        and not isinstance(call.args[0], ast.Starred)
-        and not call.keywords
-    )
+    """Whether a .replace() call may be Path.replace(target): one argument, where str.replace takes two, or its target
+    as a keyword, or a `**` unpacking that may hold it beside fewer than two positional arguments."""
+    if not (isinstance(call.func, ast.Attribute) and call.func.attr == "replace"):
+        return False
+    if any(keyword.arg == "target" for keyword in call.keywords):
+        return True
+    positional = [argument for argument in call.args if not isinstance(argument, ast.Starred)]
+    if any(keyword.arg is None for keyword in call.keywords):
+        return len(positional) < 2
+    return len(call.args) == 1 and len(positional) == 1 and not call.keywords
 
 
 def _call_writes(call: ast.Call, aliases: dict[str, str], bindings: dict[str, set[str] | None]) -> str | None:
@@ -395,14 +401,15 @@ def _keyword_arguments(call: ast.Call, names: set[str]) -> list[ast.expr]:
 
 def _write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
     """The arguments that may name where a write lands. open() and os.open() write to their file and os.open() also
-    relative to its dir_fd; a path method writes to its receiver and, for a rename or a link, to its argument; any
+    relative to its dir_fd; a path method writes to its receiver and, for a rename or a link, to its target; any
     other function may write to every argument but a constant that is not a string, such as a mode or a flag."""
     target = qualified_name(call.func, aliases)
     if target == "os.open" or target in OPEN_FUNCTIONS:
         names = {"path", "dir_fd"} if target == "os.open" else {"file"}
         return call.args[:1] + _keyword_arguments(call, names)
     if target not in FILESYSTEM_WRITES["qualified"] and isinstance(call.func, ast.Attribute):
-        return [call.func.value, *(call.args if call.func.attr in TWO_PATH_METHODS else [])]
+        second = [*call.args, *_keyword_arguments(call, {"target"})] if call.func.attr in TWO_PATH_METHODS else []
+        return [call.func.value, *second]
     arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
     return [
         argument

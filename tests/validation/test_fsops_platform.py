@@ -282,6 +282,85 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_filesystem_write_policy_reads_a_keyword_target_and_counts_an_unpacked_mode(self) -> None:
+        # A keyword spelling of a write is the same write, and a mode the policy cannot read may be a writing one.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/spelled.py": "import io\n"  # 1
+                    "\n"  # 2
+                    "\n"  # 3
+                    "def spelled(path, other, options, arguments):\n"  # 4
+                    "    path.replace(target=other)\n"  # 5
+                    "    path.replace(**options)\n"  # 6
+                    '    open(path, **{"mode": "w"})\n'  # 7
+                    "    open(path, **options)\n"  # 8
+                    "    io.open(*arguments)\n"  # 9
+                    "    path.open(**options)\n"  # 10
+                    '    open(path, "r", **options)\n'  # 11
+                    '    open(path, mode="r", **options)\n'  # 12
+                    '    text.replace("a", "b", **options)\n'  # 13
+                    '    text.replace("a", "b", count=1)\n'  # 14
+                    "    moment.replace(year=1)\n"  # 15
+                    '    path.open("rb", **options)\n',  # 16
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/spelled.py:5 writes with replace{route}",
+                    f"deployer/spelled.py:6 writes with replace{route}",
+                    f"deployer/spelled.py:7 writes with open{route}",
+                    f"deployer/spelled.py:8 writes with open{route}",
+                    f"deployer/spelled.py:9 writes with open{route}",
+                    f"deployer/spelled.py:10 writes with open{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_an_allowed_rename_with_a_keyword_or_unpacked_target_must_stay_in_the_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "replace": "replaces only within the directory mkdtemp made",\n'
+                '    "rename": "renames only within the directory mkdtemp made",\n'
+                "}\n"
+                "import tempfile\n"
+                "from pathlib import Path\n"
+                "\n"
+                "\n"
+            )
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": allowance + "def run():\n"
+                    "    work = Path(tempfile.mkdtemp())\n"
+                    "    copy = Path(tempfile.mkdtemp())\n"
+                    "    work.replace(target=copy)\n"
+                    "    work.rename(target=copy)\n",
+                    "deployer/strayed.py": allowance + "def run(elsewhere, options):\n"
+                    "    work = Path(tempfile.mkdtemp())\n"
+                    "    work.replace(target=elsewhere)\n"  # 12: the keyword names the destination
+                    "    work.rename(target=elsewhere)\n"  # 13
+                    "    work.rename(**options)\n",  # 14: an unpacking may hold any destination
+                },
+            )
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:12 " + message.format("replace"),
+                    "deployer/strayed.py:13 " + message.format("rename"),
+                    "deployer/strayed.py:14 " + message.format("rename"),
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_platform_policy_resolves_aliased_modules(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
