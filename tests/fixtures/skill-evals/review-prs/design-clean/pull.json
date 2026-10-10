@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repository": "example/reports",
+  "number": 13,
+  "title": "Add a signed download link design for report exports",
+  "base_ref": "main",
+  "head_ref": "download-links",
+  "threads": [],
+  "manifest_path": "review/specialists.json"
+}

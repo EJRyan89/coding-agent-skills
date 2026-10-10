@@ -1,0 +1,8 @@
+{
+  "skill": "review-prs",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "no_finding_above", "severity": "SUGGESTION"},
+    {"kind": "verdict", "verdict": "APPROVED"}
+  ]
+}

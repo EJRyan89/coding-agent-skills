@@ -1,0 +1,40 @@
+{
+  "schema_version": 2,
+  "id": "reports-review",
+  "protocol_version": 1,
+  "kind": "specialists",
+  "supports": [
+    "initial",
+    "re-review"
+  ],
+  "required_capabilities": [
+    "agent-delegation",
+    "read-diff",
+    "write-result"
+  ],
+  "resources": [],
+  "specialists": [
+    {
+      "id": "design-review",
+      "category": "Design",
+      "profile": "suite:design-review",
+      "include": [
+        "^docs/design/.*\\.md$"
+      ],
+      "exclude": [],
+      "resources": [],
+      "when": null
+    }
+  ],
+  "conditions": {},
+  "finding_categories": [
+    "requirement-gap",
+    "alternative-unstated",
+    "risk",
+    "open-question",
+    "inconsistency",
+    "rollout",
+    "other"
+  ],
+  "fallback_finding_category": "other"
+}

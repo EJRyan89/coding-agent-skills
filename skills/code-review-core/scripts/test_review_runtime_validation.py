@@ -1249,6 +1249,15 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_result(),
     ),
     (
+        # Read from the suite's references, never from the repository.
+        "a profile the suite ships",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "suite:design-review"),
+        _specialists_result(
+            specialists=[{**_specialists_result()["specialists"][0], "profile": "suite:design-review"}],
+        ),
+    ),
+    (
         "a profile that is also a resource",
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "shared/guide.md"),
@@ -1579,6 +1588,29 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("specialists", 0, "profile"), "materialization.json"),
         RuntimeContractError,
         RESERVED,
+    ),
+    (
+        "a suite profile the suite does not ship",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "suite:security-review"),
+        RuntimeContractError,
+        "specialists[0].profile names no suite profile: 'suite:security-review'; the suite ships suite:design-review",
+    ),
+    (
+        # Only a catalogued name resolves, so a suite profile cannot reach another file of the suite or anything else.
+        "a suite profile that names a path",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "suite:../references/generic-reviewer.md"),
+        RuntimeContractError,
+        "specialists[0].profile names no suite profile: 'suite:../references/generic-reviewer.md'; "
+        "the suite ships suite:design-review",
+    ),
+    (
+        "a suite profile in another case, which is a repository path a colon makes unsafe",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "Suite:design-review"),
+        RuntimeContractError,
+        "specialists[0].profile is unsafe: 'Suite:design-review'",
     ),
     (
         "a reserved specialist resource",

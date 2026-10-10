@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repository": "example/reports",
+  "number": 12,
+  "title": "Add a retention sweep design for report exports",
+  "base_ref": "main",
+  "head_ref": "export-retention",
+  "threads": [],
+  "manifest_path": "review/specialists.json"
+}
