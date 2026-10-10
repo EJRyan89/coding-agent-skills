@@ -41,11 +41,12 @@ class SourceError(ValueError):
     pass
 
 
-def source_commands(run: Path, role: str) -> tuple[str, str]:
-    """The two commands a role's prompt names, with <path> and <pattern> for the reviewer to fill in."""
+def source_commands(run: Path, role: str, *, script: Path | str = SCRIPT) -> tuple[str, str]:
+    """The two commands a role's prompt names, with <path> and <pattern> for the reviewer to fill in. `script` is this
+    file, spelled as the prompt should give it."""
     return (
-        FILE_COMMAND.format(script=SCRIPT, run=run, role=role),
-        SEARCH_COMMAND.format(script=SCRIPT, run=run, role=role),
+        FILE_COMMAND.format(script=script, run=run, role=role),
+        SEARCH_COMMAND.format(script=script, run=run, role=role),
     )
 
 

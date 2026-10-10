@@ -305,6 +305,34 @@ def copy_checkout(destination: Path) -> tuple[str, str]:
     return _TEMPLATE
 
 
+class CommandScriptTests(unittest.TestCase):
+    """A role's prompt spells the pipeline's scripts as the session started it, and falls back to the resolved path."""
+
+    scripts = Path(rp.__file__).resolve().parent
+
+    def spelled(self, started: str) -> str:
+        with mock.patch.object(sys, "argv", [started, "prepare"]):
+            return rp.command_script("review_source.py")
+
+    def test_an_absolute_start_of_the_pipeline_keeps_its_spelling(self) -> None:
+        started = f"{self.scripts.parents[1] / 'review-prs'}/../code-review-core/scripts/review_pipeline.py"
+        self.assertEqual(started.removesuffix("review_pipeline.py") + "review_source.py", self.spelled(started))
+        self.assertEqual(str(self.scripts / "review_source.py"), self.spelled(str(self.scripts / "review_pipeline.py")))
+
+    def test_a_start_the_prompt_cannot_reuse_falls_back_to_the_resolved_path(self) -> None:
+        resolved = str(self.scripts / "review_source.py")
+        other = self.scripts / "review_source.py"
+        for started in (
+            "review_pipeline.py",  # relative: the reviewer's working directory may differ
+            str(other),  # another script
+            str(Path(tempfile.gettempdir()) / "review_pipeline.py"),  # another file of the same name
+            f"{self.scripts}/$x/../review_pipeline.py",  # a character the guard refuses in a quoted value
+            "",
+        ):
+            with self.subTest(started=started):
+                self.assertEqual(resolved, self.spelled(started))
+
+
 class FixtureTemplateTests(unittest.TestCase):
     def test_a_copied_checkout_matches_a_freshly_built_one(self) -> None:
         def shape(checkout: Path, base: str, head: str) -> dict[str, object]:
@@ -3805,6 +3833,43 @@ class FixtureCanaryTests(PipelineFixture):
                 self.assertEqual(runs_before, sorted(self.temporary.glob(f"{rp.RUN_PREFIX}*")))
                 self.assertEqual([], list(self.temporary.glob("code-review-fixture-*")))
         self.assertEqual([], self.no_github.calls)
+
+    def test_a_role_s_commands_keep_the_spelling_the_session_started_prepare_with(self) -> None:
+        # review-prs grants its pipeline commands as text, `..` and all, and an inline role runs its prompt's commands
+        # in that session, so they are spelled as the session ran prepare. The guard resolves that spelling for a
+        # subagent.
+        claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
+        claims.start()
+        self.addCleanup(claims.stop)
+        scripts = Path(rp.__file__).resolve().parent
+        spelled = f"{scripts.parents[1] / 'review-prs'}/../code-review-core/scripts/"
+        with mock.patch.object(sys, "argv", [f"{spelled}review_pipeline.py", "prepare"]):
+            inline = self.prepare_fixture_run("--fixture", str(self.fixture("inline", FIXTURE_HEAD)), "--inline")
+            guarded = self.prepare_fixture_run("--fixture", str(self.fixture("guarded", FIXTURE_HEAD)))
+        for state in (inline, guarded):
+            [role] = state["roles"]
+            run = Path(state["request_path"]).parent
+            prompt = Path(role["prompt_file"]).read_text(encoding="utf-8")
+            expected = (
+                rp.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"]),
+                *review_source.source_commands(run, role["id"], script=f"{spelled}review_source.py"),
+            )
+            for command in expected:
+                self.assertIn(f"{command}\n", prompt)
+            resolved = rp.SELF_CHECK_COMMAND.format(script=scripts / "review_pipeline.py", run=run, role=role["id"])
+            self.assertNotIn(resolved, prompt)
+        [role] = guarded["roles"]
+        run = Path(guarded["request_path"]).parent
+        check = rp.SELF_CHECK_COMMAND.format(script=f"{spelled}review_pipeline.py", run=run, role=role["id"])
+        fetch, _ = review_source.source_commands(run, role["id"], script=f"{spelled}review_source.py")
+        read = {"tool_name": "Read", "tool_input": {"file_path": role["prompt_file"]}, "cwd": str(self.root)}
+        self.assertIsNone(guard.decide({**read, "agent_id": "a1"}))
+        self.assertEqual(
+            (0, [f"SOURCE_FILE {run / 'source' / 'README.md'}"]),
+            self.guarded_command(role, fetch.replace("<path>", "README.md")),
+        )
+        event = {"tool_name": "Bash", "tool_input": {"command": check}, "cwd": str(self.root), "agent_id": "a1"}
+        self.assertIsNone(guard.decide(event))
 
     def test_a_fixture_needs_no_configured_repository_and_runs_inline_too(self) -> None:
         state = self.prepare_fixture_run("--fixture", str(self.fixture("inline", FIXTURE_HEAD)), "--inline")
