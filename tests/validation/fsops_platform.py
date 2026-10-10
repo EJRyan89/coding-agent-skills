@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT
+from validation_support import REPOSITORY_ROOT, import_aliases, qualified_name
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
 PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
@@ -25,32 +25,6 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
 PLATFORM_ALLOWANCE = "PLATFORM_ALLOWED"
 # The module that defines PLATFORM_TOKENS, which names every token on purpose.
 PLATFORM_POLICY_MODULE = "tests/validation/fsops_platform.py"
-
-
-def import_aliases(tree: ast.Module) -> dict[str, str]:
-    """What each name a module binds by import stands for, anywhere in it: `import shutil as sh` binds sh to shutil,
-    `from tempfile import TemporaryFile as T` binds T to tempfile.TemporaryFile, and `import os.path` binds os."""
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                top = alias.name.split(".")[0]
-                aliases[alias.asname or top] = alias.name if alias.asname else top
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            for alias in node.names:
-                aliases[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return aliases
-
-
-def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
-    """The dotted name an expression stands for through the module's imports, such as shutil.rmtree for sh.rmtree
-    after `import shutil as sh`, or "" when it is not a dotted name. A name bound otherwise stands for itself."""
-    if isinstance(node, ast.Name):
-        return aliases.get(node.id, node.id)
-    if isinstance(node, ast.Attribute):
-        base = qualified_name(node.value, aliases)
-        return f"{base}.{node.attr}" if base else ""
-    return ""
 
 
 def _platform_scanned_files(root: Path) -> list[Path]:

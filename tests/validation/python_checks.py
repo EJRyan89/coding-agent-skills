@@ -17,6 +17,7 @@ from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from toolchain import find_mypy, find_ruff
 from validation_support import (
     REPOSITORY_ROOT,
+    module_imports,
     relative,
     repository_files,
     scripts_put_on_path,
@@ -172,16 +173,9 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
 
 def imports_a_sibling(path: Path, source: str) -> bool:
     """Whether the module imports, by its bare name, another module in its own directory."""
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names = [node.module]
-        else:
-            continue
-        if any((path.parent / f"{name.split('.')[0]}.py").is_file() for name in names):
-            return True
-    return False
+    return any(
+        (path.parent / f"{found.module.split('.')[0]}.py").is_file() for found in module_imports(ast.parse(source))
+    )
 
 
 def mypy_path_problems(root: Path, files: list[Path]) -> list[str]:
