@@ -1,7 +1,9 @@
 name: Validate
 
 on:
+  # `edited` reruns validation when the body changes, since the upgrade-notes check reads the body's `## Upgrade note`.
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   # Weekly, so a change to the runner image or a new ShellCheck release surfaces without waiting for a pull request.
@@ -81,6 +83,14 @@ jobs:
           # Outside a pull request there is no base to compare with, so run every suite.
           $arguments = @('-B', 'tests/run_validation.py', '-v')
           if ($env:GITHUB_EVENT_NAME -ne 'pull_request') { $arguments += '--full' }
+          else {
+            # The body is the author's text, so it goes from the event payload to a file the upgrade-notes check
+            # reads, never through an expression into this script.
+            $payload = Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw -Encoding utf8 | ConvertFrom-Json
+            $bodyFile = Join-Path $env:RUNNER_TEMP 'pull-request-body.md'
+            [System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)
+            $arguments += @('--pr-body', $bodyFile)
+          }
           python @arguments
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

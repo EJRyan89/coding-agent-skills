@@ -36,6 +36,9 @@ REPOSITORY = {
     "allow_squash_merge": True,
     "allow_merge_commit": False,
     "allow_rebase_merge": False,
+    # The squash commit settings as `gh api` returned them on 2026-10-09.
+    "squash_merge_commit_title": "PR_TITLE",
+    "squash_merge_commit_message": "PR_BODY",
     "security_and_analysis": {
         "secret_scanning": {"status": "enabled"},
         "secret_scanning_push_protection": {"status": "enabled"},
@@ -105,6 +108,9 @@ class ProtectionProblemsTests(unittest.TestCase):
             (("allow_merge_commit",), True, "repository", "merge commits"),
             (("allow_rebase_merge",), True, "repository", "rebase merges"),
             (("allow_squash_merge",), False, "repository", "squash merges"),
+            (("squash_merge_commit_title",), "COMMIT_OR_PR_TITLE", "repository", "expected PR_TITLE"),
+            (("squash_merge_commit_message",), "COMMIT_MESSAGES", "repository", "expected PR_BODY"),
+            (("squash_merge_commit_message",), "BLANK", "repository", "carries its upgrade note"),
             (("security_and_analysis", "secret_scanning", "status"), "disabled", "repository", "secret scanning"),
             (
                 ("security_and_analysis", "secret_scanning_push_protection", "status"),

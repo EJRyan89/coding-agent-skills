@@ -1,31 +1,21 @@
 from __future__ import annotations
 
-import ast
-import contextlib
-import io
 import json
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "code-review-core" / "scripts"))
 
-import upgrade_notes_kept
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import route, uncovered
 
 REPOSITORY = Path(__file__).resolve().parents[4]
 SKILL = ".claude/skills/review-repository"
 MANIFEST_PATH = f"{SKILL}/references/specialists.json"
-CONDITION = f"{SKILL}/scripts/upgrade_notes_kept.py"
-CORE_SCRIPTS = "skills/skill-core/scripts"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 
 
@@ -41,86 +31,18 @@ def tracked_files() -> list[str]:
     return [path for path in listed.stdout.split("\0") if path]
 
 
-class UpgradeNotesConditionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.root = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.root)
-
-    def notes(self, text: str) -> None:
-        path = self.root / "docs" / "upgrade-notes.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text.encode("utf-8"))
-
-    def test_notes_with_an_unreleased_section_open_the_reviewer(self) -> None:
-        self.notes("# Upgrade notes\r\n\r\n## Unreleased\r\n\r\n## v0.4.0\r\n")
-        self.assertEqual(
-            (True, "docs/upgrade-notes.md keeps an Unreleased section"), upgrade_notes_kept.keeps_notes(self.root)
-        )
-
-    def test_notes_without_one_or_no_notes_close_it(self) -> None:
-        self.assertEqual((False, "docs/upgrade-notes.md is not in the head"), upgrade_notes_kept.keeps_notes(self.root))
-        self.notes("# Upgrade notes\n\n## v0.4.0\n\nSee ## Unreleased in the text.\n")
-        self.assertEqual(
-            (False, "docs/upgrade-notes.md has no Unreleased section"), upgrade_notes_kept.keeps_notes(self.root)
-        )
-
-    def test_unreadable_notes_leave_the_judgment_to_the_reviewer(self) -> None:
-        self.notes("")
-        (self.root / "docs" / "upgrade-notes.md").write_bytes(b"\xff\xfe## Unreleased\n")
-        kept, reason = upgrade_notes_kept.keeps_notes(self.root)
-        self.assertTrue(kept)
-        self.assertTrue(reason.startswith("docs/upgrade-notes.md cannot be read: "), reason)
-
-    def test_it_runs_from_the_files_the_manifest_declares_alone(self) -> None:
-        # review-prs materializes only the declared files, at their repository paths, and runs the condition there,
-        # so every module it imports must be declared too.
-        reviewer = self.root / "reviewer"
-        for path in declared_reviewer_files(MANIFEST):
-            target = reviewer / path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(REPOSITORY / path, target)
-        source = self.root / "source"
-        for text, code, line in (
-            ("## Unreleased\n", 0, "OPEN docs/upgrade-notes.md keeps an Unreleased section"),
-            ("## v0.4.0\n", 1, "CLOSED docs/upgrade-notes.md has no Unreleased section"),
-        ):
-            with self.subTest(code=code):
-                (source / "docs").mkdir(parents=True, exist_ok=True)
-                (source / "docs" / "upgrade-notes.md").write_text(text, encoding="utf-8")
-                ran = subprocess.run(
-                    [sys.executable, "-B", str(reviewer / CONDITION), "--source-root", str(source)],
-                    cwd=self.root,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    check=False,
-                )
-                self.assertEqual((code, f"{line}\n", ""), (ran.returncode, ran.stdout, ran.stderr))
-
-    def test_a_missing_source_root_is_a_usage_error_which_fails_the_review(self) -> None:
-        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            upgrade_notes_kept.main(["--source-root", str(self.root / "missing")])
-        self.assertEqual(2, raised.exception.code)
-
-
 class ManifestTests(unittest.TestCase):
     def test_every_file_the_manifest_declares_is_in_the_repository(self) -> None:
         files = set(tracked_files())
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if path not in files])
 
-    def test_the_condition_imports_only_skill_core_modules_the_manifest_declares(self) -> None:
-        tree = ast.parse((REPOSITORY / CONDITION).read_text(encoding="utf-8"))
-        imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
-        core = {path.stem for path in (REPOSITORY / CORE_SCRIPTS).glob("*.py")}
-        declared = {f"{CORE_SCRIPTS}/{module}.py" for module in imported & core}
-        self.assertEqual({f"{CORE_SCRIPTS}/console.py"}, declared)
-        self.assertLessEqual(declared, set(MANIFEST["resources"]))
-
-    def test_the_condition_declares_the_one_file_it_reads_so_the_snapshot_stays_lazy(self) -> None:
-        reads = MANIFEST["conditions"]["upgrade-notes-kept"]["reads"]
-        self.assertEqual(["docs/upgrade-notes.md"], reads)
-        self.assertTrue(glob_matcher(reads[0])(upgrade_notes_kept.NOTES))
-        self.assertEqual(CONDITION, MANIFEST["conditions"]["upgrade-notes-kept"]["script"])
+    def test_no_route_has_a_condition_since_none_could_see_the_body_the_upgrade_note_is_in(self) -> None:
+        # A condition script is given only the head's snapshot, and the entry lives in the pull request body.
+        self.assertEqual({}, MANIFEST["conditions"])
+        self.assertEqual([None] * len(MANIFEST["specialists"]), [item["when"] for item in MANIFEST["specialists"]])
+        profile = (REPOSITORY / SKILL / "references" / "upgrade-notes.md").read_text(encoding="utf-8")
+        self.assertIn("in the pull request body, under `## Upgrade note`, which your inputs do not include", profile)
+        self.assertNotIn("Unreleased", profile)
 
     def test_each_file_reaches_the_reviewers_its_route_names(self) -> None:
         expected = {
@@ -145,7 +67,7 @@ class ManifestTests(unittest.TestCase):
             "skills/code-review-core/scripts/review_specialists.py": {"trust-boundary"},
             "skills/code-review-core/scripts/test_adversarial_inputs.py": {"trust-boundary"},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
-            "docs/upgrade-notes.md": {"documentation", "upgrade-notes"},
+            "docs/upgrade-notes.md": {"documentation"},
             "docs/design.md": {"documentation"},
             "README.md": {"documentation"},
             "CLAUDE.md": {"documentation"},
@@ -169,13 +91,9 @@ class ManifestTests(unittest.TestCase):
             "tests/tools/test_skill_evals.py",
             ".github/workflows/validate.yml",
             f"{SKILL}/references/deployer.md",
-            CONDITION,
+            "tools/release_notes.py",
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
-
-    def test_a_closed_condition_skips_only_the_upgrade_notes_reviewer(self) -> None:
-        routes = route(MANIFEST, ["deployer/manifest.py"], lambda name: False)
-        self.assertEqual({"deployer": ["deployer/manifest.py"]}, routes)
 
     def test_each_profile_names_design_sections_that_exist(self) -> None:
         design = (REPOSITORY / "docs" / "design.md").read_text(encoding="utf-8")

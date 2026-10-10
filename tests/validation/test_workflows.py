@@ -41,6 +41,9 @@ class WorkflowsFixtures(unittest.TestCase):
             (clean + "        with:\n          token: ${{ github['token'] }}\n", "token"),
             (clean + "        with:\n          token: ${{github.token}}\n", "token"),
             (clean + "      - run: |\n          echo '${{ secrets.TOKEN }}'\n", "secret"),
+            (clean + "      - run: |\n          echo '${{ github.event.pull_request.body }}'\n", "event data"),
+            (clean + "        env:\n          TITLE: ${{ github['event']['pull_request']['title'] }}\n", "event data"),
+            (clean + '      - run: echo "${{ github.head_ref }}"\n', "event data"),
             (
                 clean.replace(
                     "  run:\n", "  call:\n    uses: o/r/.github/workflows/x.yml@main\n    secrets: inherit\n  run:\n"

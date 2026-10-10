@@ -28,6 +28,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         "**Levels**, from `1.0.0` on:\n\n- **Patch.** Nothing to do.\n- **Minor.** Something optional.\n"
         "- **Major.** The user must act.\n\n**Before `1.0.0`**, the minor level carries more.\n\n## Before tagging\n"
     )
+    NOTES = "# Upgrade notes\n\nWhat each release asks of a user.\n\n## v0.1.0\n"
 
     RELEASED: ClassVar[dict[str, str]] = {
         "deployer/manifest.py": "MANIFEST_VERSION = 7\nOLDEST_READABLE_VERSION = 6\n",
@@ -38,7 +39,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         "docs/code-review-operations-contract.md": "# Contract\n\n## Behavior\n\n| Skill | Output |\n| --- | --- |\n"
         "| a | b |\n\n## Formats\n\n### Record\n\n| Field | Type |\n| --- | --- |\n| `id` | string |\n",
         "docs/releasing.md": RELEASING,
-        "docs/upgrade-notes.md": "# Upgrade notes\n\n## Unreleased\n",
+        "docs/upgrade-notes.md": NOTES,
     }
 
     CONTRACT_CHANGES: ClassVar[dict[str, dict[str, str]]] = {
@@ -56,6 +57,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
             "deployer/tools.py": 'MINIMUM_PYTHON = (3, 12)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n'
         },
     }
+    MANIFEST_CHANGE = CONTRACT_CHANGES["deployer/manifest.py"]
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -79,57 +81,104 @@ class UpgradeNotesPolicy(unittest.TestCase):
     def git(self, *arguments: str, cwd: Path | None = None) -> None:
         subprocess.run(["git", "-C", str(cwd or self.root), *arguments], check=True, capture_output=True)
 
-    def release(self, files: Mapping[str, str] | None = None, tag: str | None = "v0.1.0") -> None:
-        """Commit the released tree, tag it, and point origin/main at it, as a fetched clone has it."""
-        write_fixture_tree(self.root, files if files is not None else self.RELEASED)
-        self.git("init", "-q", "-b", "main")
+    def commit(self, message: str, files: Mapping[str, str] | None = None) -> None:
+        write_fixture_tree(self.root, files or {})
         self.git("add", ".")
-        self.git("commit", "-q", "-m", "release")
+        message_file = self.home / "message.txt"
+        message_file.write_bytes(message.encode())
+        self.git("commit", "-q", "--allow-empty", "-F", str(message_file))
+
+    def release(
+        self, files: Mapping[str, str] | None = None, tag: str | None = "v0.1.0", message: str = "release"
+    ) -> None:
+        """Commit the released tree, tag it, and point origin/main at it, as a fetched clone has it."""
+        self.git("init", "-q", "-b", "main")
+        self.commit(message, files if files is not None else self.RELEASED)
         if tag:
             self.git("tag", tag)
+        self.merged()
+
+    def merged(self) -> None:
+        """Point origin/main at HEAD, as a squash merge of the branch so far would."""
         self.git("update-ref", "refs/remotes/origin/main", "HEAD")
 
     def restore(self) -> None:
         self.git("checkout", "--", ".")
         self.git("clean", "-q", "-f", "-d")
 
-    def entry(self, contract: str, level: str = "minor", action: str = "none", pull_request: str = "#7") -> str:
-        return (
-            f"\n### A contract changed\n\n- Level: {level}.\n- Contract: {contract}\n"
-            f"- User action: {action}\n- Pull request: {pull_request}\n"
+    def entry(self, contract: str, level: str = "minor", action: str = "none", pull_request: str = "") -> str:
+        return f"\n### A contract changed\n\n- Level: {level}.\n- Contract: {contract}\n- User action: {action}\n" + (
+            f"- Pull request: {pull_request}\n" if pull_request else ""
         )
 
-    def notes(self, *entries: str) -> dict[str, str]:
-        return {"docs/upgrade-notes.md": self.RELEASED["docs/upgrade-notes.md"] + "".join(entries)}
+    def body(self, *entries: str) -> str:
+        """A body from the template: the entries under ## Upgrade note, or None, and the sections around it."""
+        note = "".join(entries) or "\nNone\n"
+        return (
+            "Closes #7\r\n\r\nWhy.\r\n\r\n## Implications\r\n\r\nNone\r\n\r\n## Upgrade note\r\n\r\n"
+            "<!-- ### An example in a comment\r\n- Level: minor.\r\n- Contract: `deployer/manifest.py` -->\r\n"
+            + note.replace("\n", "\r\n")
+            + "\r\n## Validation\r\n\r\n- [x] Validation passes\r\n"
+        )
 
-    def problems(self, files: Mapping[str, str]) -> list[str]:
+    def problems(self, files: Mapping[str, str], body: str | None = None) -> list[str]:
         write_fixture_tree(self.root, files)
-        return upgrade_notes_problems(self.root)
+        return upgrade_notes_problems(self.root, body)
 
-    def test_a_contract_change_without_an_entry_fails_and_names_the_item(self) -> None:
+    def test_a_contract_change_without_an_upgrade_note_fails_and_names_the_item(self) -> None:
+        self.release()
+        for body in (None, self.body()):
+            for item, change in self.CONTRACT_CHANGES.items():
+                with self.subTest(item=item, body=body is not None):
+                    problems = self.problems(change, body)
+                    self.assertEqual(1, len(problems), problems)
+                    self.assertTrue(problems[0].startswith(f"{item}: "), problems[0])
+                    self.assertIn("changed since v0.1.0, and no upgrade note since then names it", problems[0])
+                    self.assertIn(f"under ## Upgrade note in the pull request body naming `{item}`", problems[0])
+                    self.assertIn("patch, minor, or major", problems[0])
+                    self.assertIn("--pr-body <file>, and otherwise the branch's commit messages", problems[0])
+                    self.restore()
+
+    def test_a_contract_change_with_an_entry_in_the_pull_request_body_passes(self) -> None:
         self.release()
         for item, change in self.CONTRACT_CHANGES.items():
             with self.subTest(item=item):
-                problems = self.problems(change)
-                self.assertEqual(1, len(problems), problems)
-                self.assertTrue(problems[0].startswith(f"{item}: "), problems[0])
-                self.assertIn("changed since v0.1.0", problems[0])
-                self.assertIn(f"naming `{item}`", problems[0])
-                self.assertIn("patch, minor, or major", problems[0])
-                self.assertIn("the user action or none, and the pull request", problems[0])
+                self.assertEqual([], self.problems(change, self.body(self.entry(f"`{item}`"))))
                 self.restore()
 
-    def test_a_contract_change_with_a_new_entry_passes(self) -> None:
+    def test_without_a_body_an_entry_in_the_branchs_commit_message_passes(self) -> None:
         self.release()
-        for item, change in self.CONTRACT_CHANGES.items():
-            with self.subTest(item=item):
-                self.assertEqual([], self.problems({**change, **self.notes(self.entry(f"`{item}`"))}))
-                self.restore()
+        self.commit(f"Change the manifest\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE)
+        self.assertEqual([], upgrade_notes_problems(self.root))
+
+    def test_with_a_body_the_branchs_own_commit_messages_do_not_count(self) -> None:
+        # The body, not the branch's commits, becomes the squash commit's message, so the entry must be there.
+        self.release()
+        self.commit(f"Change the manifest\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE)
+        problems = upgrade_notes_problems(self.root, self.body())
+        self.assertEqual(["deployer/manifest.py"], [problem.split(":", 1)[0] for problem in problems])
+
+    def test_an_entry_merged_into_origin_main_since_the_tag_counts_for_a_later_pull_request(self) -> None:
+        self.release()
+        self.commit(
+            f"Change the manifest (#8)\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE
+        )
+        self.merged()
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+
+    def test_an_entry_written_by_hand_under_unreleased_before_the_move_still_counts(self) -> None:
+        self.release()
+        hand = self.entry("`deployer/manifest.py`", pull_request="#8")
+        unreleased = self.NOTES.replace("## v0.1.0", f"## Unreleased\n{hand}\n## v0.1.0")
+        self.commit("Change the manifest (#8)", {**self.MANIFEST_CHANGE, "docs/upgrade-notes.md": unreleased})
+        self.commit("Move the notes into pull request bodies (#9)", {"docs/upgrade-notes.md": self.NOTES})
+        self.merged()
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
 
     def test_one_entry_may_name_several_items(self) -> None:
         self.release()
         changes = {**self.CONTRACT_CHANGES["skills/beta"], **self.CONTRACT_CHANGES["deployer/tools.py"]}
-        self.assertEqual([], self.problems({**changes, **self.notes(self.entry("`skills/beta`, `deployer/tools.py`"))}))
+        self.assertEqual([], self.problems(changes, self.body(self.entry("`skills/beta`, `deployer/tools.py`"))))
 
     def test_removing_a_skill_names_its_directory_and_its_required_variables(self) -> None:
         self.release()
@@ -164,13 +213,13 @@ class UpgradeNotesPolicy(unittest.TestCase):
         )
 
     def test_an_entry_released_with_the_tag_does_not_count(self) -> None:
-        self.release({**self.RELEASED, **self.notes(self.entry("`deployer/manifest.py`"))})
-        problems = self.problems(self.CONTRACT_CHANGES["deployer/manifest.py"])
+        self.release(message=f"release\n\n{self.body(self.entry('`deployer/manifest.py`'))}")
+        problems = self.problems(self.MANIFEST_CHANGE, self.body())
         self.assertEqual(["deployer/manifest.py"], [problem.split(":", 1)[0] for problem in problems])
 
     def test_a_malformed_entry_fails_by_field(self) -> None:
         self.release()
-        change = self.CONTRACT_CHANGES["deployer/manifest.py"]
+        where = "the pull request body's ## Upgrade note entry 'A contract changed'"
         cases = {
             "breaking": (
                 self.entry("`deployer/manifest.py`", level="breaking"),
@@ -189,16 +238,44 @@ class UpgradeNotesPolicy(unittest.TestCase):
         }
         for name, (entry, expected) in cases.items():
             with self.subTest(case=name):
-                problems = self.problems({**change, **self.notes(entry)})
-                self.assertIn(f"docs/upgrade-notes.md entry 'A contract changed' {expected}", problems)
+                self.assertIn(f"{where} {expected}", self.problems(self.MANIFEST_CHANGE, self.body(entry)))
+
+    def test_an_entry_written_by_hand_must_name_its_pull_request(self) -> None:
+        self.release()
+        unreleased = self.NOTES.replace("## v0.1.0", f"## Unreleased\n{self.entry('none')}\n## v0.1.0")
+        self.commit("Fix a thing", {"docs/upgrade-notes.md": unreleased})
+        self.commit("Move the notes", {"docs/upgrade-notes.md": self.NOTES})
+        problems = upgrade_notes_problems(self.root)
+        self.assertEqual(1, len(problems), problems)
+        self.assertRegex(
+            problems[0],
+            r"^docs/upgrade-notes\.md as commit [0-9a-f]{7} left it entry 'A contract changed' is missing "
+            r"'- Pull request:' or leaves it empty$",
+        )
 
     def test_an_entry_tied_to_no_file_names_none(self) -> None:
         self.release()
-        self.assertEqual([], self.problems(self.notes(self.entry("none", action="pass --cross-major once"))))
+        self.assertEqual([], self.problems({}, self.body(self.entry("none", action="pass --cross-major once"))))
+
+    def test_a_notes_section_that_is_not_a_version_fails(self) -> None:
+        self.release()
+        for heading in ("Unreleased", "Pending"):
+            with self.subTest(heading=heading):
+                notes = self.NOTES.replace(
+                    "## v0.1.0", f"## {heading}\n{self.entry('none', pull_request='#7')}\n## v0.1.0"
+                )
+                self.assertEqual(
+                    [
+                        f"docs/upgrade-notes.md has a '## {heading}' section; an entry goes under ## Upgrade note in "
+                        "the pull request body, and tools/release_notes.py writes each version's section from the "
+                        "merged commits when it is released"
+                    ],
+                    self.problems({"docs/upgrade-notes.md": notes}, self.body()),
+                )
 
     def test_no_tag_reachable_from_origin_main_passes(self) -> None:
         self.release(tag=None)
-        self.assertEqual([], self.problems(self.CONTRACT_CHANGES["deployer/manifest.py"]))
+        self.assertEqual([], self.problems(self.MANIFEST_CHANGE))
 
     def test_a_missing_origin_main_fails_with_the_fetch_command(self) -> None:
         self.release()

@@ -94,7 +94,7 @@ Working on this repository:
 | [Parallel sessions](docs/parallel-sessions.md) | Worktrees for concurrent agent sessions |
 | [Dependency updates](docs/dependency-updates.md) | Every pinned or floor-checked dependency, and the steps after a Dependabot pull request |
 | [Releasing](docs/releasing.md) | How a release is cut |
-| [Upgrade notes](docs/upgrade-notes.md) | What each release asks of a user who updates, and the entry a contract change adds |
+| [Upgrade notes](docs/upgrade-notes.md) | What each release asks of a user who updates, and the entry a pull request body gives for a change |
 
 Report suspected vulnerabilities according to the [Security policy](SECURITY.md), not through a public issue.
 

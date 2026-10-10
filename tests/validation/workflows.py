@@ -195,6 +195,9 @@ def action_pins(workflow: str) -> list[tuple[str, str, str]]:
 EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.DOTALL)
 SECRET_REFERENCE = re.compile(r"\bsecrets\b")
 TOKEN_REFERENCE = re.compile(r"\bgithub\s*(?:\.\s*token\b|\[\s*['\"]token['\"]\s*\])")
+# The event payload and the head branch's name, which a pull request's author writes: an expression pastes them into
+# the step's script, so a step reads the payload from the file GITHUB_EVENT_PATH names instead.
+EVENT_REFERENCE = re.compile(r"\bgithub\s*(?:\.\s*(?:event|head_ref)\b|\[\s*['\"](?:event|head_ref)['\"]\s*\])")
 # What a job may grant its token: nothing beyond reading.
 READ_ONLY_SCOPES = frozenset({"read", "none"})
 
@@ -231,7 +234,8 @@ def _job_permission_problems(jobs: Node) -> list[str]:
 
 
 def _string_problems(tree: Node) -> list[str]:
-    """Secrets and the token, in any expression anywhere, any key, and any value, run blocks included."""
+    """Secrets, the token, and author-written event data, in any expression anywhere, any key, and any value, run
+    blocks included."""
     problems: list[str] = []
     for path, text, is_key in _strings(tree):
         if is_key and text == "secrets":
@@ -241,6 +245,8 @@ def _string_problems(tree: Node) -> list[str]:
                 problems.append(f"{path} reads a secret: ${{{{{expression}}}}}")
             if TOKEN_REFERENCE.search(expression):
                 problems.append(f"{path} passes the token to a step: ${{{{{expression}}}}}")
+            if EVENT_REFERENCE.search(expression):
+                problems.append(f"{path} pastes event data an author writes into the workflow: ${{{{{expression}}}}}")
         if "GITHUB_TOKEN" in text:
             problems.append(f"{path} names GITHUB_TOKEN, which passes the token to a step")
     return problems
@@ -323,6 +329,19 @@ class WorkflowsPolicies(unittest.TestCase):
                 ("23 6 * * 1",),
             ),
         )
+        # The upgrade-notes check reads the pull request body, so an edit to the body reruns validation, and the body
+        # reaches the runner as a file written from the event payload, which the guard above keeps out of expressions.
+        tree = read_workflow(workflow)
+        triggers = tree.get("on") if isinstance(tree, dict) else None
+        self.assertEqual(
+            {"types": ["opened", "synchronize", "reopened", "edited"]},
+            triggers.get("pull_request") if isinstance(triggers, dict) else None,
+        )
+        self.assertIn(
+            "Get-Content -LiteralPath $env:GITHUB_EVENT_PATH -Raw -Encoding utf8 | ConvertFrom-Json", workflow
+        )
+        self.assertIn("[System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)", workflow)
+        self.assertIn("$arguments += @('--pr-body', $bodyFile)", workflow)
 
     def test_deployable_workflow_installs_the_runtime_versions_the_readme_lists_for_the_fresh_runner(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
