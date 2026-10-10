@@ -410,6 +410,18 @@ class PdfExtractionTests(unittest.TestCase):
         self.assertRefused("pdftotext wrote text that is not UTF-8")
 
 
+def labeled(texts: Sequence[str]) -> str:
+    """Extracted text whose lines are `texts`, numbered as the paragraphs of a Word document."""
+    return "".join(f"[P{number}] {text}\n" for number, text in enumerate(texts, 1))
+
+
+def changed_lines(diff: str) -> list[str]:
+    """A diff's added and removed lines, in order, without its file headers."""
+    lines = diff.splitlines()
+    body = lines[next((index for index, line in enumerate(lines) if line.startswith("@@ ")), len(lines)) :]
+    return [line for line in body if line.startswith(("+", "-"))]
+
+
 class DiffTests(unittest.TestCase):
     HEADER = ("diff --git a/docs/design.docx b/docs/design.docx", "index 1111111..2222222 100644")
 
@@ -467,6 +479,71 @@ class DiffTests(unittest.TestCase):
         self.assertTrue(note.startswith("extracted: the text of this PDF as pdftotext reads it"), note)
         self.assertIn(f"the snapshot holds it at {held}", note)
         self.assertEqual({1: "[p1 l1] Bound the queue."}, parse_unified_diff(diff)["docs/spec.pdf"]["added"])
+
+    def test_one_change_among_identical_paragraphs_is_that_change_alone_at_any_length(self) -> None:
+        path, same = "docs/design.docx", "Keep one queue."
+        for count in (50, 300):
+            base = [same] * count
+            for change, head, expected in (
+                ("inserted", [*base[:11], "Retry twice.", *base[11:]], ["+[P12] Retry twice."]),
+                ("deleted", base[:10] + base[11:], [f"-[P{count}] {same}"]),
+                ("changed", [*base[:10], "Retry twice.", *base[11:]], [f"-[P11] {same}", "+[P11] Retry twice."]),
+            ):
+                with self.subTest(count=count, change=change):
+                    diff = document_diff(self.HEADER, path, path, labeled(base), labeled(head))
+
+                    self.assertEqual(expected, changed_lines(diff))
+                    self.assertHunksMatch(diff, labeled(base), labeled(head))
+                    lines = patch_fingerprints(parse_unified_diff(diff))[path]["lines"]
+                    self.assertEqual(len(expected), lines)
+
+    def test_a_change_between_runs_of_identical_paragraphs_is_that_change_alone(self) -> None:
+        same = "Keep one queue."
+        for name, base, head, expected in (
+            (
+                "changed between equal runs",
+                [*[same] * 60, "# Scope", "Bound the queue.", *[same] * 60],
+                [*[same] * 60, "# Scope", "Bound the queue at ten.", *[same] * 60],
+                ["-[P62] Bound the queue.", "+[P62] Bound the queue at ten."],
+            ),
+            (
+                "inserted between unequal runs",
+                [*[same] * 250, "# Scope", *[same] * 40],
+                [*[same] * 250, "# Scope", "Retry twice.", *[same] * 40],
+                ["+[P252] Retry twice."],
+            ),
+        ):
+            with self.subTest(name):
+                diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+                self.assertEqual(expected, changed_lines(diff))
+                self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def test_a_long_table_of_identical_rows_changed_throughout_diffs_in_bounded_time(self) -> None:
+        base = ["| |"] * 2_000
+        head = ["| title |", *(f"| row {row} |" if row % 10 == 5 else "| |" for row in range(1, 1_999)), "| end |"]
+        started = time.monotonic()
+
+        diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def assertHunksMatch(self, diff: str, base: str, head: str) -> None:
+        """Each hunk's ranges hold exactly its lines: its old side is the base's text there, matched without labels,
+        and its new side is the head's lines there, labels and all."""
+        base_text, head_lines = documents.unlabeled(base), head.splitlines()
+        hunks = diff.split("\n@@ ")[1:]
+        self.assertTrue(hunks)
+        for hunk in hunks:
+            ranges, *body = hunk.rstrip("\n").split("\n")
+            old, new = (side.split(",") for side in ranges.removesuffix(" @@").lstrip("-").split(" +"))
+            old_start, old_length = int(old[0]), int(old[1]) if len(old) > 1 else 1
+            new_start, new_length = int(new[0]), int(new[1]) if len(new) > 1 else 1
+            old_side = [documents.split_label(line[1:])[1] for line in body if line[0] in " -"]
+            new_side = [line[1:] for line in body if line[0] in " +"]
+            self.assertEqual(base_text[old_start - 1 if old_length else old_start :][:old_length], old_side)
+            self.assertEqual(head_lines[new_start - 1 if new_length else new_start :][:new_length], new_side)
 
     def test_a_path_git_quotes_round_trips_through_the_diff_parser(self) -> None:
         for path in ("docs/r\u00e9sum\u00e9.docx", 'docs/say "hi".docx', "docs/plain name.docx"):
