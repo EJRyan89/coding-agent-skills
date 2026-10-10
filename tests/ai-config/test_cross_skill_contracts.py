@@ -735,7 +735,7 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertFalse((REPOSITORY_ROOT / "deploy-meta/re-review.json").exists())
         source = json.loads((REPOSITORY_ROOT / "source.json").read_text(encoding="utf-8"))
         self.assertEqual(
-            ["review-prs", "update-pr-tracker", "review-insights", "flag-review-finding"],
+            ["review-prs", "update-pr-tracker", "review-insights", "flag-review-finding", "review-document"],
             source["bundles"]["code-review-operations"]["members"],
         )
         review_prs = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")

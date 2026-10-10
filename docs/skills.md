@@ -34,6 +34,7 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
 | [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
+| [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` (optional) |
 | [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | Nothing extra |
@@ -56,12 +57,14 @@ Which runtimes run each skill. **Full** means every step runs there as it does i
 | [`flag-review-finding`](#flag-review-finding) | Full | Full | Full |
 | [`github-activity-report`](#github-activity-report) | Full | Full | Full |
 | [`repo-cleanup`](#repo-cleanup) | Full | Full | Partial |
+| [`review-document`](#review-document) | Full | Full | Partial |
 | [`review-insights`](#review-insights) | Full | Full | Partial |
 | [`review-prs`](#review-prs) | Full | Partial | Partial |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | Full | Full | Partial |
 | [`update-pr-tracker`](#update-pr-tracker) | Full | Partial | Partial |
 
 - `repo-cleanup` on Copilot CLI: partial, lacking `user-only-start`. A headless copilot -p session cannot start it; start it from an interactive session.
+- `review-document` on Copilot CLI: partial, lacking `agent-delegation`. The reviewer role runs inline in the session, without the reviewer agent's guard.
 - `review-insights` on Copilot CLI: partial, lacking `agent-delegation`. The synthesis runs inline in the session instead of a subagent, so its whole input loads into the session's context.
 - `review-prs` on Codex CLI: partial, lacking `workflow`. Reviewers start as native subagents on the session's model, so a reviewer model or effort setting has no effect.
 - `review-prs` on Copilot CLI: partial, lacking `agent-delegation` and `workflow`. The generic reviewer and delegation-free specialists run inline; a specialists manifest that keeps agent-delegation fails.
@@ -241,6 +244,31 @@ In Copilot CLI, start it from an interactive session: a headless `copilot -p` se
 ```text
 /repo-cleanup
 /repo-cleanup widgets
+```
+
+## `review-document`
+
+<!-- generated:review-document -->
+Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document or another text file that is not in a pull request.
+
+```text
+/review-document <path> [--base none|committed] [--output DIR]
+```
+
+Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh` (optional).
+<!-- /generated:review-document -->
+
+- `<path>`: the document to review, a text file. A `.docx` or PDF is refused for now, because its text must be extracted first.
+- `--base none|committed`: what the document is compared with. Without it, a file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged, and any other file is reviewed whole. `none` reviews the whole document anyway; `committed` insists on the change and fails when nothing is committed.
+- `--output DIR`: where the fixture and the copy of the report go, a new or empty directory outside every skills directory. Without it, a new `review-document-*` temporary directory.
+
+A Markdown or plain-text document (`.md`, `.markdown`, `.txt`, `.rst`, or `.adoc`) is reviewed by the suite's design-review specialist, which looks for requirement gaps, unstated alternatives, risks, open questions, inconsistencies, and rollout gaps; any other text file gets the generic code reviewer. The review runs on the session's model, and design review needs Sonnet or stronger. The skill builds a one-file fixture and reviews it as a [fixture canary](code-review-operations.md#fixture-canaries), so the reviewer guard, result validation, and record are those of a pull request review. It reads nothing from GitHub, posts nothing, and changes nothing in the checkout, but it needs the [code-review configuration](code-review-operations.md#first-configuration). The record stays in a new canary directory, and the report is copied beside the fixture. [Document reviews](code-review-operations.md#document-reviews) describes the fixture and the record.
+
+In Copilot CLI, which cannot start subagents, the session works the reviewer role itself, without the reviewer agent's guard.
+
+```text
+/review-document docs/design/export-retention.md
+/review-document D:\Drafts\retention.md --base none --output D:\Reviews\retention
 ```
 
 ## `review-insights`
