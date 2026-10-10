@@ -50,15 +50,28 @@ def literal_int(path: Path, name: str) -> int:
     return value
 
 
+def frontmatter_and_body(text: str) -> tuple[str, str]:
+    """A Markdown document's frontmatter and the body after it, split where skill-core's one reader splits them."""
+    lines = text.splitlines()
+    found = skill_frontmatter.split(lines)
+    if found is None:
+        raise AssertionError("the document has no frontmatter")
+    return "\n".join(found[0]), "\n".join(lines[found[1] :])
+
+
+def allowed_tools(text: str) -> list[str]:
+    """The allowed-tools list in a Markdown document's frontmatter, as skill-core's one reader reads it."""
+    value = skill_frontmatter.parse(text).value("allowed-tools")
+    if not isinstance(value, list):
+        raise AssertionError(f"allowed-tools is not a list: {value!r}")
+    return value
+
+
 def pinned_models(root: Path) -> dict[str, str]:
     """Each shipped and repository skill under root that pins a model, by its SKILL.md path, with the model."""
     paths = [*(root / "skills").glob("**/SKILL.md"), *(root / ".claude/skills").glob("*/SKILL.md")]
-    return {
-        path.relative_to(root).as_posix(): line.split(":", 1)[1].strip()
-        for path in sorted(paths)
-        for line in path.read_text(encoding="utf-8-sig").split("---", 2)[1].splitlines()
-        if re.match(r"model\s*:", line)
-    }
+    models = {path.relative_to(root).as_posix(): skill_frontmatter.read(path).string("model") for path in sorted(paths)}
+    return {name: model for name, model in models.items() if model is not None}
 
 
 def declared_options(path: Path, parser: str) -> dict[str, dict[str, str]]:
@@ -328,7 +341,7 @@ class CrossSkillContractTests(unittest.TestCase):
                 "            run_name='__main__')\"",
                 "          timeout: 30",
             ],
-            agent.split("---", 2)[1].strip().splitlines(),
+            frontmatter_and_body(agent)[0].splitlines(),
         )
         guard = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py"
         self.assertTrue(guard.is_file(), "the hook runs the guard code-review-core deploys")
@@ -354,7 +367,9 @@ class CrossSkillContractTests(unittest.TestCase):
         }
 
     def reviewer_hook_command(self) -> str:
-        frontmatter = (REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8").split("---")[1]
+        frontmatter, _ = frontmatter_and_body(
+            (REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8")
+        )
         lines = frontmatter.splitlines()
         start = lines.index("          command: >-") + 1
         folded = [line.strip() for line in lines[start:] if line.startswith("            ")]
@@ -479,7 +494,7 @@ class CrossSkillContractTests(unittest.TestCase):
         )
         self.assertIn(f"with exactly this prompt and nothing else: `{task}`", skill)
         self.assertIn(f'REVIEWER_TASK = "{task.replace("<prompt file>", "{prompt}")}"', pipeline)
-        self.assertIn('"Workflow"', skill.split("---", 2)[1], "the Workflow path needs the tool allowed")
+        self.assertIn("Workflow", allowed_tools(skill), "the Workflow path needs the tool allowed")
         # Both paths start a role on the model its trusted profile names, and otherwise name none.
         self.assertIn("When a `MODEL` line names that role, start its subagent on that model", skill)
         self.assertIn("on the model of any `MODEL` line that follows it", skill)
@@ -517,7 +532,10 @@ class CrossSkillContractTests(unittest.TestCase):
         )
         self.assertNotIn("`re-review <owner/repo#number>`", tracker)
         review_prs = read("review-prs")
-        self.assertIn("--pull owner/repo#number ... --re-review owner/repo#number ...", review_prs.split("---", 2)[1])
+        self.assertIn(
+            "--pull owner/repo#number ... --re-review owner/repo#number ...",
+            skill_frontmatter.parse(review_prs).string("argument-hint") or "",
+        )
         self.assertIn("(or `--re-review` for one given with `--re-review`)", review_prs)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         self.assertEqual("'append'", declared_options(pipeline, "prepare_parser")["--re-review"]["action"])
@@ -544,7 +562,7 @@ class CrossSkillContractTests(unittest.TestCase):
         # turn that invoked it, so check and finalize were denied later, nothing was recorded, and it still
         # reported success.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        body = skill.split("---", 2)[2]
+        _, body = frontmatter_and_body(skill)
         pipeline = REPOSITORY_ROOT / "skills/code-review-core/scripts/review_pipeline.py"
         self.assertIn(
             "Never end the turn, reply, or schedule a wakeup (ScheduleWakeup, CronCreate, `/loop`) while a "
@@ -593,7 +611,7 @@ class CrossSkillContractTests(unittest.TestCase):
     def test_review_prs_works_an_inline_run_through_next_role_and_states_its_boundary(self) -> None:
         # Copilot CLI cannot start subagents, so the orchestrating session works each role itself.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        body = skill.split("---", 2)[2]
+        _, body = frontmatter_and_body(skill)
         self.assertIn("Add `--inline` when this session cannot start subagents", body)
         self.assertIn("or one `INLINE <run directory>` line.", body)
         self.assertIn(
@@ -625,7 +643,7 @@ class CrossSkillContractTests(unittest.TestCase):
             if entry.startswith(f"{shell}(")
         ]
         self.assertEqual(2, len(grants), value)
-        body = (skill / "SKILL.md").read_text(encoding="utf-8-sig").split("---", 2)[2]
+        _, body = frontmatter_and_body((skill / "SKILL.md").read_text(encoding="utf-8-sig"))
         started = re.search(r'python -B "(\$\{CLAUDE_SKILL_DIR\}[^"]+)" prepare ', body)
         if started is None:
             self.fail("review-prs names no prepare command")
@@ -669,7 +687,7 @@ class CrossSkillContractTests(unittest.TestCase):
         # The skill takes `--canary owner/repo#number`, but the pipeline's --canary is a bare flag before --pull
         # selectors; with only the --pull fence to copy, a canary run first tried `--canary <selector>`.
         skill = (REPOSITORY_ROOT / "skills/review-prs/SKILL.md").read_text(encoding="utf-8-sig")
-        body = skill.split("---", 2)[2]
+        _, body = frontmatter_and_body(skill)
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --pull "<owner/repo#number>"', body)
         # A fixture canary passes the skill's own arguments through, the fixture directory after --fixture.
         self.assertIn('review_pipeline.py" prepare --host "<runtime>" --canary --fixture "<directory>"', body)
@@ -692,13 +710,13 @@ class CrossSkillContractTests(unittest.TestCase):
 
     def test_a_re_review_scope_is_asked_for_and_never_assumed(self) -> None:
         # A full or incremental pass is the user's call: the tracker asks once per run, a direct call asks itself.
-        def read(name: str) -> tuple[str, str]:
+        def read(name: str) -> tuple[list[str], str]:
             text = (REPOSITORY_ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8-sig")
-            return text.split("---", 2)[1], text
+            return allowed_tools(text), text
 
         for name in ("review-prs", "update-pr-tracker"):
             with self.subTest(asks=name):
-                self.assertIn('"AskUserQuestion"', read(name)[0])
+                self.assertIn("AskUserQuestion", read(name)[0])
         self.assertIn(
             "If `--re-review` was given without `--scope`, ask the user once with AskUserQuestion, offering "
             "`auto`, `full`, and `incremental` in that order; never choose one yourself.",
@@ -726,7 +744,7 @@ class CrossSkillContractTests(unittest.TestCase):
         )
         for path in sorted((REPOSITORY_ROOT / "skills").glob("*/SKILL.md")):
             with self.subTest(skill=path.parent.name):
-                body = path.read_text(encoding="utf-8-sig").split("---", 2)[2]
+                _, body = frontmatter_and_body(path.read_text(encoding="utf-8-sig"))
                 self.assertEqual([], replayed_skills(body, path.parent.name, names))
 
     def test_re_review_is_retired_into_review_prs(self) -> None:
