@@ -34,6 +34,11 @@ ADAPTER_SOURCES = {
     "generic-fallback": "generic",
 }
 ADAPTER_PROTOCOL_VERSION = 1
+# A profile the suite ships, which a specialist names as `suite:<name>` in place of a repository path, is keyed in
+# `review.adapter.source_hashes` by that reference beside the repository files the reviewer was built from. Defined
+# here, with the records, so the review that writes the key and a reader of records that must tell the two apart
+# share one rule without the reader importing the review runtime.
+SUITE_PROFILE_PREFIX = "suite:"
 SEVERITIES = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
 DISPOSITIONS = {
     "addressed",
@@ -1195,6 +1200,12 @@ def _validate_review(review: dict[str, Any]) -> None:
     _validate_timestamp(review.get("reviewed_at"))
     if not isinstance(review.get("summary"), str) or not review["summary"].strip():
         raise RecordError("Review summary is invalid")
+
+
+def is_suite_profile(profile: str) -> bool:
+    """Whether a validated specialist profile, or a `source_hashes` key, names a profile the suite ships rather than a
+    repository file."""
+    return profile.startswith(SUITE_PROFILE_PREFIX)
 
 
 def _validate_source_hashes(source_hashes: Any) -> None:

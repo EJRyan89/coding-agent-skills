@@ -13,7 +13,13 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from review_config import ConfigurationError
-from review_records import RecordError, _validate_ledger, validate_adapter_result, validate_record
+from review_records import (
+    RecordError,
+    _validate_ledger,
+    is_suite_profile,
+    validate_adapter_result,
+    validate_record,
+)
 
 Mutation = Callable[[Any], Any]
 Key = str | int
@@ -262,6 +268,11 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ("APPROVED verdict", _record, _set((*REVIEW, "verdict"), "APPROVED")),
     ("source_commit set", _record, _set((*ADAPTER, "source_commit"), BASE_SHA)),
     ("source hashes", _record, _set((*ADAPTER, "source_hashes"), {"a.md": SHA256, "dir/b.md": SHA256})),
+    (
+        "a suite profile keyed by its reference beside source hashes",
+        _record,
+        _set((*ADAPTER, "source_hashes"), {"a.md": SHA256, "suite:design-review": SHA256}),
+    ),
     ("usage object", _record, _set((*ADAPTER, "usage"), {})),
     (
         "repository adapter, partial",
@@ -1923,6 +1934,14 @@ class LedgerValidationTests(unittest.TestCase):
         stage_messages = {message for _name, _mutation, message in LEDGER_STAGES}
         rejected_messages = {message for _name, _mutation, message in REJECTED_LEDGERS}
         self.assertEqual(set(), rejected_messages - stage_messages - LEDGER_VARIANTS)
+
+
+class SuiteProfileReferenceTests(unittest.TestCase):
+    def test_only_the_suite_scheme_names_a_suite_profile(self) -> None:
+        self.assertTrue(is_suite_profile("suite:design-review"))
+        for path in ("docs/suite.md", "suites:design-review", "Suite:design-review", "a/suite:design-review"):
+            with self.subTest(path):
+                self.assertFalse(is_suite_profile(path))
 
 
 if __name__ == "__main__":
