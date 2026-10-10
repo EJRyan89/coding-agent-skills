@@ -309,6 +309,40 @@ class SearchTests(LazySnapshotFixture):
         )
         self.assertEqual(["pyproject.toml", "source-snapshot.json", "src/changed.py"], self.held(), "nothing written")
 
+    def test_the_search_judges_each_file_by_its_bytes_whatever_the_checkout_sets(self) -> None:
+        # Git would skip the text files these mark -diff or binary, and search the binary file one marks text.
+        attributes = b"*.py -diff\n*.bin diff text\n"
+        (self.checkout / ".gitattributes").write_bytes(attributes)
+        (self.checkout / ".git" / "info").mkdir(exist_ok=True)
+        (self.checkout / ".git" / "info" / "attributes").write_bytes(b"*.py binary\n")
+        self.assertEqual(
+            [("src/changed.py", "2"), ("src/unchanged.py", "1"), ("src/with space.py", "1")],
+            [(path, line) for path, line, _ in self.search("helper")[0]],
+        )
+
+    def test_a_binary_file_the_manifest_lists_or_excludes_is_never_searched(self) -> None:
+        # One binary file the snapshot fetches later and one it wrote off as binary when it read the changed files,
+        # each with long matching lines, which the search reads without holding a whole line.
+        line = b"helper " + b"y" * (400 * 1024) + b"\n"  # two of them fit the size limit of a fetchable file
+        for relative in ("assets/large.bin", "src/changed.bin"):
+            (self.checkout / relative).write_bytes(b"\0" + line * 2)
+        git(self.checkout, "add", ".")
+        git(self.checkout, "commit", "-m", "binaries")
+        head = git(self.checkout, "rev-parse", "HEAD")
+        source = self.root / "binaries"
+        manifest = materialize_source_snapshot(
+            self.checkout, REPOSITORY, head, source, changed_paths=["src/changed.bin"], upfront=reads_settings
+        )
+        self.assertEqual("binary", manifest["excluded_paths"]["src/changed.bin"])
+        self.assertIn("assets/large.bin", manifest["fetchable"])
+        self.assertEqual(
+            ["src/changed.py", "src/unchanged.py", "src/with space.py"],
+            [
+                path
+                for path, _, _ in search_source(self.checkout, source, "helper", repository=REPOSITORY, commit=head)[0]
+            ],
+        )
+
     def test_the_search_stops_at_its_limit_and_cuts_long_lines(self) -> None:
         with mock.patch.object(review_runtime, "MAX_SEARCH_MATCHES", 2):
             matches, more = self.search("helper")

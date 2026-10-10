@@ -169,6 +169,27 @@ class StreamingTests(unittest.TestCase):
             self.assertEqual(3, running.wait())
             self.assertEqual(b"done", running.errors())
 
+    def test_a_line_read_with_a_limit_is_cut_and_its_rest_left_to_the_next_read(self) -> None:
+        # Sixteen megabytes in one line, written in pieces, then two short lines.
+        program = (
+            "import sys\n"
+            "for _ in range(256):\n"
+            "    sys.stdout.buffer.write(b'z' * 65536); sys.stdout.flush()\n"
+            "sys.stdout.buffer.write(bytes([10]) + b'short' + bytes([10]) + b'end')\n"
+        )
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=60) as running:
+            self.assertEqual(b"z" * 100, running.readline(100))
+            rest = 0
+            while not (piece := running.readline(4096)).endswith(b"\n"):
+                self.assertLessEqual(len(piece), 4096)
+                rest += len(piece)
+            self.assertEqual(256 * 65536 - 100, rest + len(piece) - 1)
+            self.assertEqual(b"sho", running.readline(3))
+            self.assertEqual(b"rt\n", running.readline(100))
+            self.assertEqual(b"end", running.readline(100))
+            self.assertEqual(b"", running.readline(100))
+            self.assertEqual(0, running.wait())
+
     def test_output_that_keeps_arriving_never_times_out(self) -> None:
         # Two seconds of output in all, but never half a second without a byte.
         program = (

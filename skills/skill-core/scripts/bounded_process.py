@@ -198,11 +198,21 @@ class Streaming:
         del self._buffer[:size]
         return data
 
-    def readline(self) -> bytes:
-        """The next line of output with its newline, or what is left at its end."""
-        while b"\n" not in self._buffer and self._fill():
-            pass
-        end = self._buffer.find(b"\n") + 1 or len(self._buffer)
+    def readline(self, limit: int | None = None) -> bytes:
+        """The next line of output with its newline, or what is left at its end.
+
+        With `limit`, at most that many bytes of it, leaving the rest of a longer line to the next read, so a line
+        with no end in sight is never held whole. Each byte is searched for the newline once, however many reads a
+        long line takes to arrive.
+        """
+        searched = 0
+        while (newline := self._buffer.find(b"\n", searched)) < 0 and (limit is None or len(self._buffer) < limit):
+            searched = len(self._buffer)
+            if not self._fill():
+                break
+        end = len(self._buffer) if newline < 0 else newline + 1
+        if limit is not None:
+            end = min(end, limit)
         data = bytes(self._buffer[:end])
         del self._buffer[:end]
         return data

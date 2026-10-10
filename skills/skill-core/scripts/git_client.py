@@ -112,9 +112,10 @@ class GitStream:
         """The next `size` bytes of output, fewer only at its end."""
         return self._bounded(lambda: self._running.read(size))
 
-    def readline(self) -> bytes:
-        """The next line of output with its newline, or what is left at its end."""
-        return self._bounded(self._running.readline)
+    def readline(self, limit: int | None = None) -> bytes:
+        """The next line of output with its newline, or what is left at its end; with `limit`, at most that many
+        bytes of it, leaving the rest of a longer line to the next read."""
+        return self._bounded(lambda: self._running.readline(limit))
 
     def wait(self) -> int:
         """The exit status once git has exited."""
