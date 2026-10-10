@@ -20,9 +20,9 @@ allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.
 | `validation-policy` | `tests/validation/`, the runner, `pyproject.toml` | Each policy holds the sentence that cites it, with a fixture, read through `ast` |
 | `trust-boundary` | the code-review contract, `review_guard.py`, `review_pipeline.py`, `review_runtime.py`, `review_source.py`, `review_specialists.py`, `test_adversarial_inputs.py` | A threat-model row and its adversarial test for what an author reaches |
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
-| `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py` | The level and user action each contract change asks for |
+| `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. A reviewer is not given the pull request's body, where its `## Upgrade note` lives, so `upgrade-notes` judges what each contract change asks of a user from the diff, and validation holds that the body names each changed contract file. No route has a condition, so the review keeps the lazy snapshot.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `review-prs` gives every reviewer the pull request's body as untrusted data, `PULL_REQUEST_BODY_FILE`, so `upgrade-notes` reads its `## Upgrade note` and holds each entry's level and user action to the change in the diff, beside validation, which holds only that the body names each changed contract file. No route has a condition, and no condition is given the body, so the review keeps the lazy snapshot.
 
 ## 1. Configure
 
@@ -47,7 +47,7 @@ Check the reviewer against each pull request given, or a recent merged one of ea
 python -B skills/code-review-core/scripts/review_pipeline.py validate-reviewer --repository EJRyan89/coding-agent-skills --pull '<number>'
 ```
 
-Expect `FILES`, a `ROUTE` line per route that matches, `GENERIC files=<n>` for the rest, `SNAPSHOT ... source=checkout-lazy`, and `VALID`. A base that predates the manifest fails: set `trusted_ref` to a commit that has it, for that check only.
+Expect `FILES`, `BODY` with how much of the body reviewers would be given, a `ROUTE` line per route that matches, `GENERIC files=<n>` for the rest, `SNAPSHOT ... source=checkout-lazy`, and `VALID`. A base that predates the manifest fails: set `trusted_ref` to a commit that has it, for that check only.
 
 ## 3. Tune
 

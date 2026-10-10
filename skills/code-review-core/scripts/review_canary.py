@@ -40,8 +40,9 @@ from review_runtime import RuntimeContractError, _is_reparse_point, _safe_relati
 FIXTURE_SCHEMA_VERSION = 1
 PULL_FILE = "pull.json"
 PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "base_ref", "head_ref", "threads"})
-# A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does.
-OPTIONAL_PULL_FIELDS = frozenset({"manifest_path"})
+# A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does, and
+# the pull request's description, which reviewers are given as they are a real one's.
+OPTIONAL_PULL_FIELDS = frozenset({"manifest_path", "body"})
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
@@ -57,7 +58,7 @@ class FixtureChange:
 
     name: str  # the owner/repo the fixture names
     repository: Path
-    pull: dict[str, Any]  # the fields review_operation.PULL_FIELDS names
+    pull: dict[str, Any]  # the fields review_operation.PULL_FIELDS names, and the description, `body`
     diff: str
     undecodable: int  # bytes of the diff that were not UTF-8 and became U+FFFD
     comments: list[dict[str, Any]]  # as the request's github_comments
@@ -108,6 +109,8 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
     if not isinstance(value["threads"], list):
         raise FixtureError(f"{PULL_FILE} threads must be a list")
     threads = [_thread(thread, index) for index, thread in enumerate(value["threads"])]
+    if not isinstance(value.get("body", ""), str):
+        raise FixtureError(f"{PULL_FILE} body must be a string")
     pull = {**value, "repository": repository, "threads": threads}
     if "manifest_path" in value:
         try:
@@ -275,6 +278,7 @@ def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
                 "headRefOid": head,
                 "headRefName": pull["head_ref"],
                 "mergedAt": None,
+                "body": pull.get("body", ""),
             },
             diff=diff,
             undecodable=undecodable,

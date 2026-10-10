@@ -61,8 +61,11 @@ def validate_canary_pull(value: Any, *, repository: str, number: int) -> dict[st
 
 
 def validate_pull(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != PULL_FIELDS:
+    """A pull request's metadata; the one pull request a review reads also carries its description, `body`."""
+    if not isinstance(value, dict) or set(value) not in (PULL_FIELDS, PULL_FIELDS | {"body"}):
         raise ReviewOperationError("Pull metadata fields do not match the contract")
+    if not isinstance(value.get("body", ""), str):
+        raise ReviewOperationError("Pull body must be text")
     if not isinstance(value["number"], int) or isinstance(value["number"], bool) or value["number"] < 1:
         raise ReviewOperationError("Pull number must be positive")
     if value["state"] not in {"OPEN", "MERGED"} or not isinstance(value["isDraft"], bool):
@@ -158,6 +161,8 @@ def request_to_record_input(
         "snapshot": snapshot,
         "github_comments": list(request.get("github_comments") or []),
         "head_ref": pull.get("head_ref"),
+        "body_characters": pull.get("body_characters"),
+        "body_given": pull.get("body_given"),
         "repository": request["repository"],
         "pull_number": request["pull_number"],
         "pull_url": pull["url"],

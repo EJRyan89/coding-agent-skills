@@ -3173,13 +3173,16 @@ class ReviewerSourceTests(PipelineFixture):
             ]
         )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        self.github.pulls[12]["body"] = "## Upgrade note\n\nNone\n" + "x" * 30_000
         code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
         self.assertEqual(0, code, err)
         lines = out.splitlines()
         self.assertTrue(lines[0].startswith(f"REVIEWER team-specialists specialists source=local-manifest {manifest} "))
         self.assertIn("FILES 3 found", lines)
         self.assertIn("UNMATCHED docs-reviewer ^Documentation/", lines)
-        self.assertIn(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base", lines)
+        pull = f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base"
+        # How much of the description prepare would give the reviewers, next to the pull request it belongs to.
+        self.assertEqual("BODY characters=30022 given=24000", lines[lines.index(pull) + 1])
         self.assertIn("CONDITION window open", lines)
         self.assertIn("ROUTE python-reviewer files=1", lines)
         self.assertEqual("VALID", lines[-1])
@@ -3397,6 +3400,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
     ) -> list[str]:
         return [
             f"PULL {REPOSITORY}#{number} base={self.base[:12]} head={head[:12]} files={files} reviewer={source}",
+            "BODY characters=0 given=0",
             f"SNAPSHOT {head[:12]} {snapshot}",
             "CONDITION window open",
             f"ROUTE python-reviewer files={routed}",
@@ -3533,6 +3537,7 @@ class ValidateReviewerSequenceTests(PipelineFixture):
             f"REVIEWER fixture-review entrypoint source=repository-manifest review/entrypoint.json commit={self.base}",
             "FILES 2 found",
             f"PULL {REPOSITORY}#12 base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base",
+            "BODY characters=0 given=0",
             f"SNAPSHOT {self.head[:12]} {snapshot}",
             "ENTRYPOINT fixture-review files=2",
             "VALID",
@@ -3698,7 +3703,8 @@ class FixtureCanaryTests(PipelineFixture):
         return lines
 
     def test_a_fixture_with_a_planted_defect_runs_through_every_step_with_no_gh_call(self) -> None:
-        state = self.prepare_fixture_run("--fixture", str(self.fixture("planted", FIXTURE_HEAD)))
+        body = "Totals the items.\n\n## Upgrade note\n\nNone\n"
+        state = self.prepare_fixture_run("--fixture", str(self.fixture("planted", FIXTURE_HEAD, body=body)))
         self.assertEqual(("example/fixture#3", "initial", True), (state["selector"], state["mode"], state["canary"]))
         self.assertEqual(
             {"directory": str(self.root / "fixtures" / "planted"), "prior": None, "prior_record": None},
@@ -3709,6 +3715,7 @@ class FixtureCanaryTests(PipelineFixture):
             ("example/fixture", 3, "Total the items"),
             (request["repository"], request["pull_number"], request["pull_request"]["title"]),
         )
+        self.assertEqual(body, Path(request["pull_request"]["body_file"]).read_text(encoding="utf-8"))
         source = Path(request["source_snapshot"]["root"])
         self.assertEqual(FIXTURE_HEAD["app/service.py"], (source / "app" / "service.py").read_text(encoding="utf-8"))
         snapshot = json.loads((source / "source-snapshot.json").read_text(encoding="utf-8"))
@@ -3725,6 +3732,9 @@ class FixtureCanaryTests(PipelineFixture):
         )
         self.assertEqual(
             [("app/service.py", 2, "MUST_FIX")], [(f["path"], f["line"], f["severity"]) for f in record["findings"]]
+        )
+        self.assertEqual(
+            (len(body), len(body)), (record["pull_request"]["body_characters"], record["pull_request"]["body_given"])
         )
         self.assertEqual([], self.no_github.calls)
         self.assertFalse(self.archive.exists())
@@ -4006,7 +4016,7 @@ class SnapshotSizeTests(PipelineFixture):
         )
         self.assertEqual(
             lines.index(snapshot),
-            lines.index(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base") + 1,
+            lines.index(f"PULL {SELECTOR} base={self.base[:12]} head={self.head[:12]} files=2 reviewer=base") + 2,
         )
         self.assertEqual("VALID", lines[-1])
 
