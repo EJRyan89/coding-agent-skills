@@ -47,7 +47,7 @@ LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
 PACKAGE = "Roslynator.Formatting.Analyzers"
 PACKAGE_FILES = ("Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props", "packages.config")
-# The layout rules the analyzers enforce; see SKILL.md for which rule each setting covers.
+# The layout rules the analyzers enforce; the dotnet-format section of docs/skills.md says which rule each covers.
 SETTINGS = (
     ("insert_final_newline", "true"),
     ("dotnet_diagnostic.RCS0041.severity", "warning"),
