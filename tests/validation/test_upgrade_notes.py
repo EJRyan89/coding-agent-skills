@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from upgrade_notes import upgrade_notes_problems
+from upgrade_notes import contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
 
 
@@ -304,6 +304,43 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 "fetch the history with `git fetch --unshallow --tags`"
             ],
             upgrade_notes_problems(clone),
+        )
+
+
+class ContractListPolicy(unittest.TestCase):
+    """Each file the upgrade-notes check reads is named in a contract list, so the list and the check agree."""
+
+    NAMED = (
+        "`deployer/manifest.py`",
+        "`deploy-meta/`",
+        "`skills/code-review-core/references/`",
+        "`docs/code-review-operations-contract.md`",
+        "`skills/`",
+        "`deployer/tools.py`",
+    )
+
+    def profile(self, names: tuple[str, ...]) -> str:
+        items = "".join(f"- {name};\r\n" for name in names)
+        return f"# Profile\r\n\r\n## Contract files\r\n\r\n{items}\r\n## Documentation\r\n\r\n- `deployer/tools.py`\r\n"
+
+    def test_a_list_naming_every_file_the_check_reads_passes(self) -> None:
+        self.assertEqual([], contract_list_problems("profile.md", self.profile(self.NAMED), "## Contract files"))
+
+    def test_a_file_the_check_reads_but_the_list_leaves_out_fails_by_name(self) -> None:
+        # The tool floors are named in the next section only, which does not count.
+        problems = contract_list_problems("profile.md", self.profile(self.NAMED[:-1]), "## Contract files")
+        self.assertEqual(
+            [
+                "profile.md does not name `deployer/tools.py` under ## Contract files, though the upgrade-notes "
+                "check reads a tool floor from it"
+            ],
+            problems,
+        )
+
+    def test_a_document_without_the_section_fails(self) -> None:
+        self.assertEqual(
+            ["profile.md has no ## Contract files section naming the contract files the upgrade-notes check reads"],
+            contract_list_problems("profile.md", "# Profile\n", "## Contract files"),
         )
 
 

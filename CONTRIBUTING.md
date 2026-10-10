@@ -101,7 +101,7 @@ Run the complete validation sequence from the repository root:
 python -B tests/run_validation.py
 ```
 
-Fetch `main` and the tags first, as in [Getting the source](#getting-the-source). A full run took about three minutes on a recent workstation. In CI the `validate` check runs four legs, each a `windows-latest` runner that runs a quarter of the policy checks and suite jobs with `--shard <index>/4`, and takes about two minutes. The suite jobs are dealt by the seconds each took on a recent `main` run, recorded in `tests/validation/job_seconds.json` and refreshed at each release, so the legs carry about the same work; a new suite with no entry is dealt by its test count until the next refresh. A leg's log and step summary name its shard and how many of the run's policy checks and suite jobs it ran; to rerun one leg's share locally, pass the same option, as in `python -B tests/run_validation.py --shard 2/4`. When every changed file is documentation, such as `docs/`, `README.md`, or this file, the runner itself runs only the policy checks, the suites that name a changed file, and the Markdown fence checks, which took about a minute; `--full` runs everything.
+Fetch `main` and the tags first, as in [Getting the source](#getting-the-source). A full run took about a minute and a half on a 24-CPU workstation. In CI the `validate` check runs four legs, each a `windows-latest` runner that runs a quarter of the policy checks and suite jobs with `--shard <index>/4`, and takes about two minutes. The suite jobs are dealt by the seconds each took on a recent `main` run, recorded in `tests/validation/job_seconds.json` and refreshed at each release, so the legs carry about the same work; a new suite with no entry is dealt by its test count until the next refresh. A leg's log and step summary name its shard and how many of the run's policy checks and suite jobs it ran; to rerun one leg's share locally, pass the same option, as in `python -B tests/run_validation.py --shard 2/4`. When every changed file is documentation, such as `docs/`, `README.md`, or this file, the runner itself runs only the policy checks, the suites that name a changed file, and the Markdown fence checks, which took about a minute; `--full` runs everything.
 
 The runner reports each failing suite by path. When diagnosing a failure, run that suite directly, as in `python -B tests/deployer/test_recovery_migration.py`, or narrow the runner with `-k <pattern>`, as in `-k deployer`. Suites run in parallel, with large ones split into shards; set `VALIDATION_JOBS` to change the worker count.
 
@@ -135,7 +135,7 @@ Validation type-checks with `mypy` at its default strictness and with the `[tool
 
 The repository's security settings back this up: secret scanning, push protection, private vulnerability reporting, and Dependabot security updates are enabled, and the default workflow token is read-only.
 
-Branch protection and these settings are live repository settings, not tracked files, so they can drift without a diff. `python tools/branch_protection.py` reads them and the merge settings through `gh api` and prints `PROTECTED`, or `DRIFTED` and each invariant that no longer holds, then each security setting as it found it; reading branch protection and the security settings needs admin rights on the repository. The [release procedure](docs/releasing.md#before-tagging) runs it before every tag.
+Branch protection and these settings are live repository settings, not tracked files, so they can drift without a diff. `python tools/branch_protection.py` reads them, the merge settings, and the two issue settings [Questions](#questions) names through `gh api` and prints `PROTECTED`, or `DRIFTED` and each invariant that no longer holds, then each security setting as it found it; reading branch protection and the security settings needs admin rights on the repository. The [release procedure](docs/releasing.md#before-tagging) runs it before every tag.
 
 ## Issues and pull requests
 
@@ -166,7 +166,7 @@ Under the checklist, name anything that could not be run, and why.
 
 ## Questions
 
-Ask a question in an issue from the question template, which applies the `question` label. Discussions stay off, so the issue tracker is the one place to ask, and blank issues stay off, so every issue starts from a template.
+Ask a question in an issue from the question template, which applies the `question` label. Discussions stay off, so the issue tracker is the one place to ask, and blank issues stay off (`blank_issues_enabled: false` in `.github/ISSUE_TEMPLATE/config.yml`), so every issue starts from a template. `python tools/branch_protection.py`, described in [How `main` is protected](#how-main-is-protected), reports `DRIFTED` when either is on.
 
 ## Gates the maintainer runs
 

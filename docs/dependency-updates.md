@@ -42,13 +42,14 @@ A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_
 
 ## Runtime tool floors
 
-`python deploy.py check` reports each tool a skill declares and each runtime `python deploy.py verify` lists, with its version, and marks one older than its floor; `verify` reports a runtime below its floor as `OUTDATED` instead of listing its skills. Raise a floor in `deployer/tools.py` (`SKILL_TOOLS`, or `VERIFY_TOOLS` for the runtimes) only when a skill or `verify` starts using a newer feature, with a comment naming that feature, as the `gh` and `codex` entries have.
+`python deploy.py check` reports each tool a skill declares and each runtime `python deploy.py verify` lists, with its version, and marks one older than its floor; `verify` reports a runtime below its floor as `OUTDATED` instead of listing its skills. Raise a floor in `deployer/tools.py` (`SKILL_TOOLS`, or `VERIFY_TOOLS` for the runtimes) only when a skill or `verify` starts using a newer feature, with a comment naming that feature, as the `gh`, `codex`, and `dotnet` entries have. `tests/deployer/test_check.py` holds this table and the catalogue to the same floors.
 
 | Tool | Floor | Why |
 |---|---|---|
 | `gh` | 2.48.0 | `gh api --paginate --slurp`, which skill scripts use to parse paginated output as JSON. |
 | `codex` | 0.88.0 | The first release whose app-server `skills/list` answer says whether each skill is enabled, which `verify` reads to report a disabled adapter. |
 | `copilot` | 1.0.88 | The bounded Copilot code-review host requires it, and declares it again as `MINIMUM_COPILOT_CLI_VERSION` in `skills/code-review-core/scripts/review_hosts.py`; change both together, along with `docs/installation.md`, `docs/copilot-support.md`, and `docs/code-review-operations.md`. |
+| `dotnet` | 9.0.200 | The .NET SDK's `dotnet format`, which the `dotnet-format` skill runs on a `.slnx` solution that the `dotnet-format` global tool cannot open; 9.0.200 is the first SDK that reads `.slnx`. |
 
 ## Tested runtimes
 

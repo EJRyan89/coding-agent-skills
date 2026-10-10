@@ -266,13 +266,14 @@ class JobSelectionFixtures(unittest.TestCase):
             # By name, so a suite split into shards appears once.
             return list(dict.fromkeys(job.name for job in documentation_jobs(REPOSITORY_ROOT, paths, suites)))
 
-        # This suite reads docs/releasing.md, so a change to it still runs the suite.
-        naming = REPOSITORY_ROOT / "tests" / "tools" / "test_branch_protection.py"
+        # This suite names docs/releasing.md and not the issue template configuration, so only a change to the
+        # first runs it.
+        naming = REPOSITORY_ROOT / "tests" / "validation" / "test_upgrade_notes.py"
         # No Markdown changed, so no fence can have changed; the Python, type, and skill-script checks never run,
         # since a documentation-only change cannot reach Python or skills/.
         self.assertEqual([], labels([".github/ISSUE_TEMPLATE/config.yml"], [naming]))
         self.assertEqual(
-            [POWERSHELL_JOB, MARKDOWN_SHELL_JOB, "tests/tools/test_branch_protection.py"],
+            [POWERSHELL_JOB, MARKDOWN_SHELL_JOB, "tests/validation/test_upgrade_notes.py"],
             labels(["docs/releasing.md", ".github/ISSUE_TEMPLATE/config.yml"], [naming]),
         )
         self.assertEqual([POWERSHELL_JOB, MARKDOWN_SHELL_JOB], labels(["docs/GUIDE.MD"], [naming]))

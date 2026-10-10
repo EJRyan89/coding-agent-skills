@@ -1,18 +1,21 @@
-"""Confirm that main's live branch protection, merge settings, and security settings hold what CONTRIBUTING.md states.
+"""Confirm that main's live branch protection, merge, issue, and security settings hold what CONTRIBUTING.md states.
 
 Usage:
   python tools/branch_protection.py
 
-It reads main's branch protection, the repository's merge and security settings, private vulnerability reporting,
-and the default workflow token's permissions through `gh api`, for the repository the current checkout's remote
-names. It prints PROTECTED (exit 0) when every invariant holds, or DRIFTED and one line per invariant that no longer
-holds (exit 1), then each security setting as it found it. It exits 2 when `gh` cannot read them, such as without a
-sign-in or without admin rights on the repository. The release procedure in docs/releasing.md runs it before tagging.
+It reads main's branch protection, the repository's merge, Discussions, and security settings, the issue template
+configuration on main, private vulnerability reporting, and the default workflow token's permissions through
+`gh api`, for the repository the current checkout's remote names. It prints PROTECTED (exit 0) when every invariant
+holds, or DRIFTED and one line per invariant that no longer holds (exit 1), then each security setting as it found
+it. It exits 2 when `gh` cannot read them, such as without a sign-in or without admin rights on the repository. The
+release procedure in docs/releasing.md runs it before tagging.
 """
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -29,6 +32,9 @@ PROTECTION_ENDPOINT = "repos/{owner}/{repo}/branches/main/protection"
 REPOSITORY_ENDPOINT = "repos/{owner}/{repo}"
 REPORTING_ENDPOINT = "repos/{owner}/{repo}/private-vulnerability-reporting"
 WORKFLOW_ENDPOINT = "repos/{owner}/{repo}/actions/permissions/workflow"
+ISSUE_CONFIG = ".github/ISSUE_TEMPLATE/config.yml"
+ISSUE_CONFIG_ENDPOINT = f"repos/{{owner}}/{{repo}}/contents/{ISSUE_CONFIG}?ref=main"
+BLANK_ISSUES = re.compile(r"^blank_issues_enabled:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
 REQUIRED_CHECK = "validate"
 Runner = Callable[[list[str]], "tuple[int, str]"]
 
@@ -66,13 +72,29 @@ def security_settings(
     ]
 
 
+def blank_issues_enabled(issue_config: Mapping[str, object]) -> bool:
+    """Whether main's issue template chooser offers a blank issue, from the contents endpoint's answer for config.yml:
+    GitHub offers one unless the file sets blank_issues_enabled to false, so anything unreadable counts as on."""
+    content = issue_config.get("content")
+    if issue_config.get("encoding") != "base64" or not isinstance(content, str):
+        return True
+    try:
+        configuration = base64.b64decode(content).decode("utf-8")
+    except ValueError:
+        return True
+    setting = BLANK_ISSUES.search(configuration.replace("\r\n", "\n"))
+    return setting is None or setting.group(1).casefold() != "false"
+
+
 def protection_problems(
     protection: Mapping[str, object],
     repository: Mapping[str, object],
     reporting: Mapping[str, object],
     workflow: Mapping[str, object],
+    issue_config: Mapping[str, object],
 ) -> list[str]:
-    """Report each invariant of main's protection, or of the repository's merge or security settings, that fails."""
+    """Report each invariant of main's protection, or of the repository's merge, issue, or security settings, that
+    fails."""
     contexts = _get(protection, "required_status_checks", "contexts")
     expectations: list[tuple[bool, str]] = [
         (
@@ -106,6 +128,11 @@ def protection_problems(
             repository.get("squash_merge_commit_message") == "PR_BODY",
             "a squash commit's message is not the pull request's body, which carries its upgrade note "
             "(expected PR_BODY)",
+        ),
+        (repository.get("has_discussions") is False, "Discussions are enabled"),
+        (
+            not blank_issues_enabled(issue_config),
+            f"blank issues are enabled: {ISSUE_CONFIG} on main does not set blank_issues_enabled: false",
         ),
         (_status(repository, "secret_scanning") == "enabled", "secret scanning is not enabled"),
         (_status(repository, "secret_scanning_push_protection") == "enabled", "push protection is not enabled"),
@@ -154,10 +181,11 @@ def main(arguments: list[str] | None = None, runner: Runner = run_gh) -> int:
         repository = _read(runner, REPOSITORY_ENDPOINT)
         reporting = _read(runner, REPORTING_ENDPOINT)
         workflow = _read(runner, WORKFLOW_ENDPOINT)
+        issue_config = _read(runner, ISSUE_CONFIG_ENDPOINT)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
-    problems = protection_problems(protection, repository, reporting, workflow)
+    problems = protection_problems(protection, repository, reporting, workflow, issue_config)
     print("DRIFTED" if problems else "PROTECTED")
     for problem in problems:
         print(f"- {problem}")

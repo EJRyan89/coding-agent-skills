@@ -15,4 +15,5 @@ assignees: ''
 ## Done when
 
 <!-- What the document says once this is fixed. Say whether the change alters commands, workflow definitions,
-     template contracts, or safety expectations, since those also need the full validation suite. -->
+     template contracts, or safety expectations. The validation runner reads the changed files and decides for
+     itself which checks and suites the change needs. -->
