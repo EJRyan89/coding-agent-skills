@@ -2462,8 +2462,8 @@ def enumerate_batch(
 
         try:
             recorded = recorded_watermark(state, repository)
-            # A repository without a watermark starts today, so its first batch run reviews only open pull requests
-            # instead of every merged pull request in its history.
+            # A repository without a watermark starts today, so its first batch run reviews the open pull requests and
+            # those merged today instead of every merged pull request in its history.
             watermark = today if recorded is None else recorded
             entry["previous_watermark"] = watermark.isoformat()
             if recorded is None:
