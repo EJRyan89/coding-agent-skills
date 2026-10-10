@@ -30,6 +30,7 @@ import review_pipeline
 import review_specialists
 from git_client import GitClient, GitResult
 from review_config import write_config
+from review_documents import document_format, extract, split_label
 from review_github import GitHubClient
 from review_records import validate_record
 from review_runtime import validate_adapter_manifest
@@ -809,8 +810,8 @@ def design_document(scenario: str) -> Path:
 
 
 class ReviewDocumentScenarioTests(unittest.TestCase):
-    """The review-document scenarios review the review-prs design documents, which they name rather than copy, and
-    one edit of the clean one; an ideal run of each passes."""
+    """The review-document scenarios review the review-prs design documents, which they name rather than copy, one
+    edit of the clean one, and the gaps document written as a Word draft; an ideal run of each passes."""
 
     def setUp(self) -> None:
         self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
@@ -819,13 +820,14 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
             for name, scenario in self.scenarios.items()
         }
 
-    def test_the_three_scenarios_and_their_documents(self) -> None:
+    def test_the_four_scenarios_and_their_documents(self) -> None:
         clean = design_document("design-clean")
         self.assertEqual(
             {
                 "design-gaps": (design_document("design-gaps"), None),
                 "design-clean": (clean, None),
                 "committed-edit": ((REVIEW_DOCUMENT / "committed-edit" / clean.name).resolve(), clean),
+                "word-gaps": ((REVIEW_DOCUMENT / "word-gaps" / "export-retention.docx").resolve(), None),
             },
             {name: (scenario.document, scenario.base) for name, scenario in self.scenarios.items()},
         )
@@ -840,6 +842,25 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
                     {**item, "path": PurePosixPath(item["path"]).name} if "path" in item else item for item in theirs
                 ]
                 self.assertEqual(alone, self.specs[name]["expectations"])
+
+    def test_the_word_draft_plants_the_gaps_documents_gaps_on_the_lines_its_text_extracts_to(self) -> None:
+        markdown = lines_of(design_document("design-gaps"))
+        extracted = extract("docx", document_of(self.scenarios["word-gaps"]).read_bytes()).decode("utf-8").splitlines()
+        theirs = [item for item in self.specs["design-gaps"]["expectations"] if item["kind"] == "finding"]
+        ours = [item for item in self.specs["word-gaps"]["expectations"] if item["kind"] == "finding"]
+        self.assertEqual(
+            [(item["severity"], item["category"]) for item in theirs],
+            [(item["severity"], item["category"]) for item in ours],
+        )
+        for mine, other in zip(ours, theirs, strict=True):
+            with self.subTest(category=mine["category"]):
+                self.assertEqual("export-retention.docx", mine["path"])
+                # Each extracted line, its place label aside, is the Markdown line that plants the same gap.
+                self.assertEqual(
+                    [markdown[line - 1] for line in other["lines"]],
+                    [split_label(extracted[line - 1])[1] for line in mine["lines"]],
+                )
+        self.assertEqual(self.specs["design-gaps"]["expectations"][-1], self.specs["word-gaps"]["expectations"][-1])
 
     def test_the_edit_changes_one_line_and_the_expectations_name_only_it(self) -> None:
         scenario = self.scenarios["committed-edit"]
@@ -1071,6 +1092,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
             "committed-edit": "BASE committed ",
             "design-clean": "BASE none the file is outside any git checkout",
             "design-gaps": "BASE none the file is outside any git checkout",
+            "word-gaps": "BASE none the file is outside any git checkout",
         }
         for scenario in skill_evals.load_scenarios("review-document"):
             with self.subTest(scenario=scenario.name):
@@ -1080,7 +1102,10 @@ class FixtureCanaryRunTests(unittest.TestCase):
                 self.assertTrue(built[1].startswith(bases[scenario.name]), built)
                 self.assertEqual("ROUTE design-review", built[2])
                 fixture = Path(fixture_of(built))
-                document = review_document.normalized(Path(staged).read_bytes())
+                # A Word document's bytes are its own; a text document's line endings are read as LF.
+                document = Path(staged).read_bytes()
+                if document_format(Path(staged).name) is None:
+                    document = review_document.normalized(document)
                 self.assertEqual(document, (fixture / "head" / Path(staged).name).read_bytes())
                 prepare = ["--canary", "--fixture", str(fixture)]
                 written = json.loads(self.pipeline.review(prepare, spec_of(scenario)).read_text(encoding="utf-8"))
@@ -1546,6 +1571,7 @@ class EvaluateTests(unittest.TestCase):
             "committed-edit": "export-download-links.md",
             "design-clean": "export-download-links.md",
             "design-gaps": "export-retention.md",
+            "word-gaps": "export-retention.docx",
         }
         prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
         self.assertEqual(
@@ -1578,8 +1604,8 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-document | haiku | claude-haiku-0-0 | 10/10 | committed-edit 3/3, design-clean 2/2, "
-            "design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-document | haiku | claude-haiku-0-0 | 15/15 | committed-edit 3/3, design-clean 2/2, "
+            "design-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
         self.assertIn("| review-prs | opus | old |", written)
