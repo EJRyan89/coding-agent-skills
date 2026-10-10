@@ -1,0 +1,12 @@
+{
+  "skill": "review-document",
+  "mode": "initial",
+  "document": "export-retention.docx",
+  "expectations": [
+    {"kind": "finding", "path": "export-retention.docx", "lines": [12, 15], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "finding", "path": "export-retention.docx", "lines": [6, 16], "severity": "SHOULD_FIX", "category": "requirement-gap"},
+    {"kind": "finding", "path": "export-retention.docx", "lines": [22], "severity": "SHOULD_FIX", "category": "open-question"},
+    {"kind": "finding", "path": "export-retention.docx", "lines": [18], "severity": "SUGGESTION", "category": "alternative-unstated"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}
