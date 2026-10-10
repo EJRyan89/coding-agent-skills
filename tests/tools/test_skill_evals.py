@@ -30,10 +30,11 @@ import review_pipeline
 import review_specialists
 from git_client import GitClient, GitResult
 from review_config import write_config
-from review_documents import document_format, extract, split_label
+from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
 from review_records import validate_record
 from review_runtime import validate_adapter_manifest
+from test_review_documents import StubPdftotext
 
 from deployer import platform_support
 from tools import skill_evals
@@ -42,6 +43,51 @@ from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
 SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
+# The pdf-gaps draft's text, page by page, one line per block of the page. Its headings are set larger and its body
+# lines alternate between two sizes, so Xpdf's pdftotext, which joins evenly set lines into one, reads these lines as
+# Poppler's does.
+PDF_GAPS_PAGES = (
+    (
+        "Retention for report exports",
+        "Status: proposed",
+        "Context",
+        "The export worker writes each report export to object storage as a CSV file.",
+        "Nothing deletes them, so storage holds every export since launch.",
+        "Requirements",
+        "R1. An export is deleted when its retention period ends.",
+        "The period depends on the account plan, as the table below gives it.",
+        "R2. A customer can download an export until it is deleted.",
+        "R3. Every deletion is written to the audit log before the export is removed.",
+        "Plan Retention",
+        "Free 30 days",
+        "Team 90 days",
+        "Enterprise 365 days",
+        "Design",
+        "A nightly sweep selects the exports whose retention period has ended.",
+        "For each, it writes an audit entry, deletes the object, then deletes the row.",
+        "A row whose object is already gone is deleted without an error.",
+        "So a sweep that stops partway and runs again leaves the same state.",
+        "Enterprise exports are kept for 90 days, the same as Team.",
+        "So the sweep needs only two retention periods.",
+        "The sweep skips every account with a legal hold.",
+    ),
+    (
+        "Alternatives considered",
+        "Object storage lifecycle rules, which expire objects by age. Rejected.",
+        "Rollout",
+        "The sweep ships disabled behind the export_retention setting.",
+        "It runs one week in report-only mode, logging what it would delete.",
+        "Then it is enabled for deletion; turning the setting off stops it.",
+        "Open questions",
+        "Should a deleted export stay recoverable for 7 days in a holding bucket?",
+        "This decides whether the sweep deletes objects or moves them.",
+    ),
+)
+
+
+def pdftotext_reads_pdf_gaps(test: unittest.TestCase) -> None:
+    """A stub pdftotext, first on PATH for the rest of the test, that reads the pdf-gaps draft as pdftotext does."""
+    StubPdftotext(test, output="".join("\n".join(page) + "\n\f" for page in PDF_GAPS_PAGES))
 
 
 def finding(path: str, line: int, severity: str, identifier: str = "F001", **extra: Any) -> dict[str, Any]:
@@ -811,7 +857,7 @@ def design_document(scenario: str) -> Path:
 
 class ReviewDocumentScenarioTests(unittest.TestCase):
     """The review-document scenarios review the review-prs design documents, which they name rather than copy, one
-    edit of the clean one, and the gaps document written as a Word draft; an ideal run of each passes."""
+    edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
     def setUp(self) -> None:
         self.scenarios = {scenario.name: scenario for scenario in skill_evals.load_scenarios("review-document")}
@@ -820,7 +866,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
             for name, scenario in self.scenarios.items()
         }
 
-    def test_the_four_scenarios_and_their_documents(self) -> None:
+    def test_the_scenarios_and_their_documents(self) -> None:
         clean = design_document("design-clean")
         self.assertEqual(
             {
@@ -828,6 +874,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
                 "design-clean": (clean, None),
                 "committed-edit": ((REVIEW_DOCUMENT / "committed-edit" / clean.name).resolve(), clean),
                 "word-gaps": ((REVIEW_DOCUMENT / "word-gaps" / "export-retention.docx").resolve(), None),
+                "pdf-gaps": ((REVIEW_DOCUMENT / "pdf-gaps" / "export-retention.pdf").resolve(), None),
             },
             {name: (scenario.document, scenario.base) for name, scenario in self.scenarios.items()},
         )
@@ -861,6 +908,45 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
                     [split_label(extracted[line - 1])[1] for line in mine["lines"]],
                 )
         self.assertEqual(self.specs["design-gaps"]["expectations"][-1], self.specs["word-gaps"]["expectations"][-1])
+
+    def test_the_pdf_draft_plants_the_gaps_documents_gaps_on_the_lines_its_text_extracts_to(self) -> None:
+        content = document_of(self.scenarios["pdf-gaps"]).read_bytes()
+        # Read from the PDF itself, one shown string per line, independently of any pdftotext.
+        streams = re.findall(rb"\nstream\n(.*?)\nendstream", content, re.DOTALL)
+        shown = tuple(
+            tuple(text.decode("latin-1") for text in re.findall(rb"\((.*?)\) Tj", stream)) for stream in streams
+        )
+        self.assertEqual(PDF_GAPS_PAGES, shown)
+        pdftotext_reads_pdf_gaps(self)
+        extracted = extract("pdf", content).decode("utf-8")
+        texts, places = [split_label(line)[1] for line in extracted.splitlines()], locations(extracted)
+        theirs = [item for item in self.specs["design-gaps"]["expectations"] if item["kind"] == "finding"]
+        ours = [item for item in self.specs["pdf-gaps"]["expectations"] if item["kind"] == "finding"]
+        self.assertEqual(
+            [(item["severity"], item["category"]) for item in theirs],
+            [(item["severity"], item["category"]) for item in ours],
+        )
+        self.assertEqual({"export-retention.pdf"}, {item["path"] for item in ours})
+        self.assertEqual(
+            [
+                [
+                    ("page 1, line 14", "Enterprise 365 days"),
+                    ("page 1, line 20", "Enterprise exports are kept for 90 days, the same as Team."),
+                ],
+                [
+                    ("page 1, line 7", "R1. An export is deleted when its retention period ends."),
+                    ("page 1, line 8", "The period depends on the account plan, as the table below gives it."),
+                    ("page 1, line 22", "The sweep skips every account with a legal hold."),
+                ],
+                [
+                    ("page 2, line 8", "Should a deleted export stay recoverable for 7 days in a holding bucket?"),
+                    ("page 2, line 9", "This decides whether the sweep deletes objects or moves them."),
+                ],
+                [("page 2, line 2", "Object storage lifecycle rules, which expire objects by age. Rejected.")],
+            ],
+            [[(places[line - 1], texts[line - 1]) for line in item["lines"]] for item in ours],
+        )
+        self.assertEqual(self.specs["design-gaps"]["expectations"][-1], self.specs["pdf-gaps"]["expectations"][-1])
 
     def test_the_edit_changes_one_line_and_the_expectations_name_only_it(self) -> None:
         scenario = self.scenarios["committed-edit"]
@@ -1088,10 +1174,12 @@ class FixtureCanaryRunTests(unittest.TestCase):
         )
 
     def test_every_document_scenario_is_built_by_review_document_and_its_record_passes_the_checker(self) -> None:
+        pdftotext_reads_pdf_gaps(self)
         bases = {
             "committed-edit": "BASE committed ",
             "design-clean": "BASE none the file is outside any git checkout",
             "design-gaps": "BASE none the file is outside any git checkout",
+            "pdf-gaps": "BASE none the file is outside any git checkout",
             "word-gaps": "BASE none the file is outside any git checkout",
         }
         for scenario in skill_evals.load_scenarios("review-document"):
@@ -1102,7 +1190,7 @@ class FixtureCanaryRunTests(unittest.TestCase):
                 self.assertTrue(built[1].startswith(bases[scenario.name]), built)
                 self.assertEqual("ROUTE design-review", built[2])
                 fixture = Path(fixture_of(built))
-                # A Word document's bytes are its own; a text document's line endings are read as LF.
+                # A Word document's or a PDF's bytes are its own; a text document's line endings are read as LF.
                 document = Path(staged).read_bytes()
                 if document_format(Path(staged).name) is None:
                     document = review_document.normalized(document)
@@ -1564,6 +1652,7 @@ class EvaluateTests(unittest.TestCase):
                 self.assertEqual(str(cwd / skill_evals.STATE / "agents.json"), agents)
 
     def test_a_document_scenario_runs_the_skill_on_its_staged_document(self) -> None:
+        pdftotext_reads_pdf_gaps(self)
         claude = StubClaude(self)
         status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-document")
         self.assertEqual(0, status, lines)
@@ -1571,6 +1660,7 @@ class EvaluateTests(unittest.TestCase):
             "committed-edit": "export-download-links.md",
             "design-clean": "export-download-links.md",
             "design-gaps": "export-retention.md",
+            "pdf-gaps": "export-retention.pdf",
             "word-gaps": "export-retention.docx",
         }
         prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
@@ -1604,8 +1694,8 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-document | haiku | claude-haiku-0-0 | 15/15 | committed-edit 3/3, design-clean 2/2, "
-            "design-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-document | haiku | claude-haiku-0-0 | 20/20 | committed-edit 3/3, design-clean 2/2, "
+            "design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
         self.assertIn("| review-prs | opus | old |", written)

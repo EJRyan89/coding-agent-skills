@@ -10,12 +10,12 @@ A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
 The head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a git checkout
 and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the base has no
-such file and the whole document is reviewed. A Word document, a format `review_documents.document_format` names, is
-written to the fixture as its exact bytes, so the fixture canary's snapshot extracts its text as it does a pull
-request's; one whose text would not be extracted, or whose text the change leaves as it was, is refused here first.
-A Markdown, plain-text, or Word document (DESIGN_SUFFIXES, or a document format) goes to the suite's design-review
-specialist, through a specialists manifest in the fixture's base tree; any other text file goes to the generic
-reviewer. Nothing here calls GitHub, and nothing is written to the checkout.
+such file and the whole document is reviewed. A Word document or a PDF, a format `review_documents.document_format`
+names, is written to the fixture as its exact bytes, so the fixture canary's snapshot extracts its text as it does a
+pull request's; one whose text would not be extracted, or whose text the change leaves as it was, is refused here
+first. A Markdown, plain-text, Word, or PDF document (DESIGN_SUFFIXES, or a document format) goes to the suite's
+design-review specialist, through a specialists manifest in the fixture's base tree; any other text file goes to the
+generic reviewer. Nothing here calls GitHub, and nothing is written to the checkout.
 """
 
 from __future__ import annotations
@@ -45,9 +45,6 @@ MANIFEST_PATH = ".review-document/specialists.json"
 FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-question", "inconsistency", "rollout"]
 # git's own test for a binary file: a NUL byte in the first 8,000 bytes.
 BINARY_PROBE = 8000
-# Document formats the snapshot extracts that this skill still refuses: a PDF's text is held beside it in the snapshot,
-# and neither the route nor the skill's guidance covers it yet.
-REFUSED_FORMATS = frozenset({"pdf"})
 # The fixture's owner. No GitHub account name holds a dot, so the pull request URL a report shows names nobody's
 # repository.
 LOCAL_OWNER = "review-document.local"
@@ -77,24 +74,20 @@ class Location:
 
 
 def document_bytes(path: Path, form: str | None) -> bytes:
-    """The document's bytes: a text file's with its line endings as LF, or a Word document's exactly, once its text
-    extracts to something to review. Refused when it is empty, binary, or a document whose text is not extracted."""
+    """The document's bytes: a text file's with its line endings as LF, or a Word document's or a PDF's exactly, once
+    its text extracts to something to review. Refused when it is empty, binary, or a document whose text is not
+    extracted."""
     if not path.is_file():
         raise DocumentError(f"{path} is not a file")
     content = path.read_bytes()
     if not content.strip():
         raise DocumentError(f"{path} is empty")
-    if form in REFUSED_FORMATS:
-        raise DocumentError(f"{path} is a PDF, which review-document does not review; a pull request's review does")
     if form is not None:
         if not document_text(path, form, content).strip():
             raise DocumentError(f"{path} holds no text to review")
         return content
     if b"\0" in content[:BINARY_PROBE]:
-        raise DocumentError(
-            f"{path} is not a text file or a Word document; a PDF needs its text extracted first, which "
-            "review-document does not do"
-        )
+        raise DocumentError(f"{path} is not a text file, a Word document, or a PDF")
     return normalized(content)
 
 

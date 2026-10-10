@@ -249,7 +249,7 @@ In Copilot CLI, start it from an interactive session: a headless `copilot -p` se
 ## `review-document`
 
 <!-- generated:review-document -->
-Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document, a Word draft, or another text file that is not in a pull request.
+Review one document from its file path, such as a design draft on disk or a document with uncommitted edits, through the code-review pipeline's design reviewer, and write a validated report and record. Use it when asked to review a design document, a Word or PDF draft, or another text file that is not in a pull request.
 
 ```text
 /review-document <path> [--base none|committed] [--output DIR]
@@ -258,13 +258,15 @@ Review one document from its file path, such as a design draft on disk or a docu
 Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional), `gh` (optional), and `pdftotext` (optional).
 <!-- /generated:review-document -->
 
-- `<path>`: the document to review, a text file or a Word document (`.docx`). A PDF is refused: only a pull request's review extracts its text.
+- `<path>`: the document to review, a text file, a Word document (`.docx`), or a PDF (`.pdf`). A PDF needs `pdftotext`; without it, the review is refused before it starts, with a reason that names the tool.
 - `--base none|committed`: what the document is compared with. Without it, a file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged, and any other file is reviewed whole. `none` reviews the whole document anyway; `committed` insists on the change and fails when nothing is committed.
 - `--output DIR`: where the fixture and the copy of the report go, a new or empty directory outside every skills directory. Without it, a new `review-document-*` temporary directory.
 
-A Markdown, plain-text, or Word document (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, or `.docx`) is reviewed by the suite's design-review specialist, which looks for requirement gaps, unstated alternatives, risks, open questions, inconsistencies, and rollout gaps; any other text file gets the generic code reviewer. The review runs on the session's model, and design review needs Sonnet or stronger. The skill builds a one-file fixture and reviews it as a [fixture canary](code-review-operations.md#fixture-canaries), so the reviewer guard, result validation, and record are those of a pull request review. It reads nothing from GitHub, posts nothing, and changes nothing in the checkout, but it needs the [code-review configuration](code-review-operations.md#first-configuration). The record stays in a new canary directory, and the report is copied beside the fixture. [Document reviews](code-review-operations.md#document-reviews) describes the fixture and the record.
+A Markdown, plain-text, Word, or PDF document (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`, `.docx`, or `.pdf`) is reviewed by the suite's design-review specialist, which looks for requirement gaps, unstated alternatives, risks, open questions, inconsistencies, and rollout gaps; any other text file gets the generic code reviewer. The review runs on the session's model, and design review needs Sonnet or stronger. The skill builds a one-file fixture and reviews it as a [fixture canary](code-review-operations.md#fixture-canaries), so the reviewer guard, result validation, and record are those of a pull request review. It reads nothing from GitHub, posts nothing, and changes nothing in the checkout, but it needs the [code-review configuration](code-review-operations.md#first-configuration). The record stays in a new canary directory, and the report is copied beside the fixture. [Document reviews](code-review-operations.md#document-reviews) describes the fixture and the record.
 
 A Word document is reviewed as the text the pipeline extracts from it, one line per paragraph or table row, so a finding's line counts that text, not the document's pages. The report gives each such finding's place in the document beside its line, such as `paragraph 12, under the heading "Scope"`, which is how to find the passage in Word; [Word documents](code-review-operations.md#word-documents) describes the extraction. A Word document whose text cannot be extracted, or whose edit changes only formatting, images, or parts that are not extracted, is refused before anything is reviewed, with the reason.
+
+A PDF is reviewed as the text `pdftotext` extracts from it, one line per line of text, and the report gives each finding's place as `page 3, line 12`, counting that page's lines of text; [Word documents](code-review-operations.md#word-documents) ends with the PDF extraction. A PDF the tool cannot read, one it has not read within 60 seconds, and one whose text is over 1 MiB are refused the same way. A PDF generated from a source document is better reviewed from that source, whose text keeps its structure.
 
 In Copilot CLI, which cannot start subagents, the session works the reviewer role itself, without the reviewer agent's guard.
 
@@ -272,6 +274,7 @@ In Copilot CLI, which cannot start subagents, the session works the reviewer rol
 /review-document docs/design/export-retention.md
 /review-document D:\Drafts\retention.md --base none --output D:\Reviews\retention
 /review-document "D:\Drafts\Queue design.docx"
+/review-document D:\Drafts\retention.pdf
 ```
 
 ## `review-insights`
