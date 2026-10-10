@@ -14,7 +14,7 @@ line-ending = "auto"
 # E501 stays on: the formatter wraps code, and a string, comment, or docstring it cannot wrap is split by hand.
 # A finding that must stay is suppressed on its line as `# noqa: <code> - <reason>`, which validation requires.
 # C901 and PLR0915 cap function complexity and length at the ceilings below, with no noqa for either;
-# tests/run_validation.py refuses a raised ceiling.
+# tests/validation/python_checks.py refuses a raised ceiling.
 # The S prefixes select every stable bandit rule except S603 (a subprocess call without a shell) and S607 (a program
 # started by its PATH name); the S4 import rules are preview-only, which this configuration does not enable. Every
 # subprocess call here runs a declared tool as an argument list found on PATH, which skill_command_problems, the tools

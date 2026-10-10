@@ -1,14 +1,14 @@
 name: Deployable
 
 # A signal, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It also runs
-# weekly, the day after validate.yml's weekly run, once on the README's versions and once on the latest release of every
-# runtime, so a runtime release that breaks a fresh install shows within a week. It starts
-# from a fresh GitHub-hosted Windows runner, installs the prerequisites and both CLI runtimes, deploys into the
-# runner's real profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and
-# deploys again. It does not start a model, so it does not show a skill running; the runtime canary does that.
-# Claude Code reads the deployed files directly and cannot list skills without a session, so for it the check is the
-# installed version and the file layout, not discovery. It needs no secret and no sign-in. If a runtime refuses to list skills until it is signed in, that runtime is
-# reported SKIPPED with the reason, and the job fails only when no runtime could be checked.
+# weekly, the day after validate.yml's weekly run, once on the README's versions and once on the latest release of
+# every runtime, so a runtime release that breaks a fresh install shows within a week. It starts from a fresh
+# GitHub-hosted Windows runner, installs the prerequisites and the three runtimes, deploys into the runner's real
+# profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and deploys again. It
+# does not start a model, so it does not show a skill running; the runtime canary does that. Claude Code reads the
+# deployed files directly and cannot list skills without a session, so for it the check is the installed version and
+# the file layout, not discovery. It needs no secret and no sign-in. If a runtime refuses to list skills until it is
+# signed in, that runtime is reported SKIPPED with the reason, and the job fails only when no runtime could be checked.
 #
 # It deploys into the real profile, not --canary-home: Codex on Windows reads personal skills from the profile whatever
 # HOME says, so only a deployment there can be discovery-checked, and a fresh runner's profile is already clean.
@@ -129,9 +129,10 @@ jobs:
           }
 
       # Codex CLI on Windows needs two machine settings before it can run a skill's scripts (docs/codex-support.md).
-      # Neither changes what `verify` sees, because discovery runs no script; they are made here so the runner is set
-      # up the way a user's machine must be.
-      - name: Make the Codex Windows settings
+      # Neither changes what `verify` sees, because discovery runs no script. This step writes the sandbox setting, so
+      # the runner is set up the way a user's machine must be, and records where the Python app execution aliases
+      # stand, since no supported command turns them off.
+      - name: Make the Codex sandbox setting and record the Python aliases
         run: |
           $directory = Join-Path $env:USERPROFILE '.codex'
           New-Item -ItemType Directory -Force $directory | Out-Null

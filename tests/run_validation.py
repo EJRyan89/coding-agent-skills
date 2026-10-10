@@ -11,7 +11,8 @@ shards, each run by tests/run_shard.py in its own process, so no single suite se
 number of workers.
 
 When every changed file is documentation, it runs the policy checks and only the suites that name a changed
-file; anything else, or a change it cannot determine, runs everything. --full always runs everything.
+file, and, when a changed file is Markdown, the PowerShell analyzer and the ShellCheck check of Markdown Bash fences;
+anything else, or a change it cannot determine, runs everything. --full always runs everything.
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the

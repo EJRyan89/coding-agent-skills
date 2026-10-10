@@ -36,10 +36,15 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 
 - `MANIFEST_VERSION` and `OLDEST_READABLE_VERSION` in `deployer/manifest.py`;
 - a `required_vars` list under `deploy-meta/`;
-- `skills/code-review-core/references/review-adapter.schema.json`, or a format table in
+- a schema under `skills/code-review-core/references/`, or a format table in
   `docs/code-review-operations-contract.md`;
-- a skill directory name, or a skill's arguments or status lines;
+- a skill directory name under `skills/`, or a skill's arguments or status lines;
+- a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`;
 - the code-review configuration file's format and the reviewer manifest format.
+
+The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
+arguments, the status lines, and the two hand-written formats, which no file holds, and fails while this list or the
+Versioning section of [releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Documentation
 
@@ -62,6 +67,7 @@ Each fact has one owner; update the owner in the same change.
 | `docs/dependency-updates.md` | Every pin and floor: where it is declared, how it is updated and reviewed, and the check that holds it. |
 | `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
+| `docs/skill-evaluations.md` | The latest `evaluate-skill` result per skill and model, written by `python tools/skill_evals.py --write`. |
 
 ## Model guidance
 

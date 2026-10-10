@@ -447,6 +447,19 @@ class VersionTests(unittest.TestCase):
         self.assertIs(tools.SKILL_TOOLS["copilot"], tools.VERIFY_TOOLS["copilot"])
         self.assertNotIn("codex", tools.SKILL_TOOLS, "no skill runs Codex CLI")
 
+    def test_the_runtime_tool_floors_table_lists_every_floor_the_catalogue_checks(self) -> None:
+        # docs/dependency-updates.md owns every floor, so its table and the catalogue both name these.
+        floors = {"gh": "2.48.0", "codex": "0.88.0", "copilot": "1.0.88", "dotnet": "9.0.200"}
+        catalogued = {
+            name: ".".join(map(str, tool.minimum))
+            for name, tool in {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}.items()
+            if tool.minimum
+        }
+        self.assertEqual(floors, catalogued)
+        text = (REPOSITORY_ROOT / "docs" / "dependency-updates.md").read_text(encoding="utf-8")
+        section = text.split("\n## Runtime tool floors\n", 1)[1].split("\n## ", 1)[0]
+        self.assertEqual(floors, dict(re.findall(r"(?m)^\| `([a-z-]+)` \| ([0-9.]+) \|", section)))
+
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
             ("gh version 2.97.0 (2026-07-31)", (2, 97, 0)),

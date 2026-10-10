@@ -20,6 +20,8 @@ from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_
 # needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
 # the pull request body the runner was given with --pr-body.
 RELEASING_DOC = "docs/releasing.md"
+PROFILE_DOC = "docs/implementing-changes.md"
+CONTRACT_FILES_HEADING = "## Contract files"
 RELEASE_BRANCH = "origin/main"
 MANIFEST_MODULE = "deployer/manifest.py"
 MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
@@ -149,23 +151,39 @@ def _skill_directories(snapshot: Snapshot) -> dict[str, object]:
     return {path.parent.as_posix(): True for path in map(PurePosixPath, snapshot.names) if is_skill_file(path)}
 
 
-CONTRACT_READERS: tuple[tuple[str, Callable[[Snapshot], dict[str, object]]], ...] = (
-    (" or ".join(MANIFEST_CONTRACT_NAMES), _manifest_versions),
-    ("the required_vars list", _required_variables),
-    ("the schema", _review_schemas),
-    (f"a format table under {FORMATS_HEADING}", _format_tables),
-    ("a skill directory name", _skill_directories),
-    ("a tool floor", _tool_floors),
+# Each reader with what about its item is the contract and the file or directory it reads, which the contract lists
+# in docs/implementing-changes.md and the Versioning section of docs/releasing.md must both name.
+CONTRACT_READERS: tuple[tuple[str, str, Callable[[Snapshot], dict[str, object]]], ...] = (
+    (" or ".join(MANIFEST_CONTRACT_NAMES), MANIFEST_MODULE, _manifest_versions),
+    ("the required_vars list", "deploy-meta/", _required_variables),
+    ("the schema", "skills/code-review-core/references/", _review_schemas),
+    (f"a format table under {FORMATS_HEADING}", FORMATS_DOC, _format_tables),
+    ("a skill directory name", "skills/", _skill_directories),
+    ("a tool floor", TOOLS_MODULE, _tool_floors),
 )
+CONTRACT_LISTS = ((PROFILE_DOC, CONTRACT_FILES_HEADING), (RELEASING_DOC, VERSIONING_HEADING))
 
 
 def changed_contract_items(released: Snapshot, current: Snapshot) -> list[tuple[str, str]]:
     """Each contract item whose value differs between the two trees, with what about it is the contract."""
     changed: list[tuple[str, str]] = []
-    for description, read in CONTRACT_READERS:
+    for description, _, read in CONTRACT_READERS:
         before, after = read(released), read(current)
         changed += [(item, description) for item in sorted(before | after) if before.get(item) != after.get(item)]
     return changed
+
+
+def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
+    """Each file or directory the check reads that a document's contract list, under heading, does not name in
+    backticks, so the list a contributor reads and the one validation holds stay the same."""
+    section = _markdown_section(text.replace("\r\n", "\n"), heading)
+    if section is None:
+        return [f"{document} has no {heading} section naming the contract files the upgrade-notes check reads"]
+    return [
+        f"{document} does not name `{path}` under {heading}, though the upgrade-notes check reads {description} from it"
+        for description, path, _ in CONTRACT_READERS
+        if f"`{path}`" not in section
+    ]
 
 
 def versioning_levels(releasing: str) -> list[str]:
@@ -269,6 +287,16 @@ class UpgradeNotesPolicies(unittest.TestCase):
     def test_the_repository_names_every_contract_change_since_its_last_tag(self) -> None:
         body = None if pull_request_body is None else pull_request_body.read_text(encoding="utf-8")
         self.assertEqual([], upgrade_notes_problems(REPOSITORY_ROOT, body))
+
+    def test_the_contract_lists_name_every_file_the_check_reads(self) -> None:
+        problems = [
+            problem
+            for document, heading in CONTRACT_LISTS
+            for problem in contract_list_problems(
+                document, (REPOSITORY_ROOT / document).read_text(encoding="utf-8"), heading
+            )
+        ]
+        self.assertEqual([], problems)
 
     def test_levels_are_the_words_of_the_versioning_section(self) -> None:
         releasing = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")

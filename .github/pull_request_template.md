@@ -48,5 +48,5 @@ None
 - [ ] Documentation updated in this change
 - [ ] Diff reviewed for personal paths, organization names, credentials, and generated artifacts
 
-<!-- List anything that could not be run, and why. A documentation-only change that does not alter commands,
-     workflow definitions, template contracts, or safety expectations may skip the full suite: say so here. -->
+<!-- List anything that could not be run, and why. Run the command above for every change, documentation-only
+     included: the runner reads the changed files and decides for itself which checks and suites they need. -->

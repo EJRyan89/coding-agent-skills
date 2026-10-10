@@ -6,6 +6,7 @@ expects fails this suite until the documented invariants in CONTRIBUTING.md are 
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import copy
 import io
@@ -39,6 +40,8 @@ REPOSITORY = {
     # The squash commit settings as `gh api` returned them on 2026-10-09.
     "squash_merge_commit_title": "PR_TITLE",
     "squash_merge_commit_message": "PR_BODY",
+    # Discussions as `gh api` returned it on 2026-10-10.
+    "has_discussions": False,
     "security_and_analysis": {
         "secret_scanning": {"status": "enabled"},
         "secret_scanning_push_protection": {"status": "enabled"},
@@ -48,23 +51,41 @@ REPOSITORY = {
 # The private vulnerability reporting and workflow token responses on the same day.
 REPORTING = {"enabled": True}
 WORKFLOW = {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False}
+
+
+def issue_config(text: str) -> dict[str, Any]:
+    """The contents endpoint's answer for a file: its text in base64, as GitHub sends it."""
+    return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+
+
+# The issue template configuration on main on 2026-10-10, without its contact link.
+ISSUE_CONFIG = issue_config("blank_issues_enabled: false\ncontact_links: []\n")
 DOCUMENTS: dict[str, dict[str, Any]] = {
     "protection": PROTECTION,
     "repository": REPOSITORY,
     "reporting": REPORTING,
     "workflow": WORKFLOW,
+    "issue_config": ISSUE_CONFIG,
 }
 ENDPOINTS = {
     "protection": "repos/{owner}/{repo}/branches/main/protection",
     "repository": "repos/{owner}/{repo}",
     "reporting": "repos/{owner}/{repo}/private-vulnerability-reporting",
     "workflow": "repos/{owner}/{repo}/actions/permissions/workflow",
+    "issue_config": "repos/{owner}/{repo}/contents/.github/ISSUE_TEMPLATE/config.yml?ref=main",
 }
+
+
+ISSUE_CONFIG_ENABLED = issue_config("blank_issues_enabled: true\n")["content"]
 
 
 def problems(documents: dict[str, dict[str, Any]]) -> list[str]:
     return branch_protection.protection_problems(
-        documents["protection"], documents["repository"], documents["reporting"], documents["workflow"]
+        documents["protection"],
+        documents["repository"],
+        documents["reporting"],
+        documents["workflow"],
+        documents["issue_config"],
     )
 
 
@@ -111,6 +132,8 @@ class ProtectionProblemsTests(unittest.TestCase):
             (("squash_merge_commit_title",), "COMMIT_OR_PR_TITLE", "repository", "expected PR_TITLE"),
             (("squash_merge_commit_message",), "COMMIT_MESSAGES", "repository", "expected PR_BODY"),
             (("squash_merge_commit_message",), "BLANK", "repository", "carries its upgrade note"),
+            (("has_discussions",), True, "repository", "Discussions are enabled"),
+            (("content",), ISSUE_CONFIG_ENABLED, "issue_config", "blank issues are enabled"),
             (("security_and_analysis", "secret_scanning", "status"), "disabled", "repository", "secret scanning"),
             (
                 ("security_and_analysis", "secret_scanning_push_protection", "status"),
@@ -138,6 +161,26 @@ class ProtectionProblemsTests(unittest.TestCase):
         found = problems({**DOCUMENTS, "protection": protection})
         self.assertEqual(1, len(found), found)
         self.assertIn("approvals", found[0])
+
+    def test_an_issue_configuration_that_does_not_turn_blank_issues_off_is_drift_not_a_crash(self) -> None:
+        # GitHub offers a blank issue unless config.yml sets blank_issues_enabled to false.
+        for name, document in (
+            ("no setting", issue_config("contact_links: []\n")),
+            ("quoted", issue_config('blank_issues_enabled: "false"\n')),
+            ("not base64", {"encoding": "base64", "content": "%%%"}),
+            ("no content", {}),
+        ):
+            with self.subTest(name=name):
+                found = problems({**DOCUMENTS, "issue_config": document})
+                self.assertEqual(1, len(found), found)
+                self.assertIn("blank issues are enabled", found[0])
+        self.assertEqual([], problems({**DOCUMENTS, "issue_config": issue_config("blank_issues_enabled: False\r\n")}))
+
+    def test_a_repository_that_does_not_say_discussions_are_off_is_drift(self) -> None:
+        repository = {key: value for key, value in REPOSITORY.items() if key != "has_discussions"}
+        found = problems({**DOCUMENTS, "repository": repository})
+        self.assertEqual(1, len(found), found)
+        self.assertIn("Discussions", found[0])
 
     def test_security_settings_hidden_from_the_reader_are_drift_not_a_crash(self) -> None:
         # GitHub omits security_and_analysis for a reader without admin rights.
@@ -256,6 +299,13 @@ class DocumentationTests(unittest.TestCase):
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, section.casefold() if phrase.islower() else section)
+
+    def test_contributing_states_the_issue_settings_and_the_check(self) -> None:
+        text = (REPOSITORY_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+        section = text.split("\n## Questions\n", 1)[1].split("\n## ", 1)[0]
+        for phrase in ("Discussions stay off", "blank issues stay off", "python tools/branch_protection.py"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, section)
 
     def test_the_release_procedure_confirms_protection_before_tagging(self) -> None:
         text = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
