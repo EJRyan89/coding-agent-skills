@@ -21,7 +21,7 @@ from typing import IO, Any, TypeVar
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from review_process import ProcessStatus, process_status, same_process
-from skill_roots import deployed_skill_roots
+from skill_roots import skills_directory_holding
 
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
@@ -34,10 +34,6 @@ class PersistenceError(RuntimeError):
     """Raised when durable state cannot be read or committed safely."""
 
 
-# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
-SKILLS_ROOT = Path(__file__).resolve().parents[2]
-
-
 def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
     """Where a command writes a working file: `explicit`, or `name` in a new temporary directory.
 
@@ -46,13 +42,12 @@ def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
     """
     if explicit is None:
         return Path(tempfile.mkdtemp(prefix=prefix)) / name
-    target = explicit.resolve()
-    for root in (SKILLS_ROOT, *deployed_skill_roots()):
-        if target.is_relative_to(root.resolve()):
-            raise PersistenceError(
-                f"{explicit} is inside the skills directory {root}; omit the option to write "
-                "under a new temporary directory"
-            )
+    root = skills_directory_holding(explicit)
+    if root is not None:
+        raise PersistenceError(
+            f"{explicit} is inside the skills directory {root}; omit the option to write "
+            "under a new temporary directory"
+        )
     return explicit
 
 

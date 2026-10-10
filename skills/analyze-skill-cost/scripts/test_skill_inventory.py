@@ -218,7 +218,35 @@ class LocateTests(TemporaryTestCase):
             raise GitError("git did not finish within 300 seconds", kind="timeout")
 
         self.assertIsNone(skill_inventory.git_toplevel(self.root, GitClient(stalled)))
-        self.assertEqual([["git", "-C", str(self.root), "rev-parse", "--show-toplevel"]], commands)
+        self.assertEqual(
+            [["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--show-toplevel"]], commands
+        )
+
+    def test_the_top_level_is_the_absolute_path_git_answers(self) -> None:
+        answers = {
+            "a path": (GitResult(0, "C:/work/repo with space\n", ""), Path("C:/work/repo with space")),
+            "a failure": (GitResult(128, "", "fatal: not a git repository"), None),
+            "nothing": (GitResult(0, "\n", ""), None),
+        }
+        for case, (answer, expected) in answers.items():
+            commands: list[list[str]] = []
+
+            def answering(
+                command: Sequence[str],
+                timeout: float,
+                *,
+                answer: GitResult = answer,
+                commands: list[list[str]] = commands,
+            ) -> GitResult:
+                commands.append(list(command))
+                return answer
+
+            with self.subTest(case=case):
+                self.assertEqual(expected, skill_inventory.git_toplevel(self.root, GitClient(answering)))
+                self.assertEqual(
+                    [["git", "-C", str(self.root), "rev-parse", "--path-format=absolute", "--show-toplevel"]],
+                    commands,
+                )
 
 
 class InventoryTests(TemporaryTestCase):
