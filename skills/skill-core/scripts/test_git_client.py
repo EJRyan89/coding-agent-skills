@@ -108,6 +108,47 @@ class ClientTests(unittest.TestCase):
             given,
         )
 
+    def test_a_client_given_only_a_runner_refuses_input_instead_of_running_real_git(self) -> None:
+        runner, calls = scripted()
+        with (
+            mock.patch.object(git_client, "run_bounded") as run,
+            self.assertRaisesRegex(TypeError, "input_runner"),
+        ):
+            GitClient(runner).output(["hash-object", "--stdin"], input_bytes=b"hello\n")
+        self.assertEqual(([], []), (run.call_args_list, calls))
+
+    def test_the_default_runner_named_explicitly_still_takes_input(self) -> None:
+        finished = bounded_process.Finished(0, b"id\n", b"")
+        for client in (GitClient(), GitClient(git_client.subprocess_runner)):
+            with (
+                self.subTest(client=client),
+                mock.patch.object(git_client, "run_bounded", return_value=finished) as run,
+            ):
+                self.assertEqual("id\n", client.output(["hash-object", "--stdin"], input_bytes=b"blob"))
+            self.assertEqual(mock.call(["git", "hash-object", "--stdin"], 300.0, input_bytes=b"blob"), run.call_args)
+
+    def test_rev_parse_path_names_the_absolute_path_git_prints(self) -> None:
+        runner, calls = scripted(GitResult(0, "C:/a repo/.git\n", ""), GitResult(0, "C:/a repo\n", ""))
+        client = GitClient(runner)
+        self.assertEqual(Path("C:/a repo/.git"), client.rev_parse_path("--git-common-dir", directory=Path("a dir")))
+        self.assertEqual(Path("C:/a repo"), client.rev_parse_path("--show-toplevel", directory="b"))
+        self.assertEqual(
+            [
+                ["git", "-C", "a dir", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                ["git", "-C", "b", "rev-parse", "--path-format=absolute", "--show-toplevel"],
+            ],
+            [command for command, _timeout in calls],
+        )
+
+    def test_rev_parse_path_is_none_outside_a_repository_or_when_git_cannot_answer(self) -> None:
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            raise GitError("git did not finish within 300 seconds", kind="timeout")
+
+        runner, _calls = scripted(GitResult(128, "", NOT_A_REPOSITORY), GitResult(0, "\n", ""))
+        self.assertIsNone(GitClient(runner).rev_parse_path("--show-toplevel", directory="x"))
+        self.assertIsNone(GitClient(runner).rev_parse_path("--show-toplevel", directory="x"))
+        self.assertIsNone(GitClient(failing).rev_parse_path("--git-common-dir", directory="x"))
+
     def test_classifier_reads_literal_git_stderr(self) -> None:
         self.assertEqual("not_repository", classify_failure(NOT_A_REPOSITORY))
         self.assertEqual("not_repository", classify_failure("fatal: Not A Git Repository: 'x'"))
@@ -169,6 +210,30 @@ class SubprocessRunnerTests(unittest.TestCase):
             git_client.subprocess_runner([sys.executable, "-c", program], 0.5, input_bytes=b"request\n")
         self.assertEqual("timeout", context.exception.kind)
         self.assertIsInstance(context.exception.__cause__, subprocess.TimeoutExpired)
+
+    def test_given_input_reaches_the_command_byte_for_byte_and_then_ends(self) -> None:
+        # The stub reports, in hex, every byte it read and what a second read found once the first reached the end.
+        program = (
+            "import sys; first = sys.stdin.buffer.read(); after = sys.stdin.buffer.read(); "
+            "sys.stdout.write(first.hex() + ' ' + after.hex() + '.')"
+        )
+        given = b"caf\xe9\r\n\x00no newline at the end"
+        result = git_client.subprocess_runner([sys.executable, "-c", program], 60, input_bytes=given)
+        self.assertEqual(GitResult(0, given.hex() + " .", ""), result)
+
+    def test_a_command_given_no_input_reads_an_empty_stdin(self) -> None:
+        program = "import sys; sys.stdout.write(repr(sys.stdin.buffer.read()))"
+        for given in (None, b""):
+            with self.subTest(given=given):
+                result = git_client.subprocess_runner([sys.executable, "-c", program], 60, input_bytes=given)
+                self.assertEqual(GitResult(0, "b''", ""), result)
+
+    def test_a_command_that_reads_none_of_its_input_still_finishes(self) -> None:
+        # Far more than a pipe holds, so a command that never reads it could block a writer that used a pipe.
+        result = git_client.subprocess_runner(
+            [sys.executable, "-c", "print('done')"], 60, input_bytes=b"x" * (4 * 1024 * 1024)
+        )
+        self.assertEqual((0, "done"), (result.returncode, result.stdout.strip()))
 
     def test_real_git_reads_given_input_as_its_whole_stdin(self) -> None:
         # The blob id of "hello\n", as git has always printed it.

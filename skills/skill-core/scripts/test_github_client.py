@@ -378,6 +378,14 @@ class JsonTests(unittest.TestCase):
         self.assertEqual("malformed", context.exception.kind)
         self.assertIn("malformed JSON", str(context.exception))
 
+    def test_json_body_is_the_one_parse_a_callers_own_parse_reuses(self) -> None:
+        self.assertEqual([1, "two"], github_client.json_body(github_client.CommandResult(0, '[1, "two"]', "")))
+        for stdout in ("", "not-json", "{"):
+            with self.subTest(stdout=stdout), self.assertRaises(GitHubError) as context:
+                github_client.json_body(github_client.CommandResult(0, stdout, ""))
+            self.assertEqual(("malformed", False), (context.exception.kind, context.exception.retryable))
+            self.assertTrue(str(context.exception).startswith("GitHub returned malformed JSON: "))
+
     def test_json_retries_a_graphql_rate_limit_in_the_body(self) -> None:
         limited = json.dumps({"errors": [{"type": "RATE_LIMITED", "message": "slow down"}]})
         client, sleeper = client_for(scripted(ok(limited), ok('{"data": {}}'))[0])

@@ -12,7 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from git_client import GitClient, GitError, GitResult
-from github_client import CommandResult, GitHubClient, GitHubError, subprocess_runner
+from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
 
 LIMIT = 1000
@@ -100,10 +100,11 @@ def _commit_parents(commit: Any) -> tuple[str, list[str]] | None:
     return valid[0], valid[1:]
 
 
-def _gh(runner: GhRunner, arguments: list[str], failure: str) -> CommandResult:
-    """Run gh through the shared client, which retries rate limits; any failure is a QueryError."""
+def _gh_json(runner: GhRunner, arguments: list[str], failure: str) -> Any:
+    """Run gh through the shared client, which retries rate limits, and return its JSON; any failure, output that is
+    not JSON included, is a QueryError."""
     try:
-        return GitHubClient(runner).run(arguments)
+        return GitHubClient(runner).json(arguments)
     except GitHubError as exc:
         if exc.kind in RUN_FAILURES:
             raise QueryError(f"could not run gh: {exc}") from exc
@@ -116,18 +117,14 @@ def _gh(runner: GhRunner, arguments: list[str], failure: str) -> CommandResult:
 
 def pull_commits(repository: str, number: int, runner: GhRunner = subprocess_runner) -> dict[str, list[str]]:
     """Map each commit of the pull request to its parents, failing closed on any query problem."""
-    result = _gh(
+    pages = _gh_json(
         runner,
         ["api", "--paginate", "--slurp", f"repos/{repository}/pulls/{number}/commits?per_page=100"],
         f"gh api for the commits of pull request {number} failed",
     )
     # --slurp wraps the pages in one array, so the output is a list of pages, each a list of commits.
-    try:
-        pages = json.loads(result.stdout)
-    except ValueError:
-        pages = None
     if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
-        raise QueryError(f"gh api returned malformed commits for pull request {number}: {result.stdout.strip()[:200]}")
+        raise QueryError(f"gh api returned malformed commits for pull request {number}: {json.dumps(pages)[:200]}")
     commits: dict[str, list[str]] = {}
     for commit in (commit for page in pages for commit in page):
         parsed = _commit_parents(commit)
@@ -206,11 +203,7 @@ def _check_identities(repository: str, head_sha: str, upstream_sha: str | None) 
 def _list_pulls(repository: str, branch: str, runner: GhRunner) -> list[dict[str, Any]]:
     """Every pull request with this head name, each with a known state, failing closed on any query problem."""
     arguments = ["pr", "list", "--repo", repository, "--head", branch, "--state", "all", "--json", FIELDS]
-    result = _gh(runner, [*arguments, "--limit", str(LIMIT)], "gh pr list failed")
-    try:
-        pulls = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise QueryError(f"gh pr list returned invalid JSON: {exc}") from exc
+    pulls = _gh_json(runner, [*arguments, "--limit", str(LIMIT)], "gh pr list failed")
     if not isinstance(pulls, list):
         raise QueryError("gh pr list did not return a list")
     if len(pulls) >= LIMIT:

@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 import review_insights as ri
 import review_records
 import review_synthesis
+import skill_roots
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
@@ -1364,7 +1365,7 @@ class RecordingTests(InsightFixture):
         config = json.loads(self.config_path.read_text(encoding="utf-8"))
         write_config({**config, "summary_root": str(deployed / "insights")}, self.config_path)
         self.commit("owner/repo", 7, ["Correctness"])
-        with mock.patch.object(ri, "deployed_skill_roots", return_value=(deployed,)):
+        with mock.patch.object(skill_roots, "deployed_skill_roots", return_value=(deployed,)):
             self.assertFailed(
                 self.run_main("report", "--start", "2026-01-01", "--end", "2026-01-31"),
                 f"is inside the skills directory {deployed}",

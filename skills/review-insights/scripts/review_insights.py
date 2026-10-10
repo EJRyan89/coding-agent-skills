@@ -60,7 +60,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_synthesis as synthesis_stage
 from console import use_utf8_output
 from flat_text import flat_text
-from git_client import GitClient, GitError
+from git_client import GitClient
 from review_archive import list_versions, pull_directory, record_files, record_paths
 from review_config import (
     ConfigurationError,
@@ -70,9 +70,9 @@ from review_config import (
     validate_repository_identity,
 )
 from review_flags import FlagError, default_flags_path, load_store, resolve_flag
-from review_io import SKILLS_ROOT, PersistenceError, ResourceLock, atomic_write_text, read_json
+from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
-from skill_roots import deployed_skill_roots
+from skill_roots import skills_directory_holding
 
 # Version 2 adds each recommendation's decision_history and linked_flags. Version 3 links a flag only to the
 # finding in the review version it names; earlier reports linked it to whatever finding had its ID in the latest
@@ -130,20 +130,12 @@ class Services:
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
     flags_path: Callable[[], Path] = default_flags_path
     cwd: Callable[[], Path] = Path.cwd
-    git_common_dir: Callable[[Path], Path | None] = lambda directory: _git_common_dir(directory)
+    git_common_dir: Callable[[Path], Path | None] = lambda directory: GitClient().rev_parse_path(
+        "--git-common-dir", directory=directory
+    )
     report_lock: Callable[[Path], AbstractContextManager[Any]] = lambda json_path: ResourceLock(
         json_path.parent / ".locks" / "insights.lock"
     )
-
-
-def _git_common_dir(directory: Path) -> Path | None:
-    """The Git directory a checkout or worktree shares with its main checkout, or None outside a repository."""
-    try:
-        completed = GitClient().run(["rev-parse", "--path-format=absolute", "--git-common-dir"], directory=directory)
-    except GitError:
-        return None
-    value = completed.stdout.strip()
-    return Path(value) if completed.returncode == 0 and value else None
 
 
 def current_repository(config: dict[str, Any], services: Services) -> str | None:
@@ -737,10 +729,9 @@ def write_report(json_path: Path, report: dict[str, Any]) -> Path:
 def outside_skill_directories(summary_root: Path) -> Path:
     """`summary_root`, refused when it is inside a skills directory: a file left inside a skill directory makes the
     deployer see that skill as modified and stop updating it."""
-    target = summary_root.resolve()
-    for root in (SKILLS_ROOT, *deployed_skill_roots()):
-        if target.is_relative_to(root.resolve()):
-            raise InsightError(f"summary_root {summary_root} is inside the skills directory {root}; configure another")
+    root = skills_directory_holding(summary_root)
+    if root is not None:
+        raise InsightError(f"summary_root {summary_root} is inside the skills directory {root}; configure another")
     return summary_root
 
 

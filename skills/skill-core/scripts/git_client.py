@@ -9,7 +9,8 @@ stdout is decoded with surrogateescape, so `stdout.encode("utf-8", "surrogateesc
 stderr only feeds messages, so a byte that is not UTF-8 becomes U+FFFD there.
 
 `input_bytes` gives a command such as `fast-import` its whole stdin up front; it then sees stdin closed,
-and the time limit and the failure classification apply as without it. Tests inject `input_runner` for that form.
+and the time limit and the failure classification apply as without it. Tests inject `input_runner` for that form: a
+client given a `runner` alone refuses a call with input rather than run real git under a test.
 
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
@@ -133,18 +134,28 @@ class GitStream:
             raise GitError(f"{command} gave no output for {exc.timeout:g} seconds", kind="timeout") from exc
 
 
+def _refuse_input(command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult:
+    raise TypeError("this GitClient was given a runner but no input_runner, so it takes no input_bytes")
+
+
 class GitClient:
     """Runs git within a time limit, with no stdin but input given up front and no prompt, and classifies its
-    failures."""
+    failures.
+
+    `input_runner` runs the calls given `input_bytes`. It defaults to the real runner only while `runner` is the real
+    runner too, so a client built on a test's runner never reaches real git through a call with input.
+    """
 
     def __init__(
         self,
         runner: Runner = subprocess_runner,
         *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
-        input_runner: InputRunner = subprocess_runner,
+        input_runner: InputRunner | None = None,
     ) -> None:
         self.runner = runner
+        if input_runner is None:
+            input_runner = subprocess_runner if runner is subprocess_runner else _refuse_input
         self.input_runner = input_runner
         self.timeout = timeout
 
@@ -184,6 +195,19 @@ class GitClient:
             )
             raise GitError(message, kind=classify_failure(result.stderr), returncode=result.returncode)
         return result.stdout
+
+    def rev_parse_path(self, option: str, *, directory: str | Path) -> Path | None:
+        """The absolute path `git rev-parse <option>` names for `directory`, such as `--show-toplevel` (the root of
+        its checkout or worktree) or `--git-common-dir` (the Git directory every worktree of it shares).
+
+        None outside a repository, and when git cannot run, does not finish, fails, or prints nothing.
+        """
+        try:
+            result = self.run(["rev-parse", "--path-format=absolute", option], directory=directory)
+        except GitError:
+            return None
+        value = result.stdout.rstrip("\r\n")
+        return Path(value) if result.returncode == 0 and value else None
 
     @contextmanager
     def stream(

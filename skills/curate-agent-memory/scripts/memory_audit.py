@@ -65,8 +65,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from git_client import GitClient, GitError
-from skill_roots import deployed_skill_roots
+from git_client import GitClient
+from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
 # Claude Code loads the first 200 lines or 25KB of MEMORY.md, whichever comes first.
@@ -549,29 +549,17 @@ def encode_project(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9-]", "-", path)
 
 
-def git_output(directory: Path, *arguments: str, git: GitClient | None = None) -> str | None:
-    """The stripped output of a git command run in directory, or None when it fails, cannot run, or prints nothing."""
-    try:
-        completed = (git or GitClient()).run(arguments, directory=directory)
-    except GitError:
-        return None
-    output = completed.stdout.strip()
-    return output if completed.returncode == 0 and output else None
-
-
 def main_worktree(repo: Path) -> Path | None:
     """Return the main worktree of the repository containing repo, which every worktree shares."""
-    common = git_output(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    common = GitClient().rev_parse_path("--git-common-dir", directory=repo)
     if common is None:
         return None
-    path = Path(common)
-    return path.parent if path.name == ".git" else path
+    return common.parent if common.name == ".git" else common
 
 
 def repository_root(directory: Path) -> Path | None:
     """The root of the Git repository or worktree containing directory, or None outside one."""
-    root = git_output(directory, "rev-parse", "--show-toplevel")
-    return Path(root) if root else None
+    return GitClient().rev_parse_path("--show-toplevel", directory=directory)
 
 
 def config_directory(home: Path, environment: dict[str, str]) -> Path:
@@ -649,18 +637,6 @@ def reason(exc: OSError) -> str:
 def describe(exc: OSError) -> str:
     """An expected OSError as one line: its reason and the file it names."""
     return f"{reason(exc)}: {exc.filename}" if exc.strerror and exc.filename else reason(exc)
-
-
-# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
-SKILLS_ROOT = Path(__file__).resolve().parents[2]
-
-
-def skills_directory_holding(path: Path) -> Path | None:
-    """The skills directory path lies inside, this script's own or a deployed one, or None."""
-    target = path.resolve()
-    return next(
-        (root for root in (SKILLS_ROOT, *deployed_skill_roots()) if target.is_relative_to(root.resolve())), None
-    )
 
 
 def output_refusal(explicit: Path) -> str | None:

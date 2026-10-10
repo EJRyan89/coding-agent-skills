@@ -38,10 +38,8 @@ from console import use_utf8_output
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
-from skill_roots import deployed_skill_roots
+from skill_roots import skills_directory_holding
 
-# The skills directory holding this script: the source tree's skills/, or the deployed ~/.claude/skills.
-SKILLS_ROOT = Path(__file__).resolve().parents[2]
 T = TypeVar("T")
 PLAN_SCHEMA_VERSION = 1
 # Matched in any letter case: Windows treats Release and release as one directory, and refs stored as files there
@@ -78,7 +76,7 @@ class CleanupError(Exception):
     """An expected problem with one repository: report it and skip the repository."""
 
 
-class GitError(Exception):
+class GitUnavailable(Exception):
     """Git itself could not run: report it and skip the repository."""
 
 
@@ -121,7 +119,7 @@ def git(services: Services, directory: str | Path, *arguments: str) -> GitResult
     try:
         return services.git.run(["--no-optional-locks", *arguments], directory=directory)
     except git_client.GitError as exc:
-        raise GitError(f"could not run git: {exc}") from exc
+        raise GitUnavailable(f"could not run git: {exc}") from exc
 
 
 def git_output(services: Services, directory: str | Path, *arguments: str) -> str:
@@ -940,13 +938,12 @@ def plans_location(explicit: str | None) -> Path | None:
     """
     if explicit is None:
         return None
-    target = Path(explicit).resolve()
-    for root in (SKILLS_ROOT, *deployed_skill_roots()):
-        if target.is_relative_to(root.resolve()):
-            raise ValueError(
-                f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans "
-                "in a new temporary directory"
-            )
+    root = skills_directory_holding(Path(explicit))
+    if root is not None:
+        raise ValueError(
+            f"{explicit} is inside the skills directory {root}; omit --plans to keep the plans in a new temporary "
+            "directory"
+        )
     return Path(explicit)
 
 
@@ -982,7 +979,7 @@ def sweep_repository(
     except (CleanupError, OSError) as exc:
         emit("ERROR", exc)
         state = "error"
-    except GitError as exc:
+    except GitUnavailable as exc:
         emit("ERROR", exc)
         state = "git-failed"
     except Exception as exc:  # a defect in one repository's run must not discard every other repository's report
@@ -1082,7 +1079,7 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
             print_summary(load_plan(options.plan))
         elif not confirm(options.plan, options.branches, services, force=options.command == "force-delete"):
             return 1
-    except (CleanupError, GitError, OSError, ValueError) as exc:
+    except (CleanupError, GitUnavailable, OSError, ValueError) as exc:
         emit("FAILED", exc)
         return 1
     return 0

@@ -252,6 +252,30 @@ class StreamingTests(unittest.TestCase):
             self.assertEqual(b"y" * 1024, running.read(1024))
         self.assertLess(time.monotonic() - started, 20)  # well inside exit_wait: it ended without being killed
 
+    def test_an_exception_with_stdin_left_open_ends_its_requests_and_lets_the_command_exit(self) -> None:
+        # Answers each request until its requests end, as `git cat-file --batch` does. Leaving the block by an
+        # exception before the caller closed stdin must end the requests, or closing waits out the whole exit_wait,
+        # here made far longer than the bound.
+        program = "import sys\nfor line in sys.stdin.buffer:\n    sys.stdout.buffer.write(line); sys.stdout.flush()\n"
+        command = [sys.executable, "-c", program]
+        with (
+            self.assertRaisesRegex(RuntimeError, "the caller failed"),
+            bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, exit_wait=600) as running,
+        ):
+            running.stdin.write(b"request\n")
+            running.stdin.flush()
+            self.assertEqual(b"request\n", running.readline().replace(b"\r", b""))
+            started = time.monotonic()
+            raise RuntimeError("the caller failed")
+        self.assertLess(time.monotonic() - started, IDLE_MARGIN_SECONDS)
+        self.assertEqual(0, running.wait())  # it exited by itself rather than being killed
+
+    def test_closing_after_the_caller_closed_stdin_is_harmless(self) -> None:
+        with bounded_process.streaming([sys.executable, "-c", "pass"], idle_timeout=STARTUP_SECONDS) as running:
+            running.stdin.close()
+        self.assertEqual(0, running.wait())
+        running.close()
+
     def test_a_missing_command_raises_file_not_found(self) -> None:
         with (
             self.assertRaises(FileNotFoundError),

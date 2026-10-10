@@ -217,6 +217,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([[name] for name in expected], self.values(lines, "FILE"))
         (file_list,) = self.values(lines, "FILE_LIST")
         self.assertEqual("".join(f"{name}\n" for name in expected), Path(file_list[0]).read_text(encoding="utf-8"))
+        self.assertEqual(expected, targets.read_file_list(Path(file_list[0])))
         self.assertEqual([["App.sln", "4"]], self.values(lines, "SOLUTION"))
         self.assertEqual([["Loose/Untracked.cs"]], self.values(lines, "OUTSIDE_SOLUTION"))
         self.assertEqual("SOLUTION", lines[-1][0])
@@ -694,6 +695,34 @@ class ConsoleTests(unittest.TestCase):
         lines = result.stdout.decode("utf-8").splitlines()
         self.assertIn("FILE\tarrow → ✓.cs", lines)
         self.assertEqual(f"STOP\tno .sln or .slnx found under {repository.root}", lines[-1])
+
+
+class FileListTests(unittest.TestCase):
+    """The one reader of a FILE_LIST, which the formatter and the layout checker both use."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.path = Path(directory.name) / "file list.txt"
+
+    def test_file_lists_skip_blank_lines_and_a_byte_order_mark(self) -> None:
+        self.path.write_bytes(b"\xef\xbb\xbf  src/A.cs  \r\n\r\nsrc/My Folder/B.cs\n\n")
+        self.assertEqual(["src/A.cs", "src/My Folder/B.cs"], targets.read_file_list(self.path))
+
+    def test_an_empty_or_undecodable_list_is_refused(self) -> None:
+        for content, message in (
+            (b"", "lists no files"),
+            (b" \n\n", "lists no files"),
+            (b"caf\xe9.cs\n", "is not UTF-8 text"),
+        ):
+            self.path.write_bytes(content)
+            with self.subTest(content=content), self.assertRaises(ValueError) as context:
+                targets.read_file_list(self.path)
+            self.assertEqual(f"{self.path} {message}", str(context.exception))
+
+    def test_a_missing_list_is_an_os_error(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            targets.read_file_list(self.path)
 
 
 if __name__ == "__main__":

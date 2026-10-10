@@ -112,7 +112,7 @@ class ClassifyTests(unittest.TestCase):
     def test_query_problems_fail_closed(self) -> None:
         cases = {
             "gh pr list failed": responder("", returncode=1, stderr="HTTP 502"),
-            "invalid JSON": responder("not json"),
+            "gh pr list failed: GitHub returned malformed JSON": responder("not json"),
             "did not return a list": responder("{}"),
             "unexpected pull request state": responder(listing(pull("OPEN"), pull("DRAFT"))),
             "may be incomplete": responder(listing(*([pull("CLOSED")] * LIMIT))),
@@ -271,13 +271,14 @@ class UpdatedPullRequestTests(unittest.TestCase):
         merged = listing(dict(pull("MERGED", UPDATE), number=7))
         many = history(*((f"{index:040x}", BASE) for index in range(COMMIT_LIMIT)))
         commit = {"sha": UPDATE, "parents": [{"sha": TIP}]}
+        not_json = "commits of pull request 7 failed: GitHub returned malformed JSON: Expecting value: line 1 column 1"
         cases = {
             r"commits of pull request 7 failed \(1\): HTTP 502": router(merged, "", 1, "HTTP 502"),
             "may be incomplete": router(merged, many),
+            f"{not_json} \\(char 0\\)$": router(merged, ""),
+            f"^gh api for the {not_json}": router(merged, "not json"),
         }
         malformed = (
-            "",
-            "not json",
             json.dumps({"message": "Not Found"}),
             json.dumps([commit]),  # one page, not an array of pages
             json.dumps([[commit], {"sha": TIP}]),
@@ -371,7 +372,10 @@ class ClassifySequenceTests(unittest.TestCase):
     def test_listing_problems_are_refused_with_their_exact_message(self) -> None:
         cases = (
             (responder("", 1, "HTTP 502: Bad"), "gh pr list failed (1): HTTP 502: Bad"),
-            (responder("nope"), "gh pr list returned invalid JSON: Expecting value: line 1 column 1 (char 0)"),
+            (
+                responder("nope"),
+                "gh pr list failed: GitHub returned malformed JSON: Expecting value: line 1 column 1 (char 0)",
+            ),
             (responder("{}"), "gh pr list did not return a list"),
             (responder('"OPEN"'), "gh pr list did not return a list"),
             (
