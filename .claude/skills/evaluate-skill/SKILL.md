@@ -12,7 +12,7 @@ allowed-tools: ["Bash(python -B tools/skill_evals.py*)", "PowerShell(python -B t
 
 `tools/skill_evals.py` runs a skill's scenarios, the folders under `tests/fixtures/skill-evals/<skill>/`, once per reviewer model, each in a headless Claude Code session started in a throwaway home where this checkout is deployed, and checks every expectation against the record the run wrote. The script does every deterministic step: the deployment, the runs, the checks, the table, and the results file. Your part is choosing what to run and saying what a failure means. Its docstring lists every output line and what still comes from the user's own setup.
 
-It is a manual gate, never part of `tests/run_validation.py`. A full run of `review-prs`, today the only skill with scenarios, is nine sessions (three scenarios on three models), each calling models, and takes up to an hour.
+It is a manual gate, never part of `tests/run_validation.py`. A full run of `review-prs`, today the only skill with scenarios, is nine sessions (three scenarios on three models), each calling models. Two full runs on 2026-10-09 took about four minutes each, every session one to two; after deploying the homes, the script bounds the sessions at ninety minutes, since it runs three at once and stops each at 1,800 seconds.
 
 ## 1. Choose the run
 
