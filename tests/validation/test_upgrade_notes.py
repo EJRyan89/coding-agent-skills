@@ -178,6 +178,26 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.merged()
         self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
 
+    def test_a_hard_wrapped_entry_in_a_merged_commit_message_is_read_whole(self) -> None:
+        # A squash commit's message may be wrapped, which moves a field's contract item off its label's line; a
+        # wrapped entry that truly names no item still fails.
+        wrapped = (
+            "\n### A contract changed in a commit whose message is\nwrapped\n\n- Level: minor: an additive\nchange.\n"
+            "- Contract: the manifest in\n{contract}\nand nothing else.\n- User action: none.\n"
+        )
+        self.release()
+        named = self.body(wrapped.format(contract="`deployer/manifest.py`,"))
+        self.commit(f"Change the manifest (#8)\n\n{named}", self.MANIFEST_CHANGE)
+        self.merged()
+        self.assertEqual([], upgrade_notes_problems(self.root, self.body()))
+        self.commit(f"Change it again (#9)\n\n{self.body(wrapped.format(contract='the module,'))}")
+        self.merged()
+        self.assertRegex(
+            "\n".join(upgrade_notes_problems(self.root, self.body())),
+            r"commit [0-9a-f]{7}'s ## Upgrade note entry 'A contract changed in a commit whose message is wrapped' "
+            r"names no contract item in backticks, nor none, in '- Contract:'",
+        )
+
     def test_one_entry_may_name_several_items(self) -> None:
         self.release()
         changes = {**self.CONTRACT_CHANGES["skills/beta"], **self.CONTRACT_CHANGES["deployer/tools.py"]}

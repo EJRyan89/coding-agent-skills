@@ -43,6 +43,40 @@ class BodyEntriesTests(unittest.TestCase):
         )
         self.assertEqual({"skills/beta"}, entries[0].contract_items)
 
+    def test_a_wrapped_heading_and_wrapped_fields_are_read_whole(self) -> None:
+        # A squash merge may carry a body hard-wrapped, as git and GitHub wrap commit messages, so a heading or a
+        # list item runs on over the following lines until a blank line or the next list item.
+        wrapped = (
+            "## Upgrade note\n\n### A changed document is reviewed as its extracted\ntext\n\n"
+            "- Level: minor: the manifest gains optional\nitems.\n"
+            "- Contract: the format tables in\n`docs/contract.md`: `record.location`,\nand a coverage gap.\n"
+            "  - an indented item stays its own line\n"
+            "- User action: none.\n\nA paragraph after a blank line\nstays apart.\n"
+        )
+        entries = release_notes.body_entries(wrapped)
+        self.assertEqual(["A changed document is reviewed as its extracted text"], [e.heading for e in entries])
+        self.assertEqual(
+            {
+                "Level": "minor: the manifest gains optional items.",
+                "Contract": "the format tables in `docs/contract.md`: `record.location`, and a coverage gap.",
+                "User action": "none.",
+            },
+            entries[0].fields,
+        )
+        self.assertEqual({"docs/contract.md", "record.location"}, entries[0].contract_items)
+        self.assertEqual(
+            "### A changed document is reviewed as its extracted text\n\n"
+            "- Level: minor: the manifest gains optional items.\n"
+            "- Contract: the format tables in `docs/contract.md`: `record.location`, and a coverage gap.\n"
+            "  - an indented item stays its own line\n"
+            "- User action: none.\n\nA paragraph after a blank line stays apart.",
+            entries[0].text,
+        )
+
+    def test_a_field_with_nothing_on_its_line_stays_empty(self) -> None:
+        entries = release_notes.body_entries("## Upgrade note\n\n### An entry\n\n- Contract:\n- User action: none\n")
+        self.assertEqual({"Contract": "", "User action": "none"}, entries[0].fields)
+
     def test_a_body_that_says_none_or_has_no_section_has_no_entries(self) -> None:
         self.assertEqual([], release_notes.body_entries("## Upgrade note\n\nNone\n\n## Validation\n"))
         self.assertEqual([], release_notes.body_entries("## Changes\n\n### A heading\n\n- Level: minor.\n"))
