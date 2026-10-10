@@ -1,6 +1,8 @@
-"""Regression tests for the text the snapshot extracts from a changed Word document, and the diff of two extractions.
+"""Regression tests for the text the snapshot extracts from a changed Word document or PDF, and the diff of two
+extractions.
 
-Every document here is built by the test itself with `zipfile`, so no binary fixture is committed.
+Every document here is built by the test itself, a Word document with `zipfile` and a PDF by hand, so no binary
+fixture is committed. A PDF is read by a stub pdftotext the test puts first on PATH, or by none, so no real one runs.
 """
 
 from __future__ import annotations
@@ -8,14 +10,19 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import unittest
 import zipfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -89,6 +96,110 @@ def lines(content: bytes) -> list[str]:
     return extract("docx", content).decode("utf-8").splitlines()
 
 
+def pdf_document(*pages: Sequence[str]) -> bytes:
+    """A PDF whose pages hold these lines in Helvetica, written with no compressed stream and so no NUL byte."""
+    objects: list[bytes] = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    kids: list[int] = []
+    for page in pages:
+        shown = b" ".join(
+            b"(" + line.encode("latin-1").replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)") + b") '"
+            for line in page
+        )
+        stream = b"BT /F1 12 Tf 72 720 Td 14 TL " + shown + b" ET"
+        objects.append(b"<< /Length %d >>\nstream\n%s\nendstream" % (len(stream), stream))
+        objects.append(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents %d 0 R "
+            b"/Resources << /Font << /F1 3 0 R >> >> >>" % len(objects)
+        )
+        kids.append(len(objects))
+    objects[1] = b"<< /Type /Pages /Kids [%s] /Count %d >>" % (b" ".join(b"%d 0 R" % kid for kid in kids), len(kids))
+    content = bytearray(b"%PDF-1.4\n")
+    offsets: list[int] = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(content))
+        content += b"%d 0 obj\n%s\nendobj\n" % (number, body)
+    table_offset = len(content)
+    content += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    content += b"".join(b"%010d 00000 n \n" % offset for offset in offsets)
+    content += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objects) + 1, table_offset)
+    return bytes(content)
+
+
+# The stub pdftotext: it records each call, then answers as the first rule whose marker the document holds says.
+STUB_PROGRAM = """\
+import json
+import sys
+import time
+from pathlib import Path
+
+here = Path(__file__).resolve().parent
+arguments = sys.argv[1:]
+document = Path(arguments[-2]).read_bytes() if len(arguments) >= 2 and Path(arguments[-2]).is_file() else b""
+call = {"arguments": arguments, "stdin": len(sys.stdin.buffer.read()), "document": document.hex()}
+with open(here / "calls.jsonl", "a", encoding="utf-8") as log:
+    log.write(json.dumps(call) + "\\n")
+rules = json.loads((here / "rules.json").read_text(encoding="utf-8"))
+rule = next(rule for rule in rules if bytes.fromhex(rule["marker"]) in document)
+out = sys.stdout.buffer
+out.write(bytes.fromhex(rule["output"]))
+out.flush()
+for _ in range(rule["repeat"]):
+    out.write(b"x" * 65536)
+time.sleep(rule["sleep"])
+sys.exit(rule["status"])
+"""
+
+
+def path_without_pdftotext() -> str:
+    """This process's PATH less every folder that holds a pdftotext, so a test decides which one, if any, runs."""
+    folders = os.environ.get("PATH", "").split(os.pathsep)
+    return os.pathsep.join(folder for folder in folders if folder and shutil.which("pdftotext", path=folder) is None)
+
+
+class StubPdftotext:
+    """A `pdftotext` first on PATH for the rest of a test, which records each call and answers by `rules`: the first
+    rule whose marker the document holds gives its output, then writes 64 KiB `repeat` times, sleeps, and exits."""
+
+    def __init__(self, test: unittest.TestCase, *rules: dict[str, Any], **default: Any) -> None:
+        self.folder = Path(tempfile.mkdtemp(prefix="stub pdftotext "))
+        test.addCleanup(shutil.rmtree, self.folder, True)
+        program = self.folder / "stub_pdftotext.py"
+        program.write_text(STUB_PROGRAM, encoding="utf-8")
+        (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
+        self.answer(*rules, **default)
+        environment = mock.patch.dict(os.environ, {"PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}"})
+        environment.start()
+        test.addCleanup(environment.stop)
+
+    def answer(self, *rules: dict[str, Any], **default: Any) -> None:
+        """Answer every later call by `rules`, then by `default` for a document no rule's marker is in."""
+        written = [{"marker": b"", "output": "", "repeat": 0, "sleep": 0, "status": 0, **rule} for rule in rules]
+        written.append({"marker": b"", "output": "", "repeat": 0, "sleep": 0, "status": 0, **default})
+        for rule in written:
+            rule["marker"] = rule["marker"].hex()
+            rule["output"] = (
+                rule["output"].encode("utf-8").hex() if isinstance(rule["output"], str) else rule["output"].hex()
+            )
+        (self.folder / "rules.json").write_text(json.dumps(written), encoding="utf-8")
+
+    def calls(self) -> list[dict[str, Any]]:
+        log = self.folder / "calls.jsonl"
+        if not log.is_file():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def without_pdftotext(test: unittest.TestCase) -> None:
+    """No pdftotext on PATH for the rest of a test."""
+    environment = mock.patch.dict(os.environ, {"PATH": path_without_pdftotext()})
+    environment.start()
+    test.addCleanup(environment.stop)
+
+
 class ExtractionTests(unittest.TestCase):
     def test_paragraphs_headings_lists_and_tables_are_lines_labelled_with_their_place(self) -> None:
         content = word_document(
@@ -144,7 +255,8 @@ class ExtractionTests(unittest.TestCase):
 
     def test_the_format_is_named_by_suffix_ignoring_case(self) -> None:
         self.assertEqual(document_format("docs/Design.DOCX"), "docx")
-        self.assertIsNone(document_format("docs/design.pdf"))
+        self.assertEqual(document_format("docs/Spec.PDF"), "pdf")
+        self.assertIsNone(document_format("docs/design.odt"))
         self.assertIsNone(document_format("docs.docx/readme"))
         self.assertIsNone(document_format("docx"))
 
@@ -160,6 +272,9 @@ class ExtractionTests(unittest.TestCase):
                 "",
             ],
         )
+
+    def test_a_pdfs_locations_name_the_page_and_the_line(self) -> None:
+        self.assertEqual(locations("[p1 l1] # Not a heading\n[p3 l12] Body\n"), ["page 1, line 1", "page 3, line 12"])
 
 
 class RefusalTests(unittest.TestCase):
@@ -223,6 +338,66 @@ class mock_parser_never_created:
         documents.expat.ParserCreate = self.original  # type: ignore[assignment]  # the original, put back
 
 
+PDF = pdf_document(["Scope", "Keep one queue."], ["Retry twice."])
+
+
+class PdfExtractionTests(unittest.TestCase):
+    """A PDF is read by the pdftotext on PATH, here a stub, given the bytes as a throwaway file and nothing else."""
+
+    def assertRefused(self, reason: str) -> None:
+        with self.assertRaises(ExtractionRefused) as caught:
+            extract("pdf", PDF)
+        self.assertEqual(reason, str(caught.exception))
+
+    def test_each_line_is_labelled_with_its_page_and_its_line_among_those_with_text(self) -> None:
+        stub = StubPdftotext(self, output="Scope\n\n  Keep one\x0bqueue.  \n\fRetry\u2028twice.\n\n\f")
+
+        self.assertEqual(b"[p1 l1] Scope\n[p1 l2] Keep one queue.\n[p2 l1] Retry twice.\n", extract("pdf", PDF))
+        [call] = stub.calls()
+        options, document, output = call["arguments"][:-2], Path(call["arguments"][-2]), call["arguments"][-1]
+        self.assertEqual((["-q", "-enc", "UTF-8", "-eol", "unix"], "-"), (options, output), "layout stays off")
+        self.assertEqual(PDF.hex(), call["document"], "the bytes are given as a file")
+        self.assertEqual(0, call["stdin"], "and nothing on stdin")
+        # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
+        self.assertEqual(Path(tempfile.gettempdir()), document.parent.parent, document)
+        self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
+
+    def test_without_pdftotext_a_pdf_is_refused_with_a_reason_that_names_it(self) -> None:
+        without_pdftotext(self)
+
+        self.assertRefused("pdftotext, which extracts a PDF's text, is not installed")
+
+    def test_a_pdf_the_tool_rejects_is_refused(self) -> None:
+        StubPdftotext(self, output="partial", status=1)
+
+        self.assertRefused("pdftotext could not read it (exit status 1)")
+
+    def test_a_pdf_the_tool_takes_too_long_over_is_refused_at_the_time_limit(self) -> None:
+        StubPdftotext(self, output="Scope\n", sleep=30)
+        started = time.monotonic()
+        with mock.patch.object(documents, "PDF_EXTRACTION_SECONDS", 2.0):
+            self.assertRefused("pdftotext did not finish within 2 seconds")
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_text_over_the_limit_is_refused_without_reading_the_rest(self) -> None:
+        StubPdftotext(self, repeat=4096)  # 256 MiB, were it all read
+        started = time.monotonic()
+        with mock.patch.object(documents, "MAX_EXTRACTED_BYTES", 1024):
+            self.assertRefused("its text is over 1,024 bytes")
+        self.assertLess(time.monotonic() - started, 20)
+
+    def test_labelled_text_over_the_limit_is_refused(self) -> None:
+        StubPdftotext(self, output="x\n" * 400)  # 800 bytes of text, 4,400 once each line is labelled
+
+        with mock.patch.object(documents, "MAX_EXTRACTED_BYTES", 1024):
+            self.assertRefused("its text is over 1,024 bytes")
+
+    def test_text_that_is_not_utf8_is_refused(self) -> None:
+        StubPdftotext(self, output=b"Sc\xffope\n")
+
+        self.assertRefused("pdftotext wrote text that is not UTF-8")
+
+
 class DiffTests(unittest.TestCase):
     HEADER = ("diff --git a/docs/design.docx b/docs/design.docx", "index 1111111..2222222 100644")
 
@@ -255,6 +430,19 @@ class DiffTests(unittest.TestCase):
 
         self.assertIn("the base version could not be extracted (it is broken)", diff)
         self.assertEqual(parse_unified_diff(diff)["d.docx"]["added"], {1: "[P1] new"})
+
+    def test_a_pdfs_diff_matches_lines_without_their_places_and_names_where_its_text_is_held(self) -> None:
+        header = ("diff --git a/docs/spec.pdf b/docs/spec.pdf", "index 1111111..2222222 100644")
+        base = "[p1 l1] Keep one queue.\n[p2 l1] Retry twice.\n"
+        head = "[p1 l1] Bound the queue.\n[p1 l2] Keep one queue.\n[p2 l1] Retry twice.\n"
+        held = "source-snapshot-text/docs/spec.pdf.txt"
+
+        diff = document_diff(header, "docs/spec.pdf", "docs/spec.pdf", base, head, form="pdf", held=held)
+
+        note = diff.splitlines()[2]
+        self.assertTrue(note.startswith("extracted: the text of this PDF as pdftotext reads it"), note)
+        self.assertIn(f"the snapshot holds it at {held}", note)
+        self.assertEqual({1: "[p1 l1] Bound the queue."}, parse_unified_diff(diff)["docs/spec.pdf"]["added"])
 
     def test_a_path_git_quotes_round_trips_through_the_diff_parser(self) -> None:
         for path in ("docs/r\u00e9sum\u00e9.docx", 'docs/say "hi".docx', "docs/plain name.docx"):
@@ -398,6 +586,150 @@ class SnapshotRouteTests(unittest.TestCase):
         self.assertEqual(BASE_DOCUMENT, read("docs/design.docx", blob[:7]))
         with self.assertRaises(RuntimeContractError):
             read("docs/design.docx", "not-an-id")
+
+
+BASE_PDF = pdf_document(["Scope", "Keep one queue."])
+HEAD_PDF = pdf_document(["Scope", "Bound the queue at ten.", "Keep one queue."], ["Retry twice."])
+HEAD_PDF_TEXT = "Scope\nBound the queue at ten.\n\nKeep one queue.\n\fRetry twice.\n\f"
+HEAD_PDF_LINES = b"[p1 l1] Scope\n[p1 l2] Bound the queue at ten.\n[p1 l3] Keep one queue.\n[p2 l1] Retry twice.\n"
+HELD = "source-snapshot-text/docs/spec.pdf.txt"
+
+
+class PdfSnapshotTests(unittest.TestCase):
+    """Every route holds a changed PDF's text beside it, at a path a reviewer's file reader takes for text, since
+    Claude Code's Read parses any file named .pdf as a PDF and refuses text there."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        git(self.checkout, "init", "-q", "--template=", "-b", "main")
+        git(self.checkout, "remote", "add", "origin", f"https://github.com/{REPOSITORY}.git")
+        self.base = commit(self.checkout, {"docs/spec.pdf": BASE_PDF, "docs/old.pdf": BASE_PDF})
+        self.head = commit(self.checkout, {"docs/spec.pdf": HEAD_PDF})
+        self.stub = StubPdftotext(self, output=HEAD_PDF_TEXT)
+
+    def snapshot(self, name: str, **options: Any) -> tuple[Path, dict[str, Any], dict[str, str]]:
+        refused: dict[str, str] = {}
+        destination = self.root / name
+        metadata = materialize_source_snapshot(
+            self.checkout,
+            REPOSITORY,
+            self.head,
+            destination,
+            changed_paths=["docs/spec.pdf"],
+            refused=refused,
+            **options,
+        )
+        return destination, metadata, refused
+
+    def assert_held_beside(self, destination: Path, metadata: dict[str, Any]) -> None:
+        self.assertEqual({"docs/spec.pdf": "pdf"}, metadata[review_runtime.SNAPSHOT_EXTRACTED])
+        self.assertEqual(HELD, review_runtime.held_path("docs/spec.pdf", "pdf"))
+        held = destination / "source-snapshot-text" / "docs" / "spec.pdf.txt"
+        # A reviewer reads it as text: it is UTF-8 and its name does not end in .pdf.
+        self.assertEqual(HEAD_PDF_LINES.decode("utf-8"), held.read_text(encoding="utf-8"))
+        self.assertEqual(hashlib.sha256(HEAD_PDF_LINES).hexdigest(), metadata["source_hashes"][HELD])
+        self.assertNotIn("docs/spec.pdf", metadata["source_hashes"])
+        self.assertFalse((destination / "docs" / "spec.pdf").exists(), "nothing is held at the PDF's own path")
+        if "fetchable" not in metadata:
+            self.assertEqual(BASE_PDF, (destination / "docs" / "old.pdf").read_bytes(), "an unchanged PDF is kept")
+        self.assertEqual(HEAD_PDF.hex(), self.stub.calls()[0]["document"])
+        verify_source_snapshot(destination, expected_repository=REPOSITORY, expected_commit=self.head)
+
+    def test_a_whole_checkout_snapshot_holds_a_changed_pdfs_text_beside_it_though_it_has_no_nul_byte(self) -> None:
+        self.assertNotIn(b"\0", HEAD_PDF)
+
+        destination, metadata, refused = self.snapshot("whole")
+
+        self.assert_held_beside(destination, metadata)
+        self.assertEqual({}, refused)
+
+    def test_a_lazy_snapshot_holds_it_and_source_file_returns_the_text_for_the_pdfs_path(self) -> None:
+        destination, metadata, _ = self.snapshot("lazy", upfront=lambda _path: False)
+
+        self.assert_held_beside(destination, metadata)
+        staging = self.root / "staging"
+        staging.mkdir()
+        for relative in ("docs/spec.pdf", HELD):
+            with self.subTest(relative=relative):
+                self.assertEqual(
+                    destination / "source-snapshot-text" / "docs" / "spec.pdf.txt",
+                    fetch_source_file(
+                        self.checkout, destination, relative, repository=REPOSITORY, commit=self.head, staging=staging
+                    ),
+                )
+
+    def test_a_tarball_snapshot_holds_it_as_the_checkout_does(self) -> None:
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for name, data in {"docs/spec.pdf": HEAD_PDF, "docs/old.pdf": BASE_PDF}.items():
+                info = tarfile.TarInfo(f"example-one-abc/{name}")
+                info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+        destination = self.root / "tarball"
+
+        def fetcher(_repository: str, _commit: str, target: Path) -> None:
+            target.write_bytes(buffer.getvalue())
+
+        metadata = materialize_source_snapshot_from_github(
+            REPOSITORY, self.head, destination, fetcher=fetcher, changed_paths=["docs/spec.pdf"]
+        )
+
+        self.assert_held_beside(destination, metadata)
+
+    def test_without_pdftotext_a_changed_pdf_is_unextractable_and_says_why(self) -> None:
+        without_pdftotext(self)
+
+        destination, metadata, refused = self.snapshot("absent")
+
+        self.assertEqual("unextractable", metadata["excluded_paths"]["docs/spec.pdf"])
+        self.assertEqual({"docs/spec.pdf": "pdftotext, which extracts a PDF's text, is not installed"}, refused)
+        self.assertNotIn(review_runtime.SNAPSHOT_EXTRACTED, metadata)
+        self.assertFalse((destination / "source-snapshot-text").exists())
+
+    def test_a_held_path_longer_than_the_room_left_is_unextractable_before_the_tool_runs(self) -> None:
+        documents_read = review_runtime._Documents(frozenset({"docs/spec.pdf"}), review_runtime.PathRoom(30, 30))
+
+        kept = review_runtime._kept_content("docs/spec.pdf", HEAD_PDF, {}, documents_read)
+
+        self.assertEqual(("docs/spec.pdf", "unextractable"), kept)
+        self.assertEqual(
+            {"docs/spec.pdf": "the path its text would be held at, in source-snapshot-text, is too long"},
+            documents_read.refused,
+        )
+        self.assertEqual([], self.stub.calls())
+
+    def test_a_repository_path_in_the_held_text_folder_fails_the_snapshot(self) -> None:
+        for name in ("source-snapshot-text/docs/spec.pdf.txt", "Source-Snapshot-Text/notes.md"):
+            with self.subTest(name=name):
+                head = commit(self.checkout, {name: b"planted\n"})
+                with self.assertRaisesRegex(RuntimeContractError, "reserved snapshot path"):
+                    materialize_source_snapshot(
+                        self.checkout, REPOSITORY, head, self.root / f"reserved {len(name)}", changed_paths=[name]
+                    )
+                git(self.checkout, "rm", "-q", "-r", "--", name.split("/", 1)[0])
+                commit(self.checkout, {})
+
+    def test_a_manifest_whose_held_text_names_no_extracted_pdf_fails_verification(self) -> None:
+        destination, metadata, _ = self.snapshot("whole")
+        manifest = destination / review_runtime.SOURCE_SNAPSHOT_MANIFEST
+        hashes = metadata["source_hashes"]
+        changes: list[dict[str, Any]] = [
+            {"extracted": {}},
+            {"extracted": {"docs/spec.pdf": "docx"}},
+            {"extracted": {"docs/spec.pdf": "pdf", HELD: "pdf"}},
+            {"excluded_paths": {**metadata["excluded_paths"], "source-snapshot-text/x.txt": "binary"}},
+            {"fetchable": {"source-snapshot-text/x.txt": "a" * 40}},
+            {"source_hashes": {**hashes, "docs/spec.pdf": hashes[HELD]}},
+        ]
+        for changed in changes:
+            with self.subTest(changed=changed):
+                manifest.write_text(json.dumps({**metadata, **changed}), encoding="utf-8")
+                with self.assertRaises(RuntimeContractError):
+                    verify_source_snapshot(destination, expected_repository=REPOSITORY, expected_commit=self.head)
 
 
 class StubGitHub:

@@ -50,6 +50,7 @@ A mypy bump raises the floor with it. In the same pull request, set `VALIDATION_
 | `codex` | 0.88.0 | The first release whose app-server `skills/list` answer says whether each skill is enabled, which `verify` reads to report a disabled adapter. |
 | `copilot` | 1.0.88 | The bounded Copilot code-review host requires it, and declares it again as `MINIMUM_COPILOT_CLI_VERSION` in `skills/code-review-core/scripts/review_hosts.py`; change both together, along with `docs/installation.md`, `docs/copilot-support.md`, and `docs/code-review-operations.md`. |
 | `dotnet` | 9.0.200 | The .NET SDK's `dotnet format`, which the `dotnet-format` skill runs on a `.slnx` solution that the `dotnet-format` global tool cannot open; 9.0.200 is the first SDK that reads `.slnx`. |
+| `pdftotext` | 4.0 | The code-review skills extract a changed PDF's text with it, which parses the pull request author's bytes. Xpdf's 4.00, which Git for Windows bundles, is the oldest the extraction is tested with; Poppler numbers its releases by year since 20.08, so the floor also leaves out its 0.x releases from before 2020. Xpdf exits 99 after printing its version, which `check` reads as it reads a status of 0. |
 
 ## Tested runtimes
 

@@ -201,11 +201,13 @@ class LooseFileTests(DocumentTestCase):
         self.assertEqual((1, ["FAILED --base committed needs a file inside a git checkout"]), (code, lines))
 
     def test_binary_empty_and_missing_files_are_refused(self) -> None:
-        binary, empty = self.root / "design.pdf", self.root / "empty.md"
+        binary, pdf, empty = self.root / "design.bin", self.root / "design.PDF", self.root / "empty.md"
         binary.write_bytes(b"%PDF-1.7\n\0\0rest")
+        pdf.write_bytes(b"%PDF-1.7\nno NUL byte, so it reads as text\n")
         empty.write_bytes(b" \r\n")
         for path, reason in (
             (binary, "is not a text file or a Word document; a PDF needs its text extracted first"),
+            (pdf, "is a PDF, which review-document does not review; a pull request's review does"),
             (empty, "is empty"),
             (self.root / "missing.md", "is not a file"),
         ):

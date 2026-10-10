@@ -24,6 +24,8 @@ class Tool:
     minimum: tuple[int, ...] = ()
     optional: bool = False
     other_uses: tuple[str, ...] = ()
+    # The exit statuses after which the version arguments' output is read.
+    version_statuses: frozenset[int] = frozenset({0})
 
 
 POWERSHELL_VERSION = ("-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
@@ -120,6 +122,18 @@ SKILL_TOOLS = {
         # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open;
         # 9.0.200 is the first SDK that reads .slnx.
         Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
+        # The code-review skills extract a changed PDF's text with it. Two families ship it: Xpdf, whose 4.00 Git for
+        # Windows bundles and which exits 99 after printing its version, and Poppler, numbered by year since 20.08.
+        # 4.0 is the oldest Xpdf the extraction is tested with, and it leaves out Poppler's 0.x releases from before
+        # 2020, which predate years of fixes to the parser that reads a pull request author's bytes.
+        Tool(
+            "pdftotext",
+            "pdftotext",
+            lambda: platform_support.find_executable("pdftotext"),
+            version_arguments=("-v",),
+            minimum=(4, 0),
+            version_statuses=frozenset({0, 99}),
+        ),
     )
 }
 
@@ -167,7 +181,7 @@ def probe(tool: Tool) -> Probe:
     if path is None or not tool.version_arguments:
         return Probe(tool, path, None)
     result = platform_support.run_tool([path, *tool.version_arguments])
-    return Probe(tool, path, parse_version(result.output) if result.returncode == 0 else None)
+    return Probe(tool, path, parse_version(result.output) if result.returncode in tool.version_statuses else None)
 
 
 def python_version() -> tuple[int, ...]:

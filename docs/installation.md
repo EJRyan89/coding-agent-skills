@@ -22,6 +22,7 @@ Some skills need more when you use them, not when you deploy them:
 | Codex CLI 0.88.0 or newer (optional) | Verifying Codex skill discovery |
 | GitHub Copilot CLI 1.0.88 or newer (optional) | Verifying Copilot skill discovery, and the bounded Copilot code-review host |
 | .NET SDK and the `dotnet-format` global tool; .NET SDK 9.0.200 or newer for a `.slnx` solution | `dotnet-format`, which checks for them and reports the install command |
+| `pdftotext` 4.0 or newer (optional): Git for Windows bundles one in `mingw64\bin`, which Git Bash puts on `PATH`, and Poppler's works too | The code-review skills, to review a PDF a pull request changes; without it that review is `INCOMPLETE` |
 
 None of the agent runtimes is needed to deploy. The deployer keeps its files under `~/.claude` even when Claude Code is not installed, because the skills' authoritative copies live there and the Codex and Copilot adapters point to them.
 
