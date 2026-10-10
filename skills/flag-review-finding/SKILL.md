@@ -21,7 +21,7 @@ It prints `FINDING v<version> <finding> <severity> <path>:<line> <headline>` per
 python -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" add "<category>" "<rationale>" --repository "<owner/repo>" --pull "<number>" --review-version "<version>" --finding "<finding id>"
 ```
 
-It prints `ADDED <flag id>`. Only a flag that names a finding can be resolved by `review-insights`.
+It prints `ADDED <flag id>`. `review-insights` links a flag that names a finding to the recommendations covering it, and its synthesis can name any open flag, one that names no finding included; accepting a recommendation resolves the flags it links.
 
 List the open flags:
 

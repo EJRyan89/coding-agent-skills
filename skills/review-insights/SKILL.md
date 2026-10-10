@@ -7,7 +7,7 @@ allowed-tools: ["Bash(python -B \"${CLAUDE_SKILL_DIR}/scripts/*)", "PowerShell(p
 
 # Review insights
 
-Run the commands below exactly as shown; do not read the archive, the flag store, the synthesis input, or the scripts yourself, and never edit a report, a synthesis result, or a flag by hand. Commands print one fact per line and exit 0 on success; a last line `FAILED <reason>` is an expected failure to report.
+Run the commands below exactly as shown; do not read the archive, the flag store, the synthesis input (unless step 2 has you follow the prompt yourself), or the scripts yourself, and never edit a report, a synthesis result, or a flag by hand. Commands print one fact per line and exit 0 on success; a last line `FAILED <reason>` is an expected failure to report.
 
 0. **Scope**, only when the user named no repository and no set:
    ```bash
@@ -28,7 +28,7 @@ Run the commands below exactly as shown; do not read the archive, the flag store
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/scripts/review_insights.py" synthesize --report "<insights.json>" --result "<result file>"
    ```
-   It prints `MARKDOWN <insights.md>`, `SYNTHESIS recorded <time>`, and for each synthesized recommendation, highest priority first, `SYNTHESIZED <id> type=<type> priority=<priority> decision=<decision> flags=<flag ids or none>` followed by its `TITLE <id> <title>`, `TARGET <id> <repository:file or analyzer rule>`, `CHANGE <id> <change>`, `RATIONALE <id> <rationale>`, and up to three `EXAMPLE <id> <finding>` lines. On `FAILED`, after its `PROBLEM` lines, start one more fresh subagent with the same prompt and record again; if that fails too, report the problems and continue with the deterministic recommendations.
+   It prints `MARKDOWN <insights.md>`, `SYNTHESIS recorded <time>`, and for each synthesized recommendation, highest priority first, `SYNTHESIZED <id> type=<type> priority=<priority> decision=<decision> flags=<flag ids or none>` followed by its `TITLE <id> <title>`, `TARGET <id> <repository:file or analyzer rule>`, `CHANGE <id> <change>`, `RATIONALE <id> <rationale>`, and up to three `EXAMPLE <id> <finding>` lines, then `SYNTHESIZED_COUNT <n>`. On `FAILED`, after its `PROBLEM` lines, start one more fresh subagent with the same prompt and record again; if that fails too, report the problems and continue with the deterministic recommendations.
 3. **Ask** the user about each recommendation individually, one AskUserQuestion per recommendation with the options Accept, Reject, and Defer, recording each answer with step 4 before asking the next; present them all as one list only when the user asks for that. When a recommendation's reasoning looks unsound to you, say why in the question and offer an amended Accept, recording the amendment as its `--note`. Present the synthesized ones first, by priority, naming each one's title, type, target, change, rationale, and linked flags. Then the deterministic ones: each category with its topics, assessment, and the synthesized recommendations that address it, and every `FINDING` line when it has them; or each analyzer rule's coverage, tool, rule, and repositories; each with its finding count and linked flags, and the reviewer and model behind most of its findings when one stands out. Present analyzer recommendations in the order printed, since enforcing a rule the repository already has is the cheapest fix. Ask about the custom-candidate rules last, in one question for all of them, naming their count, findings, flags, and each `PATTERN` with its assessment and the recommendations that address it. Accepting resolves its linked flags; rejecting or deferring changes no flag. Leave unanswered recommendations as they are.
 4. **Decide** each answered recommendation with the ID, subject, and `flags=` value exactly as the line the user saw printed them, each value in double quotes, adding `--note "<the user's reason>"` when they gave one. The report prints every subject screened for this: on one line, with `?` for any character a shell would expand in double quotes. For a `SYNTHESIZED` line, the subject is `--synthesized "<title>"`, the title its `TITLE` line gave; for a `RECOMMENDATION` line, `--category "<category>"`; for an `ANALYZER` line, `--analyzer "<coverage>" "<tool>" "<rule>"`:
    ```bash
@@ -38,7 +38,7 @@ Run the commands below exactly as shown; do not read the archive, the flag store
    ```bash
    python -B "${CLAUDE_SKILL_DIR}/scripts/review_insights.py" decide-custom --report "<insights.json>" --flags "<flags>" deferred
    ```
-   If the report no longer gives that ID that subject and exactly those flags, it fails without changing anything: run the report again and confirm with the user. Report its `FLAG_RESOLVED`, `FLAG_ALREADY_RESOLVED`, and `DECIDED` lines.
+   If the report no longer gives that ID that subject and exactly those flags, it fails without changing anything: run the report again and confirm with the user. If it fails saying the decision is recorded but some flags could not be resolved, run the same command again once to resolve them. Report its `FLAG_RESOLVED`, `FLAG_ALREADY_RESOLVED`, and `DECIDED` lines.
 
 Finish by giving the user the Markdown report path and the decisions and flags recorded.
 

@@ -6,11 +6,15 @@ import copy
 import hashlib
 import json
 import re
+import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from flat_text import flat_text
 from review_config import validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
 
@@ -1391,10 +1395,6 @@ def _display_id(version: int, identifier: str) -> str:
     return f"v{version} {identifier}"
 
 
-def _flat(text: str) -> str:
-    return " ".join(text.split())
-
-
 def _finding_block(
     finding: dict[str, Any], label: str, *, repeats: str | None = None, status: Iterable[str] = ()
 ) -> list[str]:
@@ -1481,7 +1481,7 @@ class _Ledger:
         latest = entry["dispositions"][-1]
         rationale = self.rationales.get((latest["version"], ledger_id(entry["version"], entry["id"])))
         text = f"{DISPOSITION_PHRASES[latest['disposition']]} in v{latest['version']}"
-        return f"{text}: {_flat(rationale)}" if rationale else f"{text}."
+        return f"{text}: {flat_text(rationale)}" if rationale else f"{text}."
 
     def status(self, entry: dict[str, Any]) -> list[str]:
         """An open or unverified entry's status line in a re-review, then a line for each flag on it."""
@@ -1499,7 +1499,7 @@ class _Ledger:
 
     def flag_lines(self, entry: dict[str, Any]) -> list[str]:
         return [
-            f"**Flagged:** {flag['id']} ({_flat(flag['category'])}): {_flat(flag['body'])}"
+            f"**Flagged:** {flag['id']} ({flat_text(flag['category'])}): {flat_text(flag['body'])}"
             for flag in self.flags.get(ledger_id(entry["version"], entry["id"]), [])
         ]
 

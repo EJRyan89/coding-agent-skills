@@ -5,9 +5,11 @@ result must pass before its recommendations join the report.
 range's totals, its findings grouped and capped so a large range still fits an agent's context, the open flags in
 scope whether or not they name a finding, each repository's guidance files, and the previous period's synthesized
 recommendations. The context (`synthesis-context.json`) is what `synthesize` checks the result against and the agent
-never needs: every analyzed finding's reference, the open flag IDs, and the guidance sets. The prompt names both the
-input and the one result file the agent may write. The report seals the input and context by hash, so a result is
-only accepted against the input it was written from.
+never needs: every finding reference the input gives (each analyzed finding's, and each finding an open flag names,
+in the range or not), the open flag IDs, the guidance sets, the previous period's recommendation IDs, each analyzed
+category with the references of its findings when it is small enough that the result must address each one, and
+the custom-candidate rules. The prompt names both the input and the one result file the agent may write. The
+report seals the input and context by hash, so a result is only accepted against the input it was written from.
 
 A repository's guidance files are the repository-relative paths in `review.adapter.source_hashes` of the latest
 record each repository-scoped reviewer wrote, anywhere in the archive: the files that reviewer was built from, which
@@ -27,6 +29,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from flat_text import flat_text
 from review_io import PersistenceError, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, valid_analyzer
 
@@ -61,7 +64,6 @@ RESULT_FIELDS = {
 CUSTOM_PATTERN_FIELDS = {"pattern", "rules", "assessment", "addressed_by"}
 # A category this small has no pattern to summarize, so the result must address each of its findings by reference.
 SMALL_CATEGORY = 5
-TOPICS_PER_CATEGORY = 5
 TOPIC_FIELDS = {"topic": "text", "count": "count", "examples": "examples"}
 CATEGORY_FIELDS = {"category", "topics", "assessment", "addressed_by", "findings"}
 RECOMMENDATION_FIELDS = {"type", "priority", "target", "title", "change", "rationale", "evidence", "flags"}
@@ -86,6 +88,7 @@ PATHS_PER_GROUP = 3
 TAIL_HEADLINES = 8
 FLAG_BODY = 1500
 HEADLINE = 120
+EXAMPLES_LIMIT = 3
 EVIDENCE_LIMIT = 10
 TEXT_LIMITS = {"short": 300, "rationale": 1500, "change": 2000}
 # A title, category, or analyzer name is passed back on the command line inside double quotes as the subject of a
@@ -94,6 +97,10 @@ UNSAFE_ARGUMENT = re.compile(r'["`$\\\x00-\x1f\x7f-\x9f\u2028\u2029]')
 ADJACENT_DAYS = 7
 PERIOD = re.compile(r"(\d{4}-\d{2}-\d{2})--(\d{4}-\d{2}-\d{2})")
 PROBLEMS_SHOWN = 20
+# The largest report or synthesis context written or read back. A report stores every finding an analyzer
+# recommendation covers as its evidence, so a long range of many reviews can grow large; one limit for writing and
+# reading means a file this suite wrote is never one it then refuses to read.
+MAXIMUM_BYTES = 64 * 1024 * 1024
 
 
 class SynthesisError(ValueError):
@@ -112,14 +119,14 @@ def finding_ref(record: dict[str, Any], finding: dict[str, Any]) -> str:
 
 
 def _line(text: str, limit: int) -> str:
-    flat = re.sub(r"\s+", " ", text).strip()
+    flat = flat_text(text)
     return flat if len(flat) <= limit else flat[: limit - 3].rstrip() + "..."
 
 
 def screened(value: str) -> str:
     """`value` as a fact line prints it and a decision names it: whitespace flattened to single spaces, and each other
     character UNSAFE_ARGUMENT matches shown as `?`. A title is refused instead, since the synthesis can rewrite it."""
-    return UNSAFE_ARGUMENT.sub("?", re.sub(r"\s+", " ", value).strip())
+    return UNSAFE_ARGUMENT.sub("?", flat_text(value))
 
 
 def _headline(finding: dict[str, Any]) -> str:
@@ -139,6 +146,8 @@ class _Group:
     pairs: list[tuple[dict[str, Any], dict[str, Any], Any]] = field(default_factory=list)
 
     def rank(self, outcomes: dict[Any, str], flagged: set[Any]) -> tuple[int, int, int, int]:
+        """Larger groups first, then those with more flagged findings, then more findings a later review judged
+        still present, partly addressed counting as still present, then the highest severity."""
         severity = max(SEVERITY_RANK[finding["severity"]] for _, finding, _ in self.pairs)
         still = sum(outcomes.get(entry) in {"still_present", "partially_addressed"} for _, _, entry in self.pairs)
         marked = sum(entry in flagged for _, _, entry in self.pairs)
@@ -214,12 +223,18 @@ def group_findings(
     return shown + _tail_lines(ordered[GROUPS_IN_FULL:])
 
 
-def scoped_flags(
-    flags: list[dict[str, Any]], repositories: list[str], start: date, end: date, refs: dict[Any, str]
-) -> list[dict[str, Any]]:
-    """Every open flag on these repositories, or on none, with the analyzed finding each names when it names one: an
-    open flag is feedback no report has acted on yet, often recorded after the period it is about. `refs` maps a
-    flag's (repository, pull, version, finding) to that finding."""
+def flag_ref(flag: dict[str, Any]) -> str | None:
+    """The reference of the finding a flag names, as `finding_ref` writes it, or None when it names none. It is built
+    from the flag alone, so a flag on a review outside the range still names its finding."""
+    named = (flag["repository"], flag["pull_number"], flag["review_version"], flag["finding_id"])
+    if None in named:
+        return None
+    return f"{flag['repository'].lower()}#{flag['pull_number']} v{flag['review_version']} {flag['finding_id']}"
+
+
+def scoped_flags(flags: list[dict[str, Any]], repositories: list[str], start: date, end: date) -> list[dict[str, Any]]:
+    """Every open flag on these repositories, or on none, with the finding each names when it names one: an open flag
+    is feedback no report has acted on yet, often recorded after the period it is about."""
     lines = []
     scope = {repository.lower() for repository in repositories}
     for flag in flags:
@@ -227,7 +242,6 @@ def scoped_flags(
         repository = (flag["repository"] or "").lower() or None
         if flag["status"] != "open" or (repository is not None and repository not in scope):
             continue
-        key = (repository, flag["pull_number"], flag["review_version"], flag["finding_id"])
         lines.append(
             {
                 "kind": "flag",
@@ -237,7 +251,7 @@ def scoped_flags(
                 "in_range": start <= created <= end,
                 "repository": repository,
                 "pull_number": flag["pull_number"],
-                "finding": refs.get(key),
+                "finding": flag_ref(flag),
                 "body": _line(flag["body"], FLAG_BODY),
             }
         )
@@ -323,9 +337,12 @@ def seal(directory: Path) -> str:
 
 
 def write_inputs(directory: Path, lines: list[dict[str, Any]], context: dict[str, Any]) -> str:
-    """Write the input, its seal line first, and the context; return the seal."""
+    """Write the input, its seal line first, and the context; return the seal. A context larger than `synthesize`
+    reads back is refused before anything is written."""
     body = _jsonl(lines)
     context_text = json.dumps(context, indent=1, sort_keys=True) + "\n"
+    if len(context_text.encode("utf-8")) > MAXIMUM_BYTES:
+        raise PersistenceError(f"The synthesis context would exceed {MAXIMUM_BYTES} bytes; report a shorter range")
     digest = _digest(body, context_text)
     atomic_write_text(directory / CONTEXT_NAME, context_text)
     atomic_write_text(directory / INPUT_NAME, _jsonl([{"kind": "seal", "input_sha256": digest}]) + body)
@@ -345,6 +362,10 @@ def write_prompt(directory: Path, *, script: Path, report_path: Path, repositori
             "--check",
             types=", ".join(f"`{item}`" for item in TYPES),
             coverages=", ".join(f"`{item}`" for item in ANALYZER_COVERAGES),
+            small_category=SMALL_CATEGORY,
+            headline=HEADLINE,
+            examples=EXAMPLES_LIMIT,
+            evidence=EVIDENCE_LIMIT,
             **LIMITS,
         ),
     )
@@ -423,15 +444,11 @@ def prepare(
     """Write the input, context, and prompt for a report, and return its pending synthesis; one with no findings and
     no open flags in scope is skipped, with nothing written."""
     report = analyzed.report
-    refs = {
-        (record["repository"].lower(), record["pull_request"]["number"], record["review"]["version"], finding["id"]): (
-            finding_ref(record, finding)
-        )
-        for record in analyzed.records
-        for finding in record["findings"]
-    }
     start, end = date.fromisoformat(report["start_date"]), date.fromisoformat(report["end_date"])
-    flag_lines = scoped_flags(flags, report["repositories"], start, end, refs)
+    flag_lines = scoped_flags(flags, report["repositories"], start, end)
+    # A result may cite any finding the input names: an analyzed one, or one an open flag names outside the range.
+    refs = {finding_ref(record, finding) for record in analyzed.records for finding in record["findings"]}
+    refs.update(line["finding"] for line in flag_lines if line["finding"] is not None)
     if not analyzed.pairs and not flag_lines:
         return empty_synthesis("skipped")
     totals = {
@@ -455,7 +472,7 @@ def prepare(
         *flag_lines,
     ]
     context = {
-        "refs": sorted(refs.values()),
+        "refs": sorted(refs),
         "open_flags": sorted(line["id"] for line in flag_lines),
         "guidance": guidance,
         "previous_recommendations": [item["id"] for item in previous[1]["recommendations"]] if previous else None,
@@ -488,7 +505,7 @@ def load_context(synthesis: dict[str, Any]) -> dict[str, Any]:
     directory = Path(synthesis["input"]).parent
     try:
         sealed = seal(directory)
-        context = read_json(directory / CONTEXT_NAME, maximum_bytes=64 * 1024 * 1024)
+        context = read_json(directory / CONTEXT_NAME, maximum_bytes=MAXIMUM_BYTES)
     except (OSError, ValueError, PersistenceError) as exc:
         raise SynthesisError([f"the synthesis input cannot be read: {exc}"]) from exc
     if sealed != synthesis["input_sha256"]:
@@ -518,8 +535,8 @@ guidance and to the repositories' tooling. This file is your complete task.
 
 - `seal`: the `input_sha256` your result must repeat.
 - `totals`: the range's record and finding counts, by severity, category, and source.
-- `category`: each finding category with its count. A category of five findings or fewer also lists every finding in
-  full, because the result must address each one.
+- `category`: each finding category with its count. A category of {small_category} findings or fewer also lists every
+  finding in full, because the result must address each one.
 - `custom-rule`: a pattern reviewers said would need a custom analyzer rule, as `<tool> <rule>`, with its count and
   examples. There can be many, often several names for one pattern.
 - `group`: findings with the same repository, category, and headline. `outcomes` counts how later reviews judged
@@ -583,7 +600,8 @@ Write one JSON object:
 - At most {themes} themes (high-level patterns, such as timezone handling), {mistakes} mistakes (specific ones, such
   as local time where UTC is needed), {persistent_patterns} persistent patterns (findings later reviews judged still
   present, with a likely reason they are left), and {recommendations} recommendations. Every `count` is at least 1;
-  every example and evidence item is a finding reference from the input, at most 3 examples and 10 evidence items.
+  every example and evidence item is a finding reference from the input, at most {examples} examples and {evidence}
+  evidence items.
 - `comparison` is null without a `previous` line. With one, it is
   `{{"persistent": [...], "new": [...], "resolved": [...], "previous_recommendations": [{{"id": "...",
   "assessment": "..."}}]}}`: themes in both periods, only this one, and only the previous one, and for each previous
@@ -592,19 +610,20 @@ Write one JSON object:
   `{{"analyzer": {{"coverage": "...", "tool": "...", "rule": "..."}}}}`, with coverage {coverages}, the tool the
   analyzer's name, and the rule its rule ID or, for a custom rule, a short kebab-case pattern name; every other type
   targets a repository and a guidance file. `flagged` addresses flags no finding pattern covers.
-- `title` is one line of at most 120 characters without quotes, backticks, dollar signs, backslashes, tabs, or other
-  control characters, unique among the recommendations. `change` says exactly what text or configuration to add,
-  change, or remove.
-- `categories` has one entry for every `category` line, no more. `topics` names 1 to 5 concrete patterns or topics
-  within the category, each with its count and up to 3 examples, never just the category's name. `assessment` says
-  what the category's findings show and what should change, or why nothing should. `addressed_by` lists the titles of
-  this result's recommendations that act on the category, or is empty. For a category whose `category` line lists its
-  findings, `findings` addresses every one of them, as `{{"ref": "...", "assessment": "..."}}`: whether it is valid,
-  noise, or a gap, and what follows; for every other category, `findings` is empty.
-- `custom_rule_patterns` groups every `custom-rule` line's rule, exactly as the line spells it, into at most 15
-  patterns, each rule in exactly one; it is empty without `custom-rule` lines. `assessment` says whether a custom rule
-  is worth writing for the pattern; `addressed_by` lists the recommendations, such as a `new-analyzer` one, that act on
-  it.
+- `title` is one line of at most {headline} characters without quotes, backticks, dollar signs, backslashes, tabs, or
+  other control characters, unique among the recommendations. `change` says exactly what text or configuration to
+  add, change, or remove.
+- `categories` has one entry for every `category` line, no more. `topics` names 1 to {topics} concrete patterns or
+  topics within the category, each with its count and up to {examples} examples, never just the category's name.
+  `assessment` says what the category's findings show and what should change, or why nothing should. `addressed_by`
+  lists the titles of this result's recommendations that act on the category, or is empty. For a category whose
+  `category` line lists its findings, `findings` addresses every one of them, as
+  `{{"ref": "...", "assessment": "..."}}`: whether it is valid, noise, or a gap, and what follows; for every other
+  category, `findings` is empty.
+- `custom_rule_patterns` groups every `custom-rule` line's rule, exactly as the line spells it, into at most
+  {custom_rule_patterns} patterns, each rule in exactly one; it is empty without `custom-rule` lines. `assessment`
+  says whether a custom rule is worth writing for the pattern; `addressed_by` lists the recommendations, such as a
+  `new-analyzer` one, that act on it.
 - `flags` lists the open flags a recommendation addresses; accepting it resolves them. A `flagged` recommendation names
   at least one; every other one names evidence, flags, or both.
 
@@ -677,8 +696,10 @@ class _Checker:
         elif kind == "count" and not _count(value):
             self.problem(where, "must be a positive integer")
         elif kind == "examples":
-            self.refs_at(where, value, minimum=1, maximum=3)
-        elif kind == "texts" and (not isinstance(value, list) or any(not _text(item, 300) for item in value)):
+            self.refs_at(where, value, minimum=1, maximum=EXAMPLES_LIMIT)
+        elif kind == "texts" and (
+            not isinstance(value, list) or any(not _text(item, TEXT_LIMITS["short"]) for item in value)
+        ):
             self.problem(where, "must be a list of non-blank text")
         elif kind == "severity" and (
             not isinstance(value, dict) or not value or set(value) - SEVERITIES or not all(map(_count, value.values()))
@@ -742,7 +763,8 @@ class _Checker:
         if not _text(title, HEADLINE) or UNSAFE_ARGUMENT.search(title):
             self.problem(
                 f"{where}.title",
-                "must be one line of at most 120 characters without quotes, backticks, $, \\, or control characters",
+                f"must be one line of at most {HEADLINE} characters without quotes, backticks, $, \\, or control "
+                "characters",
             )
         elif title.casefold() in titles:
             self.problem(f"{where}.title", "repeats another recommendation's title")
@@ -792,7 +814,7 @@ class _Checker:
     def category(self, where: str, item: dict[str, Any], small: list[str] | None, titles: Container[str]) -> None:
         topics = item["topics"]
         if not isinstance(topics, list) or not topics:
-            self.problem(f"{where}.topics", f"must be a list of 1 to {TOPICS_PER_CATEGORY} topics")
+            self.problem(f"{where}.topics", f"must be a list of 1 to {LIMITS['topics']} topics")
         else:
             self.items(item, "topics", TOPIC_FIELDS, where=f"{where}.topics")
         self.field(f"{where}.assessment", item["assessment"], "long")
@@ -836,7 +858,9 @@ class _Checker:
     def category_findings(self, where: str, findings: Any, small: list[str] | None) -> None:
         if small is None:
             if findings != []:
-                self.problem(f"{where}.findings", "must be empty for a category of more than five findings")
+                self.problem(
+                    f"{where}.findings", f"must be empty for a category of more than {SMALL_CATEGORY} findings"
+                )
             return
         if not isinstance(findings, list) or any(
             not isinstance(entry, dict) or set(entry) != {"ref", "assessment"} for entry in findings
@@ -1026,7 +1050,7 @@ def custom_pattern_facts(report: dict[str, Any]) -> list[str]:
         return []
     lines = []
     for number, item in enumerate(synthesis["custom_rule_patterns"], start=1):
-        lines.append(f"PATTERN {number} rules={len(item['rules'])} {_line(item['pattern'], 300)}")
+        lines.append(f"PATTERN {number} rules={len(item['rules'])} {_line(item['pattern'], TEXT_LIMITS['short'])}")
         lines.append(f"PATTERN_ASSESSMENT {number} {_line(item['assessment'], TEXT_LIMITS['rationale'])}")
         lines.append(f"PATTERN_ADDRESSED_BY {number} {','.join(_addressed_ids(report, item)) or 'none'}")
     return lines
@@ -1049,7 +1073,9 @@ def category_markdown(report: dict[str, Any], entry: dict[str, Any]) -> list[str
 
 def category_facts(report: dict[str, Any], identifier: str, entry: dict[str, Any]) -> list[str]:
     """The same commentary as output lines: `TOPIC`, `ASSESSMENT`, `ADDRESSED_BY`, and `FINDING`."""
-    flat = [f"TOPIC {identifier} {item['count']} {_line(item['topic'], 300)}" for item in entry["topics"]]
+    flat = [
+        f"TOPIC {identifier} {item['count']} {_line(item['topic'], TEXT_LIMITS['short'])}" for item in entry["topics"]
+    ]
     flat.append(f"ASSESSMENT {identifier} {_line(entry['assessment'], TEXT_LIMITS['rationale'])}")
     flat.append(f"ADDRESSED_BY {identifier} {','.join(_addressed_ids(report, entry)) or 'none'}")
     flat += [f"FINDING {identifier} {item['ref']} {_line(item['assessment'], 600)}" for item in entry["findings"]]
