@@ -6,8 +6,8 @@
                                             the skill reads from outside its folder
     tools FILE                              compare the tools a skill body references with its allowed-tools, and
                                             size the description every session loads
-    scan FILE...                            list lines with cost cues for the agent to judge, and subagent
-                                            prompts that a script writes at runtime
+    scan FILE...                            list lines with cost cues for the agent to judge, subagent prompts
+                                            that a script writes at runtime, and the sample of each such prompt
 
 Every command prints one fact per line in forward-slash paths. locate prefers a source skill to its deployed
 copy, and counts a .agents/skills shim that points to the .claude/skills skill of its name as that skill; it
@@ -54,6 +54,14 @@ A script that starts code the target repository configures declares a module-lev
 saying so, and its command must keep prompting. A fence command that runs one, through ${CLAUDE_SKILL_DIR}, is
 REPOSITORY_CODE <tool> <line> <command> when no grant of that tool covers it, as intended, and
 GRANTED_REPOSITORY_CODE <tool> <line> <command> when one does; it is never UNGRANTED.
+
+Runtime prompts: RUNTIME_PROMPT <file> <line> <writer> is a subagent told to read a prompt file that the named script
+(or unknown) writes at runtime, which the skill's own files never show. A skill source tree keeps a rendered sample of
+each such prompt as docs/runtime-prompts/<skill>/<name>.txt, naming the throwaway folder it was rendered in as <temp>
+and the source tree as <source>. For each sample of the skill, scan prints RUNTIME_PROMPT_SAMPLE <sample> <tokens>,
+one RUNTIME_PROMPT_READ <sample> <path> <tokens> per file of the source tree the prompt names other than a script,
+which the subagent reads on every run, and REPLY_BOUNDED <sample> yes|no, whether the prompt bounds the reply. A skill
+with no sample prints RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason> for each runtime prompt instead.
 """
 
 from __future__ import annotations
@@ -237,6 +245,10 @@ DELEGATION = re.compile(r"(?i)\bsubagents?\b")
 # A subagent told to read a prompt file: the real prompt is written at runtime and the audit cannot see it.
 RUNTIME_PROMPT = re.compile(r"(?i)\bread <[^>]*\bprompt\b[^>]*>")
 SCRIPT_PATH = re.compile(r"[\w./{}$-]*scripts/[\w.-]+\.(?:py|sh|bash|ps1|js|mjs)")
+# Where a skill source tree keeps the rendered samples of its runtime prompts, one folder per skill.
+RUNTIME_PROMPT_SAMPLES = Path("docs") / "runtime-prompts"
+# A file of the source tree a rendered sample names, which the renderer wrote as <source> and the path below it.
+SAMPLE_SOURCE_PATH = re.compile(r"<source>[\\/]([^\s\"'`<>]+)")
 # A relative Markdown path that leaves the skill folder, such as `../shared.md`. With a ${CLAUDE_SKILL_DIR}
 # prefix it resolves against the skill folder instead of the file that names it.
 OUTSIDE_REFERENCE = re.compile(r"(?<![\w./-])(\$\{CLAUDE_SKILL_DIR\}/)?((?:\.\./)+[\w./-]+\.md)\b")
@@ -696,11 +708,18 @@ def outside_lines(directory: Path, texts: dict[str, tuple[str, str]]) -> list[st
     return lines
 
 
+def source_root(directory: Path) -> Path | None:
+    """The source tree a skill folder belongs to, which holds the skill's deploy metadata, or None."""
+    root = directory.parent.parent
+    return root if (root / "deploy-meta" / f"{directory.name}.json").is_file() else None
+
+
 def declared_lines(directory: Path) -> list[str]:
     """The skill's declared shared assets and skill dependencies, when it is audited from its source tree."""
-    metadata = directory.parent.parent / "deploy-meta" / f"{directory.name}.json"
-    if not metadata.is_file():
+    root = source_root(directory)
+    if root is None:
         return []
+    metadata = root / "deploy-meta" / f"{directory.name}.json"
     try:
         declared = json.loads(metadata.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -874,6 +893,7 @@ def scan(paths: list[Path]) -> list[str]:
         raise InputError("file not found: " + ", ".join(missing))
     texts = [require_text(path) for path in paths]
     output: list[str] = []
+    runtime_prompts: list[tuple[Path, int]] = []
     for path, text in zip(paths, texts, strict=True):
         lines = text.splitlines()
         if path.suffix.casefold() == ".md":
@@ -903,8 +923,10 @@ def scan(paths: list[Path]) -> list[str]:
             excerpt = text if len(text) <= 160 else text[:157] + "..."
             output.extend(f"CUE {posix(path)} {index + 1} {cue} {excerpt}" for cue in cues)
         if path.suffix.casefold() == ".md":
-            output.extend(delegation_lines(path, lines, languages, start))
-    return output
+            found = delegation_lines(path, lines, languages, start)
+            output.extend(found)
+            runtime_prompts += [(path, int(line.split()[2])) for line in found if line.startswith("RUNTIME_PROMPT ")]
+    return output + sample_lines(runtime_prompts)
 
 
 def delegation_lines(path: Path, lines: list[str], languages: list[str | None], start: int) -> list[str]:
@@ -934,6 +956,50 @@ def delegation_lines(path: Path, lines: list[str], languages: list[str | None], 
             "unknown",
         )
         output.append(f"RUNTIME_PROMPT {posix(path)} {index + 1} {writer}")
+    return output
+
+
+def skill_folder(path: Path) -> Path | None:
+    """The skill folder a scanned file belongs to: the nearest folder above it that holds SKILL.md, named as the
+    file is, so a relative path stays relative."""
+    for folder in path.parents:
+        folder = folder if folder.name else folder.resolve()
+        if any(child.name.casefold() == MAIN_NAME for child in folder.iterdir() if child.is_file()):
+            return folder
+    return None
+
+
+def sample_lines(runtime_prompts: list[tuple[Path, int]]) -> list[str]:
+    """Measure the rendered sample of each runtime prompt once per skill, or say why a prompt has none."""
+    output: list[str] = []
+    measured: set[Path] = set()
+    for path, line in runtime_prompts:
+        folder = skill_folder(path)
+        root = None if folder is None else source_root(folder)
+        if folder is None or root is None:
+            output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} not in a skill source tree")
+            continue
+        samples_folder = root / RUNTIME_PROMPT_SAMPLES / folder.name
+        samples = sorted(samples_folder.glob("*.txt")) if samples_folder.is_dir() else []
+        if not samples:
+            output.append(f"RUNTIME_PROMPT_UNSAMPLED {posix(path)} {line} no sample under {posix(samples_folder)}")
+        elif samples_folder not in measured:
+            measured.add(samples_folder)
+            for sample in samples:
+                output.extend(measure_sample(root, sample))
+    return output
+
+
+def measure_sample(root: Path, sample: Path) -> list[str]:
+    """A rendered prompt's estimate, the source files it has the subagent read, and whether it bounds the reply."""
+    text = require_text(sample)
+    output = [f"RUNTIME_PROMPT_SAMPLE {posix(sample)} {estimate_tokens(text, 'doc')}"]
+    named = {match.group(1).replace("\\", "/").rstrip(".,;:)") for match in SAMPLE_SOURCE_PATH.finditer(text)}
+    for relative in sorted(named):
+        target = root / relative
+        if target.suffix.casefold() not in HELPER_SUFFIXES and target.is_file():
+            output.append(f"RUNTIME_PROMPT_READ {posix(sample)} {relative} {estimate_tokens(read_text(target), 'doc')}")
+    output.append(f"REPLY_BOUNDED {posix(sample)} {'yes' if REPLY_BOUND.search(text) else 'no'}")
     return output
 
 

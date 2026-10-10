@@ -804,9 +804,71 @@ class ScanTests(TemporaryTestCase):
         bounded = write(self.root / "bounded.md", delegation + "Each subagent must reply with exactly: DONE.\n")
         _, lines, _ = run("scan", str(bounded))
         self.assertEqual(
-            [f"RUNTIME_PROMPT {bounded.as_posix()} 1 unknown"],
+            [
+                f"RUNTIME_PROMPT {bounded.as_posix()} 1 unknown",
+                f"RUNTIME_PROMPT_UNSAMPLED {bounded.as_posix()} 1 not in a skill source tree",
+            ],
             [line for line in lines if " agent " not in line],
             "a bounded reply is not flagged, and no earlier command names the writer",
+        )
+
+    def source_skill(self, name: str = "alpha") -> Path:
+        """A skill in a source tree whose subagent reads a prompt its script writes at runtime."""
+        write(self.root / "deploy-meta" / f"{name}.json", "{}")
+        return write(
+            self.root / "skills" / name / "SKILL.md",
+            "```bash\n"
+            'python -B "${CLAUDE_SKILL_DIR}/scripts/pipeline.py" prepare\n'
+            "```\n"
+            "Start one subagent with this prompt: `Read <prompt file> and follow it.`\n"  # 4
+            "Each subagent must reply with exactly: DONE.\n",
+        )
+
+    def test_a_runtime_prompt_with_no_sample_says_why(self) -> None:
+        skill = self.source_skill()
+        _, lines, _ = run("scan", str(skill))
+        samples = (self.root / "docs" / "runtime-prompts" / "alpha").as_posix()
+        self.assertEqual(
+            [
+                f"RUNTIME_PROMPT {skill.as_posix()} 4 " + "${CLAUDE_SKILL_DIR}/scripts/pipeline.py",
+                f"RUNTIME_PROMPT_UNSAMPLED {skill.as_posix()} 4 no sample under {samples}",
+            ],
+            [line for line in lines if line.startswith("RUNTIME_PROMPT")],
+        )
+
+        loose = write(self.root / "loose" / "SKILL.md", skill.read_text(encoding="utf-8"))
+        _, lines, _ = run("scan", str(loose))
+        self.assertEqual(
+            [f"RUNTIME_PROMPT_UNSAMPLED {loose.as_posix()} 4 not in a skill source tree"],
+            [line for line in lines if line.startswith("RUNTIME_PROMPT_")],
+        )
+
+    def test_a_sample_is_measured_with_the_files_it_names_and_whether_it_bounds_the_reply(self) -> None:
+        skill = self.source_skill()
+        write(self.root / "skills" / "core" / "references" / "reviewer.md", "x" * 40 + "\n")
+        write(self.root / "skills" / "core" / "scripts" / "check.py", "print()\n")
+        samples = self.root / "docs" / "runtime-prompts" / "alpha"
+        bounded = write(
+            samples / "reviewer.txt",
+            "Follow <source>\\skills\\core\\references\\reviewer.md, for what to review.\n"
+            'Run python -B "<source>\\skills\\core\\scripts\\check.py" --run "<temp>\\run".\n'
+            "Then reply with exactly: WROTE <temp>\\run\\result.json\n",
+        )
+        unbounded = write(samples / "synthesis.txt", "Write the result to <temp>/result.json.\n")
+        write(samples / "notes.md", "Not a sample.\n")
+        _, lines, _ = run("scan", str(skill), str(write(self.root / "skills" / "alpha" / "more.md", "Text.\n")))
+        self.assertEqual(
+            [
+                f"RUNTIME_PROMPT {skill.as_posix()} 4 " + "${CLAUDE_SKILL_DIR}/scripts/pipeline.py",
+                f"RUNTIME_PROMPT_SAMPLE {bounded.as_posix()} "
+                + str(skill_inventory.estimate_tokens(bounded.read_text(encoding="utf-8"), "doc")),
+                f"RUNTIME_PROMPT_READ {bounded.as_posix()} skills/core/references/reviewer.md 11",
+                f"REPLY_BOUNDED {bounded.as_posix()} yes",
+                f"RUNTIME_PROMPT_SAMPLE {unbounded.as_posix()} 10",
+                f"REPLY_BOUNDED {unbounded.as_posix()} no",
+            ],
+            [line for line in lines if line.startswith(("RUNTIME_PROMPT", "REPLY_BOUNDED"))],
+            "a sample is measured once, a script it runs is not a read, and only .txt files are samples",
         )
 
     def test_long_lines_are_truncated(self) -> None:
