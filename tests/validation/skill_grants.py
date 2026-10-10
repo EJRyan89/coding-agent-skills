@@ -36,11 +36,51 @@ def repository_skill_files(root: Path) -> list[Path]:
     return sorted((root / REPOSITORY_SKILLS).glob("*/SKILL.md"), key=lambda path: path.parent.name)
 
 
+def idle_grant_problems(name: str, skill_md: Path, inventory: list[str]) -> list[str]:
+    """Report the grants of a skill nothing starts, and each scoped shell pattern no command the skill shows matches.
+
+    allowed-tools pre-approves for the turn that starts the skill, so a hidden skill's grants approve nothing, and a
+    pattern that matches no command in a shell fence or a code span pre-approves a command the skill never names,
+    such as one a repository profile names, which a generic skill must leave to prompt.
+    """
+    import frontmatter
+    import skill_inventory
+
+    if "INVOCATION hidden" in inventory:
+        if any(line.startswith("ALLOWED ") for line in inventory):
+            return [f"{name} is hidden, so no turn starts it and its allowed-tools approve nothing; see {GRANTS_DOC}"]
+        return []
+    lines = skill_md.read_text(encoding="utf-8").splitlines()
+    split = frontmatter.split(lines)
+    if split is None:
+        return []
+    entries = skill_inventory.allowed_entries(frontmatter.Frontmatter(split[0]).value("allowed-tools"))
+    body = lines[split[1] :]
+    languages, _ = skill_inventory.parse_fences(body)
+    commands = [command for _, command in skill_inventory.fence_commands(body, languages, split[1])]
+    commands += [
+        span.strip()
+        for line, language in zip(body, languages, strict=True)
+        if language is None
+        for span in skill_inventory.CODE_SPAN.findall(line)
+    ]
+    return [
+        f"{name} grants {skill_inventory.entry_text(tool, pattern)}, which matches no command in its fences or code "
+        f"spans; see {GRANTS_DOC}"
+        for tool, pattern in entries
+        if tool in skill_inventory.SHELL_TOOLS
+        and pattern is not None
+        and pattern.strip() not in skill_inventory.UNSCOPED_PATTERNS
+        and not any(skill_inventory.grants(pattern, command) for command in commands)
+    ]
+
+
 def skill_grant_problems(
     root: Path, skill_files: list[Path] | None = None, own: re.Pattern[str] = OWN_SCRIPT_COMMAND
 ) -> list[str]:
     """Report shell grants that cover every command or one shell only, grants no step uses, own-script commands
-    left ungranted, and grants that pre-approve a script that starts code from the target repository.
+    left ungranted, grants that pre-approve a script that starts code from the target repository, and grants that
+    cover nothing the skill runs.
 
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
@@ -51,7 +91,9 @@ def skill_grant_problems(
     problems: list[str] = []
     for skill_md in shipped_skill_files(root) if skill_files is None else skill_files:
         name = skill_md.relative_to(root).as_posix()
-        for line in skill_inventory.tools(skill_md):
+        found = skill_inventory.tools(skill_md)
+        problems += idle_grant_problems(name, skill_md, found)
+        for line in found:
             kind, _, detail = line.partition(" ")
             if kind == "UNSCOPED_ALLOWED":
                 problems.append(f"{name} grants {detail} for every command; see {GRANTS_DOC}")
@@ -115,32 +157,15 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
 
 
 def repository_skill_problems(root: Path) -> list[str]:
-    """Report each repository skill under .claude/skills without a matching .agents/skills shim, and each stray shim.
+    """Report each repository skill under .claude/skills whose .agents/skills shim is missing or differs from what
+    tools/skill_shims.py writes, and each stray shim.
 
     Codex and Copilot CLI read .agents/skills, so a shim must carry the skill's own frontmatter, which is all they
-    see before choosing it, and point to the skill as the authoritative workflow.
+    see before choosing it, and point to the skill as the authoritative workflow; the tool is the one writer of both.
     """
+    from tools import skill_shims
 
-    def frontmatter(path: Path) -> str:
-        parts = path.read_text(encoding="utf-8").replace("\r\n", "\n").split("---\n", 2)
-        return parts[1] if len(parts) == 3 and parts[0] == "" else ""
-
-    skills = {path.parent.name: path for path in (root / ".claude" / "skills").glob("*/SKILL.md")}
-    shims = {path.parent.name: path for path in (root / ".agents" / "skills").glob("*/SKILL.md")}
-    found = [
-        f".agents/skills/{name}/SKILL.md has no .claude/skills/{name}/SKILL.md"
-        for name in sorted(set(shims) - set(skills))
-    ]
-    for name in sorted(skills):
-        shim = shims.get(name)
-        if shim is None:
-            found.append(f".claude/skills/{name}/SKILL.md has no .agents/skills/{name}/SKILL.md shim")
-            continue
-        if not frontmatter(skills[name]) or frontmatter(shim) != frontmatter(skills[name]):
-            found.append(f".agents/skills/{name}/SKILL.md frontmatter differs from .claude/skills/{name}/SKILL.md")
-        if f"`../../../.claude/skills/{name}/SKILL.md`" not in shim.read_text(encoding="utf-8"):
-            found.append(f".agents/skills/{name}/SKILL.md does not point to ../../../.claude/skills/{name}/SKILL.md")
-    return found
+    return skill_shims.problems(root)
 
 
 def description_problems(root: Path, skill_files: list[Path]) -> list[str]:

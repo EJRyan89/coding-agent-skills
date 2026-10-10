@@ -4,7 +4,7 @@ description: >-
   Procedure for adding or changing a skill in this repository, shipped under skills/ or repository-only under
   .claude/skills: its SKILL.md, scripts, metadata, or documentation. Use it when asked to add, create, change, fix,
   or extend a skill here. Not for deployer-only, repository-tool, or documentation-only changes.
-allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_reference.py*)", "PowerShell(python tools/skill_reference.py*)", "Bash(python -B tests/run_validation.py*)", "PowerShell(python -B tests/run_validation.py*)"]
+allowed-tools: ["Bash(python tools/new_skill.py *)", "PowerShell(python tools/new_skill.py *)", "Bash(python tools/skill_shims.py*)", "PowerShell(python tools/skill_shims.py*)", "Bash(python tools/skill_reference.py*)", "PowerShell(python tools/skill_reference.py*)", "Bash(python -B tests/run_validation.py*)", "PowerShell(python -B tests/run_validation.py*)"]
 ---
 
 # Adding or changing a skill
@@ -13,7 +13,7 @@ A skill change is finished only when it is tested, documented, validated, and au
 
 `CLAUDE.md` holds the rules this procedure applies, and `docs/adding-a-skill.md` the skill contract. A quoted name, such as "Granting tools", is a section of the contract unless another document is named. Read only that section: Grep the document for `^#{2,3} ` with line numbers, then Read from the heading to the next.
 
-A repository skill, under `.claude/skills/<name>/`, meets the shipped standard but has no `deploy-meta` entry, `docs/skills.md` section, or README row; its shim `.agents/skills/<name>/SKILL.md` carries the same frontmatter.
+A repository skill, under `.claude/skills/<name>/`, meets the shipped standard but has no `deploy-meta` entry, `docs/skills.md` section, or README row; its shim `.agents/skills/<name>/SKILL.md` carries the same frontmatter, and `tools/skill_shims.py` writes it.
 
 ## 1. Plan the skill
 
@@ -36,7 +36,11 @@ python tools/new_skill.py "<name>" --description "<description>" --argument-hint
 
 Add `--user-only` and `--opt-in` as planned, and omit `--argument-hint` or `--tool` when there is none. Pass the planned grants as `--allowed-tools`, comma-separated, unless they are its default: both shells for the skill's own scripts, and the file-reading tool. It writes the frontmatter, the metadata, and the generated part of the reference section, refuses without changing anything when the name is taken or a tool is unknown, and prints a `REMAINING` line for each thing validation still needs from you. A skill inside a bundle also needs its entry in `source.json`.
 
-`new_skill.py` scaffolds shipped skills only. A new repository skill is `.claude/skills/<name>/SKILL.md`, written by hand, and its shim `.agents/skills/<name>/SKILL.md`: the same frontmatter, then the two lines every shim has, naming the new skill. Validation fails until the shim exists and its frontmatter matches.
+For a new repository skill, add `--repository`, which writes `.claude/skills/<name>/SKILL.md` and its shim and takes no `--tool` or `--opt-in`; it grants nothing unless you pass `--allowed-tools`:
+
+```bash
+python tools/new_skill.py "<name>" --repository --description "<description>"
+```
 
 ## 3. Implement test first
 
@@ -59,7 +63,7 @@ python tools/skill_reference.py --write
 - Update the hand-written part of the skill's section in `docs/skills.md` to match what shipped: what each argument means, what it does without them, and an example.
 - A new skill, or bundle, gets a row in the "Included skills" table in `README.md`, linking its section in `docs/skills.md`.
 - A code-review skill's configuration or records belong in `docs/code-review-operations.md`.
-- A repository skill's frontmatter change is copied to its shim.
+- After a repository skill's frontmatter change, rewrite its shim with `python tools/skill_shims.py --write`; validation fails while a shim differs.
 
 ## 5. Verify
 

@@ -3,6 +3,8 @@
 Usage:
   python tools/new_skill.py <name> --description TEXT [--argument-hint TEXT] [--user-only] [--opt-in]
                                    [--tool NAME ...] [--allowed-tools ENTRY,ENTRY]
+  python tools/new_skill.py <name> --repository --description TEXT [--argument-hint TEXT] [--user-only]
+                                   [--allowed-tools ENTRY,ENTRY]
 
 A model-invocable skill's description must say when to use it, and allowed-tools may grant Bash and PowerShell
 only as twin patterns, by default the skill's own scripts: the rules validation applies, from skill_reference and
@@ -13,6 +15,12 @@ part of the skill's docs/skills.md section, then prints one REMAINING line for e
 from a person, such as the reference's hand-written explanation and the README entry. It refuses, changing
 nothing, when the name is invalid or already used, when the name or description breaks the Agent Skills
 frontmatter rules, or when a tool is not in deployer/tools.py.
+
+With --repository it scaffolds one of this repository's own skills instead: .claude/skills/<name>/SKILL.md, with
+no allowed-tools unless given, since a repository skill runs the repository's tools rather than scripts of its own,
+and its .agents/skills shim, written by tools/skill_shims.py. A repository skill has no metadata or reference
+section, so it takes no --tool or --opt-in, and its name must not be a shipped skill's, which would make the cost
+audit's lookup by name ambiguous.
 
 It writes no scripts: validation requires a regression suite for any script under scripts/, so a stub would be
 a placeholder that lands untested.
@@ -33,7 +41,7 @@ from console import use_utf8_output
 from deployer import runtime_support
 from deployer import source as deploy_source
 from deployer.tools import SKILL_TOOLS
-from tools import skill_reference
+from tools import skill_reference, skill_shims
 
 # The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
@@ -55,12 +63,13 @@ def _yaml_string(value: str) -> str:
 
 
 def skill_markdown(
-    name: str, description: str, argument_hint: str | None, user_only: bool, allowed_tools: list[str]
+    name: str, description: str, argument_hint: str | None, user_only: bool, allowed_tools: list[str] | None
 ) -> str:
     lines = ["---", f"name: {name}", f"description: {_yaml_string(description)}"]
     if argument_hint is not None:
         lines.append(f"argument-hint: {_yaml_string(argument_hint)}")
-    lines.append(f"allowed-tools: {json.dumps(allowed_tools)}")
+    if allowed_tools is not None:
+        lines.append(f"allowed-tools: {json.dumps(allowed_tools)}")
     if user_only:
         lines.append("disable-model-invocation: true")
     title = name.replace("-", " ").capitalize()
@@ -112,17 +121,11 @@ def _one_line(label: str, value: str) -> str:
     return value
 
 
-def scaffold(
-    root: Path,
-    name: str,
-    description: str,
-    argument_hint: str | None = None,
-    user_only: bool = False,
-    opt_in: bool = False,
-    tools: list[str] | None = None,
-    allowed_tools: list[str] | None = None,
-) -> list[str]:
-    """Write the new skill's files and return the reference problems a person still has to resolve."""
+def _frontmatter_values(
+    name: str, description: str, argument_hint: str | None, user_only: bool, allowed_tools: list[str] | None
+) -> tuple[str, str | None, list[str] | None]:
+    """The description, argument hint, and allowed-tools as the frontmatter will carry them, each checked against
+    the rules a shipped and a repository skill share."""
     if not deploy_source.is_valid_name(name):
         raise ScaffoldError(f"'{name}' is not a valid skill name; see docs/adding-a-skill.md")
     word = deploy_source.reserved_word(name)
@@ -136,16 +139,35 @@ def scaffold(
         raise ScaffoldError(f"--description must {skill_reference.WHEN_RULE}")
     if argument_hint is not None:
         argument_hint = _one_line("--argument-hint", argument_hint)
-    tools = sorted(set(tools or []))
-    unknown = [tool for tool in tools if tool not in SKILL_TOOLS]
-    if unknown:
-        raise ScaffoldError(f"unknown tool {unknown[0]}; add it to SKILL_TOOLS in deployer/tools.py first")
-    allowed = [tool.strip() for tool in (allowed_tools if allowed_tools is not None else DEFAULT_ALLOWED_TOOLS)]
+    if allowed_tools is None:
+        return description, argument_hint, None
+    allowed = [tool.strip() for tool in allowed_tools]
     if not allowed or not all(allowed):
         raise ScaffoldError("--allowed-tools must name at least one tool")
     grant_problems = shell_grant_problems(allowed)
     if grant_problems:
         raise ScaffoldError(grant_problems[0])
+    return description, argument_hint, allowed
+
+
+def scaffold(
+    root: Path,
+    name: str,
+    description: str,
+    argument_hint: str | None = None,
+    user_only: bool = False,
+    opt_in: bool = False,
+    tools: list[str] | None = None,
+    allowed_tools: list[str] | None = None,
+) -> list[str]:
+    """Write the new skill's files and return the reference problems a person still has to resolve."""
+    description, argument_hint, allowed = _frontmatter_values(
+        name, description, argument_hint, user_only, DEFAULT_ALLOWED_TOOLS if allowed_tools is None else allowed_tools
+    )
+    tools = sorted(set(tools or []))
+    unknown = [tool for tool in tools if tool not in SKILL_TOOLS]
+    if unknown:
+        raise ScaffoldError(f"unknown tool {unknown[0]}; add it to SKILL_TOOLS in deployer/tools.py first")
     existing = skill_reference.load_source(root)
     skill_md = root / "skills" / name / "SKILL.md"
     meta = root / "deploy-meta" / f"{name}.json"
@@ -165,6 +187,32 @@ def scaffold(
     return skill_reference.problems(root)
 
 
+def scaffold_repository(
+    root: Path,
+    name: str,
+    description: str,
+    argument_hint: str | None = None,
+    user_only: bool = False,
+    allowed_tools: list[str] | None = None,
+) -> list[Path]:
+    """Write a new repository skill's SKILL.md and its shim, and return the paths written, relative to root."""
+    description, argument_hint, allowed = _frontmatter_values(
+        name, description, argument_hint, user_only, allowed_tools
+    )
+    skill_md = skill_shims.SKILLS / name / "SKILL.md"
+    shim = skill_shims.shim_path(name)
+    if name in skill_reference.load_source(root).skills or (root / skill_md.parent).exists():
+        raise ScaffoldError(f"'{name}' is already a shipped or repository skill, or an existing path")
+    if (root / shim.parent).exists():
+        raise ScaffoldError(f"{shim.parent.as_posix()} already exists")
+
+    (root / skill_md.parent).mkdir(parents=True)
+    (root / skill_md).write_text(
+        skill_markdown(name, description, argument_hint, user_only, allowed), encoding="utf-8", newline="\n"
+    )
+    return [skill_md, *skill_shims.write(root, [name])]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     parser.add_argument("name")
@@ -174,15 +222,20 @@ def main(argv: list[str] | None = None) -> int:
         "--user-only", action="store_true", help="only the user may start it (disable-model-invocation)"
     )
     parser.add_argument("--opt-in", action="store_true", help="leave it out of deploy.py --all unless chosen")
+    parser.add_argument(
+        "--repository", action="store_true", help="scaffold a repository skill under .claude/skills, and its shim"
+    )
     parser.add_argument("--tool", action="append", default=[], help="an external tool it runs, from deployer/tools.py")
     parser.add_argument(
         "--allowed-tools",
-        default=",".join(DEFAULT_ALLOWED_TOOLS),
-        help="comma-separated allowed-tools entries (default: Bash "
-        "and PowerShell for the skill's own scripts, and Read)",
+        help="comma-separated allowed-tools entries (default: Bash and PowerShell for the skill's own scripts, and "
+        "Read; none for a repository skill)",
     )
     parser.add_argument("--root", type=Path, default=REPOSITORY_ROOT, help=argparse.SUPPRESS)
     arguments = parser.parse_args(argv)
+    allowed = None if arguments.allowed_tools is None else arguments.allowed_tools.split(",")
+    if arguments.repository:
+        return _main_repository(arguments, allowed)
     try:
         remaining = scaffold(
             arguments.root,
@@ -192,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments.user_only,
             arguments.opt_in,
             arguments.tool,
-            arguments.allowed_tools.split(","),
+            allowed,
         )
     except (OSError, ScaffoldError, skill_reference.ReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
@@ -202,6 +255,21 @@ def main(argv: list[str] | None = None) -> int:
     print(f"UPDATED {skill_reference.REFERENCE.as_posix()}")
     for problem in remaining:
         print(f"REMAINING {problem}")
+    return 0
+
+
+def _main_repository(arguments: argparse.Namespace, allowed: list[str] | None) -> int:
+    try:
+        if arguments.tool or arguments.opt_in:
+            raise ScaffoldError("a repository skill has no deploy metadata, so it takes no --tool or --opt-in")
+        written = scaffold_repository(
+            arguments.root, arguments.name, arguments.description, arguments.argument_hint, arguments.user_only, allowed
+        )
+    except (OSError, ScaffoldError, skill_reference.ReferenceError) as exc:
+        print(f"FAILED {exc}", file=sys.stderr)
+        return 2
+    for path in written:
+        print(f"CREATED {path.as_posix()}")
     return 0
 
 
