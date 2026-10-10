@@ -125,6 +125,17 @@ class ManifestTests(unittest.TestCase):
             with self.subTest(specialist=specialist["id"]):
                 self.assertLessEqual(set(re.findall(r"`([^`]+)`", line)), listed)
 
+    def test_the_documentation_profile_flags_a_count_outside_the_places_claude_md_lets_own_one(self) -> None:
+        # No validation policy can tell a count from a legitimate number, so this reviewer is the rule's only guard.
+        rule = (REPOSITORY / "CLAUDE.md").read_text(encoding="utf-8")
+        profile = (REPOSITORY / SKILL / "references" / "documentation.md").read_text(encoding="utf-8")
+        line = next(line for line in profile.splitlines() if line.startswith("Categories:"))
+        self.assertIn("`Count or date in prose`", line)
+        for place in ("`docs/design.md`", "`docs/upgrade-notes.md`", "supported-runtimes table"):
+            with self.subTest(place=place):
+                self.assertIn(place, rule)
+                self.assertIn(place, profile)
+
 
 class RecommendedConfigurationTests(unittest.TestCase):
     def entry(self) -> dict[str, Any]:

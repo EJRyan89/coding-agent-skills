@@ -10,6 +10,7 @@
     "Correctness",
     "Code-document drift",
     "Documents disagree",
+    "Count or date in prose",
     "Unheld invariant",
     "Grant mismatch",
     "Missing upgrade note",
