@@ -683,6 +683,29 @@ class OtherFilesListTests(unittest.TestCase):
         self.assertEqual([], rs._listed([]))
 
 
+class PromptCommentTests(unittest.TestCase):
+    def test_a_body_is_cut_past_four_thousand_characters_and_every_line_break_is_escaped(self) -> None:
+        comment = {"id": "C1", "author": "a", "path": "src/A.cs", "line": 2, "outdated": False, "url": "u"}
+        kept = {**comment, "body": "k" * 4000}
+        cut = {**comment, "id": "C2", "body": "c" * 4001}
+        breaks = {**comment, "id": "C3", "body": "a\nb\rc\u0085d\u2028e\u2029f"}
+        text = rs.prompt_comments([kept, cut, breaks])
+        self.assertEqual(
+            [
+                kept,
+                {
+                    **cut,
+                    "body": "c" * 4000
+                    + " [cut: 4,001 characters in all; the whole comment is in GITHUB_COMMENTS_FILE]",
+                },
+                breaks,
+            ],
+            json.loads(text),
+        )
+        self.assertIn(r'"body": "a\nb\rc\u0085d\u2028e\u2029f"', text)
+        self.assertEqual(text.count("\n"), len(text.splitlines()) - 1, "every line break in the text is a JSON one")
+
+
 class SymbolicLinkPromptTests(unittest.TestCase):
     DIFF = (
         "diff --git a/tools/cache b/tools/cache\nnew file mode 120000\nindex 0000000..1111111\n--- /dev/null\n"
