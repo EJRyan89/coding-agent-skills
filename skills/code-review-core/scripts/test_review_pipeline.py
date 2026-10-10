@@ -2244,6 +2244,19 @@ class ReadCountTests(PipelineFixture):
         report = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn(f"| 2 ({sum(sizes)} B) |\n", report)
 
+    def test_the_snapshot_manifest_is_not_a_file_read(self) -> None:
+        # files_read counts files of the snapshot, as review.snapshot.files does, and that leaves the manifest out.
+        ready = self.prepare()
+        run, role = Path(ready["run"]), ready["roles"][0]
+        self.assertTrue((run / "source" / "source-snapshot.json").is_file())
+        self.guarded(role, "a71dab35ebc1b97eb", "source-snapshot.json", "app/service.py")
+        with guard.read_log(run, role["id"]).open("a", encoding="utf-8") as stream:
+            stream.write('"./source-snapshot.json"\n"SOURCE-SNAPSHOT.JSON"\n')
+        self.write_role_result(role, findings=[self.finding()])
+        self.assertEqual((0, f"ALL_VALID {SELECTOR}\n", ""), self.run_main("check", "--run", str(run)))
+        size = (run / "source" / "app" / "service.py").stat().st_size
+        self.assertEqual({role["id"]: {"files": 1, "bytes": size}}, rp.load_run(run)["reads"])
+
     def test_finalize_counts_a_log_check_did_not_reach_and_a_reviewer_without_one_is_unknown(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))
         ready = self.prepare()
@@ -3256,7 +3269,8 @@ class ReviewerSourceTests(PipelineFixture):
             ]
         )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(clash)))
-        with self.assertRaisesRegex(Exception, "cannot also be a repository profile or resource: window.py"):
+        # A local condition script that is also a repository profile would be read from the manifest's folder.
+        with self.assertRaisesRegex(Exception, "Adapter declares a file more than once"):
             self.prepare()
 
 
@@ -4184,7 +4198,7 @@ class LocalCommitTests(unittest.TestCase):
             raise GitError("git fetch did not finish within 300 seconds", kind="timeout")
 
         checkout = Path(self.id().replace(".", "-")).resolve()
-        with self.assertRaisesRegex(rp.PipelineError, "git fetch failed in .*did not finish within 300 seconds"):
+        with self.assertRaisesRegex(rp.RuntimeContractError, "git fetch failed in .*did not finish within 300 seconds"):
             rp.ensure_local_commit(checkout, "missing", "refs/pull/3/head", runner)
         self.assertEqual([300.0], timeouts)
 

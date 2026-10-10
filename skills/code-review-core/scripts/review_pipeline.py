@@ -51,7 +51,7 @@ from typing import Any, NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from git_client import GitClient, GitError, GitResult, Runner, subprocess_runner
+from git_client import Runner, subprocess_runner
 from review_analyzers import reads_settings
 from review_archive import ArchiveError, archive_head, commit_record, pull_records
 from review_canary import FixtureError, fixture_change, validate_prior_record
@@ -126,10 +126,12 @@ from review_runtime import (
     MODEL_ALIAS_RUNTIMES,
     RUNTIME_CAPABILITIES,
     SNAPSHOT_FETCHABLE,
+    SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
     build_adapter_request,
     choose_dispatch,
     declared_reviewer_files,
+    git_in,
     github_tarball_fetcher,
     glob_matcher,
     materialize_reviewer,
@@ -285,19 +287,8 @@ class Services:
     copilot_executable: str | None = None
 
 
-def _git(checkout: Path, git: Runner, *arguments: str) -> GitResult:
-    """Run git in the checkout through skill-core's client, with no prompt and a time limit.
-
-    A fetch from a private remote with an expired credential fails instead of waiting on a credential prompt.
-    """
-    try:
-        return GitClient(git).run(arguments, directory=checkout)
-    except GitError as exc:
-        raise PipelineError(f"git {arguments[0]} failed in {checkout}: {exc}") from exc
-
-
 def _has_commit(checkout: Path, commit: str, git: Runner) -> bool:
-    return _git(checkout, git, "cat-file", "-e", f"{commit}^{{commit}}").returncode == 0
+    return git_in(checkout, git, "cat-file", "-e", f"{commit}^{{commit}}").returncode == 0
 
 
 _FETCH_LOCKS: dict[str, threading.Lock] = {}
@@ -318,7 +309,7 @@ def ensure_local_commit(checkout: Path, commit: str, refspec: str, git: Runner) 
     with _fetch_lock(checkout):
         if _has_commit(checkout, commit, git):  # another pull request's fetch may have brought it
             return
-        result = _git(checkout, git, "fetch", "--no-tags", "--quiet", "origin", refspec)
+        result = git_in(checkout, git, "fetch", "--no-tags", "--quiet", "origin", refspec)
     if result.returncode != 0:
         raise PipelineError(f"Cannot fetch {refspec}: {result.stderr.strip() or 'git fetch failed'}")
     if not _has_commit(checkout, commit, git):
@@ -621,7 +612,7 @@ def _default_branch_tip(checkout: Path, services: Services) -> tuple[str, str]:
 
     The checkout's origin is the configured repository, so its default branch holds only what the repository merged.
     """
-    result = _git(checkout, services.git, "ls-remote", "--symref", "origin", "HEAD")
+    result = git_in(checkout, services.git, "ls-remote", "--symref", "origin", "HEAD")
     if result.returncode != 0:
         reason = result.stderr.strip() or "git ls-remote failed"
         raise PipelineError(f"Cannot read origin's default branch: {reason}")
@@ -1634,10 +1625,12 @@ def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
     """Reduce each named role's read log, which the reviewer guard writes, to the distinct snapshot files it names and
     their bytes, add them to the role's counts in run.json's `reads`, and delete the log, so no path outlives this
     step. Returns whether any log was counted. A role without a log had no guard and stays uncounted, and a run
-    prepared before reads were counted has no `reads` and counts nothing."""
+    prepared before reads were counted has no `reads` and counts nothing. The snapshot's own manifest is not a file
+    of the snapshot, as `review.snapshot.files` leaves it out, so reading it counts for nothing."""
     if "reads" not in state:
         return False
     source = run / "source"
+    manifest = os.path.normcase(os.path.normpath(source / SOURCE_SNAPSHOT_MANIFEST))
     counted = False
     for role in roles:
         log = read_log(run, role)
@@ -1649,7 +1642,7 @@ def count_reads(run: Path, state: dict[str, Any], roles: Sequence[str]) -> bool:
                 relative = json.loads(line)
                 target = source.joinpath(relative) if isinstance(relative, str) else source
                 key = os.path.normcase(os.path.normpath(target))
-                if key not in sizes and _inside(target, source) and target.is_file():
+                if key not in sizes and key != manifest and _inside(target, source) and target.is_file():
                     sizes[key] = target.stat().st_size
         total = state["reads"].get(role, {"files": 0, "bytes": 0})
         state["reads"][role] = {"files": total["files"] + len(sizes), "bytes": total["bytes"] + sum(sizes.values())}

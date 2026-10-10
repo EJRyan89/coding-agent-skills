@@ -214,7 +214,7 @@ CSHARP: dict[str, Any] = {
     "profile": "agents/cs.md",
     "include": [r"\.cs$"],
     "exclude": ["/Generated/"],
-    "resources": ["docs/rules.md"],
+    "resources": [],
     "when": None,
     "model": "sonnet",
     "effort": "high",

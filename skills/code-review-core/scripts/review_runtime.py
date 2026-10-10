@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
-from review_config import REVIEWER_EFFORTS, validate_repository_identity
+from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
 
@@ -338,33 +338,6 @@ def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
     return list(value)
 
 
-def _read_patterns(value: Any, field: str) -> list[str]:
-    """The snapshot paths a condition declares it reads: distinct glob patterns, matched as snapshot_exclude globs are
-    (`glob_matcher`), each repository-relative and unable to name the snapshot's root or leave it: no backslash,
-    control character, or empty (so no leading slash), `.`, or `..` segment."""
-    if not isinstance(value, list):
-        raise RuntimeContractError(f"{field} must be an array of glob patterns")
-    if len(value) > MAX_CONDITION_READS:
-        raise RuntimeContractError(f"{field} holds more than {MAX_CONDITION_READS} patterns")
-    seen: set[str] = set()
-    for index, pattern in enumerate(value):
-        if (
-            not isinstance(pattern, str)
-            or not 0 < len(pattern) <= MAX_READ_PATTERN_LENGTH
-            or "\\" in pattern
-            or re.search(r"[\x00-\x1f\x7f]", pattern)
-            or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
-        ):
-            raise RuntimeContractError(
-                f"{field}[{index}] must be a repository-relative glob pattern of 1 to {MAX_READ_PATTERN_LENGTH} "
-                f"characters, without a backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}"
-            )
-        if pattern.casefold() in seen:
-            raise RuntimeContractError(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
-        seen.add(pattern.casefold())
-    return list(value)
-
-
 def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     conditions = value["conditions"]
     if not isinstance(conditions, dict):
@@ -377,7 +350,14 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeContractError(f"Adapter condition {name} must declare a script and may declare reads")
         normalized_conditions[name] = {"script": _safe_relative_path(condition["script"], f"conditions.{name}.script")}
         if "reads" in condition:
-            normalized_conditions[name]["reads"] = _read_patterns(condition["reads"], f"conditions.{name}.reads")
+            # Matched as snapshot_exclude globs are (`glob_matcher`), so validated as they are.
+            normalized_conditions[name]["reads"] = validate_glob_patterns(
+                condition["reads"],
+                f"conditions.{name}.reads",
+                maximum_patterns=MAX_CONDITION_READS,
+                maximum_length=MAX_READ_PATTERN_LENGTH,
+                error=RuntimeContractError,
+            )
     specialists = value["specialists"]
     if not isinstance(specialists, list) or not specialists:
         raise RuntimeContractError("Adapter specialists must be a non-empty array")
@@ -423,18 +403,29 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def declared_reviewer_files(manifest: dict[str, Any]) -> list[str]:
-    """Every trusted repository file a validated manifest declares, without duplicates. A suite profile is not one."""
+    """Every trusted repository file a validated manifest declares, once each, in order. A suite profile is not one."""
     if manifest.get("kind") == "specialists":
         files = list(manifest["resources"])
         for specialist in manifest["specialists"]:
-            for path in (specialist["profile"], *specialist["resources"]):
-                if path not in files and not is_suite_profile(path):
-                    files.append(path)
-        for condition in manifest["conditions"].values():
-            if condition["script"] not in files:
-                files.append(condition["script"])
-        return files
+            profile = specialist["profile"]
+            files.extend([*([] if is_suite_profile(profile) else [profile]), *specialist["resources"]])
+        files.extend(condition["script"] for condition in manifest["conditions"].values())
+        return list(dict.fromkeys(files))
     return [manifest["entrypoint"], *manifest["resources"], *manifest["agent_profiles"]]
+
+
+def _specialists_manifest_roles(manifest: dict[str, Any]) -> list[list[str]]:
+    """A specialists manifest's repository files by role, each read from its own commit: the top-level resources,
+    the specialists' profiles, their own resources (guidelines, read from the base when it has them), and the
+    condition scripts (read from beside a local manifest when there is one). Several specialists may name one
+    profile or guideline, and several conditions one script; a suite profile is no repository file."""
+    specialists = manifest["specialists"]
+    return [
+        list(manifest["resources"]),
+        [specialist["profile"] for specialist in specialists if not is_suite_profile(specialist["profile"])],
+        [path for specialist in specialists for path in specialist["resources"]],
+        [condition["script"] for condition in manifest["conditions"].values()],
+    ]
 
 
 def validate_adapter_manifest(value: Any) -> dict[str, Any]:
@@ -498,13 +489,13 @@ def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(value)
     normalized["resources"] = _path_list(value["resources"], "resources")
     normalized.update(_validate_specialists(value))
-    declared = [*normalized["resources"]]
-    for specialist in normalized["specialists"]:
-        declared.extend([specialist["profile"], *specialist["resources"]])
-    declared.extend(condition["script"] for condition in normalized["conditions"].values())
-    if len(set(normalized["resources"])) != len(normalized["resources"]):
+    # A file has one role, so one purpose and one source: a guideline that is also a shared resource would be read
+    # from the base for one and the trusted ref for the other. A list that names a file twice is a mistake.
+    roles = [set(role) for role in _specialists_manifest_roles(normalized)]
+    lists = [normalized["resources"], *(specialist["resources"] for specialist in normalized["specialists"])]
+    if sum(map(len, roles)) != len(set().union(*roles)) or any(len(set(paths)) != len(paths) for paths in lists):
         raise RuntimeContractError("Adapter declares a file more than once")
-    _refuse_reserved_paths(declared)
+    _refuse_reserved_paths(declared_reviewer_files(normalized))
     return normalized
 
 
@@ -613,20 +604,21 @@ def resolve_runtime(configured: str, host: str | None = None) -> str:
     raise RuntimeContractError("No supported local runtime host is available")
 
 
-def _git(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
+def git_in(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
     """Run git in the checkout through skill-core's client, whose `runner` tests replace.
 
-    git reads no stdin, shows no prompt, and stops at the client's time limit; git that cannot run or finish breaks
-    the contract like a failed command.
+    git reads no stdin, shows no prompt, and stops at the client's time limit, so a fetch from a private remote with
+    an expired credential fails instead of waiting on a credential prompt. git that cannot run or finish breaks the
+    contract like a failed command; one that runs and fails returns its result for the caller to judge.
     """
     try:
         return GitClient(runner).run(arguments, directory=checkout)
     except GitError as exc:
-        raise RuntimeContractError(str(exc)) from exc
+        raise RuntimeContractError(f"git {arguments[0]} failed in {checkout}: {exc}") from exc
 
 
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
-    result = _git(checkout, runner, *arguments)
+    result = git_in(checkout, runner, *arguments)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "git command failed"
         raise RuntimeContractError(output_bytes(detail).decode("utf-8", "replace"))
@@ -673,7 +665,7 @@ def _read_git_file(checkout: Path, commit: str, relative: str, runner: Runner) -
     fields = mode_line.split(None, 3)
     if len(fields) != 4 or fields[1] != "blob" or fields[0] == "120000":
         raise RuntimeContractError(f"Declared reviewer file is not a regular file: {relative}")
-    result = _git(checkout, runner, "show", f"{commit}:{relative}")
+    result = git_in(checkout, runner, "show", f"{commit}:{relative}")
     if result.returncode != 0:
         raise RuntimeContractError(f"Cannot read declared reviewer file: {relative}")
     return output_bytes(result.stdout)
@@ -722,30 +714,20 @@ def load_manifest_from_file(path: Path) -> dict[str, Any]:
 
 
 def local_reviewer_files(manifest: dict[str, Any]) -> list[str]:
-    """Files a local manifest supplies itself: its condition scripts. Everything else comes from the repository."""
+    """Files a validated local manifest supplies itself: its condition scripts. Everything else comes from the
+    repository, and validation has refused a script that is also a profile or resource, since no file is declared
+    twice."""
     if manifest.get("kind") != "specialists":
         return []
-    scripts = {condition["script"] for condition in manifest["conditions"].values()}
-    repository = set(manifest["resources"]) | {
-        path for specialist in manifest["specialists"] for path in (specialist["profile"], *specialist["resources"])
-    }
-    clashes = sorted(scripts & repository)
-    if clashes:
-        raise RuntimeContractError(
-            "A local condition script cannot also be a repository profile or resource: " + ", ".join(clashes)
-        )
-    return sorted(scripts)
+    return sorted({condition["script"] for condition in manifest["conditions"].values()})
 
 
 def specialist_guidelines(manifest: dict[str, Any]) -> set[str]:
-    """Documents only specialists declare as their own resources (the rules a review applies)."""
+    """Documents specialists declare as their own resources (the rules a review applies). Validation has refused one
+    that is also a shared resource, a profile, or a condition script, which are read from the trusted commit."""
     if manifest.get("kind") != "specialists":
         return set()
-    guidelines = {path for specialist in manifest["specialists"] for path in specialist["resources"]}
-    instructions = set(manifest["resources"])
-    instructions.update(specialist["profile"] for specialist in manifest["specialists"])
-    instructions.update(condition["script"] for condition in manifest["conditions"].values())
-    return guidelines - instructions
+    return {path for specialist in manifest["specialists"] for path in specialist["resources"]}
 
 
 def materialize_reviewer(

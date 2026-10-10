@@ -1152,6 +1152,27 @@ def _as_is(manifest: Any) -> Any:
     return manifest
 
 
+def _second_specialist(**fields: Any) -> ManifestMutation:
+    """Add a second specialist with files of its own, except the fields given."""
+
+    def apply(manifest: Any) -> Any:
+        manifest["specialists"].append(
+            {
+                "id": "docs-reviewer",
+                "category": "Docs",
+                "profile": "agents/docs.md",
+                "include": [r"\.md$"],
+                "exclude": [],
+                "resources": ["shared/docs.md"],
+                "when": None,
+                **copy.deepcopy(fields),
+            }
+        )
+        return manifest
+
+    return apply
+
+
 def _entrypoint_result(**changes: Any) -> dict[str, Any]:
     """The base entrypoint manifest as validate_adapter_manifest returns it, with the given fields replaced."""
     result = _entrypoint_manifest()
@@ -1258,11 +1279,54 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         ),
     ),
     (
-        "a profile that is also a resource",
+        # A suite profile is a name, not a repository file, so two specialists may name the same one.
+        "two specialists that name the same suite profile",
         _specialists_manifest,
-        _put(("specialists", 0, "profile"), "shared/guide.md"),
+        _both(
+            _put(("specialists", 0, "profile"), "suite:design-review"),
+            _second_specialist(profile="suite:design-review"),
+        ),
         _specialists_result(
-            specialists=[{**_specialists_result()["specialists"][0], "profile": "shared/guide.md"}],
+            specialists=[
+                {**_specialists_result()["specialists"][0], "profile": "suite:design-review"},
+                {
+                    "id": "docs-reviewer",
+                    "category": "Docs",
+                    "profile": "suite:design-review",
+                    "include": [r"\.md$"],
+                    "exclude": [],
+                    "resources": ["shared/docs.md"],
+                    "when": None,
+                },
+            ],
+        ),
+    ),
+    (
+        # Several specialists may share a profile or a guideline, which keeps its one role and its one source.
+        "two specialists that share a profile and a guideline",
+        _specialists_manifest,
+        _second_specialist(profile="agents/python.md", resources=["shared/python.md"]),
+        _specialists_result(
+            specialists=[
+                _specialists_result()["specialists"][0],
+                {
+                    "id": "docs-reviewer",
+                    "category": "Docs",
+                    "profile": "agents/python.md",
+                    "include": [r"\.md$"],
+                    "exclude": [],
+                    "resources": ["shared/python.md"],
+                    "when": None,
+                },
+            ],
+        ),
+    ),
+    (
+        "two conditions that share a script",
+        _specialists_manifest,
+        _put(("conditions", "open"), {"script": "conditions/window.py"}),
+        _specialists_result(
+            conditions={"window": {"script": "conditions/window.py"}, "open": {"script": "conditions/window.py"}}
         ),
     ),
     (
@@ -1581,6 +1645,50 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _put(("resources",), ["materialization.json"]),
         RuntimeContractError,
         RESERVED,
+    ),
+    # A file of a specialists manifest has one role (a top-level resource, a profile, a specialist's guideline, or a
+    # condition script), each read from its own commit, and no list names it twice.
+    (
+        "a profile that is also a resource",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "./shared/guide.md"),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a specialist resource that is also a top-level resource",
+        _specialists_manifest,
+        _put(("specialists", 0, "resources"), ["shared/guide.md"]),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a specialist resource listed twice",
+        _specialists_manifest,
+        _put(("specialists", 0, "resources"), ["shared/python.md", "shared/./python.md"]),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "one specialist's profile that is another's guideline",
+        _specialists_manifest,
+        _second_specialist(resources=["agents/python.md"]),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a specialist resource that is a condition script",
+        _specialists_manifest,
+        _put(("specialists", 0, "resources"), ["conditions/window.py"]),
+        RuntimeContractError,
+        TWICE,
+    ),
+    (
+        "a profile that is a condition script",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), "conditions/window.py"),
+        RuntimeContractError,
+        TWICE,
     ),
     (
         "a reserved profile",

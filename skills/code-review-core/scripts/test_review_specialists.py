@@ -85,7 +85,7 @@ def manifest(**overrides: object) -> dict:
                 "profile": "agents/cs.md",
                 "include": [r"\.cs$"],
                 "exclude": [r"/Generated/"],
-                "resources": ["docs/rules.md"],
+                "resources": [],
                 "when": None,
             },
             {
@@ -111,6 +111,10 @@ class ManifestTests(unittest.TestCase):
             ["docs/rules.md", "agents/db.md", "docs/db.md", "agents/cs.md", "agents/compat.md", "tools/window.py"],
             declared_reviewer_files(normalized),
         )
+        # A profile and a guideline two specialists share are one file each, materialized and hashed once.
+        value = manifest()
+        value["specialists"].append({**value["specialists"][0], "id": "db-style", "include": [r"^db/.*\.ddl$"]})
+        self.assertEqual(declared_reviewer_files(normalized), declared_reviewer_files(validate_adapter_manifest(value)))
 
     def test_invalid_manifests_fail_closed(self) -> None:
         cases = {
