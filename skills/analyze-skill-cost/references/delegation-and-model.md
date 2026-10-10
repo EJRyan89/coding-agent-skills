@@ -9,7 +9,9 @@ Review every `agent` cue. For each subagent invocation:
 - Injected context that could be passed as a file path instead (e.g. an inlined file list) → SUGGESTION.
 - A scope narrow enough for an inline search or read → SUGGESTION.
 - `subagent-reply` (the skill delegates but never bounds the reply) → SUGGESTION: even when the result goes to a file, every closing message lands in the orchestrator's context. Recommend a fixed one-line reply such as `WROTE <path>`.
-- Each `RUNTIME_PROMPT <file> <line> <script>`: a subagent reads a prompt that the named script (or `unknown`) writes at runtime, so this audit cannot see it. Never judge it as a small prompt; report a SUGGESTION to audit what that script renders: its size, any chain of reads it starts, and whether it bounds the reply.
+- Each `RUNTIME_PROMPT <file> <line> <script>`: a subagent reads a prompt that the named script (or `unknown`) writes at runtime, which the skill's own files never show. The lines after it measure the rendered sample of that prompt, kept in the skill's source tree:
+  - `RUNTIME_PROMPT_SAMPLE <sample> <tokens>`, the rendered prompt's estimate; `RUNTIME_PROMPT_READ <sample> <path> <tokens>`, each skill file it tells the subagent to read on every run; and `REPLY_BOUNDED <sample> yes|no`. Report each sample in the Scope. Judge the sample as you judge a body, by content: a SUGGESTION only for a prompt that restates its reads or carries text the subagent never acts on, a read whose content the prompt could carry in a line, or a read that sends the subagent on to further files. `REPLY_BOUNDED <sample> no` → SUGGESTION to end the prompt with a fixed one-line reply such as `WROTE <path>`. Otherwise the runtime prompt has no finding.
+  - `RUNTIME_PROMPT_UNSAMPLED <file> <line> <reason>`: no sample was found, for the reason given. Never judge the prompt as a small one; report a SUGGESTION to audit what that script renders by hand (its size, any chain of reads it starts, and whether it bounds the reply), naming the reason, and to keep a rendered sample beside the source.
 - A subagent call inside a loop over N items with no cap → **MUST FIX** (unbounded fan-out).
 
 ## Model

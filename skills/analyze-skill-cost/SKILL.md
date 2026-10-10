@@ -81,7 +81,7 @@ Recommend a tested command under `scripts/` that prints one fact per line, so th
 
 ## Step 6 — Agent delegation cost
 
-When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section. Otherwise the skill delegates nothing and this bucket has no findings.
+When Step 5 printed an `agent` or `subagent-reply` cue or a `RUNTIME_PROMPT` line, read `${CLAUDE_SKILL_DIR}/references/delegation-and-model.md` and judge them by its Delegation section; it also says what the runtime prompt lines that follow mean. Otherwise the skill delegates nothing and this bucket has no findings.
 
 ## Step 7 — Model, allowed-tools, and listing
 
@@ -131,6 +131,7 @@ Group all findings into four buckets. Within each bucket, subdivide into MUST FI
   - Supporting docs ≈ <M> tok
   - Helpers ≈ <K> tok (invoked via a shell — not auto-loaded)
   - Outside reads ≈ <T> tok in <n> files (read on every run)
+  - Runtime prompt <sample> ≈ <N> tok, its reads ≈ <M> tok in <n> files, reply bounded <yes|no> (one line per sample; omit when none)
 - Frontmatter model: <value or "(inherits caller)">
 - Listing: <INVOCATION>, description ≈ <N> tok loaded every session while model-invocable
 - Allowed tools: <comma-separated list>
