@@ -31,8 +31,8 @@ holds the rules validation enforces.
 
 ## Contract files
 
-A change to any of these is a contract change and raises the release level (the Versioning section of
-[releasing.md](releasing.md) holds the contracts and levels):
+A change to any of these is a contract change, raises the release level, and is named under `## Upgrade note` in the
+pull request body (the Versioning section of [releasing.md](releasing.md) holds the contracts and levels):
 
 - `MANIFEST_VERSION` and `OLDEST_READABLE_VERSION` in `deployer/manifest.py`;
 - a `required_vars` list under `deploy-meta/`;
@@ -60,7 +60,7 @@ Each fact has one owner; update the owner in the same change.
 | `CONTRIBUTING.md` | The contributor path from a clone to a merged pull request, and the full account of the Python format, lint, and type checks (`CLAUDE.md` keeps the rules a session acts on). |
 | `SECURITY.md` | The supported line, how to report a vulnerability, and the security-sensitive areas. |
 | `docs/dependency-updates.md` | Every pin and floor: where it is declared, how it is updated and reviewed, and the check that holds it. |
-| `docs/upgrade-notes.md` | What each release changes for an installation, one entry per changed contract item. |
+| `docs/upgrade-notes.md` | What each release changes for an installation, one entry per change a user meets, written at release from each pull request body's `## Upgrade note`. |
 | `docs/code-review-operations-contract.md` | The behavior the code-review skills promise to keep, and the formats of their records. |
 
 ## Model guidance

@@ -24,7 +24,7 @@ Keep a full clone, and fetch `main` and the tags before validating:
 git fetch origin main --tags
 ```
 
-Validation reads both: the runner compares with `origin/main` to find a documentation-only change, and the upgrade-notes check compares the contract files at the last tag reachable from `origin/main` with the working tree. A missing `origin/main` or a shallow clone fails that check with the command that fixes it. A clone whose `origin` is a fork without this repository's tags passes it silently, because with no tag it treats nothing as released; cloning this repository and pushing to the fork avoids that.
+Validation reads both: the runner compares with `origin/main` to find a documentation-only change, and the upgrade-notes check compares the contract files at the last tag reachable from `origin/main` with the working tree and reads the upgrade notes of the commits since that tag. A missing `origin/main` or a shallow clone fails that check with the command that fixes it. A clone whose `origin` is a fork without this repository's tags passes it silently, because with no tag it treats nothing as released; cloning this repository and pushing to the fork avoids that.
 
 ## Development environment
 
@@ -91,7 +91,7 @@ For the complete skill template and metadata contract, see [Adding a skill](docs
 
 ### Upgrade notes
 
-A change to a contract, such as a skill directory name, a `required_vars` list, a tool floor, the manifest version, or a code-review record format, adds an entry under `## Unreleased` in [Upgrade notes](docs/upgrade-notes.md) in the same pull request, in the format that page states. The [Versioning](docs/releasing.md#versioning) section of Releasing lists the contracts and the levels. Validation's upgrade-notes check compares those contract files at the last tag with the working tree and fails, naming the item and what the entry must say, while a changed item has no new entry. Skill arguments, status lines, and deployer flags have no contract file, so add their entry without being asked. A change that touches no contract needs no entry.
+A change to a contract, such as a skill directory name, a `required_vars` list, a tool floor, the manifest version, or a code-review record format, states what it asks of a user who updates under `## Upgrade note` in the pull request body, in the format [Upgrade notes](docs/upgrade-notes.md) states; so does a fix or an addition a user meets. Nobody edits `docs/upgrade-notes.md` for a change: the repository squash-merges with the body as the commit message, and `tools/release_notes.py` writes each release's section from those messages before tagging. The [Versioning](docs/releasing.md#versioning) section of Releasing lists the contracts and the levels. Validation's upgrade-notes check compares those contract files at the last tag with the working tree and fails, naming the item and what the entry must say, while a changed item is named by no upgrade note since the tag. In a pull request it reads the body, which CI passes it, and the commits merged into `origin/main`; locally it reads the branch's commit messages, or the body from a file with `python -B tests/run_validation.py --pr-body '<file>'`. Editing the body reruns the check. Skill arguments, status lines, and deployer flags have no contract file, so add their entry without being asked. A change that touches nothing a user meets writes `None` under the heading.
 
 ## Validation
 
@@ -127,6 +127,7 @@ Validation type-checks with `mypy` at its default strictness and with the `[tool
 
 - the `validate` check is required, and it is strict: a branch must be up to date with `main` before it can merge, so a pull request that is behind is refused until `origin/main` is merged into it;
 - linear history is required, and the repository allows squash merges only, with merge commits and rebase merges turned off, so each pull request lands as one commit;
+- the squash commit takes the pull request's title as its title and its body as its message, so each change's upgrade note reaches `main`'s history, which the release notes are written from;
 - unresolved review conversations block the merge until each one is resolved;
 - no approval is required, so a passing, current, resolved pull request can merge;
 - force pushes to `main` and deleting it are refused; and
@@ -157,7 +158,7 @@ The template's sections ask for the problem and the chosen behavior, the user-vi
 - for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` reason;
 - for a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
 - for a skill change, `analyze-skill-cost` audited each changed skill from the source tree with no MUST FIX left, and any SUGGESTION left is named with why;
-- for a contract change, an entry under `## Unreleased` in `docs/upgrade-notes.md` names each changed contract item;
+- for a contract change, the body's `## Upgrade note` has an entry naming each changed contract item;
 - documentation is updated in the same change; and
 - the diff is reviewed for personal paths, organization names, credentials, and generated artifacts.
 

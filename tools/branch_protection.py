@@ -98,6 +98,15 @@ def protection_problems(
         (repository.get("allow_squash_merge") is True, "squash merges are not allowed"),
         (repository.get("allow_merge_commit") is False, "merge commits are allowed"),
         (repository.get("allow_rebase_merge") is False, "rebase merges are allowed"),
+        (
+            repository.get("squash_merge_commit_title") == "PR_TITLE",
+            "a squash commit's title is not the pull request's title (expected PR_TITLE)",
+        ),
+        (
+            repository.get("squash_merge_commit_message") == "PR_BODY",
+            "a squash commit's message is not the pull request's body, which carries its upgrade note "
+            "(expected PR_BODY)",
+        ),
         (_status(repository, "secret_scanning") == "enabled", "secret scanning is not enabled"),
         (_status(repository, "secret_scanning_push_protection") == "enabled", "push protection is not enabled"),
         (reporting.get("enabled") is True, "private vulnerability reporting is not enabled"),

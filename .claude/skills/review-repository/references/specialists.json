@@ -5,7 +5,7 @@
   "kind": "specialists",
   "supports": ["initial", "re-review"],
   "required_capabilities": ["read-diff", "write-result"],
-  "resources": ["docs/design.md", "docs/adding-a-skill.md", "skills/skill-core/scripts/console.py"],
+  "resources": ["docs/design.md", "docs/adding-a-skill.md"],
   "finding_categories": [
     "Correctness",
     "Code-document drift",
@@ -84,18 +84,12 @@
         "^deploy-meta/[^/]+\\.json$",
         "^skills/code-review-core/references/[^/]+\\.schema\\.json$",
         "^docs/code-review-operations-contract\\.md$",
-        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$",
-        "^docs/upgrade-notes\\.md$"
+        "^skills/(?:[^/]+/)?[^/]+/SKILL\\.md$"
       ],
       "exclude": [],
       "resources": ["docs/releasing.md"],
-      "when": "upgrade-notes-kept"
+      "when": null
     }
   ],
-  "conditions": {
-    "upgrade-notes-kept": {
-      "script": ".claude/skills/review-repository/scripts/upgrade_notes_kept.py",
-      "reads": ["docs/upgrade-notes.md"]
-    }
-  }
+  "conditions": {}
 }

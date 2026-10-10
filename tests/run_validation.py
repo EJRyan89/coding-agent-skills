@@ -1,6 +1,6 @@
 """Run the complete repository validation suite.
 
-Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full]
+Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE]
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
@@ -12,11 +12,16 @@ number of workers.
 
 When every changed file is documentation, it runs the policy checks and only the suites that name a changed
 file; anything else, or a change it cannot determine, runs everything. --full always runs everything.
+
+--pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
+the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
+notes in the commit messages since that tag on HEAD, the branch's own included.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import io
 import os
@@ -24,6 +29,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
@@ -153,6 +159,21 @@ class DocumentationDecision(unittest.TestCase):
                 self.assertIn(reason, why)
 
 
+class PullRequestBodyOption(unittest.TestCase):
+    def test_a_body_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
+        missing = REPOSITORY_ROOT / "tests" / "no such body.md"
+        with (
+            mock.patch.object(upgrade_notes, "pull_request_body", None),
+            mock.patch(f"{__name__}.tool_versions") as versions,
+            contextlib.redirect_stderr(io.StringIO()) as error,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            main(["--pr-body", str(missing)])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn(f"--pr-body is not a file: {missing}", error.getvalue())
+        versions.assert_not_called()
+
+
 def run_policies(policies: unittest.TestSuite, verbose: bool) -> unittest.TestResult:
     """Run the policy checks into a buffer and print their report in one block once they finish."""
     report = io.StringIO()
@@ -174,7 +195,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="list each policy check and suite as it finishes")
     parser.add_argument("--full", action="store_true", help="run every suite even when only documentation changed")
+    parser.add_argument(
+        "--pr-body",
+        type=Path,
+        metavar="FILE",
+        help="a file holding the pull request body, whose ## Upgrade note the upgrade-notes check reads",
+    )
     arguments = parser.parse_args(argv)
+    if arguments.pr_body is not None and not arguments.pr_body.is_file():
+        parser.error(f"--pr-body is not a file: {arguments.pr_body}")
+    upgrade_notes.pull_request_body = arguments.pr_body
     versions = tool_versions()
     if report_prerequisite_problems(versions):
         return 2

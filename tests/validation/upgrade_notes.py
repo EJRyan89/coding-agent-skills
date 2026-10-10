@@ -1,4 +1,4 @@
-"""The upgrade-notes guard: each contract item changed since the last tag is named by a new upgrade-notes entry."""
+"""The upgrade-notes guard: each contract item changed since the last tag is named by an upgrade note since then."""
 
 from __future__ import annotations
 
@@ -13,10 +13,12 @@ from pathlib import Path
 
 from validation_support import REPOSITORY_ROOT, _markdown_section, repository_files
 
+from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
+
 # The upgrade-notes guard: the contract files the Versioning section of docs/releasing.md judges a release by, read at
 # the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
-# needs no entry.
-UPGRADE_NOTES = "docs/upgrade-notes.md"
+# needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
+# the pull request body the runner was given with --pr-body.
 RELEASING_DOC = "docs/releasing.md"
 RELEASE_BRANCH = "origin/main"
 MANIFEST_MODULE = "deployer/manifest.py"
@@ -28,9 +30,10 @@ FORMATS_DOC = "docs/code-review-operations-contract.md"
 FORMATS_HEADING = "## Formats"
 VERSIONING_HEADING = "## Versioning"
 LEVEL_ITEM = re.compile(r"- \*\*([A-Za-z]+)\.\*\*")
-NOTES_FIELDS = ("Level", "Contract", "User action", "Pull request")
-NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
-NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
+NOTES_FIELDS = ("Level", "Contract", "User action")
+# The only sections the notes file has below its title are versions', which tools/release_notes.py writes.
+NOTES_SECTION = re.compile(r"^## (.*)$", re.MULTILINE)
+VERSION = re.compile(r"v\d+\.\d+\.\d+")
 PULL_REQUESTS = re.compile(r"#\d+(?:,? (?:and )?#\d+)*")
 
 
@@ -43,17 +46,6 @@ class Snapshot:
 
     def text(self, name: str) -> str | None:
         return self.read(name).replace("\r\n", "\n") if name in self.names else None
-
-
-@dataclass(frozen=True)
-class NotesEntry:
-    heading: str
-    fields: dict[str, str]
-    text: str
-
-    @property
-    def contract_items(self) -> set[str]:
-        return {item.rstrip("/") for item in re.findall(r"`([^`]+)`", self.fields.get("Contract", ""))}
 
 
 def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -188,26 +180,18 @@ def versioning_levels(releasing: str) -> list[str]:
     return levels
 
 
-def notes_entries(text: str | None) -> list[NotesEntry]:
-    """The upgrade-notes entries: each ### heading with its field lines."""
-    entries: list[NotesEntry] = []
-    for block in NOTES_ENTRY_START.split(text or ""):
-        if block.startswith("### "):
-            heading, _, body = block.partition("\n")
-            fields = {match.group(1): match.group(2) for match in NOTES_FIELD.finditer(body)}
-            normalized = "\n".join(line.rstrip() for line in block.strip().split("\n"))
-            entries.append(NotesEntry(heading[4:].strip(), fields, normalized))
-    return entries
-
-
 def _either(words: list[str]) -> str:
     return words[0] if len(words) == 1 else f"{', '.join(words[:-1])}, or {words[-1]}"
 
 
-def notes_entry_problems(entry: NotesEntry, levels: list[str]) -> list[str]:
-    where = f"{UPGRADE_NOTES} entry '{entry.heading}'"
+def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
+    """Each field an entry leaves out or fills wrongly; one written by hand in the notes file also names its pull
+    request, which the release script otherwise takes from the squash title."""
+    entry = item.entry
+    where = f"{item.where} entry '{entry.heading}'"
+    fields = (*NOTES_FIELDS, "Pull request") if item.from_notes else NOTES_FIELDS
     problems = [
-        f"{where} is missing '- {field}:' or leaves it empty" for field in NOTES_FIELDS if not entry.fields.get(field)
+        f"{where} is missing '- {field}:' or leaves it empty" for field in fields if not entry.fields.get(field)
     ]
     level = re.match(r"[A-Za-z]+", entry.fields.get("Level", ""))
     if level and level.group(0).lower() not in levels:
@@ -224,38 +208,66 @@ def notes_entry_problems(entry: NotesEntry, levels: list[str]) -> list[str]:
     return problems
 
 
-def upgrade_notes_problems(root: Path) -> list[str]:
-    """Report each contract item changed since the last tag that no upgrade-notes entry added since then names.
+def notes_layout_problems(notes: str | None) -> list[str]:
+    """A section of the notes file that is not a version's: entries now live in pull request bodies."""
+    return [
+        f"{UPGRADE_NOTES} has a '## {heading}' section; an entry goes under {BODY_HEADING} in the pull request "
+        "body, and tools/release_notes.py writes each version's section from the merged commits when it is released"
+        for heading in NOTES_SECTION.findall(notes or "")
+        if not VERSION.fullmatch(heading.strip())
+    ]
+
+
+def upgrade_notes_problems(root: Path, body: str | None = None) -> list[str]:
+    """Report each contract item changed since the last tag that no upgrade note since then names.
 
     The last tag is the one `git describe --tags --abbrev=0 origin/main` names; with none reachable, nothing has been
-    released and every change is free. A new entry must give its level in the Versioning section's own words.
+    released and every change is free. The notes are the entries tools/release_notes.py reads from the commits since
+    the tag and, given a pull request body, from its `## Upgrade note`. With a body, the commits are origin/main's,
+    because the body, not the branch's own commit messages, becomes the squash commit's message; without one, they
+    are HEAD's, so a local run reads the branch's commits. Each entry must give its level in the Versioning section's
+    own words.
     """
+    current = working_snapshot(root)
+    problems = notes_layout_problems(current.text(UPGRADE_NOTES))
     tag, problem = last_release_tag(root)
     if problem is not None:
-        return [problem]
+        return [*problems, problem]
     if tag is None:
-        return []
+        return problems
     levels = versioning_levels((root / RELEASING_DOC).read_text(encoding="utf-8"))
     if not levels:
         return [f"{RELEASING_DOC} has no **Levels** list under {VERSIONING_HEADING} for upgrade-notes entries to use"]
-    released, current = tag_snapshot(root, tag), working_snapshot(root)
-    old_entries = {entry.text for entry in notes_entries(released.text(UPGRADE_NOTES))}
-    added = [entry for entry in notes_entries(current.text(UPGRADE_NOTES)) if entry.text not in old_entries]
-    problems = [problem for entry in added for problem in notes_entry_problems(entry, levels)]
-    named = {item for entry in added for item in entry.contract_items}
+    try:
+        sourced = range_entries(root, tag, RELEASE_BRANCH if body is not None else "HEAD")
+    except ValueError as error:
+        return [*problems, f"the upgrade-notes check cannot read the commits since {tag}: {error}"]
+    if body is not None:
+        sourced += [
+            SourcedEntry(entry, f"the pull request body's {BODY_HEADING}", None, from_notes=False)
+            for entry in body_entries(body)
+        ]
+    problems += [problem for item in sourced for problem in notes_entry_problems(item, levels)]
+    named = {item for sourced_entry in sourced for item in sourced_entry.entry.contract_items}
     problems += [
-        f"{item}: {description} changed since {tag}, and no entry added to {UPGRADE_NOTES} since then names it; add "
-        f"one under ## Unreleased naming `{item}` with its level ({_either(levels)}, per the Versioning section of "
-        f"{RELEASING_DOC}), the user action or none, and the pull request"
-        for item, description in changed_contract_items(released, current)
+        f"{item}: {description} changed since {tag}, and no upgrade note since then names it; add an entry under "
+        f"{BODY_HEADING} in the pull request body naming `{item}` with its level ({_either(levels)}, per the "
+        f"Versioning section of {RELEASING_DOC}) and the user action or none (a local run reads the body from "
+        "--pr-body <file>, and otherwise the branch's commit messages)"
+        for item, description in changed_contract_items(tag_snapshot(root, tag), current)
         if item not in named
     ]
     return problems
 
 
+# The pull request body file tests/run_validation.py was given with --pr-body, read by the policy check below.
+pull_request_body: Path | None = None
+
+
 class UpgradeNotesPolicies(unittest.TestCase):
     def test_the_repository_names_every_contract_change_since_its_last_tag(self) -> None:
-        self.assertEqual([], upgrade_notes_problems(REPOSITORY_ROOT))
+        body = None if pull_request_body is None else pull_request_body.read_text(encoding="utf-8")
+        self.assertEqual([], upgrade_notes_problems(REPOSITORY_ROOT, body))
 
     def test_levels_are_the_words_of_the_versioning_section(self) -> None:
         releasing = (REPOSITORY_ROOT / "docs" / "releasing.md").read_text(encoding="utf-8")
