@@ -249,6 +249,22 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 "starts its Level with 'breaking', not one of the levels in the Versioning section of "
                 "docs/releasing.md: patch, minor, or major",
             ),
+            # A Level that starts with no word at all is held to the same rule, not skipped.
+            "numeric": (
+                self.entry("`deployer/manifest.py`", level="0.5.0"),
+                "starts its Level with '0.5.0.', not one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
+            "punctuation first": (
+                self.entry("`deployer/manifest.py`", level="`minor`"),
+                "starts its Level with '`minor`.', not one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
+            "word run into a digit": (
+                self.entry("`deployer/manifest.py`", level="minor2"),
+                "starts its Level with 'minor2.', not one of the levels in the Versioning section of "
+                "docs/releasing.md: patch, minor, or major",
+            ),
             "action": (
                 self.entry("`deployer/manifest.py`", action=""),
                 "is missing '- User action:' or leaves it empty",
@@ -262,6 +278,19 @@ class UpgradeNotesPolicy(unittest.TestCase):
         for name, (entry, expected) in cases.items():
             with self.subTest(case=name):
                 self.assertIn(f"{where} {expected}", self.problems(self.MANIFEST_CHANGE, self.body(entry)))
+
+    def test_a_level_that_is_a_sentence_starting_with_a_level_word_passes(self) -> None:
+        self.release()
+        for level in (
+            "minor",
+            "Patch. A fix",
+            "minor: an addition; before `1.0.0` the minor level carries what would be major",
+            "minor, because before 1.0.0 the minor level carries it",
+        ):
+            with self.subTest(level=level):
+                entry = self.entry("`deployer/manifest.py`", level=level)
+                self.assertEqual([], self.problems(self.MANIFEST_CHANGE, self.body(entry)))
+                self.restore()
 
     def test_an_entry_written_by_hand_must_name_its_pull_request(self) -> None:
         self.release()
