@@ -54,7 +54,7 @@ A canary can also review a fixture directory in place of a pull request, with no
 /review-prs --canary --fixture <directory> --re-review --prior <record>
 ```
 
-The directory holds the change as two trees, `base/` and `head/`, and the pull request around it in `pull.json` ("Fixture pull request" in the [contract](code-review-operations-contract.md#fixture-pull-request) states its fields). `prepare` reads nothing from GitHub. It commits both trees, byte for byte, to a throwaway repository, takes the base and head commits and the diff from it, and snapshots the head from it by the same path a checkout's head takes, with every exclusion; the throwaway repository is gone when `prepare` returns. The suite's generic reviewer reviews a fixture, unless its `pull.json` names a `manifest_path`: a reviewer manifest in the `base/` tree, which `prepare` reads from the base commit as it reads a configured repository's `manifest_path`, so a fixture can exercise specialists, and its `body` is the description reviewers are given. The fixture's repository need not be configured, though the configuration still supplies the runtime, the verdict policy, and model names. `run.json` records the fixture under `fixture`. A fixture is trusted input; see "Threat model" in the contract.
+The directory holds the change as two trees, `base/` and `head/`, and the pull request around it in `pull.json` ("Fixture pull request" in the [contract](code-review-operations-contract.md#fixture-pull-request) states its fields). `prepare` reads nothing from GitHub. It commits both trees, byte for byte, to a throwaway repository, takes the base and head commits and the diff from it, and snapshots the head from it by the same path a checkout's head takes, with every exclusion. The throwaway repository then moves into the run as `repository`, where the `source-file` and `source-search` commands read it, until `finalize` removes the run (see [Source snapshots](#source-snapshots)). The suite's generic reviewer reviews a fixture, unless its `pull.json` names a `manifest_path`: a reviewer manifest in the `base/` tree, which `prepare` reads from the base commit as it reads a configured repository's `manifest_path`, so a fixture can exercise specialists, and its `body` is the description reviewers are given. The fixture's repository need not be configured, though the configuration still supplies the runtime, the verdict policy, and model names. `run.json` records the fixture under `fixture`. A fixture is trusted input; see "Threat model" in the contract.
 
 - **Initial review**: `--canary --fixture <directory>` records a first review, version 1, under a new canary root.
 - **Re-review**: `--re-review --prior <record>` adds a review record of the same pull request, its first review, such as one an initial fixture canary wrote. The re-review carries that record's open findings and ledger as a real re-review carries the archive's and covers the full scope. `finalize` archives the prior record in the new canary root first and records the re-review as version 2 on top of it, so the record has a real re-review's dispositions, ledger, and `repeats` links.
@@ -78,9 +78,9 @@ The fixture goes in `<output>/fixture`, where `<output>` is `--output` or a new 
 `review-prs` never posts to GitHub. If you then ask the agent to post findings, it should post only the ones you
 choose, as one review whose payload a JSON serializer builds and `gh api --input <file>` sends, never `--field`
 arguments or a shell heredoc. The payload omits `event` entirely, so no review state (approve, request changes, or
-comment) is submitted, and comment bodies are plain text without internal finding IDs or labels. The skill keeps
-only the rule against sending an `event`; Codex and Copilot CLI also get the rest through the runtime compatibility
-contract every adapter carries.
+comment) is submitted, and comment bodies are plain text without internal finding IDs or labels. The skill carries
+only the rule against sending an `event`, on every runtime; the rest of this paragraph is guidance for the maintainer
+to give a session asked to post, and no runtime is given it.
 
 ## Review pipeline
 
@@ -226,7 +226,7 @@ Set `CODE_REVIEW_CONFIG` to an alternate file for fixtures or profiles. Otherwis
 
 `model_names` optionally maps the model identifier a reviewer reports to the name a report's **Reviewers** table shows, for example `{"arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc123": "Opus 5.5"}`. An inference-profile ARN names no model, so this is the only way to see which model reviewed. Review Details still lists each mapped identifier beside its name, and an identifier with no entry shows as it is. Keys are trimmed single lines of at most 200 characters, and names are single lines of at most 100. A name is applied when a report is written, so changing it doesn't rewrite earlier reports.
 
-`operation_repository_sets` optionally gives an operation its own default set, used when no repositories or set are named: for example `{"review-prs": "primary", "update-pr-tracker": "tracked"}`. Valid operations are `review-prs`, `update-pr-tracker`, and `review-insights`; without an entry the operation uses `default_repository_set`. A repository with no merged-pull watermark yet starts at the first run's date, so its first batch reviews only open pull requests.
+`operation_repository_sets` optionally gives an operation its own default set, used when no repositories or set are named: for example `{"review-prs": "primary", "update-pr-tracker": "tracked"}`. Valid operations are `review-prs`, `update-pr-tracker`, and `review-insights`; without an entry the operation uses `default_repository_set`. A repository with no merged-pull watermark yet starts at the first run's date, so its first batch reviews the open pull requests and those merged on the first run's date.
 
 A review's verdict is `CHANGES_REQUESTED` when its findings require it, otherwise `INCOMPLETE` when a changed file's source was unavailable to reviewers (excluded from the snapshot for size, an unsafe name, or the repository's `snapshot_exclude`; listed in the record's `review.coverage.unavailable_sources` and in the report), otherwise `APPROVED`. A coverage gap never hides a blocking finding. Changed files a reviewer manifest deliberately leaves unreviewed (`"uncovered": "ignore"`) are listed in `review.coverage.uncovered_files` and in the report's **Not reviewed** note, and do not change the verdict. A specialist or reviewer that produces no valid result is different: the result is `failed`, nothing is archived, and the pull request is retried on the next run.
 
@@ -386,7 +386,7 @@ The suite's `design-review` specialist reviews design documents as designs rathe
   "id": "design-review",
   "category": "Design",
   "profile": "suite:design-review",
-  "include": ["^docs/design/.*\.md$"],
+  "include": ["^docs/design/.*\\.md$"],
   "exclude": [],
   "resources": [],
   "when": null
