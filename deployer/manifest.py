@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from . import fsops
-from .errors import DeployError
+from .errors import DeployError, os_error
 from .hashing import HASH_PATTERN
 from .kinds import ADAPTERS, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
@@ -226,7 +226,10 @@ def load(path: Path) -> Manifest:
         return Manifest(path, {"manifest_version": MANIFEST_VERSION, "sources": {}})
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError as exc:
+        # A file another process holds, or one this user may not read, is not malformed: say which it is.
+        raise os_error(exc, "read the manifest") from exc
+    except (UnicodeError, json.JSONDecodeError):
         data = None
     if not isinstance(data, dict) or not isinstance(data.get("sources", {}), dict):
         raise DeployError(f"ERROR: Manifest is malformed: {path}")

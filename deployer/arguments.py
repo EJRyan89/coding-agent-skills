@@ -23,6 +23,11 @@ USAGE_ERROR = 2
 HelpFormatter = functools.partial(argparse.RawDescriptionHelpFormatter, width=HELP_WIDTH, max_help_position=24)
 
 
+def usage_error(message: str, *details: str, prog: str = PROG) -> DeployError:
+    """A command line deploy.py refuses: what is wrong, any details, and the --help to read, exiting 2."""
+    return DeployError(f"ERROR: {message}", *details, f"Run '{prog} --help' for usage.", exit_code=USAGE_ERROR)
+
+
 class ParserExit(Exception):
     """Raised instead of exiting the process when a parser finishes, as it does after --help."""
 
@@ -45,7 +50,7 @@ class _Parser(argparse.ArgumentParser):
         return f"\n{super().format_help()}\n"
 
     def error(self, message: str) -> NoReturn:
-        raise DeployError(f"ERROR: {message}", f"Run '{self.prog} --help' for usage.", exit_code=USAGE_ERROR)
+        raise usage_error(message, prog=self.prog)
 
     def exit(self, status: int = 0, message: str | None = None) -> NoReturn:
         if message:
@@ -155,7 +160,32 @@ def _parse(arguments: list[str]) -> argparse.Namespace:
         for action in top.deploy_options:
             if getattr(namespace, action.dest) != action.default:
                 top.error(f"{action.option_strings[0]} cannot be combined with the {namespace.command} command")
+    else:
+        _check_deploy_options(top, namespace)
     return namespace
+
+
+# The deploy options each one refuses beside it, in the order they are checked. --migrate-from only moves ownership
+# and returns, so an option that selects, previews, or replaces items would otherwise be silently ignored with it.
+_EXCLUSIVE = (
+    ("--migrate-from", ("--dry-run", "--all", "--include", "--force", "--force-item")),
+    ("--take-over-source", ("--dry-run",)),
+    ("--canary-home", ("--dry-run", "--migrate-from", "--take-over-source")),
+)
+
+
+def _check_deploy_options(top: _Parser, namespace: argparse.Namespace) -> None:
+    """Refuse deploy options that cannot run together, before anything is read."""
+    given = {
+        action.option_strings[0] for action in top.deploy_options if getattr(namespace, action.dest) != action.default
+    }
+    if "--include" in given and "--all" not in given:
+        top.error("--include can only be used with --all")
+    for option, refused in _EXCLUSIVE:
+        if option in given:
+            for other in refused:
+                if other in given:
+                    top.error(f"{option} cannot be combined with {other}")
 
 
 def parse_command(arguments: list[str]) -> argparse.Namespace | int:

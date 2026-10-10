@@ -29,7 +29,7 @@ from . import (
     source_commit,
 )
 from . import selection as selection_module
-from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command
+from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
 from .context import Context, Options
 from .errors import Cancelled, DeployError, debug_requested, fail, print_error, print_traceback, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, SHARED, SKILL
@@ -41,27 +41,16 @@ TAKE_OVER_SOURCE = "--take-over-source"
 
 
 def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
-    """The deployment's options, refused when they combine in a way only the source can rule out or that cannot run."""
+    """The deployment's options, with --migrate-from's source ID refused unless it names another valid source.
+
+    The parser refuses options that cannot run together; this checks what only the source can rule out.
+    """
     options = Options(**{key: value for key, value in vars(namespace).items() if key != "command"})
-    if options.include and not options.select_all:
-        raise DeployError("ERROR: --include can only be used with --all")
     if options.migrate_from:
         if not source.SOURCE_ID_PATTERN.fullmatch(options.migrate_from):
-            raise DeployError(f"ERROR: Invalid migration source ID: {options.migrate_from}")
+            raise usage_error(f"Invalid migration source ID: {options.migrate_from}")
         if options.migrate_from == source_id:
-            raise DeployError("ERROR: --migrate-from must name a different source")
-        if options.dry_run:
-            raise DeployError("ERROR: --migrate-from cannot be combined with --dry-run")
-    if options.take_over_source and options.dry_run:
-        raise DeployError(f"ERROR: {TAKE_OVER_SOURCE} cannot be combined with --dry-run")
-    if options.canary_home:
-        for flag, used in (
-            ("--dry-run", options.dry_run),
-            ("--migrate-from", options.migrate_from),
-            (TAKE_OVER_SOURCE, options.take_over_source),
-        ):
-            if used:
-                raise DeployError(f"ERROR: --canary-home cannot be combined with {flag}")
+            raise usage_error("--migrate-from must name a different source")
     return options
 
 
