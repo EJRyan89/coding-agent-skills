@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 
 import duplication
 import fsops_platform
+import job_selection
 import markdown_links
 import python_checks
 import repository_hygiene
@@ -74,6 +75,7 @@ from deployer import tools
 POLICY_MODULES = (
     duplication,
     fsops_platform,
+    job_selection,
     markdown_links,
     python_checks,
     repository_hygiene,
