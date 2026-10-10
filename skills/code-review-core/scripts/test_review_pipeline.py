@@ -995,12 +995,12 @@ class SymbolicLinkTests(PipelineFixture):
         ready = self.prepare()
         prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
         self.assertIn(
-            " The source snapshot leaves out these symbolic links, which you read only as diff text and never follow: "
-            f'app/cache -> "{self.TARGET}" (added line 1). A pull request that commits a symbolic link, above all one '
-            "to an absolute path, is itself a finding: raise it on the link's added line.",
+            "Symbolic links in your scope (left out of SOURCE_ROOT; read them only as diff text and never follow "
+            f'them):\n- app/cache -> "{self.TARGET}" (added line 1)\nA pull request that commits a symbolic link, '
+            "above all one to an absolute path, is itself a finding: raise it on the link's added line.\n",
             prompt,
         )
-        self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
+        self.assertEqual(1, prompt.count(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
 
 
 class SelfCheckTests(PipelineFixture):
@@ -1995,13 +1995,14 @@ class RepositoryReviewerTests(PipelineFixture):
         ready = self.prepare()
         self.assertEqual("entrypoint", ready["kind"])
         prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
-        self.assertIn(f"{ready['reviewer_root']}/review/SKILL.md", prompt)
-        self.assertIn(f"Write only the protocol result JSON to {ready['result_path']}", prompt)
-        self.assertTrue(prompt.endswith(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
+        self.assertIn("Follow REVIEWER_ROOT/review/SKILL.md, the repository's trusted reviewer entrypoint", prompt)
+        self.assertIn(f"\nREVIEWER_ROOT={ready['reviewer_root']}\n", prompt)
+        self.assertIn(f"\nRESULT_FILE={ready['result_path']}\n", prompt)
+        self.assertEqual(1, prompt.count(f"reply with exactly: WROTE {ready['result_path']}\n"), prompt)
         script = SCRIPT_DIRECTORY / "review_pipeline.py"
         self.assertIn(
-            f'one of the three commands you may run: python -B "{script}" validate-result --run "{ready["run"]}" '
-            f'--role "fixture-review" It prints VALID',
+            f'one of the three commands you may run:\npython -B "{script}" validate-result --run "{ready["run"]}" '
+            '--role "fixture-review"\nIt prints VALID',
             prompt,
         )
         Path(ready["result_path"]).write_text(
@@ -3120,7 +3121,9 @@ class ReviewerSourceTests(PipelineFixture):
         root = Path(ready["reviewer_root"])
         self.assertEqual(SOLO_SKILL, (root / "review" / "solo.md").read_text(encoding="utf-8"))
         self.assertTrue((root / "review" / "rules.md").is_file(), "files the skill names travel with it")
-        self.assertIn(f"{root}/review/solo.md", Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8"))
+        prompt = Path(ready["roles"][0]["prompt_file"]).read_text(encoding="utf-8")
+        self.assertIn(f"\nREVIEWER_ROOT={root}\n", prompt)
+        self.assertIn("Follow REVIEWER_ROOT/review/solo.md,", prompt)
         lines = self.run_main("inspect-reviewer", "--repository", REPOSITORY, "--ref", "main")[1].splitlines()
         self.assertIn("TOOLS Read, Grep, Glob", lines)
         self.assertIn("DELEGATES no its tool list grants neither Agent nor Task", lines)
