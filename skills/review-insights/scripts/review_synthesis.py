@@ -31,8 +31,7 @@ from typing import Any
 
 from flat_text import flat_text
 from review_io import PersistenceError, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, valid_analyzer
-from review_runtime import is_suite_profile
+from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, is_suite_profile, valid_analyzer
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"

@@ -29,6 +29,7 @@ from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_rep
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
+from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
 
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
@@ -128,7 +129,6 @@ GENERIC_SPECIALIST = "generic-review"
 # Profiles the suite ships, which a specialist names as `suite:<name>` in place of a repository path. Each is read from
 # this skill's references folder, never from the repository, and only the names here resolve, so a manifest can reach
 # no other file through one.
-SUITE_PROFILE_PREFIX = "suite:"
 SUITE_PROFILES = {"design-review": "design-reviewer.md"}
 SUITE_REFERENCES = Path(__file__).resolve().parents[1] / "references"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
@@ -300,11 +300,6 @@ def configured_exclusion(patterns: Sequence[str]) -> Exclusion:
     if not matchers:
         return _never_excluded
     return lambda relative: any(matches(relative) for matches in matchers)
-
-
-def is_suite_profile(profile: str) -> bool:
-    """Whether a validated specialist profile names a profile the suite ships rather than a repository file."""
-    return profile.startswith(SUITE_PROFILE_PREFIX)
 
 
 def suite_profile_path(profile: str) -> Path:
