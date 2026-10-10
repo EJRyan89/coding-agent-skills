@@ -93,7 +93,10 @@ def changed_files(comparison: object) -> ChangedFiles | None:
 
 def with_modes(files: ChangedFiles | None, modes: dict[str, str] | None) -> Fingerprint | None:
     """The changed files with the tree mode each leaves behind, empty for a removed file; None when the files are
-    unknown or the tree may be incomplete or lacks one of them."""
+    unknown or the tree may be incomplete or lacks one of them.
+
+    The blob ID covers a file's bytes and the tree mode its executable, symlink, or submodule type, so two commits
+    with the same fingerprint leave every changed file identical and a review of one applies to the other."""
     if files is None or modes is None:
         return None
     entries: list[tuple[str, str, str, str, str]] = []
@@ -106,17 +109,6 @@ def with_modes(files: ChangedFiles | None, modes: dict[str, str] | None) -> Fing
             return None
         entries.append((filename, status, previous, content, mode))
     return tuple(entries)
-
-
-def contribution_fingerprint(comparison: object, modes: dict[str, str] | None) -> Fingerprint | None:
-    """Identify every file a comparison changes and the exact tree entry it leaves behind.
-
-    The blob ID covers a file's bytes and the tree mode covers its executable,
-    symlink, or submodule type, so two commits with the same fingerprint leave
-    every changed file identical and a review of one applies to the other.
-    Returns None when the comparison or tree is malformed or may be truncated.
-    """
-    return with_modes(changed_files(comparison), modes)
 
 
 def needs_modes(before: ChangedFiles, after: ChangedFiles) -> bool:
