@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### Review comments reach a prompt cut to 4,000 characters, and the report escapes a title and a comment as text
+
+- Level: patch. A fix: a reviewer's prompt lists each open review comment's body cut to 4,000 characters, with its full length and `GITHUB_COMMENTS_FILE`, which holds it whole, named after the cut; a body used to reach the prompt whole, up to GitHub's 65,536 characters. The prompt also escapes the line separators U+0085, U+2028, and U+2029 inside a body. The report's **Title** row and each **Review Comments** excerpt escape every character Markdown or HTML reads as markup, so a link, an image, or a tag in a pull request's title or a comment renders as written. The threat model in the operations contract gains rows for comment bodies, the title, and the head branch's name, and every row now names a test in `test_adversarial_inputs.py`.
+- Contract: none
+- User action: none
+- Pull request: #275
+
 ### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
 
 - Level: minor. Additive: a specialist's `profile` in a specialists manifest may now be `suite:design-review`, a profile the suite ships for design documents, read from `code-review-core`'s deployed references rather than the repository. A record whose reviewer used one names it in `review.adapter.source_hashes` under `suite:design-review`, with the SHA-256 of the file that ran; an earlier release reads such a record, but refuses a manifest that names a suite profile. A fixture's `pull.json` may name a `manifest_path` in its `base/` tree, which a fixture canary then reviews with, read from the base commit; without it the generic reviewer reviews the fixture as before. "Design documents" under "Specialist reviewers" in `docs/code-review-operations.md` shows the route and the finding categories.
