@@ -222,33 +222,45 @@ def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
     )
     if reviewer["scope"] == "repository" and checkout is None:
         raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
-    exclude = _validate_snapshot_exclude(entry.get("snapshot_exclude", []), f"repositories.{identity}.snapshot_exclude")
+    exclude = validate_glob_patterns(
+        entry.get("snapshot_exclude", []),
+        f"repositories.{identity}.snapshot_exclude",
+        maximum_patterns=MAX_SNAPSHOT_EXCLUDE_PATTERNS,
+        maximum_length=MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH,
+    )
     return {"reviewer": reviewer, "checkout_path": checkout, "snapshot_exclude": exclude}
 
 
-def _validate_snapshot_exclude(value: Any, field: str) -> list[str]:
+def validate_glob_patterns(
+    value: Any,
+    field: str,
+    *,
+    maximum_patterns: int,
+    maximum_length: int,
+    error: type[ValueError] = ConfigurationError,
+) -> list[str]:
     """Distinct glob patterns, each a repository-relative POSIX path pattern that cannot name the snapshot's root or
-    leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment."""
+    leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment. A repository's
+    `snapshot_exclude` and a condition's `reads` are both such patterns; `error` is the exception its reader raises."""
     if not isinstance(value, list):
-        raise ConfigurationError(f"{field} must be an array of glob patterns")
-    if len(value) > MAX_SNAPSHOT_EXCLUDE_PATTERNS:
-        raise ConfigurationError(f"{field} holds more than {MAX_SNAPSHOT_EXCLUDE_PATTERNS} patterns")
+        raise error(f"{field} must be an array of glob patterns")
+    if len(value) > maximum_patterns:
+        raise error(f"{field} holds more than {maximum_patterns} patterns")
     seen: set[str] = set()
     for index, pattern in enumerate(value):
         if (
             not isinstance(pattern, str)
-            or not 0 < len(pattern) <= MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH
+            or not 0 < len(pattern) <= maximum_length
             or "\\" in pattern
             or re.search(r"[\x00-\x1f\x7f]", pattern)
             or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
         ):
-            raise ConfigurationError(
-                f"{field}[{index}] must be a repository-relative glob pattern of 1 to "
-                f"{MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH} characters, without a backslash, a control character, or an "
-                f"empty, '.', or '..' segment: {pattern!r}"
+            raise error(
+                f"{field}[{index}] must be a repository-relative glob pattern of 1 to {maximum_length} characters, "
+                f"without a backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}"
             )
         if pattern.casefold() in seen:
-            raise ConfigurationError(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
+            raise error(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
         seen.add(pattern.casefold())
     return list(value)
 

@@ -13,6 +13,20 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### A specialists manifest that gives a file two roles is refused
+
+- Level: minor. Before `1.0.0` this carries what would later be major: a specialists manifest is refused with `Adapter declares a file more than once` when one repository file has two roles (a top-level resource, a specialist's profile, a specialist's own resource, or a condition script), such as a guideline listed both at the top level, where it is read from the trusted ref, and by a specialist, where it is read from the pull request's base, or when a specialist's `resources` list a file twice. Before, only a file listed twice in the top-level `resources` was refused, and the record silently took one source. Several specialists may still share a profile or a guideline, and several conditions a script. An entrypoint manifest is checked as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: if `validate-reviewer` or a review now fails with `Adapter declares a file more than once`, keep the file in one role: a guideline the specialists apply in their own `resources`, a file every specialist may read in the top-level `resources`.
+- Pull request: #324
+
+### files_read no longer counts the snapshot's manifest, and the contract states the category check and adapter.name as they are
+
+- Level: patch. A fix: a reviewer's `files_read` and `bytes_read` no longer count `source-snapshot.json` when the reviewer reads it, since the contract counts files of the snapshot and `review.snapshot.files` leaves the manifest out; earlier records may count it. The contract now says that a specialist finding's `category` must be a string even without `finding_categories`, as it has been checked since the specialist result was stated, and that `review.adapter.name` is `generic` whenever the suite's generic reviewer ran, a fallback included, and otherwise the manifest's `id`. The operations guide no longer says `snapshot_exclude` saves the tarball's download: GitHub's whole tarball is still downloaded and hashed, and exclusion saves the write.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #324
+
 ### repo-cleanup asks before deleting a closed pull request's branch, and a stopped cleanup's heading clears
 
 - Level: patch. Fixes: a clean linked worktree whose pull request closed without merging is still removed, but its branch is now kept and offered on a `CONFIRM_LOCAL` line, as a local branch with no remote is, instead of deleted with the worktree; the summary lists it under `Closed PR (kept)`, and `delete-local` and `force-delete` delete it as before. A worktree whose pull request merged is removed and its branch deleted without asking, as before, and the documents now say so. A summary headed `cleanup stopped partway` now describes only the command that failed: a later `delete-local` or `force-delete` on the same plan that completes is headed `cleanup complete`, and so is `summary` after it.
@@ -167,7 +181,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. Additive: a repository's entry in the code-review configuration may list `snapshot_exclude`, glob patterns of files to leave out of its source snapshot, such as resources, designer files, and generated reports; without it nothing changes. A matching file is recorded in the snapshot's manifest under `excluded_paths` with the new reason `configured`, on the lazy, whole, and tarball routes alike: it is never written, `source-file` prints `EXCLUDED <path> configured` for it, and `source-search` leaves it out. A changed file it matches is an unavailable source, so that review is `INCOMPLETE`. `validate-reviewer` fails on a pattern that matches a file the reviewer declares, and its `SNAPSHOT` line counts `configured` exclusions. Each record's `review.snapshot` gains `excluded`, the head's paths left out by reason, which the report's Snapshot row and a canary's `STATS` snapshot line show. A previous release refuses a record that has it.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: none. To use it, add `snapshot_exclude` to a repository's entry and run `validate-reviewer` for a repository reviewer; "Configuration" in `docs/code-review-operations.md` gives an example.
-- Pull request: #209
+- Pull request: #249
 
 ### The Copilot CLI host re-reads the source snapshot only as far as it changed since prepare
 
@@ -181,7 +195,7 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - Level: minor. Before `1.0.0` this carries what would later be major. The contract's Formats section gains tables for the specialist result each reviewer writes and for the review state `review-prs` keeps (`state.json`), and its opening paragraph names its one exception, `review-insights`' own report. A specialist result now fails its check, and its reviewer is asked to fix it, when it holds a field its prompt's output contract does not list, when it gives its findings as `comments` instead of `findings`, or when a finding's `category` is not a string; before, these were accepted, and the extra fields were dropped. `review_pipeline.py enumerate` exits 1 after printing any `REPOSITORY_FAILED` line, as the tracker's `collect` does; it still lists the other repositories and writes the batch. The generic reviewer's instructions now follow its prompt's output contract and no longer name the adapter schema. The contract now says that the configuration file takes no lock, and why. The unused `references/review-output-template.md` is removed.
 - Contract: `docs/code-review-operations-contract.md`
 - User action: none. Nothing in `review-prs` acts on `enumerate`'s exit code. A repository specialist profile that tells its reviewer to add fields of its own needs no change: the prompt's output contract replaces any format a profile gives, and the reviewer's self-check names a field that does not belong.
-- Pull request: #197
+- Pull request: #239
 
 ### update-coding-agent-skills stops at a release even when local main has no release tag
 
