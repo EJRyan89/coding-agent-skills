@@ -10,18 +10,23 @@ configured command, arguments, working directory, and environment; it receives i
 notifications/initialized, and tools/list, and is then stopped. Identical definitions in
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
-through nextCursor, is a valid list of tools. One line per server:
+through nextCursor, is a valid list of tools. Each config is read as audit_ai_config.py reads it. One line per
+config problem, then one per server:
 
-    CONFIG_ERROR <file> <reason>        the file could not be read or parsed; its servers were not checked
-    CONFIG_WARNING <file> <reason>
+    CONFIG_ERROR <file> <reason>        the file could not be read or parsed, so none of its servers was checked,
+                                        or its servers are not an object (a table in TOML), or one server
+                                        names neither a command nor a url, which is then SKIPPED while the
+                                        others run
+    CONFIG_WARNING <file> <reason>      the file lacks its servers key, or an entry is not an object (a
+                                        table in TOML) and is not a server; the others run
     HANDSHAKE_OK <name> source=<files> protocol=<version> tools=<count|none>
     HANDSHAKE_FAILED <name> source=<files> <reason>
     SKIPPED <name> source=<files> transport=<transport>
-    NO_SERVERS                          every config was readable and none declares a server
+    NO_SERVERS                          no config had a CONFIG_ERROR and none declares a server
     FAILED <reason>                     last line: the root is not a Git repository, or no server has the
                                         name --server gives
 
-Exit 0 when every config was readable and no started server failed; 1 when a config could not be read, any
+Exit 0 when no CONFIG_ERROR was printed and no started server failed; 1 when a CONFIG_ERROR was printed, any
 server failed, or the run printed FAILED; 2 for a usage error.
 """
 
@@ -37,13 +42,12 @@ import subprocess
 import sys
 import threading
 import time
-import tomllib
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from audit_ai_config import _parse_mcp_json
+from audit_ai_config import _parse_mcp_json, _read_codex_mcp
 from console import use_utf8_output
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
@@ -54,6 +58,7 @@ PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2024-11-05", "2025-03-26", PROTOCOL_VERSION})
 MAX_TOOL_PAGES = 100
 JSON_SOURCES = ((".mcp.json", "mcpServers"), (".github/mcp.json", "mcpServers"), (".vscode/mcp.json", "servers"))
+CODEX_CONFIG = ".codex/config.toml"
 
 
 Problem = tuple[str, str, str]  # (ERROR or WARNING, source, message)
@@ -71,20 +76,9 @@ def declared_servers(root: Path) -> tuple[list[tuple[str, str, dict[str, Any]]],
         servers, findings = _parse_mcp_json(root / rel, rel, wrapper)
         problems.extend((finding.severity, rel, finding.message) for finding in findings)
         found.extend((name, rel, entry) for name, entry in servers.items() if isinstance(entry, dict))
-    codex = root / ".codex/config.toml"
-    if codex.is_file():
-        try:
-            with codex.open("rb") as handle:
-                table = tomllib.load(handle).get("mcp_servers", {})
-        except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
-            problems.append(("ERROR", ".codex/config.toml", f"Could not read or parse: {error}"))
-            table = {}
-        if isinstance(table, dict):
-            found.extend(
-                (name, ".codex/config.toml", entry) for name, entry in table.items() if isinstance(entry, dict)
-            )
-        else:
-            problems.append(("ERROR", ".codex/config.toml", "mcp_servers must be a table"))
+    codex_servers, codex_findings = _read_codex_mcp(root)
+    problems.extend((finding.severity, CODEX_CONFIG, finding.message) for finding in codex_findings)
+    found.extend((name, CODEX_CONFIG, entry) for name, entry in codex_servers.items())
     return found, problems
 
 

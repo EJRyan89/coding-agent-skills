@@ -41,7 +41,7 @@ The manifest's `mcp_servers` entries:
 | `command`, `args`, `cwd` | Required `command` for `stdio` and `local` |
 | `url` | Required for `http` and `sse` |
 | `env` | String-to-string map of literal values; `.codex/config.toml` receives it for stdio servers only |
-| `copilot_local.tools` | Must be `null` when the server also targets `claude`, because the shared `.mcp.json` cannot enforce an allowlist |
+| `copilot_local.tools` | Must be `null` or `["*"]` when the server also targets `claude`, because the shared `.mcp.json` cannot enforce any other allowlist |
 
 ### Transport compatibility
 

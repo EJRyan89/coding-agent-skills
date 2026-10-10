@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Deterministic read-only audit engine for AI agent configuration.
 
-Owned by the audit-ai-config skill and standalone after deployment. It checks
-any repository, and checks the generated layout described in
+Owned by the audit-ai-config skill. It needs the standard library and the
+skill-core modules it imports, which deployment installs beside the skill. It
+checks any repository, and checks the generated layout described in
 references/generated-layout.md where a repository's own ai_config.py generator
 produced one.
 
@@ -41,7 +42,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-from frontmatter import NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
+from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 
 # ---------------------------------------------------------------------------
 # Finding model
@@ -92,6 +93,11 @@ class Finding:
             self.path or "",
             self.line or 0,
         )
+
+
+# The scope statuses references/report-schema.md names; a reason the generator's scope could not be derived goes in
+# the scope WARNING's message, never in the status.
+SCOPE_STATUSES = ("independently-derived", "manifest-declared-only", "no-declared-scope", "not-applicable")
 
 
 @dataclass
@@ -406,13 +412,17 @@ UNREADABLE_ENTRY = "Frontmatter must use key: value entries, block scalars, bloc
 # The line walk is kept beside skill-core's frontmatter.py by decision
 # (https://github.com/EJRyan89/coding-agent-skills/issues/27#issuecomment-6022293710): this audit is a lint policy that
 # reports each frontmatter problem at its line number, which the shared reader does not give. The walk finds each
-# entry's lines and hands quoted values, lists, and continued scalars to the shared reader, so both read them alike.
+# entry's lines and hands quoted values, lists, continued scalars, and block scalars to the shared reader, so both read
+# them alike. What the walk still reads itself: a one-line plain value, kept as written even where YAML would refuse
+# it (references/known-limitations.md), and the two block scalar shapes the shared reader refuses rather than guess at
+# for the deployer (an explicit indentation indicator, and a folded scalar with more-indented lines), which are valid
+# YAML a repository's skills and agents may use.
 def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]]:
     """Read YAML frontmatter line by line without executing or loading YAML tags.
 
-    A one-line plain value is kept as written. A block scalar (| or >) is read as YAML reads it. A quoted value, a
-    list, or a scalar continued on indented lines is read by skill-core's reader, and a nested mapping is accepted
-    without reading its entries.
+    A one-line plain value is kept as written, without the trailing comment YAML ends it at. A block scalar (| or >),
+    a quoted value, a list, or a scalar continued on indented lines is read by skill-core's reader, a block scalar it
+    refuses is read here as YAML reads it, and a nested mapping is accepted without reading its entries.
     """
     rel = path.as_posix()
     try:
@@ -439,11 +449,12 @@ def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]
             findings.append(Finding("ERROR", "copilot-config", rel, number, UNREADABLE_ENTRY))
             continue
         key, inline = match.groups()
+        inline = _without_comment(inline)
         value: FrontmatterValue
         header = BLOCK_SCALAR_HEADER.fullmatch(inline)
         if header:
             body = _block_scalar_lines(lines[index:end], header)
-            value = _block_scalar_value(body, header)
+            value = _block_scalar(key, inline, body, header)
         else:
             body = _entry_lines(lines[index:end], listed=not inline)
             value, problem = _entry_value(key, inline, body)
@@ -455,6 +466,16 @@ def _frontmatter(path: Path) -> tuple[dict[str, FrontmatterValue], list[Finding]
             findings.append(Finding("ERROR", "copilot-config", rel, number, f"Duplicate frontmatter key '{key}'"))
         values[key] = value
     return values, findings
+
+
+def _without_comment(inline: str) -> str:
+    """An entry's inline text without the comment YAML ends a plain value or a block scalar header at: a # at its start
+    or after a space. A quoted value or flow list keeps it, for skill-core's reader, which knows where they close."""
+    if inline.startswith("#"):
+        return ""
+    if inline.startswith(('"', "'", "[")):
+        return inline
+    return COMMENT.sub("", inline)
 
 
 def _entry_lines(lines: list[str], listed: bool) -> list[str]:
@@ -536,6 +557,15 @@ def _block_scalar_lines(lines: list[str], header: re.Match[str]) -> list[str]:
     return body
 
 
+def _block_scalar(key: str, inline: str, body: list[str], header: re.Match[str]) -> str:
+    """A block scalar's value: skill-core's reading, or this module's for a shape skill-core refuses."""
+    try:
+        value = Frontmatter([f"{key}: {inline}", *body]).value(key)
+    except FrontmatterError:
+        return _block_scalar_value(body, header)
+    return value if isinstance(value, str) else ""
+
+
 def _block_scalar_value(body: list[str], header: re.Match[str]) -> str:
     """The value YAML gives a block scalar, with its chomping applied."""
     indent = _block_scalar_indent(body, header)
@@ -581,9 +611,10 @@ def _text(values: dict[str, FrontmatterValue], key: str) -> str:
 
 
 def _is_tool_list(tools: FrontmatterValue) -> bool:
-    """A non-empty list of non-empty names, or text other than a flow list the reader could not read."""
+    """A list of non-empty names, empty to disable every tool, or text other than a flow list the reader could not
+    read."""
     if isinstance(tools, list):
-        return bool(tools) and all(tools)
+        return all(tools)
     return isinstance(tools, str) and not tools.startswith("[")
 
 
@@ -609,7 +640,7 @@ def _validate_skill(path: Path, root: Path) -> list[Finding]:
         )
     if not _text(values, "description").strip():
         findings.append(Finding("ERROR", "copilot-skill", rel, message="Skill frontmatter requires description"))
-    if values.get("allowed-tools") == "":
+    if values.get("allowed-tools") in ("", []):
         findings.append(Finding("ERROR", "copilot-skill", rel, message="allowed-tools must not be empty"))
     if directory_name in COPILOT_BUILTIN_NAMES:
         findings.append(
@@ -644,16 +675,22 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
     for key in ("include-custom-instructions", "infer", "disable-model-invocation", "user-invocable"):
         if key in values and _text(values, key) not in {"true", "false"}:
             findings.append(Finding("ERROR", "copilot-agent", rel, message=f"{key} must be a boolean"))
+    # GitHub's custom-agents reference: an unset tools enables every tool and an empty list disables every tool. An
+    # empty value says neither: YAML reads it as unset, so it enables every tool its author may have meant to remove.
     tools = values.get("tools")
     if tools == "":
-        findings.append(Finding("ERROR", "copilot-agent", rel, message="tools must not be empty"))
-    elif tools is not None and not _is_tool_list(tools):
         findings.append(
             Finding(
                 "ERROR",
                 "copilot-agent",
                 rel,
-                message="tools must be a non-empty string list or comma-separated string",
+                message="tools must not be empty; write [] to disable every tool, or omit tools to enable every tool",
+            )
+        )
+    elif tools is not None and not _is_tool_list(tools):
+        findings.append(
+            Finding(
+                "ERROR", "copilot-agent", rel, message="tools must be a list of tool names or a comma-separated string"
             )
         )
     if "modelPolicy" in values and _text(values, "modelPolicy") not in {"preferred", "required"}:
@@ -778,6 +815,7 @@ def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, li
                 ),
             )
         )
+        status = "manifest-declared-only"
     else:
         for field, expected in derived.items():
             actual = manifest.get(field)
@@ -1205,7 +1243,7 @@ def _read_artifact(root: Path, path_str: str) -> tuple[str | None, str | None]:
 
 def _hash_problem(content: str, stored_hash: Any) -> str | None:
     if stored_hash and content_hash(content) != stored_hash:
-        return "JSON artifact modified (hash mismatch with manifest)"
+        return "Artifact modified (hash mismatch with manifest)"
     return None
 
 
@@ -1456,8 +1494,10 @@ def _read_vscode_mcp(root: Path) -> tuple[dict[str, Any], list[Finding]]:
 
 
 def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding]]:
-    """Read the object-valued mcp_servers entries of .codex/config.toml."""
-    path = root / ".codex/config.toml"
+    """Read the table-valued mcp_servers entries of .codex/config.toml, reporting what is not a table as
+    _parse_mcp_json reports what is not an object. The handshake reads Codex servers through this too."""
+    rel = ".codex/config.toml"
+    path = root / rel
     if not path.is_file():
         return {}, []
     try:
@@ -1470,9 +1510,19 @@ def _read_codex_mcp(root: Path) -> tuple[dict[str, dict[str, Any]], list[Finding
     else:
         servers = config.get("mcp_servers", {})
         if not isinstance(servers, dict):
-            return {}, []
-        return {name: server for name, server in servers.items() if isinstance(server, dict)}, []
-    return {}, [Finding(severity="ERROR", check="mcp", path=".codex/config.toml", message=message)]
+            return {}, [Finding(severity="ERROR", check="mcp", path=rel, message="'mcp_servers' must be a table")]
+        findings = [
+            Finding(
+                severity="WARNING",
+                check="mcp",
+                path=rel,
+                message=f"Server '{name}': entry must be a table, got {type(server).__name__}",
+            )
+            for name, server in servers.items()
+            if not isinstance(server, dict)
+        ]
+        return {name: server for name, server in servers.items() if isinstance(server, dict)}, findings
+    return {}, [Finding(severity="ERROR", check="mcp", path=rel, message=message)]
 
 
 def _check_codex_http_env(codex_servers: dict[str, dict[str, Any]]) -> list[Finding]:
@@ -2294,6 +2344,9 @@ def main() -> int:
     result = audit(args.root)
 
     if args.json:
+        # The JSON report is the report the user asked for in another form, for CI, not data a later step of the
+        # skill reads, so the skill contract's "A script prints no JSON" leaves it as the report it is. The script
+        # declares no EXIT_CONTRACT_EXEMPT, which would also lift the exit-code checks it keeps to.
         print(format_json(result), end="")
     else:
         print(format_markdown(result), end="")
