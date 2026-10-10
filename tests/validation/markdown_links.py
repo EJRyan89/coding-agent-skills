@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, _markdown_section, fence_holders, repository_files
+from validation_support import REPOSITORY_ROOT, fence_holders, markdown_section, repository_files
 
 MARKDOWN_HEADING = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 MARKDOWN_CODE_SPAN = re.compile(r"(`+).+?\1")
@@ -83,7 +83,7 @@ CITED_TEST = re.compile(r"`(test_[\w-]+\.py)::(test_\w+)`")
 def threat_model_test_problems(root: Path) -> list[str]:
     """Report each row of the code-review threat model that names no test in test_adversarial_inputs.py, and each
     `<suite>::<test>` it names that is not a test function in that suite under skills/code-review-core/scripts/."""
-    section = _markdown_section((root / THREAT_MODEL_DOC).read_text(encoding="utf-8"), THREAT_MODEL_HEADING)
+    section = markdown_section((root / THREAT_MODEL_DOC).read_text(encoding="utf-8"), THREAT_MODEL_HEADING)
     rows = [line for line in (section or "").split("\n") if line.startswith("|")][2:]
     if not rows:
         return [f"{THREAT_MODEL_DOC} has no table under {THREAT_MODEL_HEADING!r}"]

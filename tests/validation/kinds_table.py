@@ -8,8 +8,7 @@ import ast
 import unittest
 from pathlib import Path
 
-from fsops_platform import _docstring_ids, _platform_allowance
-from validation_support import REPOSITORY_ROOT, import_aliases, qualified_name
+from validation_support import REPOSITORY_ROOT, docstring_ids, import_aliases, module_allowance, qualified_name
 
 # Each kind's manifest key, report label, and journal root, written out here rather than read from deployer/kinds.py,
 # so that a change to the table cannot also change what this policy looks for.
@@ -143,7 +142,7 @@ def kind_findings(tree: ast.Module, package: str) -> list[tuple[int, str, str]]:
     """Each place a module treats a kind apart, as (line, pass, description), ignoring docstrings, path components,
     and the module's allowance. A pass is the innermost function or class holding it, by qualified name, or the
     module-level assignment holding it, by its target."""
-    skipped = _docstring_ids(tree) | _path_components(tree)
+    skipped = docstring_ids(tree) | _path_components(tree)
     lookups = _lookups(tree)
     aliases = {**import_aliases(tree), **_relative_import_aliases(tree, package)}
     found: list[tuple[int, str, str]] = []
@@ -180,7 +179,7 @@ def kinds_table_problems(root: Path) -> list[str]:
     for path in sorted(_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        allowed = _platform_allowance(tree, KINDS_ALLOWANCE)
+        allowed = module_allowance(tree, KINDS_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {KINDS_ALLOWANCE} must map each pass to the reason it treats a kind apart")
             allowed = {}

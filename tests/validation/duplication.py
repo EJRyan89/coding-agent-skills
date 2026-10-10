@@ -7,8 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from fsops_platform import _platform_allowance
-from validation_support import REPOSITORY_ROOT, is_test_script, module_imports, scripts_put_on_path
+from validation_support import REPOSITORY_ROOT, is_test_script, module_allowance, module_imports, scripts_put_on_path
 
 # A module sanctions a copy beside the code it excuses, as a module-level DUPLICATION_ALLOWED = {name: reason}, and
 # every module holding the copy states it. Nothing sanctions a whole module: shared code lives in skill-core. An
@@ -48,7 +47,7 @@ def duplicated_definition_problems(root: Path) -> list[str]:
     for path in sorted(files, key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        allowed = _platform_allowance(tree, DUPLICATION_ALLOWANCE)
+        allowed = module_allowance(tree, DUPLICATION_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
             allowed = {}

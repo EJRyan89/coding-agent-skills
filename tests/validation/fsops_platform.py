@@ -9,7 +9,7 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, import_aliases, qualified_name
+from validation_support import REPOSITORY_ROOT, docstring_ids, import_aliases, module_allowance, qualified_name
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
 PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
@@ -40,7 +40,7 @@ def _platform_scanned_files(root: Path) -> list[Path]:
 
 def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[int, str]]:
     """The platform tokens a module's code names, as (line, token), ignoring comments, docstrings, and test cases."""
-    docstrings = _docstring_ids(tree)
+    docstrings = docstring_ids(tree)
     aliases = import_aliases(tree)
     command = re.compile(r"\b(?:" + "|".join(map(re.escape, PLATFORM_TOKENS["command"])) + r")\b")
     found: list[tuple[int, str]] = []
@@ -56,19 +56,6 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
 
     visit(tree)
     return found
-
-
-def _docstring_ids(tree: ast.Module) -> set[int]:
-    """The id of each docstring's node: the module's, and each class's and function's."""
-    return {
-        id(node.body[0].value)
-        for node in ast.walk(tree)
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.body
-        and isinstance(node.body[0], ast.Expr)
-        and isinstance(node.body[0].value, ast.Constant)
-        and isinstance(node.body[0].value.value, str)
-    }
 
 
 def _is_test_case(node: ast.AST) -> bool:
@@ -142,24 +129,6 @@ def _platform_string_names(line: int, value: str, command: re.Pattern[str]) -> l
     return found
 
 
-def _platform_allowance(tree: ast.Module, name: str = PLATFORM_ALLOWANCE) -> dict[str, str] | None:
-    """A module's allowance, such as PLATFORM_ALLOWED, or None when it does not map each token to its reason."""
-    for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == name for target in node.targets
-        ):
-            try:
-                allowance = ast.literal_eval(node.value)
-            except ValueError:
-                return None
-            valid = isinstance(allowance, dict) and all(
-                isinstance(token, str) and isinstance(reason, str) and reason.strip()
-                for token, reason in allowance.items()
-            )
-            return allowance if valid else None
-    return {}
-
-
 def platform_code_problems(root: Path) -> list[str]:
     """Report operating-system-specific code outside deployer/platform_support.py, and allowances no longer needed.
 
@@ -170,7 +139,7 @@ def platform_code_problems(root: Path) -> list[str]:
     for path in sorted(_platform_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        allowed = _platform_allowance(tree)
+        allowed = module_allowance(tree, PLATFORM_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {PLATFORM_ALLOWANCE} must map each token to the reason it is allowed")
             allowed = {}
@@ -476,7 +445,7 @@ def filesystem_write_problems(root: Path) -> list[str]:
     for path in sorted(_writes_scanned_files(root), key=lambda path: path.relative_to(root).as_posix()):
         name = path.relative_to(root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        allowed = _platform_allowance(tree, FSOPS_ALLOWANCE)
+        allowed = module_allowance(tree, FSOPS_ALLOWANCE)
         if allowed is None:
             problems.append(f"{name}: {FSOPS_ALLOWANCE} must map each token to the reason it is allowed")
             allowed = {}
