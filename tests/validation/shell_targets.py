@@ -409,8 +409,9 @@ def static_markdown_shell_check(root: Path = REPOSITORY_ROOT) -> None:
 # A ShellCheck directive that disables a check. The header deployer/render.py adds to the command examples it
 # extracts is the one sanctioned suppression, and it lives in that Python module, never in a Bash file or fence.
 SHELLCHECK_DISABLE = re.compile(r"^[ \t]*#[ \t]*shellcheck[ \t][^\n]*\bdisable[ \t]*=", re.IGNORECASE | re.MULTILINE)
-# PSScriptAnalyzer's suppression attribute, under any of the names PowerShell resolves to it.
-SUPPRESS_MESSAGE = re.compile(r"\[\s*(?:[\w.]+\.)?SuppressMessage(?:Attribute)?\s*\(", re.IGNORECASE)
+# PSScriptAnalyzer's suppression attribute, under any of the names PowerShell resolves to it, wherever it stands in an
+# attribute list: first after the bracket, or after another attribute and a comma, on the same line or the next.
+SUPPRESS_MESSAGE = re.compile(r"\bSuppressMessage(?:Attribute)?\s*\(", re.IGNORECASE)
 # Configuration files ShellCheck and PSScriptAnalyzer find on their own, which could disable a rule for every file.
 SHELL_CONFIGURATION_FILES = frozenset({".shellcheckrc", "shellcheckrc", "psscriptanalyzersettings.psd1"})
 

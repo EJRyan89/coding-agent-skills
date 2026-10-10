@@ -351,6 +351,44 @@ class SkillScriptsFixtures(unittest.TestCase):
                 console_setup_problems(root),
             )
 
+    def test_console_setup_policy_detects_a_stream_replaced_wrapped_or_reconfigured_through_an_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "deployer/replaced.py": "import io\nimport sys\n\n\ndef setup():\n"
+                '    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")\n',  # 6
+                "deployer/renamed.py": "import codecs\nimport sys as system\n\n"
+                'system.stderr = codecs.getwriter("utf-8")(system.stderr.buffer)\n',  # 4
+                "deployer/set.py": 'import sys\n\nsetattr(sys, "stdout", open(1, "w", encoding="utf-8"))\n',  # 3
+                "tools/wrapped.py": "import io\nimport sys\n\n"
+                'OUT = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")\n',  # 4
+                "tools/bound.py": 'import sys\n\nfix = sys.stderr.reconfigure\nfix(encoding="utf-8")\n',  # 4
+                "tools/fetched.py": 'import sys\n\ngetattr(sys.stdout, "reconfigure")(encoding="utf-8")\n'  # 3
+                "sys.stdout.reconfigure(**OPTIONS)\n",  # 4: the options may hold an encoding
+                # Wrapping a file that is not a standard stream, writing to a stream, or naming one changes no stream.
+                "tools/plain.py": "import io\nimport sys\n\n\ndef read(raw):\n"
+                '    text = io.TextIOWrapper(raw, encoding="utf-8")\n'
+                "    out = sys.stdout\n"
+                "    out.write(text.read())\n"
+                "    sys.stderr.reconfigure(line_buffering=True)\n",
+            }
+            write_fixture_tree(root, files)
+            mark_skills(root)
+            doc = '"Script results" in docs/adding-a-skill.md'
+            copied = f"reconfigures a stream itself; call use_utf8_output() from skill-core instead; see {doc}"
+            self.assertEqual(
+                [
+                    f"deployer/renamed.py:4 {copied}",
+                    f"deployer/replaced.py:6 {copied}",
+                    f"deployer/set.py:3 {copied}",
+                    f"tools/bound.py:4 {copied}",
+                    f"tools/fetched.py:3 {copied}",
+                    f"tools/fetched.py:4 {copied}",
+                    f"tools/wrapped.py:4 {copied}",
+                ],
+                console_setup_problems(root),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -438,10 +438,38 @@ def _temporary_directory_names(tree: ast.Module, aliases: dict[str, str]) -> set
     return {name for name, bound in values.items() if all(created(value) for value in bound)}
 
 
+# The path methods that take a second path, where the call writes besides its receiver.
+TWO_PATH_METHODS = frozenset({"rename", "replace", "symlink_to", "hardlink_to"})
+
+
+def _keyword_arguments(call: ast.Call, names: set[str]) -> list[ast.expr]:
+    """The values of a call's keywords named here, and of each ** unpacking, which may hold any of them."""
+    return [keyword.value for keyword in call.keywords if keyword.arg is None or keyword.arg in names]
+
+
+def _write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
+    """The arguments that may name where a write lands. open() and os.open() write to their file and os.open() also
+    relative to its dir_fd; a path method writes to its receiver and, for a rename or a link, to its argument; any
+    other function may write to every argument but a constant that is not a string, such as a mode or a flag."""
+    target = qualified_name(call.func, aliases)
+    if target == "os.open" or target in OPEN_FUNCTIONS:
+        names = {"path", "dir_fd"} if target == "os.open" else {"file"}
+        return call.args[:1] + _keyword_arguments(call, names)
+    if target not in FILESYSTEM_WRITES["qualified"] and isinstance(call.func, ast.Attribute):
+        return [call.func.value, *(call.args if call.func.attr in TWO_PATH_METHODS else [])]
+    arguments = [*call.args, *(keyword.value for keyword in call.keywords)]
+    return [
+        argument
+        for argument in arguments
+        if not (isinstance(argument, ast.Constant) and not isinstance(argument.value, str))
+    ]
+
+
 def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, str]) -> list[str]:
     """Report each call an allowance sanctions that may write outside the system temporary directory: a tempfile call
-    that is not keyword-only without dir, or any other write whose first argument is not a name bound only to a
-    directory tempfile.mkdtemp created there."""
+    that is not keyword-only without dir, or any other write with a destination argument that is not a name bound only
+    to a directory tempfile.mkdtemp created there. A destination built from such a name, unpacked, or held in anything
+    else may be anywhere."""
     aliases = import_aliases(tree)
     directories = _temporary_directory_names(tree, aliases)
     problems: list[str] = []
@@ -451,8 +479,10 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
         if token.startswith("tempfile."):
             temporary = _in_the_temporary_directory(node, aliases)
         else:
-            first = node.args[0] if node.args else None
-            temporary = isinstance(first, ast.Name) and first.id in directories
+            destinations = _write_destinations(node, aliases)
+            temporary = bool(destinations) and all(
+                isinstance(destination, ast.Name) and destination.id in directories for destination in destinations
+            )
         if not temporary:
             problems.append(
                 f"{name}:{node.lineno} {FSOPS_ALLOWANCE} allows {token} only under the system temporary directory, "

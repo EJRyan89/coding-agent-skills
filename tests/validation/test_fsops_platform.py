@@ -63,6 +63,66 @@ class FsopsPlatformFixtures(unittest.TestCase):
                 filesystem_write_problems(root),
             )
 
+    def test_every_destination_of_an_allowed_write_must_be_under_the_system_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "shutil.copy": "copies only within the directory mkdtemp made",\n'
+                '    "os.chmod": "changes only the directory mkdtemp made",\n'
+                '    "open": "writes only inside the directory mkdtemp made",\n'
+                '    "write_text": "writes only inside the directory mkdtemp made",\n'
+                '    "rename": "renames only within the directory mkdtemp made",\n'
+                "}\n"
+                "import os\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "from pathlib import Path\n"
+                "\n"
+                "\n"
+            )
+            files = {
+                # Flags, modes, and the text written name no destination.
+                "deployer/kept.py": allowance + "def run():\n"
+                "    work = Path(tempfile.mkdtemp())\n"
+                "    copy = Path(tempfile.mkdtemp())\n"
+                "    shutil.copy(work, copy, follow_symlinks=False)\n"
+                "    os.chmod(work, 0o700)\n"
+                '    with open(work, "w", encoding="utf-8") as handle:\n'
+                '        handle.write("x")\n'
+                '    work.write_text("x", encoding="utf-8")\n'
+                "    work.rename(copy)\n",
+                "deployer/strayed.py": allowance + "def run(elsewhere):\n"
+                "    work = Path(tempfile.mkdtemp())\n"
+                '    shutil.copy(work / "a", elsewhere)\n'  # 17: the source is not a name mkdtemp bound
+                "    shutil.copy(work, elsewhere)\n"  # 18: the destination is second
+                "    shutil.copy(work, dst=elsewhere)\n"  # 19: the destination is a keyword
+                "    shutil.copy(work, *elsewhere)\n"  # 20: an unpacked argument may be anywhere
+                '    with open(elsewhere, "w") as handle:\n'  # 21: the file is a parameter
+                '        handle.write("x")\n'
+                '    elsewhere.write_text("x")\n'  # 23: the receiver is the destination
+                "    work.rename(elsewhere)\n"  # 24: the argument is the destination
+                "    os.chmod(elsewhere, 0o700)\n",  # 25: the mode is no destination, but the path is
+            }
+            write_fixture_tree(root, files)
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:17 " + message.format("shutil.copy"),
+                    "deployer/strayed.py:18 " + message.format("shutil.copy"),
+                    "deployer/strayed.py:19 " + message.format("shutil.copy"),
+                    "deployer/strayed.py:20 " + message.format("shutil.copy"),
+                    "deployer/strayed.py:21 " + message.format("open"),
+                    "deployer/strayed.py:23 " + message.format("write_text"),
+                    "deployer/strayed.py:24 " + message.format("rename"),
+                    "deployer/strayed.py:25 " + message.format("os.chmod"),
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_filesystem_write_policy_detects_each_write_and_a_stale_allowance(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

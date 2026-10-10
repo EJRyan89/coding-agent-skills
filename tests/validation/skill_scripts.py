@@ -10,7 +10,6 @@ import re
 import shlex
 import unittest
 from pathlib import Path
-from typing import TypeGuard
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from fsops_platform import import_aliases, qualified_name
@@ -291,13 +290,83 @@ def console_entry_points(root: Path) -> list[Path]:
     )
 
 
-def _reconfigures_encoding(node: ast.AST) -> TypeGuard[ast.Call]:
-    """Whether a call reconfigures a stream's encoding, as stream.reconfigure(...) or through a name bound to it."""
-    if not isinstance(node, ast.Call) or not any(keyword.arg == "encoding" for keyword in node.keywords):
+# The standard streams use_utf8_output configures, under every name sys gives them.
+STANDARD_STREAMS = frozenset(
+    f"sys.{name}" for stream in ("stdin", "stdout", "stderr") for name in (stream, f"__{stream}__")
+)
+# Calls that build a text stream over a binary stream or a file descriptor, choosing its encoding, and the codecs
+# calls that return a class that does.
+STREAM_WRAPPERS = frozenset({"io.TextIOWrapper", "open", "builtins.open", "io.open", "os.fdopen"})
+CODEC_WRAPPERS = frozenset({"codecs.getwriter", "codecs.getreader"})
+
+
+def _is_reconfigure(node: ast.expr) -> bool:
+    """Whether an expression is a stream's reconfigure method: stream.reconfigure, or getattr(stream, "reconfigure")."""
+    if isinstance(node, ast.Attribute):
+        return node.attr == "reconfigure"
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) > 1
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "reconfigure"
+    )
+
+
+def _reconfigure_names(tree: ast.Module) -> set[str]:
+    """The names a module binds to a stream's reconfigure method anywhere in it, and reconfigure itself."""
+    names = {"reconfigure"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and _is_reconfigure(node.value):
+            names |= {target.id for target in node.targets if isinstance(target, ast.Name)}
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value and _is_reconfigure(node.value):
+            names |= {node.target.id} if isinstance(node.target, ast.Name) else set()
+    return names
+
+
+def _names_a_standard_stream(node: ast.AST, aliases: dict[str, str]) -> bool:
+    """Whether an expression reaches a standard stream, such as sys.stdout.buffer or sys.stderr.fileno()."""
+    return any(qualified_name(part, aliases) in STANDARD_STREAMS for part in ast.walk(node))
+
+
+def _changes_a_stream(node: ast.AST, aliases: dict[str, str], reconfigures: set[str]) -> bool:
+    """Whether a node sets a stream's encoding: a reconfigure call that may pass one, directly or through a name bound
+    to the method; an assignment or setattr that replaces a standard stream; or a text wrapper built over one."""
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return any(
+            isinstance(target, ast.Attribute) and qualified_name(target, aliases) in STANDARD_STREAMS
+            for target in targets
+        )
+    if not isinstance(node, ast.Call):
         return False
     function = node.func
-    return (isinstance(function, ast.Attribute) and function.attr == "reconfigure") or (
-        isinstance(function, ast.Name) and function.id == "reconfigure"
+    if _is_reconfigure(function) or (isinstance(function, ast.Name) and function.id in reconfigures):
+        return any(keyword.arg in {"encoding", None} for keyword in node.keywords)
+    if qualified_name(function, aliases) in {"setattr", "builtins.setattr"} and len(node.args) > 1:
+        stream = node.args[1]
+        return (
+            qualified_name(node.args[0], aliases) == "sys"
+            and isinstance(stream, ast.Constant)
+            and f"sys.{stream.value}" in STANDARD_STREAMS
+        )
+    wrapper = qualified_name(function, aliases) in STREAM_WRAPPERS or (
+        isinstance(function, ast.Call) and qualified_name(function.func, aliases) in CODEC_WRAPPERS
+    )
+    arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+    return wrapper and any(_names_a_standard_stream(argument, aliases) for argument in arguments)
+
+
+def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]:
+    """The lines on which a module sets a standard stream's encoding itself."""
+    reconfigures = _reconfigure_names(tree)
+    return sorted(
+        {
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.stmt, ast.expr)) and _changes_a_stream(node, aliases, reconfigures)
+        }
     )
 
 
@@ -323,10 +392,9 @@ def console_setup_problems(root: Path) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = import_aliases(tree)
         problems += [
-            f"{name}:{node.lineno} reconfigures a stream itself; call {CONSOLE_SETUP}() from {CONSOLE_CORE} instead; "
+            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_SETUP}() from {CONSOLE_CORE} instead; "
             f"see {CONSOLE_DOC}"
-            for node in ast.walk(tree)
-            if _reconfigures_encoding(node)
+            for line in _stream_change_lines(tree, aliases)
         ]
         for node in tree.body:
             if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
