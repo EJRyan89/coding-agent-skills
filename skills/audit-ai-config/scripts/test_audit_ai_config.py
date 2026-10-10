@@ -1350,8 +1350,9 @@ class CopilotConfigurationTests(unittest.TestCase):
         )
         self._write_manifest(manifest)
         result = audit.audit(self.root)
-        self.assertTrue(
-            any(f.check == "provenance" and "lacks an ownership marker" in f.message for f in result.findings)
+        self.assertIn(
+            ("ownership", "Generated file missing embedded ownership marker"),
+            [(f.check, f.message) for f in result.findings if f.path == ".github/agents/project-agent.agent.md"],
         )
 
     def test_roles_distinguish_copilot_surfaces(self) -> None:
@@ -2733,7 +2734,7 @@ PARITY_SCENARIOS: dict[str, tuple[dict[str, str | bytes], dict]] = {
             ]
         },
     ),
-    "hash_mismatch_hides_missing_marker": (
+    "hash_mismatch_on_an_unmarked_file": (
         {".github/agents/reviewer.md": "# Reviewer\n"},
         {"artifacts": [{"path": ".github/agents/reviewer.md", "hash": "0" * 64}]},
     ),
@@ -2974,12 +2975,11 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ("ERROR", "parity", ".github/mcp.json", "Generated artifact missing: .github/mcp.json"),
         ("ERROR", "parity", ".codex/config.toml", "Generated artifact exists but could not be read"),
         ("ERROR", "parity", ".mcp.json", "Artifact modified (hash mismatch with manifest)"),
-        ("ERROR", "parity", ".github/agents/reviewer.md", "Generated file missing ownership marker"),
         ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
         ("ERROR", "parity", "AGENTS.md", "Content does not match deterministic template"),
         ("ERROR", "parity", ".agents/skills/demo/SKILL.md", "Content does not match deterministic template"),
     ],
-    "hash_mismatch_hides_missing_marker": [
+    "hash_mismatch_on_an_unmarked_file": [
         ("ERROR", "parity", ".github/agents/reviewer.md", "Artifact modified (hash mismatch with manifest)"),
     ],
     "copilot_sections_differ": [
@@ -3692,6 +3692,158 @@ class RepositoryWalkTests(unittest.TestCase):
         self.assertEqual(
             {".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__", ".tox", ".nox"},
             audit.SKIPPED_DIRECTORIES,
+        )
+
+
+class ScopeWithoutAValidManifestTests(unittest.TestCase):
+    """A derived generator scope is compared with a valid manifest only; a missing or invalid one is one finding."""
+
+    GENERATOR = "SOURCE = 'CLAUDE.md'\nTARGET_RUNTIMES = ['claude']\nTARGET_SURFACES = []\nTARGET_FEATURES = []\n"
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _write_fixture(self.root, {"CLAUDE.md": MAINTAINED_CLAUDE, ".github/scripts/ai_config.py": self.GENERATOR})
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _scope(self) -> tuple[str, list[tuple[str, str | None, str]]]:
+        result = audit.audit(self.root)
+        self.assertEqual("conforming", result.authority)
+        return result.scope_status, [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"]
+
+    def test_a_missing_manifest_is_one_scope_error(self) -> None:
+        self.assertEqual(
+            (
+                "independently-derived",
+                [("ERROR", MANIFEST_PATH, "Manifest is missing, so the derived generator scope was not compared")],
+            ),
+            self._scope(),
+        )
+
+    def test_a_malformed_ignored_or_schema_invalid_manifest_is_one_scope_error(self) -> None:
+        for name, content in (
+            ("malformed", "{bad"),
+            ("not generated", json.dumps({"runtimes": ["claude"]})),
+            ("schema invalid", _manifest(runtimes=None)),
+        ):
+            with self.subTest(name=name):
+                _write_fixture(self.root, {MANIFEST_PATH: content})
+                self.assertEqual(
+                    (
+                        "independently-derived",
+                        [
+                            (
+                                "ERROR",
+                                MANIFEST_PATH,
+                                "Manifest is not a valid ai_config.py manifest, so the derived generator scope "
+                                "was not compared",
+                            )
+                        ],
+                    ),
+                    self._scope(),
+                )
+
+    def test_a_valid_manifest_is_still_compared_field_by_field(self) -> None:
+        _write_fixture(self.root, {MANIFEST_PATH: _manifest(runtimes=["claude"], surfaces=["copilot_cli"])})
+        self.assertEqual(
+            (
+                "independently-derived",
+                [("ERROR", MANIFEST_PATH, "Manifest surfaces differs from independently derived generator scope")],
+            ),
+            self._scope(),
+        )
+
+
+class MarkdownCellTests(unittest.TestCase):
+    """A value the repository controls cannot split a findings row or add a column."""
+
+    def test_pipes_and_line_breaks_in_a_cell_are_escaped(self) -> None:
+        result = audit.AuditResult(
+            repository="example",
+            authority="conforming",
+            findings=[audit.Finding("ERROR", "mcp", "a|b\r\nc.json", 3, "Server 'a|b\nc': bad")],
+        )
+        rows = [line for line in audit.format_markdown(result).splitlines() if line.startswith("| ERROR")]
+        self.assertEqual([r"| ERROR | mcp | a\|b<br>c.json | 3 | Server 'a\|b<br>c': bad |"], rows)
+
+    def test_a_server_name_from_the_repository_stays_in_its_row(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _setup_conforming_repo(root)
+            (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"a|b\nc": {}}}), encoding="utf-8")
+            report = audit.format_markdown(audit.audit(root))
+        table = report[report.index("| Severity") :].splitlines()
+        self.assertTrue(table)
+        for line in table:
+            self.assertEqual(6, len(re.findall(r"(?<!\\)\|", line)), line)
+
+
+class OwnershipFindingTests(unittest.TestCase):
+    """The ownership marker and an unreadable artifact are each reported once, by one check."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _setup_conforming_repo(self.root)
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _own(self, rel: str, content: str | bytes) -> list[tuple[str, str]]:
+        manifest = json.loads((self.root / MANIFEST_PATH).read_text(encoding="utf-8"))
+        manifest["artifacts"].append({"path": rel})
+        _write_fixture(self.root, {MANIFEST_PATH: json.dumps(manifest), rel: content})
+        return [
+            (f.check, f.message)
+            for f in audit.audit(self.root).findings
+            if f.path == rel and f.check in ("parity", "provenance", "ownership")
+        ]
+
+    def test_a_manifest_owned_projection_without_its_marker_is_one_ownership_error(self) -> None:
+        self.assertEqual(
+            [("ownership", "Generated file missing embedded ownership marker")],
+            self._own(".github/skills/demo/SKILL.md", "---\nname: demo\ndescription: Demo skill.\n---\n"),
+        )
+
+    def test_an_unreadable_artifact_is_one_parity_error(self) -> None:
+        self.assertEqual(
+            [("parity", "Generated artifact exists but could not be read")],
+            self._own(".codex/config.toml", UNDECODABLE),
+        )
+
+    def test_a_json_artifacts_hash_is_left_to_the_manifest_schema(self) -> None:
+        _write_fixture(self.root, {".mcp.json": "{}"})
+        self.assertEqual([], audit.check_ownership(self.root, {"artifacts": [{"path": ".mcp.json"}]}))
+
+
+class UnlistableDirectoryTests(unittest.TestCase):
+    """A directory the audit cannot list is a finding at that directory, never a traceback."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        _setup_conforming_repo(self.root)
+        _write_fixture(self.root, {".github/agents/reviewer.md": "---\ndescription: Reviews.\n---\n"})
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def test_a_permission_error_listing_agents_is_an_error_at_the_directory(self) -> None:
+        listed = Path.iterdir
+        denied = self.root / ".github/agents"
+
+        def iterdir(path: Path):
+            if path == denied:
+                raise PermissionError(13, "Access is denied", str(path))
+            return listed(path)
+
+        with mock.patch.object(Path, "iterdir", iterdir):
+            result = audit.audit(self.root)
+        self.assertEqual(
+            [("ERROR", "copilot-config", "Could not list the directory: Access is denied")],
+            [(f.severity, f.check, f.message) for f in result.findings if f.path == ".github/agents"],
         )
 
 

@@ -18,7 +18,9 @@ Finding format, severities, and output modes for the audit engine.
 The Markdown and JSON report include repository `authority` plus `scopeStatus`.
 `scopeStatus` is one of four values:
 
-- `independently-derived` when literal generator target declarations were statically compared to the manifest;
+- `independently-derived` when literal generator target declarations were read and statically compared to the
+  manifest, one `scope` `ERROR` per field that differs; when the manifest is missing, or is not a valid `ai_config.py`
+  manifest, nothing is compared and one `scope` `ERROR` says so instead;
 - `manifest-declared-only` when a manifest exists but that safe derivation was unavailable, with a `scope` `WARNING`
   whose message ends with the reason in parentheses: `manifest-declared-only` (no recognized generator),
   `generator-scope-unreadable`, `generator-scope-not-literal`, `generator-scope-invalid`, or
@@ -92,7 +94,9 @@ SUMMARY INFO inventory 1
 ```
 
 `Authority` and `Scope` print the same lowercase values as the JSON `authority` and `scopeStatus`. A finding with no
-path or line leaves that cell empty.
+path or line leaves that cell empty. A path or message is text the audited repository controls, so a `|` in it is
+written `\|` and a line break `<br>`, and each finding stays one row of five cells; the JSON output carries the text
+as it is.
 
 The `SUMMARY` lines come before the findings: one per severity, always in `ERROR`, `WARNING`, `INFO` order and
 printed even when the count is `0`, then one per check that produced an `INFO` finding, sorted by check name. JSON

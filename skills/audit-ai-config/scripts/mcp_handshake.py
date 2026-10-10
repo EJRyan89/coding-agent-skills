@@ -6,7 +6,8 @@
 This STARTS repository-configured commands, so run it only after the user explicitly
 authorizes operational validation of a trusted repository. Each stdio server declared in
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its
-configured command, arguments, working directory, and environment; it receives initialize,
+configured command, arguments, working directory, and environment (a command with a directory part is
+relative to that working directory under the root, as a client starts it); it receives initialize,
 notifications/initialized, and tools/list, and is then stopped. Identical definitions in
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
@@ -101,7 +102,9 @@ def group_servers(root: Path, only: str | None) -> tuple[list[tuple[str, list[st
     for name, source, entry in servers:
         if only is not None and name != only:
             continue
-        key = (name, json.dumps(connection(entry), sort_keys=True))
+        # A TOML date or time has no JSON form; repr keeps such a definition distinct, and the handshake then
+        # rejects the value as it rejects any other of the wrong type.
+        key = (name, json.dumps(connection(entry), sort_keys=True, default=repr))
         if key in groups:
             groups[key][1].append(source)
         else:
@@ -256,9 +259,21 @@ def tool_count(session: Session, deadline: float) -> int:
     raise RuntimeError(f"tools/list did not finish within {MAX_TOOL_PAGES} pages")
 
 
+def resolve_command(command: str, cwd: Path) -> str | None:
+    """The program a server's command names: a path is relative to the server's working directory, the directory a
+    client starts it in, and a bare name is looked up on PATH."""
+    if any(separator in command for separator in (os.sep, os.altsep) if separator):
+        return shutil.which(str(cwd / command))
+    return shutil.which(command)
+
+
 def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
     """Return 'protocol=<v> tools=<n>' or raise RuntimeError with the failure reason."""
-    command = shutil.which(entry["command"])
+    configured_cwd = entry.get("cwd", ".")
+    if not isinstance(configured_cwd, str):
+        raise RuntimeError("cwd must be a string")
+    cwd = root / configured_cwd
+    command = resolve_command(entry["command"], cwd)
     if command is None:
         raise RuntimeError(f"command not found: {entry['command']}")
     args = entry.get("args") or []
@@ -267,7 +282,6 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
         raise RuntimeError("args must be a list of strings")
     if not isinstance(env_values, dict) or not all(isinstance(v, str) for v in env_values.values()):
         raise RuntimeError("env must map names to strings")
-    cwd = root / entry["cwd"] if isinstance(entry.get("cwd"), str) else root
     try:
         session = Session([command, *args], cwd, {**os.environ, **env_values})
     except OSError as error:
