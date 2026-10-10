@@ -278,6 +278,49 @@ class ExtractionTests(unittest.TestCase):
             ],
         )
 
+    def test_a_body_paragraph_starting_with_a_hash_is_escaped_and_never_taken_for_a_heading(self) -> None:
+        content = word_document(
+            paragraph("Scope", style="Titre1"),
+            paragraph("#1 priority is latency."),
+            paragraph("Retention is 30 days."),
+            paragraph("# not a heading either"),
+            paragraph("\\# already escaped"),
+            paragraph("Limits", style="Heading2"),
+            paragraph("#hashtag", style="Heading2"),
+            paragraph("Last."),
+            paragraph("#tag", level=0),
+        )
+        text = extract("docx", content).decode("utf-8")
+
+        self.assertEqual(
+            text.splitlines(),
+            [
+                "[P1] # Scope",
+                "[P2] \\#1 priority is latency.",
+                "[P3] Retention is 30 days.",
+                "[P4] \\# not a heading either",
+                "[P5] \\\\# already escaped",
+                "[P6] ## Limits",
+                "[P7] ## #hashtag",
+                "[P8] Last.",
+                "[P9] - #tag",
+            ],
+        )
+        self.assertEqual(
+            locations(text),
+            [
+                "paragraph 1",
+                'paragraph 2, under the heading "Scope"',
+                'paragraph 3, under the heading "Scope"',
+                'paragraph 4, under the heading "Scope"',
+                'paragraph 5, under the heading "Scope"',
+                "paragraph 6",
+                "paragraph 7",
+                'paragraph 8, under the heading "#hashtag"',
+                'paragraph 9, under the heading "#hashtag"',
+            ],
+        )
+
     def test_a_pdfs_locations_name_the_page_and_the_line(self) -> None:
         self.assertEqual(locations("[p1 l1] # Not a heading\n[p3 l12] Body\n"), ["page 1, line 1", "page 3, line 12"])
 
