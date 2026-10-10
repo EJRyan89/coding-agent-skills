@@ -4,18 +4,19 @@ Every command prints one fact per line:
   build   Writes a fixture directory (see review_canary.py in code-review-core) that holds the document as one change,
           and prints DOCUMENT <path in the fixture>, BASE committed <commit> | BASE none <reason>,
           ROUTE design-review | ROUTE generic, FIXTURE <fixture directory>, and OUTPUT <output directory>.
-  report  Copies the report `finalize` recorded into the output directory, and prints REPORT <copy> and
-          RECORD <the record JSON beside the original>.
+  report  Copies the report `finalize` recorded into the output directory, never over a file already there, and
+          prints REPORT <copy> and RECORD <the record JSON beside the original>.
 A failure prints `FAILED <reason>` and exits 1; a usage error exits 2.
 
 The head is the file as it is on disk. The base is the version committed at HEAD when the file lies in a git checkout
 and is committed there, so the review covers the uncommitted change; otherwise, or with `--base none`, the base has no
 such file and the whole document is reviewed. A Word document or a PDF, a format `review_documents.document_format`
 names, is written to the fixture as its exact bytes, so the fixture canary's snapshot extracts its text as it does a
-pull request's; one whose text would not be extracted, or whose text the change leaves as it was, is refused here
-first. A Markdown, plain-text, Word, or PDF document (DESIGN_SUFFIXES, or a document format) goes to the suite's
-design-review specialist, through a specialists manifest in the fixture's base tree; any other text file goes to the
-generic reviewer. Nothing here calls GitHub, and nothing is written to the checkout.
+pull request's; one whose text would not be extracted, or whose lines of text the change leaves as they were, labels
+aside, is refused here first. A Markdown, plain-text, Word, or PDF document (DESIGN_SUFFIXES, or a document format)
+goes to the suite's design-review specialist, through a specialists manifest in the fixture's base tree; any other
+text file goes to the generic reviewer. Nothing here calls GitHub, nothing is written to the checkout, and `--output`
+must name a new or empty directory, so nothing already there is mixed with the review's files or replaced.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import use_utf8_output
 from git_client import GitClient, GitError
-from review_documents import ExtractionRefused, document_format, extract
+from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_io import PersistenceError, working_path
 
 # The documents the design-review specialist reviews: Markdown and plain-text markup, matched by suffix, ignoring case.
@@ -183,10 +184,12 @@ def specialists_manifest(relative: str) -> dict[str, Any]:
 
 
 def same_text(form: str, base: bytes, head: bytes) -> bool:
-    """Whether a document's committed version extracts to the text its version on disk does. A base whose text is
-    not extracted is never the same: the review then reads the whole head, and its report says why."""
+    """Whether a document's committed version extracts to the lines of text its version on disk does, their labels
+    aside, as the diff matches them: an edit that only renumbers the same lines, such as an inserted empty paragraph,
+    leaves the diff no hunk to review. A base whose text is not extracted is never the same: the review then reads the
+    whole head, and its report says why."""
     try:
-        return extract(form, base) == extract(form, head)
+        return unlabeled(extract(form, base).decode("utf-8")) == unlabeled(extract(form, head).decode("utf-8"))
     except ExtractionRefused:
         return False
 
@@ -199,12 +202,13 @@ def write_file(root: Path, relative: str, content: bytes) -> None:
 
 def output_directory(output: Path | None) -> Path | None:
     """The explicit output directory, checked before anything is read or written, or None for a new temporary one.
-    One inside a skills directory is refused, since a file left there makes the deployer skip that skill."""
+    One inside a skills directory is refused, since a file left there makes the deployer skip that skill, and so is
+    one that exists and is not empty, so nothing the user keeps there is mixed with the review's files or replaced."""
     if output is None:
         return None
     directory = working_path(output, "review-document-", "").resolve()
-    if (directory / "fixture").exists():
-        raise DocumentError(f"{directory} already holds a fixture; name a new or empty directory")
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        raise DocumentError(f"{directory} exists and is not an empty directory; name a new or empty directory")
     return directory
 
 
@@ -223,8 +227,8 @@ def build(path: Path, requested: str | None, output: Path | None, git: GitClient
         )
     if form is not None and base.content is not None and same_text(form, base.content, content):
         raise DocumentError(
-            f"{location.relative} has no uncommitted change to its text, only to formatting, images, or parts whose "
-            "text is not extracted; pass --base none to review the whole document"
+            f"{location.relative} has no uncommitted change to its text, only to formatting, layout, images, or parts "
+            "whose text is not extracted; pass --base none to review the whole document"
         )
     design = form is not None or path.suffix.lower() in DESIGN_SUFFIXES
     fixture = (directory or Path(tempfile.mkdtemp(prefix="review-document-")).resolve()) / "fixture"
@@ -262,7 +266,8 @@ def build(path: Path, requested: str | None, output: Path | None, git: GitClient
 
 
 def report(fixture: Path, recorded: Path) -> list[str]:
-    """Copy the recorded report beside the fixture, and name the record JSON finalize wrote beside it."""
+    """Copy the recorded report beside the fixture, never over a file already there, and name the record JSON
+    finalize wrote beside it."""
     fixture = fixture.resolve()
     if not (fixture / "pull.json").is_file():
         raise DocumentError(f"{fixture} is not a fixture review-document built")
@@ -272,7 +277,11 @@ def report(fixture: Path, recorded: Path) -> list[str]:
     if recorded.suffix != ".md" or not recorded.is_file() or not record.is_file():
         raise DocumentError(f"{recorded} is not a report finalize recorded")
     target = directory / REPORT_NAME
-    shutil.copyfile(recorded, target)
+    try:
+        with recorded.open("rb") as source, target.open("xb") as copy:
+            shutil.copyfileobj(source, copy)
+    except FileExistsError as exc:
+        raise DocumentError(f"{target} already exists, and is not replaced; the report is at {recorded}") from exc
     return [f"REPORT {target}", f"RECORD {record}"]
 
 

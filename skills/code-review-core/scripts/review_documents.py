@@ -485,6 +485,12 @@ def split_label(line: str) -> tuple[str, str]:
     return ("", line) if match is None else (line[1 : match.end() - 2], line[match.end() :])
 
 
+def unlabeled(text: str) -> list[str]:
+    """An extracted text's lines without their labels, as `document_diff` matches them: two texts whose unlabeled
+    lines are equal give a diff with no hunk."""
+    return [split_label(line)[1] for line in text.splitlines()]
+
+
 def locations(text: str) -> list[str]:
     """Each extracted line's place in the source document, for a report: its paragraph, its table row, and the
     nearest heading above it, or a PDF's page and line."""
