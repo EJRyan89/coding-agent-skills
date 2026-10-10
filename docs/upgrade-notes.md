@@ -13,6 +13,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 
 ## Unreleased
 
+### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
+
+- Level: minor. Additive: a specialist's `profile` in a specialists manifest may now be `suite:design-review`, a profile the suite ships for design documents, read from `code-review-core`'s deployed references rather than the repository. A record whose reviewer used one names it in `review.adapter.source_hashes` under `suite:design-review`, with the SHA-256 of the file that ran; an earlier release reads such a record, but refuses a manifest that names a suite profile. A fixture's `pull.json` may name a `manifest_path` in its `base/` tree, which a fixture canary then reviews with, read from the base commit; without it the generic reviewer reviews the fixture as before. "Design documents" under "Specialist reviewers" in `docs/code-review-operations.md` shows the route and the finding categories.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #253
+
 ### source-search judges binary files by their bytes, not by the checkout's attributes
 
 - Level: patch. A fix: on a lazy snapshot, `source-search` let the configured checkout's `.gitattributes`, `.git/info/attributes`, or `core.attributesFile` decide what was binary, so a text file one marked `-diff` or `binary` was never searched and a binary file one marked `diff` was. It now searches every file of the head as text and keeps a match only in a file the snapshot's own test (no NUL byte in the first 8,000 bytes) finds text, testing a file it lists to fetch the first time that file matches. Its output is unchanged, and no Git floor is added.
