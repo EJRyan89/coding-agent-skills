@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import REPOSITORY_ROOT, DeployerTestCase, forward
+from harness import FAILS_PARTWAY, REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
 
 from deployer import errors, fsops, platform_support
 from deployer.errors import DeployError
@@ -330,7 +330,7 @@ class RecoveryRemedyTests(RemedyTestCase):
             mock.patch("deployer.pipeline._deploy", side_effect=DeployError("ERROR: synthetic failure")),
             mock.patch("deployer.journal.recover_incomplete", side_effect=[True, False]),
         ):
-            result = self.deploy_fails("--all", pattern="Immediate recovery failed")
+            result = self.deploy_fails("--all", pattern="Immediate recovery failed", changes_home=FAILS_PARTWAY)
         self.assert_lines(
             result.output,
             "The next run reclaims the lock and retries recovery. If that fails too, reconcile the run by hand. "
@@ -357,7 +357,9 @@ class BackupRemedyTests(RemedyTestCase):
         existing = self.root / "existing-backup"
         existing.mkdir()
         with mock.patch("deployer.journal.prepare_backup_destination", return_value=existing):
-            result = self.deploy_fails("--all", "--force-item", "alpha", pattern="Permanent backup destination")
+            result = self.deploy_fails(
+                "--all", "--force-item", "alpha", pattern="Permanent backup destination", changes_home=FAILS_PARTWAY
+            )
         self.assert_lines(
             result.output,
             f"ERROR: Permanent backup destination already exists: {forward(existing)}",
@@ -432,7 +434,9 @@ class LockRemedyTests(RemedyTestCase):
             mock.patch("deployer.fsops.write_atomic", side_effect=failing_write),
             mock.patch("deployer.fsops.remove", side_effect=failing_remove),
         ):
-            result = self.deploy_fails("--all", pattern="Failed to initialize deployment lock")
+            result = self.deploy_fails(
+                "--all", pattern="Failed to initialize deployment lock", changes_home=TAKES_THE_LOCK
+            )
         self.assert_lines(
             result.output,
             f"Remove {forward(self.lock_dir)} after confirming no deployment is running.",
@@ -466,7 +470,9 @@ class LockRemedyTests(RemedyTestCase):
             real_make_directory(path)
 
         with mock.patch("deployer.fsops.make_directory", side_effect=contended):
-            result = self.deploy_fails("--all", pattern="after stale reclaim", probe=probe_returning(False, None))
+            result = self.deploy_fails(
+                "--all", pattern="after stale reclaim", probe=probe_returning(False, None), changes_home=TAKES_THE_LOCK
+            )
         self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
 
 

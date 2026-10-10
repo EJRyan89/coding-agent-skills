@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import io
 import json
 import shutil
 import unittest
@@ -13,8 +11,7 @@ from unittest import mock
 
 from harness import DeployerTestCase
 
-from deployer import fsops, pipeline
-from deployer.paths import Paths
+from deployer import fsops
 
 
 def sha256(content: bytes) -> str:
@@ -307,11 +304,7 @@ class AgentDeploymentTests(DeployerTestCase):
         skill = other / "skills" / "beta" / "SKILL.md"
         skill.write_bytes(skill.read_bytes().replace(b"name: alpha", b"name: beta"))
         self.make_config("other/skills")
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(["--all"], Paths(other, self.home), stdin=io.StringIO(""))
-        self.assertNotEqual(0, code)
-        self.assertIn("Agent 'reviewer.md' is owned by source 'test/skills'", captured.getvalue())
+        self.deploy_fails("--all", source=other, pattern="Agent 'reviewer.md' is owned by source 'test/skills'")
         self.assertEqual(self.content, self.agent.read_bytes())
 
     def test_malformed_agent_ownership_in_the_manifest_is_rejected(self) -> None:
