@@ -396,29 +396,42 @@ class DiscoverTests(Fixture):
 
     def test_the_reason_a_sweep_cannot_start_names_the_kind_of_failure(self) -> None:
         not_signed_in = "^GitHub CLI not authenticated — run 'gh auth login'$"
-        for failure, message in (
-            (CommandResult(1, "", "gh: Bad credentials (HTTP 401)\n"), not_signed_in),
-            (GitHubError(MISSING_CLI, kind="prerequisite"), f"^GitHub CLI not installed — {re.escape(MISSING_CLI)}$"),
+        for failure, message, waits in (
+            (CommandResult(1, "", "gh: Bad credentials (HTTP 401)\n"), not_signed_in, []),
+            (
+                GitHubError(MISSING_CLI, kind="prerequisite"),
+                f"^GitHub CLI not installed — {re.escape(MISSING_CLI)}$",
+                [],
+            ),
             (
                 CommandResult(1, "", "error connecting to api.github.com\ncheck your internet connection\n"),
                 "^cannot reach github.com — error connecting to api.github.com check your internet connection$",
+                [],
             ),
             (
                 GitHubError("GitHub CLI did not finish within 300 seconds", kind="timeout"),
                 "^github.com did not answer — GitHub CLI did not finish within 300 seconds$",
+                [],
             ),
             (
                 CommandResult(1, "", "HTTP 502: Bad Gateway\n"),
                 r"^GitHub CLI access check failed \(api\) — HTTP 502",
+                [],
             ),
             (
                 CommandResult(1, "", "gh: API rate limit exceeded (HTTP 403)\n"),
-                "^GitHub's rate limit refused the GitHub CLI — gh: API rate limit exceeded",
+                "^GitHub's rate limit refused the GitHub CLI — gh: API rate limit exceeded "
+                r".*\(gave up after 5 retries\)$",
+                [5.0, 10.0, 20.0, 40.0, 80.0],
             ),
         ):
-            with self.subTest(failure=failure), self.assertRaisesRegex(rc.CleanupError, message):
+            # discover builds its own GitHubClient, which takes time.sleep as its sleeper when it is built, so the
+            # patch records the waits a rate limit's backoff would make instead of sleeping through them.
+            with self.subTest(failure=failure), mock.patch("time.sleep") as sleep:
                 self.github.access_failure = failure
-                self.discover()
+                with self.assertRaisesRegex(rc.CleanupError, message):
+                    self.discover()
+                self.assertEqual(waits, [call.args[0] for call in sleep.call_args_list])
 
 
 class SyncTests(Fixture):
