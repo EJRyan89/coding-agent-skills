@@ -45,6 +45,9 @@ MANIFEST_PATH = ".review-document/specialists.json"
 FINDING_CATEGORIES = ["requirement-gap", "alternative-unstated", "risk", "open-question", "inconsistency", "rollout"]
 # git's own test for a binary file: a NUL byte in the first 8,000 bytes.
 BINARY_PROBE = 8000
+# Document formats the snapshot extracts that this skill still refuses: a PDF's text is held beside it in the snapshot,
+# and neither the route nor the skill's guidance covers it yet.
+REFUSED_FORMATS = frozenset({"pdf"})
 # The fixture's owner. No GitHub account name holds a dot, so the pull request URL a report shows names nobody's
 # repository.
 LOCAL_OWNER = "review-document.local"
@@ -81,6 +84,8 @@ def document_bytes(path: Path, form: str | None) -> bytes:
     content = path.read_bytes()
     if not content.strip():
         raise DocumentError(f"{path} is empty")
+    if form in REFUSED_FORMATS:
+        raise DocumentError(f"{path} is a PDF, which review-document does not review; a pull request's review does")
     if form is not None:
         if not document_text(path, form, content).strip():
             raise DocumentError(f"{path} holds no text to review")

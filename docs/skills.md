@@ -34,9 +34,9 @@ When a required argument is missing, a skill asks for it rather than guessing.
 | [`flag-review-finding`](#flag-review-finding) | You or the agent | `code-review-operations` bundle | Nothing extra |
 | [`github-activity-report`](#github-activity-report) | You or the agent | By default | `gh` |
 | [`repo-cleanup`](#repo-cleanup) | You | By default | `gh`, the `REPOS_ROOT` setting |
-| [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` (optional) |
+| [`review-document`](#review-document) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` (optional), `pdftotext` (optional) |
 | [`review-insights`](#review-insights) | You or the agent | `code-review-operations` bundle | Nothing extra |
-| [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh` |
+| [`review-prs`](#review-prs) | You or the agent | `code-review-operations` bundle | `copilot` (optional), `gh`, `pdftotext` (optional) |
 | [`update-coding-agent-skills`](#update-coding-agent-skills) | You | By default | Nothing extra |
 | [`update-pr-tracker`](#update-pr-tracker) | You or the agent | `code-review-operations` bundle | `gh` |
 <!-- /generated:summary -->
@@ -255,10 +255,10 @@ Review one document from its file path, such as a design draft on disk or a docu
 /review-document <path> [--base none|committed] [--output DIR]
 ```
 
-Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh` (optional).
+Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional), `gh` (optional), and `pdftotext` (optional).
 <!-- /generated:review-document -->
 
-- `<path>`: the document to review, a text file or a Word document (`.docx`). A PDF is refused, because its text must be extracted first.
+- `<path>`: the document to review, a text file or a Word document (`.docx`). A PDF is refused: only a pull request's review extracts its text.
 - `--base none|committed`: what the document is compared with. Without it, a file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged, and any other file is reviewed whole. `none` reviews the whole document anyway; `committed` insists on the change and fails when nothing is committed.
 - `--output DIR`: where the fixture and the copy of the report go, a new or empty directory outside every skills directory. Without it, a new `review-document-*` temporary directory.
 
@@ -304,7 +304,7 @@ Review eligible pull requests in explicitly configured repositories, review or r
 /review-prs [owner/repo ... | --repository-set NAME | --pull owner/repo#number ... --re-review owner/repo#number ... --scope auto|full|incremental] [--force] | --canary owner/repo#number ... | --canary --fixture DIR [--re-review --prior RECORD]
 ```
 
-Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional) and `gh`.
+Started by you or the agent. Installed with the `code-review-operations` bundle. Needs `copilot` (optional), `gh`, and `pdftotext` (optional).
 <!-- /generated:review-prs -->
 
 It runs in one of four modes, chosen by its arguments:

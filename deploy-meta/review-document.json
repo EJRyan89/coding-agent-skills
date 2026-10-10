@@ -2,6 +2,6 @@
     "required_vars": [],
     "shared_deps": ["runtime-compatibility.md"],
     "skill_deps": ["code-review-core", "skill-core"],
-    "optional_tools": ["copilot", "gh"],
+    "optional_tools": ["copilot", "gh", "pdftotext"],
     "runtime_support": {"claude-code": "full", "codex": "full", "copilot-cli": {"level": "partial", "needs": ["agent-delegation"], "reason": "The reviewer role runs inline in the session, without the reviewer agent's guard."}}
 }

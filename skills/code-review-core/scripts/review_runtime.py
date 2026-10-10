@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
-from review_documents import DOCUMENT_FORMATS, ExtractionRefused, document_format, extract
+from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
 
@@ -39,6 +39,13 @@ SOURCE_SNAPSHOT_FIELDS = frozenset({"schema_version", "repository", "source_comm
 SNAPSHOT_FETCHABLE = "fetchable"
 # The changed documents the snapshot holds as extracted text rather than their committed bytes, with their format.
 SNAPSHOT_EXTRACTED = "extracted"
+# The folder at the snapshot's root that holds the text of a document whose own path a reviewer's file reader would
+# parse as that format: Claude Code's Read takes any file named .pdf for a PDF and refuses text there. No path of
+# the repository may be in it, as none may be the manifest.
+HELD_TEXT_FOLDER = "source-snapshot-text"
+# The formats whose text is held in HELD_TEXT_FOLDER, at the document's path with this suffix added, rather than at
+# the document's own path.
+HELD_BESIDE = {"pdf": ".txt"}
 SNAPSHOT_OPTIONAL_FIELDS = frozenset({SNAPSHOT_FETCHABLE, SNAPSHOT_EXTRACTED})
 MAX_SOURCE_SNAPSHOT_FILES = 50_000
 MAX_SOURCE_SNAPSHOT_BYTES = 256 * 1024 * 1024
@@ -1159,6 +1166,7 @@ def _verify_fetched_files(
         if (
             normalized != relative
             or relative == SOURCE_SNAPSHOT_MANIFEST
+            or _in_held_text_folder(relative)
             or relative in hashes
             or relative in excluded
             or _is_agent_instruction_path(relative)
@@ -1208,6 +1216,7 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         normalized != relative
         or relative in hashes
         or relative == SOURCE_SNAPSHOT_MANIFEST
+        or _in_held_text_folder(relative)
         or not isinstance(reason, str)
         or reason not in SNAPSHOT_EXCLUSION_REASONS
     ):
@@ -1215,12 +1224,23 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
 
 
 def _validate_extracted(extracted: Any, hashes: dict[str, Any]) -> None:
-    """The documents held as extracted text: each one a file the snapshot holds, in a format it extracts."""
+    """The documents held as extracted text: each one in a format the snapshot extracts, with its text held where
+    that format's text is, and, for a format held beside it, nothing held at its own path. Every file in
+    HELD_TEXT_FOLDER is one of theirs."""
     if not isinstance(extracted, dict):
         raise RuntimeContractError("Source snapshot extracted documents must be an object")
+    beside: set[str] = set()
     for relative, form in extracted.items():
-        if relative not in hashes or form not in DOCUMENT_FORMATS.values():
+        if form not in DOCUMENT_FORMATS.values() or not isinstance(relative, str) or _in_held_text_folder(relative):
             raise RuntimeContractError(f"Source snapshot extracted document is invalid: {relative!r}")
+        held = held_path(relative, form)
+        if held not in hashes or (held != relative and relative in hashes):
+            raise RuntimeContractError(f"Source snapshot extracted document is invalid: {relative!r}")
+        if held != relative:
+            beside.add(held)
+    stray = sorted(relative for relative in hashes if _in_held_text_folder(relative) and relative not in beside)
+    if stray:
+        raise RuntimeContractError(f"Source snapshot holds text of no extracted document: {stray[0]}")
 
 
 def _require_snapshot_file_set(tree: _SnapshotTree, expected_files: set[str], fetchable: set[str]) -> None:
@@ -1245,15 +1265,15 @@ def _entry_exclusion(
     diff. A symbolic link, and any other entry that is not a regular file, is excluded without being read, written,
     or followed; reviewers see a link only as diff text. Raises for a name that would leave the snapshot or name its
     root (an absolute path, or an empty, `.`, or `..` segment), which no tree git accepts holds, and for the reserved
-    manifest path. A regular file the repository's snapshot_exclude matches, changed or not, is a `configured`
-    exclusion.
+    manifest path and any path in HELD_TEXT_FOLDER. A regular file the repository's snapshot_exclude matches, changed
+    or not, is a `configured` exclusion.
     """
     if name.startswith("/") or any(segment in {"", ".", ".."} for segment in _segments(name)):
         raise RuntimeContractError(f"source snapshot member is unsafe: {name!r}")
     if unsafe_path_reason(name, room) is not None:
         return replace_undecodable(name)[0], "unsafe-path"
     relative = _safe_relative_path(name, "source snapshot member")
-    if relative == SOURCE_SNAPSHOT_MANIFEST:
+    if relative == SOURCE_SNAPSHOT_MANIFEST or _in_held_text_folder(relative):
         raise RuntimeContractError(f"Repository contains reserved snapshot path: {relative}")
     if kind != "file":
         return relative, kind
@@ -1267,35 +1287,60 @@ def _entry_exclusion(
     return relative, None
 
 
+def held_path(relative: str, form: str) -> str:
+    """Where the snapshot holds the extracted text of the document at `relative` in format `form`: its own path, or
+    a path in HELD_TEXT_FOLDER for a format held beside it."""
+    suffix = HELD_BESIDE.get(form)
+    return relative if suffix is None else f"{HELD_TEXT_FOLDER}/{relative}{suffix}"
+
+
+def _in_held_text_folder(relative: str) -> bool:
+    """Whether a path is in HELD_TEXT_FOLDER, in any case, since a case-insensitive file system merges the spellings."""
+    return relative.split("/", 1)[0].casefold() == HELD_TEXT_FOLDER
+
+
 @dataclass
 class _Documents:
     """The changed documents a snapshot reads: each one it holds as extracted text, with its format, and why each
-    one it could not extract was refused."""
+    one it could not extract was refused. `room` is the room the snapshot leaves a path, which a document's text
+    held beside it must fit too."""
 
     changed: frozenset[str]
+    room: PathRoom
     extracted: dict[str, str] = field(default_factory=dict)
     refused: dict[str, str] = field(default_factory=dict)
 
 
-def _kept_content(relative: str, content: bytes, written: dict[str, str], documents: _Documents) -> bytes | str:
-    """What the snapshot writes for a file it reads, once `written` records it, or why it leaves the file out.
+def _kept_content(
+    relative: str, content: bytes, written: dict[str, str], documents: _Documents
+) -> tuple[str, bytes | str]:
+    """The path the snapshot writes a file it reads at, once `written` records it, and its content, or the file's
+    own path and why the snapshot leaves it out.
 
     A file with a NUL byte near its start is `binary`, unless the pull request changes it and it is a document whose
-    text the snapshot extracts: then the text is written in its place, or the file is `unextractable` when the
-    extraction is refused. Raises for two kept paths a case-insensitive filesystem would merge.
+    text the snapshot extracts; a PDF the pull request changes is extracted whether or not it has one. The text is
+    written in the document's place, or, for a format held beside it, at its path in HELD_TEXT_FOLDER; the document
+    is `unextractable` when the extraction is refused. Raises for two kept paths a case-insensitive filesystem would
+    merge.
     """
-    if _binary(content):
-        form = document_format(relative) if relative in documents.changed else None
-        if form is None:
-            return "binary"
-        try:
-            content = extract(form, content)
-        except ExtractionRefused as exc:
-            documents.refused[relative] = str(exc)
-            return "unextractable"
-        documents.extracted[relative] = form
-    _claim_name(relative, written)
-    return content
+    form = document_format(relative) if relative in documents.changed else None
+    binary = _binary(content)
+    if form is None or not (binary or form in EXTRACTED_WHEN_TEXT):
+        if binary:
+            return relative, "binary"
+        _claim_name(relative, written)
+        return relative, content
+    held = held_path(relative, form)
+    try:
+        if unsafe_path_reason(held, documents.room) is not None:
+            raise ExtractionRefused(f"the path its text would be held at, in {HELD_TEXT_FOLDER}, is too long")
+        content = extract(form, content)
+    except ExtractionRefused as exc:
+        documents.refused[relative] = str(exc)
+        return relative, "unextractable"
+    documents.extracted[relative] = form
+    _claim_name(held, written)
+    return held, content
 
 
 def _binary(content: bytes) -> bool:
@@ -1418,7 +1463,7 @@ def _commit_members(
         else:
             yield relative, reason
     written: dict[str, str] = {}
-    documents = documents or _Documents(changed_paths)
+    documents = documents or _Documents(changed_paths, room)
     if upfront is not None and fetchable is not None:
         names: dict[str, str] = {}
         for relative, _, _ in pending:
@@ -1435,7 +1480,7 @@ def _commit_members(
                 raise RuntimeContractError("git cat-file returned fewer blobs than the commit's tree lists")
             if len(content) != length:
                 raise RuntimeContractError(f"Source blob size changed: {relative}")
-            yield relative, _kept_content(relative, content, written, documents)
+            yield _kept_content(relative, content, written, documents)
     finally:
         close = getattr(blobs, "close", None)
         if close is not None:  # a generator reader ends its git process
@@ -1453,7 +1498,7 @@ def _tarball_members(
     (path, reason) when not, a changed document's content being its extracted text, which `documents` records. The
     count and size limits are the caller's to apply."""
     written: dict[str, str] = {}
-    documents = documents or _Documents(changed_paths)
+    documents = documents or _Documents(changed_paths, room)
     with tarfile.open(archive, mode="r:gz") as source:
         for member in source:
             parts = PurePosixPath(member.name).parts[1:]
@@ -1471,7 +1516,7 @@ def _tarball_members(
             content = extracted.read()
             if len(content) != member.size:
                 raise RuntimeContractError(f"Source snapshot member size changed: {relative}")
-            yield relative, _kept_content(relative, content, written, documents)
+            yield _kept_content(relative, content, written, documents)
 
 
 def _populate_snapshot(
@@ -1574,7 +1619,7 @@ def materialize_source_snapshot(
     try:
         room = path_room(destination)
         fetchable: dict[str, str] | None = None if upfront is None else {}
-        documents = _Documents(frozenset(changed_paths))
+        documents = _Documents(frozenset(changed_paths), room)
         members = _commit_members(
             checkout,
             commit,
@@ -1644,11 +1689,15 @@ def fetch_source_file(
     does not hold as a file, in any other spelling, raises with nothing written. The blob is read from `checkout`'s
     object store by the id the manifest lists, and its bytes must hash to that id. It is written through a temporary
     file in `staging`, which must be on the snapshot's volume, into a folder checked for reparse points and escape,
-    and the snapshot's total size limit holds. A file already there is checked against its id instead.
+    and the snapshot's total size limit holds. A file already there is checked against its id instead. A document
+    held as extracted text is returned as that text, wherever the snapshot holds it.
     """
     metadata, tree, held, _ = _verify_snapshot(
         root, expected_repository=repository, expected_commit=commit, contents=False
     )
+    form = metadata.get(SNAPSHOT_EXTRACTED, {}).get(relative)
+    if form is not None:
+        return root.joinpath(*PurePosixPath(held_path(relative, form)).parts)
     target = root.joinpath(*PurePosixPath(relative).parts)
     if relative in metadata["source_hashes"]:
         return target
@@ -1964,9 +2013,9 @@ def materialize_source_snapshot_from_github(
         with tempfile.TemporaryDirectory(prefix="code-review-source-") as temporary:
             archive = Path(temporary) / "source.tar.gz"
             fetcher(repository, commit, archive)
-            documents = _Documents(frozenset(changed_paths))
+            documents = _Documents(frozenset(changed_paths), path_room(destination))
             members = _tarball_members(
-                archive, documents.changed, path_room(destination), configured_exclusion(exclude), documents
+                archive, documents.changed, documents.room, configured_exclusion(exclude), documents
             )
             with closing(members):
                 snapshot = _populate_snapshot(

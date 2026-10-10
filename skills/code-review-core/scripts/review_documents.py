@@ -1,4 +1,4 @@
-"""The text of a Word document a pull request changes, so its reviewers read the change as they read Markdown.
+"""The text of a Word document or PDF a pull request changes, so its reviewers read the change as they read Markdown.
 
 A `.docx` is a zip package of XML parts, which the standard library reads. Its bytes are the pull request author's,
 so the package and its XML are refused before parsing whenever they could make the reader leave the package, fetch
@@ -8,6 +8,12 @@ Each extracted line starts with its place in the document, `[P<n>]` for the body
 whole table, every paragraph counted, empty ones included) and `[P<n> R<r>]` for a table's r-th row, so a finding on
 a line points back into the document. Tracked changes stay in the line of the paragraph or row that holds them, as
 `{+inserted+}` and `[-deleted-]`.
+
+The standard library cannot read a PDF's text, so a `.pdf` is read by `pdftotext`, an optional tool: absent, the
+document is refused with a reason that names it, so the review is incomplete rather than silently partial. It is given
+the bytes as a throwaway file under the system temporary directory, no stdin, and a time limit, and its output is
+read no further than the extraction limit. Each line starts with `[p<page> l<line>]`, the line counted among the
+page's lines that hold text.
 """
 
 from __future__ import annotations
@@ -15,13 +21,30 @@ from __future__ import annotations
 import difflib
 import io
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 import zipfile
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from xml.parsers import expat
 
-DOCUMENT_FORMATS = {".docx": "docx"}
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from bounded_process import streaming
+
+DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
+# A PDF is extracted whether or not the snapshot's NUL test finds it binary: one written without compressed streams
+# holds no NUL byte, and its bytes are page-description operators, not the text a reader sees.
+EXTRACTED_WHEN_TEXT = frozenset({"pdf"})
+PDFTOTEXT = "pdftotext"
+# From starting pdftotext to its last byte of output, for one document.
+PDF_EXTRACTION_SECONDS = 60.0
+# How long a pdftotext stopped at the extraction limit gets to exit by itself before it is killed.
+PDF_EXIT_SECONDS = 5.0
 # A Word document holds tens of parts; a package with thousands is not one.
 MAX_DOCUMENT_MEMBERS = 2_000
 # The most any one part is decompressed to, counted as it is read, never from the size the package declares.
@@ -35,17 +58,24 @@ STYLES_PART = "word/styles.xml"
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main "
 # Markup compatibility: a fallback repeats its choice's content for older readers, so its text would be read twice.
 FALLBACK = "http://schemas.openxmlformats.org/markup-compatibility/2006 Fallback"
-LABEL = re.compile(r"\[P(\d+)(?: R(\d+))?\] ")
+LABEL = re.compile(r"\[(?:P(\d+)(?: R(\d+))?|p(\d+) l(\d+))\] ")
 HEADING_STYLE = re.compile(r"heading ([1-9])")
 XML_ENCODING = re.compile(r"""<\?xml[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
 DECLARATION = re.compile(rb"<!(?:doctype|entity)", re.IGNORECASE)
 # Every C0 control, DEL, and the characters Python's `splitlines` also breaks on: none may split or reshape a line.
 LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
-EXTRACTED_NOTE = (
-    "extracted: the text of this Word document, one line per paragraph or table row, each starting with its place "
-    "in the document: [P<paragraph>] or [P<paragraph> R<table row>]; tracked changes show as {+inserted+} and "
-    "[-deleted-]"
-)
+EXTRACTED_NOTES = {
+    "docx": (
+        "extracted: the text of this Word document, one line per paragraph or table row, each starting with its "
+        "place in the document: [P<paragraph>] or [P<paragraph> R<table row>]; tracked changes show as {{+inserted+}} "
+        "and [-deleted-]"
+    ),
+    "pdf": (
+        "extracted: the text of this PDF as pdftotext reads it, one line per line of text, each starting with its "
+        "place in the document: [p<page> l<line>], counting the page's lines that hold text; the snapshot holds it "
+        "at {held}, since a file named .pdf is read as a PDF"
+    ),
+}
 UNCHANGED_NOTE = "; no line of its text differs, so the change is to formatting, images, or parts not extracted"
 NO_BASE_NOTE = "; the base version could not be extracted ({reason}), so every line shows as added"
 # What reading a hostile package can raise: a damaged archive, an unsupported or corrupt compression, a cut stream.
@@ -69,9 +99,12 @@ def document_format(path: str) -> str | None:
 
 def extract(form: str, content: bytes) -> bytes:
     """The extracted text of a document in format `form`, as UTF-8 lines each ending in LF."""
-    if form != "docx":
+    if form == "docx":
+        lines = extract_docx(content)
+    elif form == "pdf":
+        lines = extract_pdf(content)
+    else:
         raise ExtractionRefused(f"no extraction for {form}")
-    lines = extract_docx(content)
     text = "".join(f"[{label}] {line}\n" for label, line in lines).encode("utf-8")
     if len(text) > MAX_EXTRACTED_BYTES:
         raise ExtractionRefused(f"its text is over {_size(MAX_EXTRACTED_BYTES)}")
@@ -93,6 +126,55 @@ def extract_docx(content: bytes) -> list[tuple[str, str]]:
     body = _Body(headings)
     _parse(document, MAIN_PART, body.start, body.end, body.text)
     return body.lines
+
+
+def extract_pdf(content: bytes) -> list[tuple[str, str]]:
+    """Each line of a PDF's text that holds any, as (label, text), page by page, as `pdftotext` reads it."""
+    try:
+        text = _pdftotext(content).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ExtractionRefused(f"{PDFTOTEXT} wrote text that is not UTF-8") from exc
+    lines: list[tuple[str, str]] = []
+    # pdftotext ends every page with a form feed, so the piece after the last one holds no text.
+    for page, body in enumerate(text.split("\f"), 1):
+        number = 0
+        for raw in body.split("\n"):
+            line = _line(raw)
+            if line:
+                number += 1
+                lines.append((f"p{page} l{number}", line))
+    return lines
+
+
+def _pdftotext(content: bytes) -> bytes:
+    """What `pdftotext` writes for a PDF's bytes, read no further than the extraction limit.
+
+    The bytes go to a throwaway file in a folder of their own under the system temporary directory, which is removed
+    afterwards. Layout is off, its default, so the lines follow the reading order it finds, and its messages are off.
+    """
+    executable = shutil.which(PDFTOTEXT)
+    if executable is None:
+        raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed")
+    with tempfile.TemporaryDirectory(prefix="code-review-pdf-", ignore_cleanup_errors=True) as folder:
+        document = Path(folder) / "document.pdf"
+        document.write_bytes(content)
+        command = [executable, "-q", "-enc", "UTF-8", "-eol", "unix", str(document), "-"]
+        try:
+            with streaming(
+                command, idle_timeout=PDF_EXTRACTION_SECONDS, timeout=PDF_EXTRACTION_SECONDS, exit_wait=PDF_EXIT_SECONDS
+            ) as running:
+                running.stdin.close()
+                output = running.read(MAX_EXTRACTED_BYTES + 1)
+                if len(output) > MAX_EXTRACTED_BYTES:
+                    raise ExtractionRefused(f"its text is over {_size(MAX_EXTRACTED_BYTES)}")
+                status = running.wait()
+        except subprocess.TimeoutExpired as exc:
+            raise ExtractionRefused(f"{PDFTOTEXT} did not finish within {PDF_EXTRACTION_SECONDS:g} seconds") from exc
+        except OSError as exc:
+            raise ExtractionRefused(f"{PDFTOTEXT} could not be started") from exc
+    if status != 0:
+        raise ExtractionRefused(f"{PDFTOTEXT} could not read it (exit status {status})")
+    return output
 
 
 def _open_package(content: bytes) -> zipfile.ZipFile:
@@ -379,9 +461,14 @@ class _Body:
             self.block.add(data)
 
 
+def _line(text: str) -> str:
+    """One line: no character that breaks or reshapes it, and no run of spaces."""
+    return " ".join(LINE_UNSAFE.sub(" ", text).split())
+
+
 def _flat(text: str) -> str:
-    """One line: no character that breaks or reshapes it, no run of spaces, no empty tracked-change marker."""
-    text = " ".join(LINE_UNSAFE.sub(" ", text).split())
+    """One line of a Word document: as `_line` makes it, with no empty tracked-change marker."""
+    text = _line(text)
     previous = None
     while previous != text:
         previous = text
@@ -397,13 +484,16 @@ def split_label(line: str) -> tuple[str, str]:
 
 def locations(text: str) -> list[str]:
     """Each extracted line's place in the source document, for a report: its paragraph, its table row, and the
-    nearest heading above it."""
+    nearest heading above it, or a PDF's page and line."""
     places: list[str] = []
     heading = ""
     for line in text.splitlines():
         match = LABEL.match(line)
         if match is None:
             places.append("")
+            continue
+        if match.group(3) is not None:
+            places.append(f"page {match.group(3)}, line {match.group(4)}")
             continue
         place = f"paragraph {match.group(1)}" + (f", table row {match.group(2)}" if match.group(2) else "")
         body = line[match.end() :]
@@ -435,17 +525,26 @@ def _escaped(byte: int) -> str:
 
 
 def document_diff(
-    header: Sequence[str], old: str | None, new: str | None, base: str, head: str, *, base_refused: str | None = None
+    header: Sequence[str],
+    old: str | None,
+    new: str | None,
+    base: str,
+    head: str,
+    *,
+    base_refused: str | None = None,
+    form: str = "docx",
+    held: str = "",
 ) -> str:
     """A file's diff block, from its `diff --git` header lines, its old and new paths (None for a side the change has
-    no file on), and the extracted text of each side.
+    no file on), and the extracted text of each side, in format `form`; `held` names where the snapshot holds the
+    head text when that is not the document's own path.
 
     Lines are matched on their text without their labels, so a paragraph inserted early shows as one added line, not
     as every later line renumbered; each line is then shown with its own side's label, so the new side's lines are
     exactly the head file's, and a hunk's line numbers are that file's.
     """
     base_lines, head_lines = base.splitlines(), head.splitlines()
-    note = EXTRACTED_NOTE
+    note = EXTRACTED_NOTES[form].format(held=held)
     if base_refused is not None:
         note += NO_BASE_NOTE.format(reason=base_refused)
         base_lines = []

@@ -23,7 +23,10 @@ INSTALLED = {
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
     "claude": ("C:/tools/claude.exe", "2.1.291 (Claude Code)\n"),
     "dotnet": ("C:/tools/dotnet.exe", "10.0.301\n"),
+    "pdftotext": ("C:/tools/pdftotext.exe", "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"),
 }
+# Xpdf's pdftotext exits 99 after printing its version.
+STATUSES = {"C:/tools/pdftotext.exe": 99}
 GIT = "C:/tools/git.exe"
 GIT_VERSION = "git version 2.54.0.windows.1\n"
 COMMIT = "71ad8150c0ffee5eed0123456789abcdef012345"
@@ -79,7 +82,7 @@ class Machine:
 
     def run_tool(self, arguments: list[str]) -> platform_support.ToolResult:
         if arguments[0] != GIT:
-            return platform_support.ToolResult(0, self.versions[arguments[0]])
+            return platform_support.ToolResult(STATUSES.get(arguments[0], 0), self.versions[arguments[0]])
         if arguments[1:] == ["--version"]:
             return platform_support.ToolResult(0, GIT_VERSION)
         self.git_calls.append(arguments)
@@ -192,6 +195,22 @@ class CheckCommandTests(DeployerTestCase):
         groups = self.report_groups(self.check(Machine(versions={"dotnet": "9.0.200\n"})).output, "CHECK")
         self.assertIn("dotnet 9.0.200 (used by formatter)", groups["OPTIONAL"])
         self.assertNotIn("OUTDATED", groups)
+
+    def test_pdftotext_is_optional_and_before_4_0_outdated_and_xpdf_is_read_though_it_exits_99(self) -> None:
+        # The code-review skills extract a changed PDF's text with it when it is there. Git for Windows bundles
+        # Xpdf's 4.00; Poppler's releases are numbered by year since 20.08, and its 0.x releases come before 2020.
+        set_tools(self, "core", ["pdftotext"], key="optional_tools")
+        groups = self.report_groups(self.check(Machine()).output, "CHECK")
+        self.assertIn("pdftotext 4.0 (used by operations)", groups["OPTIONAL"])
+        groups = self.report_groups(self.check(Machine(missing=("pdftotext",))).output, "CHECK")
+        self.assertIn("pdftotext (not installed; used by operations)", groups["OPTIONAL"])
+        self.assertNotIn("MISSING", groups)
+        poppler = "pdftotext version 0.86.1\nCopyright 2005-2020 The Poppler Developers\n"
+        groups = self.report_groups(self.check(Machine(versions={"pdftotext": poppler})).output, "CHECK")
+        self.assertEqual(["pdftotext 0.86.1 (needs 4.0 or newer)"], groups["OUTDATED"])
+        poppler = "pdftotext version 25.07.0\nCopyright 2005-2025 The Poppler Developers\n"
+        groups = self.report_groups(self.check(Machine(versions={"pdftotext": poppler})).output, "CHECK")
+        self.assertIn("pdftotext 25.7.0 (used by operations)", groups["OPTIONAL"])
 
     def test_windows_powershell_is_enough_to_deploy(self) -> None:
         groups = self.report_groups(self.check(Machine(powershell="5.1.26100.1")).output, "CHECK")
@@ -449,7 +468,7 @@ class VersionTests(unittest.TestCase):
 
     def test_the_runtime_tool_floors_table_lists_every_floor_the_catalogue_checks(self) -> None:
         # docs/dependency-updates.md owns every floor, so its table and the catalogue both name these.
-        floors = {"gh": "2.48.0", "codex": "0.88.0", "copilot": "1.0.88", "dotnet": "9.0.200"}
+        floors = {"gh": "2.48.0", "codex": "0.88.0", "copilot": "1.0.88", "dotnet": "9.0.200", "pdftotext": "4.0"}
         catalogued = {
             name: ".".join(map(str, tool.minimum))
             for name, tool in {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}.items()

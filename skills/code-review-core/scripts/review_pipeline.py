@@ -62,7 +62,14 @@ from review_config import (
     resolve_repositories,
     validate_repository_identity,
 )
-from review_documents import ExtractionRefused, document_diff, document_format, extract, locations
+from review_documents import (
+    EXTRACTED_WHEN_TEXT,
+    ExtractionRefused,
+    document_diff,
+    document_format,
+    extract,
+    locations,
+)
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
 from review_guard import RUN_PREFIX, read_log
@@ -141,6 +148,7 @@ from review_runtime import (
     github_tarball_fetcher,
     given_body,
     glob_matcher,
+    held_path,
     materialize_reviewer,
     materialize_source_snapshot,
     materialize_source_snapshot_from_github,
@@ -610,9 +618,10 @@ def _base_reader(checkout: Path | None, repository: str, pull: dict[str, Any], s
     return from_github
 
 
-def _binary_block(block: str) -> tuple[list[str], str | None] | None:
-    """A binary file's diff block's header lines and the abbreviated base blob id its index line names (None for an
-    added file), or None for a block that is not one binary file's."""
+def _document_block(block: str, form: str) -> tuple[list[str], str | None] | None:
+    """A changed document's diff block's header lines and the abbreviated base blob id its index line names (None for
+    an added file), or None for a block that is not one file's binary block, or, for a format extracted whether or not
+    it is binary, one file's text block."""
     header: list[str] = []
     old: str | None = None
     for raw in block.rstrip("\n").split("\n"):
@@ -620,6 +629,8 @@ def _binary_block(block: str) -> tuple[list[str], str | None] | None:
         if header and line.startswith("diff --git "):
             return None
         if line.startswith(("Binary files ", "GIT binary patch")):
+            return header, old
+        if line.startswith("--- ") and form in EXTRACTED_WHEN_TEXT:
             return header, old
         if line.startswith(("@@", "--- ", "+++ ")):
             return None
@@ -667,12 +678,13 @@ def _document_diffs(
     places: dict[str, list[str]] = {}
     for path, entry in parsed.items():
         form = document_format(path)
-        binary = None if form is None else _binary_block(entry["block"])
+        binary = None if form is None else _document_block(entry["block"], form)
         if form is None or binary is None:
             continue
         old, new = diff_block_sides(entry["block"])
+        held = held_path(path, form)
         if path in extracted:
-            head = source.joinpath(*Path(path).parts).read_text(encoding="utf-8")
+            head = source.joinpath(*Path(held).parts).read_text(encoding="utf-8")
             places[path] = locations(head)
         elif new is None:
             head = ""
@@ -681,7 +693,7 @@ def _document_diffs(
         base, refused = _extracted_base(form, old, binary[1], read_base)
         if refused is not None:
             notes.append(f"The base version of document {json.dumps(path)} could not be extracted ({refused}).")
-        rendered[path] = document_diff(binary[0], old, new, base, head, base_refused=refused)
+        rendered[path] = document_diff(binary[0], old, new, base, head, base_refused=refused, form=form, held=held)
     if not rendered:
         return None
     text = read_diff(diff_path)

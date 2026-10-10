@@ -36,7 +36,7 @@ from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
 from review_runtime import validate_adapter_manifest
 from review_state import load_state
-from test_review_documents import paragraph, table, word_document
+from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -3803,6 +3803,71 @@ class FixtureCanaryTests(PipelineFixture):
             '> **Line 2 (paragraph 2, under the heading "Scope"):** `[P2] Bound the queue at {+ten+}`',
             Path(report).read_text(encoding="utf-8"),
         )
+
+    def test_a_changed_pdf_is_reviewed_as_text_held_beside_it_and_its_findings_name_page_and_line(self) -> None:
+        head_text = "Scope\nBound the queue at ten.\nKeep one queue.\n\f"
+        StubPdftotext(self, {"marker": b"at ten", "output": head_text}, output="Scope\nKeep one queue.\n\f")
+        directory = self.fixture("pdf", FIXTURE_HEAD)
+        pages = (["Scope", "Keep one queue."], ["Scope", "Bound the queue at ten.", "Keep one queue."])
+        for tree, page in zip(("base", "head"), pages, strict=True):
+            (directory / tree / "docs").mkdir()
+            (directory / tree / "docs" / "spec.pdf").write_bytes(pdf_document(page))
+
+        state = self.prepare_fixture_run("--fixture", str(directory))
+        request = json.loads(Path(request_path := state["request_path"]).read_text(encoding="utf-8"))
+        diff = Path(request["diff_path"]).read_text(encoding="utf-8")
+        block = diff[diff.index("diff --git a/docs/spec.pdf") :]
+        self.assertIn("\nextracted: the text of this PDF as pdftotext reads it", block)
+        self.assertIn("the snapshot holds it at source-snapshot-text/docs/spec.pdf.txt", block)
+        self.assertIn("\n [p1 l1] Scope\n+[p1 l2] Bound the queue at ten.\n [p1 l3] Keep one queue.\n", block)
+        self.assertNotIn("%PDF", block)
+        source = Path(request["source_snapshot"]["root"])
+        held = source / "source-snapshot-text" / "docs" / "spec.pdf.txt"
+        self.assertEqual(
+            "[p1 l1] Scope\n[p1 l2] Bound the queue at ten.\n[p1 l3] Keep one queue.\n", held.read_text("utf-8")
+        )
+        self.assertEqual(["page 1, line 1", "page 1, line 2", "page 1, line 3"], state["documents"]["docs/spec.pdf"])
+        self.assertNotIn("docs/spec.pdf", request["coverage"]["unavailable_sources"])
+
+        # A guarded reviewer reads the held text, and source-file names it for the PDF's own path.
+        claims = mock.patch.object(guard, "CLAIMS", self.root / "claims")
+        claims.start()
+        self.addCleanup(claims.stop)
+        role = state["roles"][0]
+        for path in (role["prompt_file"], str(held)):
+            event = {"tool_name": "Read", "tool_input": {"file_path": path}, "cwd": str(self.root), "agent_id": "a1"}
+            self.assertIsNone(guard.decide(event), path)
+        fetch, _ = review_source.source_commands(Path(request_path).parent, role["id"])
+        self.assertEqual(
+            (0, [f"SOURCE_FILE {held}"]), self.guarded_command(role, fetch.replace("<path>", "docs/spec.pdf"))
+        )
+
+        finding = {**self.finding(2), "path": "docs/spec.pdf", "title": "The bound has no unit"}
+        _, record = self.canary_record(self.finish(state, findings=[finding]))
+        [recorded] = record["findings"]
+        self.assertEqual(
+            ("docs/spec.pdf", 2, "page 1, line 2"), (recorded["path"], recorded["line"], recorded["location"])
+        )
+
+    def test_without_pdftotext_a_changed_pdf_leaves_the_review_incomplete_and_says_why(self) -> None:
+        without_pdftotext(self)
+        directory = self.fixture("no-pdftotext", FIXTURE_HEAD)
+        (directory / "head" / "docs").mkdir()
+        (directory / "head" / "docs" / "spec.pdf").write_bytes(pdf_document(["Scope"]))
+
+        state = self.prepare_fixture_run("--fixture", str(directory))
+        request = json.loads(Path(state["request_path"]).read_text(encoding="utf-8"))
+        self.assertIn("docs/spec.pdf", request["coverage"]["unavailable_sources"])
+        source = Path(request["source_snapshot"]["root"])
+        snapshot = json.loads((source / "source-snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual("unextractable", snapshot["excluded_paths"]["docs/spec.pdf"])
+        self.assertIn(
+            'the text of document "docs/spec.pdf" could not be extracted '
+            "(pdftotext, which extracts a PDF's text, is not installed)",
+            "\n".join(state["notes"]),
+        )
+        _, record = self.canary_record(self.finish(state, findings=[]))
+        self.assertEqual("INCOMPLETE", record["review"]["verdict"])
 
     def guarded_command(self, role: dict[str, Any], command: str) -> tuple[int, list[str]]:
         """Run a Bash command a guarded reviewer of `role` makes, once the guard allows it, as review_source.py."""
