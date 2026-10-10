@@ -20,6 +20,13 @@ An entry is a `###` heading saying what changed, followed by four fields:
 - User action: none
 - Pull request: #316
 
+### source-search judges binary files by their bytes, not by the checkout's attributes
+
+- Level: patch. A fix: on a lazy snapshot, `source-search` let the configured checkout's `.gitattributes`, `.git/info/attributes`, or `core.attributesFile` decide what was binary, so a text file one marked `-diff` or `binary` was never searched and a binary file one marked `diff` was. It now searches every file of the head as text and keeps a match only in a file the snapshot's own test (no NUL byte in the first 8,000 bytes) finds text, testing a file it lists to fetch the first time that file matches. Its output is unchanged, and no Git floor is added.
+- Contract: none
+- User action: none
+- Pull request: #315
+
 ### validate-reviewer measures the snapshot route prepare takes and reads the reviewer where prepare does
 
 - Level: minor. New output fields, a new flag, and fixes: `validate-reviewer` now measures the source snapshot on the route `prepare` would take, which its `SNAPSHOT` line names as `source=checkout-lazy` or `source=checkout` beside a new `fetchable=<n>` count. On the lazy route only the files `prepare` writes (the changed files, the analyzer settings, and the paths declared `reads` match) count against the 256 MiB size limit, and every file it lists counts against the file-count limit, so a repository whose unchanged files pass 256 MiB is no longer refused while `prepare` accepts it. For each `--pull` it now reads the reviewer through `prepare`'s fallback, from the default branch's tip or as the suite's generic reviewer when the base predates the review skill, instead of failing, and its `PULL` line ends with `reviewer=<source>`, the `review.adapter.source` the record would name, followed by `prepare`'s `NOTE` on the fallback. `--host`, as on `prepare`, names the runtime that decides an `auto` runtime, since an entrypoint reviewer on the Copilot CLI host gets a whole snapshot.

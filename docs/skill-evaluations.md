@@ -10,9 +10,11 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   `scenario.json` of expectations; `tools/skill_evals.py`'s docstring defines the format.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
-  at least as severe as the entry: a less severe finding on the same line is about another defect, such as a
-  suggestion beside a still-present must-fix, and passes, while restating the entry at its own severity or higher
-  without the link fails, since that is the double counting the ledger exists to prevent.
+  at the entry's severity: restating the entry at that severity without the link fails, since that is the double
+  counting the ledger exists to prevent. A less severe finding on the same line is about another defect, such as a
+  suggestion beside a still-present must-fix, and passes. A more severe one is a new finding and passes too, since
+  the [record contract](code-review-operations-contract.md#reviewer-behavior) lets a `repeats` link name only a
+  finding at least as severe; a scenario that expects the escalation states it with its own `finding` expectation.
 - **A run** is the [`evaluate-skill`](../.claude/skills/evaluate-skill/SKILL.md) repository skill, which runs
   `python -B tools/skill_evals.py <skill> --write`. It deploys the checkout into throwaway homes, one per model,
   sets that model on the home's reviewer agent, and runs each scenario through the skill in a headless Claude Code

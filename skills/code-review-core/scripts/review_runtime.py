@@ -16,7 +16,7 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import closing, suppress
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import IO, Any
@@ -1225,10 +1225,15 @@ def _content_exclusion(relative: str, content: bytes, written: dict[str, str]) -
 
     Raises for two kept paths a case-insensitive filesystem would merge.
     """
-    if b"\0" in content[:BINARY_PROBE_BYTES]:
+    if _binary(content):
         return "binary"
     _claim_name(relative, written)
     return None
+
+
+def _binary(content: bytes) -> bool:
+    """The snapshot's test of whether a file is binary: a NUL byte in its first BINARY_PROBE_BYTES bytes."""
+    return b"\0" in content[:BINARY_PROBE_BYTES]
 
 
 def _claim_name(relative: str, written: dict[str, str]) -> None:
@@ -1549,7 +1554,7 @@ def fetch_source_file(
             close()
     if content is None or _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
         raise RuntimeContractError(f"The checkout did not return blob {blob} of {json.dumps(relative)}")
-    if b"\0" in content[:BINARY_PROBE_BYTES]:
+    if _binary(content):
         return "binary"
     if held + len(content) > MAX_SOURCE_SNAPSHOT_BYTES:
         raise RuntimeContractError("Source snapshot would exceed the size limit")
@@ -1576,33 +1581,73 @@ def search_source(
     """Matches of an extended regular expression in the head commit's files, as (path, line number, text), in the
     paths the snapshot at `root` can hold only, and whether more than MAX_SEARCH_MATCHES were found.
 
-    `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. It skips binary files
-    by the snapshot's own test, applies no textconv, and reads each line's text as UTF-8 with U+FFFD for any other
-    byte, cut at MAX_MATCH_CHARACTERS. A path the snapshot excludes, such as an agent instruction file, is left out.
+    `git grep` searches the commit's tree in `checkout`, so a lazy snapshot is searched whole. It treats every file as
+    text, so no attribute the checkout sets decides what is binary; the snapshot's own test does. A file the snapshot
+    holds passed it when it was written, and a file it lists to fetch later is read by its blob id from one
+    `git cat-file --batch` and tested the first time it matches. No textconv applies. Each line is read only as far
+    as a match can show, so a long line of a binary file is never held whole, and its text is read as UTF-8 with
+    U+FFFD for any other byte, cut at MAX_MATCH_CHARACTERS. A path the snapshot excludes, such as an agent
+    instruction file, is left out.
     """
     metadata = _verify_snapshot(root, expected_repository=repository, expected_commit=commit, contents=False)[0]
-    searchable = set(metadata["source_hashes"]) | set(metadata.get(SNAPSHOT_FETCHABLE, {}))
-    arguments = ["grep", "--null", "--line-number", "-I", "-E", "--no-color", "--full-name", "-e", pattern, commit]
-    matches: list[tuple[str, str, str]] = []
+    fetchable: dict[str, str] = metadata.get(SNAPSHOT_FETCHABLE, {})
+    text = dict.fromkeys(metadata["source_hashes"], True)  # path -> whether the snapshot's test finds it text
     prefix = f"{commit}:".encode("ascii")
+    # The commit, the longest path, two NULs, a line number, and enough bytes of text to run past
+    # MAX_MATCH_CHARACTERS however they decode.
+    longest = max((len(path.encode("utf-8", "surrogateescape")) for path in [*text, *fetchable]), default=0)
+    limit = len(prefix) + longest + 32 + 4 * (MAX_MATCH_CHARACTERS + 1)
+    arguments = ["grep", "--null", "--line-number", "-a", "-E", "--no-color", "--full-name", "-e", pattern, commit]
+    matches: list[tuple[str, str, str]] = []
     try:
-        with GitClient().stream([*arguments, "--"], directory=checkout) as stream:
+        with ExitStack() as processes:
+            stream = processes.enter_context(GitClient().stream([*arguments, "--"], directory=checkout))
             stream.stdin.close()
-            while line := stream.readline():
+            binary: Callable[[str], bool] | None = None
+            while line := stream.readline(limit):
+                if not line.endswith(b"\n"):
+                    _skip_line(stream)
                 name, _, rest = line.rstrip(b"\r\n").partition(b"\0")
-                number, _, text = rest.partition(b"\0")
+                number, cut, found = rest.partition(b"\0")
                 path = name.removeprefix(prefix).decode("utf-8", "surrogateescape")
-                if path not in searchable:
+                if not cut or (path not in text and path not in fetchable):
+                    continue  # a line cut before its text names a path longer than any the snapshot can hold
+                if path not in text:
+                    binary = binary or processes.enter_context(_blob_binary_test(checkout))
+                    text[path] = not binary(fetchable[path])
+                if not text[path]:
                     continue
                 if len(matches) == MAX_SEARCH_MATCHES:
                     return matches, True
-                matches.append((path, number.decode("ascii", "replace"), _match_text(text)))
+                matches.append((path, number.decode("ascii", "replace"), _match_text(found)))
             status = stream.wait()
             if status not in {0, 1}:  # 1 is no match
                 raise RuntimeContractError(stream.stderr().strip() or f"git grep failed with exit code {status}")
     except GitError as exc:
         raise RuntimeContractError(str(exc)) from exc
     return matches, False
+
+
+def _skip_line(stream: GitStream) -> None:
+    """Read past the rest of a line a limited `readline` cut, a mebibyte at a time."""
+    while (piece := stream.readline(1024 * 1024)) and not piece.endswith(b"\n"):
+        pass
+
+
+@contextmanager
+def _blob_binary_test(checkout: Path) -> Iterator[Callable[[str], bool]]:
+    """The snapshot's binary test of a blob, read by its id from one `git cat-file --batch` that stays open."""
+    with GitClient().stream(["cat-file", "--batch"], directory=checkout) as stream:
+
+        def binary(blob: str) -> bool:
+            if not GIT_OBJECT_ID.fullmatch(blob):
+                raise RuntimeContractError(f"Not a git object id: {blob!r}")
+            stream.stdin.write(f"{blob}\n".encode("ascii"))
+            stream.stdin.flush()
+            return _binary(_read_batch_blob(stream, blob))
+
+        yield binary
+        stream.stdin.close()
 
 
 def _match_text(text: bytes) -> str:
