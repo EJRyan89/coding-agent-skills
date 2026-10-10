@@ -386,7 +386,7 @@ The suite's `design-review` specialist reviews design documents as designs rathe
   "id": "design-review",
   "category": "Design",
   "profile": "suite:design-review",
-  "include": ["^docs/design/.*\.md$"],
+  "include": ["^docs/design/.*\\.md$"],
   "exclude": [],
   "resources": [],
   "when": null
