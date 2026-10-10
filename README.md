@@ -61,7 +61,7 @@ Start `update-coding-agent-skills` from any runtime, or update by hand with `git
 The deployer:
 
 - renders copies in memory and never modifies template sources; a dry run writes nothing;
-- parses configuration without executing it and substitutes only the variables each skill declares, escaping or rejecting values according to the file type;
+- parses configuration without executing it and substitutes into each skill only the variables it declares and into each shared asset the derived variables, escaping or rejecting values according to the file type;
 - validates names, paths, metadata, unresolved tokens, Bash, PowerShell, and ShellCheck findings before applying changes;
 - tracks source-scoped ownership in a manifest and rejects cross-source collisions;
 - journals mutations, so the next run recovers or rolls back an interrupted deployment;
