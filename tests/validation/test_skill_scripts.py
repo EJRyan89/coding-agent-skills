@@ -157,6 +157,38 @@ class SkillScriptsFixtures(unittest.TestCase):
                 client_command_problems(mark_skills(root)),
             )
 
+    def test_client_command_policy_resolves_aliases_imported_runners_and_bound_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scripts = root / "skills" / "alpha" / "scripts"
+            scripts.mkdir(parents=True)
+            (scripts / "tool.py").write_text(
+                "import shutil\n"
+                "import subprocess as sp\n"
+                "from subprocess import Popen\n"
+                "\n"
+                "from bounded_process import run_bounded\n"
+                "\n"
+                'SHELL = "gh auth status"\n'  # 7
+                'GIT = shutil.which("git")\n'  # 8
+                "sp.run(SHELL, shell=True)\n"
+                'Popen("git log")\n'  # 10
+                'run_bounded([GIT, "status"], 5)\n'
+                'sp.run("echo git")\n',
+                encoding="utf-8",
+            )
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/tool.py:7 runs gh itself; {gh}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:8 runs git itself; {git}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:10 runs git itself; {git}; see {doc}",
+                ],
+                client_command_problems(mark_skills(root)),
+            )
+
     def test_gh_filter_policy_detects_jq_template_and_json_query_flags(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -235,6 +267,102 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skill gamma runs yq, which a standard install lacks; see {doc}",
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"curl", "git"}),
+            )
+
+    def test_skill_command_policy_reads_python_commands_through_imports_names_and_skill_core(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "deploy-meta/alpha.json": "{}",
+                "skills/alpha/SKILL.md": "# alpha\n",
+                # A runner reached through an alias or a from-import, or a keyword argument.
+                "skills/alpha/scripts/aliased.py": 'import subprocess as sp\n\nsp.run(["yq", "."])\n',
+                "skills/alpha/scripts/imported.py": "from subprocess import check_output\n\n"
+                'check_output(["rg", "x"])\n',
+                "skills/alpha/scripts/keyword.py": 'import subprocess\n\nsubprocess.run(args=["perl", "-e", "1"])\n',
+                "skills/alpha/scripts/shell.py": 'import os\n\nos.system("node --version")\n',
+                # skill-core's bounded runner, given a command held in a name or built from one.
+                "skills/alpha/scripts/bounded.py": 'from bounded_process import run_bounded\n\nCOMMAND = ["jq", "."]\n'
+                "run_bounded(COMMAND, 5)\n",
+                "skills/alpha/scripts/built.py": 'import bounded_process\n\nBASE = ["dotnet-format"]\n'
+                'bounded_process.run_bounded([*BASE, "--version"], timeout=5)\n',
+                # skill-core's clients run their command, and a program looked up is one the script runs.
+                "skills/alpha/scripts/client.py": "from github_client import GitHubClient\n\n"
+                'GitHubClient().run(["api"])\n',
+                "skills/alpha/scripts/git.py": 'import git_client\n\ngit_client.GitClient().run(["status"])\n',
+                "skills/alpha/scripts/lookup.py": 'import shutil as sh\n\nPROGRAM = sh.which("copilot")\n',
+                # Neither a string that reads like a call nor a list of other words is a command.
+                "skills/alpha/scripts/quiet.py": 'TEXT = "subprocess.run([\\"zsh\\"])"\nLABELS = ["zip", "unzip"]\n'
+                'print(["python", "-B"])\n',
+            }
+            write_fixture_tree(root, files)
+            doc = '"Commands skills may run" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "skill alpha runs copilot without declaring it in tools",
+                    "skill alpha runs dotnet-format without declaring it in tools",
+                    "skill alpha runs gh without declaring it in tools",
+                    *(
+                        f"skill alpha runs {name}, which a standard install lacks; see {doc}"
+                        for name in ("jq", "node", "perl", "rg", "yq")
+                    ),
+                ],
+                skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
+            )
+
+    def test_skill_command_policy_reads_powershell_scripts_and_fences_through_powershell(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "deploy-meta/beta.json": json.dumps({"tools": ["gh"]}),
+                "skills/beta/SKILL.md": "# beta\n\n```powershell\njq . data.json\n```\n\n"
+                "```pwsh\ncopilot --version\n```\n",
+                # A function the script defines, a cmdlet or alias PowerShell ships, a path, and a command held in a
+                # variable are not programs it names; a cmdlet of a module PowerShell does not ship is one.
+                "skills/beta/scripts/run.ps1": "function Invoke-Helper { param($Value) $Value }\n"
+                "Get-ChildItem | ForEach-Object { $_.Name }\n"
+                "git status\n"
+                "& 'gh' api user\n"
+                "dotnet-format.exe --version\n"
+                "Invoke-Helper 1\n"
+                "ls\n"
+                ".\\local.ps1\n"
+                "& $env:TOOL\n"
+                "nonesuch --flag\n"
+                "Invoke-ScriptAnalyzer -Path run.ps1\n",
+            }
+            write_fixture_tree(root, files)
+            doc = '"Commands skills may run" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "skill beta runs copilot without declaring it in tools",
+                    "skill beta runs dotnet-format without declaring it in tools",
+                    f"skill beta runs Invoke-ScriptAnalyzer, which a standard install lacks; see {doc}",
+                    f"skill beta runs jq, which a standard install lacks; see {doc}",
+                    f"skill beta runs nonesuch, which a standard install lacks; see {doc}",
+                ],
+                skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
+            )
+
+    def test_skill_command_policy_reaches_a_dependency_by_its_imports_not_by_a_string(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            files = {
+                "deploy-meta/core.json": json.dumps({"tools": ["gh"], "selectable": False}),
+                "deploy-meta/aliased.json": json.dumps({"skill_deps": ["core"]}),
+                "deploy-meta/quoted.json": json.dumps({"skill_deps": ["core"]}),
+                "skills/core/SKILL.md": "# core\n",
+                "skills/core/scripts/github.py": 'run(["gh", "api"])\n',
+                "skills/aliased/SKILL.md": "# aliased\n",
+                "skills/aliased/scripts/run.py": "import json, github as api\n",
+                # Text that reads like an import is not one.
+                "skills/quoted/SKILL.md": "# quoted\n",
+                "skills/quoted/scripts/run.py": 'HELP = """\nimport github\nfrom github import Client\n"""\n',
+            }
+            write_fixture_tree(root, files)
+            self.assertEqual(
+                ["skill aliased runs gh through skills/core/scripts/github.py without declaring it in tools"],
+                skill_command_problems(root, {"gh"}, {"git", "python"}),
             )
 
     def test_skill_command_policy_counts_the_dependency_scripts_a_skill_reaches(self) -> None:

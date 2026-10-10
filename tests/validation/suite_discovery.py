@@ -13,7 +13,6 @@ import unittest
 from collections.abc import Mapping
 from pathlib import Path
 
-from fsops_platform import import_aliases, qualified_name
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
 from toolchain import find_powershell
@@ -24,8 +23,11 @@ from validation_support import (
     TEST_NAME_PATTERNS,
     TEST_SCRIPT_EXTENSIONS,
     _markdown_section,
+    import_aliases,
     is_executable_script,
     is_test_script,
+    module_imports,
+    qualified_name,
     relative,
     repository_files,
     skill_script_directories,
@@ -73,13 +75,10 @@ def imported_modules(source: str) -> set[str]:
     """The modules a test imports: every `import a.b`, `from a import b`, and importlib.import_module("a.b"), as a.b
     and each package above it, and every file spec_from_file_location loads, as `*` and the path it names without
     .py, such as *tools/b for "tools/b.py" or *b for a path built from "b.py"."""
-    found: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names = [alias.name for alias in node.names]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            names = [node.module, *(f"{node.module}.{alias.name}" for alias in node.names)]
-        elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
+    tree = ast.parse(source)
+    imported = [[found.module, *(target for _, target in found.bindings)] for found in module_imports(tree)]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)):
             function = node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
             strings = [
                 part.value for part in ast.walk(node) if isinstance(part, ast.Constant) and isinstance(part.value, str)
@@ -90,8 +89,9 @@ def imported_modules(source: str) -> set[str]:
                 names = [f"*{value.removesuffix('.py')}" for value in strings if value.endswith(".py")]
             else:
                 continue
-        else:
-            continue
+            imported.append(names)
+    found: set[str] = set()
+    for names in imported:
         for name in names:
             parts = name.split(".")
             found |= {".".join(parts[: count + 1]) for count in range(len(parts))}

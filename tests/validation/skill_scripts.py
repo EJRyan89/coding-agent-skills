@@ -8,14 +8,23 @@ import ast
 import json
 import re
 import shlex
+import tempfile
 import unittest
+from collections import defaultdict
 from pathlib import Path
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
-from fsops_platform import import_aliases, qualified_name
-from validation_support import REPOSITORY_ROOT, SHELL_FENCES, is_test_script, skill_script_directories
+from toolchain import find_powershell
+from validation_support import (
+    REPOSITORY_ROOT,
+    import_aliases,
+    is_test_script,
+    module_imports,
+    qualified_name,
+    skill_script_directories,
+)
 
-from deployer import render
+from deployer import platform_support, render
 
 SHELL_OPERATORS = ("&&", "||", ";;", "|&", "()", "(", ")", ";", "&", "|", "<", ">", "\n")
 COMMAND_SEPARATORS = {";", "&", "&&", "|", "||", "|&", "(", "\n", "{"}
@@ -65,10 +74,6 @@ SHELL_BUILTINS = {
 }
 ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^\]]*\])?\+?=")
 COMMAND_NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]*")
-PYTHON_COMMAND = re.compile(
-    r'subprocess\.(?:run|Popen|call|check_call|check_output)\(\s*\[\s*"([A-Za-z][A-Za-z0-9._-]*)"'
-    r'|which\(\s*"([A-Za-z][A-Za-z0-9._-]*)"\s*\)'
-)
 COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
 
 
@@ -114,27 +119,214 @@ def shell_commands(script: str) -> set[str]:
     return found
 
 
-def _shell_fences(markdown: str) -> list[str]:
+def _fences(markdown: str, context: str) -> list[str]:
+    """The body of each closed fence that deployer/render.py renders in a context: shell for a Bash, sh, or shell
+    fence, and powershell for a PowerShell, ps1, or pwsh fence."""
     lines = markdown.splitlines()
     return [
         "\n".join(lines[index] for index in fence.body(len(lines)))
         for fence in render.find_fences(lines)
-        if fence.closer is not None and fence.language.casefold() in SHELL_FENCES
+        if fence.closer is not None and fence.context == context
     ]
 
 
-def _file_commands(path: Path, known_call: re.Pattern[str]) -> set[str]:
+# The calls that start a command, as the module's imports resolve them, and the position and keyword of the argument
+# that names it: a list or tuple whose first item is the program, or a string whose first word is.
+COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
+    **{f"subprocess.{name}": (0, "args") for name in ("run", "Popen", "call", "check_call", "check_output")},
+    "subprocess.getoutput": (0, "cmd"),
+    "subprocess.getstatusoutput": (0, "cmd"),
+    "os.system": (0, "command"),
+    "os.popen": (0, "cmd"),
+    "asyncio.create_subprocess_exec": (0, "program"),
+    "asyncio.create_subprocess_shell": (0, "cmd"),
+    # skill-core's runner, which bounds a command with a time limit and gives it no stdin.
+    "bounded_process.run_bounded": (0, "command"),
+    "bounded_process.streaming": (0, "command"),
+}
+# skill-core's clients: each runs its one command for every call a script makes through it.
+CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
+# shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
+# own name, such as services.which("dotnet"), so a call of any function named which counts too.
+COMMAND_LOOKUP = "shutil.which"
+
+
+def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:
+    """Whether a call looks a program up: shutil.which under any name its imports give it, or a function named which."""
+    function = call.func
+    if isinstance(function, ast.Attribute) and function.attr == "which":
+        return True
+    return (isinstance(function, ast.Name) and function.id == "which") or (
+        qualified_name(function, aliases) == COMMAND_LOOKUP
+    )
+
+
+def _program_name(command: str) -> str | None:
+    """The program a command string starts, by its first word and without a .exe suffix, or None for a path or a word
+    that names no program."""
+    words = command.split(None, 1)
+    name = words[0] if words else ""
+    name = name[:-4] if name.casefold().endswith(".exe") else name
+    return name if COMMAND_NAME.fullmatch(name) else None
+
+
+def _name_bindings(tree: ast.Module) -> dict[str, list[ast.expr]]:
+    """Every value the module assigns to each name, anywhere in it."""
+    bindings: dict[str, list[ast.expr]] = defaultdict(list)
+    for node in ast.walk(tree):
+        targets: list[ast.expr]
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name):
+                bindings[target.id].append(value)
+    return bindings
+
+
+class CommandReader:
+    """The programs a Python module runs, each call resolved through the module's imports and each name it passes
+    followed to every literal the module binds that name to, so an alias or a command list held in a variable is
+    read as the command it is."""
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.tree = tree
+        self.aliases = import_aliases(tree)
+        self.bindings = _name_bindings(tree)
+
+    def program_literals(self, node: ast.expr | None, seen: frozenset[str] = frozenset()) -> list[ast.Constant]:
+        """The string literals that may name the program a command expression runs: a string, the first item of a
+        list or tuple, the left side of a +, what a which() call looks up, and every value a name is bound to."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node]
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return self.program_literals(node.elts[0], seen) if node.elts else []
+        if isinstance(node, ast.Starred):
+            return self.program_literals(node.value, seen)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return self.program_literals(node.left, seen)
+        if isinstance(node, ast.Call) and _is_lookup(node, self.aliases) and node.args:
+            return self.program_literals(node.args[0], seen)
+        if isinstance(node, ast.Name) and node.id not in seen:
+            values = self.bindings.get(node.id, [])
+            return [found for value in values for found in self.program_literals(value, seen | {node.id})]
+        return []
+
+    def _named(self, node: ast.expr | None) -> list[tuple[int, str]]:
+        return [
+            (literal.lineno, name)
+            for literal in self.program_literals(node)
+            if isinstance(literal.value, str) and (name := _program_name(literal.value))
+        ]
+
+    def started(self, call: ast.Call) -> list[tuple[int, str]]:
+        """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
+        runner = COMMAND_RUNNERS.get(qualified_name(call.func, self.aliases))
+        if runner is None:
+            return []
+        position, keyword = runner
+        if len(call.args) > position:
+            return self._named(call.args[position])
+        return self._named(next((item.value for item in call.keywords if item.arg == keyword), None))
+
+    def commands(self, known: set[str]) -> set[str]:
+        """Every program the module runs through a runner or a skill-core client, or looks up with which, and every
+        known tool a list or tuple begins with, since a module may hand that command to a function of its own."""
+        found: set[str] = set()
+        for node in ast.walk(self.tree):
+            if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+                first = node.elts[0]
+                if isinstance(first, ast.Constant) and first.value in known:
+                    found.add(first.value)
+            elif isinstance(node, ast.Call):
+                client = CLIENT_CLASSES.get(qualified_name(node.func, self.aliases))
+                found |= {client} if client else set()
+                if _is_lookup(node, self.aliases) and node.args:
+                    found |= {name for _, name in self._named(node.args[0])}
+                found |= {name for _, name in self.started(node)}
+        return found
+
+
+# Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
+# COMMAND_SOURCES names, as PowerShell's own parser reads them. A function a source defines is its own, and so is
+# what PowerShell ships: its aliases and the commands of its core and of the modules under its home, such as
+# Get-ChildItem and ForEach-Object. A module installed elsewhere, such as PSScriptAnalyzer, is not standard.
+POWERSHELL_COMMANDS_RUN = (
+    "$ErrorActionPreference = 'Stop'; "
+    "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
+    "$sources = @(Get-Content -LiteralPath $env:COMMAND_SOURCES -Raw -Encoding utf8 | ConvertFrom-Json); "
+    "$shipped = @(Get-Module -ListAvailable | Where-Object { "
+    "$_.ModuleBase.StartsWith($PSHOME, [StringComparison]::OrdinalIgnoreCase) } | ForEach-Object Name); "
+    "$own = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase); "
+    "foreach ($command in Get-Command -Module @($shipped + 'Microsoft.PowerShell.Core')) { "
+    "[void]$own.Add($command.Name) }; "
+    "foreach ($alias in Get-Alias) { [void]$own.Add($alias.Name) }; "
+    "$found = [Collections.Generic.List[object]]::new(); "
+    "for ($index = 0; $index -lt $sources.Count; $index++) { "
+    "$tokens = $null; $errors = $null; "
+    "$tree = [Management.Automation.Language.Parser]::ParseInput($sources[$index], [ref]$tokens, [ref]$errors); "
+    "$functions = @($tree.FindAll({ param($node) "
+    "$node -is [Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object Name); "
+    "foreach ($command in $tree.FindAll({ param($node) "
+    "$node -is [Management.Automation.Language.CommandAst] }, $true)) { "
+    "$name = $command.GetCommandName(); "
+    "if (-not $name -or $functions -contains $name -or $own.Contains($name)) { continue }; "
+    "$found.Add([ordered]@{ source = $index; name = $name }) } }; "
+    "[Console]::Out.WriteLine((ConvertTo-Json -InputObject $found.ToArray() -Compress -Depth 3))"
+)
+
+
+def powershell_commands(sources: list[str]) -> list[set[str]]:
+    """The external programs each PowerShell source runs, read by PowerShell's own parser in one call for them all."""
+    if not sources:
+        return []
+    with tempfile.TemporaryDirectory(prefix="powershell-commands-") as directory:
+        request = Path(directory) / "sources.json"
+        request.write_text(json.dumps(sources), encoding="utf-8")
+        result = platform_support.run_tool(
+            [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POWERSHELL_COMMANDS_RUN],
+            {"COMMAND_SOURCES": str(request)},
+        )
+    lines = [line for line in result.output.splitlines() if line.strip()]
+    try:
+        found = json.loads(lines[-1]) if result.returncode == 0 and lines else None
+    except json.JSONDecodeError:
+        found = None
+    if not isinstance(found, list):
+        raise AssertionError(
+            f"PowerShell could not read the commands (exit code {result.returncode}):\n{result.output}"
+        )
+    commands: list[set[str]] = [set() for _ in sources]
+    for item in found:
+        if name := _program_name(item["name"]):
+            commands[item["source"]].add(name)
+    return commands
+
+
+def _powershell_sources(path: Path) -> list[str]:
+    """The PowerShell a file holds: a .ps1 script, or Markdown's PowerShell fences."""
+    suffix = path.suffix.casefold()
+    if suffix == ".ps1":
+        return [path.read_text(encoding="utf-8-sig", errors="replace")]
+    if suffix == ".md":
+        return _fences(path.read_text(encoding="utf-8", errors="replace"), "powershell")
+    return []
+
+
+def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]]) -> set[str]:
+    """The programs a file runs, where powershell holds what each PowerShell source read for the run runs."""
     text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.casefold()
-    found: set[str] = set()
+    found = {command for source in _powershell_sources(path) for command in powershell[source]}
     if suffix == ".py":
-        found.update(known_call.findall(text))
-        found.update(name for match in PYTHON_COMMAND.finditer(text) for name in match.groups() if name)
+        found |= CommandReader(ast.parse(text)).commands(known)
     elif suffix in {".sh", ".bash"}:
-        found.update(shell_commands(text))
+        found |= shell_commands(text)
     elif suffix == ".md":
-        for block in _shell_fences(text):
-            found.update(shell_commands(block))
+        found |= {command for block in _fences(text, "shell") for command in shell_commands(block)}
     return found
 
 
@@ -143,10 +335,6 @@ def _skill_files(directory: Path) -> list[Path]:
     return sorted(path for path in directory.rglob("*") if path.is_file() and not is_test_script(path))
 
 
-IMPORTED_MODULE = re.compile(
-    r"^[ \t]*(?:from[ \t]+([A-Za-z_]\w*)[ \t]+import\b|import[ \t]+([A-Za-z_]\w*(?:[ \t]*,[ \t]*[A-Za-z_]\w*)*))",
-    re.MULTILINE,
-)
 NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
 
 
@@ -155,8 +343,7 @@ def _referenced_scripts(path: Path) -> set[str]:
     text = path.read_text(encoding="utf-8", errors="replace")
     names = {name for _, name in NAMED_SCRIPT.findall(text)}
     if path.suffix.casefold() == ".py":
-        for match in IMPORTED_MODULE.finditer(text):
-            names.update([match.group(1)] if match.group(1) else (part.strip() for part in match.group(2).split(",")))
+        names |= {found.module.split(".")[0] for found in module_imports(ast.parse(text))}
     return names
 
 
@@ -201,21 +388,26 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     run: a dependency's tools are not the skill's unless it imports or names the script that runs them, and then the
     skill declares them too, so a skill that reaches skill-core's GitHub client declares gh.
     """
-    names = "|".join(re.escape(name) for name in sorted(known))
-    known_call = re.compile(rf'\[\s*"({names})"')
-    problems: list[str] = []
+    skills: list[tuple[str, set[str], list[Path], list[Path]]] = []
     for metadata in sorted((root / "deploy-meta").glob("*.json")):
-        skill = metadata.stem
         document = json.loads(metadata.read_text(encoding="utf-8"))
         declared = set(document.get("tools", [])) | set(document.get("optional_tools", []))
-        directories = [root / "skills" / skill, *sorted((root / "skills").glob(f"*/{skill}"))]
+        directories = [root / "skills" / metadata.stem, *sorted((root / "skills").glob(f"*/{metadata.stem}"))]
         own = [
             path for directory in directories if (directory / "SKILL.md").is_file() for path in _skill_files(directory)
         ]
-        used = {command for path in own for command in _file_commands(path, known_call)}
+        skills.append((metadata.stem, declared, own, _reached_dependency_scripts(root, metadata.stem, own)))
+    # PowerShell reads every source in one start, which costs far more than reading one.
+    sources = sorted(
+        {source for *_, own, deps in skills for path in own + deps for source in _powershell_sources(path)}
+    )
+    powershell = dict(zip(sources, powershell_commands(sources), strict=True))
+    problems: list[str] = []
+    for skill, declared, own, dependency_scripts in skills:
+        used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
-        for path in _reached_dependency_scripts(root, skill, own):
-            for command in _file_commands(path, known_call):
+        for path in dependency_scripts:
+            for command in _file_commands(path, known, powershell):
                 reached.setdefault(command, path)
         for name in sorted((used & known) - declared):
             problems.append(f"skill {skill} runs {name} without declaring it in tools")
@@ -544,29 +736,20 @@ def script_contract_problems(root: Path) -> list[str]:
 
 # The command each shared client runs, and the client a skill script runs it through.
 CLIENT_COMMANDS = {"git": "git_client.py's GitClient", "gh": "github_client.py's GitHubClient"}
-SUBPROCESS_CALLS = {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
 CLIENTS_DOC = '"Script results" in docs/adding-a-skill.md'
 
 
-def _client_command(node: ast.AST) -> tuple[int, str] | None:
-    """The line and the git or gh command a node starts: a list or tuple that begins with it, or a subprocess call
-    given it as a string, such as `subprocess.run("git fetch", shell=True)`."""
-    first: ast.AST | None = None
+def _client_commands(node: ast.AST, reader: CommandReader) -> list[tuple[int, str]]:
+    """The line and the git or gh command a node starts: a list or tuple that begins with it, or a call that runs a
+    command given it, such as `subprocess.run("git fetch", shell=True)`, directly or through a name bound to it."""
+    found: list[tuple[int, str]] = []
     if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
         first = node.elts[0]
-    elif (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in SUBPROCESS_CALLS
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "subprocess"
-        and node.args
-    ):
-        first = node.args[0]
-    if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
-        return None
-    command = first.value.split(" ", 1)[0]
-    return (first.lineno, command) if command in CLIENT_COMMANDS else None
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            found = [(first.lineno, first.value.split(" ", 1)[0])]
+    elif isinstance(node, ast.Call):
+        found = reader.started(node)
+    return [(line, command) for line, command in found if command in CLIENT_COMMANDS]
 
 
 def client_command_problems(root: Path) -> list[str]:
@@ -580,8 +763,9 @@ def client_command_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
-        for line, command in sorted({found for node in ast.walk(tree) if (found := _client_command(node))}):
+        reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
+        commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
+        for line, command in sorted(commands):
             problems.append(
                 f"{name}:{line} runs {command} itself; run it through {SKILL_CORE}'s {CLIENT_COMMANDS[command]}, "
                 f"which bounds it and turns prompts off; see {CLIENTS_DOC}"
