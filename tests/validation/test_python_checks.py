@@ -19,6 +19,7 @@ from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
     ceiling_noqa,
+    comments,
     issue_numbers_in_comments,
     mypy_path_problems,
     mypy_type_check,
@@ -189,6 +190,11 @@ class PythonChecksFixtures(unittest.TestCase):
                 ["module.py:1", "module.py:2", "module.py:3"],
                 type_ignore_without_reason(root, [root / "module.py", root / "notes.md"]),
             )
+
+    def test_the_comment_scanner_reads_comments_and_never_text_in_a_string(self) -> None:
+        source = 'x = "# not a comment"  # first\n"""\n# inside a docstring\n"""\n# second\n'
+        found = [(token.start[0], token.string) for token in comments(source)]
+        self.assertEqual([(1, "# first"), (5, "# second")], found)
 
     def test_noqa_scan_requires_codes_and_a_reason(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

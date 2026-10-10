@@ -49,19 +49,19 @@ ISSUE_REFERENCE = re.compile(r"(?<![\w/&#])#\d+\b|\bissues?\s+#?\d+\b", re.IGNOR
 ISSUE_REFERENCE_EXCLUDED = ("tests/fixtures",)
 
 
+def comments(source: str) -> list[tokenize.TokenInfo]:
+    """Each comment in the Python source, as tokenize reads it, so text in a string never counts as one."""
+    return [token for token in tokenize.generate_tokens(io.StringIO(source).readline) if token.type == tokenize.COMMENT]
+
+
 def noqa_without_reason(root: Path, files: list[Path]) -> list[str]:
     """Each `# noqa` comment that does not name its codes and state its reason after ` - `, as path:line."""
     found: list[str] = []
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        source = path.read_text(encoding="utf-8")
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if (
-                token.type == tokenize.COMMENT
-                and NOQA.search(token.string)
-                and not NOQA_WITH_REASON.search(token.string)
-            ):
+        for token in comments(path.read_text(encoding="utf-8")):
+            if NOQA.search(token.string) and not NOQA_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
 
@@ -72,10 +72,7 @@ def ceiling_noqa(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        source = path.read_text(encoding="utf-8")
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if token.type != tokenize.COMMENT:
-                continue
+        for token in comments(path.read_text(encoding="utf-8")):
             for match in NOQA_CODES.finditer(token.string):
                 named = sorted({code.upper() for code in re.split(r"[\s,]+", match.group(1)) if code} & CEILING_CODES)
                 if named:
@@ -109,11 +106,10 @@ def python_suppression_problems(root: Path, files: list[Path]) -> list[str]:
             found.append(f"{name} configures ruff; pyproject.toml at the repository root is its one configuration")
         if path.suffix != ".py":
             continue
-        source = path.read_text(encoding="utf-8")
         found += [
             f"{name}:{token.start[0]} turns a check off with {match.group(0)!r}; fix each finding at its cause"
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
-            if token.type == tokenize.COMMENT and (match := PYTHON_SUPPRESSION.search(token.string))
+            for token in comments(path.read_text(encoding="utf-8"))
+            if (match := PYTHON_SUPPRESSION.search(token.string))
         ]
     return found
 
@@ -124,13 +120,8 @@ def type_ignore_without_reason(root: Path, files: list[Path]) -> list[str]:
     for path in sorted(files):
         if path.suffix != ".py":
             continue
-        source = path.read_text(encoding="utf-8")
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if (
-                token.type == tokenize.COMMENT
-                and TYPE_IGNORE.search(token.string)
-                and not TYPE_IGNORE_WITH_REASON.search(token.string)
-            ):
+        for token in comments(path.read_text(encoding="utf-8")):
+            if TYPE_IGNORE.search(token.string) and not TYPE_IGNORE_WITH_REASON.search(token.string):
                 found.append(f"{path.relative_to(root).as_posix()}:{token.start[0]}")
     return found
 
@@ -162,9 +153,9 @@ def issue_numbers_in_comments(root: Path, files: list[Path]) -> list[str]:
         source = path.read_text(encoding="utf-8")
         lines = {
             token.start[0]
-            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            for token in comments(source)
             # The comment's own leading hash sign is not a citation, so the search starts after it.
-            if token.type == tokenize.COMMENT and ISSUE_REFERENCE.search(token.string[1:])
+            if ISSUE_REFERENCE.search(token.string[1:])
         }
         lines |= {number for number, line in docstring_lines(source) if ISSUE_REFERENCE.search(line)}
         found += [f"{name}:{number}" for number in sorted(lines)]

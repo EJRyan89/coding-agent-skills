@@ -91,7 +91,8 @@ def fence_holders(lines: list[str]) -> list[render.Fence | None]:
     return holders
 
 
-def _fence_body_line(holder: render.Fence | None, index: int) -> bool:
+def fence_body_line(holder: render.Fence | None, index: int) -> bool:
+    """Whether the line at index is inside the fence that holds it, rather than its opener or closer."""
     return holder is not None and index not in (holder.opener, holder.closer)
 
 
@@ -131,7 +132,8 @@ def scripts_put_on_path(source: str) -> list[str]:
     return names
 
 
-def _markdown_section(text: str, heading: str) -> str | None:
+def markdown_section(text: str, heading: str) -> str | None:
+    """The lines after the heading line up to the next second-level heading, or None when the heading is absent."""
     lines = text.split("\n")
     if heading not in lines:
         return None
@@ -200,3 +202,38 @@ def write_fixture_tree(root: Path, files: Mapping[str, str]) -> None:
     for relative_path, text in files.items():
         (root / relative_path).parent.mkdir(parents=True, exist_ok=True)
         (root / relative_path).write_text(text, encoding="utf-8")
+
+
+def module_allowance(tree: ast.Module, name: str) -> dict[str, str] | None:
+    """A module's allowance, such as PLATFORM_ALLOWED, or None when it does not map each token to its reason.
+
+    Every policy that lets a module sanction an exception beside the code it excuses reads the allowance here, so
+    they agree on its shape: a module-level literal dictionary of non-empty reasons, empty when the module has none.
+    """
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            try:
+                allowance = ast.literal_eval(node.value)
+            except ValueError:
+                return None
+            valid = isinstance(allowance, dict) and all(
+                isinstance(token, str) and isinstance(reason, str) and reason.strip()
+                for token, reason in allowance.items()
+            )
+            return allowance if valid else None
+    return {}
+
+
+def docstring_ids(tree: ast.Module) -> set[int]:
+    """The id of each docstring's node: the module's, and each class's and function's."""
+    return {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.body
+        and isinstance(node.body[0], ast.Expr)
+        and isinstance(node.body[0].value, ast.Constant)
+        and isinstance(node.body[0].value.value, str)
+    }

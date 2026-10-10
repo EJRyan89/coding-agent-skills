@@ -18,8 +18,8 @@ from validation_support import (
     SKILL_GUIDE,
     TEMPLATE_TOKEN,
     UNSUPPORTED_SCRIPT_EXTENSIONS,
-    _fence_body_line,
     all_skill_directories,
+    fence_body_line,
     fence_holders,
     is_executable_script,
     is_test_script,
@@ -260,7 +260,7 @@ def skill_path_problems(root: Path) -> list[str]:
         holders = fence_holders(lines)
         for number, line in enumerate(lines, start=1):
             holder = holders[number - 1]
-            if holder is not None and not _fence_body_line(holder, number - 1):
+            if holder is not None and not fence_body_line(holder, number - 1):
                 continue  # an opening or closing line
             in_fence = holder is not None
             in_shell_fence = holder is not None and holder.language.casefold() in SHELL_FENCES
@@ -338,7 +338,7 @@ def output_placeholder_problems(root: Path, tree: str = "skills") -> list[str]:
         lines = path.read_text(encoding="utf-8").splitlines()
         for number, (line, holder) in enumerate(zip(lines, fence_holders(lines), strict=True), start=1):
             in_command_fence = (
-                _fence_body_line(holder, number - 1)
+                fence_body_line(holder, number - 1)
                 and holder is not None
                 and holder.language.casefold() in EXECUTABLE_FENCE_LANGUAGES
             )

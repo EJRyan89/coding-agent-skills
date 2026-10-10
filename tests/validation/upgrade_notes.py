@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from validation_support import REPOSITORY_ROOT, _markdown_section, is_skill_file, repository_files
+from validation_support import REPOSITORY_ROOT, is_skill_file, markdown_section, repository_files
 
 from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
 
@@ -139,7 +139,7 @@ def _review_schemas(snapshot: Snapshot) -> dict[str, object]:
 
 
 def _format_tables(snapshot: Snapshot) -> dict[str, object]:
-    section = _markdown_section(snapshot.text(FORMATS_DOC) or "", FORMATS_HEADING)
+    section = markdown_section(snapshot.text(FORMATS_DOC) or "", FORMATS_HEADING)
     if section is None:
         return {}
     rows = [line.strip().strip("|") for line in section.split("\n") if line.lstrip().startswith("|")]
@@ -176,7 +176,7 @@ def changed_contract_items(released: Snapshot, current: Snapshot) -> list[tuple[
 def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
     """Each file or directory the check reads that a document's contract list, under heading, does not name in
     backticks, so the list a contributor reads and the one validation holds stay the same."""
-    section = _markdown_section(text.replace("\r\n", "\n"), heading)
+    section = markdown_section(text.replace("\r\n", "\n"), heading)
     if section is None:
         return [f"{document} has no {heading} section naming the contract files the upgrade-notes check reads"]
     return [
@@ -188,7 +188,7 @@ def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
 
 def versioning_levels(releasing: str) -> list[str]:
     """The level names of the **Levels** list in the Versioning section, lowercased, in the order written."""
-    section = _markdown_section(releasing.replace("\r\n", "\n"), VERSIONING_HEADING) or ""
+    section = markdown_section(releasing.replace("\r\n", "\n"), VERSIONING_HEADING) or ""
     _, found, rest = section.partition("**Levels**")
     levels: list[str] = []
     for line in rest.split("\n")[1:] if found else []:

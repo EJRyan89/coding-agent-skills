@@ -15,6 +15,14 @@ from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT, 
 
 from deployer import render
 
+# The analyze-skill-cost inventory owns the grant rules, so the audit and this policy cannot disagree. It stays in that
+# skill rather than skill-core because it is the audit program the deployed skill runs, and the rules are its subject;
+# the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
+# The deployer's import above has put skill-core's scripts, and so the one frontmatter reader, on the path.
+sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
+import frontmatter
+import skill_inventory
+
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 # A fence command that runs the skill's own scripts, which its grants must cover: a shipped skill names them through
 # its directory, and a repository skill runs the repository's tools and tests from the working tree.
@@ -43,9 +51,6 @@ def idle_grant_problems(name: str, skill_md: Path, inventory: list[str]) -> list
     pattern that matches no command in a shell fence or a code span pre-approves a command the skill never names,
     such as one a repository profile names, which a generic skill must leave to prompt.
     """
-    import frontmatter
-    import skill_inventory
-
     if "INVOCATION hidden" in inventory:
         if any(line.startswith("ALLOWED ") for line in inventory):
             return [f"{name} is hidden, so no turn starts it and its allowed-tools approve nothing; see {GRANTS_DOC}"]
@@ -85,9 +90,6 @@ def skill_grant_problems(
     The rules are the analyze-skill-cost inventory's, so the audit and this policy cannot disagree. A shipped skill's
     own scripts run through ${CLAUDE_SKILL_DIR}; a repository skill's are the repository's tools and tests.
     """
-    sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
-    import skill_inventory
-
     problems: list[str] = []
     for skill_md in shipped_skill_files(root) if skill_files is None else skill_files:
         name = skill_md.relative_to(root).as_posix()
@@ -127,9 +129,6 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
     The inventory leaves a command ungranted only for a script whose module-level declaration is a non-empty string,
     so a declaration of another shape would fail silently, and one in a script that starts nothing is stale.
     """
-    sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
-    import skill_inventory
-
     declaration = skill_inventory.REPOSITORY_CODE_DECLARATION
     problems: list[str] = []
     for script in sorted([*(root / "skills").rglob("*.py"), *(root / REPOSITORY_SKILLS).rglob("*.py")]):
