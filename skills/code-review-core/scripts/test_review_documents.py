@@ -358,7 +358,8 @@ class PdfExtractionTests(unittest.TestCase):
         self.assertEqual((["-q", "-enc", "UTF-8", "-eol", "unix"], "-"), (options, output), "layout stays off")
         self.assertEqual(PDF.hex(), call["document"], "the bytes are given as a file")
         self.assertEqual(0, call["stdin"], "and nothing on stdin")
-        self.assertTrue(document.is_relative_to(Path(tempfile.gettempdir()).resolve()), document)
+        # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
+        self.assertEqual(Path(tempfile.gettempdir()), document.parent.parent, document)
         self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
 
     def test_without_pdftotext_a_pdf_is_refused_with_a_reason_that_names_it(self) -> None:
