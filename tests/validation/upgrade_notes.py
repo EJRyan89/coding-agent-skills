@@ -212,7 +212,9 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     problems = [
         f"{where} is missing '- {field}:' or leaves it empty" for field in fields if not entry.fields.get(field)
     ]
-    level = re.match(r"[A-Za-z]+", entry.fields.get("Level", ""))
+    # The Level is a sentence that starts with a level word. A value that starts with anything else, such as a
+    # version number, punctuation, or a word run into a digit, is named by its first token, so it fails the same way.
+    level = re.match(r"[A-Za-z]+\b|\S+", entry.fields.get("Level", ""))
     if level and level.group(0).lower() not in levels:
         problems.append(
             f"{where} starts its Level with '{level.group(0)}', not one of the levels in the Versioning section of "
