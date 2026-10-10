@@ -3832,10 +3832,10 @@ class UnlistableDirectoryTests(unittest.TestCase):
 
     def test_a_permission_error_listing_agents_is_an_error_at_the_directory(self) -> None:
         listed = Path.iterdir
-        denied = self.root / ".github/agents"
 
         def iterdir(path: Path):
-            if path == denied:
+            # The audit resolves its root, which can spell the temporary directory differently from self.root.
+            if path.parts[-2:] == (".github", "agents"):
                 raise PermissionError(13, "Access is denied", str(path))
             return listed(path)
 
