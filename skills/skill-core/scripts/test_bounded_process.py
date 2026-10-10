@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,20 @@ ENVIRONMENT_PROGRAM = (
 STARTUP_SECONDS = 60.0
 IDLE_SECONDS = 0.5
 IDLE_MARGIN_SECONDS = 10.0
+# A session timeout starts with the command, so its tests cannot wait out start-up first. Each asserts only that the
+# session ended within SESSION_SECONDS plus the stop allowance (KILL_WAIT_SECONDS) and IDLE_MARGIN_SECONDS, whether a
+# slow start-up or the command's later silence used the time up, and makes the command outlive that bound.
+SESSION_SECONDS = 2.0
+
+# Starts a program that inherits stdout and waits until the file named by its first argument exists, then says ready
+# and exits, as a launcher does: the program holds stdout open after the command is gone.
+LAUNCHER_PROGRAM = (
+    "import subprocess, sys\n"
+    "waiter = 'import os, sys, time\\nfor _ in range(1200):\\n    if os.path.exists(sys.argv[1]): break\\n"
+    "    time.sleep(0.1)\\n'\n"
+    "subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
+    "print('ready'); sys.stdout.flush()\n"
+)
 
 
 class BoundedProcessTests(unittest.TestCase):
@@ -243,6 +258,77 @@ class StreamingTests(unittest.TestCase):
             bounded_process.streaming(["coding-agent-skills-no-such"], idle_timeout=1),
         ):
             pass
+
+    def test_a_given_environment_is_the_whole_environment_with_no_prompt_turned_off(self) -> None:
+        given = {name: value for name, value in os.environ.items() if name not in bounded_process.NON_INTERACTIVE}
+        given["GIT_TERMINAL_PROMPT"] = "a value with spaces"
+        command = [sys.executable, "-c", ANSWERING_PROGRAM]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, env=given) as running:
+            running.stdin.write(b"first\n")
+            running.stdin.close()
+            self.assertEqual(b"first answered a value with spaces None\n", running.readline())
+            self.assertEqual(3, running.wait())
+
+    def test_the_session_timeout_ends_reads_while_output_keeps_arriving(self) -> None:
+        # A byte every twentieth of a second for two minutes: the idle limit never fires, the session limit must.
+        program = "import sys, time\nfor _ in range(2400):\n    sys.stdout.buffer.write(b'x'); sys.stdout.flush()\n"
+        program += "    time.sleep(0.05)\n"
+        started = time.monotonic()
+        command = [sys.executable, "-c", program]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, timeout=SESSION_SECONDS) as running:
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                while running.read(1):
+                    pass
+            self.assertEqual(SESSION_SECONDS, raised.exception.timeout)
+        bound = SESSION_SECONDS + bounded_process.KILL_WAIT_SECONDS + IDLE_MARGIN_SECONDS
+        self.assertLess(time.monotonic() - started, bound)
+
+    def test_the_session_timeout_bounds_the_wait_and_kills_a_command_still_running_on_leaving(self) -> None:
+        started = time.monotonic()
+        command = [sys.executable, "-c", "import time; time.sleep(120)"]
+        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, timeout=SESSION_SECONDS) as running:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                running.wait()
+            self.assertLess(time.monotonic() - started, SESSION_SECONDS + IDLE_MARGIN_SECONDS)
+        # exit_wait is a minute by default; the session's end cuts it short.
+        bound = SESSION_SECONDS + bounded_process.KILL_WAIT_SECONDS + IDLE_MARGIN_SECONDS
+        self.assertLess(time.monotonic() - started, bound)
+
+    def test_closing_after_the_session_never_waits_on_a_program_holding_stdout(self) -> None:
+        # The launcher exits at once while the program it started holds stdout until the test releases it. A close
+        # that waited on the reader would wait the whole stop allowance, here made far longer than the bound.
+        with tempfile.TemporaryDirectory() as temporary:
+            release = Path(temporary) / "release"
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(release)]
+            started = time.monotonic()
+            try:
+                with (
+                    mock.patch.object(bounded_process, "KILL_WAIT_SECONDS", 600.0),
+                    bounded_process.streaming(
+                        command, idle_timeout=STARTUP_SECONDS, timeout=SESSION_SECONDS
+                    ) as running,
+                    self.assertRaises(subprocess.TimeoutExpired),
+                ):
+                    while running.readline():
+                        pass
+                self.assertLess(time.monotonic() - started, SESSION_SECONDS + IDLE_MARGIN_SECONDS)
+            finally:
+                release.touch()
+
+    def test_a_command_started_without_its_pipes_is_stopped_and_raises(self) -> None:
+        for missing in ("stdin", "stdout"):
+            with self.subTest(missing=missing):
+                process = mock.MagicMock(spec=subprocess.Popen)
+                process.stdin = None if missing == "stdin" else mock.MagicMock()
+                process.stdout = None if missing == "stdout" else mock.MagicMock()
+                with (
+                    mock.patch.object(bounded_process.subprocess, "Popen", return_value=process),
+                    self.assertRaisesRegex(OSError, r"^the command started without its pipes$"),
+                    bounded_process.streaming(["any"], idle_timeout=1),
+                ):
+                    pass
+                process.kill.assert_called_once_with()
+                process.wait.assert_called_once_with(timeout=bounded_process.KILL_WAIT_SECONDS)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,10 @@ authorizes operational validation of a trusted repository. Each stdio server dec
 .mcp.json, .github/mcp.json, .vscode/mcp.json, or .codex/config.toml is started with its
 configured command, arguments, working directory, and environment (a command with a directory part is
 relative to that working directory under the root, as a client starts it); it receives initialize,
-notifications/initialized, and tools/list, and is then stopped. Identical definitions in
+notifications/initialized, and tools/list, each one line of JSON ended by a line feed and never a carriage
+return, and is then stopped. --timeout bounds each server from its start to its stop, so neither the server nor a
+program its launcher started and left holding its output keeps the run waiting past it; a server still running
+then is killed, and up to ten seconds more are allowed for it to be reported gone. Identical definitions in
 several files are started once. A handshake passes only when the initialize result has the fields
 the MCP schema requires and a protocol version this client supports, and every tools/list page, followed
 through nextCursor, is a valid list of tools. Each config is read as audit_ai_config.py reads it. One line per
@@ -37,18 +40,16 @@ import argparse
 import contextlib
 import json
 import os
-import queue
 import shutil
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from audit_ai_config import _parse_mcp_json, _read_codex_mcp
+from bounded_process import Streaming, streaming
 from console import use_utf8_output
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
@@ -58,6 +59,8 @@ PROTOCOL_VERSION = "2025-06-18"
 # Revisions whose initialize and tools/list shapes this client validates; a server may answer with any of them.
 SUPPORTED_PROTOCOL_VERSIONS = frozenset({"2024-11-05", "2025-03-26", PROTOCOL_VERSION})
 MAX_TOOL_PAGES = 100
+# Seconds a server gets to exit once its stdin closes, within --timeout, before it is killed.
+EXIT_WAIT_SECONDS = 2.0
 JSON_SOURCES = ((".mcp.json", "mcpServers"), (".github/mcp.json", "mcpServers"), (".vscode/mcp.json", "servers"))
 CODEX_CONFIG = ".codex/config.toml"
 
@@ -113,62 +116,27 @@ def group_servers(root: Path, only: str | None) -> tuple[list[tuple[str, list[st
 
 
 class Session:
-    """A started server whose stdout lines arrive on a queue, so reads can time out."""
+    """A started server, run by skill-core's bounded process layer so that `--timeout` bounds the whole session: a
+    server, or a program a launcher started that holds its stdout, can neither hold a read nor the stop past it."""
 
-    def __init__(self, arguments: list[str], cwd: Path, env: dict[str, str]) -> None:
-        self.process = subprocess.Popen(
-            arguments,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding="utf-8",
-            errors="replace",
-        )
-        stdin, stdout, stderr = self.process.stdin, self.process.stdout, self.process.stderr
-        # All three were requested as pipes above; a server started without them cannot be talked to.
-        if stdin is None or stdout is None or stderr is None:
-            self.process.kill()
-            self.process.wait()
-            raise RuntimeError("could not open the server's pipes")
-        self.stdin, self.stdout, self.stderr = stdin, stdout, stderr
-        self.lines: queue.Queue[str | None] = queue.Queue()
-        self.stderr_tail: list[str] = []
-        self.pumps = [
-            threading.Thread(target=self._pump_stdout, daemon=True),
-            threading.Thread(target=self._pump_stderr, daemon=True),
-        ]
-        for pump in self.pumps:
-            pump.start()
-
-    def _pump_stdout(self) -> None:
-        for line in self.stdout:
-            self.lines.put(line)
-        self.lines.put(None)
-
-    def _pump_stderr(self) -> None:
-        for line in self.stderr:
-            self.stderr_tail = [*self.stderr_tail, line.strip()][-3:]
+    def __init__(self, running: Streaming) -> None:
+        self.running = running
 
     def send(self, message: dict[str, Any]) -> None:
-        self.stdin.write(json.dumps(message) + "\n")
-        self.stdin.flush()
+        # Stdin is binary, so each message ends with exactly the newline the stdio transport frames it with.
+        self.running.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        self.running.stdin.flush()
 
-    def response(self, request_id: int, deadline: float) -> dict[str, Any]:
+    def response(self, request_id: int) -> dict[str, Any]:
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise RuntimeError("timed out waiting for a response")
             try:
-                line = self.lines.get(timeout=remaining)
-            except queue.Empty:
-                continue
-            if line is None:
-                # Stdout can close before the server's last stderr line is read; exited() waits for it.
+                line = self.running.readline()
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("timed out waiting for a response") from None
+            if not line:
                 raise RuntimeError(self.exited() or "server exited before responding")
             try:
-                message = json.loads(line)
+                message = json.loads(line.decode("utf-8", "replace"))
             except json.JSONDecodeError:
                 continue
             if isinstance(message, dict) and message.get("id") == request_id:
@@ -186,25 +154,18 @@ class Session:
         broken pipe; that is the same failure as exiting before a response, and its stderr says why.
         """
         try:
-            self.process.wait(timeout=2)
+            self.running.wait()
         except subprocess.TimeoutExpired:
             return None
-        self.pumps[1].join(timeout=2)
-        detail = f": {self.stderr_tail[-1]}" if self.stderr_tail else ""
+        lines = [line.strip() for line in self.running.errors().decode("utf-8", "replace").splitlines()]
+        last = next((line for line in reversed(lines) if line), "")
+        detail = f": {last}" if last else ""
         return f"server exited before responding{detail}"
 
-    def close(self) -> None:
+    def end_requests(self) -> None:
+        """Close the server's stdin, which tells a stdio server to exit."""
         with contextlib.suppress(OSError):
-            self.stdin.close()
-        try:
-            self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait()
-        for pump in self.pumps:
-            pump.join(timeout=2)
-        self.stdout.close()
-        self.stderr.close()
+            self.running.stdin.close()
 
 
 def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -227,7 +188,7 @@ def initialize_result(result: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     return version, capabilities
 
 
-def tool_count(session: Session, deadline: float) -> int:
+def tool_count(session: Session) -> int:
     """Count the tools across every tools/list page, or raise RuntimeError for an invalid result."""
     count = 0
     cursor: str | None = None
@@ -237,7 +198,7 @@ def tool_count(session: Session, deadline: float) -> int:
         if cursor is not None:
             request["params"] = {"cursor": cursor}
         session.send(request)
-        result = session.response(request_id, deadline)
+        result = session.response(request_id)
         tools = result.get("tools")
         if not isinstance(tools, list):
             raise RuntimeError("tools/list result has no tools array")
@@ -283,38 +244,52 @@ def handshake(root: Path, entry: dict[str, Any], timeout: float) -> str:
     if not isinstance(env_values, dict) or not all(isinstance(v, str) for v in env_values.values()):
         raise RuntimeError("env must map names to strings")
     try:
-        session = Session([command, *args], cwd, {**os.environ, **env_values})
-    except OSError as error:
+        with streaming(
+            [command, *args],
+            idle_timeout=timeout,
+            timeout=timeout,
+            env={**os.environ, **env_values},
+            cwd=cwd,
+            exit_wait=EXIT_WAIT_SECONDS,
+        ) as running:
+            session = Session(running)
+            try:
+                return _initialize_and_list(session)
+            except OSError as error:
+                raise RuntimeError(session.exited() or f"could not talk to the server: {error}") from error
+            finally:
+                session.end_requests()
+    except OSError as error:  # talking to the server raises RuntimeError above, so this is starting it
         raise RuntimeError(f"could not start: {error}") from error
-    deadline = time.monotonic() + timeout
-    try:
-        session.send(
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "capabilities": {},
-                    "clientInfo": {"name": "audit-ai-config", "version": "1"},
-                },
-            }
-        )
-        version, capabilities = initialize_result(session.response(1, deadline))
-        session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        tools = str(tool_count(session, deadline)) if "tools" in capabilities else "none"
-        return f"protocol={version} tools={tools}"
-    except OSError as error:
-        raise RuntimeError(session.exited() or f"could not talk to the server: {error}") from error
-    finally:
-        session.close()
+
+
+def _initialize_and_list(session: Session) -> str:
+    """'protocol=<v> tools=<n>' from a started server, or RuntimeError with the failure reason."""
+    session.send(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "audit-ai-config", "version": "1"},
+            },
+        }
+    )
+    version, capabilities = initialize_result(session.response(1))
+    session.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    tools = str(tool_count(session)) if "tools" in capabilities else "none"
+    return f"protocol={version} tools={tools}"
 
 
 def main(arguments: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--server", help="handshake only the server with this name")
-    parser.add_argument("--timeout", type=float, default=30.0, help="seconds per server (default 30)")
+    parser.add_argument(
+        "--timeout", type=float, default=30.0, help="seconds per server, from its start to its stop (default 30)"
+    )
     args = parser.parse_args(arguments)
     if not (args.root / ".git").exists():
         print(f"FAILED {args.root} is not a Git repository")

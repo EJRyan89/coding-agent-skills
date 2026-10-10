@@ -10,7 +10,7 @@ then wait for that process. A file needs no reader, so the call returns when the
 too: the command reads it to its end and then sees stdin closed, and one that reads none of it cannot block.
 
 `Streaming` runs a command that answers requests while it runs, such as `git cat-file --batch`, with the same
-environment; its stdin is the caller's pipe of requests, never the terminal.
+environment unless its caller gives another; its stdin is the caller's pipe of requests, never the terminal.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,11 +100,20 @@ def _stdin(input_bytes: bytes | None) -> Iterator[int | IO[bytes]]:
 
 @contextmanager
 def streaming(
-    command: Sequence[str], *, idle_timeout: float, cwd: Path | None = None, exit_wait: float = EXIT_WAIT_SECONDS
+    command: Sequence[str],
+    *,
+    idle_timeout: float,
+    timeout: float | None = None,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    exit_wait: float = EXIT_WAIT_SECONDS,
 ) -> Iterator[Streaming]:
     """Start a command that takes requests on stdin and answers on stdout while it runs, and close it on leaving.
 
-    Raises OSError when the command cannot start (FileNotFoundError when it does not exist).
+    With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
+    `Streaming` describes. With `env`, that is the command's whole environment and no prompt is turned off for it;
+    otherwise it is this process's environment with every prompt turned off. Raises OSError when the command cannot
+    start (FileNotFoundError when it does not exist).
     """
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
@@ -112,10 +121,10 @@ def streaming(
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=errors,
-            env=non_interactive_environment(),
+            env=non_interactive_environment() if env is None else dict(env),
             cwd=cwd,
         )
-        running = Streaming(process, errors, idle_timeout=idle_timeout, exit_wait=exit_wait)
+        running = Streaming(process, errors, idle_timeout=idle_timeout, exit_wait=exit_wait, timeout=timeout)
         try:
             yield running
         finally:
@@ -134,16 +143,32 @@ class Streaming:
     which closes the command's stdout, so a command still writing fails its next write and exits by itself; it is
     killed only if it has not exited `exit_wait` seconds later. A killed launcher's program
     can hold its working directory a moment longer, so ending it this way matters.
+
+    A session `timeout` bounds all of it. Every read and `wait` also raises subprocess.TimeoutExpired once that many
+    seconds have passed since the command started, however steadily output arrives. Closing then waits for nothing
+    past that moment but a killed command to be reported gone, for at most KILL_WAIT_SECONDS: the command gets
+    `exit_wait` seconds to exit or what is left of the session, whichever is less, and the reader is not waited for
+    once the session is over, since a program the command started can hold its stdout open for as long as it runs.
     """
 
     def __init__(
-        self, process: subprocess.Popen[bytes], errors: IO[bytes], *, idle_timeout: float, exit_wait: float
+        self,
+        process: subprocess.Popen[bytes],
+        errors: IO[bytes],
+        *,
+        idle_timeout: float,
+        exit_wait: float,
+        timeout: float | None = None,
     ) -> None:
         if process.stdin is None or process.stdout is None:
+            process.kill()
+            process.wait(timeout=KILL_WAIT_SECONDS)
             raise OSError("the command started without its pipes")
         self.command = process.args
         self.idle_timeout = idle_timeout
         self.exit_wait = exit_wait
+        self.timeout = timeout
+        self._deadline = None if timeout is None else time.monotonic() + timeout
         self.stdin: IO[bytes] = process.stdin
         self._process = process
         self._stdout: IO[bytes] = process.stdout
@@ -177,17 +202,25 @@ class Streaming:
             with suppress(OSError):
                 self._stdout.close()
 
+    def _within(self, seconds: float) -> float:
+        """`seconds`, or what is left of the session when that is less, and never below zero."""
+        if self._deadline is None:
+            return seconds
+        return max(0.0, min(seconds, self._deadline - time.monotonic()))
+
     def _fill(self) -> bool:
         """Add the next chunk of output to the buffer, or return False at its end."""
-        deadline = time.monotonic() + self.idle_timeout
+        idle_until = time.monotonic() + self.idle_timeout
         while True:
+            if self.timeout is not None and self._within(self.timeout) <= 0:
+                raise subprocess.TimeoutExpired(self.command, self.timeout)
             try:
                 self._buffer += self._chunks.get(timeout=POLL_SECONDS)
                 return True
             except queue.Empty:
                 if self._ended.is_set() and self._chunks.empty():
                     return False
-                if time.monotonic() >= deadline:
+                if time.monotonic() >= idle_until:
                     raise subprocess.TimeoutExpired(self.command, self.idle_timeout) from None
 
     def read(self, size: int) -> bytes:
@@ -218,8 +251,9 @@ class Streaming:
         return data
 
     def wait(self) -> int:
-        """The exit status, raising subprocess.TimeoutExpired when the command has not exited within `idle_timeout`."""
-        return self._process.wait(timeout=self.idle_timeout)
+        """The exit status, raising subprocess.TimeoutExpired when the command has not exited within `idle_timeout`
+        or by the end of the session."""
+        return self._process.wait(timeout=self._within(self.idle_timeout))
 
     def errors(self) -> bytes:
         """What the command has written to stderr so far."""
@@ -227,15 +261,17 @@ class Streaming:
         return self._errors.read()
 
     def close(self) -> None:
-        """Stop reading, let the command exit, and kill it if it has not exited `exit_wait` seconds later."""
+        """Stop reading, let the command exit, and kill it if it has not exited `exit_wait` seconds later or by the end
+        of the session."""
         if self._closed:
             return
         self._closed = True
         self._stopping.set()
         try:
-            self._process.wait(timeout=self.exit_wait)
+            self._process.wait(timeout=self._within(self.exit_wait))
         except subprocess.TimeoutExpired:
             self._process.kill()
             with suppress(subprocess.TimeoutExpired):
                 self._process.wait(timeout=KILL_WAIT_SECONDS)
-        self._reader.join(KILL_WAIT_SECONDS)  # bounded: a program the command started may still hold its stdout
+        # Bounded, and not past the session's end: a program the command started may still hold its stdout.
+        self._reader.join(self._within(KILL_WAIT_SECONDS))

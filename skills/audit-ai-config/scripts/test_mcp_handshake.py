@@ -10,15 +10,32 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+import bounded_process
 import mcp_handshake
+
+# The launcher test's --timeout, and how far past --timeout and the stop allowance a loaded machine may end the run.
+LAUNCHER_TIMEOUT_SECONDS = 2.0
+MARGIN_SECONDS = 10.0
 
 FAKE_SERVER = """\
 import json, sys, time
 mode = sys.argv[1]
+if mode == "launcher":
+    # Read the first request, start a program that inherits stdout and waits until the file named by the next
+    # argument exists, and exit, so the program holds stdout open after the server is gone.
+    import subprocess, tempfile
+    sys.stdin.buffer.readline()
+    waiter = "import os, sys, time\\nfor _ in range(1200):\\n    if os.path.exists(sys.argv[1]): break\\n"
+    waiter += "    time.sleep(0.1)\\n"
+    subprocess.Popen([sys.executable, "-c", waiter, sys.argv[2]], cwd=tempfile.gettempdir())
+    sys.exit(0)
 if mode == "exit":
     print("boom: missing dependency", file=sys.stderr)
     sys.exit(3)
@@ -45,7 +62,9 @@ TOOLS = {
     "nonobject": {"tools": ["search"]},
     "loop": {"tools": [{"name": "search", "inputSchema": SCHEMA}], "nextCursor": "again"},
 }
-for line in sys.stdin:
+for line in sys.stdin.buffer:
+    if mode == "record":
+        open("received.bin", "ab").write(line)
     message = json.loads(line)
     if mode == "silent":
         time.sleep(30)
@@ -197,7 +216,7 @@ class HandshakeTests(unittest.TestCase):
         original = mcp_handshake.Session.send
 
         def send_after_exit(session: mcp_handshake.Session, message: dict) -> None:
-            session.process.wait(timeout=10)
+            session.running.wait()
             original(session, message)
 
         self._write(".mcp.json", "mcpServers", {"crash": self._stdio("exit")})
@@ -222,18 +241,47 @@ class HandshakeTests(unittest.TestCase):
         )
 
     def test_a_server_started_without_its_pipes_is_stopped_and_fails(self) -> None:
-        for missing in ("stdin", "stdout", "stderr"):
-            with self.subTest(missing=missing):
-                process = mock.MagicMock(spec=subprocess.Popen)
-                for pipe in ("stdin", "stdout", "stderr"):
-                    setattr(process, pipe, None if pipe == missing else mock.MagicMock())
-                with (
-                    mock.patch.object(mcp_handshake.subprocess, "Popen", return_value=process),
-                    self.assertRaisesRegex(RuntimeError, r"^could not open the server's pipes$"),
-                ):
-                    mcp_handshake.handshake(self.root, self._stdio("ok"), 5)
-                process.kill.assert_called_once_with()
-                process.wait.assert_called_once_with()
+        process = mock.MagicMock(spec=subprocess.Popen)
+        process.stdin, process.stdout = mock.MagicMock(), None
+        with (
+            mock.patch.object(bounded_process.subprocess, "Popen", return_value=process),
+            self.assertRaisesRegex(RuntimeError, r"^could not start: the command started without its pipes$"),
+        ):
+            mcp_handshake.handshake(self.root, self._stdio("ok"), 5)
+        process.kill.assert_called_once_with()
+
+    def test_messages_reach_the_server_as_lines_ended_by_a_line_feed_alone(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("record", cwd="tools")})
+        self.assertEqual((0, ["HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2"]), self._run())
+        received = (self.root / "tools" / "received.bin").read_bytes()
+        self.assertNotIn(b"\r", received)
+        self.assertTrue(received.endswith(b"\n"), received)
+        methods = [json.loads(line)["method"] for line in received.split(b"\n")[:-1]]
+        self.assertEqual(["initialize", "notifications/initialized", "tools/list"], methods)
+
+    def test_a_program_a_launcher_leaves_holding_its_output_does_not_hold_the_run_past_the_timeout(self) -> None:
+        # Before the handshake ran on the bounded process layer, the stop waited on the reader behind the program
+        # for as long as it ran, here until the test releases it.
+        release = Path(self.temp.name) / "release"
+        launched = {"command": sys.executable, "args": [str(self.server), "launcher", str(release)]}
+        self._write(".mcp.json", "mcpServers", {"launched": launched})
+        output = io.StringIO()
+        started = time.monotonic()
+        try:
+            with contextlib.redirect_stdout(output):
+                code = mcp_handshake.main(["--root", str(self.root), "--timeout", str(LAUNCHER_TIMEOUT_SECONDS)])
+            elapsed = time.monotonic() - started
+        finally:
+            release.touch()
+        self.assertEqual(
+            (1, ["HANDSHAKE_FAILED launched source=.mcp.json timed out waiting for a response"]),
+            (code, output.getvalue().splitlines()),
+        )
+        self.assertLess(elapsed, LAUNCHER_TIMEOUT_SECONDS + bounded_process.KILL_WAIT_SECONDS + MARGIN_SECONDS)
+
+    def test_the_usage_states_the_stop_allowance_the_process_layer_gives(self) -> None:
+        self.assertEqual(10.0, bounded_process.KILL_WAIT_SECONDS)
+        self.assertIn("up to ten seconds more are allowed", " ".join((mcp_handshake.__doc__ or "").split()))
 
     def test_unresponsive_server_times_out(self) -> None:
         self._write(".mcp.json", "mcpServers", {"slow": self._stdio("silent")})
