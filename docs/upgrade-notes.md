@@ -15,6 +15,386 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.5.0
+
+### A status override of `incomplete` is refused as a computed state
+
+- Level: patch. A fix: `incomplete`, the AI review state of an unchanged head whose review could not read every changed file, is refused as a dashboard status override, in any case and trimmed, as `missing`, `current`, and `stale` already were; a configuration that holds one fails every command that reads it with `FAILED Dashboard status override <owner/repo#N> duplicates a computed tracker state`.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none, unless that message names an override; then rename or remove that entry in `dashboard.status_overrides` in the code-review configuration file by hand, since `tracker_pipeline.py override --clear` validates the file first and refuses it too.
+- Pull request: #450
+
+### A Word finding's location names the nearest styled heading, never a body paragraph that starts with #
+
+- Level: patch. A fix: a body paragraph starting with `#`, such as `#1 priority is latency.`, is no longer taken for a heading in a later finding's `location`, which names the nearest styled heading above the line; in the extracted text such a paragraph now starts with `\#`, as Markdown escapes it.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #452
+
+### The code-review contract names review-document's behavior
+
+- Level: patch. The contract gains a Skill behavior row for `review-document` stating what the skill already does, and its opening names the bundle's public skills by that table rather than counting them; no behavior changes.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #453
+
+### A review-insights synthesis no longer lists a suite profile as a repository's guidance file
+
+- Level: patch. A fix: a reviewer whose manifest routes a specialist to `suite:design-review` no longer makes the synthesis list that reference among the repository's guidance files, and a recommendation targeting it is refused as any other path outside the set is.
+- Contract: none
+- User action: none
+- Pull request: #451
+
+### source-search no longer prints a changed Word document's bytes as matches
+
+- Level: patch. A fix: `source-search` searched the zip of a Word document the pull request changes and printed its compressed bytes as `MATCH` lines; it now leaves out every document the snapshot holds as extracted text, as the contract already said.
+- Contract: none
+- User action: none
+- Pull request: #449
+
+### Several changes around a long run of identical paragraphs diff as those changes alone
+
+- Level: patch: a fix to match the documented behavior; two or more paragraphs changed in a Word document or PDF around a run of identical paragraphs or table rows, such as a form edited at both ends or a table of identical rows with some rows filled in, now diff as those lines alone (before, the whole run showed as removed and added once it passed 200 lines), so the reviewer reads only the changes and a re-review's scope is those changes; this lifts the known limit the previous release's note named, and only a pair whose fewest changed lines take more than two million steps to find, such as thousands of changed rows in one long table, is still matched as before.
+- Contract: none
+- User action: none
+- Pull request: #407
+
+### A repetitive document's diff and re-review scope show only the change made
+
+- Level: patch: a fix to match the documented behavior; one paragraph inserted, deleted, or changed in a Word document or PDF whose other paragraphs repeat, such as a form or a table of identical rows, now diffs as that one line at any length (before, every line on one side of it, all of them above 200 lines), so the reviewer reads only the change and a re-review's scope is that change; a known limit remains: two or more changes around a run of more than 200 identical lines still show the whole run as changed, as before.
+- Contract: none
+- User action: none
+- Pull request: #406
+
+### review-document refuses an --output that is not empty, never replaces a report.md, and refuses an edit that only renumbers the same lines of text
+
+- Level: patch: a fix to match the documented behavior; `build --output DIR` is refused when `DIR` exists and is not an empty directory (before, only one holding `fixture`), `report` refuses to replace a `report.md` already beside the fixture, and a Word document or PDF whose edit changes no line of text but moves its labels, such as an inserted empty paragraph, is refused as unchanged text instead of reviewed on a diff with no hunk.
+- Contract: none
+- User action: none. Name a new or empty `--output`, or omit it for a new temporary directory; pass `--base none` to review a document whose text did not change.
+- Pull request: #403
+
+### A PDF's page and line labels no longer depend on which pdftotext is on PATH
+
+- Level: patch. The snapshot runs `pdftotext` with `-raw`, so Xpdf (bundled with Git for Windows) and Poppler both read a PDF one line per line of text, in the order the PDF draws its text; before, Xpdf joined a paragraph's lines into one, so a finding's `page <p>, line <l>` differed by tool. The contract's snapshot paragraph and threat-model row now say so, including where the two can still differ (a line whose pieces are drawn apart, such as a raised suffix).
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #387
+
+### review-document reviews a PDF from its path, as the text the optional pdftotext extracts
+
+- Level: minor: an addition; `review-document` accepts a `.pdf` it refused before, reviews it through the design-review specialist, and reports each finding's place as `page <p>, line <l>`, as a pull request's review of a PDF already does.
+- Contract: none
+- User action: none. A PDF needs `pdftotext` on `PATH`, which Git for Windows bundles and Git Bash puts there; without it `review-document` refuses the PDF and names the tool.
+- Pull request: #386
+
+### A pull request's changed PDF is reviewed as the text an optional pdftotext extracts, and its review is INCOMPLETE without it
+
+- Level: minor: an optional tool and an extracted format are added, the snapshot manifest and the finding `location` gain values a previous record never held, and a record written before stays valid.
+- Contract: `deployer/tools.py` (the new `pdftotext` floor, 4.0) and `docs/code-review-operations-contract.md` (the snapshot's `extracted` format `pdf`, its text held in `source-snapshot-text`, and the `location` form `page <p>, line <l>`).
+- User action: none. Git for Windows bundles a `pdftotext` that Git Bash puts on `PATH`; `python deploy.py check` reports it, and without it a review of a changed PDF is `INCOMPLETE` and names the tool.
+- Pull request: #379
+
+### review-document reviews a Word document from its path
+
+- Level: minor. Additive: `review-document <path>` accepts a `.docx`, which it refused before, and reviews it as its extracted text through the design-review specialist, reporting each finding's place in the document; a Word document whose text cannot be extracted, has no text, or whose edit leaves its text unchanged is refused by `build` with a `FAILED` line naming why. Text files behave as before.
+- Contract: the `review-document` argument `<path>`, which accepts a `.docx`, and its `SKILL.md` statements on routing and on reporting a finding's location.
+- User action: none
+- Pull request: #378
+
+### analyze-skill-cost reports grants that match no command, and grants in a hidden skill
+
+- Level: minor. A new output line: `skill_inventory.py tools` prints `IDLE_ALLOWED <entry>` for a scoped Bash or PowerShell pattern that matches no command in the skill's shell fences or code spans, and `HIDDEN_ALLOWED` for a hidden skill with any `allowed-tools`. The audit reports both as MUST FIX.
+- Contract: none
+- User action: none. A skill audited before this release may now show these MUST FIX findings: remove the grant, or show the command it is for.
+- Pull request: #375
+
+### A pull request's changed Word document is reviewed as its extracted text
+
+- Level: minor: the snapshot manifest, its exclusion reasons, and the review record gain optional, additive items, and a record written before stays valid.
+- Contract: the format tables in `docs/code-review-operations-contract.md`: `record.findings[].location`, the snapshot manifest's `extracted` object, and the `unextractable` exclusion reason, a coverage gap.
+- User action: none. A review of a pull request that changes a `.docx` can now report findings in it, and is `INCOMPLETE` when its text cannot be extracted.
+- Pull request: #374
+
+### A repository entrypoint reviewer starts from one self-contained prompt
+
+- Level: patch. Prompt wording: the entrypoint reviewer's prompt states the request's facts and the adapter result's contract inline, with the same input rules as a specialist's prompt, and the Copilot CLI host's prompt names the diff and the description untrusted. No record, configuration, or manifest format changes.
+- Contract: none
+- User action: none
+- Pull request: #371
+
+### Reviewers are given the pull request's description, and records keep how much of it they saw
+
+- Level: minor. Additive: a new reviewer input, `PULL_REQUEST_BODY_FILE`, named in every prompt; the adapter request's `pull_request` gains `body_file`, `body_characters`, and `body_given`; the review record's `pull_request` gains the optional `body_characters` and `body_given`, which older records lack and stay valid without; a fixture's `pull.json` takes an optional `body`; and `validate-reviewer` prints a `BODY` line after each `PULL` line.
+- Contract: `docs/code-review-operations-contract.md` format tables (adapter request, record, fixture pull request)
+- User action: none. A repository entrypoint reviewer may read the request's `body_file` as untrusted data.
+- Pull request: #366
+
+### analyze-skill-cost measures the prompt a skill's script writes for a subagent
+
+- Level: minor. Additive: `skill_inventory.py scan` prints new lines after each `RUNTIME_PROMPT`: `RUNTIME_PROMPT_SAMPLE`, `RUNTIME_PROMPT_READ`, and `REPLY_BOUNDED` for a skill whose source tree keeps a rendered sample under `docs/runtime-prompts/<skill>/`, or `RUNTIME_PROMPT_UNSAMPLED` with the reason when it has none. When `analyze-skill-cost` audits `review-prs`, `review-document`, or `review-insights` from this repository, the report shows each prompt's size, its reads, and whether it bounds the reply, and the standing suggestion to audit the prompt by hand is gone. Audited outside a source tree, as with a deployed copy, it still makes that suggestion and says why.
+- Contract: none
+- User action: none
+- Pull request: #361
+
+### The audit-ai-config MCP handshake ends within --timeout and frames each message with a line feed
+
+- Level: patch. Fixes: `mcp_handshake.py` bounds each server from its start to its stop by `--timeout`, plus up to ten seconds for a killed server to be reported gone, so a server whose launcher leaves a program holding its output no longer holds the run until that program ends. Each message it sends ends with `\n` alone, where on Windows it ended `\r\n`. It runs servers through skill-core's bounded process layer, whose `streaming` gains an environment parameter and a whole-session time limit; those are internal additions, and the git client's use of `streaming` is unchanged. The `HANDSHAKE_*`, `CONFIG_*`, `SKIPPED`, `NO_SERVERS`, and `FAILED` lines are unchanged.
+- Contract: none
+- User action: none
+- Pull request: #358
+
+### Correction to the v0.4.0 notes: audit-ai-config changed more frontmatter verdicts than block scalars
+
+- Level: minor, the level v0.4.0 carried this at; this release changes nothing here, and the entry completes that release's notes, which stay as published. The v0.4.0 entry "audit-ai-config reports unreadable files as findings, accepts block scalars, and prints each finding's line" named block scalars only. Since v0.4.0, audit-ai-config also reads quoted scalars, flow and block lists, and nested mappings in skill and agent frontmatter as YAML reads them: a quoted value no longer keeps its quotes, a nested mapping such as `metadata` is no longer an `ERROR` on each indented line, and a block list under an agent's `tools:` is no longer an `ERROR` with "tools must not be empty". Since v0.4.0 it also reports frontmatter it cannot read as YAML as an `ERROR` at its line: a value such as an unclosed quote at the key's line, and a list or mapping line indented out of place at that line, with the message "Frontmatter must use key: value entries, block scalars, block lists, or nested mappings".
+- Contract: none
+- User action: none, unless CI matches audit-ai-config's frontmatter findings; expect fewer `ERROR`s for the forms above and match the new message for unreadable frontmatter.
+- Pull request: #358
+
+### The release procedure refreshes the validate legs' measured seconds
+
+- Level: patch. Maintainer-facing: "Before tagging" in `docs/releasing.md` gains step 6, `python -B tools/record_job_seconds.py`, which rewrites `tests/validation/job_seconds.json` from the latest successful `main` validate run, committed in the release pull request. Nothing changes for an installation.
+- Contract: none
+- User action: none. A maintainer cutting a release runs the new step.
+- Pull request: #357
+
+### A specialist in a reviewer manifest may set `model` and `effort` to null
+
+- Level: minor. Additive: a specialist's `model` and `effort` accept `null`, meaning no setting, as an absent key does: the profile's model, else the session's, and the configuration's `reviewer_effort`, else the session's effort. `validate-reviewer`'s `ROUTE` line now shows the configuration's `reviewer_effort` for a specialist that sets no effort of its own. A previous release refuses a manifest with a null setting.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #355
+
+### curate-agent-memory states that a `MEMORY.md` hook is cut to 150 characters, and dotnet-format states its `SOLUTION` line
+
+- Level: patch. Documentation only; no behavior changes. This corrects the v0.4.0 entry that said a `>` or `|` block-scalar `description` is "read whole" in the rebuilt `MEMORY.md`. It is read past its header and through all its lines. The hook is then collapsed to one line and cut to 150 characters, as every description has been. dotnet-format's `SKILL.md` now gives the `SOLUTION <solution> <score>` line format that `resolve` already printed.
+- Contract: none
+- User action: none
+- Pull request: #353
+
+### audit-ai-config reports a missing manifest, an ownership marker, and an unreadable directory once, and the handshake resolves relative commands
+
+- Level: minor, because before `1.0.0` the minor level carries changes that would be major later: finding messages a CI filter may match change. A conforming repository with a generator and no valid manifest gets one `scope` `ERROR` ("Manifest is missing, ..." or "Manifest is not a valid ai_config.py manifest, ...") instead of three "Manifest <field> differs from independently derived generator scope" errors. A missing ownership marker is reported only as `ownership` "Generated file missing embedded ownership marker"; parity's "Generated file missing ownership marker" and provenance's "Manifest-owned Copilot ... projection lacks an ownership marker" are no longer emitted. An unlistable agent directory is a `copilot-config` `ERROR` where the audit used to stop with a traceback. Markdown cells escape `|` and line breaks. The handshake resolves a command with a directory part against the server's `cwd`, so such a server may now pass, and a non-string `cwd` now fails.
+- Contract: `audit-ai-config` report findings (the `scope`, `parity`, `provenance`, `ownership`, and `copilot-config` messages above) and Markdown findings rows; no status line (`RESULT`, `SUMMARY`, `HANDSHAKE_*`, `CONFIG_*`) changes.
+- User action: none, unless CI matches the removed messages; match the `ownership` or new `scope` message instead.
+- Pull request: #349
+
+### The review-insights report and its synthesis files are stated in the behavior contract
+
+- Level: patch. Documentation and tests: the contract's Formats section now has tables for `insights.json`, the synthesis input, context, and result, which were already written in this shape. `synthesize` reports a category finding assessment without a text reference as a problem instead of failing with a traceback.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #347
+
+### A deploy command line whose options cannot run together exits 2 and names the --help to read
+
+- Level: minor. A deployer exit code changes: `--include` without `--all`, `--take-over-source --dry-run`, `--canary-home` with `--dry-run`, `--migrate-from`, or `--take-over-source`, `--migrate-from --dry-run`, an invalid `--migrate-from` source ID or this source's own, and a `--force-item` the run does not install now exit 2 with `Run 'python deploy.py --help' for usage.`, where they exited 1 without it. The messages are otherwise unchanged.
+- Contract: none
+- User action: none, unless a script checks for exit 1 from one of these refusals; check for 2 instead.
+- Pull request: #345
+
+### --migrate-from refuses the options it used to ignore
+
+- Level: minor. A deployer flag changes: `--migrate-from` with `--all`, `--include`, `--force`, or `--force-item` now stops before anything changes with a usage error (exit 2), where it migrated and silently ignored them. `--take-over-source` still combines with it.
+- Contract: none
+- User action: none, unless a script passes those options with `--migrate-from`; run the migration alone, then deploy with them.
+- Pull request: #345
+
+### An unreadable manifest, source.json, or metadata file is reported as unreadable
+
+- Level: patch. A fix: a file the deployer cannot read, such as one another process holds, is reported as `Could not read ...` with its path and the operating system's reason, instead of as malformed content. The exit code stays 1.
+- Contract: none
+- User action: none.
+- Pull request: #345
+
+### review-insights reports are schema 8, and no recommendation ID is given twice
+
+- Level: minor. A durable report format change with an automatic upgrade: `insights.json` gains `next_recommendation_number`, so a subject a regeneration drops never has its `REC-` ID given to another subject or a synthesized recommendation. This release reads reports of versions 1 to 7 and upgrades them when it writes them. A previous release refuses a version 8 report. Before `1.0.0` this is carried in a minor.
+- Contract: none
+- User action: none
+- Pull request: #344
+
+### review-insights records a decision before resolving its flags, and holds a lock while it writes a report
+
+- Level: patch. A fix: an accepted decision is written to the report before its flags are resolved. A flag store failure partway now fails with a reason naming the flags left open, and the decision stays recorded with the flags it did resolve. Running the same `decide` or `decide-custom` again resolves the rest. Two runs on one report no longer lose each other's writes.
+- Contract: none
+- User action: none
+- Pull request: #344
+
+### synthesize --check refuses a recorded synthesis, and a flag outside the range names its finding
+
+- Level: patch. A fix: `review_insights.py synthesize --check` now prints `FAILED` for a report whose synthesis is already recorded, as recording does. In the synthesis input, a `flag` line's `finding` names the finding even when its review is outside the range, and is null only for a flag that names none. A result may cite that finding.
+- Contract: none
+- User action: none
+- Pull request: #344
+
+### review-insights refuses a summary_root inside a skills directory
+
+- Level: minor. A configuration that worked before can now fail: `report` refuses a `summary_root` inside `~/.claude/skills`, `~/.agents/skills`, or the suite's own skills directory, because files left there make the deployer see a skill as modified.
+- Contract: none
+- User action: if your code-review configuration's `summary_root` is inside one of those directories, move it elsewhere and move its reports with it.
+- Pull request: #344
+
+### audit-ai-config verdicts and output lines follow the runtimes' documented frontmatter and its references
+
+- Level: minor, because before 1.0.0 the minor level carries changes that would be major later. Two verdicts turn a passing repository into `RESULT ERRORS`: `allowed-tools: []`, and a Codex `mcp_servers` that is not a table. The JSON `scopeStatus` stops printing internal `generator-scope-*` values, and the handshake prints `CONFIG_WARNING` for a non-table Codex entry.
+- Contract: `audit-ai-config` status lines (`scopeStatus`, `CONFIG_ERROR`, `CONFIG_WARNING`).
+- User action: none; CI that keyed on a `generator-scope-*` `scopeStatus` reads `manifest-declared-only` and the reason in the `scope` warning instead.
+- Pull request: #341
+
+### update-pr-tracker's override documents match what the command does
+
+- Level: patch. Documentation and dashboard wording only; no status line, argument, or format changes. Two statements in the v0.4.0 entry "update-pr-tracker sets and clears status overrides with a validated command" are now known to be false: the command does not change "nothing else in the file" (it keeps every value but rewrites the file with sorted keys and two-space indentation, as `review_config.py write` does), and it does not clear an override whose pull request has closed on its own (an override lasts until you clear it, which works the same once the pull request has closed).
+- Contract: none
+- User action: none
+- Pull request: #339
+
+### Upgrade notes are written in the pull request body and generated into docs/upgrade-notes.md at release
+
+- Level: minor. A contributor-facing change: a pull request states what it asks of a user who updates under `## Upgrade note` in its body instead of under `## Unreleased` in `docs/upgrade-notes.md`, which now holds only release sections that `tools/release_notes.py` writes before tagging. Validation reads the body in CI and the commit messages since the last tag, and fails on a non-version section of the notes file.
+- Contract: none
+- User action: none. Contributors with an open pull request that adds an entry under `## Unreleased` move it into the body's `## Upgrade note` after merging `main`.
+- Pull request: #333
+
+### A specialists manifest that gives a file two roles is refused
+
+- Level: minor. Before `1.0.0` this carries what would later be major: a specialists manifest is refused with `Adapter declares a file more than once` when one repository file has two roles (a top-level resource, a specialist's profile, a specialist's own resource, or a condition script), such as a guideline listed both at the top level, where it is read from the trusted ref, and by a specialist, where it is read from the pull request's base, or when a specialist's `resources` list a file twice. Before, only a file listed twice in the top-level `resources` was refused, and the record silently took one source. Several specialists may still share a profile or a guideline, and several conditions a script. An entrypoint manifest is checked as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: if `validate-reviewer` or a review now fails with `Adapter declares a file more than once`, keep the file in one role: a guideline the specialists apply in their own `resources`, a file every specialist may read in the top-level `resources`.
+- Pull request: #324
+
+### files_read no longer counts the snapshot's manifest, and the contract states the category check and adapter.name as they are
+
+- Level: patch. A fix: a reviewer's `files_read` and `bytes_read` no longer count `source-snapshot.json` when the reviewer reads it, since the contract counts files of the snapshot and `review.snapshot.files` leaves the manifest out; earlier records may count it. The contract now says that a specialist finding's `category` must be a string even without `finding_categories`, as it has been checked since the specialist result was stated, and that `review.adapter.name` is `generic` whenever the suite's generic reviewer ran, a fallback included, and otherwise the manifest's `id`. The operations guide no longer says `snapshot_exclude` saves the tarball's download: GitHub's whole tarball is still downloaded and hashed, and exclusion saves the write.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #324
+
+### repo-cleanup asks before deleting a closed pull request's branch, and a stopped cleanup's heading clears
+
+- Level: patch. Fixes: a clean linked worktree whose pull request closed without merging is still removed, but its branch is now kept and offered on a `CONFIRM_LOCAL` line, as a local branch with no remote is, instead of deleted with the worktree; the summary lists it under `Closed PR (kept)`, and `delete-local` and `force-delete` delete it as before. A worktree whose pull request merged is removed and its branch deleted without asking, as before, and the documents now say so. A summary headed `cleanup stopped partway` now describes only the command that failed: a later `delete-local` or `force-delete` on the same plan that completes is headed `cleanup complete`, and so is `summary` after it.
+- Contract: none
+- User action: none
+- Pull request: #326
+
+### repo-cleanup reports every action it took, including before a failure
+
+- Level: minor. New output lines and fixes: when a step fails partway through cleaning a repository, the sweep now prints the repository's `PLAN` and its summary of what was done before the failure, headed `cleanup stopped partway (<reason>); done before it:`, then its `ERROR`; `delete-local` and `force-delete` print the summary before a `FAILED` line the same way. A repository with no plan summary now shows `CHECKOUT switched` and its `FF_DEFAULT` line, whose values are `forwarded <sha>`, `failed <reason>`, `diverged <ahead> <behind>`, and `skipped <reason>` (`ok` is gone; a default branch already current prints none). The summary's default branch row says when the run fast-forwarded the branch or switched to it, a default branch not fast-forwarded because of changes is listed under `Fast-forward skipped`, and `quiet` now means nothing changed. `Gone with open PR` is now `Open PR (kept)` and lists every branch with an open pull request. `delete-local` and `force-delete` exit 1 when Git refuses a deletion. A sweep that cannot reach GitHub prints only `FAILED` and creates no plans directory. A worktree holding ignored files, such as a `.env`, is now preserved instead of removed with them, `release` protection matches in any letter case, and a branch name that is not UTF-8 is printed with U+FFFD instead of stopping the output.
+- Contract: none
+- User action: none. A worktree now preserved for its ignored files is removed by hand once they are no longer needed.
+- Pull request: #307
+
+### review-document reviews one text document from its file path
+
+- Level: minor. A new skill in the `code-review-operations` bundle: `review-document <path> [--base none|committed] [--output DIR]` reviews a Markdown or other text document that is not in a pull request as a one-file fixture canary, sending a Markdown or plain-text document to the design-review specialist and any other text file to the generic reviewer. A file committed in a git checkout is reviewed against its committed version, so only the uncommitted change is judged; any other file is reviewed whole. It needs the code-review configuration, reads nothing from GitHub, and posts nothing. A `.docx` or PDF is refused until text extraction exists. An installation that has the bundle gets it on its next update. "Document reviews" in `docs/code-review-operations.md` describes it.
+- Contract: `skills/review-document`
+- User action: none
+- Pull request: #321
+
+### Review comments reach a prompt cut to 4,000 characters, and the report escapes a title and a comment as text
+
+- Level: patch. A fix: a reviewer's prompt lists each open review comment's body cut to 4,000 characters, with its full length and `GITHUB_COMMENTS_FILE`, which holds it whole, named after the cut; a body used to reach the prompt whole, up to GitHub's 65,536 characters. The prompt also escapes the line separators U+0085, U+2028, and U+2029 inside a body. The report's **Title** row and each **Review Comments** excerpt escape every character Markdown or HTML reads as markup, so a link, an image, or a tag in a pull request's title or a comment renders as written. The threat model in the operations contract gains rows for comment bodies, the title, and the head branch's name, and every row now names a test in `test_adversarial_inputs.py`.
+- Contract: none
+- User action: none
+- Pull request: #319
+
+### Specialists manifests can name the suite's design-review specialist, and a fixture can carry a manifest
+
+- Level: minor. Additive: a specialist's `profile` in a specialists manifest may now be `suite:design-review`, a profile the suite ships for design documents, read from `code-review-core`'s deployed references rather than the repository. A record whose reviewer used one names it in `review.adapter.source_hashes` under `suite:design-review`, with the SHA-256 of the file that ran; an earlier release reads such a record, but refuses a manifest that names a suite profile. A fixture's `pull.json` may name a `manifest_path` in its `base/` tree, which a fixture canary then reviews with, read from the base commit; without it the generic reviewer reviews the fixture as before. "Design documents" under "Specialist reviewers" in `docs/code-review-operations.md` shows the route and the finding categories.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #317
+
+### An inline review's self-check and source commands match review-prs's grant
+
+- Level: patch. A fix: each reviewer prompt now gives its self-check, `source-file`, and `source-search` commands with the script path spelled as the session started `prepare`, `${CLAUDE_SKILL_DIR}/../code-review-core/scripts/` filled in, instead of the resolved path. In Claude Code, an inline role's commands now match `review-prs`'s grant rather than asking each time. Writing a role's result still asks, because no skill grant can name the system temporary directory. "Inline reviews" in the operations guide gives the allow rule a headless session needs.
+- Contract: none
+- User action: none
+- Pull request: #316
+
+### source-search judges binary files by their bytes, not by the checkout's attributes
+
+- Level: patch. A fix: on a lazy snapshot, `source-search` let the configured checkout's `.gitattributes`, `.git/info/attributes`, or `core.attributesFile` decide what was binary, so a text file one marked `-diff` or `binary` was never searched and a binary file one marked `diff` was. It now searches every file of the head as text and keeps a match only in a file the snapshot's own test (no NUL byte in the first 8,000 bytes) finds text, testing a file it lists to fetch the first time that file matches. Its output is unchanged, and no Git floor is added.
+- Contract: none
+- User action: none
+- Pull request: #315
+
+### validate-reviewer measures the snapshot route prepare takes and reads the reviewer where prepare does
+
+- Level: minor. New output fields, a new flag, and fixes: `validate-reviewer` now measures the source snapshot on the route `prepare` would take, which its `SNAPSHOT` line names as `source=checkout-lazy` or `source=checkout` beside a new `fetchable=<n>` count. On the lazy route only the files `prepare` writes (the changed files, the analyzer settings, and the paths declared `reads` match) count against the 256 MiB size limit, and every file it lists counts against the file-count limit, so a repository whose unchanged files pass 256 MiB is no longer refused while `prepare` accepts it. For each `--pull` it now reads the reviewer through `prepare`'s fallback, from the default branch's tip or as the suite's generic reviewer when the base predates the review skill, instead of failing, and its `PULL` line ends with `reviewer=<source>`, the `review.adapter.source` the record would name, followed by `prepare`'s `NOTE` on the fallback. `--host`, as on `prepare`, names the runtime that decides an `auto` runtime, since an entrypoint reviewer on the Copilot CLI host gets a whole snapshot.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #313
+
+### On Codex, review-prs notes a reviewer's model instead of asking for a Claude alias
+
+- Level: patch. A fix: Codex's native delegation takes only its own model identifiers, so where a specialist's manifest or profile names `sonnet`, `opus`, `haiku`, or `fable`, `prepare` and `check` on Codex now print a `NOTE` naming the model in place of the `MODEL` line, as they do for an inline role, and the reviewer runs on the session's model. The record's `model` is the one the reviewer reports, as before. Claude Code still gets the `MODEL` line. An inline retry no longer prints a `MODEL` line either.
+- Contract: none
+- User action: none
+- Pull request: #305
+
+### dotnet-format stops at its time limit even when the formatter leaves a build host running
+
+- Level: patch. A fix: the formatter now runs through skill-core's bounded runner, writing its output to a file rather than a pipe, so a process it starts and leaves holding that output, such as a build host, no longer keeps a check or a fix waiting past `--timeout` (570 seconds by default) on Windows. It reads no stdin and runs with the git, Git Credential Manager, and gh prompts turned off, as every other bounded command does. The output, the `LOG` file, and the exit codes are unchanged.
+- Contract: none
+- User action: none
+- Pull request: #304
+
+### A skill left in place keeps the agents it was deployed with
+
+- Level: minor. A fix with an addition to the ownership manifest that the previous release still reads: each skill's manifest entry gains `agent_deps`, the agent files it was deployed with, and a deployment that leaves a locally modified skill in place, deselected, skipped, or preserved by an uninstall, keeps those agents and reports them as `KEEP`, as it already kept the skill's shared assets. Before, the agent was removed as `no selected skill needs it` while the preserved skill still started it. `MANIFEST_VERSION` stays 7; a previous release ignores `agent_deps` and drops it when it rewrites the entry.
+- Contract: `deployer/manifest.py`
+- User action: none. An installation updated across this change records a skill's agents at the next deployment that selects the skill and finds it unmodified; until then a preserved skill keeps no agent.
+- Pull request: #303
+
+### update-pr-tracker reports a GitHub call that failed instead of marking reviews stale
+
+- Level: minor. A new status line and a fix: when a GitHub call a comparison needs fails for any reason but a missing commit, `tracker_pipeline.py update` no longer reads it as unknown evidence, which marked every affected review `stale`, offered it for re-review, and exited 0. Network and timeout failures now stop the run at once with `FAILED <reason>`, as authentication and rate-limit failures already did. Any other failure, such as HTTP 403, an SSO-withheld result, or a server error, prints the new line `PULL_FAILED <owner/repo#N> <error>` for each pull request whose comparison failed, then `FAILED <n> of <m> pull requests could not be compared; the dashboard keeps its previous rows`, and exits 1 without writing the dashboard or printing a `CANDIDATE`. `collect` treats the same failures alike while placing the user's review commit: a network or timeout failure stops the collection, and any other but a missing commit fails its repository with `REPOSITORY_FAILED`, where before it showed the Findings cell without what moved since the user's review. A missing commit or branch is still unknown, as before.
+- Contract: none
+- User action: none. An update that now fails names each pull request GitHub could not compare; rerun it once GitHub answers, or leave out a pull request that fails on every run with `--remove`.
+- Pull request: #300
+
+### update-coding-agent-skills leaves a clone on the branch it was found on when it stops
+
+- Level: patch. A fix: when local `main` has commits that `origin/main` lacks, `update-coding-agent-skills` now stops with `NOT_FAST_FORWARD` before switching branches, so a clone found on another branch stays on it, and the lines after the status list those local commits instead of Git's error. When Git refuses the fast-forward itself after the switch, for an untracked file in its way, the clone is switched back, or a `still on main:` line says why it could not be. An update still switches the clone to `main` and leaves it there, as before.
+- Contract: none
+- User action: none
+- Pull request: #294
+
+### audit-ai-config asks before its MCP handshake starts a repository's servers
+
+- Level: minor. A fix with a new output line: in Claude Code, `audit-ai-config` pre-approves only its audit engine, so the opt-in handshake, which starts each MCP server the repository configures, now asks for approval before it runs. `analyze-skill-cost`'s `skill_inventory.py tools` prints `REPOSITORY_CODE` for a command that runs a script declaring `RUNS_REPOSITORY_CODE` and is left to prompt, and `GRANTED_REPOSITORY_CODE` for one a grant covers, in place of `UNGRANTED` for such a command.
+- Contract: none
+- User action: none. Approve the handshake command when you have authorized the operational validation.
+- Pull request: #299
+
+### review-insights prints categories and analyzer names screened, and decides them as printed
+
+- Level: patch. A fix: a `RECOMMENDATION` line's category and an `ANALYZER` line's tool and rule are printed on one line, with whitespace flattened and `?` for a double quote, backtick, `$`, backslash, or control character, so a value from a record never breaks the one-fact-per-line output or reaches a shell unquoted. `decide` takes the subject as printed or as recorded, and the skill passes every value in double quotes. A synthesized title is now refused for a control character too. Records and reports are unchanged.
+- Contract: none
+- User action: none
+- Pull request: #293
+
+### The review state refuses a merged_since that is not a date, and enumerate fails only that repository
+
+- Level: patch. A fix: `validate_state` now refuses a repository's `merged_since` whose first ten characters are not a `YYYY-MM-DD` calendar date, as the review state table already said, so such a `state.json` fails with one `FAILED` line naming the repository instead of a traceback from `enumerate`. A watermark that still cannot be read when `enumerate` lists its repository ends in `REPOSITORY_FAILED` for that repository, and the command exits 1 after the batch, as for any other failed repository. Every watermark `advance` writes is such a date, so a state the scripts wrote is read as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none. A `merged_since` edited by hand to something else is now refused; correct it to a `YYYY-MM-DD` date, or remove it to start that repository again from today.
+- Pull request: #295
+
+### A status override may not name a section the tracker renders, such as `My PRs`
+
+- Level: minor. A fix that would be major from `1.0.0`: `dashboard.status_overrides` now refuses every section name `update-pr-tracker` renders, trimmed and in any case, which adds `my prs` to the refused states; `to review`, `awaiting response`, `drafts`, `my pull requests`, `missing`, `current`, and `stale` stay refused. An override named `My PRs` was accepted before, and the dashboard then showed that section twice and dropped every authored pull request not overridden; a configuration holding one now fails to load.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none, unless an override's status is `My PRs` in any case. Then rename or remove it in the code-review configuration file by hand, since `tracker_pipeline.py override` validates the file before changing it.
+- Pull request: #292
+
+### The reviewer guard refuses a self-check whose script or run ends in a backslash
+
+- Level: patch. A fix: in Claude Code, the reviewer guard now holds a `code-review-reviewer`'s self-check command to the rule its source commands already followed, so no quoted script or run may end in a backslash, which would escape its closing quote. The self-check the pipeline writes is allowed as before.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none
+- Pull request: #262
+
 ## v0.4.0
 
 ### A specialist condition may declare the snapshot paths it reads, so its review keeps the lazy snapshot
