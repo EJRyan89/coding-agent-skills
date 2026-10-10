@@ -108,7 +108,8 @@ CODEX = Tool(
     other_uses=("Codex verification",),
 )
 
-# Tools a skill may declare in its deploy-meta "tools" list. Git and Python are deployment requirements already.
+# Tools a skill may declare in its deploy-meta "tools" list. Python is a deployment requirement already, and Git,
+# which every skill runs, is reported apart in REPORTED_TOOLS below.
 SKILL_TOOLS = {
     tool.name: tool
     for tool in (
