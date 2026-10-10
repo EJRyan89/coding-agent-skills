@@ -258,7 +258,9 @@ def _mode_argument(call: ast.Call, position: int) -> ast.expr | None:
         if index == position or isinstance(argument, ast.Starred):
             return argument
     named = next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
-    return named or next((keyword.value for keyword in call.keywords if keyword.arg is None), None)
+    if named is not None:
+        return named
+    return next((keyword.value for keyword in call.keywords if keyword.arg is None), None)
 
 
 def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None]) -> bool:
