@@ -25,6 +25,7 @@ from update_pr_tracker import (
     ComparisonFailures,
     ConfigurationError,
     TrackerError,
+    _ai_review,
     evaluate,
     review_candidates,
     update_dashboard_rows,
@@ -491,6 +492,24 @@ class TrackerTests(unittest.TestCase):
         for computed in ("stale", "Drafts", "awaiting response", "To Review", "my pull requests"):
             with self.subTest(computed=computed), self.assertRaisesRegex(TrackerError, "computed tracker state"):
                 run([item()], overrides={"owner/repo#1": computed})
+
+    def test_every_ai_review_state_the_tracker_computes_is_refused_as_an_override(self) -> None:
+        # One item per branch of the computation: never reviewed, reviewed at an earlier head that changed since,
+        # reviewed at this head in full, and reviewed at this head without reading every changed file.
+        cases = {
+            "missing": item() | {"reviewed_head_sha": None},
+            "stale": item(),
+            "current": item() | {"reviewed_head_sha": HEAD},
+            "incomplete": item() | {"reviewed_head_sha": HEAD, "reviewed_incomplete": True},
+        }
+        self.assertEqual(
+            {state: state for state in cases},
+            {state: _ai_review(value, FakeDetector()) for state, value in cases.items()},
+        )
+        for state in cases:
+            for value in (state, state.upper(), f" {state.title()} "):
+                with self.subTest(value=value), self.assertRaisesRegex(TrackerError, "computed tracker state"):
+                    run([item()], overrides={"owner/repo#1": value})
 
     def test_an_override_naming_a_rendered_section_is_refused(self) -> None:
         # A pinned section named like a computed one rendered twice, and the computed one lost its own rows.

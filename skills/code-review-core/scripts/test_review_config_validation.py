@@ -14,7 +14,12 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_config import ConfigurationError, validate_config
+from review_config import (
+    COMPUTED_DASHBOARD_STATES,
+    DASHBOARD_AI_REVIEW_STATES,
+    ConfigurationError,
+    validate_config,
+)
 
 Mutation = Callable[[Any], Any]
 Case = tuple[str, Mutation, type[Exception], str]
@@ -41,6 +46,7 @@ COMPUTED_STATES = [
     "missing",
     "current",
     "stale",
+    "incomplete",
 ]
 
 
@@ -1183,7 +1189,15 @@ REJECTED: list[Case] = [
             C,
             "Dashboard status override owner/repo#1 duplicates a computed tracker state",
         )
-        for value in [*COMPUTED_STATES, " To Review ", "DRAFTS", "My PRs", "Awaiting Response"]
+        for value in [
+            *COMPUTED_STATES,
+            " To Review ",
+            "DRAFTS",
+            "My PRs",
+            "Awaiting Response",
+            " Incomplete ",
+            "INCOMPLETE",
+        ]
     ],
     ("author_names null", _set(("dashboard", "author_names"), None), C, "dashboard.author_names must be an object"),
     (
@@ -1481,6 +1495,12 @@ class ConfigValidationTests(unittest.TestCase):
             validate_config(config)
         self.assertIs(error, type(caught.exception))
         self.assertEqual(message, str(caught.exception))
+
+    def test_the_computed_states_are_the_sections_and_every_ai_review_state(self) -> None:
+        # The tracker computes each AI review state from these constants, so pinning them here against literals
+        # keeps a state added to the computation from being accepted as an override.
+        self.assertEqual(("missing", "current", "stale", "incomplete"), DASHBOARD_AI_REVIEW_STATES)
+        self.assertEqual(frozenset(COMPUTED_STATES), COMPUTED_DASHBOARD_STATES)
 
     def test_accepted_configurations_return_their_exact_result(self) -> None:
         for name, mutation, expected_mutation in ACCEPTED:
