@@ -446,6 +446,14 @@ class FileTests(unittest.TestCase):
                 status, lines = self.main(*command, "--repo-root", str(self.root), "--file-list", str(undecodable))
                 self.assertEqual((1, [[f"FAILED {undecodable} is not UTF-8 text"]]), (status, lines))
 
+    def test_an_empty_file_list_fails_as_the_formatter_does(self) -> None:
+        empty = self.root / "files.txt"
+        empty.write_text(" \n\n", encoding="utf-8")
+        for command in (("check",), ("config", "--solution", "App.sln")):
+            with self.subTest(command=command[0]):
+                status, lines = self.main(*command, "--repo-root", str(self.root), "--file-list", str(empty))
+                self.assertEqual((1, [[f"FAILED {empty} lists no files"]]), (status, lines))
+
     def test_an_unwritable_source_file_fails(self) -> None:
         (self.root / "Fixable.cs").write_bytes(b"#region A\n\n#endregion A\n")
         file_list = self.file_list("Fixable.cs")

@@ -93,6 +93,22 @@ def read_text(path: Path) -> str:
     return data.decode("utf-8-sig", errors="replace")
 
 
+def read_file_list(path: Path) -> list[str]:
+    """The paths a FILE_LIST names, one per line, without blank lines or a byte order mark.
+
+    Raises OSError when it cannot be read, and ValueError when it is not UTF-8 or names no file: resolve writes a
+    FILE_LIST only when it found files to format, so an empty one did not come from it.
+    """
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError(f"{path} is not UTF-8 text") from None
+    files = [name for name in (line.strip() for line in text.splitlines()) if name]
+    if not files:
+        raise ValueError(f"{path} lists no files")
+    return files
+
+
 def same_path(path: Path) -> str:
     return os.path.normcase(os.path.normpath(str(path)))
 

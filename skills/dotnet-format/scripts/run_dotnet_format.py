@@ -39,9 +39,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bounded_process import run_bounded
 from console import use_utf8_output
+from dotnet_format_targets import read_file_list
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
 ISSUE = re.compile(
@@ -185,17 +187,6 @@ def parse_diagnostics(log: str, root: Path) -> list[Diagnostic]:
     return list(found)
 
 
-def read_file_list(path: Path) -> list[str]:
-    try:
-        text = path.read_text(encoding="utf-8-sig")
-    except UnicodeDecodeError:
-        raise Failed(f"{path} is not UTF-8 text") from None
-    files = [line.strip() for line in text.splitlines() if line.strip()]
-    if not files:
-        raise Failed(f"{path} lists no files")
-    return files
-
-
 def run_batches(
     mode: str, root: Path, solution: str, files: list[str], severity: str, timeout: float, services: Services
 ) -> tuple[bytes, str | None]:
@@ -240,7 +231,10 @@ def run(
             raise Failed(SDK_INSTALL_HINT)
     elif not services.which("dotnet-format"):
         raise Failed(INSTALL_HINT)
-    files = read_file_list(file_list)
+    try:
+        files = read_file_list(file_list)
+    except ValueError as exc:
+        raise Failed(str(exc)) from None
     log, failure = run_batches(mode, root, solution, files, severity, timeout, services)
     descriptor, log_path = tempfile.mkstemp(prefix=f"dotnet-format-{mode}-", suffix=".log")
     with os.fdopen(descriptor, "wb") as handle:

@@ -221,6 +221,17 @@ class Backoff:
 BACKOFF = Backoff()
 
 
+def json_body(result: CommandResult) -> Any:
+    """The JSON a successful gh command printed, raising a `malformed` GitHubError when it is not JSON.
+
+    `GitHubClient.json` parses with it, and so does a caller's own parse passed to `request`.
+    """
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+
+
 def _identity(result: CommandResult) -> CommandResult:
     return result
 
@@ -279,10 +290,7 @@ class GitHubClient:
         """Run `gh <arguments>` and return its JSON output; with `graphql`, errors in the body fail too."""
 
         def parse(result: CommandResult) -> Any:
-            try:
-                payload = json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+            payload = json_body(result)
             problem = graphql_failure(payload) if graphql else None
             if problem is not None:
                 raise problem

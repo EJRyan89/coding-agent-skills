@@ -139,9 +139,10 @@ class Streaming:
     never times out, however large. Killing the command instead would not be enough, because a launcher such as Git
     for Windows' git.exe can be killed while the program it started keeps the pipe open.
 
-    The caller ends its requests by closing `stdin`, from whichever thread writes them. Closing stops the reader,
-    which closes the command's stdout, so a command still writing fails its next write and exits by itself; it is
-    killed only if it has not exited `exit_wait` seconds later. A killed launcher's program
+    The caller ends its requests by closing `stdin`, from whichever thread writes them. Closing ends them too, for a
+    caller that left by an exception before it could, and stops the reader, which closes the command's stdout, so a
+    command waiting for requests sees them end and a command still writing fails its next write, and either exits by
+    itself; it is killed only if it has not exited `exit_wait` seconds later. A killed launcher's program
     can hold its working directory a moment longer, so ending it this way matters.
 
     A session `timeout` bounds all of it. Every read and `wait` also raises subprocess.TimeoutExpired once that many
@@ -267,6 +268,8 @@ class Streaming:
             return
         self._closed = True
         self._stopping.set()
+        with suppress(OSError, ValueError):
+            self.stdin.close()  # a command that has stopped reading may fail the flush of what is still buffered
         try:
             self._process.wait(timeout=self._within(self.exit_wait))
         except subprocess.TimeoutExpired:

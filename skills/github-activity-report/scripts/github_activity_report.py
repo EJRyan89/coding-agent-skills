@@ -7,7 +7,6 @@ Prints the Markdown report on stdout and progress on stderr. A failure prints no
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
 import time
@@ -28,6 +27,7 @@ from github_client import (
     Runner,
     Sleeper,
     graphql_failure,
+    json_body,
     subprocess_runner,
 )
 
@@ -109,10 +109,7 @@ class SearchPacer:
 
 def _payload(result: CommandResult) -> Any:
     """The JSON body, failing on GraphQL errors and retrying a search GitHub cut short."""
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise GitHubError(f"GitHub returned malformed JSON: {exc}", kind="malformed") from exc
+    payload = json_body(result)
     if isinstance(payload, dict) and payload.get("incomplete_results") is True:
         raise GitHubError("GitHub search timed out and returned incomplete results", kind="incomplete", retryable=True)
     problem = graphql_failure(payload)

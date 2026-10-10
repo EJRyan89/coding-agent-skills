@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import use_utf8_output
-from dotnet_format_targets import read_text, same_path, solution_projects
+from dotnet_format_targets import read_file_list, read_text, same_path, solution_projects
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
 DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z]+)")
@@ -765,10 +765,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = arguments.repo_root.resolve()
     try:
         try:
-            text = arguments.file_list.read_text(encoding="utf-8-sig")
-        except UnicodeDecodeError:
-            raise Failed(f"{arguments.file_list} is not UTF-8 text") from None
-        names = [name for name in (line.strip() for line in text.splitlines()) if name]
+            names = read_file_list(arguments.file_list)
+        except ValueError as exc:
+            raise Failed(str(exc)) from None
         if arguments.command == "check":
             findings = check_files(root, names, arguments.fix, print)
         else:

@@ -179,14 +179,6 @@ class ParseTests(unittest.TestCase):
         )
         self.assertEqual([], formatter.parse_diagnostics("", self.root))
 
-    def test_file_lists_skip_blank_lines_and_a_byte_order_mark(self) -> None:
-        path = self.root / "files.txt"
-        path.write_bytes(b"\xef\xbb\xbf  src/A.cs  \r\n\r\nsrc/My Folder/B.cs\n\n")
-        self.assertEqual(["src/A.cs", "src/My Folder/B.cs"], formatter.read_file_list(path))
-        path.write_text(" \n\n", encoding="utf-8")
-        with self.assertRaisesRegex(formatter.Failed, "lists no files"):
-            formatter.read_file_list(path)
-
 
 class SubprocessRunnerTests(unittest.TestCase):
     def test_merges_standard_error_into_the_output_and_keeps_the_exit_code(self) -> None:
