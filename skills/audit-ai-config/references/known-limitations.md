@@ -1,6 +1,6 @@
 # Known Limitations — audit-ai-config
 
-Reviewed 2026-09-11 by Claude Code, GitHub Copilot, and Codex; updated 2026-10-02.
+Reviewed 2026-09-11 by Claude Code, GitHub Copilot, and Codex; updated 2026-10-10.
 
 The engine reports each limitation below that applies to the audited repository as an
 `INFO` finding with check `limitation`, when it can detect that it applies.
@@ -22,7 +22,7 @@ trusted configuration artifact could close that remaining gap.
 
 ## Malformed manifests can produce conforming classification
 
-Malformed JSON and non-object manifests produce only WARNING findings and do not count as a conforming signal. With two independent authority signals (e.g., `CLAUDE.md` + maintaining section, or `CLAUDE.md` + generator script), the repository classifies as conforming with empty manifest scope. Because the warnings are not ERRORs, the audit can report `RESULT COMPLIANT` (exit code 0).
+Malformed JSON and non-object manifests produce only WARNING findings and do not count as a conforming signal. With two independent authority signals (e.g., `CLAUDE.md` + maintaining section, or `CLAUDE.md` + generator script), the repository classifies as conforming with empty manifest scope. Because the warnings are not ERRORs, the audit can report `RESULT COMPLIANT` (exit code 0), unless a recognized generator declares the scope: that scope cannot be compared with a manifest the audit cannot read, which is one `scope` ERROR.
 
 Separately, structurally valid JSON objects that fail schema validation (e.g., missing required fields, wrong types) produce ERROR findings and force `RESULT ERRORS` (exit code 1), though the conforming classification may still appear if other signals are present.
 
@@ -96,4 +96,4 @@ The engine checks suppression language, workaround rules, and quality-gate state
 
 ## The MCP handshake covers stdio servers only
 
-`scripts/mcp_handshake.py` starts stdio and `local` servers only and skips remote transports, which would need network access and often credentials. It passes configured `env` values literally, so placeholders such as `${input:token}` or `${env:NAME}` are not expanded and can make a server fail its handshake. It never calls a tool, so a server that fails only on tool invocation still passes. It checks the shape of the initialize and `tools/list` results against the MCP schema and accepts only the protocol revisions 2024-11-05, 2025-03-26, and 2025-06-18; the script requests 2025-06-18, so only a server that no longer supports it and answers with a later revision fails.
+`scripts/mcp_handshake.py` starts stdio and `local` servers only and skips remote transports, which would need network access and often credentials. It starts each server as a client does: a `command` with a directory part, such as `./server.cmd`, is resolved against the configured `cwd` under the repository root, and a bare name is looked up on `PATH`. It passes configured `env` values literally, so placeholders such as `${input:token}` or `${env:NAME}` are not expanded and can make a server fail its handshake. It never calls a tool, so a server that fails only on tool invocation still passes. It checks the shape of the initialize and `tools/list` results against the MCP schema and accepts only the protocol revisions 2024-11-05, 2025-03-26, and 2025-06-18; the script requests 2025-06-18, so only a server that no longer supports it and answers with a later revision fails.

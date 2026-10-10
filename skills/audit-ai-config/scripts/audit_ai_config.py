@@ -350,7 +350,10 @@ def _inventory_agent_directories(root: Path) -> list[Finding]:
     for agent_dir in (".github/agents", ".claude/agents"):
         d = root / agent_dir
         if d.is_dir():
-            agents = [p.name for p in d.iterdir() if p.is_file()]
+            try:
+                agents = [p.name for p in d.iterdir() if p.is_file()]
+            except OSError:
+                continue  # check_copilot_configuration reports a directory it cannot list
             if agents:
                 findings.append(_inventory_finding(agent_dir, f"Custom agent files found: {', '.join(sorted(agents))}"))
     return findings
@@ -705,21 +708,17 @@ def _validate_agent(path: Path, root: Path) -> list[Finding]:
 
 
 def _provenance(path: Path, rel: str, kind: str, manifest_paths: set[str]) -> list[Finding]:
-    """A Copilot projection carries the ownership marker exactly when the manifest owns it.
+    """A marker-bearing Copilot projection must be owned by the manifest.
 
-    An unreadable file is skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
+    The converse, a manifest-owned projection without the marker, is check_ownership's finding. An unreadable file is
+    skipped: it is an ERROR from its frontmatter check, and from parity when the manifest owns it.
     """
     content = read_text_or_none(path)
-    if content is None:
+    if content is None or not has_ownership_marker(content) or rel in manifest_paths:
         return []
-    marked = has_ownership_marker(content)
-    if marked and rel not in manifest_paths:
-        message = f"Generated Copilot {kind} projection is not owned by the manifest"
-    elif rel in manifest_paths and not marked:
-        message = f"Manifest-owned Copilot {kind} projection lacks an ownership marker"
-    else:
-        return []
-    return [Finding("ERROR", "provenance", rel, message=message)]
+    return [
+        Finding("ERROR", "provenance", rel, message=f"Generated Copilot {kind} projection is not owned by the manifest")
+    ]
 
 
 def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Finding]:
@@ -742,7 +741,14 @@ def check_copilot_configuration(root: Path, manifest: dict[str, Any]) -> list[Fi
         directory = root / agent_dir
         if not directory.is_dir():
             continue
-        for path in sorted(p for p in directory.iterdir() if p.is_file()):
+        try:
+            files = sorted(p for p in directory.iterdir() if p.is_file())
+        except OSError as error:
+            findings.append(
+                Finding("ERROR", "copilot-config", agent_dir, message=f"Could not list the directory: {error.strerror}")
+            )
+            continue
+        for path in files:
             findings.extend(_validate_agent(path, root))
             findings.extend(_provenance(path, path.relative_to(root).as_posix(), "agent", manifest_paths))
     return findings
@@ -792,7 +798,8 @@ def derive_generator_scope(root: Path) -> tuple[dict[str, list[str]] | None, str
 def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, list[Finding]]:
     findings: list[Finding] = []
     derived, status = derive_generator_scope(root)
-    if derived is None and not (root / ".github/ai-config-manifest.json").is_file():
+    manifest_exists = (root / ".github/ai-config-manifest.json").is_file()
+    if derived is None and not manifest_exists:
         # With no manifest there is no editable scope that could narrow checks; say what was skipped.
         status = "no-declared-scope"
         findings.append(
@@ -816,6 +823,18 @@ def check_scope_and_roles(root: Path, manifest: dict[str, Any]) -> tuple[str, li
             )
         )
         status = "manifest-declared-only"
+    elif not manifest:
+        # Comparing with an absent or rejected manifest would report every field; say once why nothing was compared.
+        problem = "is not a valid ai_config.py manifest" if manifest_exists else "is missing"
+        findings.append(
+            Finding(
+                "ERROR",
+                "scope",
+                ".github/ai-config-manifest.json",
+                message=f"Manifest {problem}, so the derived generator scope was not compared",
+            )
+        )
+        status = "independently-derived"
     else:
         for field, expected in derived.items():
             actual = manifest.get(field)
@@ -1247,13 +1266,6 @@ def _hash_problem(content: str, stored_hash: Any) -> str | None:
     return None
 
 
-def _marker_problem(path_str: str, content: str) -> str | None:
-    """Comment-supporting formats must carry the ownership marker."""
-    if not path_str.endswith(".json") and not has_ownership_marker(content):
-        return "Generated file missing ownership marker"
-    return None
-
-
 def _copilot_content_problem(root: Path, manifest: dict[str, Any], content: str) -> str | None:
     expected_body = _expected_copilot_sections_body(root, manifest)
     if expected_body is None:
@@ -1287,7 +1299,10 @@ def _content_problem(root: Path, manifest: dict[str, Any], path_str: str, conten
 
 
 def _artifact_problem(root: Path, manifest: dict[str, Any], artifact: dict[str, Any]) -> str | None:
-    """The first check a manifest artifact fails, in order: path, existence, hash, marker, content."""
+    """The first check a manifest artifact fails, in order: path, existence, hash, content.
+
+    The ownership marker is check_ownership's, so a file that also fails here is still told it lacks one.
+    """
     path_str = artifact.get("path", "")
     path_error = validate_manifest_path(path_str)
     if path_error:
@@ -1295,11 +1310,7 @@ def _artifact_problem(root: Path, manifest: dict[str, Any], artifact: dict[str, 
     content, read_problem = _read_artifact(root, path_str)
     if content is None:
         return read_problem
-    return (
-        _hash_problem(content, artifact.get("hash"))
-        or _marker_problem(path_str, content)
-        or _content_problem(root, manifest, path_str, content)
-    )
+    return _hash_problem(content, artifact.get("hash")) or _content_problem(root, manifest, path_str, content)
 
 
 def check_parity(
@@ -2050,55 +2061,26 @@ def check_ownership(
     root: Path,
     manifest: dict[str, Any],
 ) -> list[Finding]:
+    """Every comment-supporting manifest artifact carries the ownership marker.
+
+    A JSON artifact is owned through its manifest hash, which the manifest schema requires, and a path that is
+    rejected, missing, or unreadable is parity's finding.
+    """
     findings: list[Finding] = []
-    artifacts = manifest.get("artifacts", [])
-
-    for artifact in artifacts:
+    for artifact in manifest.get("artifacts", []):
         path_str = artifact.get("path", "")
-        if validate_manifest_path(path_str):
-            continue  # Already reported in parity check
-
-        full_path = root / path_str
-        if not full_path.is_file():
-            continue  # Already reported in parity check
-
-        try:
-            content = read_text(full_path)
-        except (OSError, UnicodeError):
+        if path_str.endswith(".json") or validate_manifest_path(path_str):
+            continue
+        content = read_text_or_none(root / path_str)
+        if content is not None and not has_ownership_marker(content):
             findings.append(
                 Finding(
                     severity="ERROR",
                     check="ownership",
                     path=path_str,
-                    message="Generated artifact exists but could not be read",
+                    message="Generated file missing embedded ownership marker",
                 )
             )
-            continue
-
-        if path_str.endswith(".json"):
-            # JSON: ownership tracked via manifest hash
-            stored_hash = artifact.get("hash")
-            if not stored_hash and path_str != ".github/ai-config-manifest.json":
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="ownership",
-                        path=path_str,
-                        message="JSON artifact has no hash in manifest",
-                    )
-                )
-        else:
-            # Comment-supporting: ownership tracked via embedded marker
-            if not has_ownership_marker(content):
-                findings.append(
-                    Finding(
-                        severity="ERROR",
-                        check="ownership",
-                        path=path_str,
-                        message="Generated file missing embedded ownership marker",
-                    )
-                )
-
     return findings
 
 
@@ -2278,6 +2260,11 @@ def summary_lines(findings: list[Finding]) -> list[str]:
     return lines
 
 
+def _cell(text: str) -> str:
+    """A table cell for text the audited repository controls: a pipe or a line break would end the cell or the row."""
+    return re.sub(r"\r\n|\r|\n", "<br>", text.replace("|", r"\|"))
+
+
 def format_markdown(result: AuditResult) -> str:
     sorted_findings = result.sorted_findings()
     lines = [
@@ -2301,7 +2288,7 @@ def format_markdown(result: AuditResult) -> str:
     lines.append("|---|---|---|---|---|")
     for f in sorted_findings:
         line = "" if f.line is None else str(f.line)
-        lines.append(f"| {f.severity} | {f.check} | {f.path or ''} | {line} | {f.message} |")
+        lines.append(f"| {f.severity} | {f.check} | {_cell(f.path or '')} | {line} | {_cell(f.message)} |")
     return "\n".join(lines) + "\n"
 
 
