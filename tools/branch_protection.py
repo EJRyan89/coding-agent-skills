@@ -35,7 +35,7 @@ WORKFLOW_ENDPOINT = "repos/{owner}/{repo}/actions/permissions/workflow"
 ISSUE_CONFIG = ".github/ISSUE_TEMPLATE/config.yml"
 ISSUE_CONFIG_ENDPOINT = f"repos/{{owner}}/{{repo}}/contents/{ISSUE_CONFIG}?ref=main"
 BLANK_ISSUES = re.compile(r"^blank_issues_enabled:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
-REQUIRED_CHECK = "validate"
+REQUIRED_CHECK = "Validation"
 Runner = Callable[[list[str]], "tuple[int, str]"]
 
 

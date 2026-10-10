@@ -34,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         # The floor in deployer/tools.py on every run. The latest stable release runs on the weekly schedule only, so
-        # a new interpreter is a signal there and never blocks a pull request through the required `validate` check.
+        # a new interpreter is a signal there and never blocks a pull request through the required `Validation` check.
         python-version: ${{ github.event_name == 'schedule' && fromJSON('["3.11", "3.x"]') || fromJSON('["3.11"]') }}
         # One run's jobs dealt across four runners, so a leg's four cores run a quarter of them; each interpreter runs
         # every leg. The count is the second number of each entry.
@@ -150,9 +150,10 @@ jobs:
           python -B tests/run_validation.py --full -v --shard $env:SHARD
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-  # Branch protection requires the single check named `validate`, so every leg reports through this job: a matrix job's
-  # result is success only when every one of its legs succeeded.
+  # Branch protection requires the single check named `Validation`, this job's name, so every leg reports through this
+  # job: a matrix job's result is success only when every one of its legs succeeded.
   validate:
+    name: Validation
     if: ${{ !cancelled() }}
     needs: suite
     runs-on: ubuntu-latest
