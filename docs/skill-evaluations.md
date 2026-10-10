@@ -43,7 +43,7 @@ scenarios. A pull request that changes a skill's prompt, model guidance, or revi
 | review-document | haiku | claude-haiku-4-5-20251001 | 8/10 | committed-edit 3/3, design-clean 1/2, design-gaps 4/5 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
 | review-document | sonnet | claude-sonnet-5-5 | 10/10 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
 | review-document | opus | claude-opus-5-5 | 10/10 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
-| review-prs | haiku | claude-haiku-4-5-20251001 | 19/21 | clean-change 2/2, design-clean 2/2, design-gaps 4/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
+| review-prs | haiku | claude-haiku-4-5-20251001 | 18/21 | clean-change 2/2, design-clean 1/2, design-gaps 4/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
 | review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
 | review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-10 |
 <!-- skill-evals:end -->
