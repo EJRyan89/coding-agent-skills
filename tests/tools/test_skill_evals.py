@@ -44,8 +44,8 @@ REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
 SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
 # The pdf-gaps draft's text, page by page, one line per block of the page. Its headings are set larger and its body
-# lines alternate between two sizes, so Xpdf's pdftotext, which joins evenly set lines into one, reads these lines as
-# Poppler's does.
+# lines alternate between two sizes, so even Xpdf's default reading, which joins evenly set lines into one, reads these
+# lines; the snapshot's -raw reads them so with either pdftotext.
 PDF_GAPS_PAGES = (
     (
         "Retention for report exports",

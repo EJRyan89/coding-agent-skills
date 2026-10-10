@@ -129,7 +129,9 @@ def pdf_document(*pages: Sequence[str]) -> bytes:
     return bytes(content)
 
 
-# The stub pdftotext: it records each call, then answers as the first rule whose marker the document holds says.
+# The stub pdftotext: it records each call, then answers as the first rule whose marker the document holds says. A
+# rule's `joined` output, when it has one, answers a call without -raw, as Xpdf's default reading joins a paragraph's
+# evenly set lines into one where Poppler's keeps them apart.
 STUB_PROGRAM = """\
 import json
 import sys
@@ -145,7 +147,7 @@ with open(here / "calls.jsonl", "a", encoding="utf-8") as log:
 rules = json.loads((here / "rules.json").read_text(encoding="utf-8"))
 rule = next(rule for rule in rules if bytes.fromhex(rule["marker"]) in document)
 out = sys.stdout.buffer
-out.write(bytes.fromhex(rule["output"]))
+out.write(bytes.fromhex(rule["output"] if rule["joined"] is None or "-raw" in arguments else rule["joined"]))
 out.flush()
 for _ in range(rule["repeat"]):
     out.write(b"x" * 65536)
@@ -162,7 +164,8 @@ def path_without_pdftotext() -> str:
 
 class StubPdftotext:
     """A `pdftotext` first on PATH for the rest of a test, which records each call and answers by `rules`: the first
-    rule whose marker the document holds gives its output, then writes 64 KiB `repeat` times, sleeps, and exits."""
+    rule whose marker the document holds gives its output (its `joined` output, if any, to a call without -raw), then
+    writes 64 KiB `repeat` times, sleeps, and exits."""
 
     def __init__(self, test: unittest.TestCase, *rules: dict[str, Any], **default: Any) -> None:
         self.folder = Path(tempfile.mkdtemp(prefix="stub pdftotext "))
@@ -177,13 +180,13 @@ class StubPdftotext:
 
     def answer(self, *rules: dict[str, Any], **default: Any) -> None:
         """Answer every later call by `rules`, then by `default` for a document no rule's marker is in."""
-        written = [{"marker": b"", "output": "", "repeat": 0, "sleep": 0, "status": 0, **rule} for rule in rules]
-        written.append({"marker": b"", "output": "", "repeat": 0, "sleep": 0, "status": 0, **default})
+        blank = {"marker": b"", "output": "", "joined": None, "repeat": 0, "sleep": 0, "status": 0}
+        written = [{**blank, **rule} for rule in [*rules, default]]
         for rule in written:
             rule["marker"] = rule["marker"].hex()
-            rule["output"] = (
-                rule["output"].encode("utf-8").hex() if isinstance(rule["output"], str) else rule["output"].hex()
-            )
+            for key in ("output", "joined"):
+                if rule[key] is not None:
+                    rule[key] = (rule[key].encode("utf-8") if isinstance(rule[key], str) else rule[key]).hex()
         (self.folder / "rules.json").write_text(json.dumps(written), encoding="utf-8")
 
     def calls(self) -> list[dict[str, Any]]:
@@ -355,12 +358,21 @@ class PdfExtractionTests(unittest.TestCase):
         self.assertEqual(b"[p1 l1] Scope\n[p1 l2] Keep one queue.\n[p2 l1] Retry twice.\n", extract("pdf", PDF))
         [call] = stub.calls()
         options, document, output = call["arguments"][:-2], Path(call["arguments"][-2]), call["arguments"][-1]
-        self.assertEqual((["-q", "-enc", "UTF-8", "-eol", "unix"], "-"), (options, output), "layout stays off")
+        self.assertEqual((["-q", "-enc", "UTF-8", "-eol", "unix", "-raw"], "-"), (options, output))
         self.assertEqual(PDF.hex(), call["document"], "the bytes are given as a file")
         self.assertEqual(0, call["stdin"], "and nothing on stdin")
         # The temporary directory as tempfile names it, which may be an 8.3 short form that resolving would expand.
         self.assertEqual(Path(tempfile.gettempdir()), document.parent.parent, document)
         self.assertFalse(document.parent.exists(), "the throwaway folder is removed")
+
+    def test_xpdf_and_poppler_give_a_paragraphs_lines_the_same_labels(self) -> None:
+        apart = "Scope\nKeep one queue.\nRetry twice.\n\fSecond page\n\f"
+        expected = b"[p1 l1] Scope\n[p1 l2] Keep one queue.\n[p1 l3] Retry twice.\n[p2 l1] Second page\n"
+        # Xpdf's default reading joins a paragraph's evenly set lines; Poppler's keeps them apart with or without -raw.
+        xpdf = StubPdftotext(self, output=apart, joined="Scope Keep one queue. Retry twice.\n\fSecond page\n\f")
+        self.assertEqual(expected, extract("pdf", PDF), "Xpdf")
+        xpdf.answer(output=apart)
+        self.assertEqual(expected, extract("pdf", PDF), "Poppler")
 
     def test_without_pdftotext_a_pdf_is_refused_with_a_reason_that_names_it(self) -> None:
         without_pdftotext(self)
