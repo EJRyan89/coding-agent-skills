@@ -28,6 +28,7 @@ import sys
 import tempfile
 import zipfile
 import zlib
+from array import array
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -54,6 +55,10 @@ MAX_DOCUMENT_PART_BYTES = 16 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 1024 * 1024
 MAX_HEADING_CHARACTERS = 80
 DIFF_CONTEXT = 3
+# The most steps the shortest edit search takes between a diff's anchored ends before difflib matches those lines
+# instead. It takes about three million a second, so this bounds it near two-thirds of a second, twice what a
+# 2,000-row table of identical rows with every third row changed needs.
+MATCH_STEPS = 2_000_000
 MAIN_PART = "word/document.xml"
 STYLES_PART = "word/styles.xml"
 WORD = "http://schemas.openxmlformats.org/wordprocessingml/2006/main "
@@ -580,13 +585,17 @@ def document_diff(
 
 
 class _AnchoredMatcher(difflib.SequenceMatcher[str]):
-    """A line matcher that matches the longest common start and end of two texts before matching what lies between.
+    """A line matcher that matches the longest common start and end of two texts, then the fewest lines that differ
+    between them, so `get_grouped_opcodes` writes the hunks from matches a reviewer can trust.
 
-    Matched in one pass, a run of identical paragraphs pairs its longest stretch first, wherever that falls, so one
-    paragraph inserted among them shows as every line on one side of it removed and added again, and above 200 lines
-    the popular-line heuristic leaves a repeated paragraph unmatched altogether. With the ends anchored, one change
-    anywhere leaves nothing else between them. What lies between keeps the heuristic: without it, matching a long
-    run of identical lines takes time that grows with the cube of its length, minutes for a two-thousand-row table.
+    difflib alone is not enough for documents, whose paragraphs and table rows repeat. It pairs the longest stretch of
+    identical lines first, wherever that falls, so one paragraph inserted among identical ones shows as every line on
+    one side of it removed and added again, and above 200 lines its popular-line heuristic leaves a repeated line
+    unmatched altogether, so two changes around a long run show the whole run as changed. Without the heuristic it
+    takes time that grows with the cube of a repeated run, minutes for a two-thousand-row table. So the anchored ends
+    settle one change anywhere, and what lies between them is matched by a shortest edit search (`_shortest_edit`),
+    whose time grows with the number of lines that differ rather than with the length of a repeated run; only a pair
+    that needs more than `MATCH_STEPS` of it is matched by difflib, as before.
     """
 
     def __init__(self, base: list[str], head: list[str]) -> None:
@@ -602,16 +611,171 @@ class _AnchoredMatcher(difflib.SequenceMatcher[str]):
         end = 0
         while end < shorter - start and base[-1 - end] == head[-1 - end]:
             end += 1
-        middle = difflib.SequenceMatcher(None, base[start : len(base) - end], head[start : len(head) - end])
+        old, new = base[start : len(base) - end], head[start : len(head) - end]
+        middle = _shortest_edit(old, new, MATCH_STEPS)
+        if middle is None:
+            middle = [
+                (first, second, size)
+                for first, second, size in difflib.SequenceMatcher(None, old, new).get_matching_blocks()[:-1]
+            ]
         blocks = [difflib.Match(0, 0, start)] if start else []
-        blocks.extend(
-            difflib.Match(first + start, second + start, size)
-            for first, second, size in middle.get_matching_blocks()[:-1]
-        )
+        blocks.extend(difflib.Match(first + start, second + start, size) for first, second, size in middle)
         if end:
             blocks.append(difflib.Match(len(base) - end, len(head) - end, end))
         blocks.append(difflib.Match(len(base), len(head), 0))
         return blocks
+
+
+def _shortest_edit(base: list[str], head: list[str], budget: int) -> list[tuple[int, int, int]] | None:
+    """The matching blocks of a shortest edit turning `base` into `head`, as `(base, head, size)` triples, or None when
+    finding it takes more than `budget` steps, each a diagonal tried or a pair of lines compared.
+
+    This is Myers's greedy search: for each count d of lines that differ, the furthest point each diagonal of the edit
+    graph reaches, so it takes about d squared steps and one more for each line matched, however long a run of
+    identical lines is. Two lengths that differ by n need at least n(n+1)/2 steps, so a pair for which that passes the
+    budget is given up on at once. The matches it finds are then moved within runs of identical lines (`_paired`).
+    """
+    if not base or not head:
+        return []
+    apart = abs(len(base) - len(head))
+    if apart * (apart + 1) // 2 > budget:
+        return None
+    numbers: dict[str, int] = {}
+    old = [numbers.setdefault(line, len(numbers)) for line in base]
+    new = [numbers.setdefault(line, len(numbers)) for line in head]
+    width, height = len(old), len(new)
+    middle = width + height + 1
+    reach = [0] * (2 * middle + 1)
+    trace: list[array[int]] = []
+    steps = 0
+    for edits in range(width + height + 1):
+        for diagonal in range(-edits, edits + 1, 2):
+            if diagonal == -edits or (
+                diagonal != edits and reach[middle + diagonal - 1] < reach[middle + diagonal + 1]
+            ):
+                x = reach[middle + diagonal + 1]
+            else:
+                x = reach[middle + diagonal - 1] + 1
+            y = start = x - diagonal
+            while x < width and y < height and old[x] == new[y]:
+                x += 1
+                y += 1
+            steps += 1 + y - start
+            reach[middle + diagonal] = x
+            if x >= width and y >= height:
+                return _paired(old, new, _backtrack(trace, width, height))
+        trace.append(array("q", reach[middle - edits : middle + edits + 1 : 2]))
+        if steps > budget:
+            return None
+    raise AssertionError("a shortest edit is at most every line of both sides")
+
+
+def _backtrack(trace: list[array[int]], width: int, height: int) -> list[tuple[int, int, int]]:
+    """The matching blocks of the path `_shortest_edit` found to (`width`, `height`), from `trace`, whose d-th entry
+    holds the furthest point each diagonal from -d to d reached with d lines differing."""
+    blocks: list[tuple[int, int, int]] = []
+    x, y = width, height
+    for edits in range(len(trace), 0, -1):
+        reached = trace[edits - 1]
+        diagonal = x - y
+        if diagonal == -edits or (
+            diagonal != edits and reached[(diagonal + edits - 2) // 2] < reached[(diagonal + edits) // 2]
+        ):
+            before = reached[(diagonal + edits) // 2]
+            start, previous = before, (before, before - diagonal - 1)
+        else:
+            before = reached[(diagonal + edits - 2) // 2]
+            start, previous = before + 1, (before, before - diagonal + 1)
+        if x > start:
+            blocks.append((start, start - diagonal, x - start))
+        x, y = previous
+    if x:
+        blocks.append((0, 0, x))
+    return blocks[::-1]
+
+
+def _paired(old: list[int], new: list[int], blocks: list[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    """`blocks` with as many lines matched, moved within runs of identical lines so that a line one side drops sits,
+    where it can, beside a line the other side adds.
+
+    A shortest edit leaves open which of a run's identical lines is the one dropped, and the search picks one far from
+    the change: a changed row in a table of identical rows comes out as a row added there and an identical row dropped
+    elsewhere, as short an edit as that row removed and added but labelled at the wrong rows. Swapping a dropped line
+    with a matched one of the same text keeps the matched text, and so the edit, unchanged.
+    """
+    kept_old, kept_new = bytearray(len(old)), bytearray(len(new))
+    for first, second, size in blocks:
+        kept_old[first : first + size] = b"\x01" * size
+        kept_new[second : second + size] = b"\x01" * size
+    _slide(old, kept_old, kept_new)
+    _slide(new, kept_new, kept_old)
+    paired: list[tuple[int, int, int]] = []
+    for first, second in zip(
+        (index for index, kept in enumerate(kept_old) if kept),
+        (index for index, kept in enumerate(kept_new) if kept),
+        strict=True,
+    ):
+        if paired and paired[-1][0] + paired[-1][2] == first and paired[-1][1] + paired[-1][2] == second:
+            paired[-1] = (paired[-1][0], paired[-1][1], paired[-1][2] + 1)
+        else:
+            paired.append((first, second, 1))
+    return paired
+
+
+def _slide(lines: list[int], kept: bytearray, other: bytearray) -> None:
+    """Moves the lines of `lines` that `kept` leaves unmatched, within each run of identical lines, into the gaps
+    between matched pairs where `other` leaves lines of the other side unmatched, one for each."""
+    mine, theirs = [0] * (sum(kept) + 1), [0] * (sum(kept) + 1)
+    for flags, counts in ((kept, mine), (other, theirs)):
+        gap = 0
+        for flag in flags:
+            gap += flag
+            counts[gap] += not flag
+    gap = start = 0
+    while start < len(lines):
+        stop = start + 1
+        while stop < len(lines) and lines[stop] == lines[start]:
+            stop += 1
+        matched = sum(kept[start:stop])
+        if 0 < matched < stop - start:
+            _spread(kept, start, stop, gap, mine, theirs)
+        gap += matched
+        start = stop
+
+
+def _spread(kept: bytearray, start: int, stop: int, first: int, mine: list[int], theirs: list[int]) -> None:
+    """Rearranges the run of identical lines from `start` to `stop`, whose first gap is `first`: each unmatched line
+    stays in a gap that needs it, else moves to the first gap that does, else stays, and `mine` counts it there."""
+    gaps: list[int] = []
+    gap = first
+    for flag in kept[start:stop]:
+        gap += flag
+        if not flag:
+            gaps.append(gap)
+            mine[gap] -= 1
+    last = gap
+    placed = [0] * (last - first + 1)
+    spare: list[int] = []
+    for gap in gaps:
+        if mine[gap] < theirs[gap]:
+            mine[gap] += 1
+            placed[gap - first] += 1
+        else:
+            spare.append(gap)
+    target = first
+    for gap in spare:
+        while target <= last and mine[target] >= theirs[target]:
+            target += 1
+        chosen = target if target <= last else gap
+        mine[chosen] += 1
+        placed[chosen - first] += 1
+    index = start
+    for slot, count in enumerate(placed):
+        kept[index : index + count] = bytes(count)
+        index += count
+        if slot < last - first:
+            kept[index] = 1
+            index += 1
 
 
 def _range(start: int, stop: int) -> str:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import itertools
 import json
 import os
 import shutil
@@ -422,6 +423,19 @@ def changed_lines(diff: str) -> list[str]:
     return [line for line in body if line.startswith(("+", "-"))]
 
 
+def longest_common(base: Sequence[str], head: Sequence[str]) -> int:
+    """The length of the longest common subsequence of two short line lists, by the textbook table."""
+    lengths = [[0] * (len(head) + 1) for _ in range(len(base) + 1)]
+    for first, line in enumerate(base):
+        for second, other in enumerate(head):
+            lengths[first + 1][second + 1] = (
+                lengths[first][second] + 1
+                if line == other
+                else max(lengths[first][second + 1], lengths[first + 1][second])
+            )
+    return lengths[-1][-1]
+
+
 class DiffTests(unittest.TestCase):
     HEADER = ("diff --git a/docs/design.docx b/docs/design.docx", "index 1111111..2222222 100644")
 
@@ -528,6 +542,99 @@ class DiffTests(unittest.TestCase):
 
         self.assertLess(time.monotonic() - started, 20)
         self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def test_changes_at_both_ends_of_a_long_run_of_identical_paragraphs_are_those_changes_alone(self) -> None:
+        path, same = "docs/design.docx", "Keep one queue."
+        for count in (100, 300):
+            base = ["Title.", *[same] * count, "End."]
+            head = ["New title.", *[same] * count, "New end."]
+            with self.subTest(count=count):
+                diff = document_diff(self.HEADER, path, path, labeled(base), labeled(head))
+
+                last = count + 2
+                expected = ["-[P1] Title.", "+[P1] New title.", f"-[P{last}] End.", f"+[P{last}] New end."]
+                self.assertEqual(expected, changed_lines(diff))
+                self.assertHunksMatch(diff, labeled(base), labeled(head))
+                self.assertEqual(4, patch_fingerprints(parse_unified_diff(diff))[path]["lines"])
+
+    def test_a_long_table_with_every_tenth_row_changed_diffs_to_those_rows_in_bounded_time(self) -> None:
+        rows = range(2_000)
+        base = ["| |" for _ in rows]
+        head = [f"| row {row} |" if row % 10 == 9 else "| |" for row in rows]
+        started = time.monotonic()
+
+        diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+        self.assertLess(time.monotonic() - started, 20)
+        expected = [
+            line for row in rows if row % 10 == 9 for line in (f"-[P{row + 1}] | |", f"+[P{row + 1}] {head[row]}")
+        ]
+        self.assertEqual(expected, changed_lines(diff))
+        self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def test_a_change_at_each_of_several_places_in_a_long_identical_run_is_that_change_alone(self) -> None:
+        same, places = "Keep one queue.", (40, 250, 251, 470, 598)
+        run = [same] * 600
+        changed = [f"Change {index}." if index in places else line for index, line in enumerate(run)]
+        inserted = [line for index, kept in enumerate(run) for line in ([f"Add {index}."] * (index in places) + [kept])]
+        removed = [line for index, kept in enumerate(run) for line in ([f"Drop {index}."] * (index in places) + [kept])]
+
+        def replaced(*indices: int) -> list[str]:
+            return [f"-[P{index + 1}] {same}" for index in indices] + [f"+[P{i + 1}] Change {i}." for i in indices]
+
+        for name, base, head, expected in (
+            ("changed", run, changed, [*replaced(40), *replaced(250, 251), *replaced(470), *replaced(598)]),
+            (
+                "inserted",
+                run,
+                inserted,
+                [f"+[P{index + offset + 1}] Add {index}." for offset, index in enumerate(places)],
+            ),
+            (
+                "deleted",
+                removed,
+                run,
+                [f"-[P{index + offset + 1}] Drop {index}." for offset, index in enumerate(places)],
+            ),
+        ):
+            with self.subTest(name):
+                diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+                self.assertEqual(expected, changed_lines(diff))
+                self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def test_texts_past_the_matchers_cost_limit_fall_back_to_difflib_and_still_diff_validly(self) -> None:
+        same = "Keep one queue."
+        base, head = ["Title.", *[same] * 300, "End."], ["New title.", *[same] * 300, "New end."]
+        with mock.patch.object(documents, "MATCH_STEPS", 10):
+            diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+        self.assertEqual(604, len(changed_lines(diff)))
+        self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+        rows = range(20_000)
+        base = ["| |" for _ in rows]
+        head = [f"| row {row} |" if row % 3 == 1 else "| |" for row in rows]
+        started = time.monotonic()
+
+        diff = document_diff(self.HEADER, "docs/design.docx", "docs/design.docx", labeled(base), labeled(head))
+
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertHunksMatch(diff, labeled(base), labeled(head))
+
+    def test_the_middle_matcher_finds_a_longest_common_subsequence_of_every_small_pair(self) -> None:
+        for alphabet, longest in (("ab", 6), ("abc", 4)):
+            texts = [list(text) for size in range(longest + 1) for text in itertools.product(alphabet, repeat=size)]
+            for base, head in itertools.product(texts, repeat=2):
+                blocks = documents._AnchoredMatcher(base, head).get_matching_blocks()
+
+                self.assertEqual((len(base), len(head), 0), tuple(blocks[-1]), (base, head))
+                first = second = 0
+                for start, other, size in blocks:
+                    self.assertTrue(start >= first and other >= second, (base, head, blocks))
+                    self.assertEqual(base[start : start + size], head[other : other + size], (base, head, blocks))
+                    first, second = start + size, other + size
+                self.assertEqual(longest_common(base, head), sum(size for *_, size in blocks), (base, head, blocks))
 
     def assertHunksMatch(self, diff: str, base: str, head: str) -> None:
         """Each hunk's ranges hold exactly its lines: its old side is the base's text there, matched without labels,
