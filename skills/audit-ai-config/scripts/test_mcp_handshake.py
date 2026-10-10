@@ -305,6 +305,51 @@ class HandshakeTests(unittest.TestCase):
             self._run(),
         )
 
+    def test_a_relative_command_resolves_against_the_configured_directory_not_the_callers(self) -> None:
+        launcher = self.root / "tools" / "fake server.cmd"
+        launcher.write_text(f'@"{sys.executable}" "%~dp0fake server.py" %*\n', encoding="utf-8")
+        self._write(
+            ".mcp.json",
+            "mcpServers",
+            {
+                "rooted": {"command": "tools/fake server.cmd", "args": ["ok"]},
+                "local": {"command": "./fake server.cmd", "args": ["ok"], "cwd": "tools"},
+            },
+        )
+        elsewhere = Path(self.temp.name) / "elsewhere"
+        elsewhere.mkdir()
+        with contextlib.chdir(elsewhere):
+            code, lines = self._run()
+        self.assertEqual(
+            (
+                0,
+                [
+                    "HANDSHAKE_OK rooted source=.mcp.json protocol=2025-06-18 tools=2",
+                    "HANDSHAKE_OK local source=.mcp.json protocol=2025-06-18 tools=2",
+                ],
+            ),
+            (code, lines),
+        )
+
+    def test_a_relative_command_that_is_not_there_fails_naming_it(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"gone": {"command": "./missing.cmd", "cwd": "tools"}})
+        self.assertEqual((1, ["HANDSHAKE_FAILED gone source=.mcp.json command not found: ./missing.cmd"]), self._run())
+
+    def test_a_toml_date_in_a_server_definition_fails_that_server_without_a_traceback(self) -> None:
+        (self.root / ".codex").mkdir()
+        (self.root / ".codex/config.toml").write_text(
+            f"[mcp_servers.dated]\ncommand = {json.dumps(sys.executable)}\nargs = [{json.dumps(str(self.server))}]\n"
+            "env = { WHEN = 1979-05-27 }\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            (1, ["HANDSHAKE_FAILED dated source=.codex/config.toml env must map names to strings"]), self._run()
+        )
+
+    def test_a_working_directory_that_is_not_a_string_fails_that_server(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok", cwd=5)})
+        self.assertEqual((1, ["HANDSHAKE_FAILED docs source=.mcp.json cwd must be a string"]), self._run())
+
     def test_a_readable_server_is_still_checked_beside_an_unreadable_config(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})
         (self.root / ".vscode").mkdir()
