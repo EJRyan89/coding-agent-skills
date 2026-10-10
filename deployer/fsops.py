@@ -24,7 +24,12 @@ PLATFORM_ALLOWED = {
 
 
 def move(source: Path, destination: Path) -> None:
-    """Rename without ever replacing an existing destination."""
+    """Rename without ever replacing an existing destination: a FileExistsError leaves both as they were.
+
+    Journal finalization, recovery, and the lock reclaim rely on it, so platform_support refuses an existing destination
+    where the platform's rename would replace it.
+    """
+    platform_support.refuse_existing_destination(destination)
     source.rename(destination)
 
 

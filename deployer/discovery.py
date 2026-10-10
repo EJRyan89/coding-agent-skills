@@ -23,6 +23,12 @@ from typing import IO
 
 from . import platform_support
 
+# Each runtime's listing names its field skills, a word the manifest also uses as a key; neither listing is a manifest.
+KINDS_ALLOWED = {
+    "parse_copilot": "reads Copilot CLI's skill listing, whose field is named skills",
+    "parse_codex": "reads the Codex app server's skills/list answer, whose field is named skills",
+}
+
 RUNTIMES = ("codex", "copilot")
 LABELS = {"codex": "Codex CLI", "copilot": "Copilot CLI"}
 DEFAULT_TIMEOUT = 120

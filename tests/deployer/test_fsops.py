@@ -12,7 +12,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import fsops
+from deployer import fsops, platform_support
 
 
 class FilesystemOperationTests(unittest.TestCase):
@@ -32,6 +32,61 @@ class FilesystemOperationTests(unittest.TestCase):
         """Restore write access if a test fails, so the temporary directory can still be cleaned up."""
         if path.exists():
             path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+    def tree(self, path: Path) -> dict[str, str]:
+        """Each file under path, or path itself, with its text."""
+        files = [path] if path.is_file() else sorted(path.rglob("*"))
+        return {item.relative_to(self.root).as_posix(): item.read_text(encoding="utf-8") for item in files}
+
+    def held(self, *paths: Path) -> dict[str, dict[str, str]]:
+        return {path.name: self.tree(path) for path in paths}
+
+    def move_targets(self) -> list[tuple[str, Path, Path]]:
+        """A source and an existing destination for each shape a move meets: file onto file, directory onto a
+        directory with contents, directory onto an empty one, and file onto a directory."""
+        (self.root / "new.txt").write_text("new\n", encoding="utf-8")
+        (self.root / "old.txt").write_text("old\n", encoding="utf-8")
+        for name in ("new-skill", "old-skill"):
+            (self.root / name).mkdir()
+            (self.root / name / "SKILL.md").write_text(f"{name}\n", encoding="utf-8")
+        (self.root / "empty").mkdir()
+        return [
+            ("file onto file", self.root / "new.txt", self.root / "old.txt"),
+            ("directory onto directory", self.root / "new-skill", self.root / "old-skill"),
+            ("directory onto empty directory", self.root / "new-skill", self.root / "empty"),
+            ("file onto directory", self.root / "new.txt", self.root / "old-skill"),
+        ]
+
+    def test_move_renames_onto_a_free_destination(self) -> None:
+        (self.root / "new.txt").write_text("new\n", encoding="utf-8")
+        fsops.move(self.root / "new.txt", self.root / "moved.txt")
+        self.assertFalse((self.root / "new.txt").exists())
+        self.assertEqual("new\n", (self.root / "moved.txt").read_text(encoding="utf-8"))
+
+    def test_move_never_replaces_an_existing_destination(self) -> None:
+        for shape, source, destination in self.move_targets():
+            with self.subTest(shape):
+                before = self.held(source, destination)
+                with self.assertRaises(FileExistsError):
+                    fsops.move(source, destination)
+                self.assertEqual(before, self.held(source, destination))
+
+    def test_move_refuses_an_existing_destination_where_a_rename_would_replace_it(self) -> None:
+        # A POSIX rename replaces a file or an empty directory; Path.replace does the same here.
+        def replacing_rename(path: Path, target: Path) -> None:
+            path.replace(target)
+
+        with mock.patch.object(Path, "rename", replacing_rename):
+            _, source, destination = self.move_targets()[0]
+            before = self.held(source, destination)
+            with mock.patch.object(platform_support, "RENAME_REPLACES", True), self.assertRaises(FileExistsError):
+                fsops.move(source, destination)
+            self.assertEqual(before, self.held(source, destination))
+            # Without the check, the same move replaces the destination.
+            with mock.patch.object(platform_support, "RENAME_REPLACES", False):
+                fsops.move(source, destination)
+            self.assertFalse(source.exists())
+            self.assertEqual("new\n", destination.read_text(encoding="utf-8"))
 
     def test_remove_deletes_a_read_only_file(self) -> None:
         path = self.read_only(self.root / "held.txt", "read-only\n")

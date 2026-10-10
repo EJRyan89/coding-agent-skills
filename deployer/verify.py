@@ -13,6 +13,7 @@ from . import discovery, manifest, platform_support, tools
 from .arguments import PROG, VERIFY_COMMAND, parse_command
 from .discovery import Listed, Listing, ListingError
 from .errors import DeployError, debug_requested, fail
+from .kinds import ADAPTER_KIND
 from .paths import Paths
 from .report import ReportLine, print_report
 
@@ -42,7 +43,7 @@ def adapter_names(owned: manifest.Manifest) -> list[str]:
     names: set[str] = set()
     for entry in owned.sources.values():
         if isinstance(entry, dict):
-            names.update((entry.get(manifest.ADAPTERS) or {}).keys())
+            names.update((entry.get(ADAPTER_KIND.key) or {}).keys())
     return sorted(names)
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -129,6 +130,21 @@ def is_filesystem_root(value: str) -> bool:
 
 def canonical_directory(path: str | os.PathLike[str]) -> str:
     return normalize(os.path.realpath(path))
+
+
+# Windows' rename refuses an existing destination; a POSIX rename replaces a file or an empty directory.
+RENAME_REPLACES = sys.platform != "win32"
+
+
+def refuse_existing_destination(destination: Path) -> None:
+    """Raise FileExistsError for an existing destination where a rename onto it would replace it.
+
+    Windows' rename refuses an existing destination itself, atomically, so nothing is checked there. Elsewhere any
+    existing destination, a broken link included, is refused before the rename, which holds against everything but a
+    destination created between the check and the rename.
+    """
+    if RENAME_REPLACES and os.path.lexists(destination):
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), os.fspath(destination))
 
 
 def is_link(path: Path) -> bool:

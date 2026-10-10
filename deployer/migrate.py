@@ -11,6 +11,12 @@ from .kinds import AGENT_KIND, KINDS, SHARED, SKILL, ItemKind
 from .names import require_safe_name
 from .report import ReportLine, print_report
 
+KINDS_ALLOWED = {
+    "_migration_candidates": "this source takes over a shared asset only if it owns one, an agent only from its "
+    "agents, and a skill only from its skills",
+    "migrate": "only a skill is requested by name, so only a skill's request moves with it",
+}
+
 
 def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> list[str]:
     restore = (
@@ -26,10 +32,10 @@ def _migration_candidates(context: Context, old_entry: dict, kind: ItemKind) -> 
                 continue
             if not (context.paths.skills_src / name).is_file():
                 raise DeployError(f"ERROR: Cannot migrate shared asset '{name}': source owner file is missing.")
-            if (old_entry["shared"][name] or {}).get("role") != "owner":
+            if (old_entry[kind.key][name] or {}).get("role") != "owner":
                 continue
         elif kind is AGENT_KIND:
-            if not name.endswith(".md") or name[: -len(".md")] not in context.source.agents:
+            if not name.endswith(kind.suffix) or kind.item_name(name) not in context.source.agents:
                 continue
         elif name not in context.source.skills:
             continue

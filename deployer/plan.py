@@ -21,6 +21,14 @@ from .paths import Paths
 from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL, ReportLine, print_report
 from .source import Source
 
+KINDS_ALLOWED = {
+    "build": "plans skills first and names the kinds that depend on them: a skill left in place keeps its shared "
+    "assets and agents, a runtime adapter is skipped with its skill, and each kind's rendered content has its own "
+    "shape in render.Staged",
+    "_retained": "another source's skills keep a shared asset too, but only this source's skills keep an agent, "
+    "since two sources never own one agent",
+}
+
 # Actions that move the rendered copy into place, and actions that end this source's ownership of an item.
 INSTALLING = frozenset({"INSTALL", "UPDATE", "UNCHANGED", "ADOPT", "REPLACE"})
 RELEASING = frozenset({"REMOVE", "DROP"})
@@ -261,7 +269,7 @@ def _declared_assets(src: Source) -> dict[str, str]:
     for asset, role in src.shared_assets.items():
         require_safe_name(asset, "shared asset name")
         assets[asset] = role
-    taken = {platform_support.name_key(name): ("skill", name) for name in sorted(src.skills)}
+    taken = {platform_support.name_key(name): (SKILL.noun, name) for name in sorted(src.skills)}
     for asset in sorted(assets):
         if asset in src.skills:
             raise DeployError(f"ERROR: Shared asset '{asset}' collides with a skill of the same name")
@@ -272,7 +280,7 @@ def _declared_assets(src: Source) -> dict[str, str]:
                 f"ERROR: Shared asset '{asset}' collides with {noun} '{existing}'.",
                 f"The file system treats '{asset}' and '{existing}' as one name. Rename one of them.",
             )
-        taken[key] = ("shared asset", asset)
+        taken[key] = (SHARED.noun, asset)
     return assets
 
 
@@ -299,7 +307,7 @@ def _check_dependency(context: Context, asset: str) -> None:
         raise DeployError(f"ERROR: Dependency '{asset}' has no owner in the manifest")
     if owner == context.source_id:
         raise DeployError(f"ERROR: Dependency '{asset}' is declared as both dependency and owned by this source")
-    entry = context.manifest.entry(owner, "shared", asset) or {}
+    entry = context.manifest.entry(owner, SHARED.key, asset) or {}
     owner_role = entry.get("role", "")
     if owner_role != "owner":
         raise DeployError(

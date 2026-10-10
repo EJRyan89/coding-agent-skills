@@ -17,7 +17,8 @@ PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
     "attribute": ("chmod", "fchmod", "lchmod", "st_file_attributes"),
     "keyword": ("creationflags",),
     "module": ("ctypes", "winreg", "msvcrt", "_winapi"),
-    "variable": ("LOCALAPPDATA", "USERPROFILE", "ProgramFiles", "APPDATA"),
+    # Windows environment names, which Windows compares ignoring case, so each is matched in any case.
+    "variable": ("LOCALAPPDATA", "USERPROFILE", "ProgramFiles", "APPDATA", "GIT_BASH"),
     "command": ("cygpath",),
 }
 # A module sanctions a use beside the code it excuses, as a module-level PLATFORM_ALLOWED = {token: reason}. An
@@ -133,8 +134,10 @@ def _platform_import_from_names(node: ast.ImportFrom) -> list[tuple[int, str]]:
 
 
 def _platform_string_names(line: int, value: str, command: re.Pattern[str]) -> list[tuple[int, str]]:
-    # Equality catches an environment lookup or entry, never prose that mentions the variable.
-    found = [(line, value)] if value in PLATFORM_TOKENS["variable"] else []
+    # Equality catches an environment lookup or entry, never prose that mentions the variable, and it ignores case
+    # because Windows does: os.environ.get("PROGRAMFILES") reads ProgramFiles.
+    variables = {variable.casefold() for variable in PLATFORM_TOKENS["variable"]}
+    found = [(line, value)] if value.casefold() in variables else []
     found.extend((line, name) for name in sorted(set(command.findall(value))))
     return found
 

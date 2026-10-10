@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validation"))
 import duplication
 import fsops_platform
 import job_selection
+import kinds_table
 import markdown_links
 import python_checks
 import repository_hygiene
@@ -77,6 +78,7 @@ POLICY_MODULES = (
     duplication,
     fsops_platform,
     job_selection,
+    kinds_table,
     markdown_links,
     python_checks,
     repository_hygiene,

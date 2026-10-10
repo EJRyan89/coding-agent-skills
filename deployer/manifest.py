@@ -10,10 +10,18 @@ from typing import Any
 from . import fsops
 from .errors import DeployError, os_error
 from .hashing import HASH_PATTERN
-from .kinds import ADAPTERS, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
+from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SKILL, ItemKind
 from .names import safe_name_problem
 from .source import SOURCE_ID_PATTERN, is_valid_name
 from .source_commit import COMMIT_PATTERN
+
+KINDS_ALLOWED = {
+    "Manifest.ownership": "a skill entry also records the items it depends on, and a shared asset entry its role",
+    "_valid_dependencies": "a skill names the agents it depends on by their file names, and its shared assets by any "
+    "safe name",
+    "_validate": "each kind names its items its own way: a skill and its runtime adapter by a skill name and an agent "
+    "by its file name, and only a shared asset entry has a role and only a skill entry dependencies",
+}
 
 MANIFEST_VERSION = 7
 # Version 7 adds agent ownership. A version 6 manifest is read as having no agents and saved as version 7, which a
@@ -22,7 +30,6 @@ MANIFEST_VERSION = 7
 # a deployer that predates it drops it on rewrite, which loses only the agents a skill left in place would keep, never
 # an owned item.
 OLDEST_READABLE_VERSION = 6
-OWNED_KINDS = tuple(kind.key for kind in KINDS)
 
 
 def _by_kind() -> dict[str, dict[str, str]]:
@@ -50,19 +57,19 @@ class Ownership:
 
     @property
     def skills(self) -> dict[str, str]:
-        return self.hashes["skills"]
+        return self.of(SKILL)
 
     @property
     def shared(self) -> dict[str, str]:
-        return self.hashes["shared"]
+        return self.of(SHARED)
 
     @property
     def adapters(self) -> dict[str, str]:
-        return self.hashes[ADAPTERS]
+        return self.of(ADAPTER_KIND)
 
     @property
     def agents(self) -> dict[str, str]:
-        return self.hashes["agents"]
+        return self.of(AGENT_KIND)
 
 
 @dataclass
@@ -76,11 +83,11 @@ class Manifest:
 
     @property
     def skill_owners(self) -> dict[str, str]:
-        return self.owners["skills"]
+        return self.owners_of(SKILL)
 
     @property
     def shared_owners(self) -> dict[str, str]:
-        return self.owners["shared"]
+        return self.owners_of(SHARED)
 
     @property
     def sources(self) -> dict[str, Any]:
@@ -134,7 +141,7 @@ def _is_agent_file(name: Any) -> bool:
     """An agent's deployed file name: a safe name that is a valid item name followed by .md."""
     return (
         isinstance(name, str)
-        and safe_name_problem(name, "agent") is None
+        and safe_name_problem(name, AGENT_KIND.noun) is None
         and name.endswith(AGENT_KIND.suffix)
         and is_valid_name(AGENT_KIND.item_name(name))
     )
@@ -177,30 +184,30 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                 isinstance(value, str) and is_valid_name(value) for value in values
             ):
                 raise DeployError("ERROR: Manifest selection fields are malformed")
-        for kind in OWNED_KINDS:
-            items = entry.get(kind, {})
+        for kind in KINDS:
+            items = entry.get(kind.key, {})
             if not isinstance(items, dict):
                 raise DeployError("ERROR: Manifest selection fields are malformed")
             for name, value in items.items():
-                named_like_skill = kind in ("skills", ADAPTERS)
+                named_like_skill = kind in (SKILL, ADAPTER_KIND)
                 safe = isinstance(name, str) and safe_name_problem(name, "item") is None
                 if (
                     not safe
                     or (named_like_skill and not is_valid_name(name))
-                    or (kind == "agents" and not _is_agent_file(name))
+                    or (kind is AGENT_KIND and not _is_agent_file(name))
                     or not isinstance(value, dict)
                     or not isinstance(value.get("hash"), str)
                     or not HASH_PATTERN.fullmatch(value["hash"])
-                    or (kind == "shared" and value.get("role", "owner") not in ("owner", "dependency"))
+                    or (kind is SHARED and value.get("role", "owner") not in ("owner", "dependency"))
                     or (
-                        kind == "skills"
+                        kind is SKILL
                         and not all(
                             _valid_dependencies(value.get(dependency.dependency_key, []), dependency)
                             for dependency in DEPENDENCY_KINDS
                         )
                     )
                 ):
-                    raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind} {name!r}")
+                    raise DeployError(f"ERROR: Manifest entry is malformed: source '{source_id}' {kind.key} {name!r}")
 
 
 def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str, str]) -> None:

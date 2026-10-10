@@ -35,7 +35,7 @@ class Kind:
 
 SKILL = Kind("", "alpha", "skills", lambda case: case.skills_dir, True)
 SHARED = Kind("shared asset", "shared.md", "shared", lambda case: case.skills_dir, False)
-ADAPTER = Kind("runtime adapter", "alpha", manifest.ADAPTERS, lambda case: case.agents_dir, True)
+ADAPTER = Kind("runtime adapter", "alpha", "wrappers", lambda case: case.agents_dir, True)
 AGENT = Kind("agent", "reviewer.md", "agents", lambda case: case.claude_agents_dir, False)
 
 
