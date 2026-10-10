@@ -1320,7 +1320,8 @@ class RecordTests(unittest.TestCase):
         older = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
         self.assertNotIn("body_characters", older["pull_request"])
         self.assertNotIn("**Description**", render_markdown(older, record_payload_hash="0" * 64))
-        for characters, given in ((5, 6), (-1, 0), (True, 0), (5, "5")):
+        faults: list[tuple[Any, Any]] = [(5, 6), (-1, 0), (True, 0), (5, "5")]
+        for characters, given in faults:
             with self.subTest(characters=characters, given=given):
                 broken = copy.deepcopy(older)
                 broken["pull_request"].update(body_characters=characters, body_given=given)
@@ -1746,7 +1747,12 @@ class GitHubTests(unittest.TestCase):
         for body, expected in (("## Upgrade note\n\nNone\n", "## Upgrade note\n\nNone\n"), (None, ""), ("", "")):
             with self.subTest(body=body):
                 value = {**self._api_pull(42), "body": body}
-                client = GitHubClient(lambda arguments, value=value: CommandResult(0, json.dumps(value), ""))
+                served = CommandResult(0, json.dumps(value), "")
+
+                def serve(arguments: Sequence[str], served: CommandResult = served) -> CommandResult:
+                    return served
+
+                client = GitHubClient(serve)
                 pull = client.get_pull("example/one", 42)
                 self.assertEqual(expected, pull["body"])
                 self.assertEqual(pull, validate_pull(pull))
