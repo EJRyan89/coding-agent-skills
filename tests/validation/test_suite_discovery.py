@@ -21,6 +21,7 @@ from suite_discovery import (
     SHARD_RUNNER,
     TESTS_PER_SHARD,
     recorded_cost_problems,
+    recorded_shard_problems,
     regression_suites,
     shard_count,
     suite_discovery_documentation_problems,
@@ -180,6 +181,24 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
             jobs = suite_jobs([suite], {"test_costly.py": {"T.test_4": 13}}, root=Path(temporary))
             self.assertEqual(shard_count(suite, {"T.test_4": 13}), len(jobs))
             self.assertEqual({(17 + 12) / len(jobs)}, {job.weight for job in jobs})
+
+    def test_a_recorded_test_shares_a_shard_once_the_suite_outgrows_the_shard_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, tests in (("tests/test_fits.py", 17), ("tests/test_outgrown.py", 200)):
+                body = "".join(f"    def test_{number}(self): pass\n" for number in range(tests))
+                # A helper is not a test, so it neither adds to the suite's cost nor joins a shard.
+                write_fixture_tree(
+                    root, {name: f"import unittest\nclass T(unittest.TestCase):\n{body}    def run_x(self): pass\n"}
+                )
+            recorded = {"tests/test_fits.py": {"T.test_4": 13}, "tests/test_outgrown.py": {"T.test_4": 13}}
+            self.assertEqual(
+                [
+                    "tests/test_outgrown.py deals T.test_4 onto a shard beside other tests, since the suite fills its "
+                    f"{MAXIMUM_SHARDS} shards; raise MAXIMUM_SHARDS or split the suite"
+                ],
+                recorded_shard_problems(root, recorded),
+            )
 
     def test_recorded_seconds_must_name_a_suite_and_a_test_it_defines(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
