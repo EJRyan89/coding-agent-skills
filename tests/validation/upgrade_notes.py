@@ -9,9 +9,9 @@ import subprocess
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from validation_support import REPOSITORY_ROOT, _markdown_section, repository_files
+from validation_support import REPOSITORY_ROOT, _markdown_section, is_skill_file, repository_files
 
 from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
 
@@ -145,7 +145,8 @@ def _format_tables(snapshot: Snapshot) -> dict[str, object]:
 
 
 def _skill_directories(snapshot: Snapshot) -> dict[str, object]:
-    return {"/".join(name.split("/")[:2]): True for name in snapshot.names if re.match(r"skills/[^/]+/", name)}
+    """Each skill directory in the tree, skills/<name> or skills/<category>/<name>, so a category is not a skill."""
+    return {path.parent.as_posix(): True for path in map(PurePosixPath, snapshot.names) if is_skill_file(path)}
 
 
 CONTRACT_READERS: tuple[tuple[str, Callable[[Snapshot], dict[str, object]]], ...] = (

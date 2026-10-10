@@ -140,7 +140,8 @@ class SkillGrantsFixtures(unittest.TestCase):
             }
             for skill, (allowed, command) in skills.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text("{}", encoding="utf-8")
-                directory = root / "skills" / skill
+                # A skill in a category is held as well.
+                directory = root / "skills" / ("tools/bare" if skill == "bare" else skill)
                 directory.mkdir(parents=True)
                 (directory / "SKILL.md").write_text(
                     f"---\nname: {skill}\nallowed-tools: {allowed}\n---\n\n```bash\n{command}\n```\n", encoding="utf-8"
@@ -148,7 +149,7 @@ class SkillGrantsFixtures(unittest.TestCase):
             (root / "skills" / "asset").mkdir()
             self.assertEqual(
                 [
-                    f"skills/bare/SKILL.md grants Bash for every command; see {GRANTS_DOC}",
+                    f"skills/tools/bare/SKILL.md grants Bash for every command; see {GRANTS_DOC}",
                     "skills/expands/SKILL.md:7 expands a shell variable, "
                     f'so it always prompts: {own}x.py" --cwd "$PWD"; '
                     f"see {GRANTS_DOC}",

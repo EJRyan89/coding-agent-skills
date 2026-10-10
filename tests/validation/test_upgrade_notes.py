@@ -35,6 +35,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         "deployer/tools.py": 'MINIMUM_PYTHON = (3, 11)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n',
         "deploy-meta/alpha.json": '{"required_vars": ["ALPHA"], "tools": []}\n',
         "skills/alpha/SKILL.md": "alpha\n",
+        "skills/tools/delta/SKILL.md": "delta\n",
         "skills/code-review-core/references/record.schema.json": '{"type": "object"}\n',
         "docs/code-review-operations-contract.md": "# Contract\n\n## Behavior\n\n| Skill | Output |\n| --- | --- |\n"
         "| a | b |\n\n## Formats\n\n### Record\n\n| Field | Type |\n| --- | --- |\n| `id` | string |\n",
@@ -53,6 +54,8 @@ class UpgradeNotesPolicy(unittest.TestCase):
             + "| `name` | string |\n"
         },
         "skills/beta": {"skills/beta/SKILL.md": "beta\n"},
+        # A skill added to a category the release already has is its own item; the category is not a skill.
+        "skills/tools/gamma": {"skills/tools/gamma/SKILL.md": "gamma\n"},
         "deployer/tools.py": {
             "deployer/tools.py": 'MINIMUM_PYTHON = (3, 12)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n'
         },

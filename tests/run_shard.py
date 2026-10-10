@@ -4,8 +4,9 @@ tests/run_validation.py splits large suites into shards, each its own process, s
 length of the whole run. Every shard deals the suite's tests out the same way: heaviest first, each onto the shard
 with the least so far and the lowest index on a tie, where a test weighs its recorded seconds or else one. With
 nothing recorded that is round-robin in test-ID order. So the shards of a suite run each of its tests exactly once,
-and a recorded test runs on a shard of its own. Module and class fixtures run in every shard that has one of their
-tests.
+and a recorded test runs on a shard of its own while the suite's other tests fit on its other shards, which can stop
+holding once a suite outgrows the shard cap; tests/validation/suite_discovery.py fails validation when it does. Module
+and class fixtures run in every shard that has one of their tests.
 
 It imports nothing from the repository and puts the suite's own directory first on sys.path, as `python <suite>`
 does, so a suite that passes as shards also passes on its own.

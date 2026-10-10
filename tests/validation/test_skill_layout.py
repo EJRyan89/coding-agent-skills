@@ -541,6 +541,7 @@ class SkillLayoutFixtures(unittest.TestCase):
             for skill, metadata in {"user": {"skill_deps": ["core"]}, "core": {"selectable": False}}.items():
                 (root / "deploy-meta" / f"{skill}.json").write_text(json.dumps(metadata), encoding="utf-8")
                 (root / "skills" / skill / "scripts").mkdir(parents=True)
+                (root / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n", encoding="utf-8")
 
             def insert(skill: str) -> str:
                 return f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{skill}" / "scripts"))\n'
