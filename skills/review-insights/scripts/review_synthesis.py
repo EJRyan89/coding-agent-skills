@@ -31,7 +31,7 @@ from typing import Any
 
 from flat_text import flat_text
 from review_io import PersistenceError, atomic_write_text, read_json
-from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, valid_analyzer
+from review_records import ANALYZER_COVERAGES, SEVERITIES, SEVERITY_RANK, is_suite_profile, valid_analyzer
 
 RESULT_SCHEMA_VERSION = 1
 INPUT_NAME = "synthesis-input.jsonl"
@@ -260,7 +260,9 @@ def scoped_flags(flags: list[dict[str, Any]], repositories: list[str], start: da
 
 def guidance_files(repositories: list[str], records: dict[Path, dict[str, Any]]) -> dict[str, list[str]]:
     """Each repository's guidance files: the source files of the latest record each repository-scoped reviewer
-    wrote, anywhere in the archive. `records` holds every validated record of the repositories by its path."""
+    wrote, anywhere in the archive. `records` holds every validated record of the repositories by its path. A profile
+    the suite ships is recorded beside them under its `suite:<name>` reference, but it is no file of the repository,
+    which cannot change it, so it is left out."""
     latest: dict[str, dict[str, tuple[str, list[str]]]] = {repository.lower(): {} for repository in repositories}
     for path in sorted(records):
         record = records[path]
@@ -270,7 +272,10 @@ def guidance_files(repositories: list[str], records: dict[Path, dict[str, Any]])
             continue
         stamp = adapter["reviewed_at"]
         if source["name"] not in by_name or by_name[source["name"]][0] < stamp:
-            by_name[source["name"]] = (stamp, sorted(source["source_hashes"]))
+            by_name[source["name"]] = (
+                stamp,
+                sorted(path for path in source["source_hashes"] if not is_suite_profile(path)),
+            )
     return {
         repository: sorted({path for _, paths in by_name.values() for path in paths})
         for repository, by_name in latest.items()
