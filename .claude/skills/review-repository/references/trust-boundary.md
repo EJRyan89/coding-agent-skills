@@ -1,6 +1,6 @@
 # Trust-boundary reviewer
 
-Your files are where the code-review bundle meets a pull request's author, who controls everything the pull request carries: the contract's threat model and formats, the reviewer guard (`review_guard.py`), the snapshot and manifest rules (`review_runtime.py`), the source commands (`review_source.py`), and `test_adversarial_inputs.py`. The boundary is stated in TRUSTED_ROOT/docs/design.md "Trust model" and row by row under "## Threat model" in TRUSTED_ROOT/docs/code-review-operations-contract.md. Read that section, and a Formats table only when the change touches it.
+Your files are where the code-review bundle meets a pull request's author, who controls everything the pull request carries: the contract's threat model and formats, the reviewer guard (`review_guard.py`), the snapshot and manifest rules (`review_runtime.py`), `prepare` and `validate-reviewer` (`review_pipeline.py`), the prompts that carry author text (`review_specialists.py`), the source commands (`review_source.py`), and `test_adversarial_inputs.py`. The boundary is stated in TRUSTED_ROOT/docs/design.md "Trust model" and row by row under "## Threat model" in TRUSTED_ROOT/docs/code-review-operations-contract.md. Read that section, and a Formats table only when the change touches it.
 
 Ask of each change:
 

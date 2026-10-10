@@ -18,11 +18,11 @@ allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.
 | `deployer` | `deployer/`, `deploy.py` | One write point, one platform seam, refusals before mutation, the journal, the kinds table |
 | `skill-contract` | skills' `SKILL.md`, `agents/`, `deploy-meta/`, `source.json`, repository skills and shims | Grants that match what runs, script over prose, metadata, cost |
 | `validation-policy` | `tests/validation/`, the runner, `pyproject.toml` | Each policy holds the sentence that cites it, with a fixture, read through `ast` |
-| `trust-boundary` | the code-review contract, `review_guard.py`, `review_runtime.py`, `review_source.py`, `test_adversarial_inputs.py` | A threat-model row and its adversarial test for what an author reaches |
+| `trust-boundary` | the code-review contract, `review_guard.py`, `review_pipeline.py`, `review_runtime.py`, `review_source.py`, `review_specialists.py`, `test_adversarial_inputs.py` | A threat-model row and its adversarial test for what an author reaches |
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py`, the notes | An entry at the right level for each contract change |
 
-The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `upgrade-notes` runs only when `scripts/upgrade_notes_kept.py` finds an `## Unreleased` section in the head's notes; it declares that one file as its `reads`, so the review keeps the lazy snapshot. The condition imports skill-core's `console.py`, which the manifest therefore lists among its resources.
+The generic reviewer takes every other file: `tools/`, skill scripts, the deployer and tools suites, CI, and this skill's own profiles. Every finding names one of the manifest's `finding_categories`, each a kind of drift. `upgrade-notes` runs only when `scripts/upgrade_notes_kept.py` finds an `## Unreleased` section in the head's notes; it declares that one file as its `reads`, so the review keeps the lazy snapshot.
 
 ## 1. Configure
 
@@ -37,7 +37,7 @@ The configuration stays on each machine and never in the repository. Add this en
 }
 ```
 
-`manifest_path`, not `skill`, because the manifest is committed here. `snapshot_exclude` leaves out the skill-evaluation and canary fixtures: their trees hold planted defects and their own `README.md` and `docs/design.md`, which `source-search` would return beside the repository's. A pull request that changes a fixture is then `INCOMPLETE`, its fixtures reviewed from the diff alone; `evaluate-skill` is what exercises them.
+`snapshot_exclude` leaves out the evaluation and canary fixtures, whose planted defects and own `README.md` and `docs/design.md` `source-search` would return beside the repository's. A pull request that changes a fixture is therefore `INCOMPLETE`: its fixtures are reviewed from the diff, and `evaluate-skill` exercises them.
 
 ## 2. Check
 

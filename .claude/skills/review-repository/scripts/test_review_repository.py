@@ -141,6 +141,8 @@ class ManifestTests(unittest.TestCase):
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
             "skills/code-review-core/scripts/review_guard.py": {"trust-boundary"},
             "skills/code-review-core/scripts/review_source.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_pipeline.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_specialists.py": {"trust-boundary"},
             "skills/code-review-core/scripts/test_adversarial_inputs.py": {"trust-boundary"},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
             "docs/upgrade-notes.md": {"documentation", "upgrade-notes"},
@@ -161,7 +163,7 @@ class ManifestTests(unittest.TestCase):
         others = [
             "tools/worktrees.py",
             "skills/repo-cleanup/scripts/repo_cleanup.py",
-            "skills/code-review-core/scripts/review_pipeline.py",
+            "skills/code-review-core/scripts/review_canary.py",
             "skills/code-review-core/scripts/test_review_pipeline.py",
             "tests/deployer/test_plan.py",
             "tests/tools/test_skill_evals.py",
