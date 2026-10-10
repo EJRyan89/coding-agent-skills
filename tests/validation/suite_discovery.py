@@ -21,10 +21,10 @@ from validation_support import (
     SKILL_GUIDE,
     TEST_NAME_PATTERNS,
     TEST_SCRIPT_EXTENSIONS,
-    _markdown_section,
     import_aliases,
     is_executable_script,
     is_test_script,
+    markdown_section,
     module_imports,
     qualified_name,
     relative,
@@ -125,7 +125,7 @@ def untested_module_problems(root: Path) -> list[str]:
 
 def suite_discovery_documentation_problems(root: Path) -> list[str]:
     """Report a rule that decides whether a regression suite runs and that "Validation" in the skill guide omits."""
-    section = _markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
+    section = markdown_section((root / SKILL_GUIDE).read_text(encoding="utf-8"), "## Validation")
     if section is None:
         return [f'{SKILL_GUIDE} has no "Validation" section']
     rules = [*TEST_NAME_PATTERNS, *sorted(TEST_SCRIPT_EXTENSIONS), PYTHON_ENTRY_POINT]

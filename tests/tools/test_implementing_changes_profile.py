@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import re
+import sys
 import unittest
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+import frontmatter
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROFILE = REPOSITORY_ROOT / "docs" / "implementing-changes.md"
@@ -38,7 +43,11 @@ class ImplementingChangesProfileTest(unittest.TestCase):
                 self.assertIn(f"*{name}*", text)
 
     def test_skill_body_names_no_repository_command(self) -> None:
-        body = SKILL.read_text(encoding="utf-8").split("---\n", 2)[2]
+        lines = SKILL.read_text(encoding="utf-8").splitlines()
+        found = frontmatter.split(lines)
+        if found is None:
+            self.fail("implement-change has no frontmatter")
+        body = "\n".join(lines[found[1] :])
         for literal in ("tools/worktrees.py", "run_validation", "deploy.py", "change-skill", "releasing.md"):
             with self.subTest(literal=literal):
                 self.assertNotIn(literal, body)
