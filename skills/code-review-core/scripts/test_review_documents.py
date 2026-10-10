@@ -36,6 +36,7 @@ from review_runtime import (
     fetch_source_file,
     materialize_source_snapshot,
     materialize_source_snapshot_from_github,
+    search_source,
     verify_source_snapshot,
 )
 from review_specialists import parse_unified_diff, patch_fingerprints
@@ -747,6 +748,28 @@ class SnapshotRouteTests(unittest.TestCase):
         self.assertEqual("binary", fetch("docs/old.docx"))
         self.assertEqual("unextractable", fetch("docs/hostile.docx"))
 
+    def test_source_search_leaves_out_a_held_document_in_a_whole_and_a_lazy_snapshot(self) -> None:
+        # A text file names what the document's package holds, so the search is seen to run and to find it there.
+        line = "word/document and [Content_Types]"
+        head = commit(self.checkout, {"docs/notes.md": f"{line}\n".encode()})
+        shapes: list[tuple[str, dict[str, Any]]] = [("whole", {}), ("lazy", {"upfront": lambda _path: False})]
+        for shape, options in shapes:
+            destination = self.root / shape
+            metadata = materialize_source_snapshot(
+                self.checkout, REPOSITORY, head, destination, changed_paths=self.changed, **options
+            )
+            self.assertEqual({"docs/design.docx": "docx"}, metadata[review_runtime.SNAPSHOT_EXTRACTED])
+            for pattern, expected in (
+                ("word/document", [("docs/notes.md", "1", line)]),
+                ("Content_Types", [("docs/notes.md", "1", line)]),
+                ("Bound the queue", []),  # the held text is not searched either
+            ):
+                with self.subTest(shape=shape, pattern=pattern):
+                    self.assertEqual(
+                        (expected, False),
+                        search_source(self.checkout, destination, pattern, repository=REPOSITORY, commit=head),
+                    )
+
     def test_a_tarball_snapshot_extracts_as_the_checkout_does(self) -> None:
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
@@ -868,6 +891,24 @@ class PdfSnapshotTests(unittest.TestCase):
                     fetch_source_file(
                         self.checkout, destination, relative, repository=REPOSITORY, commit=self.head, staging=staging
                     ),
+                )
+
+    def test_source_search_leaves_out_a_held_pdf_as_it_does_a_word_document(self) -> None:
+        # The PDF's bytes hold the line uncompressed, and so do the text held beside it and a text file.
+        line = "Bound the queue at ten."
+        self.assertIn(line.encode(), HEAD_PDF)
+        head = commit(self.checkout, {"docs/notes.md": f"{line}\n".encode()})
+        shapes: list[tuple[str, dict[str, Any]]] = [("whole", {}), ("lazy", {"upfront": lambda _path: False})]
+        for shape, options in shapes:
+            with self.subTest(shape=shape):
+                destination = self.root / shape
+                metadata = materialize_source_snapshot(
+                    self.checkout, REPOSITORY, head, destination, changed_paths=["docs/spec.pdf"], **options
+                )
+                self.assertEqual({"docs/spec.pdf": "pdf"}, metadata[review_runtime.SNAPSHOT_EXTRACTED])
+                self.assertEqual(
+                    ([("docs/notes.md", "1", line)], False),
+                    search_source(self.checkout, destination, "Bound the queue", repository=REPOSITORY, commit=head),
                 )
 
     def test_a_tarball_snapshot_holds_it_as_the_checkout_does(self) -> None:
