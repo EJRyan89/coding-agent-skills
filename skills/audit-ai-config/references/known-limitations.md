@@ -14,8 +14,8 @@ manifest is an error.
 
 This hardening is unavailable when there is no recognized generator, assignments
 are dynamic, parsing fails, or target declarations are incomplete. In that case the
-report is explicitly `manifest-declared-only` and emits a warning: a structurally
-valid but narrowed manifest can still suppress checks. When no manifest exists either,
+report is explicitly `manifest-declared-only` and emits a warning naming the reason:
+a structurally valid but narrowed manifest can still suppress checks. When no manifest exists either,
 the report is `no-declared-scope` with an informational finding instead, because no
 editable scope exists to narrow. A future independently
 trusted configuration artifact could close that remaining gap.
@@ -55,12 +55,14 @@ cannot determine what a particular historical review actually loaded.
 ## Frontmatter is read as simple YAML
 
 Skill and agent frontmatter is read line by line so that each finding names its line. Quoted scalars, lists, block
-scalars, and scalars continued on indented lines are read as YAML reads them, through the repository's shared reader
-for all but block scalars, and a nested mapping such as the Agent Skills specification's `metadata` is accepted
-without checking its entries. Values are text without YAML type resolution, so a quoted `"true"` counts as a boolean.
-A one-line plain value is kept as written, even one YAML would refuse, such as `*bold* text`, and a flow list the
-shared reader cannot read, such as `[pr-number] [priority]`, is kept as text. A double-quoted value with an escape
-JSON lacks, such as `\x41`, is reported as unreadable.
+scalars, and scalars continued on indented lines are read as YAML reads them, through the repository's shared reader,
+except a block scalar with an explicit indentation indicator or a folded block scalar with more-indented lines, which
+the shared reader refuses and the engine reads itself. A nested mapping such as the Agent Skills specification's
+`metadata` is accepted without checking its entries. Values are text without YAML type resolution, so a quoted
+`"true"` counts as a boolean. A one-line plain value is kept as written, without the trailing ` # comment` YAML ends
+it at, even one YAML would refuse, such as `*bold* text`, and a flow list the shared reader cannot read, such as
+`[pr-number] [priority]`, is kept as text. A double-quoted value with an escape JSON lacks, such as `\x41`, is
+reported as unreadable.
 
 ## Copilot projections are only provenance-checked
 
@@ -73,7 +75,8 @@ artifacts rather than authority sources.
 
 ## MCP validation gaps
 
-- Missing `mcpServers` wrapper and non-object server entries produce warnings, not errors.
+- Missing `mcpServers` wrapper and non-object server entries, and non-table `.codex/config.toml` server entries,
+  produce warnings, not errors; the audit and the handshake read each file the same way.
 - VS Code and Codex server definitions receive minimal structural validation beyond container type checks.
 - Ancestor-chain `.mcp.json` discovery is not implemented; nested `.mcp.json` files are reported as a limitation but not validated.
 - Cross-runtime parity does not cover `env_vars`, HTTP headers, or authentication fields.

@@ -277,7 +277,33 @@ class HandshakeTests(unittest.TestCase):
         (self.root / ".codex/config.toml").write_text("[mcp_servers.docs\n", encoding="utf-8")
         code, lines = self._run()
         self.assertEqual(1, code, lines)
-        self.assertTrue(lines[0].startswith("CONFIG_ERROR .codex/config.toml Could not read or parse: "), lines)
+        self.assertTrue(lines[0].startswith("CONFIG_ERROR .codex/config.toml Invalid TOML: "), lines)
+
+    def test_one_malformed_server_is_a_config_problem_while_the_others_run(self) -> None:
+        self._write(".mcp.json", "mcpServers", {"bad": {}, "note": "text", "docs": self._stdio("ok")})
+        self.assertEqual(
+            (
+                1,
+                [
+                    "CONFIG_ERROR .mcp.json Server 'bad': must have 'command' (STDIO/local) or 'url' (HTTP/SSE)",
+                    "CONFIG_WARNING .mcp.json Server 'note': entry must be an object, got str",
+                    "SKIPPED bad source=.mcp.json transport=unknown",
+                    "HANDSHAKE_OK docs source=.mcp.json protocol=2025-06-18 tools=2",
+                ],
+            ),
+            self._run(),
+        )
+
+    def test_codex_servers_are_read_as_the_audit_reads_them(self) -> None:
+        (self.root / ".codex").mkdir()
+        config = self.root / ".codex/config.toml"
+        config.write_text('mcp_servers = "docs"\n', encoding="utf-8")
+        self.assertEqual((1, ["CONFIG_ERROR .codex/config.toml 'mcp_servers' must be a table"]), self._run())
+        config.write_text("[mcp_servers]\ndocs = 1\n", encoding="utf-8")
+        self.assertEqual(
+            (0, ["CONFIG_WARNING .codex/config.toml Server 'docs': entry must be a table, got int", "NO_SERVERS"]),
+            self._run(),
+        )
 
     def test_a_readable_server_is_still_checked_beside_an_unreadable_config(self) -> None:
         self._write(".mcp.json", "mcpServers", {"docs": self._stdio("ok")})

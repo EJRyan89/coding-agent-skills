@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import dataclasses
 import hashlib
@@ -341,16 +342,16 @@ class ParityTests(unittest.TestCase):
             any(f.severity == "ERROR" and "missing" in f.message.lower() for f in result.findings),
         )
 
-    def test_json_hash_mismatch_is_conflict(self) -> None:
-        """Modified JSON artifact flagged as hash mismatch."""
+    def test_a_hashed_artifact_that_changed_is_a_conflict_whatever_its_format(self) -> None:
+        # The fixture's manifest hashes the Markdown copilot-instructions.md, not only its JSON artifacts.
         (self.root / ".github/copilot-instructions.md").write_text(
             f"> {OWNERSHIP}.\n\nModified content.\n", encoding="utf-8"
         )
-        # Update manifest to point to copilot-instructions as JSON for this test
-        # Actually, copilot-instructions has a hash in our fixture
         result = audit.audit(self.root)
-        errors = [f for f in result.findings if f.severity == "ERROR"]
-        self.assertTrue(len(errors) > 0)
+        self.assertIn(
+            ("ERROR", "parity", "Artifact modified (hash mismatch with manifest)"),
+            [(f.severity, f.check, f.message) for f in result.findings if f.path == ".github/copilot-instructions.md"],
+        )
 
     def test_manifest_path_traversal_rejected(self) -> None:
         manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
@@ -486,6 +487,23 @@ class McpTests(unittest.TestCase):
                 for f in result.findings
             ),
         )
+
+    def test_codex_servers_that_are_not_tables_are_reported_as_the_json_readers_report_them(self) -> None:
+        cases = {
+            'mcp_servers = "docs"\n': [("ERROR", "'mcp_servers' must be a table")],
+            "mcp_servers = [1]\n": [("ERROR", "'mcp_servers' must be a table")],
+            "[mcp_servers]\ndocs = 1\n": [("WARNING", "Server 'docs': entry must be a table, got int")],
+            '[mcp_servers.docs]\ncommand = "docs"\n': [],
+            "model = 'x'\n": [],
+        }
+        (self.root / ".codex").mkdir(exist_ok=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                (self.root / ".codex/config.toml").write_text(text, encoding="utf-8")
+                servers, findings = audit._read_codex_mcp(self.root)
+                self.assertEqual(expected, [(f.severity, f.message) for f in findings])
+                self.assertEqual({".codex/config.toml"}, {f.path for f in findings} or {".codex/config.toml"})
+                self.assertEqual(["docs"] if "command" in text else [], list(servers))
 
     def test_vscode_mcp_wrong_schema(self) -> None:
         (self.root / ".vscode").mkdir(exist_ok=True)
@@ -752,14 +770,21 @@ class InstructionLayeringTests(unittest.TestCase):
             any(f.check == "layering" and "useClaudeMdFile" in f.message for f in result.findings),
         )
 
-    def test_copilot_local_folder_trust_warning(self) -> None:
+    def test_the_folder_trust_warning_follows_the_copilot_cli_and_app_surfaces(self) -> None:
+        # references/report-schema.md ties this warning to the Copilot CLI/app surfaces, not to an MCP target.
         manifest = json.loads(audit.read_text(self.root / ".github/ai-config-manifest.json"))
-        manifest["surfaces"] = ["copilot_cli"]
-        (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-        result = audit.audit(self.root)
-        self.assertTrue(
-            any(f.check == "layering" and "trust" in f.message.lower() for f in result.findings),
-        )
+        for surfaces, servers, warned in (
+            (["copilot_cli"], [], True),
+            (["copilot_app"], [], True),
+            (["vscode"], [{"name": "docs", "transport": "stdio", "targets": ["copilot_local"]}], False),
+        ):
+            with self.subTest(surfaces=surfaces):
+                manifest["surfaces"], manifest["mcp_servers"] = surfaces, servers
+                (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+                result = audit.audit(self.root)
+                self.assertEqual(
+                    warned, any(f.check == "layering" and "folder trust" in f.message for f in result.findings)
+                )
 
     def test_codex_override_masks_adapter(self) -> None:
         (self.root / "AGENTS.override.md").write_text("# Override\n\nCustom instructions.\n", encoding="utf-8")
@@ -1071,12 +1096,81 @@ class CopilotConfigurationTests(unittest.TestCase):
         path = self.root / ".github/agents/reviewer.agent.md"
         path.parent.mkdir(parents=True)
         path.write_text(
-            "---\ndescription: Review changes\ntarget: invalid\ntools: []\n---\n",
+            "---\ndescription: Review changes\ntarget: invalid\ntools: [read, [edit]]\n---\n",
             encoding="utf-8",
         )
         result = audit.audit(self.root)
         self.assertTrue(any(f.check == "copilot-agent" and "target must" in f.message for f in result.findings))
         self.assertTrue(any(f.check == "copilot-agent" and "tools must" in f.message for f in result.findings))
+
+    def test_an_empty_tools_list_disables_every_tool_and_an_empty_value_is_an_error(self) -> None:
+        # GitHub's custom-agents configuration reference: an empty list disables all tools, and an unset tools
+        # property enables all of them. An empty value is neither: YAML reads it as unset, which enables every tool,
+        # while its author may have meant none, so it stays an error that names both ways of saying it.
+        empty = "tools must not be empty; write [] to disable every tool, or omit tools to enable every tool"
+        cases = {
+            "---\ndescription: d\ntools: []\n---\n": [],
+            "---\ndescription: d\ntools: [] # none\n---\n": [],
+            "---\ndescription: d\ntools:\n---\n": [(None, empty)],
+            '---\ndescription: d\ntools: ""\n---\n': [(None, empty)],
+            "---\ndescription: d\ntools: ''\n---\n": [(None, empty)],
+            "---\ndescription: d\ntools: # none\n---\n": [(None, empty)],
+        }
+        agent = self.root / ".github/agents/demo.agent.md"
+        agent.parent.mkdir(parents=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                agent.write_text(text, encoding="utf-8")
+                found = audit._validate_agent(agent, self.root)
+                self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
+    def test_an_empty_allowed_tools_list_is_an_error_like_an_empty_value(self) -> None:
+        empty = [(None, "allowed-tools must not be empty")]
+        cases = {
+            "---\nname: demo\ndescription: d\nallowed-tools: []\n---\n": empty,
+            "---\nname: demo\ndescription: d\nallowed-tools:\n---\n": empty,
+            '---\nname: demo\ndescription: d\nallowed-tools: ""\n---\n': empty,
+            "---\nname: demo\ndescription: d\nallowed-tools: # none\n---\n": empty,
+            "---\nname: demo\ndescription: d\nallowed-tools: [Read]\n---\n": [],
+            "---\nname: demo\ndescription: d\nallowed-tools: Read Grep\n---\n": [],
+        }
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                found = audit._validate_skill(skill, self.root)
+                self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
+
+    def test_a_trailing_comment_is_not_part_of_a_plain_value(self) -> None:
+        # YAML ends a plain scalar at a space followed by #, so the comment is never part of the value.
+        cases = {
+            "---\nname: demo # the directory's name\n---\n": "demo",
+            "---\nname: see #42 # issue\n---\n": "see",
+            "---\nname: a#b\n---\n": "a#b",
+            "---\nname: # nothing\n---\n": "",
+            "---\nname: *bold* text # kept as written\n---\n": "*bold* text",
+            '---\nname: "a # b" # quoted\n---\n': "a # b",
+            "---\nname: [a, b] # list\n---\n": ["a", "b"],
+            "---\nname: > # folded\n  long\n  text\n---\n": "long text\n",
+            "---\nname: # list follows\n  - a\n  - b\n---\n": ["a", "b"],
+        }
+        skill = self.root / ".github/skills/demo/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                skill.write_text(text, encoding="utf-8")
+                values, found = audit._frontmatter(skill)
+                self.assertEqual(expected, values["name"])
+                self.assertEqual([], found)
+        agent = self.root / ".github/agents/demo.agent.md"
+        agent.parent.mkdir(parents=True)
+        agent.write_text(
+            "---\ndescription: d # what it does\ntarget: vscode # editor only\ninfer: false # never\n"
+            "modelPolicy: required # pinned\n---\n",
+            encoding="utf-8",
+        )
+        self.assertEqual([], audit._validate_agent(agent, self.root))
 
     def test_frontmatter_the_shared_reader_would_accept_or_refuse_is_judged_line_by_line(self) -> None:
         # Pinned while _frontmatter keeps its own line walk beside skill-core's reader; see the comment above it.
@@ -1097,7 +1191,7 @@ class CopilotConfigurationTests(unittest.TestCase):
             "---\nname: demo\ndescription: d\nlicense: MIT\n- x\n---\n": [(5, unreadable)],
             "---\nname: demo\ndescription: *bold* text\n---\n": [],
             "---\nname: demo\nname: demo\ndescription: d\n---\n": [(3, "Duplicate frontmatter key 'name'")],
-            "---\nname: demo\ndescription: d\nallowed-tools: []\n---\n": [],
+            "---\nname: demo\ndescription: d\nallowed-tools: []\n---\n": [(None, "allowed-tools must not be empty")],
             "---\nname: demo\ndescription: d\nargument-hint: [pr] [flag]\n---\n": [],
         }
         skill = self.root / ".github/skills/demo/SKILL.md"
@@ -1107,7 +1201,7 @@ class CopilotConfigurationTests(unittest.TestCase):
                 skill.write_text(text, encoding="utf-8")
                 found = audit._validate_skill(skill, self.root)
                 self.assertEqual(expected, [(finding.line, finding.message) for finding in found])
-        tools_shape = "tools must be a non-empty string list or comma-separated string"
+        tools_shape = "tools must be a list of tool names or a comma-separated string"
         agents = {
             "---\ndescription: d\ntools: [read, edit]\n---\n": [],
             '---\ndescription: d\ntools: ["read", "edit"]\n---\n': [],
@@ -1122,7 +1216,11 @@ class CopilotConfigurationTests(unittest.TestCase):
                 (None, tools_shape),
             ],
             "---\ndescription: d\ntools:\n  read: x\n---\n": [(None, tools_shape)],
-            "---\ndescription: d\ntools:\n---\n": [(None, "tools must not be empty")],
+            "---\ndescription: d\ntools:\n---\n": [
+                (None, "tools must not be empty; write [] to disable every tool, or omit tools to enable every tool")
+            ],
+            "---\ndescription: d\ntools: []\n---\n": [],
+            '---\ndescription: d\ntools: [read, ""]\n---\n': [(None, tools_shape)],
             "---\ndescription: d\ntarget: [vscode]\ninfer: [true]\n---\n": [
                 (None, "target must be 'vscode' or 'github-copilot'"),
                 (None, "infer must be a boolean"),
@@ -1297,7 +1395,57 @@ class CopilotConfigurationTests(unittest.TestCase):
     def test_manifest_without_generator_still_warns_about_editable_scope(self) -> None:
         result = audit.audit(self.root)
         self.assertEqual("manifest-declared-only", result.scope_status)
-        self.assertTrue(any(f.check == "scope" and f.severity == "WARNING" for f in result.findings))
+        self.assertEqual(
+            [("WARNING", True)],
+            [
+                (f.severity, f.message.endswith("(manifest-declared-only)"))
+                for f in result.findings
+                if f.check == "scope"
+            ],
+        )
+
+    def test_a_generator_scope_that_cannot_be_derived_reports_the_manifest_scope_and_why(self) -> None:
+        generators = {
+            "generator-scope-unreadable": "TARGET_RUNTIMES = [\n",
+            "generator-scope-not-literal": "TARGET_RUNTIMES = list()\nTARGET_SURFACES = []\nTARGET_FEATURES = []\n",
+            "generator-scope-invalid": "TARGET_RUNTIMES = 'claude'\nTARGET_SURFACES = []\nTARGET_FEATURES = []\n",
+            "generator-scope-incomplete": "TARGET_RUNTIMES = ['claude']\n",
+        }
+        script = self.root / ".github/scripts/ai_config.py"
+        script.parent.mkdir(parents=True)
+        for reason, source in generators.items():
+            with self.subTest(reason=reason):
+                script.write_text(source, encoding="utf-8")
+                result = audit.audit(self.root)
+                self.assertEqual("manifest-declared-only", result.scope_status)
+                self.assertEqual(
+                    [
+                        (
+                            "WARNING",
+                            "Audit scope is manifest-declared only; editable manifest scope can suppress checks "
+                            f"({reason})",
+                        )
+                    ],
+                    [(f.severity, f.message) for f in result.findings if f.check == "scope"],
+                )
+
+    def test_the_scope_status_is_always_one_the_report_schema_names(self) -> None:
+        documented = {"independently-derived", "manifest-declared-only", "no-declared-scope", "not-applicable"}
+        text = (Path(audit.__file__).resolve().parent.parent / "references/report-schema.md").read_text(
+            encoding="utf-8"
+        )
+        envelope = text[text.index("## Report Envelope") : text.index("## Finding Structure")]
+        self.assertEqual(documented, set(re.findall(r"^- `([a-z-]+)`", envelope, re.MULTILINE)))
+        self.assertEqual(documented, set(audit.SCOPE_STATUSES))
+        bullet = next(line for line in envelope.split("\n- ") if line.startswith("`manifest-declared-only`"))
+        reasons = {
+            "manifest-declared-only",
+            "generator-scope-unreadable",
+            "generator-scope-not-literal",
+            "generator-scope-invalid",
+            "generator-scope-incomplete",
+        }
+        self.assertEqual(reasons, set(re.findall(r"`([a-z-]+)`", bullet.split(":", 1)[1])))
 
     def test_code_review_head_branch_trust_warning(self) -> None:
         manifest = self._manifest()
@@ -2011,6 +2159,7 @@ MCP_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
             ".github/mcp.json",
             "Duplicate server name 'alpha' — .mcp.json takes precedence, making .github/mcp.json entry unreachable",
         ),
+        ("WARNING", "mcp", ".codex/config.toml", "Server 'flag': entry must be a table, got bool"),
         (
             "ERROR",
             "mcp",
@@ -2824,14 +2973,14 @@ PARITY_EXPECTED: dict[str, list[tuple[str, str, str | None, str]]] = {
         ),
         ("ERROR", "parity", ".github/mcp.json", "Generated artifact missing: .github/mcp.json"),
         ("ERROR", "parity", ".codex/config.toml", "Generated artifact exists but could not be read"),
-        ("ERROR", "parity", ".mcp.json", "JSON artifact modified (hash mismatch with manifest)"),
+        ("ERROR", "parity", ".mcp.json", "Artifact modified (hash mismatch with manifest)"),
         ("ERROR", "parity", ".github/agents/reviewer.md", "Generated file missing ownership marker"),
         ("ERROR", "parity", ".github/copilot-instructions.md", "Copilot instructions missing banner"),
         ("ERROR", "parity", "AGENTS.md", "Content does not match deterministic template"),
         ("ERROR", "parity", ".agents/skills/demo/SKILL.md", "Content does not match deterministic template"),
     ],
     "hash_mismatch_hides_missing_marker": [
-        ("ERROR", "parity", ".github/agents/reviewer.md", "JSON artifact modified (hash mismatch with manifest)"),
+        ("ERROR", "parity", ".github/agents/reviewer.md", "Artifact modified (hash mismatch with manifest)"),
     ],
     "copilot_sections_differ": [
         (
@@ -3304,6 +3453,18 @@ class GeneratedLayoutReferenceTests(unittest.TestCase):
         self.assertIn(".github/workflows/ai-config-parity-pr.yml", documented)
         self.assertEqual(set(), documented - set(audit.MANIFEST_ALLOWED_PATHS))
 
+    def test_the_copilot_local_tools_row_names_what_the_mcp_check_accepts(self) -> None:
+        row = next(row for row in self._table("## MCP server objects") if row[0] == "`copilot_local.tools`")
+        self.assertEqual(["null", '["*"]'], re.findall(r"`([^`]+)`", row[1])[:2])
+        manifest = {"mcp_servers": [{"name": "docs", "targets": ["claude", "copilot_local"]}]}
+        accepted = {
+            json.dumps(tools): not audit._check_copilot_local_tools(
+                manifest, {"docs": {"command": "d", "tools": tools}}
+            )
+            for tools in (None, ["*"], ["search"])
+        }
+        self.assertEqual({"null": True, '["*"]': True, '["search"]': False}, accepted)
+
 
 class ReportSchemaReferenceTests(unittest.TestCase):
     """references/report-schema.md shows the report the engine prints; its examples must be that output."""
@@ -3354,6 +3515,49 @@ class ReportSchemaReferenceTests(unittest.TestCase):
         documented = [line.split("|")[1].strip().strip("`") for line in section.splitlines() if line.startswith("| `")]
         self.assertEqual(["severity", "check", "path", "line", "message"], documented)
         self.assertEqual(documented, [field.name for field in dataclasses.fields(audit.Finding)])
+
+
+class AuditPolicyReferenceTests(unittest.TestCase):
+    """references/audit-policy.md names, in its check headings, every check a finding can carry."""
+
+    CHECKS = frozenset(
+        {
+            "inventory",
+            "authority",
+            "vocabulary",
+            "scope",
+            "parity",
+            "orphan",
+            "mcp",
+            "layering",
+            "trust-boundary",
+            "runtime",
+            "copilot-config",
+            "copilot-skill",
+            "copilot-agent",
+            "collision",
+            "provenance",
+            "runtime-role",
+            "behavioral",
+            "ownership",
+            "limitation",
+        }
+    )
+
+    def test_the_check_headings_name_every_check_the_engine_reports(self) -> None:
+        reference = Path(audit.__file__).resolve().parent.parent / "references/audit-policy.md"
+        headings = re.findall(r"^### \d+\. .*\((.*)\)$", reference.read_text(encoding="utf-8"), re.MULTILINE)
+        documented = {name for heading in headings for name in re.findall(r"`([a-z-]+)`", heading)}
+        self.assertEqual(self.CHECKS, documented)
+        tree = ast.parse(Path(audit.__file__).read_text(encoding="utf-8"))
+        reported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Finding":
+                check = node.args[1] if len(node.args) > 1 else next(k.value for k in node.keywords if k.arg == "check")
+                if not isinstance(check, ast.Constant):
+                    self.fail(f"a check named by an expression the reference cannot list: {ast.unparse(node)}")
+                reported.add(check.value)
+        self.assertEqual(self.CHECKS, reported)
 
 
 class ReportFormatTests(unittest.TestCase):

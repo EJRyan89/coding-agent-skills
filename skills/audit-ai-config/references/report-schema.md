@@ -16,10 +16,15 @@ Finding format, severities, and output modes for the audit engine.
 ## Report Envelope
 
 The Markdown and JSON report include repository `authority` plus `scopeStatus`.
-`scopeStatus` is `independently-derived` when literal generator target declarations
-were statically compared to the manifest, `manifest-declared-only` when that safe
-derivation was unavailable, `no-declared-scope` when there is neither a manifest nor a
-recognized generator, or `not-applicable` before authority is conforming.
+`scopeStatus` is one of four values:
+
+- `independently-derived` when literal generator target declarations were statically compared to the manifest;
+- `manifest-declared-only` when a manifest exists but that safe derivation was unavailable, with a `scope` `WARNING`
+  whose message ends with the reason in parentheses: `manifest-declared-only` (no recognized generator),
+  `generator-scope-unreadable`, `generator-scope-not-literal`, `generator-scope-invalid`, or
+  `generator-scope-incomplete`;
+- `no-declared-scope` when there is neither a manifest nor a recognized generator;
+- `not-applicable` before authority is conforming.
 
 ## Finding Structure
 
@@ -136,7 +141,7 @@ These are emitted per surface when static validation is insufficient:
 | `copilot_repository` targeted | Repository MCP settings cannot be validated statically |
 | Code review targeted | Custom-instructions enablement is unverifiable |
 | VS Code targeted | `chat.useClaudeMdFile`, `chat.useAgentsMdFile`, `useInstructionFiles`, `includeApplyingInstructions` settings are unverifiable |
-| `copilot_local` targeted | Folder trust status cannot be determined statically |
+| Copilot CLI or app targeted | Folder trust status cannot be determined statically |
 | Copilot CLI/app, cloud agent, or code review targeted | Repository settings, organization policy, authentication, model availability, runtime enablement, and actual use cannot be verified statically |
 | Code review targeted | Instructions, agents, and skills come from the PR head; this is not a trusted-base or trusted-ref review contract |
 | Generator scope is not safely derivable | Editable manifest scope can suppress checks; report is `manifest-declared-only` |
