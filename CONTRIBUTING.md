@@ -139,7 +139,7 @@ Branch protection and these settings are live repository settings, not tracked f
 
 ## Issues and pull requests
 
-Open issues and pull requests from the templates in `.github/`: an enhancement, bug, or documentation issue template, and the pull request template, whose Validation checklist is the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
+Open issues from the templates in `.github/ISSUE_TEMPLATE/`, one per kind of issue, and pull requests from `.github/pull_request_template.md`, whose Validation checklist is the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
 
 The [project board](https://github.com/users/EJRyan89/projects/1) is the view of the issues by release: every issue on a milestone is an item on it, grouped by milestone, and milestones remain the record of scope. A pull request's `Closes #<number>` line is what moves its issue across the board, from Todo to In Progress when the pull request opens and to Done when it merges, so the line in step 4 below is required, not a courtesy.
 
