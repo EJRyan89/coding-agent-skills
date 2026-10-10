@@ -44,7 +44,7 @@ It prints the same block as the first sweep, now with the repository's state aft
 
 Ask only these questions, and only when the sweep or a later command printed the matching lines.
 
-**Local-only and closed branches.** `CONFIRM_LOCAL <branch>` names a branch with no remote tracking branch, or one whose worktree was removed after its pull request closed without merging. For these lines, call `AskUserQuestion` with question `"<REPO_NAME>: These branches have no remote tracking branch, or their pull request closed without merging. Delete or keep each?"` listing the branches, header `"Local branches"`, and options `"Delete all listed"`, `"Keep all"`, and `"Let me choose individually"`; for the last, ask per branch with `"Delete"` and `"Keep"`. Then delete the chosen branches:
+**Local-only and closed branches.** For `CONFIRM_LOCAL <branch>` lines, call `AskUserQuestion` with question `"<REPO_NAME>: These branches have no remote tracking branch, or their pull request closed without merging. Delete or keep each?"` listing the branches, header `"Local branches"`, and options `"Delete all listed"`, `"Keep all"`, and `"Let me choose individually"`; for the last, ask per branch with `"Delete"` and `"Keep"`. Then delete the chosen branches:
 
 ```bash
 python -B "${CLAUDE_SKILL_DIR}/scripts/repo_cleanup.py" delete-local --plan "<plan file>" --branch "<branch>" --branch "<branch>"
@@ -60,6 +60,6 @@ Both print `DELETED`, `UNMERGED`, or `PRESERVED <branch> <reason>` (for a deleti
 
 ## 5. Summary
 
-The sweep (for every repository that is not `quiet`), `delete-local`, and `force-delete` each give the repository's current summary as `SUMMARY <text>` lines. Show the text of the last summary printed for each repository exactly as given; `summary --plan "<plan file>"` prints it again. A summary headed `cleanup stopped partway` describes a command that failed; a later command on the same plan that completes prints a summary headed `cleanup complete`.
+The sweep (for every repository that is not `quiet`), `delete-local`, and `force-delete` each give the repository's current summary as `SUMMARY <text>` lines. Show the text of the last summary printed for each repository exactly as given; `summary --plan "<plan file>"` prints it again. Once a later command's summary for a repository is headed `cleanup complete`, do not report an earlier stop in that repository as outstanding.
 
 Finish with `Processed <N> repositories.` from `SWEPT`, followed by how many were skipped because their fetch failed, the user aborted them, or they reported an `ERROR`.
