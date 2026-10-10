@@ -18,7 +18,7 @@ allowed-tools: ["Bash(python -B skills/code-review-core/scripts/review_pipeline.
 | `deployer` | `deployer/`, `deploy.py` | One write point, one platform seam, refusals before mutation, the journal, the kinds table |
 | `skill-contract` | skills' `SKILL.md`, `agents/`, `deploy-meta/`, `source.json`, repository skills and shims | Grants that match what runs, script over prose, metadata, cost |
 | `validation-policy` | `tests/validation/`, the runner, `pyproject.toml` | Each policy holds the sentence that cites it, with a fixture, read through `ast` |
-| `trust-boundary` | the code-review contract, `review_guard.py`, `review_pipeline.py`, `review_runtime.py`, `review_source.py`, `review_specialists.py`, `test_adversarial_inputs.py` | A threat-model row and its adversarial test for what an author reaches |
+| `trust-boundary` | the code-review contract, `review_documents.py`, `review_guard.py`, `review_pipeline.py`, `review_runtime.py`, `review_source.py`, `review_specialists.py`, `test_adversarial_inputs.py` | A threat-model row and its adversarial test for what an author reaches |
 | `documentation` | `docs/`, top-level Markdown, the templates | Each sentence true of the code and of its owner |
 | `upgrade-notes` | contract files, skills' `SKILL.md`, `deployer/arguments.py` | The body's upgrade-note entry for each contract change, at the level and with the user action it asks for |
 

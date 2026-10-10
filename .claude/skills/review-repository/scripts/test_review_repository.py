@@ -65,6 +65,7 @@ class ManifestTests(unittest.TestCase):
             "tests/run_validation.py": {"validation-policy"},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
+            "skills/code-review-core/scripts/review_documents.py": {"trust-boundary"},
             "skills/code-review-core/scripts/review_guard.py": {"trust-boundary"},
             "skills/code-review-core/scripts/review_source.py": {"trust-boundary"},
             "skills/code-review-core/scripts/review_pipeline.py": {"trust-boundary"},

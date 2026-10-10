@@ -829,6 +829,26 @@ class RecordTests(unittest.TestCase):
             with self.assertRaisesRegex(RecordError, "F001.title must be a single non-blank line"):
                 validate_record(tampered)
 
+    def test_a_finding_location_comes_from_the_suite_never_a_reviewer_and_is_validated_in_records(self) -> None:
+        def validate(result: dict) -> dict:
+            return validate_adapter_result(
+                result, expected_repository="example/one", expected_number=12, expected_head_sha="b" * 40
+            )
+
+        given = valid_adapter_result()
+        given["findings"][0]["location"] = "paragraph 2"
+        with self.assertRaisesRegex(RecordError, "Adapter finding fields do not match the protocol"):
+            validate(given)
+        result = validate(valid_adapter_result())
+        result["findings"][0]["location"] = 'paragraph 2, under the heading "Scope"'
+        record = build_record(valid_request(), result, version=1, policy={})
+        self.assertEqual('paragraph 2, under the heading "Scope"', validate_record(record)["findings"][0]["location"])
+        for bad in ("", "x" * 201, "two\nlines", " padded", 7):
+            tampered = json.loads(json.dumps(record))
+            tampered["findings"][0]["location"] = bad
+            with self.assertRaisesRegex(RecordError, "F001.location must be one trimmed line of at most 200"):
+                validate_record(tampered)
+
     def test_finding_analyzer_is_optional_but_validated_in_results_records_and_schema(self) -> None:
         schema = json.loads(
             (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(encoding="utf-8")
@@ -2408,10 +2428,13 @@ class RuntimeContractTests(unittest.TestCase):
                 "unsafe-path",
                 "symbolic-link",
                 "non-regular",
+                "unextractable",
             },
             review_runtime.SNAPSHOT_EXCLUSION_REASONS,
         )
-        self.assertEqual({"configured", "file-size-limit", "unsafe-path"}, review_runtime.COVERAGE_GAP_REASONS)
+        self.assertEqual(
+            {"configured", "file-size-limit", "unsafe-path", "unextractable"}, review_runtime.COVERAGE_GAP_REASONS
+        )
 
     def test_source_snapshot_still_refuses_a_link_at_the_reserved_manifest_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

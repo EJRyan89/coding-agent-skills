@@ -62,6 +62,7 @@ from review_config import (
     resolve_repositories,
     validate_repository_identity,
 )
+from review_documents import ExtractionRefused, document_diff, document_format, extract, locations
 from review_flags import FlagError, default_flags_path, load_store
 from review_github import GitHubClient, GitHubError
 from review_guard import RUN_PREFIX, read_log
@@ -122,14 +123,17 @@ from review_reviewers import (
     resolve_reviewer,
 )
 from review_runtime import (
+    MAX_CHANGED_FILE_BYTES,
     MAX_SOURCE_SNAPSHOT_BYTES,
     MODEL_ALIAS_RUNTIMES,
     PULL_REQUEST_BODY_CHARACTERS,
     PULL_REQUEST_BODY_FILE,
     RUNTIME_CAPABILITIES,
+    SNAPSHOT_EXTRACTED,
     SNAPSHOT_FETCHABLE,
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
+    blob_matches,
     build_adapter_request,
     choose_dispatch,
     declared_reviewer_files,
@@ -142,6 +146,7 @@ from review_runtime import (
     materialize_source_snapshot_from_github,
     measure_source_snapshot,
     negotiate_capabilities,
+    read_blob,
     resolve_reviewer_commit,
     resolve_runtime,
     snapshot_bytes,
@@ -158,6 +163,7 @@ from review_specialists import (
     check,
     condition_reads,
     describe_link,
+    diff_block_sides,
     evaluate_condition,
     load_materialized_manifest,
     parse_unified_diff,
@@ -469,15 +475,17 @@ def _snapshot(
     exclude: Sequence[str] = (),
 ) -> tuple[dict[str, tuple[int, str] | None], dict[str, Any], dict[str, Any]]:
     """Snapshot the head at `source`, from the checkout or else GitHub's tarball, leaving out what the repository's
-    `exclude` globs match. Returns the symbolic links the snapshot leaves out that the pull request changes, each one
-    noted, the snapshot's statistics: its source, files, bytes, and exclusions by reason, and the seconds spent
-    fetching the head and materializing it, and the manifest materializing it verified, which the request and the
-    plan take in place of verifying the snapshot again.
+    `exclude` globs match, and noting each changed document whose text it could not extract. Returns the symbolic
+    links the snapshot leaves out that the pull request changes, each one noted, the snapshot's statistics: its
+    source, files, bytes, and exclusions by reason, and the seconds spent fetching the head and materializing it, and
+    the manifest materializing it verified, which the request and the plan take in place of verifying the snapshot
+    again.
 
     A checkout's snapshot is lazy: it holds the changed files and the analyzer settings, and its reviewers fetch the
     rest through review_source.py. `_retake_snapshot` makes it whole where they cannot, and adds the paths the
     run's condition scripts declare they read."""
     fetched = 0.0
+    refused: dict[str, str] = {}
     started = services.timer()
     if checkout is not None:
         verify_checkout_remote(checkout, repository, services.git)
@@ -492,6 +500,7 @@ def _snapshot(
             changed_paths=changed,
             upfront=lazy_upfront(()),
             exclude=exclude,
+            refused=refused,
         )
     else:
 
@@ -502,12 +511,18 @@ def _snapshot(
             fetched += services.timer() - began
 
         snapshot = materialize_source_snapshot_from_github(
-            repository, head, source, fetcher=fetcher, changed_paths=changed, exclude=exclude
+            repository, head, source, fetcher=fetcher, changed_paths=changed, exclude=exclude, refused=refused
         )
     materialized = services.timer() - started - fetched
     # Only the links this pull request adds or changes: a repository that keeps links is not told on every review.
     links = symbolic_links(parsed, snapshot["excluded_paths"])
     notes.extend(f"snapshot excludes symbolic link {path}" for path in links)
+    # A snapshot taken again for the same change refuses the same documents, so these notes stand for it too.
+    notes.extend(
+        f"Not reviewed in full: the text of document {json.dumps(path)} could not be extracted ({reason}), so it "
+        "is recorded as an unavailable source."
+        for path, reason in sorted(refused.items())
+    )
     stats = {
         "source": "tarball" if checkout is None else "checkout-lazy",
         "files": len(snapshot["source_hashes"]),
@@ -593,6 +608,121 @@ def _retake_snapshot(
     stats["excluded"] = exclusion_counts(snapshot["excluded_paths"])
     stats["seconds"]["materialize"] += services.timer() - started
     return snapshot
+
+
+# Reads a changed document's base version: its bytes, or None for one over the changed-file limit.
+BaseReader = Callable[[str, str], bytes | None]
+DIFF_BLOCK = re.compile(r"^diff --git ", re.MULTILINE)
+INDEX_LINE = re.compile(r"index ([0-9a-f]+)\.\.([0-9a-f]+)")
+
+
+def _base_reader(checkout: Path | None, repository: str, pull: dict[str, Any], services: Services) -> BaseReader:
+    """How a review reads a changed document's base version, by the old path and abbreviated blob id its diff names:
+    from the checkout's object store, or else from GitHub at the merge base the diff was taken against, where the
+    blob GitHub names must start with that id and hash to its own."""
+    if checkout is not None:
+
+        def from_checkout(_path: str, abbreviation: str) -> bytes | None:
+            content = read_blob(checkout, abbreviation, services.git)
+            return None if len(content) > MAX_CHANGED_FILE_BYTES else content
+
+        return from_checkout
+    merge_base = functools.cache(
+        lambda: services.github.get_merge_base(repository, pull["baseRefOid"], pull["headRefOid"])
+    )
+
+    def from_github(path: str, abbreviation: str) -> bytes | None:
+        blob, content = services.github.get_file_blob(repository, merge_base(), path, maximum=MAX_CHANGED_FILE_BYTES)
+        if not blob.startswith(abbreviation) or (content is not None and not blob_matches(blob, content)):
+            raise RuntimeContractError(f"GitHub did not return blob {abbreviation}")
+        return content
+
+    return from_github
+
+
+def _binary_block(block: str) -> tuple[list[str], str | None] | None:
+    """A binary file's diff block's header lines and the abbreviated base blob id its index line names (None for an
+    added file), or None for a block that is not one binary file's."""
+    header: list[str] = []
+    old: str | None = None
+    for raw in block.rstrip("\n").split("\n"):
+        line = raw.removesuffix("\r")
+        if header and line.startswith("diff --git "):
+            return None
+        if line.startswith(("Binary files ", "GIT binary patch")):
+            return header, old
+        if line.startswith(("@@", "--- ", "+++ ")):
+            return None
+        index = INDEX_LINE.match(line)
+        if index is not None:
+            old = index.group(1) if index.group(1).strip("0") else None
+        header.append(line)
+    return None
+
+
+def _extracted_base(form: str, old: str | None, blob: str | None, read_base: BaseReader) -> tuple[str, str | None]:
+    """A changed document's base version as extracted text, and why it could not be extracted, if it could not."""
+    if old is None:
+        return "", None
+    if blob is None:
+        return "", "its diff names no base blob"
+    try:
+        content = read_base(old, blob)
+        if content is None:
+            return "", "it is over the changed-file size limit"
+        return extract(form, content).decode("utf-8"), None
+    except ExtractionRefused as exc:
+        return "", str(exc)
+    except (GitHubError, RuntimeContractError):
+        return "", "it could not be read"
+
+
+def _document_diffs(
+    diff_path: Path,
+    parsed: dict[str, dict[str, Any]],
+    snapshot: dict[str, Any],
+    source: Path,
+    read_base: BaseReader,
+    notes: list[str],
+) -> tuple[dict[str, list[str]], dict[str, dict[str, Any]]] | None:
+    """Give each changed document the snapshot holds as extracted text, or the pull request deletes, a diff of its
+    base and head text in place of its binary block in `diff_path`. Returns, for each document the snapshot holds,
+    each line's place in the document, which a finding on that line records, and the patch fingerprints of the diff
+    as rewritten; None when it changes nothing.
+
+    The head text is the snapshot's own file, so a hunk's line numbers are that file's and a finding anchors to it.
+    """
+    extracted = snapshot.get(SNAPSHOT_EXTRACTED, {})
+    rendered: dict[str, str] = {}
+    places: dict[str, list[str]] = {}
+    for path, entry in parsed.items():
+        form = document_format(path)
+        binary = None if form is None else _binary_block(entry["block"])
+        if form is None or binary is None:
+            continue
+        old, new = diff_block_sides(entry["block"])
+        if path in extracted:
+            head = source.joinpath(*Path(path).parts).read_text(encoding="utf-8")
+            places[path] = locations(head)
+        elif new is None:
+            head = ""
+        else:
+            continue
+        base, refused = _extracted_base(form, old, binary[1], read_base)
+        if refused is not None:
+            notes.append(f"The base version of document {json.dumps(path)} could not be extracted ({refused}).")
+        rendered[path] = document_diff(binary[0], old, new, base, head, base_refused=refused)
+    if not rendered:
+        return None
+    text = read_diff(diff_path)
+    starts = [match.start() for match in DIFF_BLOCK.finditer(text)]
+    pieces = [text[: starts[0]] if starts else text]
+    for start, stop in zip(starts, [*starts[1:], len(text)], strict=True):
+        block = text[start:stop]
+        files = list(parse_unified_diff(block))
+        pieces.append(rendered.get(files[0], block) if len(files) == 1 else block)
+    atomic_write_text(diff_path, "".join(pieces))
+    return places, patch_fingerprints(parse_unified_diff("".join(pieces)))
 
 
 def _generic_reviewer(runtime: str, inline: bool, source: str) -> tuple[str, dict[str, Any], None, None, str]:
@@ -1133,11 +1263,16 @@ def _prepare_run(
             manifest = _retake_snapshot(
                 repository_path, repository, head, source, changed, services, snapshot, review.snapshot_exclude, reads
             )
+        documents, patches = _document_diffs(
+            diff_path, parsed, manifest, source, _base_reader(repository_path, repository, pull, services), notes
+        ) or ({}, patches)
         lazy = SNAPSHOT_FETCHABLE in manifest
         # The Copilot CLI host starts in a process of its own, so it checks the snapshot against this stamp.
-        stamp = None
-        if dispatch == "copilot-host":
-            stamp = stamp_source_snapshot(source, expected_repository=repository, expected_commit=head)
+        stamp = (
+            stamp_source_snapshot(source, expected_repository=repository, expected_commit=head)
+            if dispatch == "copilot-host"
+            else None
+        )
         review_files: set[str] | None = None
         scope_record: dict[str, Any] | None = None
         if review.previous is not None and scope is not None:  # a re-review, which always names its scope
@@ -1215,6 +1350,8 @@ def _prepare_run(
             "scope": scope_record,
             "uncovered_files": uncovered_files,
             "archive_base": review.base,
+            # Each line's place in each changed document whose extracted text the reviewers read.
+            "documents": documents,
         }
         _write_run(run, state)
     except BaseException:
@@ -2250,6 +2387,7 @@ def finalize(run: Path, services: Services | None = None) -> dict[str, Any]:
         flags=[] if canary_root else load_store(default_flags_path())["flags"],  # a canary reads no flag store
         dispatch=run_dispatch(state),
         snapshot=state.get("snapshot"),  # absent from runs prepared before snapshots were measured
+        documents=state.get("documents"),  # absent from runs prepared before documents were extracted
     )
     notes = list(state["notes"])
     left = remove_recorded_run(

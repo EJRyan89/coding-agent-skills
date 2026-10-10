@@ -36,6 +36,7 @@ from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
 from review_runtime import validate_adapter_manifest
 from review_state import load_state
+from test_review_documents import paragraph, table, word_document
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -3746,6 +3747,59 @@ class FixtureCanaryTests(PipelineFixture):
         real = rp.finalize(ready["run"])
         real_record = json.loads(Path(real["json"]).read_text(encoding="utf-8"))
         self.assertEqual(record_structure(real_record), record_structure(record))
+
+    def test_a_changed_word_document_is_reviewed_as_extracted_text_and_its_findings_name_their_place(self) -> None:
+        base = word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue."), table(("a", "b")))
+        inserted = '<w:ins w:id="1" w:author="a"><w:r><w:t>ten</w:t></w:r></w:ins>'
+        head = word_document(
+            paragraph("Scope", style="Titre1"),
+            paragraph("Bound the queue at ", inner=inserted),
+            paragraph("Keep one queue."),
+            table(("a", "c")),
+        )
+        directory = self.fixture("document", FIXTURE_HEAD)
+        for tree, content in (("base", base), ("head", head)):
+            (directory / tree / "docs").mkdir()
+            (directory / tree / "docs" / "design.docx").write_bytes(content)
+
+        state = self.prepare_fixture_run("--fixture", str(directory))
+        request = json.loads(Path(state["request_path"]).read_text(encoding="utf-8"))
+        diff = Path(request["diff_path"]).read_text(encoding="utf-8")
+        block = diff[diff.index("diff --git a/docs/design.docx") :]
+        self.assertNotIn("Binary files", block)
+        self.assertIn("\nextracted: the text of this Word document", block)
+        self.assertIn("\n+[P2] Bound the queue at {+ten+}\n", block)
+        self.assertIn("\n [P3] Keep one queue.\n", block)
+        self.assertIn("\n-[P3 R1] | a | b |\n+[P4 R1] | a | c |\n", block)
+        source = Path(request["source_snapshot"]["root"])
+        text = (source / "docs" / "design.docx").read_text(encoding="utf-8")
+        self.assertEqual(
+            "[P1] # Scope\n[P2] Bound the queue at {+ten+}\n[P3] Keep one queue.\n[P4 R1] | a | c |\n", text
+        )
+        self.assertEqual(
+            [
+                "paragraph 1",
+                'paragraph 2, under the heading "Scope"',
+                'paragraph 3, under the heading "Scope"',
+                'paragraph 4, table row 1, under the heading "Scope"',
+            ],
+            state["documents"]["docs/design.docx"],
+        )
+        self.assertNotIn("docs/design.docx", request["coverage"]["unavailable_sources"])
+
+        finding = {**self.finding(2), "path": "docs/design.docx", "title": "The bound has no unit"}
+        lines = self.finish(state, findings=[finding])
+        _, record = self.canary_record(lines)
+        [recorded] = record["findings"]
+        self.assertEqual(
+            ("docs/design.docx", 2, 'paragraph 2, under the heading "Scope"'),
+            (recorded["path"], recorded["line"], recorded["location"]),
+        )
+        report = next(line.split(" ", 2)[2] for line in lines if line.startswith("SHA256 ") and line.endswith(".md"))
+        self.assertIn(
+            '> **Line 2 (paragraph 2, under the heading "Scope"):** `[P2] Bound the queue at {+ten+}`',
+            Path(report).read_text(encoding="utf-8"),
+        )
 
     def guarded_command(self, role: dict[str, Any], command: str) -> tuple[int, list[str]]:
         """Run a Bash command a guarded reviewer of `role` makes, once the guard allows it, as review_source.py."""

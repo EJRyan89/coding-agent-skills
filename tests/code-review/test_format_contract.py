@@ -552,7 +552,7 @@ def record_fixtures() -> list[dict[str, Any]]:
                     analyzer={"coverage": "custom-candidate", "tool": "Roslyn", "rule": "unchecked-zero"},
                 ),
                 _finding("b", "SHOULD_FIX", 20, title="Retry never stops"),
-                _finding("c", "SHOULD_FIX", 30),
+                _finding("c", "SHOULD_FIX", 30, location='paragraph 9, under the heading "Retry"'),
                 _finding("d", "SUGGESTION", 40),
                 _finding("e", "SUGGESTION", 50),
                 _finding("f", "SHOULD_FIX", 60, repeats="a"),

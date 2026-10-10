@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -16,6 +20,7 @@ from github_client import Clock, GitHubError, Runner, Sleeper, subprocess_runner
 from review_config import validate_repository_identity
 
 PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
+OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -178,6 +183,42 @@ class GitHubClient:
         if not isinstance(number, int) or isinstance(number, bool) or number < 1:
             raise GitHubError("Pull number must be positive", kind="input")
         return self.api_text(f"repos/{repository}/pulls/{number}", accept="application/vnd.github.diff")
+
+    def get_merge_base(self, repository: str, base: str, head: str) -> str:
+        """The commit GitHub diffs a pull request's head against: the merge base of its base and head commits."""
+        repository = validate_repository_identity(repository)
+        if not OBJECT_ID.fullmatch(base) or not OBJECT_ID.fullmatch(head):
+            raise GitHubError("A merge base is asked for between two commit SHAs", kind="input")
+        value = self.api_json(f"repos/{repository}/compare/{base}...{head}?per_page=1")
+        commit = value.get("merge_base_commit") if isinstance(value, dict) else None
+        sha = commit.get("sha") if isinstance(commit, dict) else None
+        if not isinstance(sha, str) or not OBJECT_ID.fullmatch(sha):
+            raise GitHubError("Compare response has an unexpected shape", kind="malformed")
+        return sha
+
+    def get_file_blob(self, repository: str, commit: str, path: str, *, maximum: int) -> tuple[str, bytes | None]:
+        """The blob id of the file at `path` in `commit`, and its bytes, or None for a file over `maximum` bytes, whose
+        content is never fetched."""
+        repository = validate_repository_identity(repository)
+        if not OBJECT_ID.fullmatch(commit):
+            raise GitHubError("A file is read at a commit SHA", kind="input")
+        entry = self.api_json(f"repos/{repository}/contents/{quote(path, safe='/')}?ref={commit}")
+        if not isinstance(entry, dict) or entry.get("type") != "file":
+            raise GitHubError("Contents response is not one file", kind="malformed")
+        sha, size = entry.get("sha"), entry.get("size")
+        if not isinstance(sha, str) or not OBJECT_ID.fullmatch(sha):
+            raise GitHubError("Contents response has an unexpected shape", kind="malformed")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise GitHubError("Contents response has an unexpected shape", kind="malformed")
+        if size > maximum:
+            return sha, None
+        blob = self.api_json(f"repos/{repository}/git/blobs/{sha}")
+        if not isinstance(blob, dict) or blob.get("encoding") != "base64" or not isinstance(blob.get("content"), str):
+            raise GitHubError("Blob response has an unexpected shape", kind="malformed")
+        try:
+            return sha, base64.b64decode(blob["content"])
+        except (binascii.Error, ValueError) as exc:
+            raise GitHubError("Blob response is not base64", kind="malformed") from exc
 
     def list_open_review_threads(self, repository: str, number: int) -> list[dict[str, Any]]:
         """Unresolved review threads a person started, as C1, C2, ... in thread order.

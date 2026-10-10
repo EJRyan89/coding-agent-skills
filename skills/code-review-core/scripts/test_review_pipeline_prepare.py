@@ -1016,6 +1016,7 @@ def state(run: str = "<root>/run", **changes: Any) -> dict[str, Any]:
         "scope": None,
         "uncovered_files": [],
         "archive_base": NO_REVIEW,
+        "documents": {},
         **changes,
     }
 

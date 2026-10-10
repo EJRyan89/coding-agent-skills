@@ -168,6 +168,23 @@ def split_unified_diff(text: str) -> tuple[dict[str, dict[str, Any]], list[str]]
     return files, unsafe
 
 
+def diff_block_sides(block: str) -> tuple[str | None, str | None]:
+    """The old and the new path one file's diff block names before its first hunk, None for the side an added or a
+    deleted file has no file on."""
+    lines = block.split("\n")
+    current = _new_diff_block(lines[0])
+    added = deleted = False
+    for raw in lines[1:]:
+        line = raw.removesuffix("\r")
+        if HUNK.match(line) or line.startswith("diff --git "):
+            break
+        _read_diff_header(current, line)
+        added = added or line.startswith("new file mode ")
+        deleted = deleted or line.startswith("deleted file mode ")
+    old, new = current["old"] or current["header"], current["new"] or current["header"]
+    return (None if added else old, None if deleted else new)
+
+
 def _new_diff_block(line: str) -> dict[str, Any]:
     """A file's block, from its `diff --git` line: the path the header names, if it names one unambiguously."""
     return {

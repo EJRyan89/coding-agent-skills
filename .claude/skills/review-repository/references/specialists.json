@@ -60,7 +60,7 @@
       "profile": ".claude/skills/review-repository/references/trust-boundary.md",
       "include": [
         "^docs/code-review-operations-contract\\.md$",
-        "^skills/code-review-core/scripts/review_(?:guard|pipeline|runtime|source|specialists)\\.py$",
+        "^skills/code-review-core/scripts/review_(?:documents|guard|pipeline|runtime|source|specialists)\\.py$",
         "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$"
       ],
       "exclude": [],
