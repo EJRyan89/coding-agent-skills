@@ -69,8 +69,9 @@ explicit_package_bases = true
 # Each skills/<name>/scripts directory a module or suite puts on sys.path: the code-review-core and skill-core scripts
 # their skill_deps dependents import, skill-core's also imported by the deployer, tools/, and tests, the
 # analyze-skill-cost inventory tools/new_skill.py and the validation runner import, the review-document and
-# review-insights scripts tools/runtime_prompts.py imports, the review-insights scripts the format-contract suite
-# imports, and the update-pr-tracker scripts a code-review-core suite imports. Then tests/deployer, whose suites import
+# review-insights scripts tools/runtime_prompts.py imports, the review-document scripts the skill-evals suite imports,
+# the review-insights scripts the format-contract suite imports, and the update-pr-tracker scripts a code-review-core
+# suite imports. Then tests/deployer, whose suites import
 # harness from beside them, and tests/validation, whose policy modules and their suites import one another by bare name,
 # as tests/run_validation.py does. Their imports then resolve as they do at run time. Validation keeps this list equal
 # to those directories.
