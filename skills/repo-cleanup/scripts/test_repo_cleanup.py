@@ -33,16 +33,30 @@ T = TypeVar("T")
 
 
 def setUpModule() -> None:
-    """Isolate Git from the user's configuration for this process and every Git it starts."""
+    """Isolate Git from the user's configuration for this process and every Git it starts.
+
+    Command-scope configuration (`GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`, and
+    `GIT_CONFIG_PARAMETERS`) outranks the global file, so it is cleared too. The suite's own configuration refuses a
+    bare repository Git is not pointed at explicitly, as an agent sandbox's may, so every test holds that a bare
+    fixture is inspected with `bare_git`."""
     directory = Path(tempfile.mkdtemp(prefix="repo-cleanup-config-"))
     config = directory / "gitconfig"
     config.write_text(
         "[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n"
-        "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n",
+        "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n"
+        "[safe]\n\tbareRepository = explicit\n",
         encoding="utf-8",
     )
     patch = {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
-    saved = {name: os.environ.get(name) for name in patch}
+    inherited = [
+        name
+        for name in os.environ
+        if name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
+        or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    ]
+    saved = {name: os.environ.get(name) for name in [*patch, *inherited]}
+    for name in inherited:
+        del os.environ[name]
     os.environ.update(patch)
     global TEMPLATE
     TEMPLATE = Path(tempfile.mkdtemp(prefix="repo-cleanup-template-")).resolve() / "root"
@@ -72,7 +86,16 @@ def remove_tree(path: Path) -> None:
 
 
 def git(directory: Path, *arguments: str) -> str:
-    result = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True, encoding="utf-8")
+    return run_git("-C", str(directory), *arguments)
+
+
+def bare_git(repository: Path, *arguments: str) -> str:
+    """Git in a bare repository, named with `--git-dir` because `safe.bareRepository=explicit` refuses `-C` into one."""
+    return run_git(f"--git-dir={repository}", *arguments)
+
+
+def run_git(*arguments: str) -> str:
+    result = subprocess.run(["git", *arguments], capture_output=True, text=True, encoding="utf-8")
     if result.returncode != 0:
         raise AssertionError(f"git {' '.join(arguments)} failed: {result.stderr}")
     return result.stdout.strip()
@@ -324,6 +347,16 @@ class Fixture(unittest.TestCase):
 
 
 class FixtureTemplateTests(unittest.TestCase):
+    def test_git_reads_only_the_suites_configuration_which_refuses_a_bare_repository_not_named_explicitly(self) -> None:
+        if TEMPLATE is None:
+            self.fail("setUpModule builds the template")
+        listing = git(TEMPLATE.parent, "config", "--list", "--show-scope").splitlines()
+        self.assertEqual({"global"}, {line.split("\t", 1)[0] for line in listing}, listing)
+        remote, other, _ = fixture_paths(TEMPLATE)
+        with self.assertRaisesRegex(AssertionError, "safe.bareRepository"):
+            git(remote, "rev-parse", "main")
+        self.assertEqual(git(other, "rev-parse", "origin/main"), bare_git(remote, "rev-parse", "main"))
+
     def test_a_copied_fixture_matches_a_freshly_built_one_and_reaches_only_its_own_remote(self) -> None:
         def shape(root: Path) -> dict[str, str]:
             remote, other, clone = fixture_paths(root)
@@ -332,8 +365,12 @@ class FixtureTemplateTests(unittest.TestCase):
                 return text.replace(str(root), "<root>").replace(root.as_posix(), "<root>")
 
             return {
-                f"{name} {aspect}": local(git(repository, *arguments))
-                for name, repository in (("remote", remote), ("other", other), ("clone", clone))
+                f"{name} {aspect}": local(run(repository, *arguments))
+                for name, repository, run in (
+                    ("remote", remote, bare_git),
+                    ("other", other, git),
+                    ("clone", clone, git),
+                )
                 for aspect, arguments in (
                     ("refs", ("for-each-ref", "--format=%(refname) %(tree) %(subject) %(upstream)")),
                     ("config", ("config", "--local", "--list")),
@@ -353,8 +390,8 @@ class FixtureTemplateTests(unittest.TestCase):
         remote, other, clone = fixture_paths(copied)
         git(other, "commit", "--quiet", "--allow-empty", "-m", "only in this copy")
         git(other, "push", "--quiet", "origin", "main")
-        pushed = git(remote, "rev-parse", "main")
-        self.assertNotEqual(pushed, git(fixture_paths(TEMPLATE)[0], "rev-parse", "main"))
+        pushed = bare_git(remote, "rev-parse", "main")
+        self.assertNotEqual(pushed, bare_git(fixture_paths(TEMPLATE)[0], "rev-parse", "main"))
         self.assertEqual(pushed, git(clone, "ls-remote", "origin", "refs/heads/main").split()[0])
         configs = [path / ".git" / "config" for path in (other, clone)] + [remote / "config"]
         for config in configs:
