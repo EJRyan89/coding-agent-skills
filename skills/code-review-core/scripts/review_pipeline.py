@@ -1397,6 +1397,7 @@ def validate_reviewer(
     services = services or Services()
     config_path, repository, entry, checkout, runtime = _repository_reviewer(repository, config_path, services)
     reviewer, exclude = entry["reviewer"], entry["snapshot_exclude"]
+    default_effort = load_config(config_path)["reviewer_effort"]
     targets = _validation_targets(repository, checkout, reviewer, pulls, ref, config_path, services)
     lines: list[str] = []
     checked: set[str] = set()
@@ -1457,7 +1458,9 @@ def validate_reviewer(
             if kind == "entrypoint":
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
-            routing = _Routing(checkout, repository, pull["headRefOid"], root, scratch, index, services, exclude)
+            routing = _Routing(
+                checkout, repository, pull["headRefOid"], root, scratch, index, services, exclude, default_effort
+            )
             lines.extend(_routing_lines(manifest, changed, routing))
     lines.append("VALID")
     return lines
@@ -1474,6 +1477,7 @@ class _Routing(NamedTuple):
     target: int  # the target's position, which names its scratch folders
     services: Services
     exclude: Sequence[str]
+    default_effort: str | None  # the configuration's reviewer_effort, which a specialist without its own effort gets
 
 
 def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routing) -> list[str]:
@@ -1499,7 +1503,8 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
     specialists = {specialist["id"]: specialist for specialist in manifest["specialists"]}
     for identity, files in routes.items():
         model, note = specialist_model(specialists[identity], routing.reviewer_root)
-        effort = specialists[identity].get("effort")
+        # The effort a Workflow agent would start on, as `workflow` resolves it; null leaves the session's.
+        effort = specialists[identity].get("effort") or routing.default_effort
         lines.append(
             f"ROUTE {identity} files={len(files)}"
             + (f" model={model}" if model else "")
