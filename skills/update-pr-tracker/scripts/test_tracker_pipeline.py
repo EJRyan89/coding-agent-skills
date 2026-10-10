@@ -858,11 +858,21 @@ class OverrideTests(TrackerPipelineFixture):
         self.configure(overrides={"example/one#2": "waiting"})
         original = self.config_path.read_bytes()
         # Every computed tracker state, in another case, as the configuration's validator refuses it.
-        computed = ["to review", "awaiting response", "my pull requests", "drafts", "missing", "current", "stale"]
+        computed = [
+            "to review",
+            "awaiting response",
+            "my pull requests",
+            "drafts",
+            "missing",
+            "current",
+            "stale",
+            "incomplete",
+        ]
         cases: list[tuple[list[str], str]] = [
             (["--set", f"example/one#3={state.title()}"], "duplicates a computed tracker state") for state in computed
         ]
         cases += [
+            (["--set", "example/one#3= INCOMPLETE "], "duplicates a computed tracker state"),
             (["--set", "example/one#3=  "], "must be non-empty"),
             (["--set", "example/one#3"], "must be owner/repo#number=status"),
             (["--set", "example/one=on hold"], "Invalid override pull-request identity"),

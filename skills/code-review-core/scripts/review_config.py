@@ -68,10 +68,24 @@ DASHBOARD_SECTIONS = (
     DASHBOARD_SECTION_MINE,
     DASHBOARD_SECTION_DRAFTS,
 )
+# The AI review states the tracker computes for each row, independently of its section: no review, a review of the
+# current head, a review of an earlier head that has changed since, and a review of the current head that could not
+# read every changed file in full. update-pr-tracker returns only these, so a state it computes is refused as an
+# override without a second list to keep in step.
+DASHBOARD_AI_REVIEW_MISSING = "missing"
+DASHBOARD_AI_REVIEW_CURRENT = "current"
+DASHBOARD_AI_REVIEW_STALE = "stale"
+DASHBOARD_AI_REVIEW_INCOMPLETE = "incomplete"
+DASHBOARD_AI_REVIEW_STATES = (
+    DASHBOARD_AI_REVIEW_MISSING,
+    DASHBOARD_AI_REVIEW_CURRENT,
+    DASHBOARD_AI_REVIEW_STALE,
+    DASHBOARD_AI_REVIEW_INCOMPLETE,
+)
 # The values a status override may not take, compared trimmed and ignoring case: each computed section, the AI review
 # states the tracker shows beside them, and the earlier name of the authored section.
 COMPUTED_DASHBOARD_STATES = frozenset(
-    {section.casefold() for section in DASHBOARD_SECTIONS} | {"my pull requests", "missing", "current", "stale"}
+    {section.casefold() for section in DASHBOARD_SECTIONS} | {"my pull requests"} | set(DASHBOARD_AI_REVIEW_STATES)
 )
 
 

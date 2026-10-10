@@ -18,6 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pr_change import CHANGED, UNCHANGED, ChangeDetector, ComparisonError, Query
 from review_config import (
     COMPUTED_DASHBOARD_STATES,
+    DASHBOARD_AI_REVIEW_CURRENT,
+    DASHBOARD_AI_REVIEW_INCOMPLETE,
+    DASHBOARD_AI_REVIEW_MISSING,
+    DASHBOARD_AI_REVIEW_STALE,
     DASHBOARD_SECTION_AWAITING,
     DASHBOARD_SECTION_DRAFTS,
     DASHBOARD_SECTION_MINE,
@@ -328,13 +332,14 @@ def _query(item: dict[str, Any], since_sha: str) -> Query:
 
 
 def _ai_review(item: dict[str, Any], detector: Detector) -> str:
+    """The row's AI review state, always one of `DASHBOARD_AI_REVIEW_STATES`, which a status override may not take."""
     if item["reviewed_head_sha"] is None:
-        return "missing"
+        return DASHBOARD_AI_REVIEW_MISSING
     change = _changed_since(item, item["reviewed_head_sha"], detector)
     if change != UNCHANGED:
-        return "stale"
+        return DASHBOARD_AI_REVIEW_STALE
     # Re-reviewing an unchanged head would hit the same coverage gap, so it is not re-offered.
-    return "incomplete" if item.get("reviewed_incomplete") else "current"
+    return DASHBOARD_AI_REVIEW_INCOMPLETE if item.get("reviewed_incomplete") else DASHBOARD_AI_REVIEW_CURRENT
 
 
 def _compares_user_review(item: dict[str, Any], relationship: str) -> bool:
@@ -428,7 +433,7 @@ def review_candidates(rows: list[Row]) -> list[dict[str, Any]]:
             "status": row.ai_review,
         }
         for row in rows
-        if row.ai_review in {"missing", "stale"} and not row.overridden
+        if row.ai_review in {DASHBOARD_AI_REVIEW_MISSING, DASHBOARD_AI_REVIEW_STALE} and not row.overridden
     ]
 
 
@@ -468,7 +473,9 @@ def _ai_cells(row: Row) -> list[str]:
     link = ""
     if review and review["report"]:
         link = f"[AI Review]({_file_url(review['report'])})"
-    marker = {"stale": "(stale)", "incomplete": "(incomplete)"}.get(row.ai_review, "")
+    marker = {DASHBOARD_AI_REVIEW_STALE: "(stale)", DASHBOARD_AI_REVIEW_INCOMPLETE: "(incomplete)"}.get(
+        row.ai_review, ""
+    )
     return [verdict, findings, " ".join(part for part in (link, marker) if part) or "-"]
 
 
