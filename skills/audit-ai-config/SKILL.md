@@ -54,6 +54,6 @@ Only when the user explicitly authorizes it for a trusted repository, because bo
 
    The skill does not pre-approve this command, because it starts commands the repository configures, so the user approves it when it runs.
 
-   It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so its servers were not checked: report it as a failure, never as "no servers". Pass `--server <name>` to start only one; `FAILED no MCP server named <name>` means none has that name.
+   It prints `HANDSHAKE_OK`, `HANDSHAKE_FAILED <reason>`, or `SKIPPED` (remote transports, or a server without a command) per server, or `NO_SERVERS`. `CONFIG_ERROR <file> <reason>` means that file could not be read, so none of its servers was checked, or one server in it is malformed while the others ran: report it as a failure, never as "no servers". `CONFIG_WARNING <file> <reason>` names an entry that is not a server, or a file without its servers key: report it as a warning. Pass `--server <name>` to start only one; `FAILED no MCP server named <name>` means none has that name.
 
 Report the results as additional findings.
