@@ -472,6 +472,27 @@ class LockTests(DeployerTestCase):
             lambda path: path.name == "journal.jsonl", "synthetic journal creation failure"
         )
 
+    def test_a_failed_manifest_commit_rolls_the_deployment_back(self) -> None:
+        """The manifest is written last, through fsops.write_atomic; when it fails, the journal undoes the run."""
+        self.fixture()
+        self.deploy_ok("--all")
+        manifest = self.manifest_file.read_bytes()
+        self.make_skill("alpha", "Updated alpha")
+        real_write = fsops.write_atomic
+
+        def failing_write(path: Path, content: bytes) -> None:
+            if path == self.manifest_file:
+                raise OSError("synthetic manifest write failure")
+            real_write(path, content)
+
+        with mock.patch("deployer.fsops.write_atomic", side_effect=failing_write):
+            self.deploy_fails("--all", pattern="synthetic manifest write failure")
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+        self.assertEqual(manifest, self.manifest_file.read_bytes())
+        self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
+        self.deploy_ok("--all")
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+
     def test_double_contention_cleans_renamed_stale_lock(self) -> None:
         self.fixture()
         lock_dir = self.write_lock({"pid": 999999, "token": "stale-token", "start_time": 1})

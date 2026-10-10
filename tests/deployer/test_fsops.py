@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import sys
 import tempfile
@@ -77,7 +78,18 @@ class FilesystemOperationTests(unittest.TestCase):
         self.assertEqual("next\n", target.read_text(encoding="utf-8"))
         self.assertEqual(["info.json"], sorted(path.name for path in self.root.iterdir()))
 
-    def test_write_private_syncs_the_copy_before_it_replaces_the_target(self) -> None:
+    def test_write_atomic_never_writes_through_a_file_already_at_a_temporary_name(self) -> None:
+        """A file left or planted beside the target is never opened as the copy, so nothing is written through it."""
+        target = self.root / "info.json"
+        target.write_text("previous\n", encoding="utf-8")
+        leftover = self.root / f".info.json.tmp.{os.getpid()}"
+        leftover.write_text("leftover\n", encoding="utf-8")
+        fsops.write_atomic(target, b"next\n")
+        self.assertEqual("next\n", target.read_text(encoding="utf-8"))
+        self.assertEqual("leftover\n", leftover.read_text(encoding="utf-8"))
+        self.assertEqual(sorted([leftover.name, "info.json"]), sorted(path.name for path in self.root.iterdir()))
+
+    def test_write_atomic_syncs_the_copy_before_it_replaces_the_target(self) -> None:
         target = self.root / "deploy.config"
         target.write_text("previous\n", encoding="utf-8")
         events: list[str] = []
@@ -91,16 +103,16 @@ class FilesystemOperationTests(unittest.TestCase):
             mock.patch("os.fsync", side_effect=lambda descriptor: events.append("fsync")),
             mock.patch.object(Path, "replace", replace),
         ):
-            fsops.write_private(target, b"next\n")
+            fsops.write_atomic(target, b"next\n")
         self.assertEqual(["fsync", "replace"], events)
         self.assertEqual("next\n", target.read_text(encoding="utf-8"))
         self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
 
-    def test_write_private_keeps_the_target_and_removes_its_copy_when_the_sync_fails(self) -> None:
+    def test_write_atomic_keeps_the_target_and_removes_its_copy_when_the_sync_fails(self) -> None:
         target = self.root / "deploy.config"
         target.write_text("previous\n", encoding="utf-8")
         with mock.patch("os.fsync", side_effect=OSError(28, "No space left on device")), self.assertRaises(OSError):
-            fsops.write_private(target, b"next\n")
+            fsops.write_atomic(target, b"next\n")
         self.assertEqual("previous\n", target.read_text(encoding="utf-8"))
         self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
 

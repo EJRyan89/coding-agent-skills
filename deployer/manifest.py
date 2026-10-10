@@ -83,14 +83,6 @@ class Manifest:
         return self.owners["shared"]
 
     @property
-    def adapter_owners(self) -> dict[str, str]:
-        return self.owners[ADAPTERS]
-
-    @property
-    def agent_owners(self) -> dict[str, str]:
-        return self.owners["agents"]
-
-    @property
     def sources(self) -> dict[str, Any]:
         return self.data.setdefault("sources", {})
 

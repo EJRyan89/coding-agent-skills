@@ -37,7 +37,6 @@ RUNTIME_CAPABILITIES = {
 FULL = "full"
 PARTIAL = "partial"
 NONE = "none"
-LEVELS = (FULL, PARTIAL, NONE)
 SHAPE = (
     'runtime_support, where present, must name each of claude-code, codex, and copilot-cli once: either "full", '
     'or an object {"level": "partial" or "none", "needs": [capabilities], "reason": "<one line>"}, where a partial '

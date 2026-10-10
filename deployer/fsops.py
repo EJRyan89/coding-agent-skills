@@ -78,30 +78,17 @@ def write_file(path: Path, content: bytes) -> None:
     path.write_bytes(content)
 
 
-def write_private(path: Path, content: bytes) -> None:
-    """Atomically replace a file under a private folder, syncing it first and removing the temporary copy on failure.
+def write_atomic(path: Path, content: bytes) -> None:
+    """Replace a file through a synced copy beside it, removing the copy if the write or the replace fails.
 
-    mkstemp asks for owner-only mode bits, but on Windows those set no access control: the file inherits its folder's
-    permissions, so the folder decides who may read it.
+    mkstemp creates the copy under a fresh name and refuses an existing one, so a file left at a temporary name, or
+    planted there, is never written through. Its owner-only mode bits set no access control on Windows: the file
+    inherits its folder's permissions, so a private file relies on its folder.
     """
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        temporary.replace(path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def write_atomic(path: Path, content: bytes) -> None:
-    """Replace a file through a temporary copy beside it, removing the copy if the write or the replace fails."""
-    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
-    try:
-        with temporary.open("wb") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())

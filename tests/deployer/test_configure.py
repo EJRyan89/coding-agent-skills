@@ -67,7 +67,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         before = self.digest()
-        with mock.patch("deployer.fsops.write_private", side_effect=OSError("synthetic config write failure")):
+        with mock.patch("deployer.fsops.write_atomic", side_effect=OSError("synthetic config write failure")):
             result = self.configure(stdin=f"{forward(self.repos)}\n")
         self.assertEqual(1, result.code, result.output)
         self.assertIn("synthetic config write failure", result.output)
@@ -141,7 +141,7 @@ class ConfigureTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         before = self.digest()
-        # The replace inside fsops.write_private, after the temporary copy is written.
+        # The replace inside fsops.write_atomic, after the temporary copy is written.
         with mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace failure")):
             result = self.configure(stdin="\n")
         self.assertEqual(1, result.code)
