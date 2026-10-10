@@ -29,6 +29,7 @@ import github_client
 import review_github
 import review_io
 import review_runtime
+import skill_roots
 from git_client import GitResult
 from github_client import CommandResult
 from review_archive import (
@@ -56,7 +57,7 @@ from review_hosts import (
     parse_copilot_version,
     run_copilot,
 )
-from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json
+from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import (
     ReviewOperationError,
     archive_base,
@@ -431,6 +432,47 @@ class ParallelCallTests(unittest.TestCase):
         caller = threading.get_ident()
         self.assertEqual([(caller, None)], map_in_order(lambda item: threading.get_ident(), ["only"]))
         self.assertEqual([(caller, None)] * 2, map_in_order(lambda item: threading.get_ident(), "ab", workers=1))
+
+
+class WorkingPathTests(unittest.TestCase):
+    """working_path refuses a path in the skills directories skill-core names, and keeps any other path."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.own = self.root / "source skills"
+        self.deployed = self.root / "home" / ".claude" / "skills"
+        self.adapters = self.root / "home" / ".agents" / "skills"
+        for patcher in (
+            mock.patch.object(skill_roots, "SKILLS_ROOT", self.own),
+            mock.patch.object(skill_roots, "deployed_skill_roots", return_value=(self.deployed, self.adapters)),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_a_path_inside_a_skills_directory_is_refused_naming_it(self) -> None:
+        for root in (self.own, self.deployed, self.adapters):
+            target = root / "review-prs" / "batch.json"
+            with self.subTest(root=root), self.assertRaises(PersistenceError) as raised:
+                working_path(target, "review-prs-batch-", "batch.json")
+            self.assertEqual(
+                f"{target} is inside the skills directory {root}; omit the option to write under a new temporary "
+                "directory",
+                str(raised.exception),
+            )
+            self.assertFalse(root.exists())
+
+    def test_a_path_beside_the_skills_directories_is_kept(self) -> None:
+        target = self.root / "home" / ".claude" / "batch.json"
+        self.assertEqual(target, working_path(target, "review-prs-batch-", "batch.json"))
+
+    def test_no_path_gives_the_name_in_a_new_temporary_directory(self) -> None:
+        path = working_path(None, "review-prs-batch-", "batch.json")
+        self.addCleanup(shutil.rmtree, path.parent)
+        self.assertEqual("batch.json", path.name)
+        self.assertTrue(path.parent.name.startswith("review-prs-batch-"), path)
+        self.assertEqual([], list(path.parent.iterdir()))
 
 
 class StateAndLockTests(unittest.TestCase):
