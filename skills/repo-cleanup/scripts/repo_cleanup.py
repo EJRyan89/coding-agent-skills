@@ -382,7 +382,7 @@ def decide(
     """The planned action for one non-release branch, mirroring the cleanup rules.
 
     A clean linked worktree of a stale branch is removed. Its branch is deleted with it unless its pull request closed
-    without merging: then the branch may hold commits on no other ref, so it is kept and the user is asked.
+    without merging: that work was set aside rather than landed, so the branch is kept and the user is asked.
     """
     if state in KEPT_STATES:
         return "keep", f"{KEPT_STATES[state]}: {error}" if error else KEPT_STATES[state]
