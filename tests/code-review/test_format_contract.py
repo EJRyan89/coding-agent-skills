@@ -835,7 +835,7 @@ def fixture_pull_fixtures() -> list[dict[str, Any]]:
         "head_ref": "totals",
         "threads": [thread, {**thread, "line": None, "outdated": True}],
     }
-    return [pull, {**pull, "threads": []}]
+    return [pull, {**pull, "threads": []}, {**pull, "manifest_path": "review/specialists.json"}]
 
 
 def state_fixtures() -> list[dict[str, Any]]:

@@ -6,6 +6,9 @@ A fixture directory holds a change as two trees and the pull request around them
     head/       the tree it proposes
     pull.json   the pull request, validated by `validate_fixture_pull`
 
+The suite's generic reviewer reviews a fixture, unless pull.json names a `manifest_path`: a specialists manifest in
+the base tree, which `prepare` reads from the base commit as it reads a configured repository's `manifest_path`.
+
 A fixture is trusted input, as the configuration is: it lives in the suite's source repository, outside anything that
 ships, and no pull request's author writes it. It still takes the real path from the commits on. `fixture_change`
 commits both trees, byte for byte, to a throwaway repository whose origin names the fixture's repository, so `prepare`
@@ -32,11 +35,13 @@ from github_client import replace_undecodable
 from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, validate_record
-from review_runtime import _is_reparse_point
+from review_runtime import RuntimeContractError, _is_reparse_point, _safe_relative_path
 
 FIXTURE_SCHEMA_VERSION = 1
 PULL_FILE = "pull.json"
 PULL_FIELDS = frozenset({"schema_version", "repository", "number", "title", "base_ref", "head_ref", "threads"})
+# A reviewer manifest in the base tree, so a fixture can exercise specialists as a configured repository does.
+OPTIONAL_PULL_FIELDS = frozenset({"manifest_path"})
 THREAD_FIELDS = frozenset({"author", "path", "line", "outdated", "body", "url"})
 # Who commits the fixture's trees; nothing reads it.
 IDENTITY = ("-c", "user.name=code-review fixture", "-c", "user.email=fixture@example.invalid")
@@ -56,6 +61,7 @@ class FixtureChange:
     diff: str
     undecodable: int  # bytes of the diff that were not UTF-8 and became U+FFFD
     comments: list[dict[str, Any]]  # as the request's github_comments
+    manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
 
 
 def _text(value: Any, field: str) -> str:
@@ -85,8 +91,11 @@ def _thread(value: Any, index: int) -> dict[str, Any]:
 
 def validate_fixture_pull(value: Any) -> dict[str, Any]:
     """A fixture's pull.json, its repository normalized as a configured one is."""
-    if not isinstance(value, dict) or set(value) != PULL_FIELDS:
-        raise FixtureError(f"{PULL_FILE} must have exactly {', '.join(sorted(PULL_FIELDS))}")
+    if not isinstance(value, dict) or not PULL_FIELDS <= set(value) <= PULL_FIELDS | OPTIONAL_PULL_FIELDS:
+        raise FixtureError(
+            f"{PULL_FILE} must have exactly {', '.join(sorted(PULL_FIELDS))}, and may have "
+            f"{', '.join(sorted(OPTIONAL_PULL_FIELDS))}"
+        )
     if value["schema_version"] != FIXTURE_SCHEMA_VERSION or isinstance(value["schema_version"], bool):
         raise FixtureError(f"{PULL_FILE} schema_version must be {FIXTURE_SCHEMA_VERSION}")
     try:
@@ -99,7 +108,13 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
     if not isinstance(value["threads"], list):
         raise FixtureError(f"{PULL_FILE} threads must be a list")
     threads = [_thread(thread, index) for index, thread in enumerate(value["threads"])]
-    return {**value, "repository": repository, "threads": threads}
+    pull = {**value, "repository": repository, "threads": threads}
+    if "manifest_path" in value:
+        try:
+            pull["manifest_path"] = _safe_relative_path(value["manifest_path"], f"{PULL_FILE} manifest_path")
+        except RuntimeContractError as exc:
+            raise FixtureError(str(exc)) from exc
+    return pull
 
 
 def validate_prior_record(value: Any, *, repository: str, number: int) -> dict[str, Any]:
@@ -264,4 +279,5 @@ def fixture_change(directory: Path, runner: Runner) -> Iterator[FixtureChange]:
             diff=diff,
             undecodable=undecodable,
             comments=_comments(pull["threads"]),
+            manifest_path=pull.get("manifest_path"),
         )

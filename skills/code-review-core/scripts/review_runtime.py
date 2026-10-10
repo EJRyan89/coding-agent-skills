@@ -111,6 +111,12 @@ MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # identifiers, so there a reviewer starts on the session's model.
 MODEL_ALIAS_RUNTIMES = frozenset({"claude-code"})
 GENERIC_SPECIALIST = "generic-review"
+# Profiles the suite ships, which a specialist names as `suite:<name>` in place of a repository path. Each is read from
+# this skill's references folder, never from the repository, and only the names here resolve, so a manifest can reach
+# no other file through one.
+SUITE_PROFILE_PREFIX = "suite:"
+SUITE_PROFILES = {"design-review": "design-reviewer.md"}
+SUITE_REFERENCES = Path(__file__).resolve().parents[1] / "references"
 SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # The snapshot paths a condition may declare it reads: glob patterns, bounded as a repository's snapshot_exclude is.
 MAX_CONDITION_READS = 100
@@ -282,6 +288,37 @@ def configured_exclusion(patterns: Sequence[str]) -> Exclusion:
     return lambda relative: any(matches(relative) for matches in matchers)
 
 
+def is_suite_profile(profile: str) -> bool:
+    """Whether a validated specialist profile names a profile the suite ships rather than a repository file."""
+    return profile.startswith(SUITE_PROFILE_PREFIX)
+
+
+def suite_profile_path(profile: str) -> Path:
+    """The suite's file a `suite:<name>` profile names."""
+    name = profile.removeprefix(SUITE_PROFILE_PREFIX)
+    if not is_suite_profile(profile) or name not in SUITE_PROFILES:
+        raise RuntimeContractError(f"No suite profile is named {profile!r}")
+    return SUITE_REFERENCES / SUITE_PROFILES[name]
+
+
+def suite_profiles(manifest: dict[str, Any]) -> list[str]:
+    """The distinct suite profiles a validated manifest's specialists name, in order."""
+    if manifest.get("kind") != "specialists":
+        return []
+    profiles = [specialist["profile"] for specialist in manifest["specialists"]]
+    return list(dict.fromkeys(profile for profile in profiles if is_suite_profile(profile)))
+
+
+def _profile(value: Any, field: str) -> str:
+    """A specialist's profile: a repository path, or `suite:<name>` for one the suite ships."""
+    if isinstance(value, str) and value.startswith(SUITE_PROFILE_PREFIX):
+        if value.removeprefix(SUITE_PROFILE_PREFIX) not in SUITE_PROFILES:
+            shipped = ", ".join(f"{SUITE_PROFILE_PREFIX}{name}" for name in sorted(SUITE_PROFILES))
+            raise RuntimeContractError(f"{field} names no suite profile: {value!r}; the suite ships {shipped}")
+        return value
+    return _safe_relative_path(value, field)
+
+
 def _path_list(value: Any, field: str) -> list[str]:
     if not isinstance(value, list):
         raise RuntimeContractError(f"{field} must be an array")
@@ -370,7 +407,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
             {
                 "id": identity,
                 "category": specialist["category"].strip(),
-                "profile": _safe_relative_path(specialist["profile"], f"{field}.profile"),
+                "profile": _profile(specialist["profile"], f"{field}.profile"),
                 "include": _regex_list(specialist["include"], f"{field}.include", required=True),
                 "exclude": _regex_list(specialist["exclude"], f"{field}.exclude", required=False),
                 "resources": _path_list(specialist["resources"], f"{field}.resources"),
@@ -386,12 +423,12 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def declared_reviewer_files(manifest: dict[str, Any]) -> list[str]:
-    """Every trusted file a validated manifest declares, without duplicates."""
+    """Every trusted repository file a validated manifest declares, without duplicates. A suite profile is not one."""
     if manifest.get("kind") == "specialists":
         files = list(manifest["resources"])
         for specialist in manifest["specialists"]:
             for path in (specialist["profile"], *specialist["resources"]):
-                if path not in files:
+                if path not in files and not is_suite_profile(path):
                     files.append(path)
         for condition in manifest["conditions"].values():
             if condition["script"] not in files:
@@ -728,6 +765,9 @@ def materialize_reviewer(
     branch's rules. Profiles and shared resources always come from the trusted commit. Condition scripts do
     too, unless the manifest is kept outside the repository: then local_root (the manifest's folder)
     supplies them, and the metadata names them under local_files. Never the pull-request head.
+
+    A suite profile is read where it is, from the suite's references, and never copied: the metadata keeps its
+    hash under suite_profiles, and the hashes returned, which the record keeps, name it by its `suite:` reference.
     """
     normalized = validate_adapter_manifest(manifest)
     if destination.exists() and any(destination.iterdir()):
@@ -762,6 +802,10 @@ def materialize_reviewer(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
             hashes[relative] = hashlib.sha256(content).hexdigest()
+        suite = {
+            profile: hashlib.sha256(suite_profile_path(profile).read_bytes()).hexdigest()
+            for profile in suite_profiles(normalized)
+        }
         metadata: dict[str, Any] = {
             "schema_version": 1,
             "adapter_id": normalized["id"],
@@ -775,11 +819,13 @@ def materialize_reviewer(
                 metadata["guideline_sources"] = guideline_sources
             if local:
                 metadata["local_files"] = sorted(local)
+            if suite:
+                metadata["suite_profiles"] = suite
         atomic_write_json(destination / "materialization.json", metadata)
     except BaseException:
         shutil.rmtree(destination, ignore_errors=True)
         raise
-    return hashes
+    return {**hashes, **suite}
 
 
 def _is_agent_instruction_path(relative: str) -> bool:

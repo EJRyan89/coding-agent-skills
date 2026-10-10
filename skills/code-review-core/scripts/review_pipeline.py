@@ -915,7 +915,7 @@ class _Review:
     snapshot_exclude: tuple[str, ...] = ()
 
 
-# The reviewer of every fixture, which has no trusted commit a repository reviewer could be loaded from.
+# The reviewer of a fixture whose pull.json names no reviewer manifest.
 GENERIC_REVIEWER = {
     "id": "generic",
     "protocol_version": 1,
@@ -923,6 +923,21 @@ GENERIC_REVIEWER = {
     "scope": "generic",
     "manifest_path": None,
 }
+
+
+def fixture_reviewer(manifest_path: str) -> dict[str, Any]:
+    """The reviewer of a fixture whose pull.json names a manifest: a repository reviewer with no trusted ref, so its
+    manifest and files are read from the fixture's base commit, as a configured repository's would be."""
+    return {
+        "id": "fixture",
+        "protocol_version": 1,
+        "trusted_ref": None,
+        "scope": "repository",
+        "manifest_path": manifest_path,
+        "skill": None,
+    }
+
+
 FIXTURE_PRIOR_FILE = "prior.json"
 
 
@@ -1013,7 +1028,8 @@ def prepare_fixture(
 
     With `prior`, a review record of the same pull request at an earlier head, it is a re-review that carries that
     record's ledger and covers the full scope; finalize archives the prior record in the canary root first, so the
-    re-review is recorded as a real one is. The suite's generic reviewer reviews every fixture.
+    re-review is recorded as a real one is. The suite's generic reviewer reviews a fixture, unless its pull.json names
+    a `manifest_path`, which is read from the fixture's base commit as a configured repository's is.
     """
     services = services or Services()
     config_path = (config_path or default_config_path()).resolve()
@@ -1035,7 +1051,7 @@ def prepare_fixture(
             previous=record,
             prior=[] if record is None else carried_findings([record]),  # a fixture reads no flag store
             base=archive_base(None, []) if record is None else archive_base(1, ledger_history([record])[1]),
-            reviewer=GENERIC_REVIEWER,
+            reviewer=GENERIC_REVIEWER if change.manifest_path is None else fixture_reviewer(change.manifest_path),
             checkout=None,
             source=change.repository,
             read_diff=lambda diff_path: (
@@ -1098,7 +1114,9 @@ def _prepare_run(
         )
         kind, adapter, reviewer_root, entrypoint, dispatch = _materialize_reviewer(
             review.reviewer,
-            checkout=checkout,
+            # The repository the head is snapshotted from: the configured checkout, or a fixture's repository, which
+            # holds the base commit a fixture's reviewer manifest is read from.
+            checkout=repository_path,
             pull=pull,
             mode=review.mode,
             runtime=runtime,

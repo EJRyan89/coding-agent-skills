@@ -16,8 +16,9 @@ re-review scenario's run adds `--re-review --prior <scenario>/<prior>`. Beside t
 Each expectation is a statement over the record, checked here by script and never by reading the report. Severities
 rank SUGGESTION < SHOULD_FIX < MUST_FIX; `lines` lists the head lines a finding may be anchored at, any of them:
 
-  {"kind": "finding", "path": P, "lines": [N, ...], "severity": S}
-      a finding at P on one of the lines, at least as severe as S
+  {"kind": "finding", "path": P, "lines": [N, ...], "severity": S, "category": C}
+      a finding at P on one of the lines, at least as severe as S, and of category C, matched ignoring case, when
+      `category` is given; a scenario whose manifest declares finding_categories names one of them
   {"kind": "no_finding_above", "severity": S, "paths": [P, ...]}
       no finding more severe than S on the paths, or on any path when `paths` is left out
   {"kind": "verdict", "verdict": "APPROVED" | "CHANGES_REQUESTED" | "INCOMPLETE"}
@@ -40,7 +41,8 @@ every expectation of its scenario and model.
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
 deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model
 in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
-session's model: a fixture's generic reviewer has no MODEL line, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
+session's model: a fixture's reviewers have no MODEL line, since neither the generic reviewer nor a scenario's
+specialist names a model, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
 The session gets that agent with `--agents`, which outranks the same agent loaded from the home's .claude/agents:
 Claude Code runs a project agent's hooks only in a folder whose workspace trust was accepted, which a `-p` session
 never is, so loaded from the home the reviewer guard would never run. The definition is the home's agent file, its
@@ -259,18 +261,34 @@ def _rank(severity: str) -> int:
 
 
 def finding_expectation(spec: Mapping[str, Any]) -> Expectation:
-    _fields(spec, {"kind", "path", "lines", "severity"})
+    _fields(spec, {"kind", "path", "lines", "severity"}, frozenset({"category"}))
     path, lines = _path(spec["path"]), _lines(spec["lines"])
     severity = _choice(spec["severity"], SEVERITIES, "severity")
+    category: str | None = None
+    if "category" in spec:
+        if not isinstance(spec["category"], str) or not spec["category"].strip():
+            raise ScenarioError("category must be a category name; leave it out for any category")
+        category = spec["category"].strip()
+
+    def matches(finding: Mapping[str, Any]) -> bool:
+        return category is None or str(finding.get("category", "")).casefold() == category.casefold()
 
     def check(record: Record) -> str | None:
         there = [finding for finding in findings(record) if finding["path"] == path]
-        if any(finding["line"] in lines and _rank(finding["severity"]) >= _rank(severity) for finding in there):
+        if any(
+            finding["line"] in lines and _rank(finding["severity"]) >= _rank(severity) and matches(finding)
+            for finding in there
+        ):
             return None
-        seen = ", ".join(f"{finding['severity']} at line {finding['line']}" for finding in there) or "none"
-        return f"no finding at least {severity} on those lines; findings on {path}: {seen}"
+        seen = ", ".join(describe(finding) for finding in there) or "none"
+        return f"no finding at least {wanted} on those lines; findings on {path}: {seen}"
 
-    return Expectation(f"finding {_where(path, lines)} {severity}", check)
+    def describe(finding: Mapping[str, Any]) -> str:
+        kind = f" {finding.get('category')}" if category is not None else ""
+        return f"{finding['severity']}{kind} at line {finding['line']}"
+
+    wanted = severity if category is None else f"{severity} {category}"
+    return Expectation(f"finding {_where(path, lines)} {wanted}", check)
 
 
 def no_finding_above_expectation(spec: Mapping[str, Any]) -> Expectation:
@@ -523,8 +541,9 @@ class Run:
 
 
 def review_config(directory: Path) -> dict[str, Any]:
-    """The code-review configuration every run reads. A fixture is reviewed by the generic reviewer whatever is
-    configured, so the one repository is a placeholder; only the runtime and the verdict policy matter."""
+    """The code-review configuration every run reads. A fixture is reviewed by the generic reviewer, or by the
+    manifest its pull.json names, whatever is configured, so the one repository is a placeholder; only the runtime and
+    the verdict policy matter."""
     generic = {"id": "generic", "protocol_version": 1, "trusted_ref": None, "scope": "generic", "manifest_path": None}
     return {
         "schema_version": 1,

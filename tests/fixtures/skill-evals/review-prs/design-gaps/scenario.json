@@ -1,0 +1,11 @@
+{
+  "skill": "review-prs",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "docs/design/export-retention.md", "lines": [19, 25], "severity": "MUST_FIX", "category": "inconsistency"},
+    {"kind": "finding", "path": "docs/design/export-retention.md", "lines": [11, 27], "severity": "SHOULD_FIX", "category": "requirement-gap"},
+    {"kind": "finding", "path": "docs/design/export-retention.md", "lines": [39], "severity": "SHOULD_FIX", "category": "open-question"},
+    {"kind": "finding", "path": "docs/design/export-retention.md", "lines": [31], "severity": "SUGGESTION", "category": "alternative-unstated"},
+    {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
+  ]
+}

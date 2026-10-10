@@ -81,6 +81,14 @@ class PullTests(unittest.TestCase):
         pull = validate_fixture_pull(copy.deepcopy(PULL))
         self.assertEqual("example/inventory", pull["repository"])
         self.assertEqual(PULL["threads"], pull["threads"])
+        self.assertNotIn("manifest_path", pull)
+
+    def test_a_reviewer_manifest_in_the_base_tree_is_named_by_a_safe_relative_path(self) -> None:
+        pull = validate_fixture_pull({**copy.deepcopy(PULL), "manifest_path": "./review//specialists.json"})
+        self.assertEqual("review/specialists.json", pull["manifest_path"])
+        for unsafe in ("../specialists.json", "/review/specialists.json", "review\\specialists.json", "C:/x.json", ""):
+            with self.subTest(unsafe), self.assertRaisesRegex(FixtureError, "manifest_path"):
+                validate_fixture_pull({**copy.deepcopy(PULL), "manifest_path": unsafe})
 
     def test_each_fault_is_refused(self) -> None:
         def changed(**fields: Any) -> dict[str, Any]:

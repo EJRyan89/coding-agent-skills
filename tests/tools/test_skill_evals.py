@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -22,15 +23,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-re
 
 import review_guard
 import review_pipeline
+import review_specialists
 from review_config import write_config
 from review_github import GitHubClient
 from review_records import validate_record
+from review_runtime import validate_adapter_manifest
 
 from deployer import platform_support
 from tools import skill_evals
 from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
+SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
 
 
 def finding(path: str, line: int, severity: str, identifier: str = "F001", **extra: Any) -> dict[str, Any]:
@@ -142,6 +146,10 @@ class LoaderTests(unittest.TestCase):
             ({"kind": "finding", "path": "a.go", "lines": [2, 2], "severity": "MUST_FIX"}, "distinct positive line"),
             ({"kind": "finding", "path": "a.go", "lines": [0], "severity": "MUST_FIX"}, "distinct positive line"),
             ({"kind": "no_finding_above", "severity": "SUGGESTION", "paths": []}, "paths must be a list"),
+            (
+                {"kind": "finding", "path": "a.go", "lines": [1], "severity": "MUST_FIX", "category": " "},
+                "category must be a category name",
+            ),
         ]
         for spec, message in cases:
             with self.subTest(spec=spec):
@@ -258,6 +266,25 @@ class FindingTests(unittest.TestCase):
 
     def test_label(self) -> None:
         self.assertEqual("finding store.go:44,45 SHOULD_FIX", skill_evals.expectation(self.spec, "initial").label)
+        categorized = {**self.spec, "category": "Risk"}
+        self.assertEqual(
+            "finding store.go:44,45 SHOULD_FIX Risk", skill_evals.expectation(categorized, "initial").label
+        )
+
+    def test_a_category_matches_ignoring_case_and_any_category_passes_without_one(self) -> None:
+        categorized = {**self.spec, "category": "open-question"}
+        found = finding("store.go", 44, "SHOULD_FIX", category="Open-Question")
+        self.assertIsNone(check(categorized, record([found]), "initial"))
+        self.assertIsNone(check(self.spec, record([finding("store.go", 44, "SHOULD_FIX", category="risk")]), "initial"))
+
+    def test_a_finding_of_another_category_fails_and_the_failure_names_its_category(self) -> None:
+        categorized = {**self.spec, "category": "inconsistency"}
+        failure = check(categorized, record([finding("store.go", 44, "MUST_FIX", category="risk")]), "initial")
+        self.assertEqual(
+            "no finding at least SHOULD_FIX inconsistency on those lines; "
+            "findings on store.go: MUST_FIX risk at line 44",
+            failure,
+        )
 
 
 class NoFindingAboveTests(unittest.TestCase):
@@ -557,11 +584,42 @@ class ReviewPrsScenarioTests(unittest.TestCase):
             for name, scenario in self.scenarios.items()
         }
 
-    def test_the_three_scenarios(self) -> None:
+    def test_the_five_scenarios(self) -> None:
         self.assertEqual(
-            {"planted-defects": "initial", "clean-change": "initial", "re-review": "re-review"},
+            {
+                "planted-defects": "initial",
+                "clean-change": "initial",
+                "re-review": "re-review",
+                "design-gaps": "initial",
+                "design-clean": "initial",
+            },
             {name: scenario.mode for name, scenario in self.scenarios.items()},
         )
+
+    def test_the_design_scenarios_route_their_document_to_the_suites_design_specialist(self) -> None:
+        for name in ("design-gaps", "design-clean"):
+            directory = self.scenarios[name].directory
+            pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+            with self.subTest(scenario=name):
+                base, head = (directory / tree / pull["manifest_path"] for tree in ("base", "head"))
+                self.assertEqual(base.read_bytes(), head.read_bytes(), "the manifest is no part of the change")
+                manifest = validate_adapter_manifest(json.loads(base.read_text(encoding="utf-8")))
+                (specialist,) = manifest["specialists"]
+                self.assertEqual("suite:design-review", specialist["profile"])
+                changed = [
+                    path.relative_to(directory / "head").as_posix()
+                    for path in (directory / "head").rglob("*")
+                    if path.is_file() and not (directory / "base" / path.relative_to(directory / "head")).is_file()
+                ]
+                self.assertEqual(changed, review_specialists.route(manifest, changed, lambda _: True)["design-review"])
+                for item in self.specs[name]["expectations"]:
+                    if "category" in item:
+                        self.assertIn(item["category"], manifest["finding_categories"])
+
+    def test_the_design_gaps_are_one_per_planted_category(self) -> None:
+        expectations = self.specs["design-gaps"]["expectations"]
+        planted = [item.get("category") for item in expectations if item["kind"] == "finding"]
+        self.assertEqual(["inconsistency", "requirement-gap", "open-question", "alternative-unstated"], planted)
 
     def test_expectations_name_changed_files_and_existing_lines(self) -> None:
         for name, spec in self.specs.items():
@@ -615,7 +673,13 @@ class ReviewPrsScenarioTests(unittest.TestCase):
         expectations = self.specs[name]["expectations"]
         verdict = next(item["verdict"] for item in expectations if item["kind"] == "verdict")
         found = [
-            finding(item["path"], item["lines"][0], item["severity"], f"F{index:03}")
+            finding(
+                item["path"],
+                item["lines"][0],
+                item["severity"],
+                f"F{index:03}",
+                **({"category": item["category"]} if "category" in item else {}),
+            )
             for index, item in enumerate(expectations, 1)
             if item["kind"] == "finding"
         ]
@@ -669,7 +733,14 @@ def stub_result(spec: dict[str, Any]) -> dict[str, Any]:
     expected disposition, and each expected repeat as a finding linked to its entry."""
     expectations = spec["expectations"]
     found = [
-        {"path": item["path"], "line": item["lines"][0], "severity": item["severity"], "title": "Planted", "body": "x"}
+        {
+            "path": item["path"],
+            "line": item["lines"][0],
+            "severity": item["severity"],
+            "title": "Planted",
+            "body": "x",
+            **({"category": item["category"]} if "category" in item else {}),
+        }
         for item in expectations
         if item["kind"] == "finding"
     ]
@@ -722,11 +793,13 @@ class Pipeline:
         run = Path(next(line for line in prepared if line.startswith("RUN ")).split(" ", 2)[2])
         fixture = Path(prepare[list(prepare).index("--fixture") + 1])
         spec = json.loads((fixture / "scenario.json").read_text(encoding="utf-8"))
+        pull = json.loads((fixture / "pull.json").read_text(encoding="utf-8"))
         for role in review_pipeline.load_run(run)["roles"]:
             if guarded:
                 review_guard.read_log(run, role["id"]).touch()
             Path(role["result_file"]).write_text(json.dumps(stub_result(spec)), encoding="utf-8")
-        self.test.assertEqual(["ALL_VALID example/inventory#1"], self("check", "--run", str(run)))
+        checked = self("check", "--run", str(run))
+        self.test.assertEqual([f"ALL_VALID {pull['repository']}#{pull['number']}"], checked)
         finalized = self("finalize", "--run", str(run))
         return Path(
             next(line.split(" ", 2)[2] for line in finalized if line.startswith("SHA256 ") and line.endswith(".json"))
@@ -774,6 +847,21 @@ class FixtureCanaryRunTests(unittest.TestCase):
                 outcomes = skill_evals.judge([scenario], ["opus"], constant(written_record))
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
         self.assertEqual([], self.pipeline.github.calls)
+
+    def test_a_design_scenario_is_reviewed_by_the_suites_design_specialist_from_its_base_commit(self) -> None:
+        scenario = next(item for item in skill_evals.load_scenarios("review-prs") if item.name == "design-gaps")
+        written = json.loads(self.pipeline.review(skill_evals.prepare_arguments(scenario)).read_text(encoding="utf-8"))
+        adapter = written["review"]["adapter"]
+        self.assertEqual(
+            ("reports-review", "repository", "base"), (adapter["name"], adapter["scope"], adapter["source"])
+        )
+        suite = SUITE_REFERENCE.read_bytes()
+        self.assertEqual({"suite:design-review": hashlib.sha256(suite).hexdigest()}, adapter["source_hashes"])
+        self.assertEqual(["design-review"], [reviewer["id"] for reviewer in written["review"]["reviewers"]])
+        self.assertEqual(
+            {"inconsistency", "requirement-gap", "open-question", "alternative-unstated"},
+            {item["category"] for item in written["findings"]},
+        )
 
 
 def assistant(model: str, subagent: bool = False) -> str:
@@ -1176,13 +1264,15 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual([f"DEPLOYED {model} {source}" for model in skill_evals.MODELS], lines[1:4])
         self.assertEqual("RUNTIME claude 2.1.291", lines[4])
         ended = [line.split(" ")[1:3] for line in lines if line.startswith("TRANSCRIPT ")]
-        scenarios = ["clean-change", "planted-defects", "re-review"]
+        scenarios = ["clean-change", "design-clean", "design-gaps", "planted-defects", "re-review"]
         self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals.MODELS], ended)
+        # A design scenario's manifest routes its one changed document to the suite's design specialist alone.
+        role = {"design-clean": "design-review", "design-gaps": "design-review"}
         self.assertIn("REVIEWER haiku claude-haiku-0-0", lines)
         guarded = [line for line in lines if line.startswith("GUARDED ")]
         self.assertEqual(
             [
-                f"GUARDED {scenario} {model} generic-review files_read=0"
+                f"GUARDED {scenario} {model} {role.get(scenario, 'generic-review')} files_read=0"
                 for scenario in scenarios
                 for model in skill_evals.MODELS
             ],
@@ -1194,8 +1284,8 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-0-0 | 14/14 | clean-change 2/2, planted-defects 5/5, re-review 7/7 "
-            "| claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+            "| review-prs | haiku | claude-haiku-0-0 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, "
+            "planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
         self.assertNotIn("| review-prs | opus | old |", written)
@@ -1234,14 +1324,14 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn('FAIL review-prs clean-change haiku verdict APPROVED "the run recorded no review"', lines)
         self.assertFalse(any(line.startswith(("PASS", "REMOVED")) for line in lines))
         self.assertTrue(self.homes.is_dir())
-        self.assertIn("| review-prs | sonnet | claude-sonnet-0-0 | 0/14 |", self.results.read_text(encoding="utf-8"))
+        self.assertIn("| review-prs | sonnet | claude-sonnet-0-0 | 0/21 |", self.results.read_text(encoding="utf-8"))
 
     def test_a_model_none_of_whose_reviewers_ran_is_recorded_as_not_run(self) -> None:
         status, lines = self.evaluate(["--write"], self.seams(StubClaude(self, review=False, reviewer="<synthetic>")))
         self.assertEqual(1, status)
         self.assertIn("REVIEWER haiku none", lines)
         self.assertIn(
-            "| review-prs | haiku | not run | 0/14 | the run recorded no review |",
+            "| review-prs | haiku | not run | 0/21 | the run recorded no review |",
             self.results.read_text(encoding="utf-8"),
         )
 
