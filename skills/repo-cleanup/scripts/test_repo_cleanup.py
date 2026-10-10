@@ -645,7 +645,9 @@ class PlanApplyTests(Fixture):
         self.assertEqual(0, code, lines)
         self.assertEqual([["local-merged"], ["local-squashed"]], facts(lines, "DELETED"))
         self.assertEqual([["local-work", work]], facts(lines, "UNMERGED"))
-        self.assertEqual([["local-open", "not a local-only branch offered by this plan"]], facts(lines, "PRESERVED"))
+        self.assertEqual(
+            [["local-open", "not a local-only or closed branch offered by this plan"]], facts(lines, "PRESERVED")
+        )
         code, lines = self.confirm("force-delete", "local-work")
         self.assertEqual([["local-work"]], facts(lines, "DELETED"))
         self.assertIsNone(self.tip("local-work"))
@@ -780,6 +782,52 @@ class PlanApplyTests(Fixture):
         summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
         self.assertIn("  Dirty worktrees skipped: 1 — ", summary)
         self.assertIn("  Protected release worktrees: 1 (preserved)", summary)
+
+    def test_a_worktree_whose_pull_request_closed_unmerged_is_removed_and_its_branch_asked_about(self) -> None:
+        tracked = self.push_branch("closed-tracked")
+        self.github.pull("closed-tracked", "CLOSED", tracked)
+        gone = self.finished_branch("closed-gone", merged=False, state="CLOSED")
+        trees = {"closed-tracked": self.area / "tracked wt", "closed-gone": self.area / "gone wt"}
+        for branch, path in trees.items():
+            git(self.clone, "worktree", "add", "--quiet", str(path), branch)
+        planned, applied = self.clean()
+        for branch in trees:
+            self.assertEqual("remove-worktree-ask", self.branch_fact(planned, branch)[4], branch)
+        self.assertEqual(
+            {"tracked wt": "closed-tracked", "gone wt": "closed-gone"},
+            {Path(fields[0]).name: fields[1] for fields in facts(applied, "REMOVED")},
+        )
+        self.assertFalse(any(path.exists() for path in trees.values()))
+        self.assertEqual([], facts(applied, "DELETED"), "a closed pull request's branch is never deleted unasked")
+        self.assertEqual([["closed-gone"], ["closed-tracked"]], sorted(facts(applied, "CONFIRM_LOCAL")))
+        self.assertEqual((tracked, gone), (self.tip("closed-tracked"), self.tip("closed-gone")))
+        summary = "\n".join(fields[0] for fields in facts(applied, "SUMMARY"))
+        row = next(line for line in summary.splitlines() if line.startswith("  Closed PR (kept):        2 — "))
+        self.assertEqual({"closed-tracked", "closed-gone"}, set(row.split(" — ")[1].split(", ")))
+        self.assertNotIn("Local-only (kept)", summary)
+
+        code, lines = self.confirm("delete-local", "closed-tracked", "closed-gone")
+        self.assertEqual(0, code, lines)
+        self.assertEqual([["closed-tracked", tracked], ["closed-gone", gone]], facts(lines, "UNMERGED"))
+        code, lines = self.confirm("force-delete", "closed-gone")
+        self.assertEqual([["closed-gone"]], facts(lines, "DELETED"))
+        self.assertIsNone(self.tip("closed-gone"))
+        self.assertEqual(tracked, self.tip("closed-tracked"), "a branch the user keeps stays")
+
+    def test_a_closed_branch_whose_worktree_git_refused_to_remove_is_not_offered(self) -> None:
+        tip = self.push_branch("closed-locked")
+        self.github.pull("closed-locked", "CLOSED", tip)
+        path = self.area / "locked wt"
+        git(self.clone, "worktree", "add", "--quiet", str(path), "closed-locked")
+        git(self.clone, "worktree", "lock", str(path))
+        _, applied = self.clean()
+        self.assertEqual([], facts(applied, "CONFIRM_LOCAL"))
+        _, lines = self.confirm("delete-local", "closed-locked")
+        self.assertEqual(
+            [["closed-locked", "not a local-only or closed branch offered by this plan"]], facts(lines, "PRESERVED")
+        )
+        self.assertEqual(tip, self.tip("closed-locked"))
+        git(self.clone, "worktree", "unlock", str(path))
 
     def test_fast_forward_targets_each_branch_by_its_exact_name(self) -> None:
         self.push_branch("fix/a.b+c")
@@ -1057,6 +1105,29 @@ class SweepTests(Fixture):
         recorded = json.loads(Path(plan).read_text(encoding="utf-8"))
         self.assertEqual((True, "could not run git: git vanished"), (recorded["applied"], recorded["stopped"]))
 
+    def test_a_later_command_that_completes_no_longer_reports_the_stopped_cleanup(self) -> None:
+        git(self.clone, "branch", "scratch", "main")
+        self.push_branch("behind")
+        self.advance_remotely("behind")
+
+        def failing(command: Sequence[str], timeout: float) -> GitResult:
+            if "update-ref" in command and "refs/heads/behind" in command:
+                raise GitError("git vanished", kind="execution")
+            return git_client.subprocess_runner(command, timeout)
+
+        self.sweep(rc.Services(git=GitClient(failing), gh=self.github), "my repo")
+        plan = (self.root / "plans" / "my repo.json").as_posix()
+        stopped = "my repo cleanup stopped partway (could not run git: git vanished); done before it:"
+        _, lines = self.invoke("summary", "--plan", plan)
+        self.assertEqual(stopped, self.summary(lines).splitlines()[0], "summary repeats the last run's summary")
+
+        code, lines = self.invoke("delete-local", "--plan", plan, "--branch", "scratch")
+        self.assertEqual((0, [["scratch"]]), (code, facts(lines, "DELETED")), lines)
+        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
+        _, lines = self.invoke("summary", "--plan", plan)
+        self.assertEqual("my repo cleanup complete:", self.summary(lines).splitlines()[0])
+        self.assertNotIn("stopped", json.loads(Path(plan).read_text(encoding="utf-8")))
+
     def test_a_repository_is_quiet_only_when_nothing_changed(self) -> None:
         broken = self.make_clone("broken repo")
         git(broken, "switch", "--quiet", "-c", "topic")
@@ -1318,6 +1389,18 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.assertEqual([["REMOVED", str(path), "merged"], ["DELETED", "merged"]], events)
         self.assertFalse(path.exists())
         self.assertIsNone(self.tip("merged"))
+
+    def test_a_closed_worktree_is_removed_and_its_branch_offered_instead_of_deleted(self) -> None:
+        path = self.add("closed")
+        tip = git(self.repo, "rev-parse", "closed")
+        with contextlib.redirect_stdout(io.StringIO()):
+            removed = rc.remove_worktree(
+                rc.Services(), self.plan, {"path": str(path), "branch": "closed"}, tip, "CLOSED", ask=True
+            )
+        self.assertTrue(removed)
+        self.assertEqual([["REMOVED", str(path), "closed"], ["CONFIRM_LOCAL", "closed"]], self.plan["events"])
+        self.assertFalse(path.exists())
+        self.assertEqual(tip, self.tip("closed"))
 
     def test_a_locked_worktree_is_kept_with_gits_reason(self) -> None:
         path = self.add("locked")
