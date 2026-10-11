@@ -1138,26 +1138,26 @@ def _generic_role(
     notes: list[str],
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """The generic reviewer's role, or None when it has nothing to do, and the changed files left unreviewed."""
-    # When no specialist routes, the generic reviewer reviews the whole change. When some do, it reviews the changed
-    # files none of them matches, unless the manifest leaves those unreviewed; then the record lists them instead.
-    outside = uncovered(manifest, changed) if routes else []
-    ignored = outside if manifest.get("uncovered", "review") == "ignore" else []
+    # Matching, not routing, determines generic scope: a closed condition deliberately skips its matched files.
+    outside = uncovered(manifest, changed)
+    matched = len(outside) < len(changed)
+    ignored = outside if matched and manifest.get("uncovered", "review") == "ignore" else []
     if ignored:
         notes.append(
             f"No reviewer reviews {len(ignored)} changed file{'s' if len(ignored) != 1 else ''} that no "
             f"specialist covers, because the reviewer manifest sets uncovered to ignore: "
             f"{', '.join(ignored)}."
         )
-    if not routes:
+    if not matched:
         reviewed = _to_review(changed, review_files)
     elif ignored:
         reviewed = []
     else:
         reviewed = _to_review(outside, review_files)
-    # Every review needs a role, so an incremental one in which nothing changed still records a pass.
+    # Every review needs a role, even when closed conditions or incremental scope leave nothing to review.
     if not routes or reviewed or unowned or unowned_comments or not specialists_planned:
         paths = {item.get("path") for item in (*unowned, *unowned_comments)}
-        files = reviewed or (changed if not routes else [p for p in changed if p in paths] or changed)
+        files = reviewed or (changed if not matched else [p for p in changed if p in paths] or changed)
         role = {
             "id": GENERIC_SPECIALIST,
             "category": "General",

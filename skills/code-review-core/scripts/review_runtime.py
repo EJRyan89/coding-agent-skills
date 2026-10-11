@@ -106,7 +106,7 @@ SPECIALIST_MANIFEST_KEYS = {
     "specialists",
     "conditions",
 }
-# `uncovered` says what happens to changed files no specialist matches when others route: `review` (the default) gives
+# `uncovered` says what happens to changed files no specialist matches when others match: `review` (the default) gives
 # them to the generic reviewer, `ignore` leaves them unreviewed and lists them in the record.
 # `finding_categories` names the kinds of problem a finding may be, such as Style or Security; when a manifest gives
 # them, every specialist names one per finding instead of each finding taking its specialist's category.
