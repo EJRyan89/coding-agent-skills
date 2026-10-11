@@ -1608,10 +1608,9 @@ def render_markdown(
     if unavailable:
         lines.extend(
             [
-                "> **Not reviewed in full:** these changed files were too large, could not be represented safely, or "
-                "were documents whose text could not be extracted, so reviewers saw only their diff: "
-                + ", ".join(_code(path) for path in unavailable)
-                + ".",
+                "> **Not reviewed in full:** these changed files were excluded by the repository's `snapshot_exclude`, "
+                "were too large, could not be represented safely, or were documents whose text could not be extracted, "
+                "so reviewers saw only their diff: " + ", ".join(_code(path) for path in unavailable) + ".",
                 "",
             ]
         )
