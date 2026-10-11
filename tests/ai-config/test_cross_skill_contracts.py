@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
 import frontmatter as skill_frontmatter
+import review_guard
 import review_pipeline
 import review_source
 from review_config import COMPUTED_DASHBOARD_STATES
@@ -376,6 +377,78 @@ class CrossSkillContractTests(unittest.TestCase):
         command = " ".join(folded)  # a folded block scalar joins its lines with single spaces
         self.assertNotIn("$", command, "neither shell may expand anything in the command")
         return command
+
+    def test_guarded_command_values_keep_spaces_and_punctuation_in_both_shells(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "Some O'Neil (scripts) [&;]"
+            root.mkdir()
+            script = root / "arguments.py"
+            script.write_text("import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8")
+            run = root / "code-review-run-spaced"
+            role = "generic-review"
+            value = "src/O'Neil \u2018service\u2019 [new] (old) & newer;|.cs"
+            pattern = "class [A-Z]+Service;|GetAssignments( |[(])"
+            commands = [
+                (
+                    review_pipeline.SELF_CHECK_COMMAND.format(script=script.as_posix(), run=run.as_posix(), role=role),
+                    review_guard.SELF_CHECK,
+                    ["validate-result", "--run", run.as_posix(), "--role", role],
+                ),
+                *[
+                    (
+                        command.replace(placeholder, chosen),
+                        review_guard.SOURCE_COMMAND,
+                        [name, "--run", str(run), "--role", role, f"--{option}={chosen}"],
+                    )
+                    for command, placeholder, chosen, name, option in zip(
+                        review_source.source_commands(run, role, script=script.as_posix()),
+                        ("<path>", "<pattern>"),
+                        (value, pattern),
+                        ("source-file", "source-search"),
+                        ("path", "pattern"),
+                        strict=True,
+                    )
+                ],
+            ]
+            for command, validator, expected in commands:
+                self.assertIsNotNone(validator.fullmatch(command))
+                for shell, (executable, arguments) in self.reviewer_hook_shells(command).items():
+                    with self.subTest(command=command, shell=shell):
+                        if executable is None:
+                            self.fail(f"{shell} is a validation prerequisite")
+                        result = subprocess.run(
+                            [executable, *arguments], capture_output=True, text=True, check=False, timeout=30
+                        )
+                        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                        self.assertEqual(expected, json.loads(result.stdout))
+
+    def test_powershell_smart_double_quote_command_breaks_are_denied_without_execution(self) -> None:
+        from deployer import platform_support
+
+        executable = platform_support.find_pwsh(os.environ.get("PATH", ""))
+        if executable is None:
+            self.fail("PowerShell is a validation prerequisite")
+        parser = (
+            "$tokens = $null; $errors = $null; "
+            "$ast = [System.Management.Automation.Language.Parser]::ParseInput("
+            "$env:GUARD_PARSE_ONLY, [ref]$tokens, [ref]$errors); "
+            "@($ast.EndBlock.Statements.Count, $errors.Count) | ConvertTo-Json -Compress"
+        )
+        fetch = review_source.source_commands(Path("C:/code-review-run-example"), "generic-review")[0]
+        for quote in ("\u201c", "\u201d", "\u201e"):
+            command = fetch.replace("<path>", f"Service{quote}; Write-Output marker; #")
+            with self.subTest(quote=quote):
+                result = subprocess.run(
+                    [executable, "-NoProfile", "-Command", parser],
+                    env={**os.environ, "GUARD_PARSE_ONLY": command},
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual([2, 0], json.loads(result.stdout))
+                self.assertIsNone(review_guard.SOURCE_COMMAND.fullmatch(command))
 
     def test_the_reviewer_hook_blocks_the_call_when_the_guard_is_missing_or_broken(self) -> None:
         # A PreToolUse hook that fails with any exit code but 2 lets the call through unguarded, and PowerShell's
