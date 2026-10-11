@@ -6,11 +6,13 @@ import copy
 import hashlib
 import json
 import re
+import string
 import sys
 from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
@@ -1378,22 +1380,60 @@ def _cell(text: str) -> str:
     return " ".join(text.split()).replace("|", "\\|")
 
 
-# The characters Markdown, GitHub's math, or HTML reads as markup within a line; a backslash makes each literal.
-MARKUP = re.compile(r"([\\`*_\[\]<>&|~$])")
+# Entities are text in both Markdown and HTML summaries. Encoding punctuation also prevents bare URL, email,
+# mention and math recognition, without depending on the parity of author-supplied backslashes.
+LITERAL_PUNCTUATION = str.maketrans(
+    {char: {"&": "&amp;", "<": "&lt;", ">": "&gt;"}.get(char, f"&#{ord(char)};") for char in string.punctuation}
+)
+
+
+def _literal(text: str) -> str:
+    text = text.translate(LITERAL_PUNCTUATION)
+    # Leading whitespace must not turn a prose line into an indented code block.
+    return re.sub(r"^[ \t]+", lambda match: "".join(f"&#{ord(char)};" for char in match[0]), text)
 
 
 def _text(text: str) -> str:
-    """Single-line Markdown table cell content that renders as written: untrusted text, such as a pull request's title
-    or a review comment, never becomes a link, an image, emphasis, or an HTML tag."""
-    return MARKUP.sub(r"\\\1", " ".join(text.split()))
+    """Literal single-line metadata, for table cells and HTML summaries."""
+    return _literal(flat_text(text))
 
 
-def _html(text: str) -> str:
-    return " ".join(text.split()).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def _code_cell(text: str) -> str:
+    """HTML code avoids Markdown table escape parity when a label contains both backslashes and pipes."""
+    if "\\" in text and "|" in text:
+        return f"<code>{_text(text)}</code>"
+    return _cell(_code(text))
+
+
+def _prose(text: str, *, table: bool = False) -> str:
+    """Literal prose with paragraphs and explicit line breaks, also inside a single table cell."""
+    lines = [_literal(line) if line.strip() else "" for line in text.splitlines()]
+    if table:
+        return "<br>".join(lines)
+    return "\n".join(
+        line + ("<br>" if line and index + 1 < len(lines) and lines[index + 1] else "")
+        for index, line in enumerate(lines)
+    )
 
 
 def _quote(text: str) -> list[str]:
-    return [f"> {line}".rstrip() for line in text.strip().splitlines()]
+    return [f"> {line}".rstrip() for line in _prose(text).splitlines()]
+
+
+def _navigation_url(url: str) -> str | None:
+    """Only absolute HTTPS navigation stays active; delimiters cannot escape its Markdown destination."""
+    if not re.fullmatch(r"https://[A-Za-z0-9.-]+(?::[0-9]+)?(?:/[^\x00-\x20]*)?", url):
+        return None
+    return quote(url, safe="/:?#@!$&+,;=%")
+
+
+def _comment_link(comment: dict[str, Any]) -> str:
+    target = _navigation_url(comment["url"])
+    return f"[{comment['id']}]({target})" if target else _text(f"{comment['id']} ({comment['url']})")
+
+
+def _evidence(text: str) -> str:
+    return "<br>".join(_code(line) if line else "" for line in text.splitlines())
 
 
 def _label(value: str) -> str:
@@ -1443,34 +1483,38 @@ def _finding_block(
     """One finding's collapsible block, headed by its display ID. `repeats` names the finding it repeats, and
     `status` holds the lines saying what this review found about it."""
     headline = (
-        _html(finding["title"])
+        _text(finding["title"])
         if "title" in finding
-        else f"<code>{_html(PurePosixPath(finding['path']).name)}:{finding['line']}</code>"
+        else f"<code>{_text(PurePosixPath(finding['path']).name)}:{finding['line']}</code>"
     )
     # A specialist's evidence is the added line itself, so it joins the line number instead of
     # repeating the location on a line of its own; other evidence stays after the body.
     added_prefix = f"{finding['path']}:{finding['line']} adds: "
     # A line of a changed document's extracted text also says where in the document it is.
-    place = f" ({_html(finding['location'])})" if "location" in finding else ""
+    place = f" ({_text(finding['location'])})" if "location" in finding else ""
     if finding["evidence"].startswith(added_prefix):
         location = [
-            f"> **Line {finding['line']}{place}:** {_code(finding['evidence'][len(added_prefix) :])} "
-            f"| **Source:** {_html(finding['source'])}"
+            f"> **Line {finding['line']}{place}:** {_evidence(finding['evidence'][len(added_prefix) :])} "
+            f"| **Source:** {_text(finding['source'])}"
         ]
         evidence = []
     else:
-        location = [f"> **Line:** {finding['line']}{place} | **Source:** {_html(finding['source'])}"]
-        evidence = [">", f"> **Evidence:** {_code(finding['evidence'])}"]
+        location = [f"> **Line:** {finding['line']}{place} | **Source:** {_text(finding['source'])}"]
+        evidence = [">", f"> **Evidence:** {_evidence(finding['evidence'])}"]
     if "analyzer" in finding:
         evidence.extend([">", f"> **Analyzer:** {_analyzer_note(finding['analyzer'])}"])
     # Each status line but the last ends in a Markdown hard break, so the lines don't run together.
-    status = [f"> {line}  " for line in status]
+    status = [
+        f"> {part}" + ("  " if part and not part.endswith("<br>") else "")
+        for line in status
+        for part in line.splitlines()
+    ]
     if status:
         status[-1] = status[-1].rstrip()
     prefix = f"Repeats {repeats}: " if repeats else ""
     return [
         "<details open>",
-        f"<summary>{label}. {prefix}[{_html(finding['category'])}] {headline}</summary>",
+        f"<summary>{label}. {prefix}[{_text(finding['category'])}] {headline}</summary>",
         "",
         *status,
         *([">"] if status else []),
@@ -1525,7 +1569,7 @@ class _Ledger:
         latest = entry["dispositions"][-1]
         rationale = self.rationales.get((latest["version"], ledger_id(entry["version"], entry["id"])))
         text = f"{DISPOSITION_PHRASES[latest['disposition']]} in v{latest['version']}"
-        return f"{text}: {flat_text(rationale)}" if rationale else f"{text}."
+        return f"{text}: {_prose(rationale)}" if rationale else f"{text}."
 
     def status(self, entry: dict[str, Any]) -> list[str]:
         """An open or unverified entry's status line in a re-review, then a line for each flag on it."""
@@ -1543,7 +1587,7 @@ class _Ledger:
 
     def flag_lines(self, entry: dict[str, Any]) -> list[str]:
         return [
-            f"**Flagged:** {flag['id']} ({flat_text(flag['category'])}): {flat_text(flag['body'])}"
+            f"**Flagged:** {_text(flag['id'])} ({_text(flag['category'])}): {_prose(flag['body'])}"
             for flag in self.flags.get(ledger_id(entry["version"], entry["id"]), [])
         ]
 
@@ -1593,15 +1637,15 @@ def render_markdown(
         "|---|---|",
         f"| **Title** | {_text(pull['title'])} |",
         (
-            f"| **Branch** | {_cell(_code(pull['head_ref']))} → {_cell(_code(pull['base_ref']))} |"
+            f"| **Branch** | {_code_cell(pull['head_ref'])} → {_code_cell(pull['base_ref'])} |"
             if pull.get("head_ref")
-            else f"| **Base** | {_cell(_code(pull['base_ref']))} |"
+            else f"| **Base** | {_code_cell(pull['base_ref'])} |"
         ),
-        f"| **URL** | {_cell(pull['url'])} |",
+        f"| **URL** | {_navigation_url(pull['url']) or _text(pull['url'])} |",
         *_description_row(pull),
         f"| **Reviewed** | {_reviewed_at(review['reviewed_at'])} |",
         f"| **Verdict** | {_label(review['verdict'])}{', ' + ledger.counts() if re_review else ''} |",
-        *([f"| **Scope** | {_cell(describe_scope(review['scope']))} |"] if "scope" in review else []),
+        *([f"| **Scope** | {_prose(describe_scope(review['scope']), table=True)} |"] if "scope" in review else []),
         "",
     ]
     unavailable = (review.get("coverage") or {}).get("unavailable_sources", [])
@@ -1625,7 +1669,7 @@ def render_markdown(
                 "",
             ]
         )
-    lines.extend(["---", "", "## Summary", "", review["summary"].strip(), "", "## Findings", ""])
+    lines.extend(["---", "", "## Summary", "", _prose(review["summary"]), "", "## Findings", ""])
     lines.extend(_findings_section(ledger, re_review))
     comments = {comment["id"]: comment for comment in record.get("github_comments", [])}
     if comments:
@@ -1644,9 +1688,9 @@ def render_markdown(
             excerpt = excerpt if len(excerpt) <= 120 else excerpt[:117].rstrip() + "..."
             outdated = " (outdated)" if comment["outdated"] else ""
             lines.append(
-                f"| [{comment['id']}]({comment['url']}) | @{_cell(comment['author'])} on "
-                f"{_cell(_code(location))}{outdated}: {_text(excerpt)} | {_label(disposition['disposition'])} "
-                f"| {_cell(disposition['rationale'])} |"
+                f"| {_comment_link(comment)} | {_text('@' + comment['author'])} on "
+                f"{_code_cell(location)}{outdated}: {_text(excerpt)} | {_label(disposition['disposition'])} "
+                f"| {_prose(disposition['rationale'], table=True)} |"
             )
         lines.extend(["", _addressed(record["comment_dispositions"]), ""])
     names = model_names or {}
@@ -1666,7 +1710,8 @@ def render_markdown(
             if model in names and model not in mapped:
                 mapped.append(model)
             lines.append(
-                f"| {_cell(_code(reviewer['id']))} | {_cell(focus)} | {_cell(names.get(model, model))} "
+                f"| {_code_cell(reviewer['id'])} | {_text(focus)} "
+                f"| {_text(names.get(model, model)) if 'model' in reviewer else '-'} "
                 f"| {reviewer['files']} "
                 f"| {reviewer['findings']} | {reviewer['retries']} | {_duration(reviewer.get('seconds'))} "
                 f"| {_files_read(reviewer)} |"
@@ -1684,14 +1729,14 @@ def render_markdown(
             f"| **Mode** | {review['mode']} v{review['version']} |",
             *([f"| **Dispatch** | {review['dispatch']} |"] if "dispatch" in review else []),
             *([f"| **Snapshot** | {describe_snapshot(review['snapshot'])} |"] if "snapshot" in review else []),
-            f"| **Adapter** | {_cell(_code(adapter['name']))} ({adapter['scope']}) |",
+            f"| **Adapter** | {_code_cell(adapter['name'])} ({adapter['scope']}) |",
             *([f"| **Reviewer source** | {_cell(describe_reviewer_source(adapter))} |"] if "source" in adapter else []),
-            f"| **Reviewer** | {_cell(adapter['reviewer'])} ({adapter['status']}) |",
+            f"| **Reviewer** | {_text(adapter['reviewer'])} ({adapter['status']}) |",
             # The Reviewers table shows a configured name in place of each mapped model identifier, kept here.
             *(
                 [
                     "| **Reviewer models** | "
-                    + "; ".join(f"{_cell(names[model])}: {_cell(_code(model))}" for model in mapped)
+                    + "; ".join(f"{_text(names[model])}: {_code_cell(model)}" for model in mapped)
                     + " |"
                 ]
                 if mapped
@@ -1742,12 +1787,13 @@ def _findings_section(ledger: _Ledger, re_review: bool) -> list[str]:
         lines.extend(["<details>", f"<summary><strong>Addressed since v{ledger.start}</strong></summary>", ""])
         for entry in closed:
             finding = ledger.raised(entry)
-            title = f" {_html(finding['title'])}," if "title" in finding else ""
+            title = f" {_text(finding['title'])}," if "title" in finding else ""
             location = _code(f"{finding['path']}:{finding['line']}")
-            lines.append(
+            item = (
                 f"- **{_display_id(entry['version'], entry['id'])}.** {_label(entry['severity'])} "
-                f"[{_html(entry['category'])}]{title} {location}. {ledger.judgment(entry)}"
+                f"[{_text(entry['category'])}]{title} {location}. {ledger.judgment(entry)}"
             )
+            lines.extend(part if index == 0 else f"  {part}" for index, part in enumerate(item.splitlines()))
         lines.extend(["", "</details>", ""])
     return lines
 

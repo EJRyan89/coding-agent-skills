@@ -4060,7 +4060,7 @@ class FixtureCanaryTests(PipelineFixture):
         )
         report = next(line.split(" ", 2)[2] for line in lines if line.startswith("SHA256 ") and line.endswith(".md"))
         self.assertIn(
-            '> **Line 2 (paragraph 2, under the heading "Scope"):** `[P2] Bound the queue at {+ten+}`',
+            "> **Line 2 (paragraph 2&#44; under the heading &#34;Scope&#34;):** `[P2] Bound the queue at {+ten+}`",
             Path(report).read_text(encoding="utf-8"),
         )
 

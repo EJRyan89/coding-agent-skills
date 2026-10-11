@@ -348,7 +348,7 @@ class ExtractedDocumentTests(DocumentTestCase):
         [finding] = record["findings"]
         self.assertEqual('paragraph 4, under the heading "Scope"', finding["location"])
         report = (self.output / "report.md").read_text(encoding="utf-8")
-        self.assertIn('**Line 3 (paragraph 4, under the heading "Scope"):** `[P4] Retry forever.`', report)
+        self.assertIn("**Line 3 (paragraph 4&#44; under the heading &#34;Scope&#34;):** `[P4] Retry forever.`", report)
 
     def test_a_committed_word_document_is_reviewed_by_the_paragraphs_its_edit_changes(self) -> None:
         checkout = self.checkout()
@@ -456,7 +456,7 @@ class ExtractedDocumentTests(DocumentTestCase):
         [finding] = record["findings"]
         self.assertEqual("page 2, line 1", finding["location"])
         report = (self.output / "report.md").read_text(encoding="utf-8")
-        self.assertIn("**Line 3 (page 2, line 1):** `[p2 l1] Retry forever.`", report)
+        self.assertIn("**Line 3 (page 2&#44; line 1):** `[p2 l1] Retry forever.`", report)
 
     def test_a_pdf_whose_text_is_not_extracted_or_unchanged_is_refused_before_any_fixture(self) -> None:
         draft = self.root / "queue.pdf"
