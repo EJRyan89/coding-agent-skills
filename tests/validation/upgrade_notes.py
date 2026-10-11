@@ -221,7 +221,7 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
             f"{RELEASING_DOC}: {_either(levels)}"
         )
     contract = entry.fields.get("Contract")
-    if contract and contract.lower() != "none" and not entry.contract_items:
+    if contract and contract.lower() not in ("none", "none.") and not entry.contract_items:
         problems.append(f"{where} names no contract item in backticks, nor none, in '- Contract:'")
     pull_request = entry.fields.get("Pull request")
     if pull_request and not PULL_REQUESTS.fullmatch(pull_request.rstrip(".")):

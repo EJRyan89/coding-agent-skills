@@ -274,6 +274,14 @@ class UpgradeNotesPolicy(unittest.TestCase):
                 "names no pull request as #N in '- Pull request:'",
             ),
             "contract": (self.entry("the manifest"), "names no contract item in backticks, nor none, in '- Contract:'"),
+            "none with prose": (
+                self.entry("none, because nothing changed"),
+                "names no contract item in backticks, nor none, in '- Contract:'",
+            ),
+            "none with repeated periods": (
+                self.entry("none.."),
+                "names no contract item in backticks, nor none, in '- Contract:'",
+            ),
         }
         for name, (entry, expected) in cases.items():
             with self.subTest(case=name):
@@ -307,7 +315,28 @@ class UpgradeNotesPolicy(unittest.TestCase):
 
     def test_an_entry_tied_to_no_file_names_none(self) -> None:
         self.release()
-        self.assertEqual([], self.problems({}, self.body(self.entry("none", action="pass --cross-major once"))))
+        for contract in ("none", "none.", "None", "None.", "NONE", "NONE.", " none. "):
+            with self.subTest(contract=contract):
+                self.assertEqual(
+                    [], self.problems({}, self.body(self.entry(contract, action="pass --cross-major once")))
+                )
+
+    def test_a_merged_entry_tied_to_no_file_may_name_none_with_a_period(self) -> None:
+        self.release()
+        self.commit(f"Clarify guidance (#8)\n\n{self.body(self.entry('none.'))}")
+        self.merged()
+        for body in (None, self.body()):
+            with self.subTest(body=body is not None):
+                self.assertEqual([], upgrade_notes_problems(self.root, body))
+
+    def test_a_none_contract_does_not_cover_a_changed_contract_item(self) -> None:
+        self.release()
+        for contract in ("none", "none."):
+            with self.subTest(contract=contract):
+                problems = self.problems(self.MANIFEST_CHANGE, self.body(self.entry(contract)))
+                self.assertEqual(1, len(problems), problems)
+                self.assertTrue(problems[0].startswith("deployer/manifest.py: "), problems[0])
+                self.assertIn("changed since v0.1.0, and no upgrade note since then names it", problems[0])
 
     def test_a_notes_section_that_is_not_a_version_fails(self) -> None:
         self.release()
