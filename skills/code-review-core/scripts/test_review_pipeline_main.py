@@ -60,6 +60,7 @@ STUBBED = (
     "prepare",
     "prepare_fixture",
     "mark_dispatched",
+    "remove_run",
     "validate_result",
     "workflow_script",
     "wait_for_reviewers",
@@ -542,7 +543,7 @@ class PrepareTests(MainCase):
             self.run_main("prepare", "--pull", "example/app#3", "--pull", "example/app#5")
         self.assertIs(error, caught.exception)
 
-    def test_an_expected_error_while_marking_ends_the_call(self) -> None:
+    def test_an_expected_error_while_marking_fails_only_its_pull_request(self) -> None:
         self.stub(
             "prepare",
             effect=by_first_argument(
@@ -553,12 +554,60 @@ class PrepareTests(MainCase):
                 }
             ),
         )
-        dispatched = self.stub("mark_dispatched", effect=raising(PersistenceError("disk full")))
+        dispatched = self.stub(
+            "mark_dispatched",
+            effect=by_first_argument({Path("run five"): PersistenceError("disk full"), Path("run seven"): None}),
+        )
+        removed = self.stub("remove_run")
         self.assertEqual(
-            (1, "SKIP example/app#3 draft\nFAILED disk full\n", ""),
+            (
+                1,
+                "SKIP example/app#3 draft\n"
+                "FAILED example/app#5 disk full\n"
+                "RUN example/app#7 run seven\n"
+                "NOTE example/app#7 first note\n"
+                "NOTE example/app#7 second note\n"
+                "ROLE generic-review generic.md\n"
+                "MODEL example/app#7 generic-review opus\n"
+                "ROLE security security.md\n"
+                "ROLE style style.md\n",
+                "",
+            ),
             self.run_main("prepare", "--pull", "example/app#3", "--pull", "example/app#5", "--pull", "example/app#7"),
         )
-        self.assertEqual([((Path("run five"),), {})], dispatched.calls)
+        self.assertEqual([((Path("run five"),), {}), ((Path("run seven"),), {})], dispatched.calls)
+        self.assertEqual([((Path("run five"),), {})], removed.calls)
+
+    def test_every_expected_marking_error_is_selector_qualified_and_cleans_up(self) -> None:
+        self.stub("prepare", ready("example/app#3", "run three"))
+        removed = self.stub("remove_run")
+        for error_class in EXPECTED:
+            with self.subTest(error=error_class.__name__):
+                removed.calls.clear()
+                self.stub("mark_dispatched", effect=raising(error_class("boom")))
+                self.assertEqual(
+                    (1, "FAILED example/app#3 boom\n", ""),
+                    self.run_main("prepare", "--pull", "example/app#3"),
+                )
+                self.assertEqual([((Path("run three"),), {})], removed.calls)
+
+    def test_a_fixture_marking_failure_names_its_directory_and_cleans_up(self) -> None:
+        self.stub("prepare_fixture", ready("example/app#3", "run three"))
+        self.stub("mark_dispatched", effect=raising(PersistenceError("disk full")))
+        removed = self.stub("remove_run")
+        self.assertEqual(
+            (1, "FAILED fixture dir disk full\n", ""),
+            self.run_main("prepare", "--canary", "--fixture", "fixture dir"),
+        )
+        self.assertEqual([((Path("run three"),), {})], removed.calls)
+
+    def test_an_unexpected_marking_error_escapes(self) -> None:
+        error = RuntimeError("bug")
+        self.stub("prepare", ready("example/app#3", "run three"))
+        self.stub("mark_dispatched", effect=raising(error))
+        with self.assertRaises(RuntimeError) as caught:
+            self.run_main("prepare", "--pull", "example/app#3")
+        self.assertIs(error, caught.exception)
 
     def test_a_malformed_selector_is_not_a_duplicate(self) -> None:
         prepare = self.stub(
@@ -1001,7 +1050,6 @@ TOP_LEVEL: list[tuple[str, list[str], str, dict[str, Any]]] = [
     ("validate-reviewer", ["validate-reviewer", "--repository", "example/app"], "validate_reviewer", {}),
     ("enumerate path", ["enumerate"], "working_path", {}),
     ("enumerate", ["enumerate"], "enumerate_batch", {"working_path": Path("batch.json")}),
-    ("prepare", ["prepare", "--pull", "example/app#3"], "mark_dispatched", {"prepare": ready("example/app#3", "run")}),
     ("validate-result", ["validate-result", "--run", "run a", "--role", "security"], "validate_result", {}),
     ("workflow", ["workflow", "--run", "run a"], "workflow_script", {}),
     ("wait-reviewers", ["wait-reviewers", "--run", "run a", "--timeout", "5"], "wait_for_reviewers", {}),

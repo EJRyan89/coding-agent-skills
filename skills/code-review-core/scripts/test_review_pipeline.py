@@ -32,6 +32,7 @@ from review_config import ConfigurationError, default_manifest_path, validate_co
 from review_flags import FlagError, add_flag
 from review_github import GitHubClient
 from review_hosts import ProcessResult
+from review_io import PersistenceError
 from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
 from review_runtime import validate_adapter_manifest
@@ -537,6 +538,122 @@ class PipelineFixture(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = rp.main(["--config", str(self.config_path), *arguments], services=self.services)
         return code, out.getvalue(), err.getvalue()
+
+
+class PreparePublicationTests(PipelineFixture):
+    def prepared_pulls(self) -> dict[str, dict[str, Any]]:
+        for number in (13, 14):
+            self.github.pulls[number] = rest_pull(number, self.head, self.base)
+        return {f"{REPOSITORY}#{number}": self.prepare(f"{REPOSITORY}#{number}") for number in (12, 13, 14)}
+
+    def publish(
+        self, prepared: dict[str, dict[str, Any]], failed_selector: str, *, fixture: bool = False
+    ) -> tuple[int, str, str]:
+        failed_run = prepared[failed_selector]["run"]
+        write_json = rp.atomic_write_json
+
+        def fail_marking(path: Path, value: Any) -> None:
+            if path == failed_run / rp.RUN_FILE:
+                raise PersistenceError("disk full")
+            write_json(path, value)
+
+        arguments = (
+            ["prepare", "--canary", "--fixture", "fixture dir"]
+            if fixture
+            else ["prepare", *[part for selector in prepared for part in ("--pull", selector)]]
+        )
+        with (
+            mock.patch.object(rp, "prepare", side_effect=lambda selector, **_: prepared[selector]),
+            mock.patch.object(rp, "prepare_fixture", return_value=prepared[failed_selector]),
+            mock.patch.object(rp, "atomic_write_json", side_effect=fail_marking),
+        ):
+            return self.run_main(*arguments)
+
+    def test_a_failed_dispatch_write_removes_only_its_unpublished_run_and_other_pulls_record(self) -> None:
+        for failed_number in (12, 13, 14):
+            with self.subTest(failed_number=failed_number):
+                self.archive = self.root / f"archive {failed_number}"
+                self.configure()
+                prepared = self.prepared_pulls()
+                failed_selector = f"{REPOSITORY}#{failed_number}"
+                code, out, err = self.publish(prepared, failed_selector)
+                self.assertEqual((1, ""), (code, err))
+                self.assertEqual(
+                    [f"FAILED {failed_selector} disk full"],
+                    [line for line in out.splitlines() if line.startswith("FAILED ")],
+                )
+                successful = {selector: ready for selector, ready in prepared.items() if selector != failed_selector}
+                self.assertEqual(
+                    [f"RUN {selector} {ready['run']}" for selector, ready in successful.items()],
+                    [line for line in out.splitlines() if line.startswith("RUN ")],
+                )
+                self.assertFalse(prepared[failed_selector]["run"].exists())
+                self.assertEqual(
+                    {ready["run"] for ready in successful.values()}, set(self.temporary.glob(f"{rp.RUN_PREFIX}*"))
+                )
+                self.assertFalse(self.archive.exists(), "publication never records a review")
+                for selector, ready in successful.items():
+                    run = ready["run"]
+                    self.assertEqual(selector, rp.unfinalized_selector(run))
+                    self.write_role_result(ready["roles"][0])
+                    self.assertEqual(0, self.run_main("finalize", "--run", str(run))[0])
+                    self.assertIsNone(rp.unfinalized_selector(run))
+                self.assertFalse(pull_directory(self.archive, REPOSITORY, failed_number).exists())
+                self.assertEqual("", git(self.checkout, "status", "--porcelain"))
+                self.assertFalse(self.state_path.exists())
+                self.assertFalse(self.flags_path.exists())
+
+    def test_a_cleanup_failure_reports_both_errors_and_keeps_the_run_discoverable(self) -> None:
+        prepared = self.prepared_pulls()
+        failed_run = prepared[SELECTOR]["run"]
+        original = (failed_run / rp.RUN_FILE).read_bytes()
+        with mock.patch.object(rp, "remove_run", side_effect=OSError("file held")):
+            code, out, err = self.publish(prepared, SELECTOR)
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            f"FAILED {SELECTOR} disk full; unpublished run {failed_run} could not be removed "
+            "(file held); inspect or delete it.",
+            out.splitlines()[0],
+        )
+        self.assertEqual(original, (failed_run / rp.RUN_FILE).read_bytes(), "failed atomic writes keep the old state")
+        self.assertEqual(
+            (1, f"UNFINALIZED {SELECTOR} {failed_run}\n", ""),
+            self.run_main("unfinalized", "--run", str(failed_run)),
+        )
+        self.assertEqual(2, sum(line.startswith("RUN ") for line in out.splitlines()))
+        self.assertFalse(self.archive.exists())
+
+    def test_partial_cleanup_reports_the_surviving_directory_without_publishing_it(self) -> None:
+        prepared = self.prepared_pulls()
+        failed_run = prepared[SELECTOR]["run"]
+
+        def partial_removal(run: Path) -> None:
+            self.assertEqual(failed_run, run)
+            (run / rp.RUN_FILE).unlink()
+            raise OSError("file held")
+
+        with mock.patch.object(rp, "remove_run", side_effect=partial_removal):
+            code, out, err = self.publish(prepared, SELECTOR)
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            f"FAILED {SELECTOR} disk full; unpublished run {failed_run} could not be removed "
+            "(file held); inspect or delete it.",
+            out.splitlines()[0],
+        )
+        self.assertTrue(failed_run.exists())
+        self.assertNotIn(f"RUN {SELECTOR} ", out)
+        self.assertEqual(2, sum(line.startswith("RUN ") for line in out.splitlines()))
+        check_code, check_out, check_err = self.run_main("unfinalized", "--run", str(failed_run))
+        self.assertEqual((1, ""), (check_code, check_err))
+        self.assertTrue(check_out.startswith(f"FAILED {failed_run} "))
+        self.assertFalse(self.archive.exists())
+
+    def test_a_fixture_dispatch_write_failure_removes_its_unpublished_run(self) -> None:
+        prepared = {SELECTOR: self.prepare(canary=True)}
+        self.assertEqual((1, "FAILED fixture dir disk full\n", ""), self.publish(prepared, SELECTOR, fixture=True))
+        self.assertFalse(prepared[SELECTOR]["run"].exists())
+        self.assertEqual([], list(self.temporary.iterdir()))
+        self.assertFalse(self.archive.exists())
 
 
 class GenericReviewTests(PipelineFixture):
