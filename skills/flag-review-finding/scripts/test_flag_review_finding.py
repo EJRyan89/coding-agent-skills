@@ -116,6 +116,62 @@ class FlagCliTests(unittest.TestCase):
     def assert_result(self, result: subprocess.CompletedProcess[str], code: int, stdout: str) -> None:
         self.assertEqual((code, stdout, ""), (result.returncode, result.stdout, result.stderr))
 
+    def assert_refusal_preserves_store_and_locks(self, reason: str, *arguments: str) -> None:
+        root = Path(self.store).parent
+
+        def snapshot() -> dict[Path, tuple[bytes | None, int]]:
+            return {
+                path.relative_to(root): (path.read_bytes() if path.is_file() else None, path.stat().st_mtime_ns)
+                for path in (root, *root.rglob("*"))
+            }
+
+        before = snapshot()
+        self.assert_result(self.store_cli(*arguments), 1, f"FAILED {reason}\n")
+        self.assertEqual(before, snapshot())
+
+    def test_add_requires_a_nonblank_category_without_changing_the_store(self) -> None:
+        for existing in (False, True):
+            if existing:
+                self.assert_result(self.store_cli("add", "guideline", "Body"), 0, "ADDED RF-000001\n")
+            for category in ("", " \t\n"):
+                with self.subTest(existing=existing, category=category):
+                    self.assert_refusal_preserves_store_and_locks(
+                        "Flag category and body are required", "add", category, "Body"
+                    )
+
+    def test_add_requires_a_nonblank_body_without_changing_the_store(self) -> None:
+        for existing in (False, True):
+            if existing:
+                self.assert_result(self.store_cli("add", "guideline", "Body"), 0, "ADDED RF-000001\n")
+            for body in ("", " \t\n"):
+                with self.subTest(existing=existing, body=body):
+                    self.assert_refusal_preserves_store_and_locks(
+                        "Flag category and body are required", "add", "guideline", body
+                    )
+
+    def test_add_requires_a_positive_pull_before_reading_the_archive_or_changing_the_store(self) -> None:
+        for existing in (False, True):
+            if existing:
+                self.assert_result(
+                    self.store_cli("add", "guideline", "Body", "--repository", "example/one", "--pull", "1"),
+                    0,
+                    "ADDED RF-000001\n",
+                )
+            for pull in ("0", "-1"):
+                for finding in (False, True):
+                    with self.subTest(existing=existing, pull=pull, finding=finding):
+                        arguments = ["add", "guideline", "Body", "--repository", "example/one", "--pull", pull]
+                        if finding:
+                            arguments.extend(["--review-version", "1", "--finding", "F001"])
+                        self.assert_refusal_preserves_store_and_locks("Pull number must be positive", *arguments)
+
+    def test_blank_resolution_fails_before_creating_a_store_or_lock(self) -> None:
+        for resolution in ("", " \t\n"):
+            with self.subTest(resolution=resolution):
+                self.assert_refusal_preserves_store_and_locks(
+                    "Resolution is required", "resolve", "RF-000001", resolution
+                )
+
     def test_add_list_and_resolve(self) -> None:
         review_fixture.commit_fixture(self.archive)
         self.assert_result(self.flag_finding("3", "F002"), 0, "ADDED RF-000001\n")
