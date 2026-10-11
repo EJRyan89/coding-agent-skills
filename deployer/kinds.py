@@ -51,7 +51,16 @@ class ItemKind:
 
 
 SKILL = ItemKind(
-    "skills", "", "skill", "Skill", "claude", "", True, "deselected or absent from source", DIFFERS_FROM_SKILL
+    "skills",
+    "",
+    "skill",
+    "Skill",
+    "claude",
+    "",
+    True,
+    "deselected or absent from source",
+    DIFFERS_FROM_SKILL,
+    dependency_key="skill_deps",
 )
 SHARED = ItemKind(
     "shared",

@@ -99,6 +99,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
         elif entry.action in INSTALLING:
             details: dict[str, object] = {"hash": entry.staged}
             if kind is SKILL:
+                details[SKILL.dependency_key] = sorted(context.source.skills[entry.name].skill_deps)
                 details[SHARED.dependency_key] = sorted(context.source.skills[entry.name].shared_deps)
                 details[AGENT_KIND.dependency_key] = source.agent_closure(context.source, [entry.name])
             elif kind is SHARED:

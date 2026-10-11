@@ -18,19 +18,18 @@ from .source_ref import REF_PATTERN
 
 KINDS_ALLOWED = {
     "Manifest.ownership": "a skill entry also records the items it depends on, and a shared asset entry its role",
-    "_valid_dependencies": "a skill names the agents it depends on by their file names, and its shared assets by any "
-    "safe name",
+    "_valid_dependencies": "a skill names skill dependencies by skill names, agents by their file names, and shared "
+    "assets by any safe name",
     "_validate": "each kind names its items its own way: a skill and its runtime adapter by a skill name and an agent "
     "by its file name, and only a shared asset entry has a role and only a skill entry dependencies",
 }
 
-MANIFEST_VERSION = 7
-# Version 7 adds agent ownership. A version 6 manifest is read as having no agents and saved as version 7, which a
-# version 6 deployer refuses, so it never rewrites a source entry and drops the agents this version owns.
-# A skill entry's agent_deps came later in version 7 without a new version: an entry without it records no agents, and
-# a deployer that predates it drops it on rewrite, which loses only the agents a skill left in place would keep, never
-# an owned item. A source entry's source_ref came later in version 7 the same way: a deployer that predates it drops
-# it on rewrite, when the deployment it makes replaces the pinned one anyway.
+MANIFEST_VERSION = 8
+# Version 8 records direct skill dependencies so a skill left in place keeps its transitive closure. Older deployers
+# refuse it rather than silently dropping those edges and removing dependencies. Versions 6/7 are upgraded in memory
+# on read; the next atomic manifest commit saves the upgrade with the deployment's journaled changes.
+# Version 7 added agent ownership; a version 6 manifest has no agents. Optional agent_deps and source_ref came later:
+# an older entry without them records no agents for a preserved skill and no pinned ref, respectively.
 OLDEST_READABLE_VERSION = 6
 
 
@@ -160,6 +159,8 @@ def _valid_dependencies(values: Any, kind: ItemKind) -> bool:
         return False
     if kind is AGENT_KIND:
         return all(_is_agent_file(value) for value in values)
+    if kind is SKILL:
+        return all(isinstance(value, str) and is_valid_name(value) for value in values)
     return all(isinstance(value, str) and safe_name_problem(value, "shared dependency") is None for value in values)
 
 
@@ -215,7 +216,13 @@ def _validate(data: dict[str, Any], path: Path) -> None:
                     or (
                         kind is SKILL
                         and not all(
-                            _valid_dependencies(value.get(dependency.dependency_key, []), dependency)
+                            _valid_dependencies(
+                                value.get(
+                                    dependency.dependency_key,
+                                    None if dependency is SKILL and data["manifest_version"] >= 8 else [],
+                                ),
+                                dependency,
+                            )
                             for dependency in DEPENDENCY_KINDS
                         )
                     )
@@ -231,6 +238,21 @@ def _record_owners(data: dict[str, Any], kind: str, label: str, owners: dict[str
                     f"ERROR: {label} '{name}' is owned by both '{owners[name]}' and '{source_id}' in manifest"
                 )
             owners[name] = source_id
+
+
+def _upgrade_dependencies(data: dict[str, Any]) -> None:
+    """Prepare an older manifest's missing edges without guessing from metadata newer than its installed skills.
+
+    Unknown historical edges conservatively retain the source's other owned skills. A successful deployment replaces
+    them with exact edges for each skill it installs; skipped and preserved skills keep the conservative graph.
+    This changes only memory, so a dry run, a refusal, or a failed uncommitted deployment leaves the manifest intact.
+    """
+    if data["manifest_version"] >= 8:
+        return
+    for entry in data["sources"].values():
+        skills = entry.get(SKILL.key, {})
+        for name, details in skills.items():
+            details.setdefault(SKILL.dependency_key, sorted(set(skills) - {name}))
 
 
 def load(path: Path) -> Manifest:
@@ -254,6 +276,7 @@ def load(path: Path) -> Manifest:
             f"ERROR: Manifest schema version '{version}' is newer than supported version {MANIFEST_VERSION}"
         )
     _validate(data, path)
+    _upgrade_dependencies(data)
     manifest = Manifest(path, data)
     for kind in KINDS:
         _record_owners(data, kind.key, kind.title, manifest.owners_of(kind))
