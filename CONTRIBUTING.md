@@ -170,6 +170,8 @@ Under the checklist, name anything that could not be run, and why.
 
 Ask a question in an issue from the question template, which applies the `question` label. Discussions stay off, so the issue tracker is the one place to ask, and blank issues stay off (`blank_issues_enabled: false` in `.github/ISSUE_TEMPLATE/config.yml`), so every issue starts from a template. `python tools/branch_protection.py`, described in [How `main` is protected](#how-main-is-protected), reports `DRIFTED` when either is on.
 
+An absent issue template configuration on `main` leaves blank issues enabled, so the check reports `DRIFTED` with exit 1. A whitespace-separated YAML comment after `blank_issues_enabled: false` does not change that setting. Authentication, permission, network, and other read failures still report `ERROR` with exit 2; unsupported or unreadable configuration content still counts as blank issues enabled.
+
 ## Gates the maintainer runs
 
 Some gates need more than a clone and the validation tools. Run them when you can and put their output in the pull request; when you cannot, say so under the checklist, and the maintainer runs them before merging:

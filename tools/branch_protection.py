@@ -8,6 +8,7 @@ configuration on main, private vulnerability reporting, and the default workflow
 `gh api`, for the repository the current checkout's remote names. It prints PROTECTED (exit 0) when every invariant
 holds, or DRIFTED and one line per invariant that no longer holds (exit 1), then each security setting as it found
 it. It exits 2 when `gh` cannot read them, such as without a sign-in or without admin rights on the repository. The
+absence of the issue template configuration counts as blank issues enabled, hence DRIFTED, not a read error. The
 release procedure in docs/releasing.md runs it before tagging.
 """
 
@@ -16,17 +17,15 @@ from __future__ import annotations
 import base64
 import json
 import re
-import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 from console import use_utf8_output
-
-from deployer import platform_support
+from github_client import GitHubClient, GitHubError
 
 PROTECTION_ENDPOINT = "repos/{owner}/{repo}/branches/main/protection"
 REPOSITORY_ENDPOINT = "repos/{owner}/{repo}"
@@ -34,9 +33,8 @@ REPORTING_ENDPOINT = "repos/{owner}/{repo}/private-vulnerability-reporting"
 WORKFLOW_ENDPOINT = "repos/{owner}/{repo}/actions/permissions/workflow"
 ISSUE_CONFIG = ".github/ISSUE_TEMPLATE/config.yml"
 ISSUE_CONFIG_ENDPOINT = f"repos/{{owner}}/{{repo}}/contents/{ISSUE_CONFIG}?ref=main"
-BLANK_ISSUES = re.compile(r"^blank_issues_enabled:[ \t]*(\S+)[ \t]*$", re.MULTILINE)
+BLANK_ISSUES = re.compile(r"^blank_issues_enabled:[ \t]*(\S+)(?:[ \t]+#.*)?[ \t]*$", re.MULTILINE)
 REQUIRED_CHECK = "Validation"
-Runner = Callable[[list[str]], "tuple[int, str]"]
 
 
 def _get(document: Mapping[str, object], *path: str) -> object:
@@ -149,20 +147,13 @@ def protection_problems(
     return [problem for holds, problem in expectations if not holds]
 
 
-def run_gh(arguments: list[str]) -> tuple[int, str]:
-    gh = platform_support.find_executable("gh")
-    if gh is None:
-        return 1, "GitHub CLI (gh) was not found on PATH"
-    completed = subprocess.run(
-        [gh, *arguments], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False
-    )
-    return completed.returncode, completed.stdout if completed.returncode == 0 else completed.stderr
-
-
-def _read(runner: Runner, endpoint: str) -> dict[str, object]:
-    code, output = runner(["api", endpoint])
-    if code != 0:
-        raise ValueError(f"gh api {endpoint} failed: {output.strip()}")
+def _read(client: GitHubClient, endpoint: str) -> dict[str, object]:
+    try:
+        output = client.run(["api", endpoint]).stdout
+    except GitHubError as error:
+        if endpoint == ISSUE_CONFIG_ENDPOINT and error.kind == "not_found":
+            return {}
+        raise ValueError(f"gh api {endpoint} failed: {error}") from error
     try:
         document = json.loads(output)
     except json.JSONDecodeError as error:
@@ -172,16 +163,17 @@ def _read(runner: Runner, endpoint: str) -> dict[str, object]:
     return document
 
 
-def main(arguments: list[str] | None = None, runner: Runner = run_gh) -> int:
+def main(arguments: list[str] | None = None, client: GitHubClient | None = None) -> int:
     if arguments:
         print(__doc__, file=sys.stderr)
         return 2
+    client = client or GitHubClient()
     try:
-        protection = _read(runner, PROTECTION_ENDPOINT)
-        repository = _read(runner, REPOSITORY_ENDPOINT)
-        reporting = _read(runner, REPORTING_ENDPOINT)
-        workflow = _read(runner, WORKFLOW_ENDPOINT)
-        issue_config = _read(runner, ISSUE_CONFIG_ENDPOINT)
+        protection = _read(client, PROTECTION_ENDPOINT)
+        repository = _read(client, REPOSITORY_ENDPOINT)
+        reporting = _read(client, REPORTING_ENDPOINT)
+        workflow = _read(client, WORKFLOW_ENDPOINT)
+        issue_config = _read(client, ISSUE_CONFIG_ENDPOINT)
     except ValueError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
