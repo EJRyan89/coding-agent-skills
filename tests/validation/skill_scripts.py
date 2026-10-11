@@ -247,6 +247,18 @@ class CommandReader:
         """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
         return self._named(self._command_argument(call))
 
+    def starts_process(self) -> bool:
+        """Whether the module calls a command runner or a skill-core client, even with a dynamic command.
+
+        An import, command lookup, or command list alone starts nothing. This does not say whether the process
+        runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
+        """
+        return any(
+            isinstance(node, ast.Call)
+            and (self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES)
+            for node in ast.walk(self.tree)
+        )
+
     def problems(self, path: str) -> list[str]:
         unreadable = {
             literal.lineno

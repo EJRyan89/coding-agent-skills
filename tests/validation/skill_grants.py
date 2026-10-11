@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from skill_layout import embedded_program_problems, output_placeholder_problems
+from skill_scripts import CommandReader
 from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT, skills_by_name
 
 from deployer import render
@@ -26,8 +27,6 @@ GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'
 # its directory, and a repository skill runs the repository's tools and tests from the working tree.
 OWN_SCRIPT_COMMAND = re.compile(r"\$\{CLAUDE_SKILL_DIR\}")
 REPOSITORY_TOOL_COMMAND = re.compile(r"^python (?:-B )?(?:tools|tests)/")
-# The modules through which a skill script starts a process: directly, or through skill-core's bounded runner.
-PROCESS_MODULES = frozenset({"subprocess", "bounded_process"})
 
 
 def shipped_skill_files(root: Path) -> list[Path]:
@@ -116,10 +115,9 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
         name = script.relative_to(root).as_posix()
         if len(assigned) != 1 or assigned[0] not in tree.body or not skill_inventory.runs_repository_code(script):
             problems.append(f"{name}: {declaration} must be one module-level assignment of a non-empty reason")
-        imports = {
-            alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
-        } | {(node.module or "").split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
-        if not imports & PROCESS_MODULES:
+        reader = CommandReader(tree)
+        problems += reader.problems(name)
+        if not reader.starts_process():
             problems.append(f"{name}: declares {declaration} but starts no process; remove the declaration")
     return problems
 

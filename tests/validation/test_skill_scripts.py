@@ -15,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from skill_scripts import (
+    CLIENT_CLASSES,
+    COMMAND_RUNNERS,
     CommandReader,
     client_command_problems,
     console_setup_problems,
@@ -35,6 +37,16 @@ def mark_skills(root: Path) -> Path:
 
 
 class SkillScriptsFixtures(unittest.TestCase):
+    def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(self) -> None:
+        for callable_name in (*COMMAND_RUNNERS, *CLIENT_CLASSES):
+            with self.subTest(callable_name=callable_name):
+                module, function = callable_name.split(".")
+                tree = ast.parse(f"import {module} as process\nstart = process.{function}\nstart(command)\n")
+                reader = CommandReader(tree)
+                self.assertTrue(reader.starts_process())
+                self.assertEqual([], reader.problems("start.py"))
+                self.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
+
     def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(self) -> None:
         for expression, prefix in (
             ('f"gh api {endpoint} --template {template}"', "gh api "),
