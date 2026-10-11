@@ -408,10 +408,98 @@ class RotationTests(Fixture):
 
 
 class CommandLineTests(Fixture):
-    def run_script(self, *arguments: str) -> subprocess.CompletedProcess[bytes]:
+    def run_script(self, *arguments: str, setup: str = "") -> subprocess.CompletedProcess[bytes]:
         """Run the script as a program on a console whose code page cannot encode every path."""
         environment = {**os.environ, "PYTHONIOENCODING": "cp1252"}
-        return subprocess.run([sys.executable, "-B", str(SCRIPT), *arguments], capture_output=True, env=environment)
+        command = [sys.executable, "-B"]
+        if setup:
+            command += [
+                "-c",
+                f"import runpy, sys\n{setup}\nsys.argv = sys.argv[1:]\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')",
+            ]
+        return subprocess.run([*command, str(SCRIPT), *arguments], capture_output=True, env=environment)
+
+    def test_temporary_allocation_failure_exits_1_with_only_failed(self) -> None:
+        for mode in ("release", "rotation"):
+            with self.subTest(mode=mode):
+                result = self.run_script(
+                    mode,
+                    "--repository",
+                    str(self.root),
+                    setup="from unittest.mock import patch\n"
+                    "patch('tempfile.mkdtemp', side_effect=OSError('temporary allocation denied')).start()",
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(
+                    b"FAILED cannot create the briefs directory: temporary allocation denied\n", result.stdout
+                )
+                self.assertEqual(b"", result.stderr)
+                self.assertEqual(["audited repo"], [path.name for path in self.temporary.iterdir()])
+                self.assertEqual("", git(self.root, "status", "--porcelain"))
+
+    def test_brief_write_failure_preserves_partial_files_without_success_lines(self) -> None:
+        for mode, failed_area in (("release", "deployer"), ("release", "code-review"), ("rotation", "code-review")):
+            with self.subTest(mode=mode, failed_area=failed_area):
+                directory = self.temporary / f"{mode} {failed_area} briefs"
+                directory.mkdir()
+                failed_path = directory / f"{failed_area}.md"
+                result = self.run_script(
+                    mode,
+                    *(("--since", "v0.1.0") if mode == "release" else ()),
+                    "--repository",
+                    str(self.root),
+                    setup="from pathlib import Path\nfrom unittest.mock import patch\n"
+                    f"patch('tempfile.mkdtemp', return_value={str(directory)!r}).start()\n"
+                    "write_text = Path.write_text\n"
+                    "def fail(path, text, *args, **kwargs):\n"
+                    f"    if path.name == {failed_path.name!r}:\n"
+                    "        write_text(path, 'partial brief', *args, **kwargs)\n"
+                    "        raise OSError('brief write denied')\n"
+                    "    return write_text(path, text, *args, **kwargs)\n"
+                    "patch('pathlib.Path.write_text', fail).start()",
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(
+                    f"FAILED cannot write the brief {failed_path.as_posix()}: brief write denied\n".encode(),
+                    result.stdout,
+                )
+                self.assertEqual(b"", result.stderr)
+                self.assertEqual("partial brief", failed_path.read_text(encoding="utf-8"))
+                expected = [failed_path.name]
+                if mode == "release" and failed_area == "code-review":
+                    expected.append("deployer.md")
+                    text = (directory / "deployer.md").read_text(encoding="utf-8")
+                    self.assertEqual(
+                        audit.release_brief(
+                            audit.DEPLOYER,
+                            [audit.Change("M", "deployer/plan.py")],
+                            "v0.1.0",
+                            git(self.root, "rev-parse", "v0.1.0"),
+                            git(self.root, "rev-parse", "HEAD"),
+                        ),
+                        text,
+                    )
+                self.assertEqual(sorted(expected), sorted(path.name for path in directory.iterdir()))
+                self.assertEqual("", git(self.root, "status", "--porcelain"))
+
+    def test_programmer_errors_are_not_reported_as_expected_failures(self) -> None:
+        for target in ("tempfile.mkdtemp", "pathlib.Path.write_text"):
+            with self.subTest(target=target):
+                directory = self.temporary / target
+                directory.mkdir()
+                result = self.run_script(
+                    "release",
+                    "--repository",
+                    str(self.root),
+                    setup="from unittest.mock import patch\n"
+                    f"patch('tempfile.mkdtemp', return_value={str(directory)!r}).start()\n"
+                    f"patch({target!r}, side_effect=RuntimeError('programmer error')).start()",
+                )
+                self.assertEqual(1, result.returncode)
+                self.assertEqual(b"", result.stdout)
+                self.assertIn(b"Traceback", result.stderr)
+                self.assertIn(b"RuntimeError: programmer error", result.stderr)
 
     def test_output_is_utf8_whatever_the_console_code_page(self) -> None:
         outside = Path(tempfile.mkdtemp(prefix="audit-repository-outside-")) / "not a repo π"
