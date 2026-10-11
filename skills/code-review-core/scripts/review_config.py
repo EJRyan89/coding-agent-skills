@@ -132,13 +132,14 @@ def validate_windows_absolute_path(value: Any, field: str, *, nullable: bool = F
     return normalized
 
 
-def _safe_repository_path(value: Any) -> bool:
+def safe_repository_path(value: Any) -> bool:
     """A non-empty repository-relative POSIX path that stays inside the repository."""
     return (
         isinstance(value, str)
         and bool(value)
         and "\\" not in value
         and not value.startswith("/")
+        and not re.match(r"^[A-Za-z]:", value)
         and ".." not in value.split("/")
     )
 
@@ -186,7 +187,7 @@ def validate_config(value: Any) -> dict[str, Any]:
 
 
 def _validate_schema_version(version: Any) -> None:
-    if version != SCHEMA_VERSION:
+    if type(version) is not int or version != SCHEMA_VERSION:
         if isinstance(version, int) and version > SCHEMA_VERSION:
             raise ConfigurationError(f"Unsupported future config schema version: {version}")
         raise ConfigurationError(f"Unsupported config schema version: {version!r}")
@@ -265,7 +266,7 @@ def validate_glob_patterns(
         if (
             not isinstance(pattern, str)
             or not 0 < len(pattern) <= maximum_length
-            or "\\" in pattern
+            or not safe_repository_path(pattern)
             or re.search(r"[\x00-\x1f\x7f]", pattern)
             or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
         ):
@@ -285,7 +286,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     reviewer_id = reviewer.get("id")
     if not isinstance(reviewer_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
         raise ConfigurationError(f"repositories.{identity}.reviewer.id is invalid")
-    if reviewer.get("protocol_version") != 1:
+    if type(reviewer.get("protocol_version")) is not int or reviewer["protocol_version"] != 1:
         raise ConfigurationError(f"repositories.{identity}.reviewer protocol is unsupported")
     trusted_ref = reviewer.get("trusted_ref")
     if trusted_ref is not None and (not isinstance(trusted_ref, str) or not trusted_ref.strip()):
@@ -310,13 +311,13 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
         # A manifest committed to the repository describes its reviewer on its own.
         if skill is not None or manifest is not None:
             raise ConfigurationError(f"{field} sets manifest_path, so it cannot also set skill or manifest")
-        if not _safe_repository_path(manifest_path):
+        if not safe_repository_path(manifest_path):
             raise ConfigurationError(f"{field}.manifest_path is unsafe")
     else:
         # The repository's own review skill, optionally run through a manifest kept outside the repository.
         if skill is None:
             raise ConfigurationError(f"{field} needs skill (the repository's review skill) or manifest_path")
-        if not _safe_repository_path(skill):
+        if not safe_repository_path(skill):
             raise ConfigurationError(f"{field}.skill is unsafe")
         if manifest is not None and manifest is not True:
             manifest = validate_windows_absolute_path(manifest, f"{field}.manifest")

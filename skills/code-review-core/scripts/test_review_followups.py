@@ -486,7 +486,14 @@ class ReviewedHeadTests(unittest.TestCase):
         self.assertEqual(str(self.directory / "legacy-review.md"), reviewed["report"])
 
     def test_invalid_legacy_index_is_treated_as_unreviewed(self) -> None:
-        for overrides in ({"pull_number": 6}, {"repository": "owner/other"}, {"reviewed_head_sha": "zz"}, {"extra": 1}):
+        for overrides in (
+            {"pull_number": 6},
+            {"repository": "owner/other"},
+            {"reviewed_head_sha": "zz"},
+            {"extra": 1},
+            {"schema_version": True},
+            {"schema_version": 1.0},
+        ):
             with self.subTest(overrides=overrides):
                 self.write_legacy(**overrides)
                 self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))

@@ -42,7 +42,7 @@ def watermark_date(identity: str, value: str) -> date:
 def validate_state(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) - {"schema_version", "repositories"}:
         raise StateError("State must contain only schema_version and repositories")
-    if value.get("schema_version") != SCHEMA_VERSION:
+    if type(value.get("schema_version")) is not int or value["schema_version"] != SCHEMA_VERSION:
         raise StateError(f"Unsupported state schema version: {value.get('schema_version')!r}")
     repositories = value.get("repositories")
     if not isinstance(repositories, dict):

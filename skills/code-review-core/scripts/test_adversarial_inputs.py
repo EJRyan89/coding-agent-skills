@@ -785,13 +785,23 @@ class ConfiguredExclusionTests(AdversarialFixture):
                     code = review_source.main([arguments[0], "--run", str(ready["run"]), "--role", role, arguments[1]])
                 self.assertEqual((0, printed), (code, out.getvalue().splitlines()))
         self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
-        # A pattern that would name the root or leave it is refused before any review, and the rest are matched only
-        # against the head's repository-relative paths, so even the checkout's own absolute path matches nothing.
-        for pattern in ("../*", "/app/*", "app/../../*", "./app/*", "app//*.resx", "app\\*.resx", "app/\n*"):
+        before = self.config_path.read_bytes()
+        for pattern in (
+            "../*",
+            "/app/*",
+            "app/../../*",
+            "./app/*",
+            "app//*.resx",
+            "app\\*.resx",
+            "app/\n*",
+            f"{self.checkout.as_posix()}/**",
+            f"{self.root.as_posix()}/**/*.resx",
+        ):
             with self.subTest(pattern=pattern), self.assertRaisesRegex(ConfigurationError, "repository-relative"):
                 self.configure(exclude=[pattern])
+            self.assertEqual(before, self.config_path.read_bytes())
         shutil.rmtree(self.archive)
-        self.configure(exclude=[f"{self.checkout.as_posix()}/**", f"{self.root.as_posix()}/**/*.resx"])
+        self.configure(exclude=["elsewhere/**", "other-root/**/*.resx"])
         ready = self.prepare()
         manifest = json.loads((ready["run"] / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST).read_bytes())
         self.assertNotIn("configured", manifest["excluded_paths"].values())

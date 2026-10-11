@@ -453,11 +453,17 @@ def _manifest_version(value: Any) -> Any:
     if not isinstance(value, dict):
         raise RuntimeContractError("Adapter manifest fields do not match the protocol")
     version = value.get("schema_version")
+    if type(version) is not int:
+        raise RuntimeContractError("Adapter manifest protocol version is unsupported")
     expected_keys = SPECIALIST_MANIFEST_KEYS if version == 2 else MANIFEST_KEYS
     optional_keys = OPTIONAL_SPECIALIST_MANIFEST_KEYS if version == 2 else set()
     if not expected_keys <= set(value) <= expected_keys | optional_keys:
         raise RuntimeContractError("Adapter manifest fields do not match the protocol")
-    if version not in {1, 2} or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
+    if (
+        version not in {1, 2}
+        or type(value["protocol_version"]) is not int
+        or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION
+    ):
         raise RuntimeContractError("Adapter manifest protocol version is unsupported")
     if not isinstance(value["id"], str) or not SLUG.fullmatch(value["id"]):
         raise RuntimeContractError("Adapter manifest id is invalid")
@@ -1097,7 +1103,7 @@ def _read_snapshot_metadata(root: Path) -> tuple[Any, str]:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
     if not isinstance(metadata, dict) or set(metadata) - SNAPSHOT_OPTIONAL_FIELDS != SOURCE_SNAPSHOT_FIELDS:
         raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
-    if metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
+    if type(metadata["schema_version"]) is not int or metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
     return metadata, hashlib.sha256(content).hexdigest()
 

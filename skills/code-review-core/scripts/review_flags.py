@@ -67,7 +67,7 @@ def _validate_store_envelope(value: Any) -> None:
     """The store's own fields: its shape, schema version, next ID, and flag list."""
     if not isinstance(value, dict) or set(value) != {"schema_version", "next_id", "flags"}:
         raise FlagError("Flag store shape is invalid")
-    if value["schema_version"] != SCHEMA_VERSION:
+    if type(value["schema_version"]) is not int or value["schema_version"] != SCHEMA_VERSION:
         raise FlagError("Flag store schema version is unsupported")
     if not isinstance(value["next_id"], int) or isinstance(value["next_id"], bool) or value["next_id"] < 1:
         raise FlagError("Flag next_id is invalid")
@@ -137,7 +137,12 @@ def _positive(value: Any) -> bool:
 
 def upgrade_store(value: Any) -> Any:
     """A version 1 store as version 2: its flags name no review version, so none of them can be linked to a finding."""
-    if isinstance(value, dict) and value.get("schema_version") == 1 and isinstance(value.get("flags"), list):
+    if (
+        isinstance(value, dict)
+        and type(value.get("schema_version")) is int
+        and value["schema_version"] == 1
+        and isinstance(value.get("flags"), list)
+    ):
         value = {
             **value,
             "schema_version": SCHEMA_VERSION,

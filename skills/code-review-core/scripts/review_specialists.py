@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from review_analyzers import inventory, tool_names
+from review_config import safe_repository_path
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_records import (
     ANALYZER_RULE,
@@ -113,7 +114,7 @@ LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 def _safe_path(value: str) -> str | None:
     """The path as reviewers see it, or None when no prompt, work file, or link may carry it: empty, absolute,
     with a backslash, an empty, `.`, or `..` segment, or a character `LINE_UNSAFE` matches."""
-    if not value or "\\" in value or LINE_UNSAFE.search(value) or value.startswith("/"):
+    if not safe_repository_path(value) or LINE_UNSAFE.search(value):
         return None
     if any(part in {"", ".", ".."} for part in value.split("/")):
         return None
@@ -992,7 +993,11 @@ def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[s
 def _load_request(request_path: Path) -> dict[str, Any]:
     """The adapter request, refused unless it is protocol 1 in a supported mode."""
     request = read_json(request_path)
-    if not isinstance(request, dict) or request.get("protocol_version") != 1:
+    if (
+        not isinstance(request, dict)
+        or type(request.get("protocol_version")) is not int
+        or request["protocol_version"] != 1
+    ):
         raise SpecialistError("Adapter request protocol version is unsupported")
     if request.get("mode") not in {"initial", "re-review"}:
         raise SpecialistError("Adapter request mode is invalid")

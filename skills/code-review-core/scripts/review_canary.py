@@ -97,7 +97,7 @@ def validate_fixture_pull(value: Any) -> dict[str, Any]:
             f"{PULL_FILE} must have exactly {', '.join(sorted(PULL_FIELDS))}, and may have "
             f"{', '.join(sorted(OPTIONAL_PULL_FIELDS))}"
         )
-    if value["schema_version"] != FIXTURE_SCHEMA_VERSION or isinstance(value["schema_version"], bool):
+    if type(value["schema_version"]) is not int or value["schema_version"] != FIXTURE_SCHEMA_VERSION:
         raise FixtureError(f"{PULL_FILE} schema_version must be {FIXTURE_SCHEMA_VERSION}")
     try:
         repository = validate_repository_identity(value["repository"])

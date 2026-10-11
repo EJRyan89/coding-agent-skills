@@ -664,7 +664,7 @@ class UnsafeDiffPathTests(unittest.TestCase):
         for character in (" ", "~", "\x80", "\xa0", "é", "�", "?", ":"):
             with self.subTest(code=hex(ord(character))):
                 self.assertEqual(f"src/a{character}b.py", rs._safe_path(f"src/a{character}b.py"))
-        for path in ("", "/abs.py", "a/../b.py", "./a.py", "a//b.py", "a\\b.py"):
+        for path in ("", "/abs.py", "a/../b.py", "./a.py", "a//b.py", "a\\b.py", "C:/x.py", "c:/x.py", "C:x.py"):
             with self.subTest(path=path):
                 self.assertIsNone(rs._safe_path(path))
 
