@@ -210,7 +210,9 @@ class SkillGrantsFixtures(unittest.TestCase):
     def test_grant_policy_fails_a_grant_over_a_script_that_runs_repository_code(self) -> None:
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
         handshake = f'{own}start.py" --root "<repository root>"'
-        declaring = 'import subprocess\n\nRUNS_REPOSITORY_CODE = "starts each configured server"\n'
+        declaring = (
+            'import subprocess\n\nRUNS_REPOSITORY_CODE = "starts each configured server"\nsubprocess.run(command)\n'
+        )
         grants = {
             "wide": json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
             "narrow": json.dumps([f'Bash({own}audit.py" *)', f'PowerShell({own}audit.py" *)']),
@@ -226,6 +228,7 @@ class SkillGrantsFixtures(unittest.TestCase):
                     f'```bash\n{own}audit.py" --json\n{handshake}\n```\n'
                 )
             write_fixture_tree(root, files)
+            self.assertEqual([], repository_code_declaration_problems(root))
             self.assertEqual(
                 [
                     f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {handshake}, which runs code from the "
@@ -235,6 +238,103 @@ class SkillGrantsFixtures(unittest.TestCase):
                 skill_grant_problems(root),
             )
 
+    def test_repository_code_declarations_accept_process_routes_but_refuse_their_grants(self) -> None:
+        sources = (
+            'import subprocess as sp\nsp.run(f"python {script}")\n',
+            "from subprocess import Popen as start\nstart(command)\n",
+            "import os as operating\noperating.system(command)\n",
+            "from os import popen as start\nstart(cmd=command)\n",
+            "from os import system\nrunner = system\nalias = runner\nalias(command)\n",
+            "import asyncio as tasks\ntasks.create_subprocess_exec(program=program)\n",
+            "from asyncio import create_subprocess_shell as start\nstart(cmd=command)\n",
+            "import bounded_process as bounded\nbounded.run_bounded(command, 5)\n",
+            "from bounded_process import streaming as start\nstart(command, 5)\n",
+            'from git_client import GitClient as Client\nClient().run(["status"])\n',
+            'import github_client as api\napi.GitHubClient().run(["api"])\n',
+            "from github_client import GitHubClient\nclient = GitHubClient\nalias = client\nalias()\n",
+            "import os\n"
+            "def first():\n    runner = os.system\n    runner(command)\n"
+            "def second():\n    runner = os.popen\n    runner(command)\n",
+        )
+        own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
+        command = f'{own}start.py" --root "<repository root>"'
+        for source in sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                files: dict[str, str] = {}
+                for skill, pattern in (("wide", f"{own}*"), ("narrow", f'{own}audit.py" *')):
+                    grants = json.dumps([f"Bash({pattern})", f"PowerShell({pattern})"])
+                    files[f"deploy-meta/{skill}.json"] = "{}"
+                    files[f"skills/{skill}/scripts/start.py"] = (
+                        'RUNS_REPOSITORY_CODE = "starts configured repository code"\n' + source
+                    )
+                    # Starting a process alone does not make an own-script command repository code.
+                    files[f"skills/{skill}/scripts/audit.py"] = "import os\nos.system(command)\n"
+                    files[f"skills/{skill}/SKILL.md"] = (
+                        f"---\nname: {skill}\nallowed-tools: {grants}\n---\n\n"
+                        f'```bash\n{own}audit.py" --check\n{command}\n```\n'
+                    )
+                write_fixture_tree(root, files)
+                self.assertEqual([], repository_code_declaration_problems(root))
+                self.assertEqual(
+                    [
+                        f"skills/wide/SKILL.md:8 a {tool} grant pre-approves {command}, which runs code from the "
+                        f"target repository; see {GRANTS_DOC}"
+                        for tool in ("Bash", "PowerShell")
+                    ],
+                    skill_grant_problems(root),
+                )
+
+    def test_repository_code_declarations_refuse_imports_lookups_and_shadowed_calls_without_a_process(self) -> None:
+        sources = (
+            "import subprocess\n",
+            "from bounded_process import run_bounded\nrunner = run_bounded\n",
+            "from github_client import GitHubClient\nclient = GitHubClient\n",
+            "import os\nos.getenv('COMMAND')\n",
+            "import asyncio\nasyncio.run(main())\n",
+            'import shutil\nshutil.which("python")\n',
+            'COMMAND = ["python", script]\nprint(COMMAND)\n',
+            "import os\nrunner = os.system\ndef run(runner):\n    runner(command)\n",
+            "import os\ndef run():\n    os = service\n    os.system(command)\n",
+            "import subprocess\ndef run(command):\n    pass\nrun(command)\n",
+            "from .os import system\nsystem(command)\n",
+        )
+        for source in sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                name = ".claude/skills/a/scripts/stale.py"
+                write_fixture_tree(root, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
+                self.assertEqual(
+                    [f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"],
+                    repository_code_declaration_problems(root),
+                )
+
+    def test_repository_code_declarations_report_unresolved_aliases_and_unreadable_commands(self) -> None:
+        alias_error = "cannot resolve callable alias runner; use a single binding to a known callable"
+        rebound = "import os\nrunner = os.system\nrunner = None\nrunner(command)\n"
+        sources = (
+            (rebound, 5, alias_error, False),
+            (rebound + "from os import popen as valid_start\nvalid_start(command)\n", 5, alias_error, True),
+            (
+                'import subprocess\nrunner = subprocess.run\nCOMMAND = f"{program} arguments"\nrunner(COMMAND)\n',
+                4,
+                "cannot read f-string command without a literal program prefix; "
+                'see "Commands skills may run" in docs/adding-a-skill.md',
+                True,
+            ),
+        )
+        for source, line, error, starts_process in sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                name = "skills/a/scripts/start.py"
+                write_fixture_tree(root, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
+                expected = [f"{name}:{line} {error}"]
+                if not starts_process:
+                    expected.append(
+                        f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"
+                    )
+                self.assertEqual(expected, repository_code_declaration_problems(root))
+
     def test_repository_code_declarations_must_be_readable_and_current(self) -> None:
         declared = 'RUNS_REPOSITORY_CODE = "starts servers"\n'
         with tempfile.TemporaryDirectory() as temporary:
@@ -242,12 +342,15 @@ class SkillGrantsFixtures(unittest.TestCase):
             write_fixture_tree(
                 root,
                 {
-                    "skills/a/scripts/good.py": f"from subprocess import Popen\n\n{declared}",
-                    "skills/a/scripts/bounded.py": 'import bounded_process\n\nRUNS_REPOSITORY_CODE: str = "x"\n',
+                    "skills/a/scripts/good.py": f"from subprocess import Popen\n\n{declared}Popen(command)\n",
+                    "skills/a/scripts/bounded.py": "import bounded_process\n\n"
+                    'RUNS_REPOSITORY_CODE: str = "x"\nbounded_process.run_bounded(command, 5)\n',
                     "skills/a/scripts/plain.py": "import json\n",
-                    "skills/a/scripts/empty.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE = ""\n',
-                    "skills/a/scripts/twice.py": f"import subprocess\n\n{declared}{declared}",
-                    "skills/a/scripts/nested.py": f"import subprocess\n\n\ndef f() -> None:\n    {declared}",
+                    "skills/a/scripts/empty.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE = ""\n'
+                    "subprocess.run(command)\n",
+                    "skills/a/scripts/twice.py": f"import subprocess\n\n{declared}{declared}subprocess.run(command)\n",
+                    "skills/a/scripts/nested.py": f"import subprocess\n\n\ndef f() -> None:\n    {declared}"
+                    "    subprocess.run(command)\n",
                     ".claude/skills/b/scripts/stale.py": f"import json\n\n{declared}",
                 },
             )
