@@ -682,6 +682,55 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertNotIn("since_review", item["ai_review"])
         self.assertIn("| Changes Requested | 1H 2S open | [AI Review]", row)
 
+    def test_malformed_legacy_verdicts_collect_and_render_as_missing_without_a_review_result(self) -> None:
+        directory = self.archive / "example" / "one" / "pulls" / "12"
+        directory.mkdir(parents=True)
+        index = {
+            "schema_version": 1,
+            "kind": "legacy-review-index",
+            "repository": "example/one",
+            "pull_number": 12,
+            "reviewed_at": "2026-01-01T00:00:00+00:00",
+            "reviewed_head_sha": review_fixture.HEADS[3],
+            "source_sha256": "0" * 64,
+            "source_path": "legacy.md",
+            "source_file_sha256": "0" * 64,
+        }
+        report = directory / "legacy-review.md"
+        report.write_text("<summary><strong>MUST FIX (1)</strong></summary>\n", encoding="utf-8")
+        verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
+        for overrides in ({}, *({"verdict": value} for value in verdicts)):
+            with self.subTest(overrides=overrides):
+                path = directory / "legacy-review.json"
+                path.write_text(json.dumps({**index, **overrides}), encoding="utf-8")
+                before = path.read_bytes()
+                item, row = self.collect_fixture([])
+                self.assertIsNone(item["reviewed_head_sha"])
+                self.assertFalse(item["reviewed_incomplete"])
+                self.assertIsNone(item["ai_review"], "no verdict, counts, ledger or report is manufactured")
+                self.assertIn("| - | - | - |", row)
+                self.assertNotIn("[AI Review]", row)
+                code, out, err = self.run_main("update", "--input", str(self.input), "--candidates")
+                self.assertEqual((0, ""), (code, err))
+                self.assertIn("CANDIDATE missing example/one#12", out.splitlines())
+                self.assertEqual(before, path.read_bytes())
+                self.assertEqual("<summary><strong>MUST FIX (1)</strong></summary>\n", report.read_text("utf-8"))
+        for verdict, label in (
+            ("APPROVED", "Approved"),
+            ("CHANGES REQUESTED", "Changes Requested"),
+            ("CHANGES_REQUESTED", "Changes Requested"),
+        ):
+            with self.subTest(verdict=verdict):
+                path.write_text(json.dumps({**index, "verdict": verdict}), encoding="utf-8")
+                item, row = self.collect_fixture([])
+                self.assertEqual(review_fixture.HEADS[3], item["reviewed_head_sha"])
+                self.assertEqual(verdict.replace(" ", "_"), item["ai_review"]["verdict"])
+                self.assertIn(f"| {label} | 1M open | [AI Review]", row)
+                rows = tp.update_dashboard_rows(
+                    self.input, self.dashboard, "reviewer", detector=tp.ChangeDetector(self.services.github)
+                )
+                self.assertEqual(["current"], [row.ai_review for row in rows])
+
     def test_the_findings_cell_counts_flagged_open_findings(self) -> None:
         review_fixture.commit_fixture(self.archive)
         add_flag(

@@ -498,8 +498,49 @@ class ReviewedHeadTests(unittest.TestCase):
                 self.write_legacy(**overrides)
                 self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
 
-    def test_record_takes_precedence_over_legacy(self) -> None:
+    def test_a_non_string_or_missing_legacy_verdict_is_absent(self) -> None:
+        verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
+        for overrides in ({}, *({"verdict": value} for value in verdicts)):
+            with self.subTest(overrides=overrides):
+                self.write_legacy()
+                path = self.directory / "legacy-review.json"
+                value = json.loads(path.read_text(encoding="utf-8"))
+                value.pop("verdict")
+                value.update(overrides)
+                path.write_text(json.dumps(value), encoding="utf-8")
+                before = path.read_bytes()
+                self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5))
+                self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
+                self.assertEqual({}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]))
+                self.assertEqual(before, path.read_bytes(), "an invalid legacy index is never rewritten")
+
+    def test_legacy_string_verdicts_keep_their_values_and_normalization(self) -> None:
+        for verdict in ("APPROVED", "CHANGES REQUESTED", "CHANGES_REQUESTED", "", "unknown legacy verdict"):
+            with self.subTest(verdict=verdict):
+                self.write_legacy(verdict=verdict)
+                index = review_operation.legacy_index(self.root, "owner/repo", 5)
+                reviewed = review_operation.reviewed_head(self.root, "owner/repo", 5)
+                if index is None or reviewed is None:
+                    self.fail("string legacy verdicts remain readable without checking their values")
+                self.assertEqual(verdict, index["verdict"])
+                self.assertEqual(verdict.replace(" ", "_"), reviewed["verdict"])
+                self.assertEqual({5: "a" * 40}, review_operation.latest_reviewed_heads(self.root, "owner/repo", [5]))
+
+    def test_unreadable_legacy_json_is_absent_but_programming_errors_propagate(self) -> None:
         self.write_legacy()
+        path = self.directory / "legacy-review.json"
+        for content in (b"{", b"\xff"):
+            with self.subTest(content=content):
+                path.write_bytes(content)
+                self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5))
+        with (
+            mock.patch.object(review_operation, "read_json", side_effect=AttributeError("reader bug")),
+            self.assertRaisesRegex(AttributeError, "reader bug"),
+        ):
+            review_operation.legacy_index(self.root, "owner/repo", 5)
+
+    def test_record_takes_precedence_over_legacy(self) -> None:
+        self.write_legacy(verdict=None)
         record = {
             "pull_request": {"head_sha": "b" * 40},
             "review": {
@@ -630,10 +671,10 @@ class EnumerateBatchTests(unittest.TestCase):
             }
         )
 
-    def review(self, number: int) -> None:
+    def review(self, number: int, **overrides: Any) -> None:
         """A migrated legacy review of the pull request's current head, which counts as reviewed."""
         directory = self.archive / "owner" / "repo" / "pulls" / str(number)
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         index = {
             "schema_version": 1,
             "kind": "legacy-review-index",
@@ -645,6 +686,7 @@ class EnumerateBatchTests(unittest.TestCase):
             "source_sha256": "0" * 64,
             "source_path": "C:/legacy/review.md",
             "source_file_sha256": "0" * 64,
+            **overrides,
         }
         (directory / "legacy-review.json").write_text(json.dumps(index), encoding="utf-8")
 
@@ -728,6 +770,52 @@ class EnumerateBatchTests(unittest.TestCase):
         entry = self.enumerate(force=True)
         self.assertEqual(0, entry["listing"]["read"])
         self.assertEqual([1], [pull["number"] for pull in entry["eligible"]])
+
+    def test_malformed_legacy_verdicts_stay_eligible_and_do_not_complete_merged_work(self) -> None:
+        self.pull(1, is_open=True)
+        self.pull(2, merged="2026-03-05T09:00:00Z")
+        self.pull(3, merged="2026-03-08T09:00:00Z")
+        self.review(3, verdict="CHANGES REQUESTED")
+        verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
+        for verdict in verdicts:
+            with self.subTest(verdict=verdict):
+                self.watermark("2026-03-01")
+                self.review(1, verdict=verdict)
+                self.review(2, verdict=verdict)
+                entry = self.enumerate()
+                self.assertEqual((True, None), (entry["complete"], entry["error"]))
+                self.assertEqual([1, 2], [pull["number"] for pull in entry["eligible"]])
+                self.assertEqual(
+                    {self.REPOSITORY: ("2026-03-01", "2026-03-04")},
+                    review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config),
+                )
+                state = json.loads(self.state_path.read_text(encoding="utf-8"))
+                self.assertEqual("2026-03-04", state["repositories"][self.REPOSITORY]["merged_since"])
+        self.review(2, verdict="APPROVED")
+        self.assertEqual(
+            {self.REPOSITORY: ("2026-03-01", "2026-03-10")},
+            review_pipeline.advance_watermarks(self.root / "batch.json", config_path=self.config),
+        )
+
+    def test_a_missing_legacy_verdict_prints_pull_and_safe_watermark_statuses(self) -> None:
+        self.watermark("2026-03-01")
+        self.pull(2, merged="2026-03-05T09:00:00Z")
+        self.review(2)
+        path = self.archive / "owner" / "repo" / "pulls" / "2" / "legacy-review.json"
+        index = json.loads(path.read_text(encoding="utf-8"))
+        index.pop("verdict")
+        path.write_text(json.dumps(index), encoding="utf-8")
+        services = review_pipeline.Services(github=review_github.GitHubClient(self.runner), today=lambda: self.TODAY)
+        batch_path = self.root / "batch.json"
+        for command, arguments, expected in (
+            ("enumerate", ["--output", str(batch_path)], "PULL owner/repo#2"),
+            ("advance", ["--batch", str(batch_path)], "WATERMARK owner/repo 2026-03-01 -> 2026-03-04"),
+        ):
+            with self.subTest(command=command), mock.patch("sys.stdout", new_callable=io.StringIO) as printed:
+                code = review_pipeline.main(["--config", str(self.config), command, *arguments], services=services)
+                self.assertEqual(0, code)
+                self.assertIn(expected, printed.getvalue().splitlines())
+                self.assertNotIn("FAILED", printed.getvalue())
 
 
 class CoverageTests(unittest.TestCase):
