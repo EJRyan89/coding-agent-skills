@@ -362,6 +362,40 @@ class RefusalTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertRefused(word_document(paragraph("x"), extra={name: b"x"}), "leaves the package")
 
+    def test_an_encrypted_member_is_refused_before_any_part_is_read(self) -> None:
+        content = bytearray(word_document(paragraph("x")))
+        with zipfile.ZipFile(io.BytesIO(content)) as package:
+            member = package.getinfo("[Content_Types].xml")
+            self.assertEqual(0, member.flag_bits & 1)
+            # zipfile clears encryption on write; set bit 0 in the local and central header flags afterwards.
+            content[member.header_offset + 6] |= 1
+            content[package.start_dir + 8] |= 1
+        with zipfile.ZipFile(io.BytesIO(content)) as package:
+            self.assertEqual(1, package.getinfo("[Content_Types].xml").flag_bits & 1)
+
+        with mock.patch.object(documents, "_read_part", wraps=documents._read_part) as read:
+            with self.assertRaises(ExtractionRefused) as caught:
+                extract("docx", bytes(content))
+            self.assertEqual("a member is encrypted", str(caught.exception))
+            read.assert_not_called()
+
+    def test_a_member_whose_original_name_contains_nul_is_refused_before_any_part_is_read(self) -> None:
+        content = word_document(paragraph("x"))
+        original, hostile = b"[Content_Types].xml", b"[Content\0Types].xml"
+        self.assertEqual(2, content.count(original))
+        # zipfile truncates NUL names on write; replace both encoded names without changing their lengths.
+        content = content.replace(original, hostile)
+        with zipfile.ZipFile(io.BytesIO(content)) as package:
+            member = package.infolist()[0]
+            self.assertEqual(hostile.decode("ascii"), member.orig_filename)
+            self.assertEqual("[Content", member.filename)
+
+        with mock.patch.object(documents, "_read_part", wraps=documents._read_part) as read:
+            with self.assertRaises(ExtractionRefused) as caught:
+                extract("docx", content)
+            self.assertEqual("a member's path leaves the package", str(caught.exception))
+            read.assert_not_called()
+
     def test_a_part_over_the_limit_is_refused_as_it_is_read(self) -> None:
         huge = b"<d>" + b" " * (documents.MAX_DOCUMENT_PART_BYTES + 1) + b"</d>"
         self.assertRefused(word_document(document=huge), "over 16 MiB")
