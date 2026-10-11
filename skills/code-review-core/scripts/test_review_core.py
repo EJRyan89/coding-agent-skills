@@ -47,7 +47,7 @@ from review_config import (
     validate_config,
     write_config,
 )
-from review_flags import FlagError, add_flag, load_store, resolve_flag
+from review_flags import FlagAlreadyResolved, FlagError, add_flag, load_store, resolve_flag
 from review_github import GitHubClient, GitHubError
 from review_hosts import (
     HostSuperseded,
@@ -1515,8 +1515,29 @@ class FlagTests(unittest.TestCase):
             self.assertEqual("resolved", resolved["status"])
             self.assertEqual(2, load_store(path)["next_id"])
             self.assertEqual(2, json.loads(path.read_text(encoding="utf-8"))["schema_version"])
-            with self.assertRaises(FlagError):
+            before = path.read_bytes()
+            with self.assertRaises(FlagAlreadyResolved) as caught:
                 resolve_flag(path, created["id"], "Again")
+            self.assertIsInstance(caught.exception, FlagError)
+            self.assertEqual(created["id"], caught.exception.flag_id)
+            self.assertEqual(f"Flag is already resolved: {created['id']}", str(caught.exception))
+            self.assertEqual(before, path.read_bytes())
+
+    def test_resolution_validation_and_unknown_ids_are_not_already_resolved(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "flags.json"
+            created = add_flag(path, category="guideline", body="Body")
+            resolve_flag(path, created["id"], "First")
+            before = path.read_bytes()
+            for flag_id, resolution, message in (
+                (created["id"], " \t", "Resolution is required"),
+                ("RF-000009", "Done", "Unknown flag ID: RF-000009"),
+            ):
+                with self.subTest(flag_id=flag_id), self.assertRaises(FlagError) as caught:
+                    resolve_flag(path, flag_id, resolution)
+                self.assertIs(FlagError, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
+                self.assertEqual(before, path.read_bytes())
 
     def test_a_finding_is_named_with_its_review_version(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

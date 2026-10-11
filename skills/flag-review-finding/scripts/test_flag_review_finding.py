@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -7,12 +9,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 
 import review_fixture
-from flag_review_finding import flag_line
+import review_flags
+from flag_review_finding import flag_line, main
 from review_config import write_config
+from review_io import PersistenceError, ResourceLock
 
 SCRIPT = Path(__file__).with_name("flag_review_finding.py")
 
@@ -125,9 +130,63 @@ class FlagCliTests(unittest.TestCase):
     def test_resolving_a_resolved_flag_keeps_its_resolution(self) -> None:
         self.store_cli("add", "guideline", "Body")
         self.store_cli("resolve", "RF-000001", "First")
+        before = Path(self.store).read_bytes()
         self.assert_result(self.store_cli("resolve", "RF-000001", "Second"), 0, "ALREADY_RESOLVED RF-000001\n")
+        self.assertEqual(before, Path(self.store).read_bytes())
         stored = json.loads(Path(self.store).read_text(encoding="utf-8"))["flags"][0]
         self.assertEqual("First", stored["resolution"])
+
+    def test_a_resolution_won_before_lock_acquisition_prints_already_resolved_and_keeps_the_store(self) -> None:
+        self.assert_result(self.store_cli("add", "guideline", "Body"), 0, "ADDED RF-000001\n")
+        store = Path(self.store)
+        winning_store: list[bytes] = []
+
+        def before_lock(lock: Path) -> ResourceLock:
+            self.assertEqual(store.parent / ".locks" / "flags.lock", lock)
+            with mock.patch.object(review_flags, "ResourceLock", ResourceLock):
+                review_flags.resolve_flag(store, "RF-000001", "First")
+            winning_store.append(store.read_bytes())
+            return ResourceLock(lock)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(review_flags, "ResourceLock", side_effect=before_lock),
+            contextlib.redirect_stdout(stdout),
+            contextlib.redirect_stderr(stderr),
+        ):
+            code = main(["--store", self.store, "resolve", "RF-000001", "Second"])
+        self.assertEqual((0, "ALREADY_RESOLVED RF-000001\n", ""), (code, stdout.getvalue(), stderr.getvalue()))
+        self.assertEqual([store.read_bytes()], winning_store)
+        self.assertEqual("First", json.loads(store.read_bytes())["flags"][0]["resolution"])
+
+    def test_resolve_requires_a_nonempty_resolution_even_when_already_resolved(self) -> None:
+        self.store_cli("add", "guideline", "Body")
+        for resolved in (False, True):
+            with self.subTest(resolved=resolved):
+                if resolved:
+                    self.store_cli("resolve", "RF-000001", "First")
+                before = Path(self.store).read_bytes()
+                self.assert_result(self.store_cli("resolve", "RF-000001", " \t"), 1, "FAILED Resolution is required\n")
+                self.assertEqual(before, Path(self.store).read_bytes())
+
+    def test_resolve_store_failures_are_not_classified_as_already_resolved(self) -> None:
+        self.store_cli("add", "guideline", "Body")
+        before = Path(self.store).read_bytes()
+        for operation, error in (
+            ("ResourceLock", PersistenceError("The store is locked")),
+            ("load_store", review_flags.FlagError("Flag is already resolved: RF-000001")),
+            ("atomic_write_json", OSError("Write failed")),
+        ):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with (
+                self.subTest(operation=operation),
+                mock.patch.object(review_flags, operation, side_effect=error),
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+            ):
+                code = main(["--store", self.store, "resolve", "RF-000001", "Done"])
+            self.assertEqual((1, f"FAILED {error}\n", ""), (code, stdout.getvalue(), stderr.getvalue()))
+            self.assertEqual(before, Path(self.store).read_bytes())
 
     def test_list_prints_one_line_per_open_flag(self) -> None:
         long_body = "word " * 50
