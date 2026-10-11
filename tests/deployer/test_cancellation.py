@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import io
 import json
 import shutil
@@ -11,9 +10,9 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import DeployerTestCase, Result
+from harness import RECOVERS, TAKES_THE_LOCK, DeployerTestCase, Result
 
-from deployer import cli, fsops, hashing, platform_support
+from deployer import fsops, hashing, platform_support
 
 CANCELLED = "Cancelled; nothing was changed."
 RECOVERY_CANCELLED = "Cancelled during recovery; the next deployment finishes recovering before it deploys."
@@ -35,12 +34,6 @@ class CancellationTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-
-    def run_cli(self, *arguments: str, stdin: io.StringIO | None = None) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(list(arguments), self.paths, stdin if stdin is not None else io.StringIO(""))
-        return Result(code, captured.getvalue())
 
     def assert_cancelled(self, result: Result, message: str) -> None:
         self.assertEqual(130, result.code, result.output)
@@ -99,7 +92,7 @@ class CancellationTests(DeployerTestCase):
             real_move(source, destination)
 
         with mock.patch("deployer.fsops.move", side_effect=interrupted_restore):
-            self.assert_cancelled(self.run_cli("--all"), RECOVERY_CANCELLED)
+            self.assert_cancelled(self.run_cli("--all", changes_home=RECOVERS), RECOVERY_CANCELLED)
         self.assertFalse(self.lock_dir.exists())
         self.assertTrue((run / "journal.jsonl").is_file())
         result = self.run_cli("--all")
@@ -126,7 +119,9 @@ class CancellationTests(DeployerTestCase):
                     self.write(self.lock_dir / "token", "stale-token")
                     self.write(self.lock_dir / "info.json", json.dumps(stale))
                 with mock.patch("deployer.fsops.write_atomic", side_effect=interrupted_metadata):
-                    self.assert_cancelled(self.deploy_with_dead_holder("--all"), CANCELLED)
+                    self.assert_cancelled(
+                        self.deploy_with_dead_holder("--all", changes_home=TAKES_THE_LOCK if stale else ""), CANCELLED
+                    )
                 self.assertEqual([], sorted(path.name for path in self.lock_dir.parent.glob(".deploy.lock*")))
                 self.assertFalse(self.manifest_file.exists())
                 result = self.deploy_with_dead_holder("--all")
@@ -137,9 +132,13 @@ class CancellationTests(DeployerTestCase):
                 shutil.rmtree(self.skills_dir / "alpha")
                 self.manifest_file.unlink()
 
-    def deploy_with_dead_holder(self, *arguments: str) -> Result:
+    def deploy_with_dead_holder(self, *arguments: str, changes_home: str = "") -> Result:
         """Deploy as `python deploy.py` does, judging any lock it finds as held by a process that has exited."""
-        return self.deploy(*arguments, probe=mock.Mock(return_value=platform_support.ProcessStatus(False, None)))
+        return self.deploy(
+            *arguments,
+            probe=mock.Mock(return_value=platform_support.ProcessStatus(False, None)),
+            changes_home=changes_home,
+        )
 
     def test_ctrl_c_in_a_dry_run_cancels_it(self) -> None:
         with mock.patch("deployer.plan.build", side_effect=interrupt):

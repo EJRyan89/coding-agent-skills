@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import re
 import unittest
 from pathlib import Path
@@ -12,7 +10,7 @@ from unittest import mock
 
 from harness import SOURCE_ID, DeployerTestCase, Result, git
 
-from deployer import cli, fsops, manifest, platform_support, source_commit
+from deployer import fsops, manifest, platform_support, source_commit
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
 
@@ -34,10 +32,7 @@ class SourceCommitTests(DeployerTestCase):
         return self.manifest()["sources"][SOURCE_ID].get("source_commit")
 
     def check(self) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(["check"], self.paths)
-        return Result(code, captured.getvalue())
+        return self.run_cli("check")
 
     def test_the_head_commit_is_read_and_described_from_a_checkout_and_not_from_another_folder(self) -> None:
         self.assertIsNone(source_commit.head_commit(self.source))

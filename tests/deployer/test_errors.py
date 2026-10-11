@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import os
 import tempfile
 import unittest
@@ -12,9 +10,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import DeployerTestCase, Result
-
-from deployer import cli
+from harness import DeployerTestCase
 
 PATH = "C:/blocked/item"
 RETRY = "Check that the path exists and that you can read it, then retry."
@@ -32,12 +28,6 @@ class OSErrorTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-
-    def run_cli(self, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(list(arguments), self.paths, io.StringIO(""))
-        return Result(code, captured.getvalue())
 
     def canary_listing_denied(self) -> tuple[str, Callable[..., Any]]:
         home = Path(tempfile.mkdtemp(prefix="deploy-test-canary.")).resolve()
@@ -100,7 +90,9 @@ class OSErrorTests(DeployerTestCase):
     def test_an_os_error_ends_with_its_lines_and_no_traceback(self) -> None:
         for name, arguments, patch, lines in self.cases():
             with self.subTest(point=name), patch, mock.patch.dict(os.environ, {"DEPLOYER_DEBUG": ""}):
-                result = self.run_cli(*arguments)
+                result = self.run_cli(
+                    *arguments, refusal_home=Path(arguments[1]) if name == "canary-home listing" else None
+                )
                 self.assertEqual(1, result.code, result.output)
                 self.assertTrue(result.output.endswith("\n" + "\n".join(lines) + "\n\n"), result.output)
                 self.assertNotIn(TRACEBACK, result.output)
@@ -112,7 +104,9 @@ class OSErrorTests(DeployerTestCase):
                 ("variable", (), {"DEPLOYER_DEBUG": "1"}),
             ):
                 with self.subTest(point=name, debug=how), patch, mock.patch.dict(os.environ, environment):
-                    result = self.run_cli(*arguments, *extra)
+                    result = self.run_cli(
+                        *arguments, *extra, refusal_home=Path(arguments[1]) if name == "canary-home listing" else None
+                    )
                     self.assertEqual(1, result.code, result.output)
                     message = "\n".join(lines) + "\n\n"
                     self.assertIn(message, result.output)

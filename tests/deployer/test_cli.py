@@ -6,13 +6,14 @@ import json
 import os
 import sys
 import unittest
+from functools import partial
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
 from harness import REPOSITORY_ROOT, DeployerTestCase, Result, forward
 
-from deployer import check, cli, configure, platform_support, verify
+from deployer import check, configure, platform_support, verify
 from deployer.arguments import USAGE_ERROR, parse_command
 
 
@@ -24,25 +25,16 @@ def interrupting() -> io.StringIO:
 
 
 class SingleEntryPointTests(DeployerTestCase):
-    def run_cli(self, *arguments: str, stdin: str | io.StringIO = "") -> Result:
-        captured = io.StringIO()
-        reader = stdin if isinstance(stdin, io.StringIO) else io.StringIO(stdin)
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(list(arguments), self.paths, reader)
-        return Result(code, captured.getvalue())
-
     def test_each_command_module_parses_its_own_command_line_as_cli_routes_it(self) -> None:
         namespace = parse_command(["check"])
         self.assertEqual("check", getattr(namespace, "command", None))
         for module, command in ((check, "check"), (configure, "configure"), (verify, "verify")):
             with self.subTest(command=command):
-                captured = io.StringIO()
-                with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-                    code = module.run(["--bogus"], self.paths)
-                self.assertEqual(USAGE_ERROR, code)
+                result = self.run_command(partial(module.run, ["--bogus"], self.paths))
+                self.assertEqual(USAGE_ERROR, result.code)
                 self.assertIn(
                     f"ERROR: unrecognized arguments: --bogus\nRun 'python deploy.py {command} --help' for usage.",
-                    captured.getvalue(),
+                    result.output,
                 )
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
@@ -262,10 +254,7 @@ class HomeTests(DeployerTestCase):
         return mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": str(self.home)})
 
     def check(self) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(["check"], self.paths)
-        return Result(code, captured.getvalue())
+        return self.run_cli("check")
 
     def test_deploying_and_checking_name_the_home(self) -> None:
         for result in (self.deploy_ok("--all", "--dry-run"), self.deploy_ok("--all"), self.check()):
