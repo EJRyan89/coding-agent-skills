@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 import unittest
 
 from validation_support import REPOSITORY_ROOT
@@ -356,7 +357,63 @@ def tool_cache_problems(workflow: str, caches: dict[str, str]) -> list[str]:
     return problems
 
 
+def _verify_commands(script: str) -> list[list[str]]:
+    """Read the verify invocations as command data, not executable PowerShell. The pinned syntax uses literal
+    arguments and parenthesized Join-Path calls; quoted labels stay one argument and comments supply no command."""
+    commands = []
+    for line in script.splitlines():
+        if not re.match(r"^\s*python\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)", line):
+            continue
+        lexer = shlex.shlex(line, posix=False, punctuation_chars="|()")
+        lexer.whitespace_split = True
+        commands.append(list(lexer))
+    return commands
+
+
+def _verify_pair_problems(commands: list[list[str]], filename: str) -> list[str]:
+    saved = [["(", "Join-Path", "$env:LOGS", f"{quote}{filename}{quote}", ")"] for quote in ("'", '"')]
+    producers = [command for command in commands if command[:3] == ["python", "deploy.py", "verify"]]
+    expected = [["python", "deploy.py", "verify", "2>&1", "|", "Tee-Object", "-FilePath", *path] for path in saved]
+    problems = []
+    if len(commands) != 2 or len(producers) != 1 or commands[0] not in expected:
+        problems.append(f"deploy.py verify must save exactly {filename} through Tee-Object -FilePath before its report")
+    reports = [command for command in commands if command[:3] == ["python", "tools/deployable_report.py", "verify"]]
+    option = "--deploy-verify-log"
+    if len(reports) != 1 or reports[0].count(option) != 1:
+        problems.append(f"exactly one deployable_report.py verify must pass {option} for {filename} in this step")
+    else:
+        offset = reports[0].index(option) + 1
+        if reports[0][offset : offset + 5] not in saved:
+            problems.append(f"deployable_report.py verify must read {filename} with {option} (Join-Path $env:LOGS)")
+    return problems
+
+
+def verify_log_problems(workflow: str) -> list[str]:
+    """Hold deployable.yml's first and second verify reports to the exact log their own step writes, in order."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", "deployable"))
+    pairs: list[tuple[str, list[list[str]]]] = []
+    problems: list[str] = []
+    for index, step in enumerate(steps):
+        name = str(step.get("name", f"step {index + 1}"))
+        try:
+            commands = _verify_commands(str(step.get("run", "")))
+        except ValueError as error:
+            problems.append(f"{name}: verify command arguments cannot be read: {error}")
+            continue
+        if commands:
+            pairs.append((name, commands))
+    if len(pairs) != 2:
+        problems.append(f"expected first and second verify steps, found {len(pairs)}")
+    for filename, (name, commands) in zip(("verify-first.log", "verify-second.log"), pairs, strict=False):
+        problems += [f"{name}: {problem}" for problem in _verify_pair_problems(commands, filename)]
+    return problems
+
+
 class WorkflowsPolicies(unittest.TestCase):
+    def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], verify_log_problems(workflow))
+
     def test_deployable_workflow_is_a_dispatched_and_weekly_pinned_check_without_secrets(self) -> None:
         workflows = REPOSITORY_ROOT / ".github/workflows"
         workflow = (workflows / "deployable.yml").read_text(encoding="utf-8")
