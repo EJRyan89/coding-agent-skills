@@ -475,7 +475,11 @@ POWERSHELL_PARSE = (
 
 
 def _powershell_files(staged: Staged) -> dict[str, bytes]:
-    return {logical: content for logical, content in staged.logical_files().items() if logical.endswith(".ps1")}
+    return {
+        logical: content
+        for logical, content in staged.logical_files().items()
+        if Path(logical).suffix.casefold() == ".ps1"
+    }
 
 
 def _parse_powershell(files: dict[str, bytes], workspace: Path, powershell: str) -> None:
