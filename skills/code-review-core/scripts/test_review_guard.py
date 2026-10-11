@@ -94,6 +94,8 @@ class ReadTests(GuardFixture):
             ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
             ("Grep", {"pattern": "x", "path": str(self.run_directory / "work")}),
             ("Glob", {"pattern": "*.prompt.md", "path": str(self.run_directory / "work")}),
+            ("Grep", {"pattern": "repeats", "path": str(guard.REFERENCES)}),
+            ("Glob", {"pattern": "*.md", "path": str(guard.REFERENCES)}),
         ):
             with self.subTest(tool=tool, input=tool_input):
                 self.assert_denied(self.decide(tool, **tool_input), "read the prompt file your task names first")
@@ -108,6 +110,8 @@ class ReadTests(GuardFixture):
             ("Read", {"file_path": str(self.run_directory / "source" / "app" / "Service.cs")}),
             ("Read", {"file_path": str(self.run_directory / "reviewer" / ".claude" / "agents" / "csharp-review.md")}),
             ("Read", {"file_path": str(guard.REFERENCES / "generic-reviewer.md")}),
+            ("Grep", {"pattern": "repeats", "path": str(guard.REFERENCES)}),
+            ("Glob", {"pattern": "*.md", "path": str(guard.REFERENCES)}),
             ("Grep", {"pattern": "class Role", "path": str(self.run_directory / "source")}),
             ("Glob", {"pattern": "**/*.cs", "path": str(self.run_directory / "source")}),
         ]
@@ -130,6 +134,11 @@ class ReadTests(GuardFixture):
             ("Read", {"file_path": str(self.other_run / "source" / "app" / "Service.cs")}),
             ("Read", {"file_path": self.prompt(run=self.other_run)}),
             ("Grep", {"pattern": "x", "path": str(self.other_run)}),
+            ("Read", {"file_path": str(guard.SCRIPT_DIRECTORY / "review_guard.py")}),
+            ("Grep", {"pattern": "anything", "path": str(guard.REFERENCES.parent)}),
+            ("Glob", {"pattern": "*.md", "path": str(guard.REFERENCES.parent.parent / "review-prs")}),
+            ("Read", {"file_path": str(guard.REFERENCES / ".." / "SKILL.md")}),
+            ("Glob", {"pattern": "../scripts/*", "path": str(guard.REFERENCES)}),
         ]
         for tool, tool_input in denied:
             with self.subTest(tool=tool, input=tool_input):

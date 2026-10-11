@@ -1240,22 +1240,25 @@ class RepeatLinkTests(unittest.TestCase):
         }
 
     def test_a_role_links_a_repeat_by_index_or_by_prior_finding_id(self) -> None:
-        result = self.assemble(
-            [
-                (
-                    "csharp-review",
+        for disposition in ("still_present", "partially_addressed"):
+            with self.subTest(disposition=disposition):
+                result = self.assemble(
                     [
-                        self.finding(134),
-                        self.finding(135, repeats=0),
-                        self.finding(136, "SUGGESTION", repeats="v1:F001"),
-                    ],
-                    self.STILL,
+                        (
+                            "csharp-review",
+                            [
+                                self.finding(134),
+                                self.finding(135, repeats=0),
+                                self.finding(136, "SUGGESTION", repeats="v1:F001"),
+                            ],
+                            [{**self.STILL[0], "disposition": disposition}],
+                        )
+                    ]
                 )
-            ]
-        )
-        self.assertEqual(
-            [None, "csharp-review-1", "v1:F001"], [finding.get("repeats") for finding in result["findings"]]
-        )
+                self.assertEqual(
+                    [None, "csharp-review-1", "v1:F001"], [finding.get("repeats") for finding in result["findings"]]
+                )
+                self.assertEqual(disposition, result["prior_dispositions"][0]["disposition"])
 
     def test_an_invalid_link_is_a_retryable_result_error(self) -> None:
         for findings, dispositions, message in (
@@ -2194,15 +2197,20 @@ class SuiteProfileTests(SpecialistFixture, unittest.TestCase):
 class GenericInstructionsTests(unittest.TestCase):
     def test_the_generic_reviewer_writes_the_result_its_prompts_output_contract_states(self) -> None:
         # The generic reviewer runs as a specialist, so the prompt's OUTPUT contract is its result format: its
-        # instructions name no other format, and every result field they name is one that contract lists.
+        # instructions name no other format, and every result field or repeat-target disposition they name is
+        # one that contract lists.
         text = rs.DEFAULT_GENERIC_INSTRUCTIONS.read_text(encoding="utf-8")
         for other_format in ("schema", "candidate_key", "adapter"):
             self.assertNotIn(other_format, text)
         named = set(re.findall(r"`([a-z_]+)`", text))
         self.assertLessEqual({"model", "title", "repeats", "findings"}, named)
-        self.assertLessEqual(named, rs.RESULT_FIELDS | rs.FINDING_FIELDS)
+        self.assertLessEqual(named, rs.RESULT_FIELDS | rs.FINDING_FIELDS | {"still_present", "partially_addressed"})
         self.assertIn("RESULT_FILE", text)
-        for instruction, contract in (("0-based index", "0-based index"), ("`model`", '"model":')):
+        for instruction, contract in (
+            ("0-based index", "0-based index"),
+            ("`model`", '"model":'),
+            ("`still_present` or `partially_addressed`", "`still_present` or `partially_addressed`"),
+        ):
             with self.subTest(instruction=instruction):
                 self.assertIn(instruction, text)
                 self.assertIn(contract, rs.OUTPUT)
