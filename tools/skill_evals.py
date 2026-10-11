@@ -4,6 +4,9 @@ Usage:
   python -B tools/skill_evals.py SKILL [--write] [--timeout SECONDS] [--jobs N]
   python -B tools/skill_evals.py SKILL [--scenario NAME ...] [--model NAME ...] [--records DIR]
 
+Repeated --scenario and --model names count once, in first-occurrence order. Without --scenario, every scenario
+is selected in name order.
+
 A scenario is a directory tests/fixtures/skill-evals/<skill>/<scenario>/, which never ships, holding a scenario.json.
 A fixture scenario is a code-review fixture, which `review_pipeline.py prepare --canary --fixture <scenario>` reviews
 in place of a pull request: the change as two trees, base/ and head/, and the pull request in pull.json (see
@@ -523,7 +526,7 @@ def skill_arguments(scenario: Scenario, run: Path, git: GitClient) -> list[str]:
 
 
 def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_ROOT) -> list[Scenario]:
-    """The skill's scenarios, each named one or every one, in name order."""
+    """Each named scenario once in first-occurrence order, or every scenario in name order."""
     folder = root / skill
     if not folder.is_dir():
         raise ScenarioError(f"no scenarios for {skill} under {folder}")
@@ -531,7 +534,7 @@ def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_
     unknown = [name for name in names if name not in found]
     if unknown:
         raise ScenarioError(f"no scenario {', '.join(unknown)} for {skill}")
-    return [load_scenario(skill, folder / name) for name in (names or found)]
+    return [load_scenario(skill, folder / name) for name in dict.fromkeys(names or found)]
 
 
 # Reading a record
