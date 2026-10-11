@@ -263,6 +263,12 @@ def target_identity(memory_dir: Path, file: str) -> str:
     return os.path.normcase(str((memory_dir / file).resolve()))
 
 
+def memory_files(memory_dir: Path) -> list[Path]:
+    """Enumerate memories without treating the index, however its name is spelled, as a memory."""
+    index_identity = target_identity(memory_dir, INDEX_NAME)
+    return sorted(path for path in memory_dir.glob("*.md") if target_identity(memory_dir, path.name) != index_identity)
+
+
 def words(text: str) -> set[str]:
     return {word for word in WORD.findall(text.lower()) if word not in STOP_WORDS}
 
@@ -360,7 +366,7 @@ def audit(
     entries, index_lines = parse_index(index_path)
     index_bytes = index_path.stat().st_size if index_path.is_file() else 0
     indexed_files = Counter(target_identity(memory_dir, entry["file"]) for entry in entries)
-    files = sorted(path for path in memory_dir.glob("*.md") if path.name != INDEX_NAME)
+    files = memory_files(memory_dir)
     parsed: dict[Path, tuple[dict[str, str], str]] = {
         path: parse_frontmatter(path.read_text(encoding="utf-8", errors="replace")) for path in files
     }
@@ -458,11 +464,7 @@ def reindex(memory_dir: Path) -> dict:
         hook = one_line(meta["description"]) if meta.get("description") else existing_hook or derived_hook(body)
         lines.append(index_line(match.group("title").strip() or derived_title(meta, file), file, hook))
         entries.append(file)
-    added = sorted(
-        path.name
-        for path in memory_dir.glob("*.md")
-        if path.name != INDEX_NAME and target_identity(memory_dir, path.name) not in seen
-    )
+    added = sorted(path.name for path in memory_files(memory_dir) if target_identity(memory_dir, path.name) not in seen)
     if added:
         while lines and not lines[-1].strip():
             lines.pop()

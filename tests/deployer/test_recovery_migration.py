@@ -7,13 +7,14 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import FAILS_PARTWAY, RECOVERS, DeployerTestCase, forward
+from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, forward, tree_state
 
-from deployer import fsops, hashing, journal, platform_support, render
+from deployer import fsops, hashing, journal, pipeline, platform_support, render
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -614,6 +615,130 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertIn("obsolete", self.report_groups(result.output, "DEPLOYED")["REMOVED"][0])
         self.assertFalse(transient.exists())
         self.assertIn("Updated alpha", self.skill_text("alpha"))
+
+
+class ImmediateRecoveryExceptionTests(RecoveryTestCase):
+    """Real CLI exit statuses after a deployment failure and a second failure while replaying its journal."""
+
+    def assert_stopped_recovery(
+        self, recovery_failure: str, *, deployment_failure: str = "OSError", committed: bool = False
+    ) -> None:
+        self.deployed(("alpha", "Original alpha"), ("beta", "Original beta"))
+        original_manifest = self.manifest_file.read_bytes()
+        if committed:
+            self.write(self.skills_dir / "alpha" / "SKILL.md", "precious local alpha\n")
+        original_alpha = hashing.hash_path(self.skills_dir / "alpha")
+        original_beta = hashing.hash_path(self.skills_dir / "beta")
+        self.make_skill("alpha", "Updated alpha")
+        self.make_skill("beta", "Updated beta")
+        source_before = tree_state(self.source)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                """
+import io
+import os
+import sys
+from pathlib import Path
+from unittest import mock
+from deployer import cli, errors, fsops
+from deployer.paths import Paths
+
+source, home = Path(sys.argv[1]), Path(sys.argv[2])
+committed = sys.argv[3] == "committed"
+deployment_error = {"OSError": OSError, "KeyboardInterrupt": KeyboardInterrupt}[sys.argv[4]]
+recovery_error = {"RuntimeError": RuntimeError, "KeyboardInterrupt": KeyboardInterrupt}[sys.argv[5]]
+real_move = fsops.move
+failed = False
+
+def failing_move(source, destination):
+    global failed
+    installing = "staging" in source.parts and destination == home / ".claude" / "skills" / "beta"
+    preserving = ".backups" in destination.parts
+    if not failed and (preserving if committed else installing):
+        failed = True
+        raise deployment_error("synthetic deployment failure")
+    if failed and source.name == "alpha.deploying-bak":
+        raise recovery_error("synthetic immediate recovery failure")
+    real_move(source, destination)
+
+os.environ[errors.DEBUG_VARIABLE] = ""
+arguments = ["--all", "--force-item", "alpha"] if committed else ["--all"]
+with mock.patch("deployer.fsops.move", side_effect=failing_move):
+    raise SystemExit(cli.main(arguments, Paths(source, home), io.StringIO()))
+""",
+                str(self.source),
+                str(self.home),
+                "committed" if committed else "uncommitted",
+                deployment_failure,
+                recovery_failure,
+            ],
+            cwd=REPOSITORY_ROOT,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(source_before, tree_state(self.source), result.stdout + result.stderr)
+        self.assertEqual(130 if recovery_failure == "KeyboardInterrupt" else 1, result.returncode, result.stderr)
+        self.assertIn("synthetic deployment failure", result.stderr)
+        self.assertIn("Deployment failed; reconciling the current journal before exit...", result.stderr)
+        if recovery_failure == "KeyboardInterrupt":
+            self.assertTrue(result.stderr.endswith(f"\n{pipeline.RECOVERY_CANCELLED}\n\n"), result.stderr)
+        else:
+            self.assertTrue(
+                result.stderr.endswith(
+                    "\nERROR: Unexpected RuntimeError: synthetic immediate recovery failure\n"
+                    "Recovery stopped, so nothing was deployed; the next deployment retries it.\n"
+                    f"{SEE_RECOVERY_FAILED}\n\n"
+                ),
+                result.stderr,
+            )
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("DEPLOYED", result.stdout)
+        self.assertFalse(self.lock_dir.exists())
+        runs = list(self.paths.staging_root.iterdir())
+        self.assertEqual(1, len(runs))
+        journal_file = runs[0] / "journal.jsonl"
+        self.assertTrue(journal_file.is_file())
+        self.assertEqual(original_alpha, hashing.hash_path(self.skills_dir / "alpha.deploying-bak"))
+        if committed:
+            self.assertEqual(runs[0].name, self.manifest()["last_run_id"])
+            self.assertIn("Updated alpha", self.skill_text("alpha"))
+        else:
+            self.assertEqual(original_manifest, self.manifest_file.read_bytes())
+            self.assertFalse((self.skills_dir / "alpha").exists())
+            self.assertEqual(original_beta, hashing.hash_path(self.skills_dir / "beta"))
+            self.assertFalse((self.skills_dir / "beta.deploying-bak").exists())
+        retry = self.deploy_ok("--all")
+        self.assertIn(f"Recovering {'committed' if committed else 'uncommitted'} run {runs[0].name}", retry.output)
+        self.assertNotIn("Stale lock", retry.output)
+        self.assertFalse(runs[0].exists())
+        self.assertFalse(self.lock_dir.exists())
+        self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+        self.assertIn("Updated alpha", self.skill_text("alpha"))
+        self.assertIn("Updated beta", self.skill_text("beta"))
+        if committed:
+            backup = self.skills_dir / ".backups" / runs[0].name / "alpha"
+            self.assertEqual(original_alpha, hashing.hash_path(backup))
+            self.assertEqual("precious local alpha\n", (backup / "SKILL.md").read_text(encoding="utf-8"))
+
+    def test_ctrl_c_during_immediate_rollback_exits_130_and_the_next_deployment_recovers(self) -> None:
+        self.assert_stopped_recovery("KeyboardInterrupt")
+
+    def test_a_second_ctrl_c_during_immediate_rollback_exits_130_and_releases_the_lock(self) -> None:
+        self.assert_stopped_recovery("KeyboardInterrupt", deployment_failure="KeyboardInterrupt")
+
+    def test_an_unexpected_immediate_rollback_error_is_reported_and_releases_the_lock(self) -> None:
+        self.assert_stopped_recovery("RuntimeError")
+
+    def test_ctrl_c_during_immediate_committed_recovery_preserves_the_backup_and_releases_the_lock(self) -> None:
+        self.assert_stopped_recovery("KeyboardInterrupt", committed=True)
+
+    def test_an_unexpected_immediate_committed_recovery_error_preserves_the_backup_and_releases_the_lock(self) -> None:
+        self.assert_stopped_recovery("RuntimeError", committed=True)
 
 
 class RecoveryBranchTests(RecoveryTestCase):

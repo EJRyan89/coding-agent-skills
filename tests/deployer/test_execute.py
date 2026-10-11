@@ -448,6 +448,50 @@ class ExecuteTests(unittest.TestCase):
             ),
         )
 
+    def test_an_exception_in_immediate_recovery_is_reported_and_releases_the_lock(self) -> None:
+        failure = DeployError("ERROR: apply failed", exit_code=3)
+        cases: list[tuple[BaseException, int, list[str]]] = [
+            (KeyboardInterrupt(), 130, [pipeline.RECOVERY_CANCELLED]),
+            (
+                RuntimeError("recovery defect"),
+                1,
+                [
+                    "ERROR: Unexpected RuntimeError: recovery defect",
+                    "Recovery stopped, so nothing was deployed; the next deployment retries it.",
+                    'See "When recovery fails" in docs/recovery.md.',
+                ],
+            ),
+        ]
+        for recovery_error, code, lines in cases:
+            for debug in (False, True):
+                self.calls = []
+                with self.subTest(recovery_error=recovery_error, debug=debug):
+                    printed_error = DeployError(*lines, exit_code=code)
+                    tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
+                    before_recovery = ["print_traceback(DeployError('ERROR: apply failed'))"] if debug else []
+                    self.assertEqual(
+                        (
+                            code,
+                            [
+                                *self.prepared(),
+                                *self.held(),
+                                *self.deployed(),
+                                *before_recovery,
+                                "recover_incomplete(paths(home))",
+                                *tracebacks,
+                                "release",
+                            ],
+                            ["", "ERROR: apply failed", "", RECONCILING, "", *lines, ""],
+                        ),
+                        self.execute(
+                            Options(),
+                            debug=debug,
+                            stdin=self.stdin,
+                            _deploy=failure,
+                            recover_incomplete=[True, recovery_error],
+                        ),
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

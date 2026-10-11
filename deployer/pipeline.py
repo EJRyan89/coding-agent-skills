@@ -521,7 +521,10 @@ def _stopped_recovery(exc: BaseException, debug: bool, held: lock.Lock) -> int:
 
 
 def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
-    """Report a failed deployment, then recover its journal and release the lock, or keep both when that fails."""
+    """Report a failed deployment, then recover its journal.
+
+    An exception during recovery releases the lock and keeps the journal; unreconciled entries keep both.
+    """
     if isinstance(exc, DeployError):
         print_error(exc, debug)
         code = exc.exit_code
@@ -531,7 +534,11 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
             print_traceback(exc)
         code = 130 if isinstance(exc, KeyboardInterrupt) else 1
     print("Deployment failed; reconciling the current journal before exit...", file=sys.stderr)
-    if journal.recover_incomplete(paths):
+    try:
+        recovered = journal.recover_incomplete(paths)
+    except (Exception, KeyboardInterrupt) as recovery_error:
+        return _stopped_recovery(recovery_error, debug, held)
+    if recovered:
         held.release()
     else:
         print("ERROR: Immediate recovery failed; deployment evidence and lock were retained.", file=sys.stderr)
