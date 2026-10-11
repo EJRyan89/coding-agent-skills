@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -1803,6 +1804,55 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         metadata["source_hashes"]["OPEN"] = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         (snapshot / "source-snapshot.json").write_text(json.dumps(metadata), encoding="utf-8")
         self.assertIn("compat-review", [r["id"] for r in self.plan()["roles"]])
+
+    def test_a_condition_script_that_never_exits_is_killed_without_writing_a_plan(self) -> None:
+        (self.checkout / "tools/window.py").write_text(
+            "import json, os, sys, threading\n"
+            "print(json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}), flush=True)\n"
+            "threading.Event().wait()\n",
+            encoding="utf-8",
+        )
+        trusted = self.commit(self.checkout, "nonterminating condition")
+        self.reviewer = self.root / "timeout-reviewer"
+        materialize_reviewer(
+            self.checkout,
+            trusted,
+            load_manifest_from_commit(self.checkout, trusted, ".review/manifest.json"),
+            self.reviewer,
+        )
+        processes: list[subprocess.Popen[str]] = []
+        popen = subprocess.Popen
+
+        def start(command: list[str], **options: Any) -> subprocess.Popen[str]:
+            process: subprocess.Popen[str] = popen(command, **options)
+            processes.append(process)
+            return process
+
+        with (
+            mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", 5),
+            mock.patch.object(rs.subprocess, "Popen", side_effect=start),
+            self.assertRaises(rs.SpecialistError) as raised,
+        ):
+            self.plan()
+        self.assertEqual("Condition script timed out: tools/window.py", str(raised.exception))
+        expired = raised.exception.__cause__
+        if not isinstance(expired, subprocess.TimeoutExpired):
+            self.fail(f"Expected an actual process timeout, got {expired!r}")
+        script = self.reviewer / "tools/window.py"
+        snapshot = self.request_args["source_snapshot_root"]
+        work = self.root / "work-initial"
+        self.assertEqual([sys.executable, "-B", str(script), "--source-root", str(snapshot)], expired.cmd)
+        self.assertEqual(5, expired.timeout)
+        self.assertEqual(
+            {"argv": [str(script), "--source-root", str(snapshot)], "cwd": str(work)},
+            json.loads(expired.output),
+            "the condition reached its indefinite wait, not merely the interpreter's startup",
+        )
+        self.assertEqual(1, len(processes))
+        self.assertIsNotNone(processes[0].returncode, "subprocess.run killed and reaped the condition before refusing")
+        self.assertNotEqual(0, processes[0].returncode)
+        self.assertTrue(self.request_path.is_file(), "planning consumed a real written request")
+        self.assertEqual([], list(work.iterdir()), "no plan, prompt, or result is published")
 
     def test_missing_result_and_tampered_reviewer_fail(self) -> None:
         plan = self.plan()

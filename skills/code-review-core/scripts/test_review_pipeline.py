@@ -3503,6 +3503,34 @@ class ReviewerSourceTests(PipelineFixture):
                 self.assertEqual(roles, [role["id"] for role in ready["roles"]], "a review decides the same")
                 self.assertEqual("checkout-lazy", ready["snapshot"]["source"])
 
+    def test_a_condition_script_that_never_exits_refuses_prepare_without_publishing_a_run(self) -> None:
+        manifest = self.local_manifest()
+        started = self.root / "condition-started.json"
+        (manifest.parent / "window.py").write_text(
+            "import json, os, sys, threading\n"
+            "from pathlib import Path\n"
+            f"Path({str(started)!r}).write_text("
+            "json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}), encoding='utf-8')\n"
+            "threading.Event().wait()\n",
+            encoding="utf-8",
+        )
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        with mock.patch("review_specialists.CONDITION_TIMEOUT_SECONDS", 5):
+            code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual((1, f"FAILED {SELECTOR} Condition script timed out: window.py\n", ""), (code, out, err))
+        invocation = json.loads(started.read_text(encoding="utf-8"))
+        work = Path(invocation["cwd"])
+        run = work.parent
+        self.assertEqual(
+            [str(run / "reviewer" / "window.py"), "--source-root", str(run / "source")], invocation["argv"]
+        )
+        self.assertEqual("work", work.name)
+        self.assertTrue(run.is_relative_to(self.temporary), "the real condition ran only inside the fixture")
+        self.assertFalse(run.exists(), "prepare removes its refused run, including the request and plan")
+        self.assertEqual([], list(self.temporary.iterdir()), "no reviewer run is published")
+        self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
+        self.assertFalse(self.state_path.exists(), "a refused prepare records no review state")
+
     def test_validate_reviewer_lists_the_files_no_routed_specialist_covers(self) -> None:
         # The fixture's head changes app/service.py, which the Python specialist takes, and CLAUDE.md, which no
         # specialist covers.
@@ -4750,6 +4778,80 @@ class LocalCommitTests(unittest.TestCase):
 
 
 class BatchTests(PipelineFixture):
+    def _completed_merged_batch(self) -> Path:
+        repositories = json.loads(self.config_path.read_text(encoding="utf-8"))["repository_sets"]["primary"]
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps(
+                {"schema_version": 1, "repositories": {name: {"merged_since": "2026-03-01"} for name in repositories}}
+            ),
+            encoding="utf-8",
+        )
+        merged = rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-05T10:00:00Z")
+        self.github.listing = [merged]
+        self.github.pulls[12] = merged
+        batch_path = self.root / "batch.json"
+        code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("PULL example/one#12\n", out)
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        return batch_path
+
+    def test_advance_preserves_a_concurrent_later_watermark_and_advances_other_repositories(self) -> None:
+        other = "example/two"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repository_sets"]["primary"].append(other)
+        config["repositories"][other] = config["repositories"][REPOSITORY]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        listing = self.services.github.list_pulls
+        closed = self.services.github.list_closed_pulls_since
+        with (
+            mock.patch.object(
+                self.services.github,
+                "list_pulls",
+                side_effect=lambda repository, **kwargs: listing(REPOSITORY, **kwargs),
+            ),
+            mock.patch.object(
+                self.services.github,
+                "list_closed_pulls_since",
+                side_effect=lambda repository, watermark: closed(REPOSITORY, watermark),
+            ),
+        ):
+            batch_path = self._completed_merged_batch()
+        batch_before = batch_path.read_bytes()
+        later = {"merged_since": "2026-03-12T10:00:00Z", "updated_at": "2026-03-12"}
+
+        def concurrent_advance(state: dict[str, Any]) -> dict[str, Any]:
+            state["repositories"][REPOSITORY] = later.copy()
+            state["repositories"][other] = {"merged_since": "2026-03-01", "updated_at": "2026-03-01"}
+            return state
+
+        rp.update_state(self.state_path, concurrent_advance)
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        state = load_state(self.state_path)
+        self.assertEqual(later, state["repositories"][REPOSITORY])
+        self.assertEqual({"merged_since": "2026-03-04", "updated_at": "2026-03-10"}, state["repositories"][other])
+        self.assertEqual(batch_before, batch_path.read_bytes())
+        self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"])
+
+    def test_advance_preserves_an_equal_watermark_date_and_its_timestamp(self) -> None:
+        batch_path = self._completed_merged_batch()
+        same_day = {"merged_since": "2026-03-10T17:30:00Z", "updated_at": "2026-03-09"}
+
+        def concurrent_advance(state: dict[str, Any]) -> dict[str, Any]:
+            state["repositories"][REPOSITORY] = same_day.copy()
+            return state
+
+        rp.update_state(self.state_path, concurrent_advance)
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        self.assertEqual(same_day, load_state(self.state_path)["repositories"][REPOSITORY])
+
     def test_enumerate_then_advance_after_merged_reviews_complete(self) -> None:
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(

@@ -3016,6 +3016,102 @@ class ReviewOperationTests(unittest.TestCase):
                 self.fail("the retried commit is in the local mirror")
             self.assertEqual(latest["artifacts"], persisted["artifacts"])
 
+    @staticmethod
+    def _pending_mirror_commit(root: Path) -> dict[str, Any]:
+        request = {
+            "protocol_version": 1,
+            "mode": "initial",
+            "repository": "example/one",
+            "pull_number": 12,
+            "pull_request": {
+                "title": "Improve behavior",
+                "url": "https://github.com/example/one/pull/12",
+                "base_ref": "main",
+                "base_sha": "a" * 40,
+                "head_sha": "b" * 40,
+            },
+            "diff_path": str(root / "diff.patch"),
+            "prior_findings": [],
+            "github_comments": [],
+        }
+        arguments: dict[str, Any] = {
+            "request_path": root / "request.json",
+            "result_path": root / "result.json",
+            "archive_root": root / "archive",
+            "local_mirror_root": root / "local",
+            "policy": {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3},
+            "adapter": {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}},
+            "base": archive_base(None, []),
+        }
+        arguments["request_path"].write_text(json.dumps(request), encoding="utf-8")
+        arguments["result_path"].write_text(json.dumps(valid_adapter_result()), encoding="utf-8")
+        unrelated = build_record(
+            valid_request(number=13), valid_adapter_result(number=13), version=1, policy=arguments["policy"]
+        )
+        for archive in (arguments["archive_root"], arguments["local_mirror_root"]):
+            commit_record(archive, "example/one", 13, unrelated, expected_latest_version=None)
+        commit_adapter_result(
+            **{**arguments, "archive_root": arguments["local_mirror_root"], "local_mirror_root": None}
+        )
+        return arguments
+
+    def _assert_mirror_refusal(self, arguments: dict[str, Any], message: str) -> None:
+        roots = [arguments["archive_root"], arguments["local_mirror_root"]]
+        before = [
+            {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()} for root in roots
+        ]
+        for files in before:
+            self.assertIn(Path("example") / "one" / "pulls" / "13" / "review.json", files)
+            self.assertIn(Path("example") / "one" / "pulls" / "13" / "review.md", files)
+        with self.assertRaises(ReviewOperationError) as raised:
+            commit_adapter_result(**arguments)
+        self.assertIs(type(raised.exception), ReviewOperationError)
+        self.assertEqual(message, str(raised.exception))
+        for root, expected in zip(roots, before, strict=True):
+            with self.subTest(archive=root.name):
+                self.assertEqual(
+                    expected,
+                    {path.relative_to(root): path.read_bytes() for path in root.rglob("*") if path.is_file()},
+                )
+
+    def test_mirror_refuses_a_reported_version_without_a_valid_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            arguments = self._pending_mirror_commit(Path(temporary))
+            local = arguments["local_mirror_root"]
+            directory = pull_directory(local, "example/one", 12)
+            observed = list_versions(directory)
+            self.assertEqual([1], observed)
+            self.assertIsNotNone(latest_record(local, "example/one", 12))
+            (directory / "review.json").unlink()
+            self.assertIsNone(latest_record(local, "example/one", 12))
+            # The record disappeared after the version scan; only that stale observation is simulated.
+            with mock.patch("review_operation.list_versions", return_value=observed) as versions:
+                self._assert_mirror_refusal(arguments, "Local mirror reports a version without a valid record")
+            versions.assert_called_once_with(directory)
+
+    def test_mirror_refuses_a_different_pending_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            arguments = self._pending_mirror_commit(Path(temporary))
+            result = valid_adapter_result()
+            result["summary"] = "A different review of the same head."
+            arguments["result_path"].write_text(json.dumps(result), encoding="utf-8")
+            self._assert_mirror_refusal(
+                arguments, "Local mirror contains a different pending review; reconcile before retrying"
+            )
+
+    def test_mirror_refuses_versions_that_differ_from_the_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            arguments = self._pending_mirror_commit(Path(temporary))
+            local = arguments["local_mirror_root"]
+            record = build_record(valid_request(), valid_adapter_result(), version=2, policy=arguments["policy"])
+            commit_record(local, "example/one", 12, record, expected_latest_version=1)
+            self.assertEqual([1, 2], list_versions(pull_directory(local, "example/one", 12)))
+            self.assertIsNotNone(latest_record(local, "example/one", 12))
+            self.assertEqual([], list_versions(pull_directory(arguments["archive_root"], "example/one", 12)))
+            self._assert_mirror_refusal(
+                arguments, "Local mirror and archive versions differ; reconcile before committing"
+            )
+
     def test_latest_reviewed_heads_ignores_missing_pull_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
