@@ -117,6 +117,8 @@ Deploy from the same clone each time: the manifest records it, and a deployment 
 
 If an updated skill requires a new configuration value, the deployer stops and asks you to run `python deploy.py configure` first.
 
+To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). The next deployment without it, `update-coding-agent-skills` included, moves the installation back to the clone's `HEAD` and reports that it replaced the pinned deployment.
+
 ## Uninstalling
 
 Run `python deploy.py --dry-run`, answer `none` at the selection prompt to preview the removal, then run `python deploy.py` and answer `none` again to remove every unmodified skill, shared asset, runtime adapter, and agent deployed from this repository.

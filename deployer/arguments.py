@@ -108,6 +108,9 @@ def parser() -> _Parser:
         top.add_argument(
             "--canary-home", default="", metavar="DIR", help="deploy into a throwaway home under the temp directory"
         ),
+        top.add_argument(
+            "--at", default=None, metavar="REF", help="deploy this commit, tag, or branch instead of the checkout"
+        ),
     ]
     _add_debug(top)
     commands = top.add_subparsers(
@@ -171,6 +174,7 @@ _EXCLUSIVE = (
     ("--migrate-from", ("--dry-run", "--all", "--include", "--force", "--force-item")),
     ("--take-over-source", ("--dry-run",)),
     ("--canary-home", ("--dry-run", "--migrate-from", "--take-over-source")),
+    ("--at", ("--migrate-from",)),
 )
 
 

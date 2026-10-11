@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -60,6 +61,32 @@ def tree_state(root: Path) -> dict[str, str]:
                 followed.append(name)
         directories[:] = followed
     return state
+
+
+def git(directory: Path, *arguments: str) -> str:
+    """Run git in a fixture repository with no user hooks, signing, or identity from the developer's configuration."""
+    completed = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "tag.gpgsign=false",
+            "-c",
+            f"core.hooksPath={directory / '.no-hooks'}",
+            "-C",
+            str(directory),
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return completed.stdout.strip()
 
 
 @dataclass

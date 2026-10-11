@@ -14,6 +14,7 @@ from .kinds import ADAPTER_KIND, AGENT_KIND, DEPENDENCY_KINDS, KINDS, SHARED, SK
 from .names import safe_name_problem
 from .source import SOURCE_ID_PATTERN, is_valid_name
 from .source_commit import COMMIT_PATTERN
+from .source_ref import REF_PATTERN
 
 KINDS_ALLOWED = {
     "Manifest.ownership": "a skill entry also records the items it depends on, and a shared asset entry its role",
@@ -28,7 +29,8 @@ MANIFEST_VERSION = 7
 # version 6 deployer refuses, so it never rewrites a source entry and drops the agents this version owns.
 # A skill entry's agent_deps came later in version 7 without a new version: an entry without it records no agents, and
 # a deployer that predates it drops it on rewrite, which loses only the agents a skill left in place would keep, never
-# an owned item.
+# an owned item. A source entry's source_ref came later in version 7 the same way: a deployer that predates it drops
+# it on rewrite, when the deployment it makes replaces the pinned one anyway.
 OLDEST_READABLE_VERSION = 6
 
 
@@ -102,6 +104,11 @@ class Manifest:
         value = (self.source(source_id) or {}).get("source_commit")
         return value if isinstance(value, str) else None
 
+    def source_ref(self, source_id: str) -> str | None:
+        """The ref a deployment made with --at named, or None when the source was last deployed as its checkout is."""
+        value = (self.source(source_id) or {}).get("source_ref")
+        return value if isinstance(value, str) else None
+
     def ownership(self, source_id: str) -> Ownership:
         entry = self.source(source_id) or {}
         owned = Ownership()
@@ -157,12 +164,18 @@ def _valid_dependencies(values: Any, kind: ItemKind) -> bool:
 
 
 def _validate_source_commit(source_id: str, entry: dict[str, Any]) -> None:
-    """A recorded commit is a full object name; an entry written before it was recorded has none until it deploys."""
-    if "source_commit" not in entry:
-        return
-    value = entry["source_commit"]
-    if not isinstance(value, str) or not COMMIT_PATTERN.fullmatch(value):
-        raise DeployError(f"ERROR: Manifest source '{source_id}' source_commit is malformed")
+    """A recorded commit is a full object name; an entry written before it was recorded has none until it deploys.
+
+    A deployment made with --at also records the ref it named, which is only ever printed, and only beside a commit.
+    """
+    if "source_commit" in entry:
+        value = entry["source_commit"]
+        if not isinstance(value, str) or not COMMIT_PATTERN.fullmatch(value):
+            raise DeployError(f"ERROR: Manifest source '{source_id}' source_commit is malformed")
+    if "source_ref" in entry:
+        ref = entry["source_ref"]
+        if "source_commit" not in entry or not isinstance(ref, str) or not REF_PATTERN.fullmatch(ref):
+            raise DeployError(f"ERROR: Manifest source '{source_id}' source_ref is malformed")
 
 
 def _validate(data: dict[str, Any], path: Path) -> None:

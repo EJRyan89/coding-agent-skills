@@ -129,7 +129,7 @@ class ExecuteTests(unittest.TestCase):
         """The exit code, the calls in order, and stderr's lines."""
         output, error = io.StringIO(), io.StringIO()
         with self.replaced(options, **outcomes), contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-            code = pipeline.execute(argparse.Namespace(debug=debug), self.paths, probe=self.probe, stdin=stdin)
+            code = pipeline.execute(argparse.Namespace(debug=debug, at=None), self.paths, probe=self.probe, stdin=stdin)
         self.assertEqual("", output.getvalue())
         return code, self.calls, error.getvalue().split("\n")[:-1]
 
@@ -159,7 +159,7 @@ class ExecuteTests(unittest.TestCase):
     def deployed(self, values: str = "{'VALUE': 'configured'}", stdin: str = "stdin") -> list[str]:
         return [
             "recover_incomplete(paths(home))",
-            f"_deploy(paths(home), options, src, {values}, {stdin}, '{RUN_ID}')",
+            f"_deploy(paths(home), options, src, {values}, {stdin}, '{RUN_ID}', None)",
         ]
 
     def held(self, take_over: bool = False) -> list[str]:
@@ -204,7 +204,7 @@ class ExecuteTests(unittest.TestCase):
                 "acquire(paths(canary), probe)",
                 f"_reject_other_checkout(paths(canary), '{SOURCE_ID}', False)",
                 "recover_incomplete(paths(canary))",
-                f"_deploy(paths(canary), options, src, {{'VALUE': 'canary'}}, stdin, '{RUN_ID}')",
+                f"_deploy(paths(canary), options, src, {{'VALUE': 'canary'}}, stdin, '{RUN_ID}', None)",
                 "release",
             ],
             calls,
@@ -256,7 +256,7 @@ class ExecuteTests(unittest.TestCase):
                 [
                     *self.prepared(),
                     "_stop_for_pending_recovery(paths(home))",
-                    "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None)",
+                    "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)",
                 ],
                 [],
             ),
@@ -271,7 +271,7 @@ class ExecuteTests(unittest.TestCase):
 
     def test_a_dry_run_that_fails_names_the_dry_run(self) -> None:
         stopped = [*self.prepared(), "_stop_for_pending_recovery(paths(home))"]
-        deploy = "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None)"
+        deploy = "_deploy(paths(home), options, src, {'VALUE': 'configured'}, stdin, None, None)"
         cases: list[tuple[dict[str, Any], int, list[str], list[str]]] = [
             (
                 {"_deploy": DeployError("ERROR: refused", exit_code=3)},

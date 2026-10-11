@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TextIO
 
-from . import manifest, source
+from . import manifest, source, source_ref
 from .kinds import ItemKind
 from .manifest import Ownership
 from .paths import Paths
@@ -21,6 +21,7 @@ class Options:
     migrate_from: str = ""
     take_over_source: bool = False
     canary_home: str = ""
+    at: str | None = None
     debug: bool = False
 
 
@@ -41,6 +42,8 @@ class Context:
     owned: Ownership  # not manifest.Ownership: in this class body, manifest names the field above
     stdin: TextIO
     selection: Selection = field(default_factory=Selection)
+    # The commit --at deploys, or None when the run deploys the checkout as it is.
+    pin: source_ref.Pin | None = None
 
     @property
     def source_id(self) -> str:
