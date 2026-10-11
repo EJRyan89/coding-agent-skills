@@ -11,7 +11,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from workflows import WorkflowSyntaxError, leg_problems, read_workflow, tool_cache_problems, workflow_guard_problems
+from workflows import (
+    WorkflowSyntaxError,
+    leg_problems,
+    read_workflow,
+    tool_cache_problems,
+    verify_log_problems,
+    workflow_guard_problems,
+)
 
 
 class WorkflowsFixtures(unittest.TestCase):
@@ -141,6 +148,78 @@ class LegFixtures(unittest.TestCase):
             with self.subTest(problem=problem):
                 problems = tool_cache_problems(drifted, caches)
                 self.assertTrue(any(problem in found for found in problems), problems)
+
+
+VERIFY_LOGS = (
+    "jobs:\n  deployable:\n    steps:\n"
+    "      - name: First discovery\n        run: |\n"
+    "          python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-first.log')\n"
+    "          $deployVerify = $LASTEXITCODE\n"
+    "          python tools/deployable_report.py verify --label 'first deploy' "
+    "--deploy-verify-exit $deployVerify --deploy-verify-log (Join-Path $env:LOGS 'verify-first.log')\n"
+    "      - name: Second discovery\n        run: |\n"
+    "          python deploy.py verify 2>&1 | Tee-Object -FilePath (Join-Path $env:LOGS 'verify-second.log')\n"
+    "          $deployVerify = $LASTEXITCODE\n"
+    "          python tools/deployable_report.py verify --label 'after uninstall and redeploy' "
+    "--deploy-verify-exit $deployVerify --deploy-verify-log (Join-Path $env:LOGS 'verify-second.log')\n"
+)
+
+
+class VerifyLogFixtures(unittest.TestCase):
+    def test_each_report_reads_the_log_its_own_verify_command_saved(self) -> None:
+        self.assertEqual([], verify_log_problems(VERIFY_LOGS))
+        self.assertEqual([], verify_log_problems(VERIFY_LOGS.replace("'", '"')))
+        self.assertEqual([], verify_log_problems(VERIFY_LOGS.replace("python ", "  python ").replace(" --", "   --")))
+
+    def test_wrong_swapped_or_missing_verify_logs_fail(self) -> None:
+        first = "--deploy-verify-log (Join-Path $env:LOGS 'verify-first.log')"
+        second = "--deploy-verify-log (Join-Path $env:LOGS 'verify-second.log')"
+        for name, drifted in (
+            (
+                "swapped",
+                VERIFY_LOGS.replace(first, "FIRST_ARGUMENT").replace(second, first).replace("FIRST_ARGUMENT", second),
+            ),
+            ("misspelt", VERIFY_LOGS.replace(first, first.replace("first.log", "frist.log"))),
+            ("missing option", VERIFY_LOGS.replace(first, "")),
+            ("missing argument", VERIFY_LOGS.replace(first, "--deploy-verify-log")),
+            ("wrong directory", VERIFY_LOGS.replace(first, first.replace("$env:LOGS", "$env:OTHER"))),
+            ("literal directory", VERIFY_LOGS.replace(first, first.replace("$env:LOGS", "'$env:LOGS'"))),
+            ("wrong producer", VERIFY_LOGS.replace("'verify-first.log'", "'other.log'", 1)),
+            ("both use wrong log", VERIFY_LOGS.replace("verify-first.log", "other.log")),
+            ("both pairs use same log", VERIFY_LOGS.replace("verify-second.log", "verify-first.log")),
+            ("missing save", VERIFY_LOGS.replace(" | Tee-Object -FilePath", " # Tee-Object -FilePath", 1)),
+            ("missing producer", VERIFY_LOGS.replace("python deploy.py verify", "# python deploy.py verify", 1)),
+            (
+                "missing consumer",
+                VERIFY_LOGS.replace(
+                    "python tools/deployable_report.py verify", "# python tools/deployable_report.py verify", 1
+                ),
+            ),
+            ("duplicate option", VERIFY_LOGS.replace(first, f"{first} {first}")),
+            ("empty workflow", "jobs:\n  deployable:\n    steps: []\n"),
+            ("missing job", "jobs:\n  other:\n    steps: []\n"),
+            ("unclosed quote", VERIFY_LOGS.replace("'verify-first.log')", "'verify-first.log)", 1)),
+        ):
+            with self.subTest(drift=name):
+                self.assertTrue(verify_log_problems(drifted), name)
+
+    def test_comments_and_other_steps_cannot_supply_the_log_wiring(self) -> None:
+        command = "python tools/deployable_report.py verify"
+        drifted = VERIFY_LOGS.replace(command, f"# {command}", 1)
+        drifted += (
+            "      - run: |\n"
+            "          python tools/deployable_report.py verify "
+            "--deploy-verify-log (Join-Path $env:LOGS 'verify-first.log')\n"
+        )
+        self.assertTrue(verify_log_problems(drifted))
+        self.assertTrue(verify_log_problems(VERIFY_LOGS.replace(command, f"echo '{command}", 1)))
+
+    def test_a_report_before_its_producer_cannot_read_that_runs_log(self) -> None:
+        lines = VERIFY_LOGS.splitlines()
+        producer = next(index for index, line in enumerate(lines) if "python deploy.py verify" in line)
+        report = next(index for index, line in enumerate(lines) if "python tools/deployable_report.py verify" in line)
+        lines[producer], lines[report] = lines[report], lines[producer]
+        self.assertTrue(verify_log_problems("\n".join(lines)))
 
 
 class WorkflowReaderFixtures(unittest.TestCase):
