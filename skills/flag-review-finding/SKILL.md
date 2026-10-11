@@ -29,7 +29,7 @@ List the open flags:
 python -B "${CLAUDE_SKILL_DIR}/scripts/flag_review_finding.py" list
 ```
 
-It prints `FLAG <flag id> <category> <target> <body>` per open flag, with the body cut to 160 characters and `-` as the target of a flag that names no pull request, then `COUNT <n>`.
+It prints `FLAG <flag id> <category> <target> <body>` per open flag, with the body cut to 160 characters and `-` as the target of a flag that names neither a repository nor a pull request, then `COUNT <n>`.
 
 Resolve an open flag by its ID (such as `RF-000004`) with a non-empty resolution:
 
