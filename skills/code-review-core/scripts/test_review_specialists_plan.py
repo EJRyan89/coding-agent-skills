@@ -1122,6 +1122,70 @@ class SpecialistTests(PlanFixture):
         self.assertEqual(["README.md"], result["uncovered_files"])
         self.assertEqual(["db-review", "csharp-review"], [value["id"] for value in result["roles"]])
 
+    def test_closed_conditions_leave_only_unmatched_files_for_generic_review(self) -> None:
+        changed = ["src/Generated/G.cs", "README.md"]
+        self.diff(*changed)
+        result = self.build(self.reviewer())
+        roles = [role("generic-review", ["README.md"])]
+        self.assert_plan(plan(roles, changed), result)
+        self.assert_written(roles)
+        self.assertEqual(
+            prompt("generic-review", ["README.md"], ["src/Generated/G.cs"]),
+            self.text("generic-review.prompt.md"),
+        )
+        self.assertEqual(1, self.effects.count(("condition", "tools/window.py")))
+
+    def test_closed_conditions_and_ignored_files_allow_no_new_findings(self) -> None:
+        changed = ["src/Generated/G.cs", "README.md"]
+        self.diff(*changed)
+        result = self.build(self.reviewer(manifest(uncovered="ignore")))
+        roles = [role("generic-review", changed, dispositions_only=True)]
+        notes = [
+            "No reviewer reviews 1 changed file that no specialist covers, because the reviewer manifest sets "
+            "uncovered to ignore: README.md."
+        ]
+        self.assert_plan(plan(roles, changed, notes=notes, uncovered=["README.md"]), result)
+        self.assert_written(roles)
+        self.assertEqual(
+            prompt("generic-review", changed, [], dispositions_only=True),
+            self.text("generic-review.prompt.md"),
+        )
+
+    def test_a_change_matched_only_by_closed_specialists_records_a_dispositions_only_pass(self) -> None:
+        changed = ["src/Generated/G.cs"]
+        self.diff(*changed)
+        result = self.build(self.reviewer())
+        roles = [role("generic-review", changed, dispositions_only=True)]
+        self.assert_plan(plan(roles, changed), result)
+        self.assert_written(roles)
+
+    def test_closed_conditions_preserve_incremental_scope_and_unowned_dispositions(self) -> None:
+        changed = ["src/Generated/G.cs", "README.md"]
+        self.diff(*changed)
+        self.request("re-review", prior=[PRIOR_README], comments=[COMMENT_GONE])
+        result = self.build(self.reviewer(manifest(uncovered="ignore")), review_files=set(changed))
+        roles = [
+            role(
+                "generic-review",
+                ["README.md"],
+                dispositions_only=True,
+                prior=[PRIOR_README],
+                comments=[COMMENT_GONE],
+            )
+        ]
+        self.assertEqual(roles, result["roles"])
+        self.assertEqual(["README.md"], result["uncovered_files"])
+        self.assert_written(roles, comments=[COMMENT_GONE])
+
+    def test_incremental_scope_cannot_reopen_a_closed_specialists_files(self) -> None:
+        changed = ["src/Generated/G.cs", "README.md"]
+        self.diff(*changed)
+        self.request("re-review")
+        result = self.build(self.reviewer(), review_files={"src/Generated/G.cs"})
+        roles = [role("generic-review", changed, dispositions_only=True)]
+        self.assert_plan(plan(roles, changed), result)
+        self.assert_written(roles)
+
     def test_too_many_other_files_are_cut_short_in_the_prompt_but_listed_in_full(self) -> None:
         changed = ["db/Procs.sql", *DOCS]
         self.diff(*changed)

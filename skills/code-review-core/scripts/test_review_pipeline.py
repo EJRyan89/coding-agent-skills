@@ -3204,15 +3204,88 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual((1, ""), (code, err))
         self.assertIn("FAILED Declared reviewer file is missing: .claude/agents/missing.md", out)
 
-    def test_a_closed_window_routes_to_the_generic_reviewer(self) -> None:
+    def test_a_closed_window_leaves_only_unmatched_files_to_the_generic_reviewer(self) -> None:
         manifest = self.local_manifest()
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
         head = self.commit({"app/service.py": "def total(items):\n    return sum(items) or 0\n"})
         self.github.pulls[12] = rest_pull(12, head, self.base)
         lines = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")[1].splitlines()
         self.assertIn("CONDITION window closed", lines)
-        self.assertTrue(any(line.startswith("GENERIC files=2") for line in lines), lines)
-        self.assertFalse(any(line.startswith("UNCOVERED ") for line in lines), "the generic reviewer reviews it all")
+        self.assertEqual(
+            [
+                "UNCOVERED CLAUDE.md",
+                "GENERIC files=1 (no specialist covers them; the generic reviewer reviews them)",
+                "VALID",
+            ],
+            lines[lines.index("CONDITION window closed") + 1 :],
+        )
+        ready = self.prepare()
+        plan = json.loads((ready["run"] / "work" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [("generic-review", ["CLAUDE.md"], False)],
+            [(role["id"], role["files"], role["dispositions_only"]) for role in plan["roles"]],
+        )
+
+    def test_validate_reviewer_keeps_whole_change_generic_review_when_no_specialist_matches(self) -> None:
+        manifest = self.local_manifest()
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        payload["specialists"][0]["include"] = [r"^unmatched/"]
+        payload["uncovered"] = "ignore"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn(
+            "GENERIC files=2 (no specialist matched; the generic reviewer reviews it)",
+            out.splitlines(),
+        )
+        ready = self.prepare()
+        plan = json.loads((ready["run"] / "work" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            [("generic-review", ["CLAUDE.md", "app/service.py"], False)],
+            [(role["id"], role["files"], role["dispositions_only"]) for role in plan["roles"]],
+        )
+        self.assertEqual([], ready["uncovered_files"])
+
+    def test_closed_conditions_and_ignored_files_stay_unreviewed_in_the_record_and_report(self) -> None:
+        manifest = self.local_manifest(uncovered="ignore")
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        head = self.commit({"app/service.py": "def total(items):\n    return sum(items) or 0\n"})
+        self.github.pulls[12] = rest_pull(12, head, self.base)
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        lines = out.splitlines()
+        self.assertEqual(
+            [
+                "UNCOVERED CLAUDE.md",
+                "UNREVIEWED files=1 (the manifest sets uncovered to ignore; the record lists them)",
+                "VALID",
+            ],
+            lines[lines.index("CONDITION window closed") + 1 :],
+        )
+        ready = self.prepare()
+        plan = json.loads((ready["run"] / "work" / "plan.json").read_text(encoding="utf-8"))
+        self.assertEqual(["CLAUDE.md"], ready["uncovered_files"])
+        self.assertEqual(
+            [("generic-review", True)],
+            [(role["id"], role["dispositions_only"]) for role in plan["roles"]],
+        )
+        generic = ready["roles"][0]
+        self.write_role_result(generic, findings=[self.finding()])
+        code, out, err = self.run_main("check", "--run", str(ready["run"]))
+        self.assertEqual(1, code, err)
+        self.assertIn("disposition-only review returned findings", out)
+        self.write_role_result(generic)
+        code, out, err = self.run_main("finalize", "--run", str(ready["run"]))
+        self.assertEqual(0, code, err)
+        record = archived_record(self.archive, 12)
+        self.assertEqual("APPROVED", record["review"]["verdict"])
+        self.assertEqual({"unavailable_sources": [], "uncovered_files": ["CLAUDE.md"]}, record["review"]["coverage"])
+        self.assertEqual([True], [role["dispositions_only"] for role in record["review"]["reviewers"]])
+        recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
+        report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
+        self.assertIn("> **Not reviewed:**", report)
+        self.assertIn("`CLAUDE.md`", report)
 
     def test_a_condition_that_declares_its_reads_decides_on_the_snapshot_a_review_gives_it(self) -> None:
         # The condition opens review/rules.md, which the pull request leaves unchanged: a lazy snapshot holds it only

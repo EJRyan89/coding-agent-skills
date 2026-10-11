@@ -244,7 +244,7 @@ class OwnershipRemedyTests(RemedyTestCase):
             f'Name a source ID listed under "sources" in {forward(self.manifest_file)}.',
         )
         data = self.manifest()
-        data["sources"]["old/source"] = {"skills": {"beta": {"hash": ZERO_HASH}}}
+        data["sources"]["old/source"] = {"skills": {"beta": {"hash": ZERO_HASH, "skill_deps": []}}}
         self.make_skill("beta", "Beta")
         self.write_manifest(data)
         result = self.deploy_fails("--migrate-from", "old/source", pattern="destination is missing")
