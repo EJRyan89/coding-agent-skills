@@ -2939,6 +2939,7 @@ class RuntimeHostTests(unittest.TestCase):
                     },
                     "prior_findings": [],
                     "github_comments": [],
+                    "coverage": {"unavailable_sources": []},
                 }
             ),
             encoding="utf-8",
@@ -3066,7 +3067,11 @@ class RuntimeHostTests(unittest.TestCase):
             self.assertEqual(str(isolation / "home"), environment["USERPROFILE"])
             self.assertEqual(str(isolation / "copilot-home"), environment["COPILOT_HOME"])
             self.assertEqual("test-token", environment["GH_TOKEN"])
-            self.assertIn(str(entrypoint.resolve()), command[-1])
+            self.assertIn(f"REVIEWER_ROOT={materialized.resolve()}", command[-1])
+            self.assertIn(
+                f"Follow REVIEWER_ROOT/{entrypoint.relative_to(materialized).as_posix()}",
+                command[-1],
+            )
 
     def test_copilot_result_is_promoted_only_when_valid_and_allowed(self) -> None:
         for case in ("partial", "refused"):
