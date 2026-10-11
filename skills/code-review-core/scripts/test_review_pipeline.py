@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -3917,6 +3918,87 @@ def record_structure(value: Any) -> Any:
     if isinstance(value, list):
         return [record_structure(value[0])] if value else []
     return type(value).__name__
+
+
+class DocumentBaseRefusalTests(PipelineFixture):
+    HEAD_TEXT = (
+        "[P1] # Scope\n[P2] Keep one queue.\n[P4 R1] | Name | Limit |\n[P4 R2] | queue | 10 |\n[P5] - Retry twice.\n"
+    )
+
+    def changed_document(self, base: bytes) -> str:
+        document = self.checkout / "docs" / "design.docx"
+        document.parent.mkdir()
+        document.write_bytes(base)
+        self.base = self.commit({})
+        blob = git(self.checkout, "rev-parse", f"{self.base}:docs/design.docx")
+        document.write_bytes(
+            word_document(
+                paragraph("Scope", style="Titre1"),
+                paragraph("Keep one queue."),
+                paragraph(),
+                table(("Name", "Limit"), ("queue", "10")),
+                paragraph("Retry twice.", level=0),
+            )
+        )
+        self.head = self.commit({})
+        self.github.pulls[12] = rest_pull(12, self.head, self.base)
+        return blob
+
+    def assert_base_refused(self, reason: str) -> None:
+        code, out, err = self.run_main("prepare", "--pull", SELECTOR, "--host", "claude-code")
+        self.assertEqual((0, ""), (code, err), out)
+        output = out.splitlines()
+        self.assertEqual(
+            [f'NOTE {SELECTOR} The base version of document "docs/design.docx" could not be extracted ({reason}).'],
+            [line for line in output if line.startswith(f"NOTE {SELECTOR} The base version of document ")],
+        )
+        state = rp.load_run(Path(next(line.split(" ", 2)[2] for line in output if line.startswith("RUN "))))
+        request = json.loads(Path(state["request_path"]).read_text(encoding="utf-8"))
+        source = Path(request["source_snapshot"]["root"])
+        self.assertEqual(self.HEAD_TEXT, (source / "docs" / "design.docx").read_text(encoding="utf-8"))
+        self.assertEqual(self.head, request["source_snapshot"]["source_commit"])
+        self.assertNotIn("docs/design.docx", request["coverage"]["unavailable_sources"])
+        diff = Path(request["diff_path"]).read_text(encoding="utf-8")
+        block = diff.split("diff --git a/docs/design.docx b/docs/design.docx\n", 1)[1].split("\ndiff --git ", 1)[0]
+        self.assertIn(f"; the base version could not be extracted ({reason}), so every line shows as added\n", block)
+        self.assertNotIn("Binary files", block)
+        self.assertEqual(
+            ["@@ -0,0 +1,5 @@", *[f"+{line}" for line in self.HEAD_TEXT.splitlines()]],
+            block[block.index("@@ ") :].splitlines(),
+        )
+
+    def test_prepare_notes_an_unreadable_base_blob_and_shows_every_head_line_as_added(self) -> None:
+        blob = self.changed_document(word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue.")))
+        original = self.services.git
+        reads: list[str] = []
+
+        def unreadable_base(arguments: Sequence[str], timeout: float) -> GitResult:
+            if list(arguments[-3:]) == ["cat-file", "blob", blob]:
+                reads.append(blob)
+                return GitResult(1, "", "fatal: fixture base blob could not be read")
+            return original(arguments, timeout)
+
+        with mock.patch.object(self.services, "git", unreadable_base):
+            self.assert_base_refused("it could not be read")
+        self.assertEqual([blob], reads)
+
+    def test_prepare_notes_an_oversized_base_and_shows_every_head_line_as_added(self) -> None:
+        buffer = io.BytesIO(word_document(paragraph("Scope", style="Titre1"), paragraph("Keep one queue.")))
+        with zipfile.ZipFile(buffer, "a", zipfile.ZIP_STORED) as package:
+            package.writestr("padding.bin", b"\0" * rp.MAX_CHANGED_FILE_BYTES)
+        base = buffer.getvalue()
+        self.assertGreater(len(base), rp.MAX_CHANGED_FILE_BYTES)
+        self.assertEqual(b"[P1] # Scope\n[P2] Keep one queue.\n", rp.extract("docx", base))
+        self.changed_document(base)
+
+        self.assert_base_refused("it is over the changed-file size limit")
+
+    def test_prepare_notes_an_unextractable_base_and_shows_every_head_line_as_added(self) -> None:
+        self.changed_document(
+            word_document(document=b'<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x "body">]><d>&x;</d>')
+        )
+
+        self.assert_base_refused("word/document.xml declares a document type or an entity")
 
 
 class FixtureCanaryTests(PipelineFixture):
