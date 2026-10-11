@@ -16,6 +16,7 @@ from harness import DeployerTestCase, tree_state
 
 from deployer import pipeline, render
 from deployer.errors import DeployError
+from deployer.paths import Paths
 
 REFUSAL = "ERROR: synthetic refusal"
 
@@ -136,6 +137,96 @@ class SourceImmutabilityGuardTests(DeployerTestCase):
         with rendering_then(leave_bytecode), self.assertRaises(AssertionError) as caught:
             self.deploy("--all")
         self.assertIn("the deployment changed its source", str(caught.exception))
+
+
+class CLIImmutabilityGuardTests(DeployerTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha")
+        self.make_config()
+
+    def test_a_cli_refusal_before_mutation_passes(self) -> None:
+        result = self.run_cli("--include", "alpha")
+        self.assertEqual(2, result.code, result.output)
+        self.assertIn("--include can only be used with --all", result.output)
+
+    def test_a_cli_refusal_after_mutating_the_home_fails_the_test(self) -> None:
+        with failing_after_applying(), self.assertRaisesRegex(AssertionError, "the refusal changed the home"):
+            self.run_cli("--all")
+        self.assertTrue((self.skills_dir / "alpha" / "SKILL.md").is_file())
+
+    def test_a_cli_failure_that_states_why_it_changes_the_home_passes(self) -> None:
+        with failing_after_applying():
+            result = self.run_cli("--all", changes_home="the run fails after it installed alpha")
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(REFUSAL, result.output)
+
+    def test_a_cli_refusal_cannot_change_an_existing_byte_in_either_tree(self) -> None:
+        for tree, message in (
+            (self.source, "the deployment changed its source"),
+            (self.home, "the refusal changed the home"),
+        ):
+            with self.subTest(tree=tree.name):
+                path = tree / "existing.txt"
+                path.write_bytes(b"before\n")
+
+                def refuse(*_arguments: Any, target: Path = path) -> int:
+                    target.write_bytes(b"Before\n")
+                    return 2
+
+                with (
+                    mock.patch("deployer.cli.main", side_effect=refuse),
+                    self.assertRaisesRegex(AssertionError, message),
+                ):
+                    self.run_cli("--bogus")
+
+    def test_changes_home_never_allows_a_cli_refusal_to_mutate_its_source(self) -> None:
+        with (
+            rendering_then(lambda: self.write(self.source / "unexpected.txt", "mutation\n")),
+            failing_after_applying(),
+            self.assertRaisesRegex(AssertionError, "the deployment changed its source"),
+        ):
+            self.run_cli("--all", changes_home="the run fails after it installed alpha")
+
+    def test_a_cli_refusal_checks_the_alternate_source_and_canary_home(self) -> None:
+        alternate = self.snapshot_source("alternate")
+        canary = self.root / "canary"
+        canary.mkdir()
+        for tree, message in (
+            (alternate, "the deployment changed its source"),
+            (canary, "the refusal changed the home"),
+        ):
+            with self.subTest(tree=tree.name):
+
+                def refuse(_arguments: list[str], paths: Paths, _stdin: object, target: Path = tree) -> int:
+                    self.assertEqual(self.home, paths.home)
+                    self.assertEqual(alternate, paths.source_dir)
+                    self.write(target / "unexpected.txt", "mutation\n")
+                    return 1
+
+                with (
+                    mock.patch("deployer.cli.main", side_effect=refuse),
+                    self.assertRaisesRegex(AssertionError, message),
+                ):
+                    self.run_cli("--all", "--canary-home", str(canary), source=alternate, refusal_home=canary)
+
+    def test_cli_success_and_cancellation_keep_the_input_stream_semantics(self) -> None:
+        for stdin, code in (("1\n", 0), ("", 130)):
+            with self.subTest(code=code):
+                result = self.run_cli("--dry-run", stdin=stdin)
+                self.assertEqual(code, result.code, result.output)
+
+    def test_configure_refusals_use_the_same_guard(self) -> None:
+        def refuse(*_arguments: Any, **_options: Any) -> int:
+            self.write(self.home / "unexpected.txt", "mutation\n")
+            return 1
+
+        with (
+            mock.patch("deployer.configure.run", side_effect=refuse),
+            self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
+        ):
+            self.configure()
 
 
 class PermanentBackupTests(DeployerTestCase):

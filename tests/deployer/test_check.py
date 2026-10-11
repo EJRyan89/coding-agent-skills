@@ -13,7 +13,7 @@ from unittest import mock
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 from pdf_tool import MINIMUMS, PdfToolRefused, parse_banner
 
-from deployer import cli, platform_support, tools
+from deployer import platform_support, tools
 
 BUNDLE = {"operations": {"members": ["reviewer"]}}
 INSTALLED = {
@@ -114,10 +114,8 @@ class CheckCommandTests(DeployerTestCase):
         set_tools(self, "formatter", ["dotnet-format"])
 
     def check(self, machine: Machine, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with machine.patches(), contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(["check", *arguments], self.paths)
-        return Result(code, captured.getvalue())
+        with machine.patches():
+            return self.run_cli("check", *arguments)
 
     def test_everything_installed_is_ready_to_deploy(self) -> None:
         result = self.check(Machine())
