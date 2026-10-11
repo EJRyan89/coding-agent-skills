@@ -498,6 +498,17 @@ class ExtractedDocumentTests(DocumentTestCase):
         self.assertEqual((1, [f"FAILED queue.pdf {UNCHANGED_TEXT}"]), (code, lines))
         self.assertFalse(self.output.exists())
 
+    def test_an_unsupported_pdf_parser_refuses_review_document_before_creating_a_fixture(self) -> None:
+        draft = self.root / "queue.pdf"
+        draft.write_bytes(pdf_document(["author bytes"]))
+        stub = StubPdftotext(self)
+        stub.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
+        code, lines = run_main("build", str(draft), "--output", str(self.output))
+        self.assertEqual(1, code)
+        self.assertIn("pdftotext Xpdf 4.0 is unsupported; upgrade to Xpdf 4.6 or newer", lines[0])
+        self.assertFalse(self.output.exists())
+        self.assertEqual([], stub.calls())
+
 
 class OutputTests(DocumentTestCase):
     def test_an_output_inside_a_skills_directory_is_refused_before_anything_is_read(self) -> None:

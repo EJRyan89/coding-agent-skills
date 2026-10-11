@@ -146,6 +146,12 @@ document = Path(arguments[-2]).read_bytes() if len(arguments) >= 2 and Path(argu
 call = {"arguments": arguments, "stdin": len(sys.stdin.buffer.read()), "document": document.hex()}
 with open(here / "calls.jsonl", "a", encoding="utf-8") as log:
     log.write(json.dumps(call) + "\\n")
+if arguments == ["-v"]:
+    probe = json.loads((here / "probe.json").read_text(encoding="utf-8"))
+    sys.stderr.buffer.write(bytes.fromhex(probe["output"]))
+    sys.stderr.buffer.flush()
+    time.sleep(probe["sleep"])
+    sys.exit(probe["status"])
 rules = json.loads((here / "rules.json").read_text(encoding="utf-8"))
 rule = next(rule for rule in rules if bytes.fromhex(rule["marker"]) in document)
 out = sys.stdout.buffer
@@ -176,6 +182,7 @@ class StubPdftotext:
         program.write_text(STUB_PROGRAM, encoding="utf-8")
         (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
         self.answer(*rules, **default)
+        self.version()
         environment = mock.patch.dict(os.environ, {"PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}"})
         environment.start()
         test.addCleanup(environment.stop)
@@ -191,11 +198,23 @@ class StubPdftotext:
                     rule[key] = (rule[key].encode("utf-8") if isinstance(rule[key], str) else rule[key]).hex()
         (self.folder / "rules.json").write_text(json.dumps(written), encoding="utf-8")
 
-    def calls(self) -> list[dict[str, Any]]:
+    def version(
+        self,
+        output: str | bytes = "pdftotext version 4.06 [www.xpdfreader.com]\nCopyright 1996-2025 Glyph & Cog, LLC\n",
+        status: int = 99,
+        sleep: float = 0,
+    ) -> None:
+        data = output.encode("utf-8") if isinstance(output, str) else output
+        (self.folder / "probe.json").write_text(
+            json.dumps({"output": data.hex(), "status": status, "sleep": sleep}), encoding="utf-8"
+        )
+
+    def calls(self, *, probes: bool = False) -> list[dict[str, Any]]:
         log = self.folder / "calls.jsonl"
         if not log.is_file():
             return []
-        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        return calls if probes else [call for call in calls if call["arguments"] != ["-v"]]
 
 
 def without_pdftotext(test: unittest.TestCase) -> None:
@@ -397,6 +416,70 @@ class PdfExtractionTests(unittest.TestCase):
             extract("pdf", PDF)
         self.assertEqual(reason, str(caught.exception))
 
+    def test_an_old_or_unidentifiable_parser_never_receives_document_bytes(self) -> None:
+        stub = StubPdftotext(self, output="not allowed")
+        for banner, status in (
+            ("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n", 99),
+            ("pdftotext version 26.09.0\nCopyright 2005-2026 The Poppler Developers\n", 0),
+            ("pdftotext version 99.99\n", 0),
+            ("pdftotext version 4.06 [www.xpdfreader.com]\nCopyright 1996-2025 Glyph & Cog, LLC\n", 1),
+        ):
+            with self.subTest(banner=banner):
+                stub.version(banner, status)
+                with mock.patch.object(documents.tempfile, "TemporaryDirectory") as temporary:
+                    with self.assertRaises(ExtractionRefused):
+                        extract("pdf", PDF)
+                    temporary.assert_not_called()
+        self.assertEqual([], stub.calls())
+        self.assertEqual(4, len(stub.calls(probes=True)))
+        self.assertTrue(all(call["document"] == "" and call["stdin"] == 0 for call in stub.calls(probes=True)))
+
+    def test_every_extraction_rechecks_the_current_path_and_reuses_only_the_checked_executable(self) -> None:
+        first = StubPdftotext(self, output="First\n\f")
+        second = StubPdftotext(self, output="Second\n\f")
+        second.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
+        original = shutil.which
+        with mock.patch.object(
+            documents.shutil,
+            "which",
+            side_effect=[str(first.folder / "pdftotext.cmd"), str(second.folder / "pdftotext.cmd")],
+        ) as located:
+            self.assertEqual(b"[p1 l1] First\n", extract("pdf", PDF))
+        located.assert_called_once_with("pdftotext")
+        self.assertEqual(2, len(first.calls(probes=True)), "the checked executable also extracts")
+        found = original("pdftotext")
+        if found is None:
+            self.fail("the current PATH must resolve the second stub")
+        self.assertEqual(second.folder / "pdftotext.cmd", Path(found))
+        with self.assertRaisesRegex(ExtractionRefused, "Xpdf.*upgrade"):
+            extract("pdf", PDF)
+        self.assertEqual([], second.calls(), "no fallback to the supported parser later on PATH")
+
+    def test_a_probe_timeout_refuses_before_writing_the_pdf(self) -> None:
+        import pdf_tool
+
+        stub = StubPdftotext(self)
+        stub.version(sleep=30)
+        started = time.monotonic()
+        with (
+            mock.patch.object(pdf_tool, "PROBE_SECONDS", 2.0),
+            self.assertRaisesRegex(ExtractionRefused, "version probe.*2 seconds"),
+        ):
+            extract("pdf", PDF)
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual([], stub.calls())
+
+    def test_flooded_or_non_utf8_probe_output_refuses_without_document_bytes(self) -> None:
+        stub = StubPdftotext(self)
+        for output in (b"x" * (256 * 1024), b"\xff"):
+            with self.subTest(size=len(output)):
+                stub.version(output, 0)
+                started = time.monotonic()
+                with self.assertRaisesRegex(ExtractionRefused, "version probe"):
+                    extract("pdf", PDF)
+                self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual([], stub.calls())
+
     def test_each_line_is_labelled_with_its_page_and_its_line_among_those_with_text(self) -> None:
         stub = StubPdftotext(self, output="Scope\n\n  Keep one\x0bqueue.  \n\fRetry\u2028twice.\n\n\f")
 
@@ -417,6 +500,7 @@ class PdfExtractionTests(unittest.TestCase):
         xpdf = StubPdftotext(self, output=apart, joined="Scope Keep one queue. Retry twice.\n\fSecond page\n\f")
         self.assertEqual(expected, extract("pdf", PDF), "Xpdf")
         xpdf.answer(output=apart)
+        xpdf.version("pdftotext version 26.10.0\nCopyright 2005-2026 The Poppler Developers\n", 0)
         self.assertEqual(expected, extract("pdf", PDF), "Poppler")
 
     def test_without_pdftotext_a_pdf_is_refused_with_a_reason_that_names_it(self) -> None:

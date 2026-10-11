@@ -107,20 +107,22 @@ def streaming(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     exit_wait: float = EXIT_WAIT_SECONDS,
+    merge_stderr: bool = False,
 ) -> Iterator[Streaming]:
     """Start a command that takes requests on stdin and answers on stdout while it runs, and close it on leaving.
 
     With `timeout`, the whole session, from starting the command to closing it, lasts at most that many seconds, as
     `Streaming` describes. With `env`, that is the command's whole environment and no prompt is turned off for it;
     otherwise it is this process's environment with every prompt turned off. Raises OSError when the command cannot
-    start (FileNotFoundError when it does not exist).
+    start (FileNotFoundError when it does not exist). With `merge_stderr`, both output streams go through the bounded
+    stdout reader, rather than keeping diagnostics in a file.
     """
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             list(command),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=errors,
+            stderr=subprocess.STDOUT if merge_stderr else errors,
             env=non_interactive_environment() if env is None else dict(env),
             cwd=cwd,
         )

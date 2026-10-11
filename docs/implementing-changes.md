@@ -41,6 +41,8 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
   manifest format;
 - a skill directory name under `skills/`, or a skill's arguments or status lines;
 - a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
+- a provider-specific PDF tool floor in `skills/skill-core/scripts/pdf_tool.py`, referenced by the catalogue's
+  `provider_minimum`.
 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
 arguments and the status lines, which no file holds, and fails while this list or the Versioning section of

@@ -10,12 +10,13 @@ from .errors import DeployError, debug_requested, fail
 from .paths import Paths
 from .report import ReportLine, currently_chosen, print_report, warn_ignored_home
 
-CHECK_ACTIONS = ("MISSING", "OUTDATED", "FOUND", "OPTIONAL")
+CHECK_ACTIONS = ("MISSING", "OUTDATED", "UNUSABLE", "FOUND", "OPTIONAL")
 NEEDED_TO_DEPLOY = "needed to deploy"
 
 
 def _version_text(probe: tools.Probe) -> str:
-    return f" {tools.format_version(probe.version)}" if probe.version else ""
+    provider = f" {probe.pdf_identity.provider}" if probe.pdf_identity is not None else ""
+    return f"{provider} {tools.format_version(probe.version)}" if probe.version else ""
 
 
 def _deploy_lines() -> list[ReportLine]:
@@ -69,6 +70,10 @@ def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine
     if probe.path is None:
         missing = ("OPTIONAL", f"not installed; {used_by}") if optional else ("MISSING", used_by)
         return ReportLine(tool.label, *missing)
+    if probe.refusal is not None:
+        return ReportLine(
+            f"{tool.label}{_version_text(probe)}", "OUTDATED" if probe.outdated else "UNUSABLE", probe.refusal
+        )
     if probe.outdated:
         minimum = tools.format_version(tool.minimum)
         return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer")
@@ -107,8 +112,8 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
         print("docs/installation.md. Open a new terminal afterwards so the tools are on PATH.")
         print("")
         return 1
-    if any(line.action in ("MISSING", "OUTDATED") for line in skill_lines):
-        print("Ready to deploy. Skills that use a missing or outdated tool will fail")
+    if any(line.action in ("MISSING", "OUTDATED", "UNUSABLE") for line in skill_lines):
+        print("Ready to deploy. Skills cannot use a missing, outdated, or unusable tool")
         print("until it is installed or updated.")
     else:
         print("Ready to deploy.")

@@ -501,6 +501,36 @@ class BlobContentTests(AdversarialFixture):
 class DocumentExtractionTests(AdversarialFixture):
     """A changed Word document is the author's bytes: its package and XML are refused before parsing."""
 
+    def test_an_unsupported_pdf_parser_leaves_explicit_gaps_and_an_incomplete_review(self) -> None:
+        stub = StubPdftotext(self, output="must not extract")
+        stub.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
+        self.pull_request(files({"docs/spec.pdf": pdf_document(["author bytes"])}))
+        ready = self.prepare()
+        snapshot = json.loads((ready["run"] / "source" / "source-snapshot.json").read_text(encoding="utf-8"))
+        self.assertEqual({"docs/spec.pdf": "unextractable"}, snapshot["excluded_paths"])
+        self.assertEqual(["docs/spec.pdf"], self.request(ready)["coverage"]["unavailable_sources"])
+        self.assertIn("Xpdf", "\n".join(ready["notes"]))
+        self.assertIn("upgrade", "\n".join(ready["notes"]))
+        self.assertEqual("INCOMPLETE", self.recorded_verdict(ready))
+        self.assertEqual([], stub.calls())
+        self.assertTrue(all(call["document"] == "" for call in stub.calls(probes=True)))
+
+    def test_a_supported_parser_is_probed_for_both_pdf_head_and_base(self) -> None:
+        stub = StubPdftotext(
+            self,
+            {"marker": b"(base text)", "output": "base text\n\f"},
+            output="head text\n\f",
+        )
+        old, new = pdf_document(["base text"]), pdf_document(["head text"])
+        self.pull_request(files({"docs/spec.pdf": new}), files({"docs/spec.pdf": old}))
+        ready = self.prepare()
+        calls = stub.calls(probes=True)
+        self.assertEqual(4, len(calls), "each side has its own probe and extraction")
+        self.assertEqual([["-v"], ["-v"]], [call["arguments"] for call in calls if not call["document"]])
+        self.assertEqual({old.hex(), new.hex()}, {call["document"] for call in stub.calls()})
+        self.assertEqual([], self.request(ready)["coverage"]["unavailable_sources"])
+        self.assertNotEqual("INCOMPLETE", self.recorded_verdict(ready))
+
     def test_a_hostile_word_document_is_refused_before_parsing_and_leaves_the_review_incomplete(self) -> None:
         external = b'<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "file:///c:/windows/win.ini">]><d>&x;</d>'
         expanding = body_xml(paragraph("x" * 64)) + b" " * 8192

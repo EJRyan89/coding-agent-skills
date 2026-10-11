@@ -7,6 +7,8 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from pdf_tool import MINIMUMS, VERSION_ARGUMENTS, PdfIdentity, PdfToolRefused, probe_pdftotext
+
 from . import platform_support
 
 MINIMUM_PYTHON = (3, 11)
@@ -15,7 +17,7 @@ VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
 
 @dataclass(frozen=True)
 class Tool:
-    """A tool by its deploy-meta name, how to locate it, and the oldest version that works, if any."""
+    """A tool by its deploy-meta name, how to locate it, and its version or provider support requirement, if any."""
 
     name: str
     label: str
@@ -26,6 +28,7 @@ class Tool:
     other_uses: tuple[str, ...] = ()
     # The exit statuses after which the version arguments' output is read.
     version_statuses: frozenset[int] = frozenset({0})
+    provider_minimum: dict[str, tuple[int, ...]] | None = None
 
 
 POWERSHELL_VERSION = ("-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.ToString()")
@@ -122,17 +125,14 @@ SKILL_TOOLS = {
         # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open;
         # 9.0.200 is the first SDK that reads .slnx.
         Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
-        # The code-review skills extract a changed PDF's text with it. Two families ship it: Xpdf, whose 4.00 Git for
-        # Windows bundles and which exits 99 after printing its version, and Poppler, numbered by year since 20.08.
-        # 4.0 is the oldest Xpdf the extraction is tested with, and it leaves out Poppler's 0.x releases from before
-        # 2020, which predate years of fixes to the parser that reads a pull request author's bytes.
+        # Shared maintained-release policy; check and each extraction use the same bounded vendor probe.
         Tool(
             "pdftotext",
             "pdftotext",
             lambda: platform_support.find_executable("pdftotext"),
-            version_arguments=("-v",),
-            minimum=(4, 0),
+            version_arguments=VERSION_ARGUMENTS,
             version_statuses=frozenset({0, 99}),
+            provider_minimum=MINIMUMS,
         ),
     )
 }
@@ -169,9 +169,13 @@ class Probe:
     tool: Tool
     path: str | None
     version: tuple[int, ...] | None
+    pdf_identity: PdfIdentity | None = None
+    refusal: str | None = None
 
     @property
     def outdated(self) -> bool:
+        if self.pdf_identity is not None:
+            return self.pdf_identity.outdated
         return bool(self.tool.minimum) and self.version is not None and self.version < self.tool.minimum
 
 
@@ -180,6 +184,13 @@ def probe(tool: Tool) -> Probe:
     path = tool.locate()
     if path is None or not tool.version_arguments:
         return Probe(tool, path, None)
+    if tool.provider_minimum is not None:
+        try:
+            identity = probe_pdftotext(path)
+        except PdfToolRefused as exc:
+            version = None if exc.identity is None else exc.identity.version
+            return Probe(tool, path, version, exc.identity, str(exc))
+        return Probe(tool, path, identity.version, identity)
     result = platform_support.run_tool([path, *tool.version_arguments])
     return Probe(tool, path, parse_version(result.output) if result.returncode in tool.version_statuses else None)
 

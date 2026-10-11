@@ -33,6 +33,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
     RELEASED: ClassVar[dict[str, str]] = {
         "deployer/manifest.py": "MANIFEST_VERSION = 7\nOLDEST_READABLE_VERSION = 6\n",
         "deployer/tools.py": 'MINIMUM_PYTHON = (3, 11)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n',
+        "skills/skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 10, 0)}\n',
         "deploy-meta/alpha.json": '{"required_vars": ["ALPHA"], "tools": []}\n',
         "skills/alpha/SKILL.md": "alpha\n",
         "skills/tools/delta/SKILL.md": "delta\n",
@@ -59,8 +60,18 @@ class UpgradeNotesPolicy(unittest.TestCase):
         "deployer/tools.py": {
             "deployer/tools.py": 'MINIMUM_PYTHON = (3, 12)\nGH = Tool("gh", "gh", find, minimum=(2, 48, 0))\n'
         },
+        "skills/skill-core/scripts/pdf_tool.py": {
+            "skills/skill-core/scripts/pdf_tool.py": 'MINIMUMS = {"Xpdf": (4, 7), "Poppler": (26, 10, 0)}\n'
+        },
     }
     MANIFEST_CHANGE = CONTRACT_CHANGES["deployer/manifest.py"]
+
+    def test_each_shared_pdf_provider_floor_needs_its_own_upgrade_note(self) -> None:
+        self.release()
+        item = "skills/skill-core/scripts/pdf_tool.py"
+        changed = {item: 'MINIMUMS = {"Xpdf": (4, 6), "Poppler": (26, 11, 0)}\n'}
+        self.assertEqual([item], [problem.split(":", 1)[0] for problem in self.problems(changed)])
+        self.assertEqual([], self.problems(changed, self.body(self.entry(f"`{item}`"))))
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -394,6 +405,7 @@ class ContractListPolicy(unittest.TestCase):
         "`skills/code-review-core/references/`",
         "`docs/code-review-operations-contract.md`",
         "`skills/`",
+        "`skills/skill-core/scripts/pdf_tool.py`",
         "`deployer/tools.py`",
     )
 

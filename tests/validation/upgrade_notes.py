@@ -26,6 +26,7 @@ RELEASE_BRANCH = "origin/main"
 MANIFEST_MODULE = "deployer/manifest.py"
 MANIFEST_CONTRACT_NAMES = ("MANIFEST_VERSION", "OLDEST_READABLE_VERSION")
 TOOLS_MODULE = "deployer/tools.py"
+PDF_POLICY_MODULE = "skills/skill-core/scripts/pdf_tool.py"
 DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
 REVIEW_SCHEMA = re.compile(r"skills/code-review-core/references/.+\.schema\.json")
 FORMATS_DOC = "docs/code-review-operations-contract.md"
@@ -106,12 +107,20 @@ def _tool_floors(snapshot: Snapshot) -> dict[str, object]:
     if source is None:
         return {}
     tree = ast.parse(source)
-    floors = _assigned_sources(tree, ("MINIMUM_PYTHON",))
+    floors: dict[str, object] = dict(_assigned_sources(tree, ("MINIMUM_PYTHON",)))
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Tool" and node.args:
-            minimum = next((ast.unparse(keyword.value) for keyword in node.keywords if keyword.arg == "minimum"), "()")
-            floors[ast.unparse(node.args[0])] = minimum
+            floors[ast.unparse(node.args[0])] = {
+                keyword.arg: ast.unparse(keyword.value)
+                for keyword in node.keywords
+                if keyword.arg in {"minimum", "provider_minimum"}
+            }
     return {TOOLS_MODULE: floors}
+
+
+def _pdf_provider_floors(snapshot: Snapshot) -> dict[str, object]:
+    source = snapshot.text(PDF_POLICY_MODULE)
+    return {} if source is None else {PDF_POLICY_MODULE: _assigned_sources(ast.parse(source), ("MINIMUMS",))}
 
 
 def _required_variables(snapshot: Snapshot) -> dict[str, object]:
@@ -160,6 +169,7 @@ CONTRACT_READERS: tuple[tuple[str, str, Callable[[Snapshot], dict[str, object]]]
     (f"a format table under {FORMATS_HEADING}", FORMATS_DOC, _format_tables),
     ("a skill directory name", "skills/", _skill_directories),
     ("a tool floor", TOOLS_MODULE, _tool_floors),
+    ("a PDF provider floor", PDF_POLICY_MODULE, _pdf_provider_floors),
 )
 CONTRACT_LISTS = ((PROFILE_DOC, CONTRACT_FILES_HEADING), (RELEASING_DOC, VERSIONING_HEADING))
 

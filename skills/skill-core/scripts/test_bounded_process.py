@@ -49,6 +49,19 @@ LAUNCHER_PROGRAM = (
 
 
 class BoundedProcessTests(unittest.TestCase):
+    def test_streaming_can_bound_stdout_and_stderr_together(self) -> None:
+        program = (
+            "import sys; assert sys.stdin.buffer.read() == b''; "
+            "sys.stdout.write('out'); sys.stdout.flush(); sys.stderr.write('err')"
+        )
+        with bounded_process.streaming(
+            [sys.executable, "-c", program], idle_timeout=60, timeout=60, merge_stderr=True
+        ) as running:
+            running.stdin.close()
+            self.assertEqual(b"outerr", running.read(100))
+            self.assertEqual(0, running.wait())
+            self.assertEqual(b"", running.errors())
+
     def test_the_command_reads_no_stdin_and_sees_every_prompt_turned_off(self) -> None:
         with mock.patch.dict("os.environ", {"KEPT": "a value", "GIT_TERMINAL_PROMPT": "1", "GCM_INTERACTIVE": "auto"}):
             finished = run_bounded([sys.executable, "-c", ENVIRONMENT_PROGRAM], 60)
