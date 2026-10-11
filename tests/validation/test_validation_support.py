@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from validation_support import (
+    CallableResolver,
     ModuleImport,
     docstring_ids,
     fence_body_line,
@@ -61,6 +62,162 @@ class ImportReaderFixtures(unittest.TestCase):
         # A name no import binds stands for itself, and an expression that is no dotted name stands for nothing.
         self.assertEqual("run", qualified_name(ast.parse("run", mode="eval").body, aliases))
         self.assertEqual("", qualified_name(ast.parse("make().run", mode="eval").body, aliases))
+
+
+class CallableResolverFixtures(unittest.TestCase):
+    def test_assigned_aliases_follow_imports_builtins_and_other_aliases(self) -> None:
+        tree = ast.parse(
+            "import shutil as sh\nfrom io import open as read\n"
+            "writer = open\ncopy = sh.copyfile\nalias: object = copy\n"
+            'writer("x", "w")\nalias("x", "y")\nread("x", "r")\n'
+        )
+        resolver = CallableResolver(tree)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.assertEqual(["open", "shutil.copyfile", "io.open"], [resolver.name(call.func) for call in calls])
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_function_bindings_and_imports_do_not_leak_into_other_scopes(self) -> None:
+        tree = ast.parse(
+            "writer = open\n"
+            "def one():\n"
+            "    import io\n"
+            "    writer = io.open\n"
+            '    writer("x", "r")\n'
+            "def two():\n"
+            "    writer = io.open\n"
+            '    writer("x", "w")\n'
+            'writer("x", "w")\n'
+        )
+        resolver = CallableResolver(tree)
+        self.assertEqual(
+            ["fixture.py:8 cannot resolve callable alias writer; use a single binding to a known callable"],
+            resolver.problems("fixture.py"),
+        )
+        names = {node.lineno: resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        self.assertEqual({5: "io.open", 8: "", 9: "open"}, names)
+
+    def test_any_other_binding_invalidates_an_alias_and_its_dependents(self) -> None:
+        changes = (
+            "writer = open",
+            "writer = None",
+            "writer += other",
+            "writer, other = callbacks",
+            "for writer in callbacks:\n    pass",
+            "with callback as writer:\n    pass",
+            "try:\n    pass\nexcept Exception as writer:\n    pass",
+            "(writer := other)",
+            "del writer",
+            "def writer():\n    pass",
+            "match value:\n    case writer:\n        pass",
+        )
+        for change in changes:
+            source = f'writer = open\nalias = writer\n{change}\nalias("x", "w")\n'
+            with self.subTest(change=change):
+                tree = ast.parse(source)
+                resolver = CallableResolver(tree)
+                self.assertEqual(
+                    [
+                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias alias; "
+                        "use a single binding to a known callable"
+                    ],
+                    resolver.problems("fixture.py"),
+                )
+
+    def test_parameters_and_local_definitions_shadow_builtins_without_hiding_alias_rebindings(self) -> None:
+        tree = ast.parse(
+            "def one(open):\n"
+            "    writer = open\n"
+            '    writer("x", "w")\n'
+            "def two():\n"
+            "    def open():\n"
+            "        pass\n"
+            "    writer = open\n"
+            "    writer()\n"
+        )
+        resolver = CallableResolver(tree)
+        self.assertEqual([], resolver.problems("fixture.py"))
+        self.assertEqual(
+            ["<local>.open", "<local>.open"],
+            [resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)],
+        )
+
+    def test_a_function_alias_can_name_its_own_enclosing_definition(self) -> None:
+        resolver = CallableResolver(ast.parse("def example():\n    alias = example\n    alias()\n"))
+        call = next(node for node in ast.walk(resolver.tree) if isinstance(node, ast.Call))
+        self.assertEqual("<local>.example", resolver.name(call.func))
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_unknown_cyclic_and_rebound_import_aliases_are_reported_at_the_call(self) -> None:
+        for prefix in (
+            "writer = unknown\n",
+            "writer = other\nother = writer\n",
+            "import builtins as module\nwriter = module.open\nmodule = None\n",
+        ):
+            source = prefix + 'writer("x", "w")\n'
+            with self.subTest(prefix=prefix):
+                resolver = CallableResolver(ast.parse(source))
+                self.assertEqual(
+                    [
+                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+                        "use a single binding to a known callable"
+                    ],
+                    resolver.problems("fixture.py"),
+                )
+
+    def test_rebound_data_receivers_are_not_callable_aliases(self) -> None:
+        resolver = CallableResolver(ast.parse('text = header\ntext = "value"\ntext.replace("a", "b")\n'))
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_comprehensions_and_class_bodies_do_not_shadow_an_enclosing_alias(self) -> None:
+        tree = ast.parse(
+            "writer = open\n"
+            "items = [writer() for writer in callbacks]\n"
+            "class Example:\n"
+            "    writer = unknown\n"
+            "    def write(self):\n"
+            '        writer("x", "w")\n'
+            'writer("x", "w")\n'
+        )
+        resolver = CallableResolver(tree)
+        names = {node.lineno: resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        self.assertEqual({2: "<local>.writer", 6: "open", 7: "open"}, names)
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_a_default_argument_uses_the_enclosing_scope_not_its_parameter(self) -> None:
+        tree = ast.parse('writer = open\ndef example(writer=writer("x", "w")):\n    writer()\n')
+        resolver = CallableResolver(tree)
+        names = {node.lineno: resolver.name(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
+        self.assertEqual({2: "open", 3: "<local>.writer"}, names)
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_global_and_nonlocal_rebindings_invalidate_the_original_alias(self) -> None:
+        for source in (
+            "writer = open\ndef change():\n    global writer\n    writer = None\nwriter()\n",
+            "def outer():\n    writer = open\n    def change():\n        nonlocal writer\n"
+            "        writer = None\n    writer()\n",
+            "writer = open\ndef outer():\n    def change():\n        nonlocal writer\n"
+            "        writer = None\n    writer = open\n    writer()\n",
+            "writer = open\nitems = [(writer := other) for other in callbacks]\nwriter()\n",
+        ):
+            with self.subTest(source=source):
+                resolver = CallableResolver(ast.parse(source))
+                self.assertEqual(
+                    [
+                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias writer; "
+                        "use a single binding to a known callable"
+                    ],
+                    resolver.problems("fixture.py"),
+                )
+
+    def test_an_annotation_without_a_value_does_not_rebind_an_alias(self) -> None:
+        resolver = CallableResolver(ast.parse('writer = open\nwriter: object\nwriter("x", "w")\n'))
+        call = next(node for node in ast.walk(resolver.tree) if isinstance(node, ast.Call))
+        self.assertEqual("open", resolver.name(call.func))
+        self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_dynamic_callable_construction_is_not_a_simple_assignment_alias(self) -> None:
+        resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))
+        self.assertEqual([], resolver.problems("fixture.py"))
 
 
 class SharedReaderFixtures(unittest.TestCase):

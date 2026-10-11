@@ -31,7 +31,7 @@ Each invariant below gives its reason and names what holds it today. The `review
 
 ### One write point
 
-Every mutating filesystem operation in the deployer goes through `deployer/fsops.py`, so tests can inject a failure at any write and show that the deployment recovers ([#9](https://github.com/EJRyan89/coding-agent-skills/issues/9) found three writes failure injection could not reach). Held by the filesystem-write policy in `tests/validation/fsops_platform.py`, which resolves each call through the module's imports, with its fixtures in `tests/validation/test_fsops_platform.py`. A sanctioned exception is stated beside its code as `FSOPS_ALLOWED`, and only throwaway files under the system temporary directory qualify.
+Every mutating filesystem operation in the deployer goes through `deployer/fsops.py`, so tests can inject a failure at any write and show that the deployment recovers ([#9](https://github.com/EJRyan89/coding-agent-skills/issues/9) found three writes failure injection could not reach). Held by the filesystem-write policy in `tests/validation/fsops_platform.py`, which resolves each call through the module's imports and simple assignment aliases in its lexical scope, with its fixtures in `tests/validation/test_fsops_platform.py`. An ambiguous or unresolved callable alias is reported rather than hiding a write ([#501](https://github.com/EJRyan89/coding-agent-skills/issues/501)). A sanctioned exception is stated beside its code as `FSOPS_ALLOWED`, and only throwaway files under the system temporary directory qualify.
 
 ### One platform seam
 

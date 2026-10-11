@@ -8,11 +8,12 @@ sys.path: tests/run_validation.py, or a fixture suite beside them.
 from __future__ import annotations
 
 import ast
+import builtins
 import fnmatch
 import re
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePath
 
 from deployer import render
@@ -77,6 +78,333 @@ def qualified_name(node: ast.AST, aliases: dict[str, str]) -> str:
         base = qualified_name(node.value, aliases)
         return f"{base}.{node.attr}" if base else ""
     return ""
+
+
+@dataclass
+class _NameScope:
+    parent: _NameScope | None
+    is_class: bool = False
+    is_comprehension: bool = False
+    bindings: dict[str, list[ast.expr | str | None]] = field(default_factory=dict)
+    aliases: set[str] = field(default_factory=set)
+    imports: set[str] = field(default_factory=set)
+    redirects: dict[str, _NameScope] = field(default_factory=dict)
+
+    def bind(self, name: str, value: ast.expr | str | None) -> None:
+        redirected = self.redirects.get(name, self)
+        if redirected is not self:
+            redirected.bind(name, value)
+            return
+        self.bindings.setdefault(name, []).append(value)
+        if (isinstance(value, ast.expr) and qualified_name(value, {})) or (
+            isinstance(value, str) and not value.startswith("<local>.")
+        ):
+            self.aliases.add(name)
+
+    def owner(self, name: str) -> _NameScope | None:
+        redirected = self.redirects.get(name, self)
+        if redirected is not self:
+            return redirected.owner(name)
+        if name in self.bindings:
+            return self
+        return self.parent.owner(name) if self.parent is not None else None
+
+
+class _BindingReader(ast.NodeVisitor):
+    def __init__(self, tree: ast.Module) -> None:
+        self.scope = _NameScope(None)
+        self.scopes: dict[int, _NameScope] = {}
+        self.values = {
+            id(target): node.value
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+            if isinstance(target, ast.Name) and node.value is not None
+        }
+        self.annotations = {
+            id(node.target) for node in ast.walk(tree) if isinstance(node, ast.AnnAssign) and node.value is None
+        }
+        self._declare(tree)
+        self.visit(tree)
+
+    def _declare(self, tree: ast.AST) -> None:
+        """Reserve lexical locals before visiting nested functions, including a nonlocal bound later in its parent."""
+        nodes: list[ast.AST] = []
+
+        def visit(node: ast.AST) -> None:
+            nodes.append(node)
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                    nodes.append(child)
+                elif not isinstance(child, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+                    visit(child)
+
+        visit(tree)
+        declared_elsewhere = {
+            name for node in nodes if isinstance(node, (ast.Global, ast.Nonlocal)) for name in node.names
+        }
+        names = {node.id for node in nodes if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))}
+        names |= {
+            node.name
+            for node in nodes
+            if node is not tree and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        names |= {
+            name
+            for node in nodes
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for found in module_imports(node)
+            for name, _ in found.bindings
+        }
+        for name in names - declared_elsewhere:
+            self.scope.bindings.setdefault(name, [])
+
+    def visit(self, node: ast.AST) -> None:
+        self.scopes[id(node)] = self.scope
+        super().visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in self.annotations:
+            self.scope.bind(node.id, self.values.get(id(node)))
+
+    def visit_arg(self, node: ast.arg) -> None:
+        self.scope.bind(node.arg, f"<local>.{node.arg}")
+
+    def _argument_expressions(self, arguments: ast.arguments) -> None:
+        for expression in [*arguments.defaults, *arguments.kw_defaults]:
+            if expression is not None:
+                self.visit(expression)
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            if argument.annotation is not None:
+                self.visit(argument.annotation)
+        for variadic in [arguments.vararg, arguments.kwarg]:
+            if variadic is not None and variadic.annotation is not None:
+                self.visit(variadic.annotation)
+
+    def _parameters(self, arguments: ast.arguments) -> None:
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            self.visit(argument)
+        for variadic in [arguments.vararg, arguments.kwarg]:
+            if variadic is not None:
+                self.visit(variadic)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for found in module_imports(node):
+            for name, target in found.bindings:
+                self.scope.bind(name, target)
+                owner = self.scope.owner(name)
+                if owner is not None:
+                    owner.imports.add(name)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        for alias in node.names:
+            target = f"{node.module}.{alias.name}" if node.level == 0 and node.module else f"<local>.{alias.name}"
+            name = alias.asname or alias.name
+            self.scope.bind(name, target)
+            owner = self.scope.owner(name)
+            if owner is not None:
+                owner.imports.add(name)
+
+    def _definition(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+        self.scope.bind(node.name, f"<local>.{node.name}")
+        for child in ast.iter_child_nodes(node):
+            if child not in node.body and not isinstance(child, ast.arguments):
+                self.visit(child)
+        parent = self.scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self._argument_expressions(node.args)
+        enclosing = parent
+        while enclosing.is_class and enclosing.parent is not None:
+            enclosing = enclosing.parent
+        self.scope = _NameScope(parent if isinstance(node, ast.ClassDef) else enclosing, isinstance(node, ast.ClassDef))
+        self._declare(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            self._parameters(node.args)
+        for statement in node.body:
+            self.visit(statement)
+        self.scope = parent
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._definition(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._definition(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self._definition(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._argument_expressions(node.args)
+        parent = self.scope
+        self.scope = _NameScope(parent)
+        self._parameters(node.args)
+        self.visit(node.body)
+        self.scope = parent
+
+    def _comprehension(self, node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp) -> None:
+        self.visit(node.generators[0].iter)
+        parent = self.scope
+        self.scope = _NameScope(parent, is_comprehension=True)
+        for index, generator in enumerate(node.generators):
+            self.visit(generator.target)
+            if index:
+                self.visit(generator.iter)
+            for condition in generator.ifs:
+                self.visit(condition)
+        for expression in [node.key, node.value] if isinstance(node, ast.DictComp) else [node.elt]:
+            self.visit(expression)
+        self.scope = parent
+
+    def visit_ListComp(self, node: ast.ListComp) -> None:
+        self._comprehension(node)
+
+    def visit_SetComp(self, node: ast.SetComp) -> None:
+        self._comprehension(node)
+
+    def visit_DictComp(self, node: ast.DictComp) -> None:
+        self._comprehension(node)
+
+    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+        self._comprehension(node)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        scope = self.scope
+        while scope.is_comprehension and scope.parent is not None:
+            scope = scope.parent
+        if isinstance(node.target, ast.Name):
+            scope.bind(node.target.id, None)
+        self.visit(node.value)
+
+    def visit_Global(self, node: ast.Global) -> None:
+        scope = self.scope
+        while scope.parent is not None:
+            scope = scope.parent
+        self.scope.redirects.update(dict.fromkeys(node.names, scope))
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        parent = self.scope.parent
+        if parent is not None:
+            for name in node.names:
+                self.scope.redirects[name] = parent.owner(name) or parent
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.name is not None:
+            self.scope.bind(node.name, None)
+        self.generic_visit(node)
+
+    def visit_MatchAs(self, node: ast.MatchAs) -> None:
+        if node.name is not None:
+            self.scope.bind(node.name, None)
+        self.generic_visit(node)
+
+    def visit_MatchStar(self, node: ast.MatchStar) -> None:
+        if node.name is not None:
+            self.scope.bind(node.name, None)
+
+    def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+        if node.rest is not None:
+            self.scope.bind(node.rest, None)
+        self.generic_visit(node)
+
+
+class CallableResolver:
+    """Resolve import and simple-assignment aliases in their lexical scopes, never guessing after a rebinding.
+
+    Other value construction is not an alias. Once a name is an alias, any other binding makes it unresolvable.
+    """
+
+    def __init__(self, tree: ast.Module) -> None:
+        self.tree = tree
+        self.scopes = _BindingReader(tree).scopes
+        self._aliases: dict[int, dict[str, str]] = {}
+
+    def _bound_name(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> str:
+        owner = scope.owner(name)
+        if owner is None:
+            return name if name in vars(builtins) else ""
+        key = (id(owner), name)
+        values = owner.bindings[name]
+        if key in seen or len(values) != 1:
+            return ""
+        value = values[0]
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (ast.Name, ast.Attribute)):
+            return self._name(value, seen | {key})
+        return f"<local>.{name}"
+
+    def _name(self, node: ast.AST, seen: frozenset[tuple[int, str]]) -> str:
+        if isinstance(node, ast.Name):
+            return self._bound_name(node.id, self.scopes[id(node)], seen)
+        if isinstance(node, ast.Attribute):
+            base = self._name(node.value, seen)
+            return f"{base}.{node.attr}" if base else ""
+        return ""
+
+    def aliases(self, node: ast.AST) -> dict[str, str]:
+        scope = self.scopes[id(node)]
+        if id(scope) not in self._aliases:
+            names: set[str] = set()
+            parent: _NameScope | None = scope
+            while parent is not None:
+                names.update(parent.bindings)
+                parent = parent.parent
+            self._aliases[id(scope)] = {name: self._bound_name(name, scope, frozenset()) for name in names}
+        return self._aliases[id(scope)]
+
+    def name(self, node: ast.AST) -> str:
+        return qualified_name(node, self.aliases(node))
+
+    def function(self, call: ast.Call) -> ast.expr:
+        """The original callable expression, so a bound path method keeps its receiver and argument positions."""
+        node = call.func
+        seen: set[int] = set()
+        while isinstance(node, ast.Name) and id(node) not in seen:
+            seen.add(id(node))
+            owner = self.scopes[id(node)].owner(node.id)
+            values = owner.bindings[node.id] if owner is not None else []
+            if len(values) != 1 or not isinstance(values[0], (ast.Name, ast.Attribute)):
+                break
+            node = values[0]
+        return node
+
+    def unresolved(self, call: ast.Call) -> bool:
+        if self.name(call.func):
+            return False
+        root = call.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        if not isinstance(root, ast.Name):
+            return False
+        owner = self.scopes[id(root)].owner(root.id)
+        return (
+            owner is not None
+            and root.id in owner.aliases
+            and (isinstance(call.func, ast.Name) or self._imported(root.id, owner, frozenset()))
+        )
+
+    def _imported(self, name: str, scope: _NameScope, seen: frozenset[tuple[int, str]]) -> bool:
+        owner = scope.owner(name)
+        if owner is None or (id(owner), name) in seen:
+            return False
+        if name in owner.imports:
+            return True
+        for value in owner.bindings[name]:
+            while isinstance(value, ast.Attribute):
+                value = value.value
+            if isinstance(value, ast.Name) and self._imported(
+                value.id, self.scopes[id(value)], seen | {(id(owner), name)}
+            ):
+                return True
+        return False
+
+    def problems(self, path: str, skipped: set[int] | None = None) -> list[str]:
+        return [
+            f"{path}:{node.lineno} cannot resolve callable alias {ast.unparse(node.func)}; "
+            "use a single binding to a known callable"
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call) and (skipped is None or id(node) not in skipped) and self.unresolved(node)
+        ]
 
 
 def fence_holders(lines: list[str]) -> list[render.Fence | None]:
