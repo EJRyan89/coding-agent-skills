@@ -1028,14 +1028,14 @@ class RecordTests(unittest.TestCase):
         validate_record(record)
         self.assertEqual((patches, scope), (record["review"]["patches"], record["review"]["scope"]))
         self.assertIn(
-            "| **Scope** | incremental, 1 of 1 files and 3 of 3 changed lines differ from v1 (requested "
-            "auto: a small change) |\n",
+            "| **Scope** | incremental&#44; 1 of 1 files and 3 of 3 changed lines differ from v1 &#40;requested "
+            "auto&#58; a small change&#41; |\n",
             render_markdown(record, record_payload_hash="0" * 64),
         )
         uncompared = copy.deepcopy(record)
         uncompared["review"]["scope"].update(used="full", files_changed=None, lines_changed=None)
         validate_record(uncompared)
-        self.assertIn("full, could not compare with v1", render_markdown(uncompared, record_payload_hash="0" * 64))
+        self.assertIn("full&#44; could not compare with v1", render_markdown(uncompared, record_payload_hash="0" * 64))
         for mutate, message in (
             (lambda r: r["review"].update(patches={}), "patches must be a non-empty object"),
             (lambda r: r["review"].update(patches={"../x.cs": patches["src/file.cs"]}), "patch path is unsafe"),
@@ -1129,14 +1129,16 @@ class RecordTests(unittest.TestCase):
             prior_records=[first],
         )
         # Prior findings are shown with the findings; review comments keep a section of their own.
-        self.assertLess(markdown.index("Addressed in v2: Fixed."), markdown.index("## Review Comments"))
+        self.assertLess(markdown.index("Addressed in v2: Fixed&#46;"), markdown.index("## Review Comments"))
         self.assertIn(
-            "| [C1](https://example.invalid/1) | @dev on `src/file.cs`: Why? | STILL PRESENT | Unchanged. |", markdown
+            "| [C1](https://example.invalid/1) | &#64;dev on `src/file.cs`: Why&#63; "
+            "| STILL PRESENT | Unchanged&#46; |",
+            markdown,
         )
         self.assertIn("## Reviewers", markdown)
         self.assertLess(markdown.index("## Review Comments"), markdown.index("## Reviewers"))
         self.assertLess(markdown.index("## Reviewers"), markdown.index("Review Details</strong>"))
-        self.assertIn("| STILL PRESENT | Unchanged. |\n\n**0/1 addressed**\n", markdown)
+        self.assertIn("| STILL PRESENT | Unchanged&#46; |\n\n**0/1 addressed**\n", markdown)
         self.assertEqual(1, markdown.count(" addressed**"), "the prior findings' count is in the verdict row")
 
     def test_unhashable_values_are_validation_errors_not_crashes(self) -> None:
@@ -1314,16 +1316,16 @@ class RecordTests(unittest.TestCase):
         markdown = render_markdown(record, record_payload_hash="0" * 64, prior_records=[prior])
         self.assertTrue(markdown.startswith("# Code Review — example/one#12 (re-review v3)\n\n| | |\n|---|---|\n"))
         for expected in (
-            "| **Title** | Fix \\| split |",
+            "| **Title** | Fix &#124; split |",
             "| **Reviewed** | 01-Oct-2026 21:26 UTC |",
             "| **Verdict** | CHANGES REQUESTED, 3 open since v2 |",
             "<summary><strong>MUST FIX (1)</strong></summary>",
             "<summary>v3 F001. [A&lt;B&gt;] List&lt;T&gt; &amp; friends leak</summary>",
-            "<summary>v3 F002. [Correctness] <code>z.cs:9</code></summary>",
+            "<summary>v3 F002. [Correctness] <code>z&#46;cs:9</code></summary>",
             "> **File:** `src/a.cs`  \n> **Line:** 3 | **Source:** generic\n>\n"
-            "> First paragraph.\n>\n> Second paragraph.\n>\n> **Evidence:** ``a.cs:3 adds: f(`x`) | y``\n",
+            "> First paragraph&#46;\n>\n> Second paragraph&#46;\n>\n> **Evidence:** ``a.cs:3 adds: f(`x`) | y``\n",
             "<summary><strong>SHOULD FIX (1)</strong></summary>",
-            "> **Open since v2.** Partially addressed in v3: One | of two.\n",
+            "> **Open since v2.** Partially addressed in v3: One &#124; of two&#46;\n",
             "<summary><strong>SUGGESTIONS (1)</strong></summary>",
             "| **Record payload SHA-256** | `" + "0" * 64 + "` |",
         ):

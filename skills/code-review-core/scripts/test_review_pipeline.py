@@ -837,11 +837,11 @@ class GenericReviewTests(PipelineFixture):
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn("## Review Comments\n\n| # | Comment | Status | Rationale |", markdown)
         self.assertIn(
-            "| [C1](https://example.invalid/c/Is) | @someone on `app/service.py:2`: Is zero right here? "
-            "| ADDRESSED | Empty input now returns 0. |",
+            "| [C1](https://example.invalid/c/Is) | &#64;someone on `app/service.py:2`: Is zero right here&#63; "
+            "| ADDRESSED | Empty input now returns 0&#46; |",
             markdown,
         )
-        self.assertIn("@ghost on `app/other.py:7` (outdated)", markdown)
+        self.assertIn("&#64;ghost on `app/other.py:7` (outdated)", markdown)
         self.assertNotIn("Addressed since", markdown, "no prior findings in an initial review")
 
     def test_reviewers_table_records_who_ran(self) -> None:
@@ -874,7 +874,9 @@ class GenericReviewTests(PipelineFixture):
         )
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review.md").read_text(encoding="utf-8")
         self.assertIn("| Reviewer | Focus | Model | Files | Findings | Retries | Time | Files read |", markdown)
-        self.assertIn("| `generic-review` | General | claude-haiku-4-5 | 2 | 1 | 1 | 2m 05s | unknown |", markdown)
+        self.assertIn(
+            "| `generic-review` | General | claude&#45;haiku&#45;4&#45;5 | 2 | 1 | 1 | 2m 05s | unknown |", markdown
+        )
 
     def test_a_result_must_name_its_model(self) -> None:
         ready = self.prepare()
@@ -929,7 +931,7 @@ class GenericReviewTests(PipelineFixture):
                 record = archived_record(self.archive, 12)
                 self.assertEqual(timed, "seconds" in record["review"]["reviewers"][0])
                 markdown = Path(result["markdown"]).read_text(encoding="utf-8")
-                self.assertIn(f"| `generic-review` | General | fixture-model | 2 | 1 | 0 {cell}", markdown)
+                self.assertIn(f"| `generic-review` | General | fixture&#45;model | 2 | 1 | 0 {cell}", markdown)
 
     def test_a_result_dated_just_before_its_dispatch_records_zero_seconds(self) -> None:
         # Windows dates a file from a coarser clock than the one that times dispatch, so a result written at once can
@@ -1678,8 +1680,8 @@ class ReReviewTests(PipelineFixture):
         markdown = (pull_directory(self.archive, REPOSITORY, 12) / "review-v2.md").read_text(encoding="utf-8")
         self.assertIn("| **Verdict** | APPROVED, 1 open since v1 (1 flagged) |", markdown)
         self.assertIn(
-            "> **Open since v1.** Still present in v2: Still an int.  \n"
-            "> **Flagged:** RF-000001 (noise): Callers accept an int.\n",
+            "> **Open since v1.** Still present in v2: Still an int&#46;  \n"
+            "> **Flagged:** RF&#45;000001 (noise): Callers accept an int&#46;\n",
             markdown,
         )
         self.assertIn("| General | Fixture Model |", markdown)
@@ -1801,8 +1803,8 @@ class ReReviewTests(PipelineFixture):
         recorded = next(line for line in out.splitlines() if line.startswith("RECORDED "))
         report = Path(recorded.split(" ", 4)[4]).read_text(encoding="utf-8")
         self.assertIn(
-            "| **Scope** | incremental, 1 of 2 files and 2 of 4 changed lines differ from v1 (requested "
-            "incremental: an incremental re-review was requested) |\n",
+            "| **Scope** | incremental&#44; 1 of 2 files and 2 of 4 changed lines differ from v1 &#40;requested "
+            "incremental&#58; an incremental re&#45;review was requested&#41; |\n",
             report,
         )
 
@@ -4060,7 +4062,7 @@ class FixtureCanaryTests(PipelineFixture):
         )
         report = next(line.split(" ", 2)[2] for line in lines if line.startswith("SHA256 ") and line.endswith(".md"))
         self.assertIn(
-            '> **Line 2 (paragraph 2, under the heading "Scope"):** `[P2] Bound the queue at {+ten+}`',
+            "> **Line 2 (paragraph 2&#44; under the heading &#34;Scope&#34;):** `[P2] Bound the queue at {+ten+}`",
             Path(report).read_text(encoding="utf-8"),
         )
 

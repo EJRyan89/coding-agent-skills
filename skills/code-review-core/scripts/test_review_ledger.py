@@ -271,7 +271,7 @@ class CarriedFindingTests(unittest.TestCase):
             # The re-reported problem is shown inside the entry it repeats, not as a finding of its own.
             self.assertIn(
                 "<summary>v1 F001. [Correctness] Problem boundary</summary>\n\n> **Open since v1.** Still "
-                "present in v2: Checked against the current code.\n",
+                "present in v2: Checked against the current code&#46;\n",
                 markdown,
             )
             self.assertIn("<summary>v2 F001. Repeats v1 F001: [Correctness] Problem again</summary>", markdown)
@@ -361,7 +361,7 @@ class RepeatTests(unittest.TestCase):
             record_payload_hash="0" * 64,
         )
         self.assertIn("<summary><strong>SHOULD FIX (2)</strong></summary>", markdown)
-        self.assertIn("<summary>v1 F003. Repeats v1 F001: [Correctness] Problem a-again</summary>", markdown)
+        self.assertIn("<summary>v1 F003. Repeats v1 F001: [Correctness] Problem a&#45;again</summary>", markdown)
         self.assertLess(markdown.index("v1 F001. [Correctness]"), markdown.index("v1 F003. Repeats v1 F001"))
         self.assertLess(markdown.index("v1 F003. Repeats v1 F001"), markdown.index("v1 F002. [Correctness]"))
 
@@ -503,7 +503,7 @@ FIXTURE_V1_REPORT = """# Code Review — example/one#12
 
 ## Summary
 
-Version 1 of the fixture.
+Version 1 of the fixture&#46;
 
 ## Findings
 
@@ -516,7 +516,7 @@ Version 1 of the fixture.
 > **File:** `src/lock.py`\x20\x20
 > **Line 10:** `lock.acquire()` | **Source:** generic
 >
-> The lock taken here is not released when the read fails.
+> The lock taken here is not released when the read fails&#46;
 
 </details>
 
@@ -531,7 +531,7 @@ Version 1 of the fixture.
 > **File:** `src/parse.py`\x20\x20
 > **Line 20:** `value = parse(text)` | **Source:** generic
 >
-> A null result from parse reaches the caller unchecked.
+> A null result from parse reaches the caller unchecked&#46;
 
 </details>
 
@@ -546,7 +546,7 @@ Version 1 of the fixture.
 |---|---|
 | **Mode** | initial v1 |
 | **Adapter** | `generic` (generic) |
-| **Reviewer** | fixture-reviewer (complete) |
+| **Reviewer** | fixture&#45;reviewer (complete) |
 | **Base SHA** | `0000000000000000000000000000000000000000` |
 | **Reviewed HEAD** | `1111111111111111111111111111111111111111` |
 | **Record payload SHA-256** | `{payload}` |
@@ -559,12 +559,12 @@ Version 1 of the fixture.
 FIXTURE_V3_OPEN_ENTRY = """<details open>
 <summary>v1 F001. [Correctness] Lock is never released</summary>
 
-> **Open since v1.** Still present in v3: The timeout branch still returns while holding the lock.
+> **Open since v1.** Still present in v3: The timeout branch still returns while holding the lock&#46;
 >
 > **File:** `src/lock.py`\x20\x20
 > **Line 10:** `lock.acquire()` | **Source:** generic
 >
-> The lock taken here is not released when the read fails.
+> The lock taken here is not released when the read fails&#46;
 
 <details open>
 <summary>v3 F001. Repeats v1 F001: [Correctness] Lock leaks on the timeout path</summary>
@@ -572,7 +572,7 @@ FIXTURE_V3_OPEN_ENTRY = """<details open>
 > **File:** `src/lock.py`\x20\x20
 > **Line 14:** `return None` | **Source:** generic
 >
-> The timeout branch returns before releasing the lock.
+> The timeout branch returns before releasing the lock&#46;
 
 </details>
 
@@ -583,7 +583,7 @@ FIXTURE_ADDRESSED = """<details>
 <summary><strong>Addressed since v1</strong></summary>
 
 - **v1 F002.** SHOULD FIX [Correctness] Null result is not checked, `src/parse.py:20`. Addressed in v2: The caller \
-now returns early on null.
+now returns early on null&#46;
 
 </details>
 """
@@ -657,7 +657,7 @@ class LedgerReportTests(unittest.TestCase):
         self.assertIn("| **Verdict** | CHANGES REQUESTED, 1 open since v1, 1 addressed |\n", report)
         self.assertIn(
             "<summary>v1 F001. [Correctness] Lock is never released</summary>\n\n"
-            "> **Open since v1.** Still present in v2: The read still runs outside a try block.\n>\n",
+            "> **Open since v1.** Still present in v2: The read still runs outside a try block&#46;\n>\n",
             report,
         )
         self.assertNotIn("No findings.", report)
@@ -681,13 +681,13 @@ class LedgerReportTests(unittest.TestCase):
         self.assertIn("| **Verdict** | APPROVED, 1 open since v1, 1 unverified |\n", report)
         self.assertIn(
             "<summary>v1 F001. [Correctness] Problem leak</summary>\n\n> **Unverified, raised in v1.** "
-            "Unable to verify in v2: Checked against the current code.\n",
+            "Unable to verify in v2: Checked against the current code&#46;\n",
             report,
         )
-        self.assertIn("> **Open since v1.** Partially addressed in v2: Checked against the current code.\n", report)
+        self.assertIn("> **Open since v1.** Partially addressed in v2: Checked against the current code&#46;\n", report)
         self.assertIn(
             "- **v1 F003.** SUGGESTION [Correctness] Problem style, `src/file.cs:30`. Superseded in v2: "
-            "Checked against the current code.\n",
+            "Checked against the current code&#46;\n",
             report,
         )
         reviews.commit([], [disposition("v1:F001", "addressed"), disposition("v1:F002", "addressed")])
@@ -705,7 +705,11 @@ class LedgerReportTests(unittest.TestCase):
         review_fixture.commit_fixture(self.archive, model_names={review_fixture.MODEL_ARN: "Fixture Opus"})
         report = fixture_report(self.archive, 3)
         self.assertIn("| `generic` | General | Fixture Opus | 3 | 1 | 0 | 40s | - |\n", report)
-        self.assertIn("| `style` | Style | claude-sonnet-5-5 | 1 | 1 | 0 | 12s | - |\n", report, "unmapped stays as is")
+        self.assertIn(
+            "| `style` | Style | claude&#45;sonnet&#45;5&#45;5 | 1 | 1 | 0 | 12s | - |\n",
+            report,
+            "unmapped stays literal",
+        )
         self.assertIn(
             "| **Reviewer models** | Fixture Opus: `arn:aws:bedrock:us-east-1:111122223333:"
             "application-inference-profile/fixture` |\n",
@@ -791,7 +795,11 @@ class LedgerReportTests(unittest.TestCase):
     def test_without_model_names_the_reviewers_table_shows_the_identifier(self) -> None:
         review_fixture.commit_fixture(self.archive)
         report = fixture_report(self.archive, 3)
-        self.assertIn(f"| `generic` | General | {review_fixture.MODEL_ARN} | 3 |", report)
+        self.assertIn(
+            "| `generic` | General | arn&#58;aws&#58;bedrock&#58;us&#45;east&#45;1&#58;111122223333&#58;"
+            "application&#45;inference&#45;profile&#47;fixture | 3 |",
+            report,
+        )
         self.assertNotIn("Reviewer models", report)
 
     def test_a_flagged_finding_is_marked_on_its_entry_and_in_the_verdict(self) -> None:
@@ -804,7 +812,8 @@ class LedgerReportTests(unittest.TestCase):
         self.assertIn("| **Verdict** | CHANGES REQUESTED, 2 open since v1 (1 flagged), 1 addressed |\n", report)
         self.assertIn(
             "> **Open since v1.** Still present in v3: The timeout branch still returns while holding the "
-            "lock.  \n> **Flagged:** RF-000001 (noise): The context manager releases the lock.\n>\n"
+            "lock&#46;  \n> **Flagged:** RF&#45;000001 (noise): The context manager<br>\n"
+            "> releases the lock&#46;\n>\n"
             "> **File:** `src/lock.py`",
             report,
         )
