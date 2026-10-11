@@ -29,7 +29,7 @@ class VersionBoundaryTests(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
 
     def test_state_versions_are_integers_on_reads_and_writes(self) -> None:
         path = self.root / "state.json"
