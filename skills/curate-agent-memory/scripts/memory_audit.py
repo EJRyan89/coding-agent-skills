@@ -59,6 +59,7 @@ import stat
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -257,6 +258,11 @@ def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     return entries, lines
 
 
+def target_identity(memory_dir: Path, file: str) -> str:
+    """Compare targets relative to the store, resolving ./ prefixes and normalizing case on Windows."""
+    return os.path.normcase(str((memory_dir / file).resolve()))
+
+
 def words(text: str) -> set[str]:
     return {word for word in WORD.findall(text.lower()) if word not in STOP_WORDS}
 
@@ -353,7 +359,7 @@ def audit(
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
     index_bytes = index_path.stat().st_size if index_path.is_file() else 0
-    indexed_files = {entry["file"] for entry in entries}
+    indexed_files = Counter(target_identity(memory_dir, entry["file"]) for entry in entries)
     files = sorted(path for path in memory_dir.glob("*.md") if path.name != INDEX_NAME)
     parsed: dict[Path, tuple[dict[str, str], str]] = {
         path: parse_frontmatter(path.read_text(encoding="utf-8", errors="replace")) for path in files
@@ -371,7 +377,7 @@ def audit(
                 name=meta.get("name", ""),
                 description=meta.get("description", ""),
                 type=meta.get("type", ""),
-                indexed=path.name in indexed_files,
+                indexed=target_identity(memory_dir, path.name) in indexed_files,
                 age_days=round((now - path.stat().st_mtime) / 86400, 1),
                 links=links,
                 broken_links=[link for link in links if link not in known_names],
@@ -394,7 +400,7 @@ def audit(
             or index_bytes > INDEX_BYTE_LIMIT * NEAR_LIMIT_FRACTION,
             "missing_files": [entry["file"] for entry in entries if not (memory_dir / entry["file"]).is_file()],
             "duplicate_entries": sorted(
-                {entry["file"] for entry in entries if [e["file"] for e in entries].count(entry["file"]) > 1}
+                {entry["file"] for entry in entries if indexed_files[target_identity(memory_dir, entry["file"])] > 1}
             ),
         },
         "unindexed_files": [memory.file for memory in memories if not memory.indexed],
@@ -428,10 +434,6 @@ def reindex(memory_dir: Path) -> dict:
     def derived_title(meta: dict[str, str], file: str) -> str:
         return " ".join((meta.get("name") or Path(file).stem).replace("[", "(").replace("]", ")").split())
 
-    def identity(file: str) -> str:
-        # The same memory may be linked as ./a.md or, on a case-insensitive file system, A.md.
-        return os.path.normcase(str((memory_dir / file).resolve()))
-
     lines: list[str] = []
     entries: list[str] = []
     seen: set[str] = set()
@@ -445,10 +447,11 @@ def reindex(memory_dir: Path) -> dict:
         if not (memory_dir / file).is_file():
             dropped.append(("missing", file))
             continue
-        if identity(file) in seen:
+        identity = target_identity(memory_dir, file)
+        if identity in seen:
             dropped.append(("duplicate", file))
             continue
-        seen.add(identity(file))
+        seen.add(identity)
         meta, body = frontmatter(file)
         hook_match = INDEX_HOOK.match(line)  # matches every line INDEX_ENTRY does
         existing_hook = hook_match.group("hook") if hook_match else ""
@@ -456,7 +459,9 @@ def reindex(memory_dir: Path) -> dict:
         lines.append(index_line(match.group("title").strip() or derived_title(meta, file), file, hook))
         entries.append(file)
     added = sorted(
-        path.name for path in memory_dir.glob("*.md") if path.name != INDEX_NAME and identity(path.name) not in seen
+        path.name
+        for path in memory_dir.glob("*.md")
+        if path.name != INDEX_NAME and target_identity(memory_dir, path.name) not in seen
     )
     if added:
         while lines and not lines[-1].strip():
