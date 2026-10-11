@@ -240,6 +240,10 @@ A repository reviewer's manifest, validated by `validate_adapter_manifest` in `r
 | `script` | string | yes | A script beside the manifest, run as `python <script> --source-root <snapshot>`. Exit code 0 runs the specialists that name it, 1 skips them, and anything else fails the review. |
 | `reads` | array | no | The snapshot paths the script opens besides the changed files: at most 100 glob patterns, distinct ignoring case, each 1 to 200 characters, repository-relative, without a backslash, a control character, or an empty, `.`, or `..` segment, matched as a repository's `snapshot_exclude` is. When every condition a review runs declares it, the checkout route's snapshot stays lazy and also holds the paths they match that `snapshot_exclude` does not, and the script reads no other; without it, the snapshot is written whole. May be empty. |
 
+A condition must finish within `CONDITION_TIMEOUT_SECONDS` in `review_specialists.py`. A script that exceeds that
+deadline is killed and waited for, and fails the review with `Condition script timed out: <script>` before any
+reviewer plan is written. A refused `prepare` leaves no published run.
+
 ### Adapter request
 
 The request a reviewer is given, as `build_adapter_request` in `review_runtime.py` writes it. No validator reads it back: reviewers read it, and the core checks a result against it.

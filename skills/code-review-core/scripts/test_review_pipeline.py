@@ -3502,6 +3502,34 @@ class ReviewerSourceTests(PipelineFixture):
                 self.assertEqual(roles, [role["id"] for role in ready["roles"]], "a review decides the same")
                 self.assertEqual("checkout-lazy", ready["snapshot"]["source"])
 
+    def test_a_condition_script_that_never_exits_refuses_prepare_without_publishing_a_run(self) -> None:
+        manifest = self.local_manifest()
+        started = self.root / "condition-started.json"
+        (manifest.parent / "window.py").write_text(
+            "import json, os, sys, threading\n"
+            "from pathlib import Path\n"
+            f"Path({str(started)!r}).write_text("
+            "json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}), encoding='utf-8')\n"
+            "threading.Event().wait()\n",
+            encoding="utf-8",
+        )
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        with mock.patch("review_specialists.CONDITION_TIMEOUT_SECONDS", 5):
+            code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        self.assertEqual((1, f"FAILED {SELECTOR} Condition script timed out: window.py\n", ""), (code, out, err))
+        invocation = json.loads(started.read_text(encoding="utf-8"))
+        work = Path(invocation["cwd"])
+        run = work.parent
+        self.assertEqual(
+            [str(run / "reviewer" / "window.py"), "--source-root", str(run / "source")], invocation["argv"]
+        )
+        self.assertEqual("work", work.name)
+        self.assertTrue(run.is_relative_to(self.temporary), "the real condition ran only inside the fixture")
+        self.assertFalse(run.exists(), "prepare removes its refused run, including the request and plan")
+        self.assertEqual([], list(self.temporary.iterdir()), "no reviewer run is published")
+        self.assertIsNone(latest_record(self.archive, REPOSITORY, 12))
+        self.assertFalse(self.state_path.exists(), "a refused prepare records no review state")
+
     def test_validate_reviewer_lists_the_files_no_routed_specialist_covers(self) -> None:
         # The fixture's head changes app/service.py, which the Python specialist takes, and CLAUDE.md, which no
         # specialist covers.
