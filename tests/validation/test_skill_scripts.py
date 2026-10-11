@@ -33,6 +33,91 @@ def mark_skills(root: Path) -> Path:
 
 
 class SkillScriptsFixtures(unittest.TestCase):
+    def test_client_command_policy_resolves_assigned_runners_and_lookups_in_each_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess as sp\n"
+                    "import shutil\n"
+                    "from bounded_process import run_bounded\n"
+                    "run = sp.run\n"
+                    "alias = run\n"
+                    'alias("git status")\n'
+                    "def first():\n"
+                    "    run = sp.check_output\n"
+                    '    run("gh auth status")\n'
+                    "def second():\n"
+                    "    run = run_bounded\n"
+                    "    lookup = shutil.which\n"
+                    '    command = lookup("git")\n'
+                    "    run(command, 5)\n",
+                },
+            )
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/tool.py:6 runs git itself; {git}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:9 runs gh itself; {gh}; see {doc}",
+                    f"skills/alpha/scripts/tool.py:13 runs git itself; {git}; see {doc}",
+                ],
+                client_command_problems(root),
+            )
+
+    def test_command_policies_report_ambiguous_assigned_runners(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess\n"
+                    "runner = subprocess.run\n"
+                    "runner = None\n"
+                    'runner("git status")\n',
+                },
+            )
+            expected = [
+                "skills/alpha/scripts/tool.py:4 cannot resolve callable alias runner; "
+                "use a single binding to a known callable"
+            ]
+            self.assertEqual(expected, client_command_problems(root))
+            self.assertEqual(expected, skill_command_problems(root, set(), {"git"}))
+
+    def test_skill_command_policy_resolves_assigned_runners_clients_and_lookups(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess\n"
+                    "from github_client import GitHubClient\n"
+                    "import shutil\n"
+                    "runner = subprocess.run\n"
+                    'runner("jq .")\n'
+                    "client = GitHubClient\n"
+                    "client()\n"
+                    "lookup = shutil.which\n"
+                    'lookup("copilot")\n',
+                },
+            )
+            doc = '"Commands skills may run" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "skill alpha runs copilot without declaring it in tools",
+                    "skill alpha runs gh without declaring it in tools",
+                    f"skill alpha runs jq, which a standard install lacks; see {doc}",
+                ],
+                skill_command_problems(root, {"copilot", "gh"}, {"git"}),
+            )
+
     def test_script_contract_policy_detects_each_breach_and_honors_a_stated_exemption(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

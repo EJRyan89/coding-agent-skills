@@ -17,6 +17,7 @@ from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from toolchain import find_powershell
 from validation_support import (
     REPOSITORY_ROOT,
+    CallableResolver,
     import_aliases,
     is_test_script,
     module_imports,
@@ -195,7 +196,7 @@ class CommandReader:
 
     def __init__(self, tree: ast.Module) -> None:
         self.tree = tree
-        self.aliases = import_aliases(tree)
+        self.resolver = CallableResolver(tree)
         self.bindings = _name_bindings(tree)
 
     def program_literals(self, node: ast.expr | None, seen: frozenset[str] = frozenset()) -> list[ast.Constant]:
@@ -209,7 +210,7 @@ class CommandReader:
             return self.program_literals(node.value, seen)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
             return self.program_literals(node.left, seen)
-        if isinstance(node, ast.Call) and _is_lookup(node, self.aliases) and node.args:
+        if isinstance(node, ast.Call) and _is_lookup(node, self.resolver.aliases(node.func)) and node.args:
             return self.program_literals(node.args[0], seen)
         if isinstance(node, ast.Name) and node.id not in seen:
             values = self.bindings.get(node.id, [])
@@ -225,7 +226,7 @@ class CommandReader:
 
     def started(self, call: ast.Call) -> list[tuple[int, str]]:
         """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
-        runner = COMMAND_RUNNERS.get(qualified_name(call.func, self.aliases))
+        runner = COMMAND_RUNNERS.get(self.resolver.name(call.func))
         if runner is None:
             return []
         position, keyword = runner
@@ -243,9 +244,9 @@ class CommandReader:
                 if isinstance(first, ast.Constant) and first.value in known:
                     found.add(first.value)
             elif isinstance(node, ast.Call):
-                client = CLIENT_CLASSES.get(qualified_name(node.func, self.aliases))
+                client = CLIENT_CLASSES.get(self.resolver.name(node.func))
                 found |= {client} if client else set()
-                if _is_lookup(node, self.aliases) and node.args:
+                if _is_lookup(node, self.resolver.aliases(node.func)) and node.args:
                     found |= {name for _, name in self._named(node.args[0])}
                 found |= {name for _, name in self.started(node)}
         return found
@@ -405,6 +406,10 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     powershell = dict(zip(sources, powershell_commands(sources), strict=True))
     problems: list[str] = []
     for skill, declared, own, dependency_scripts in skills:
+        for path in own + dependency_scripts:
+            if path.suffix.casefold() == ".py":
+                resolver = CallableResolver(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
+                problems += resolver.problems(path.relative_to(root).as_posix())
         used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
@@ -765,6 +770,7 @@ def client_command_problems(root: Path) -> list[str]:
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
         reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
+        problems += reader.resolver.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
             problems.append(

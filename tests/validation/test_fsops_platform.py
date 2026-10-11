@@ -18,6 +18,141 @@ from validation_support import write_fixture_tree
 
 
 class FsopsPlatformFixtures(unittest.TestCase):
+    def test_filesystem_write_policy_resolves_assigned_callables_in_their_own_scopes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/assigned.py": "import shutil as sh\n"
+                    "import os as o\n"
+                    "from io import open as io_open\n"
+                    "writer = open\n"
+                    "copy = sh.copyfile\n"
+                    "alias = copy\n"
+                    'writer("x", "w").close()\n'
+                    'alias("x", "y")\n'
+                    "def write(path):\n"
+                    "    writer = io_open\n"
+                    '    writer(path, mode="a")\n'
+                    "    descriptor = o.open\n"
+                    "    descriptor(path, o.O_WRONLY)\n"
+                    "def read(path):\n"
+                    "    writer = io_open\n"
+                    '    writer(path, "rb")\n'
+                    "    descriptor = o.open\n"
+                    "    descriptor(path, o.O_RDONLY | o.O_BINARY)\n"
+                    "def methods(path, text):\n"
+                    "    writer = path.open\n"
+                    '    writer("w")\n'
+                    "    rename = path.replace\n"
+                    "    rename(target=path)\n"
+                    "    replace = text.replace\n"
+                    '    replace("x", "y")\n'
+                    "descriptor = o.open\n"
+                    "def local_flags(path):\n"
+                    "    from os import O_RDONLY as read_flag\n"
+                    "    descriptor(path, read_flag)\n",
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/assigned.py:7 writes with open{route}",
+                    f"deployer/assigned.py:8 writes with shutil.copyfile{route}",
+                    f"deployer/assigned.py:11 writes with open{route}",
+                    f"deployer/assigned.py:13 writes with os.open{route}",
+                    f"deployer/assigned.py:21 writes with open{route}",
+                    f"deployer/assigned.py:23 writes with replace{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_filesystem_write_policy_reports_ambiguous_assigned_callables(self) -> None:
+        cases = (
+            "writer = open\nwriter = open\n",
+            "writer = open\nwriter = None\n",
+            "writer = missing\n",
+            "writer = other\nother = writer\n",
+            "writer = open\nfor writer in callbacks:\n    pass\n",
+            "writer = open\nwith callback as writer:\n    pass\n",
+            "import builtins as writer\nwriter = None\n",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for prefix in cases:
+                function = "writer.open" if prefix.startswith("import ") else "writer"
+                source = prefix + f'{function}("x", "w")\n'
+                with self.subTest(source=source):
+                    write_fixture_tree(root, {"deployer/ambiguous.py": source})
+                    self.assertEqual(
+                        [
+                            f"deployer/ambiguous.py:{len(source.splitlines())} cannot resolve callable alias "
+                            f"{function}; use a single binding to a known callable"
+                        ],
+                        filesystem_write_problems(root),
+                    )
+
+    def test_assigned_path_open_preserves_read_only_modes_on_constructed_and_loop_receivers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/paths.py": "from pathlib import Path\n"
+                    'path = Path("x")\n'
+                    "reader = path.open\n"
+                    'reader("r")\n'
+                    'reader("w")\n'
+                    "def read(paths):\n"
+                    "    for path in paths:\n"
+                    "        reader = path.open\n"
+                    '        reader("rb")\n'
+                    '        reader("ab")\n',
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/paths.py:5 writes with open{route}",
+                    f"deployer/paths.py:10 writes with open{route}",
+                ],
+                filesystem_write_problems(root),
+            )
+
+    def test_assigned_temporary_write_allowances_check_the_original_callable_and_destinations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            prefix = (
+                'FSOPS_ALLOWED = {"tempfile.mkdtemp": "a temporary directory", "open": "temporary output", '
+                '"shutil.copyfile": "temporary copies"}\n'
+                "import tempfile\n"
+                "import shutil\n"
+                "scratch = tempfile.mkdtemp\n"
+                "writer = open\n"
+                "copy = shutil.copyfile\n"
+                "work = scratch()\n"
+            )
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/kept.py": prefix + 'writer(work, "w")\ncopy(work, work)\n',
+                    "deployer/strayed.py": prefix
+                    + 'writer("elsewhere", "w")\ncopy(work, "elsewhere")\nscratch(dir="elsewhere")\n',
+                },
+            )
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:8 " + message.format("open"),
+                    "deployer/strayed.py:9 " + message.format("shutil.copyfile"),
+                    "deployer/strayed.py:10 " + message.format("tempfile.mkdtemp"),
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_an_allowed_write_must_land_under_the_system_temporary_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

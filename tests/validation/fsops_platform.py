@@ -9,7 +9,14 @@ import re
 import unittest
 from pathlib import Path
 
-from validation_support import REPOSITORY_ROOT, docstring_ids, import_aliases, module_allowance, qualified_name
+from validation_support import (
+    REPOSITORY_ROOT,
+    CallableResolver,
+    docstring_ids,
+    import_aliases,
+    module_allowance,
+    qualified_name,
+)
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
 PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
@@ -275,7 +282,7 @@ def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None
     return values is None or any(character in value for value in values for character in WRITE_MODE_CHARACTERS)
 
 
-def _os_open_writes(call: ast.Call, aliases: dict[str, str]) -> bool:
+def _os_open_writes(call: ast.Call, resolver: CallableResolver) -> bool:
     """Whether os.open is given flags that may write: any flag outside READ_FLAGS, a nonzero number, or flags held in
     anything but os.O_* names joined by |."""
     flags = call.args[1] if len(call.args) > 1 else next((k.value for k in call.keywords if k.arg == "flags"), None)
@@ -288,7 +295,7 @@ def _os_open_writes(call: ast.Call, aliases: dict[str, str]) -> bool:
             pending += [part.left, part.right]
         elif isinstance(part, ast.Constant) and part.value == 0 and type(part.value) is int:
             continue
-        elif qualified_name(part, aliases) not in READ_FLAGS:
+        elif resolver.name(part) not in READ_FLAGS:
             return True
     return False
 
@@ -306,13 +313,13 @@ def _replaces_a_path(call: ast.Call) -> bool:
     return len(call.args) == 1 and len(positional) == 1 and not call.keywords
 
 
-def _call_writes(call: ast.Call, aliases: dict[str, str], bindings: dict[str, set[str] | None]) -> str | None:
+def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str, set[str] | None]) -> str | None:
     """The token naming the write a call makes, or None when it makes none."""
-    target = qualified_name(call.func, aliases)
+    target = resolver.name(call.func)
     if target in FILESYSTEM_WRITES["qualified"]:
         return target
     if target == "os.open":
-        return target if _os_open_writes(call, aliases) else None
+        return target if _os_open_writes(call, resolver) else None
     if target in OPEN_FUNCTIONS:
         return "open" if _writes_with_mode(_mode_argument(call, 1), bindings) else None
     if isinstance(call.func, ast.Attribute):
@@ -326,7 +333,7 @@ def _call_writes(call: ast.Call, aliases: dict[str, str], bindings: dict[str, se
 def _write_nodes(tree: ast.Module) -> list[tuple[ast.ImportFrom | ast.Call, str]]:
     """The imports and calls through which a module's code writes to the filesystem, with each one's token, ignoring
     test cases."""
-    aliases = import_aliases(tree)
+    resolver = CallableResolver(tree)
     bindings = _string_bindings(tree)
     found: list[tuple[ast.ImportFrom | ast.Call, str]] = []
 
@@ -339,8 +346,12 @@ def _write_nodes(tree: ast.Module) -> list[tuple[ast.ImportFrom | ast.Call, str]
                 for alias in node.names
                 if f"{node.module}.{alias.name}" in FILESYSTEM_WRITES["qualified"]
             )
-        elif isinstance(node, ast.Call) and (token := _call_writes(node, aliases, bindings)):
-            found.append((node, token))
+        elif isinstance(node, ast.Call) and not resolver.unresolved(node):
+            call = ast.copy_location(
+                ast.Call(func=resolver.function(node), args=node.args, keywords=node.keywords), node
+            )
+            if token := _call_writes(call, resolver, bindings):
+                found.append((call, token))
         for child in ast.iter_child_nodes(node):
             visit(child)
 
@@ -364,7 +375,7 @@ def _in_the_temporary_directory(call: ast.Call, aliases: dict[str, str]) -> bool
     )
 
 
-def _temporary_directory_names(tree: ast.Module, aliases: dict[str, str]) -> set[str]:
+def _temporary_directory_names(tree: ast.Module, resolver: CallableResolver) -> set[str]:
     """The names a module binds only to a directory tempfile.mkdtemp created under the system temporary directory,
     directly or through one wrapping call such as Path(...), and never as a parameter or a loop or with target."""
     values: dict[str, list[ast.expr | None]] = {}
@@ -385,8 +396,8 @@ def _temporary_directory_names(tree: ast.Module, aliases: dict[str, str]) -> set
     def created(value: ast.expr | None) -> bool:
         if not isinstance(value, ast.Call):
             return False
-        if qualified_name(value.func, aliases) == TEMPORARY_DIRECTORY_CALL:
-            return _in_the_temporary_directory(value, aliases)
+        if resolver.name(value.func) == TEMPORARY_DIRECTORY_CALL:
+            return _in_the_temporary_directory(value, resolver.aliases(value.func))
         return len(value.args) == 1 and not value.keywords and created(value.args[0])
 
     return {name for name, bound in values.items() if all(created(value) for value in bound)}
@@ -425,12 +436,13 @@ def _temporary_write_problems(name: str, tree: ast.Module, allowed: dict[str, st
     that is not keyword-only without dir, or any other write with a destination argument that is not a name bound only
     to a directory tempfile.mkdtemp created there. A destination built from such a name, unpacked, or held in anything
     else may be anywhere."""
-    aliases = import_aliases(tree)
-    directories = _temporary_directory_names(tree, aliases)
+    resolver = CallableResolver(tree)
+    directories = _temporary_directory_names(tree, resolver)
     problems: list[str] = []
     for node, token in _write_nodes(tree):
         if not isinstance(node, ast.Call) or token not in allowed:
             continue
+        aliases = resolver.aliases(node.func)
         if token.startswith("tempfile."):
             temporary = _in_the_temporary_directory(node, aliases)
         else:
@@ -465,6 +477,8 @@ def filesystem_write_problems(root: Path) -> list[str]:
             for token in sorted(set(allowed) - {token for _, token in writes})
         ]
         problems += _temporary_write_problems(name, tree, allowed)
+        skipped = {id(child) for node in ast.walk(tree) if _is_test_case(node) for child in ast.walk(node)}
+        problems += CallableResolver(tree).problems(name, skipped)
     return [
         f"{name}:{line} writes with {token}; route it through deployer/fsops.py" for name, line, token in sorted(found)
     ] + problems
