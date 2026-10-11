@@ -1226,15 +1226,29 @@ REJECTED: list[Case] = [
     ),
 ]
 
-# Quirk pinned as it stands, not endorsed: a list where a membership test expects a hashable value escapes as
-# TypeError instead of ConfigurationError. Only the type and its cause are pinned; the full text varies by Python.
-UNHASHABLE: list[tuple[str, Mutation]] = [
-    ("reviewer scope a list", _set((*REVIEWER, "scope"), ["generic"])),
-    ("runtime a list", _set(("runtime",), ["auto"])),
-    ("reviewer_effort a list", _set(("reviewer_effort",), ["high"])),
-    ("request_changes_for holding a list", _set(("verdict_policy", "request_changes_for"), [["MUST_FIX"]])),
-    ("operation set a list", _set(("operation_repository_sets", "review-prs"), ["main"])),
+CONTAINER_CASES: list[Case] = [
+    (
+        f"{'.'.join(path)} {value!r}",
+        _set(path, [value] if path[-1] == "request_changes_for" else value),
+        C,
+        message(value),
+    )
+    for path, member, message in [
+        (("schema_version",), 1, lambda value: f"Unsupported config schema version: {value!r}"),
+        ((*REVIEWER, "protocol_version"), 1, lambda value: f"{FIELD}.reviewer protocol is unsupported"),
+        ((*REVIEWER, "scope"), "generic", lambda value: f"{FIELD}.reviewer.scope is invalid"),
+        (("runtime",), "auto", lambda value: f"Unknown runtime host: {value!r}"),
+        (("reviewer_effort",), "high", lambda value: f"{EFFORT_MESSAGE}{value!r}"),
+        (("verdict_policy", "request_changes_for"), "MUST_FIX", lambda value: SEVERITY_MESSAGE),
+        (
+            ("operation_repository_sets", "review-prs"),
+            "main",
+            lambda value: "operation_repository_sets.review-prs must name an existing set",
+        ),
+    ]
+    for value in ([], {}, [member], {"value": member})
 ]
+REJECTED.extend(CONTAINER_CASES)
 
 # One fault per check, in the order validate_config detects them, on the generic reviewer. For each k, every fault from
 # k on is applied at once, and check k's error must be the one raised.
@@ -1575,14 +1589,6 @@ class ConfigValidationTests(unittest.TestCase):
         for name, mutation, error, message in REJECTED:
             with self.subTest(name):
                 self.assert_refused(mutation(_rich_config()), error, message)
-
-    def test_unhashable_values_escape_as_type_errors(self) -> None:
-        for name, mutation in UNHASHABLE:
-            with self.subTest(name):
-                with self.assertRaises(Exception) as caught:
-                    validate_config(mutation(_config()))
-                self.assertIs(TypeError, type(caught.exception))
-                self.assertIn("unhashable type: 'list'", str(caught.exception))
 
     def test_each_stage_is_refused_alone(self) -> None:
         for label, build, stages in ORDERED:

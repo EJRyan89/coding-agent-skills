@@ -16,6 +16,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_config
+from test_review_config_validation import CONTAINER_CASES, _config
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -87,6 +88,32 @@ class ConfigCommandTests(unittest.TestCase):
         self.assertEqual((1, ""), (code, err))
         self.assertTrue(out.startswith(f"FAILED Cannot read valid JSON from {path}: "), out)
         self.assertEqual(1, len(out.splitlines()), out)
+
+    def test_container_fields_fail_validate_and_write_without_changing_files(self) -> None:
+        script = str(SCRIPT_DIRECTORY / "review_config.py")
+        output = self.write_json("output.json", valid_config())
+        before = output.read_bytes()
+        for name, mutation, _error, message in CONTAINER_CASES:
+            with self.subTest(name=name):
+                candidate = self.write_json("candidate.json", mutation(_config()))
+                original = candidate.read_bytes()
+                for arguments in (
+                    ("validate", str(candidate)),
+                    ("write", str(candidate), "--output", str(output)),
+                ):
+                    with self.subTest(command=arguments[0]):
+                        result = subprocess.run(
+                            [sys.executable, "-B", script, *arguments],
+                            capture_output=True,
+                            text=True,
+                            encoding="utf-8",
+                            check=False,
+                        )
+                        self.assertEqual(
+                            (1, f"FAILED {message}\n", ""), (result.returncode, result.stdout, result.stderr)
+                        )
+                        self.assertEqual(before, output.read_bytes())
+                        self.assertEqual(original, candidate.read_bytes())
 
     def test_write_names_the_config_it_wrote(self) -> None:
         candidate = self.write_json("candidate.json", valid_config())

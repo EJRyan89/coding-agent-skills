@@ -1861,6 +1861,39 @@ SPECIALISTS_STAGES: list[ManifestStage] = [
 ]
 
 
+MANIFEST_CONTAINERS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, type[Exception], str]] = [
+    (
+        f"{build.__name__} {field} {value!r}",
+        build,
+        _put((field,), [value] if field in {"supports", "required_capabilities"} else value),
+        RuntimeContractError,
+        message,
+    )
+    for build in (_entrypoint_manifest, _specialists_manifest)
+    for field, member, message in (
+        ("schema_version", 1, UNSUPPORTED),
+        ("protocol_version", 1, UNSUPPORTED),
+        ("supports", "initial", BAD_SUPPORTS),
+        ("required_capabilities", "read-diff", BAD_CAPABILITIES),
+    )
+    for value in ([], {}, [member], {"value": member})
+] + [
+    (
+        f"specialist {field} {value!r}",
+        _specialists_manifest,
+        _put(("specialists", 0, field), value),
+        RuntimeContractError,
+        message,
+    )
+    for field, member, message in (
+        ("when", "window", "specialists[0].when names an undeclared condition"),
+        ("model", "opus", "specialists[0].model must be null, inherit, or one of fable, haiku, opus, sonnet"),
+        ("effort", "high", "specialists[0].effort must be null or one of high, low, max, medium, xhigh"),
+    )
+    for value in ([], {}, [member], {"value": member})
+]
+
+
 class AdapterManifestValidationTests(unittest.TestCase):
     def assert_refused(self, manifest: Any, error: type[Exception], message: str) -> None:
         with self.assertRaises(Exception) as caught:
@@ -1880,7 +1913,7 @@ class AdapterManifestValidationTests(unittest.TestCase):
                 self.assertEqual(before, manifest)
 
     def test_each_fault_is_refused_with_its_error(self) -> None:
-        for name, build, mutation, error, message in MANIFEST_REJECTED:
+        for name, build, mutation, error, message in MANIFEST_REJECTED + MANIFEST_CONTAINERS:
             with self.subTest(name):
                 self.assert_refused(mutation(build()), error, message)
 
@@ -1900,13 +1933,25 @@ class AdapterManifestValidationTests(unittest.TestCase):
                         manifest = mutation(manifest)
                     self.assert_refused(manifest, error, message)
 
-    def test_a_capability_that_cannot_be_hashed_escapes_as_a_type_error(self) -> None:
-        # The duplicate check builds a set before the item check runs. Python words the error differently across
-        # versions, so only its class and the part every version shares are pinned.
-        with self.assertRaises(TypeError) as caught:
-            validate_adapter_manifest(_put(("required_capabilities",), [[]])(_entrypoint_manifest()))
-        self.assertIs(TypeError, type(caught.exception))
-        self.assertIn("unhashable type: 'list'", str(caught.exception))
+    def test_manifest_loaders_refuse_container_fields_with_the_same_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            path = root / "manifest.json"
+            for name, build, mutation, error, message in MANIFEST_CONTAINERS:
+                content = json.dumps(mutation(build()))
+                path.write_text(content, encoding="utf-8")
+                for source in ("file", "commit"):
+                    with self.subTest(name=name, source=source):
+                        with (
+                            mock.patch.object(review_runtime, "_read_git_file", return_value=content.encode("utf-8")),
+                            self.assertRaises(error) as caught,
+                        ):
+                            if source == "file":
+                                review_runtime.load_manifest_from_file(path)
+                            else:
+                                review_runtime.load_manifest_from_commit(root, HEAD, "manifest.json")
+                        self.assertIs(error, type(caught.exception))
+                        self.assertEqual(message, str(caught.exception))
 
 
 class ReservedPathMaterializationTests(unittest.TestCase):
