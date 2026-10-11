@@ -15,7 +15,9 @@ document scenario names a document instead, for a skill started on one file's pa
 writes it under its own file name into a new folder in the run's folder and starts the skill with that path alone.
 With a base, that folder is a new git checkout whose one commit holds the base under the same name, and the document
 is written over it uncommitted, so the skill reviews only the edit; without one, nothing encloses it and the skill
-reviews it whole. A finding's path is then the document's file name. The scenario.json:
+reviews it whole. The checkout's Git commands use a temporary empty hook directory, overriding global and
+template-installed hooks, and the base commit disables signing. A finding's path is then the document's file name.
+The scenario.json:
 
   {"skill": "<skill>", "mode": "initial" | "re-review",
    "prior": "<prior record file in the scenario>"  (re-review only),
@@ -175,8 +177,8 @@ MODES = ("initial", "re-review")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
 DOCUMENT_FOLDER = "document"
-# The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded;
-# no hook or signing configured for the user runs on it.
+# The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded,
+# and signing is disabled.
 COMMIT = ["-c", "user.name=skill-evals", "-c", "user.email=skill-evals@example.invalid", "-c", "commit.gpgsign=false"]
 ENTRY = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 
@@ -509,10 +511,15 @@ def stage_document(scenario: Scenario, folder: Path, git: GitClient) -> Path:
     folder.mkdir(parents=True)
     staged = folder / scenario.document.name
     if scenario.base is not None:
-        git.output(["init", "--quiet"], directory=folder)
-        staged.write_bytes(scenario.base.read_bytes())
-        git.output(["add", "--", staged.name], directory=folder)
-        git.output([*COMMIT, "commit", "--quiet", "--no-verify", "--message", "The committed base"], directory=folder)
+        with tempfile.TemporaryDirectory(prefix="skill-evals-hooks.") as hooks:
+            isolated = ["-c", f"core.hooksPath={hooks}"]
+            git.output([*isolated, "init", "--quiet"], directory=folder)
+            staged.write_bytes(scenario.base.read_bytes())
+            git.output([*isolated, "add", "--", staged.name], directory=folder)
+            git.output(
+                [*isolated, *COMMIT, "commit", "--quiet", "--no-verify", "--message", "The committed base"],
+                directory=folder,
+            )
     staged.write_bytes(scenario.document.read_bytes())
     return staged
 

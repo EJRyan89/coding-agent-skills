@@ -12,6 +12,8 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   folder of its own and starts the skill on its path; with a base, the folder is a throwaway git checkout where the
   base is committed and the document is an uncommitted edit of it, so only the edit is reviewed. A document may be
   another scenario's file, so `review-document` reviews the `review-prs` design documents without copies.
+  The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
+  user hooks run; the base commit also disables signing, without changing the user's Git configuration.
   `tools/skill_evals.py`'s docstring defines the format.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
