@@ -9,12 +9,14 @@ prompt describes. It reads the hook event as JSON on stdin and prints a deny dec
   role. Every other call is denied until then.
 - Read, Grep, and Glob only under the claimed review run folder (a `code-review-run-*` directory holding
   `run.json`: the snapshot, the trusted reviewer files, and the work files) or this skill's `references` folder.
-  Grep and Glob must name that folder explicitly, because their default is the session's working directory.
+  Nested source folders cannot redefine the claimed root. Grep and Glob must name their folder explicitly, because
+  their default is the session's working directory.
 - Write and Edit only on the claimed role's result file, as the run's `run.json` names it.
 - Bash only for the claimed role's self-check command, exactly as the pipeline writes it, and, for a lazy snapshot,
   its `source-file` and `source-search` commands (review_source.py), with the one path or pattern the reviewer
-  fills in, which may hold no quote, backtick, dollar sign, backslash, or line break. No quoted script or run in
-  either may end in a backslash, which would escape its closing quote.
+  fills in, which may hold no double quote (ASCII or PowerShell's smart variants), backtick, dollar sign, backslash,
+  or line break. No quoted script or run in either may end in a backslash, which would escape its closing quote.
+  The guarded reviewer exposes Bash, not PowerShell; its values conservatively exclude delimiters from either shell.
 
 Parallel reviewers share one session, so the hook tells them apart by the `agent_id` Claude Code puts in the hook
 event of a subagent's tool call, and keeps each agent's claim in a file of its own under `CLAIMS`, which no
@@ -57,7 +59,8 @@ READ_TOOLS = {"Read", "Grep", "Glob"}
 WRITE_TOOLS = {"Write", "Edit"}
 # A quoted script or run in any allowed command. No quoted value may end in a backslash, which would escape its closing
 # quote and leave what follows outside quotes, though the path still normalizes to the known script or run.
-QUOTED_VALUE = r'[^"`$\r\n]*[^"`$\r\n\\]'
+SHELL_BREAKS = r'"`$\r\n\u201c\u201d\u201e'
+QUOTED_VALUE = rf"[^{SHELL_BREAKS}]*[^{SHELL_BREAKS}\\]"
 SELF_CHECK = re.compile(
     rf'^python -B "(?P<script>{QUOTED_VALUE})" validate-result --run "(?P<run>{QUOTED_VALUE})" '
     rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)"$'
@@ -67,7 +70,7 @@ SELF_CHECK = re.compile(
 # its quotes.
 SOURCE_COMMAND = re.compile(
     rf'^python -B "(?P<script>{QUOTED_VALUE})" (?P<command>source-file|source-search) --run "(?P<run>{QUOTED_VALUE})" '
-    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)" --(?P<option>path|pattern)="[^"`$\\\r\n]+"$'
+    rf'--role "(?P<role>[a-z0-9][a-z0-9-]*)" --(?P<option>path|pattern)="[^{SHELL_BREAKS}\\]+"$'
 )
 SOURCE_OPTIONS = {"source-file": "path", "source-search": "pattern"}
 SOURCE_SCRIPT = SCRIPT_DIRECTORY / "review_source.py"
@@ -131,7 +134,7 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def run_root(path: Path) -> Path | None:
-    """The review run folder holding this path, if any."""
+    """Discover a run for a first prompt read or an explicit command root, never for a claimed source read."""
     for candidate in (path, *path.parents):
         if candidate.name.startswith(RUN_PREFIX) and (candidate / RUN_FILE).is_file():
             return candidate
@@ -203,11 +206,9 @@ def _claim(agent: str, path: Path) -> None:
 
 
 def _check_in_run(tool: str, path: Path, run: Path) -> None:
-    if _inside(path, REFERENCES):
+    if _inside(path, REFERENCES) or _inside(path, run):
         return
-    root = run_root(path)
-    if root is None or not _same(root, run):
-        raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
+    raise Denied(f"{tool} may only look inside your own review run folder; {path} is outside it")
 
 
 def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim | None) -> None:
