@@ -126,6 +126,8 @@ class RenderedExecutableTests(DeployerTestCase):
             "audit-ai-config/scripts/audit_ai_config.py",
             "dotnet-format/scripts/dotnet_format_targets.py",
             "repo-cleanup/scripts/repo_cleanup.py",
+            "code-review-core/references/generic-reviewer.md",
+            "code-review-core/scripts/review_guard.py",
             "skill-core/scripts/console.py",
             "skill-core/scripts/frontmatter.py",
             "skill-core/scripts/github_client.py",

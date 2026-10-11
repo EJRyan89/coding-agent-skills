@@ -357,6 +357,26 @@ class CrossSkillContractTests(unittest.TestCase):
         self.assertIn("If this session has no `code-review-reviewer` type", skill)
         self.assertIn("use a general-purpose subagent instead", skill)
 
+    def test_reviewer_read_guidance_names_only_the_guarded_roots(self) -> None:
+        _, body = frontmatter_and_body((REPOSITORY_ROOT / "agents/code-review-reviewer.md").read_text(encoding="utf-8"))
+        self.assertIn("Read it first and follow it exactly: it is your complete task.", body)
+        self.assertIn("Read only the files the prompt names and paths under the roots it names.", body)
+        self.assertIn(
+            "Give Read, Grep, and Glob an absolute path inside your claimed review run folder or "
+            "code-review-core's `references` folder; a hook refuses paths outside those roots.",
+            body,
+        )
+
+    def test_generic_reviewer_repeat_guidance_matches_the_output_contract(self) -> None:
+        reference = (REPOSITORY_ROOT / "skills/code-review-core/references/generic-reviewer.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("that finding's 0-based index in your `findings`", reference)
+        self.assertIn("the ID of a prior finding you marked `still_present` or `partially_addressed`", reference)
+        self.assertIn("the pipeline assigns finding IDs and assembles the review", reference)
+        self.assertIn("give every prior finding a disposition", reference)
+        self.assertIn("with a rationale drawn from the code", reference)
+
     @staticmethod
     def reviewer_hook_shells(command: str) -> dict[str, tuple[str | None, list[str]]]:
         """The reviewer hook's shell, if found, and its arguments in each shell Claude Code may run hooks in."""
