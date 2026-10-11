@@ -4693,6 +4693,80 @@ class LocalCommitTests(unittest.TestCase):
 
 
 class BatchTests(PipelineFixture):
+    def _completed_merged_batch(self) -> Path:
+        repositories = json.loads(self.config_path.read_text(encoding="utf-8"))["repository_sets"]["primary"]
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps(
+                {"schema_version": 1, "repositories": {name: {"merged_since": "2026-03-01"} for name in repositories}}
+            ),
+            encoding="utf-8",
+        )
+        merged = rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-05T10:00:00Z")
+        self.github.listing = [merged]
+        self.github.pulls[12] = merged
+        batch_path = self.root / "batch.json"
+        code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("PULL example/one#12\n", out)
+        ready = self.prepare()
+        self.write_role_result(ready["roles"][0])
+        rp.finalize(ready["run"])
+        return batch_path
+
+    def test_advance_preserves_a_concurrent_later_watermark_and_advances_other_repositories(self) -> None:
+        other = "example/two"
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repository_sets"]["primary"].append(other)
+        config["repositories"][other] = config["repositories"][REPOSITORY]
+        self.config_path.write_text(json.dumps(config), encoding="utf-8")
+        listing = self.services.github.list_pulls
+        closed = self.services.github.list_closed_pulls_since
+        with (
+            mock.patch.object(
+                self.services.github,
+                "list_pulls",
+                side_effect=lambda repository, **kwargs: listing(REPOSITORY, **kwargs),
+            ),
+            mock.patch.object(
+                self.services.github,
+                "list_closed_pulls_since",
+                side_effect=lambda repository, watermark: closed(REPOSITORY, watermark),
+            ),
+        ):
+            batch_path = self._completed_merged_batch()
+        batch_before = batch_path.read_bytes()
+        later = {"merged_since": "2026-03-12T10:00:00Z", "updated_at": "2026-03-12"}
+
+        def concurrent_advance(state: dict[str, Any]) -> dict[str, Any]:
+            state["repositories"][REPOSITORY] = later.copy()
+            state["repositories"][other] = {"merged_since": "2026-03-01", "updated_at": "2026-03-01"}
+            return state
+
+        rp.update_state(self.state_path, concurrent_advance)
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        state = load_state(self.state_path)
+        self.assertEqual(later, state["repositories"][REPOSITORY])
+        self.assertEqual({"merged_since": "2026-03-04", "updated_at": "2026-03-10"}, state["repositories"][other])
+        self.assertEqual(batch_before, batch_path.read_bytes())
+        self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"])
+
+    def test_advance_preserves_an_equal_watermark_date_and_its_timestamp(self) -> None:
+        batch_path = self._completed_merged_batch()
+        same_day = {"merged_since": "2026-03-10T17:30:00Z", "updated_at": "2026-03-09"}
+
+        def concurrent_advance(state: dict[str, Any]) -> dict[str, Any]:
+            state["repositories"][REPOSITORY] = same_day.copy()
+            return state
+
+        rp.update_state(self.state_path, concurrent_advance)
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual("WATERMARK example/one 2026-03-01 -> 2026-03-10\n", out)
+        self.assertEqual(same_day, load_state(self.state_path)["repositories"][REPOSITORY])
+
     def test_enumerate_then_advance_after_merged_reviews_complete(self) -> None:
         self.state_path.parent.mkdir(parents=True)
         self.state_path.write_text(
