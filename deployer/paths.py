@@ -14,22 +14,29 @@ from .errors import DeployError, os_error
 class Paths:
     source_dir: Path
     home: Path
+    # The tree the templates are read from, when it is not the checkout: a commit `--at` exported. The checkout stays
+    # source_dir, the one the manifest records, the configuration reads, and SOURCE_ROOT names.
+    tree_dir: Path | None = None
+
+    @property
+    def tree(self) -> Path:
+        return self.tree_dir if self.tree_dir is not None else self.source_dir
 
     @property
     def source_file(self) -> Path:
-        return self.source_dir / "source.json"
+        return self.tree / "source.json"
 
     @property
     def meta_dir(self) -> Path:
-        return self.source_dir / "deploy-meta"
+        return self.tree / "deploy-meta"
 
     @property
     def skills_src(self) -> Path:
-        return self.source_dir / "skills"
+        return self.tree / "skills"
 
     @property
     def agents_src(self) -> Path:
-        return self.source_dir / "agents"
+        return self.tree / "agents"
 
     @property
     def dest_dir(self) -> Path:

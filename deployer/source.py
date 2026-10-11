@@ -75,7 +75,7 @@ def _load_source_document(paths: Paths) -> Any:
 
 def load_source_id(paths: Paths) -> str:
     if not paths.source_file.is_file():
-        raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.source_dir)}")
+        raise DeployError(f"ERROR: source.json not found at {platform_support.normalize(paths.tree)}")
     document = _load_source_document(paths)
     source_id = document.get("id") if isinstance(document, dict) else None
     shown = source_id if isinstance(source_id, str) else "null"

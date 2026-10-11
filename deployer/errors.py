@@ -19,6 +19,7 @@ RECOVERY_SECTIONS = (
     "The deployment lock",
     "Ownership held by another source",
     "Deploying from another checkout",
+    "Deploying an earlier commit",
 )
 
 

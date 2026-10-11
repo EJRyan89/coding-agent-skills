@@ -487,6 +487,7 @@ class RecoveryGuideTests(unittest.TestCase):
                 "The deployment lock",
                 "Ownership held by another source",
                 "Deploying from another checkout",
+                "Deploying an earlier commit",
             ),
             errors.RECOVERY_SECTIONS,
         )

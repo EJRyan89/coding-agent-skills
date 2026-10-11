@@ -5,43 +5,16 @@ from __future__ import annotations
 import contextlib
 import io
 import re
-import subprocess
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import SOURCE_ID, DeployerTestCase, Result
+from harness import SOURCE_ID, DeployerTestCase, Result, git
 
 from deployer import cli, fsops, manifest, platform_support, source_commit
 
 FULL_SHA1 = re.compile(r"^[0-9a-f]{40}$")
-
-
-def git(directory: Path, *arguments: str) -> str:
-    """Run git in a fixture repository with no user hooks, signing, or identity from the developer's configuration."""
-    completed = subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "tag.gpgsign=false",
-            "-c",
-            f"core.hooksPath={directory / '.no-hooks'}",
-            "-C",
-            str(directory),
-            *arguments,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return completed.stdout.strip()
 
 
 class SourceCommitTests(DeployerTestCase):

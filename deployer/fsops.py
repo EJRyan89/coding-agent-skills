@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import sys
+import tarfile
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
@@ -109,3 +110,10 @@ def append_line(path: Path, line: str) -> None:
         handle.write(line + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def extract_archive(archive: Path, destination: Path) -> None:
+    """Extract a tar archive into destination, refusing, as tarfile's data filter does, any member that is a device,
+    an absolute path, or a path or link that leads outside destination."""
+    with tarfile.open(archive) as handle:
+        handle.extractall(destination, filter="data")

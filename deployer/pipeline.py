@@ -7,6 +7,7 @@ per-item plan and its execution in plan.py, the reports in report.py, and --migr
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import secrets
 import sys
@@ -27,6 +28,7 @@ from . import (
     report,
     source,
     source_commit,
+    source_ref,
 )
 from . import selection as selection_module
 from .arguments import USAGE_ERROR, VERIFY_COMMAND_LINE, parse_command, usage_error
@@ -60,10 +62,12 @@ def parse_arguments(namespace: argparse.Namespace, source_id: str) -> Options:
     return options
 
 
-def _apply(context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str) -> None:
+def _apply(
+    context: Context, entries: list[PlanEntry], staged: render.Staged, run_id: str, replaced_pin: str | None
+) -> None:
     paths = context.paths
     # Read before anything moves, so git runs while no deployed item is half replaced.
-    commit = source_commit.head_commit(paths.source_dir)
+    commit = context.pin.commit if context.pin is not None else source_commit.head_commit(paths.source_dir)
     staging_dir = paths.staging_root / run_id
     staged.write(staging_dir)
     record = journal.Journal(staging_dir / "journal.jsonl", run_id)
@@ -75,7 +79,7 @@ def _apply(context: Context, entries: list[PlanEntry], staged: render.Staged, ru
     _commit_manifest(context, entries, run_id, commit)
     backups = _finalize(context, record, run_id)
     fsops.remove(staging_dir)
-    _summary(context, run_id, entries, backups)
+    _summary(context, run_id, entries, backups, replaced_pin)
 
 
 def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, commit: str | None) -> None:
@@ -105,6 +109,7 @@ def _commit_manifest(context: Context, entries: list[PlanEntry], run_id: str, co
     data.sources[context.source_id] = {
         "source_dir": platform_support.normalize(context.paths.source_dir),
         **({"source_commit": commit} if commit is not None else {}),
+        **({"source_ref": context.pin.ref} if context.pin is not None else {}),
         "deployed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "requested_bundles": list(context.selection.bundles),
         "requested_skills": list(context.selection.skills),
@@ -158,23 +163,51 @@ def _finalize(context: Context, record: journal.Journal, run_id: str) -> list[tu
     return backups
 
 
-def _summary(context: Context, run_id: str, entries: list[PlanEntry], backups: list[tuple[str, str]]) -> None:
+def _summary(
+    context: Context,
+    run_id: str,
+    entries: list[PlanEntry],
+    backups: list[tuple[str, str]],
+    replaced_pin: str | None,
+) -> None:
     report.print_report(DEPLOYED, DEPLOY_ACTIONS, [entry.report_line(DEPLOYED) for entry in entries])
     if backups:
         print(f"BACKED UP ({len(backups)}):")
         for item, destination in sorted(backups):
             print(f"  {item}: {destination}")
         print("")
+    if replaced_pin is not None:
+        print(f"Replaced {replaced_pin}.")
+        print("")
     print(f"Run ID: {run_id}")
     print(f"Manifest: {platform_support.normalize(context.paths.manifest_file)}")
     print("")
 
 
+def _replaced_pin(context: Context) -> str | None:
+    """The deployment made with --at that this one replaces, described, or None when it replaces none.
+
+    A deployment pinned to the same commit keeps the pin; any other moves the installation off it, which
+    update-coding-agent-skills reports from the line this describes.
+    """
+    ref = context.manifest.source_ref(context.source_id)
+    commit = context.manifest.source_commit(context.source_id)
+    if ref is None or (context.pin is not None and context.pin.commit == commit):
+        return None
+    return f"the deployment pinned with --at {ref} to {source_commit.describe(context.paths.source_dir, commit)}"
+
+
 def _deploy(
-    paths: Paths, options: Options, src: source.Source, values: dict[str, str], stdin: TextIO, run_id: str | None
+    paths: Paths,
+    options: Options,
+    src: source.Source,
+    values: dict[str, str],
+    stdin: TextIO,
+    run_id: str | None,
+    pin: source_ref.Pin | None = None,
 ) -> int:
     data = manifest.load(paths.manifest_file)
-    context = Context(paths, options, src, values, data, data.ownership(src.source_id), stdin)
+    context = Context(paths, options, src, values, data, data.ownership(src.source_id), stdin, pin=pin)
     if options.migrate_from:
         migrate.migrate(context, options.migrate_from)
         return 0
@@ -216,10 +249,14 @@ def _deploy(
         print("Rendered and validated.")
     # Planned last, after the slow validation, so the destinations it read are the ones the deployment changes.
     entries = plan.build(context, wanted, staged)
+    replaced_pin = _replaced_pin(context)
     if run_id is None:
         plan.dry_run(entries)
+        if replaced_pin is not None:
+            print(f"Would replace {replaced_pin}.")
+            print("")
         return 0
-    _apply(context, entries, staged, run_id)
+    _apply(context, entries, staged, run_id, replaced_pin)
     return 0
 
 
@@ -321,15 +358,40 @@ def execute(
     probe: lock.ProcessProbe = platform_support.process_status,
     stdin: TextIO | None = None,
 ) -> int:
+    """Deploy the checkout, or, with --at, the tree of the commit it names, exported for the run and removed after."""
     stdin = stdin if stdin is not None else sys.stdin
     debug = debug_requested(namespace.debug)
+    if namespace.at is None:
+        return _execute(namespace, paths, None, probe, stdin, debug)
+    try:
+        platform_support.ensure_supported()
+        pin = source_ref.resolve(paths.source_dir, namespace.at)
+        exported = source_ref.export(paths.source_dir, pin.commit)
+    except (DeployError, OSError, KeyboardInterrupt) as exc:
+        return fail(exc, debug, "export the commit --at names")
+    try:
+        return _execute(namespace, dataclasses.replace(paths, tree_dir=exported / "tree"), pin, probe, stdin, debug)
+    finally:
+        source_ref.remove(exported)
+
+
+def _execute(
+    namespace: argparse.Namespace,
+    paths: Paths,
+    pin: source_ref.Pin | None,
+    probe: lock.ProcessProbe,
+    stdin: TextIO,
+    debug: bool,
+) -> int:
     try:
         paths, source_id, options, values, src = _prepare(namespace, paths)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "prepare the deployment")
     _print_source(src, paths.home)
+    if pin is not None:
+        print(f"At: {pin.ref} ({pin.commit})")
     if options.dry_run:
-        return _dry_run(paths, options, src, values, stdin, debug)
+        return _dry_run(paths, options, src, values, stdin, debug, pin)
     try:
         values, held = _claim(paths, options, source_id, values, probe)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
@@ -351,7 +413,7 @@ def execute(
     # UTC, like deployed_at, so run IDs sort in the order the runs started, across time zones and daylight saving.
     run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
     try:
-        code = _deploy(paths, options, src, values, stdin, run_id)
+        code = _deploy(paths, options, src, values, stdin, run_id, pin)
     except Cancelled as exc:
         # Raised only at the selection prompt, before staging or any destination change.
         print_error(exc, debug)
@@ -367,9 +429,11 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
     """The run's paths (a canary home's, when given), source ID, options, configured values, and source."""
     platform_support.ensure_supported()
     source_id = source.load_source_id(paths)
+    if paths.tree_dir is not None:
+        _reject_other_source_id(paths, source_id)
     options = parse_arguments(namespace, source_id)
     if options.canary_home:
-        paths = Paths(paths.source_dir, canary_home(options.canary_home))
+        paths = dataclasses.replace(paths, home=canary_home(options.canary_home))
     validate_managed_roots(paths)
     # A canary home's values are set when it is claimed, after every check; the real configuration is unread.
     values = (
@@ -380,14 +444,35 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
     return paths, source_id, options, values, source.discover(paths, source_id)
 
 
+def _reject_other_source_id(paths: Paths, tree_id: str) -> None:
+    """Refuse an exported tree whose source.json names another source than the checkout's.
+
+    Deploying it would move every item to another owner, which only an explicit --migrate-from may do.
+    """
+    checkout_id = source.load_source_id(dataclasses.replace(paths, tree_dir=None))
+    if tree_id != checkout_id:
+        raise DeployError(
+            f"ERROR: The commit --at names has source ID '{tree_id}' in its source.json, not this checkout's "
+            f"'{checkout_id}'.",
+            "Name a commit of this source; a change of source ID needs an explicit ownership migration.",
+            see_recovery(source_ref.EARLIER_COMMIT),
+        )
+
+
 def _dry_run(
-    paths: Paths, options: Options, src: source.Source, values: dict[str, str], stdin: TextIO, debug: bool
+    paths: Paths,
+    options: Options,
+    src: source.Source,
+    values: dict[str, str],
+    stdin: TextIO,
+    debug: bool,
+    pin: source_ref.Pin | None = None,
 ) -> int:
     """Report what a deployment would do, holding no lock and changing nothing, unless a recovery is pending."""
     try:
         if _stop_for_pending_recovery(paths):
             return 0
-        return _deploy(paths, options, src, values, stdin, None)
+        return _deploy(paths, options, src, values, stdin, None, pin)
     except (DeployError, OSError, KeyboardInterrupt) as exc:
         return fail(exc, debug, "finish the dry run")
 

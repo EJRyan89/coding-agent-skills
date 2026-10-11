@@ -9,12 +9,13 @@ The deployer changes your home directory only through a journaled transaction, s
 | `~/.claude/skills/<name>` | A deployed skill or shared asset. |
 | `~/.agents/skills/<name>` | A deployed runtime adapter for Codex and Copilot CLI. |
 | `~/.claude/agents/<name>.md` | A deployed Claude Code subagent definition. |
-| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, the shared assets (`shared_deps`) and agents (`agent_deps`) each skill was deployed with, and the last committed run ID. |
+| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, the shared assets (`shared_deps`) and agents (`agent_deps`) each skill was deployed with, the checkout and commit each source was deployed from (with the ref, for a deployment made with `--at`), and the last committed run ID. |
 | `~/.claude/deployer/config/<id>.config` | The configuration for one source, written by `python deploy.py configure`. |
 | `~/.claude/deployer/staging/<run-id>/` | One run in progress: its rendered files and its journal, `journal.jsonl`. |
 | `~/.claude/deployer/.deploy.lock.d/` | The lock held by the deployment that is running. |
 | `<root>/<name>.deploying-bak` | The previous copy of an item while a run replaces or removes it. |
 | `<root>/.backups/<run-id>/<name>` | A permanent backup of a copy a run replaced with `--force` or `--force-item`. |
+| `deploy-at-<random>/` in the system temporary directory | The files of the commit a `--at` run deploys, exported for that run and removed when it ends; one left behind after the process was killed can be deleted. |
 
 `<root>` is whichever of `~/.claude/skills`, `~/.agents/skills`, and `~/.claude/agents` holds the item. A `<run-id>` is the time the run started, in UTC, as `YYYYMMDD-HHMMSS`, followed by four random hexadecimal characters, such as `20261006-214501-3fa2`; runs before October 2026 used local time.
 
@@ -89,6 +90,20 @@ python deploy.py --all --take-over-source
 ```
 
 It prints the recorded checkout and how many items the source owns, then deploys as usual; when the deployment commits, the manifest records this checkout, and later deployments from it need no flag. `--take-over-source` also works with `--migrate-from`, and records this checkout even when there is nothing to migrate. It cannot be combined with `--dry-run`, which never refuses, or with `--canary-home`, whose throwaway home is empty or one an earlier canary deployment marked. A linked worktree is refused whatever the flag; deploy from the main checkout.
+
+## Deploying an earlier commit
+
+If an update brings a regression, deploy the last release, or any earlier commit, without moving the clone off `main`:
+
+```bash
+python deploy.py --all --at '<tag-or-commit>'
+```
+
+`--at` takes a tag, a branch, or a commit this clone already holds; the deployer does not fetch, so run `git fetch --tags origin` first if Git does not know the name. It exports that commit's files to a throwaway directory and deploys them with the deployer as it is at the clone's `HEAD`, never the commit's own, so the selection, the checks, and the report are the ones you know. The clone's branch, `HEAD`, and working tree do not change, and the manifest still records the clone as the source, so later deployments from it need no flag. `python deploy.py check` then names the deployed commit with `pinned with --at` and the ref. Preview it first with `--dry-run`, which changes nothing; it also works with `--canary-home`.
+
+A ref that starts with `-`, that names no commit, or whose `source.json` carries another source ID is refused before anything changes; a change of source ID needs an explicit migration.
+
+Report the regression with the commit range between the two deployments. The next deployment without `--at`, including the one `update-coding-agent-skills` makes, replaces the pinned one and says so: the deployer's report ends with `Replaced the deployment pinned with --at <ref>`, and the skill reports that line.
 
 ## Configuration that no longer reads
 
