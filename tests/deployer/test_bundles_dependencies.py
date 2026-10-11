@@ -445,17 +445,21 @@ class OptInTests(DeployerTestCase):
         self.assertEqual(["everyday", "lint"], self.installed())
 
     def test_include_needs_all_and_a_known_name(self) -> None:
-        self.deploy_fails("--include", "lint", "--dry-run", pattern="--include can only be used with --all")
-        self.deploy_fails(
-            "--all",
-            "--include",
-            "missing",
-            "--dry-run",
-            pattern="--include names no bundle or skill in this source: missing",
-        )
-        self.deploy_fails(
-            "--all", "--include", "fmt", "--dry-run", pattern="--include names no bundle or skill in this source: fmt"
-        )
+        for arguments, message in (
+            (("--include", "lint", "--dry-run"), "--include can only be used with --all"),
+            (
+                ("--all", "--include", "missing", "--dry-run"),
+                "--include names no bundle or skill in this source: missing",
+            ),
+            (("--all", "--include", "fmt", "--dry-run"), "--include names no bundle or skill in this source: fmt"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern=message)
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(
+                    f"\nERROR: {message}\nRun 'python deploy.py --help' for usage.\n\n",
+                    result.output,
+                )
 
 
 if __name__ == "__main__":
