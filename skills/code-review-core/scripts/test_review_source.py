@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import review_guard
 import review_runtime
 import review_source
 from review_analyzers import reads_settings
@@ -146,6 +147,63 @@ class LazySnapshotFixture(unittest.TestCase):
 
 
 class LazySnapshotTests(LazySnapshotFixture):
+    def test_a_lazy_fetch_in_a_run_like_source_folder_stays_readable_under_the_claimed_run(self) -> None:
+        relative = "code-review-run-authored/Service.cs"
+        metadata = self.checkout / "code-review-run-authored" / "run.json"
+        metadata.parent.mkdir()
+        metadata.write_text("not reviewer metadata", encoding="utf-8")
+        (metadata.parent / "Service.cs").write_bytes(NESTED.encode())
+        git(self.checkout, "add", ".")
+        git(self.checkout, "commit", "-m", "nested source folder")
+        head = git(self.checkout, "rev-parse", "HEAD")
+        run = self.root / "code-review-run-nested"
+        source = run / "source"
+        materialize_source_snapshot(
+            self.checkout,
+            REPOSITORY,
+            head,
+            source,
+            changed_paths=["code-review-run-authored/run.json"],
+            upfront=reads_settings,
+        )
+        prompt = run / "work" / "generic-review.prompt.md"
+        (run / "request.json").write_text(
+            json.dumps({"repository": REPOSITORY, "pull_request": {"head_sha": head}}), encoding="utf-8"
+        )
+        (run / "run.json").write_text(
+            json.dumps(
+                {
+                    "request_path": str(run / "request.json"),
+                    "source_repository": str(self.checkout),
+                    "roles": [
+                        {"id": "generic-review", "prompt_file": str(prompt), "result_file": str(run / "result.json")}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        event = {"cwd": str(self.root), "agent_id": "nested-source-review"}
+        with mock.patch.object(review_guard, "CLAIMS", self.root / "claims"):
+            self.assertIsNone(
+                review_guard.decide({**event, "tool_name": "Read", "tool_input": {"file_path": str(prompt)}})
+            )
+            command = review_source.source_commands(run, "generic-review")[0].replace("<path>", relative)
+            self.assertIsNone(review_guard.decide({**event, "tool_name": "Bash", "tool_input": {"command": command}}))
+            self.assertFalse((source / relative).exists())
+            self.assertEqual(
+                [f"SOURCE_FILE {source / relative}"], review_source.source_file(run, "generic-review", relative)
+            )
+            self.assertEqual(NESTED.encode(), (source / relative).read_bytes())
+            self.assertIsNone(
+                review_guard.decide({**event, "tool_name": "Read", "tool_input": {"file_path": str(source / relative)}})
+            )
+            search = review_source.source_commands(run, "generic-review")[1].replace("<pattern>", "class Store")
+            self.assertIsNone(review_guard.decide({**event, "tool_name": "Bash", "tool_input": {"command": search}}))
+            self.assertIn(
+                f"MATCH {relative}:1: class Store:", review_source.source_search(run, "generic-review", "class Store")
+            )
+        verify_source_snapshot(source, expected_repository=REPOSITORY, expected_commit=head)
+
     def test_a_lazy_snapshot_writes_the_changed_files_and_the_settings_and_lists_the_rest_by_blob(self) -> None:
         self.assertEqual(["pyproject.toml", "source-snapshot.json", "src/changed.py"], self.held())
         self.assertEqual(

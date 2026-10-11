@@ -140,6 +140,54 @@ class ReadTests(GuardFixture):
         drive, rest = str(self.checkout).replace("\\", "/").split(":", 1)
         self.assertIsNotNone(self.decide("Read", file_path=f"/{drive.lower()}{rest}/app/Collections.cs"))
 
+    def test_nested_run_like_source_folders_do_not_redefine_the_claimed_root(self) -> None:
+        nested = self.run_directory / "source" / "code-review-run-authored"
+        nested.mkdir()
+        metadata = nested / "run.json"
+        metadata.write_text("not reviewer metadata", encoding="utf-8")
+        source = nested / "Service.cs"
+        source.write_text("class Service {}\n", encoding="utf-8")
+        self.claim()
+        claim = (self.claims / f"{AGENT}.json").read_bytes()
+        for tool, tool_input in (
+            ("Read", {"file_path": str(metadata)}),
+            ("Read", {"file_path": str(source)}),
+            ("Read", {"file_path": str(nested / ".." / nested.name / source.name)}),
+            ("Grep", {"pattern": "class", "path": str(source)}),
+            ("Grep", {"pattern": "class", "path": str(nested)}),
+            ("Grep", {"pattern": "class", "path": str(self.run_directory / "source")}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(nested)}),
+            ("Glob", {"pattern": "**/*.cs", "path": str(self.run_directory / "source")}),
+        ):
+            with self.subTest(tool=tool, input=tool_input):
+                self.assertIsNone(self.decide(tool, **tool_input))
+        self.assertEqual(claim, (self.claims / f"{AGENT}.json").read_bytes())
+        logged = [
+            json.loads(line) for line in guard.read_log(self.run_directory, "csharp-review").read_text().splitlines()
+        ]
+        self.assertEqual(
+            [
+                Path(os.path.normcase(f"{nested.name}/{name}")).as_posix()
+                for name in ("run.json", "Service.cs", "Service.cs", "Service.cs")
+            ],
+            logged,
+        )
+
+    def test_a_run_name_prefix_or_a_junction_does_not_allow_an_outside_read(self) -> None:
+        self.claim()
+        outside = make_run(self.root / f"{self.run_directory.name}-outside", ["csharp-review"])
+        (outside / "Service.cs").write_text("class Outside {}\n", encoding="utf-8")
+        link = self.run_directory / "source" / "code-review-run-linked"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, check=True)
+        for path in (outside, link, self.run_directory / "source" / ".." / ".." / outside.name):
+            for tool, tool_input in (
+                ("Read", {"file_path": str(path / "Service.cs")}),
+                ("Grep", {"pattern": "class", "path": str(path)}),
+                ("Glob", {"pattern": "*.cs", "path": str(path)}),
+            ):
+                with self.subTest(tool=tool, path=path):
+                    self.assert_denied(self.decide(tool, **tool_input))
+
 
 class ReadLogTests(GuardFixture):
     """The guard logs each snapshot file a reviewer reads to its role's read log, which only `check` reads."""
@@ -246,6 +294,26 @@ class WriteTests(GuardFixture):
 
 
 class BashTests(GuardFixture):
+    def test_smart_double_quotes_are_rejected_in_every_interpolated_value(self) -> None:
+        self.claim()
+        check = rp.self_check_command(self.run_directory, "csharp-review")
+        fetch, search = source_commands(self.run_directory, "csharp-review")
+        for quote in ("\u201c", "\u201d", "\u201e"):
+            for command, script in (
+                (check, guard.PIPELINE),
+                (fetch, guard.SOURCE_SCRIPT),
+                (search, guard.SOURCE_SCRIPT),
+            ):
+                for bad in (
+                    command.replace(f'"{script}"', f'"{script.parent / quote / ".." / script.name}"'),
+                    command.replace(f'--run "{self.run_directory}"', f'--run "{self.run_directory / quote / ".."}"'),
+                    command.replace("<path>", f"Service{quote}; Write-Output marker; #"),
+                    command.replace("<pattern>", f"Service{quote}; Write-Output marker; #"),
+                ):
+                    if bad != command:
+                        with self.subTest(quote=quote, command=bad):
+                            self.assert_denied(self.decide("Bash", command=bad))
+
     def test_bash_runs_only_the_self_check_of_its_own_role_and_run_with_every_value_kept_in_quotes(self) -> None:
         command = rp.self_check_command(self.run_directory, "csharp-review")
         self.assert_denied(self.decide("Bash", command=command), "read the prompt file your task names first")
@@ -316,6 +384,33 @@ class BashTests(GuardFixture):
 
 
 class ClaimTests(GuardFixture):
+    def test_a_racing_first_read_keeps_the_first_written_run_and_role(self) -> None:
+        for winner, allowed in ((self.run_directory, True), (self.other_run, False)):
+            with self.subTest(winner=winner):
+                claims = self.root / f"race-{winner.name}"
+                winning_role = "sql-review" if allowed else "csharp-review"
+                winning_claim = json.dumps({"run": str(winner), "role": winning_role})
+
+                def racing_open(
+                    *args: object,
+                    destination: Path = claims / f"{AGENT}.json",
+                    content: str = winning_claim,
+                    **kwargs: object,
+                ) -> int:
+                    destination.write_text(content, encoding="utf-8")
+                    raise FileExistsError
+
+                with mock.patch.object(guard, "CLAIMS", claims), mock.patch.object(guard.os, "open", racing_open):
+                    reason = self.decide("Read", file_path=self.prompt())
+                    if allowed:
+                        self.assertIsNone(reason)
+                    else:
+                        self.assert_denied(reason)
+                    self.assertEqual(winning_claim, (claims / f"{AGENT}.json").read_text(encoding="utf-8"))
+                    self.assertIsNone(self.decide("Write", file_path=self.result(winning_role, winner)))
+                    if allowed:
+                        self.assert_denied(self.decide("Write", file_path=self.result()))
+
     def test_without_an_agent_id_every_guarded_call_is_denied(self) -> None:
         for agent in (None, "", "../escape", "a b", 7):
             with self.subTest(agent=agent):
