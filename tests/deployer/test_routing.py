@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import unittest
 from unittest import mock
 
-from harness import DeployerTestCase, Result, tree_state
-
-from deployer import cli
+from harness import DeployerTestCase, tree_state
 
 # Every option and command the hand-written usage named before the subparsers replaced it, per help page.
 OLD_USAGE_NAMES = {
@@ -39,12 +35,6 @@ class RoutingTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-
-    def run_cli(self, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(list(arguments), self.paths, io.StringIO(""))
-        return Result(code, captured.getvalue())
 
     def test_each_help_names_every_option_the_old_usage_named(self) -> None:
         for command, names in OLD_USAGE_NAMES.items():
@@ -95,12 +85,6 @@ class DeployUsageErrorTests(DeployerTestCase):
         self.make_source_json()
         self.make_skill("alpha", "Alpha")
         self.make_config()
-
-    def run_cli(self, *arguments: str) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(list(arguments), self.paths, io.StringIO(""))
-        return Result(code, captured.getvalue())
 
     def assert_usage_error(self, arguments: tuple[str, ...], *lines: str) -> None:
         result = self.run_cli(*arguments)

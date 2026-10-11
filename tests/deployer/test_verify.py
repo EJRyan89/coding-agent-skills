@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import subprocess
@@ -16,7 +14,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward
 
-from deployer import cli, discovery, platform_support, verify
+from deployer import discovery, platform_support, verify
 from deployer.discovery import Listed, ListingError
 from deployer.report import ReportLine
 
@@ -378,16 +376,12 @@ class VerifyCommandTests(DeployerTestCase):
         return platform_support.ToolResult(0, self.versions[runtime])
 
     def verify(self, *arguments: str) -> Result:
-        captured = io.StringIO()
         with (
             mock.patch("deployer.discovery.converse", self.runtimes),
             mock.patch("deployer.platform_support.find_executable", side_effect=self.installed.get),
             mock.patch("deployer.platform_support.run_tool", side_effect=self.version),
-            contextlib.redirect_stdout(captured),
-            contextlib.redirect_stderr(captured),
         ):
-            code = cli.main(["verify", *arguments], self.paths)
-        return Result(code, captured.getvalue())
+            return self.run_cli("verify", *arguments)
 
     def test_both_runtimes_finding_every_adapter_passes(self) -> None:
         self.answer()

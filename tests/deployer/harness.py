@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import configure, fsops, pipeline, platform_support
+from deployer import cli, configure, fsops, pipeline, platform_support
 from deployer.paths import Paths
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -216,20 +217,74 @@ class DeployerTestCase(unittest.TestCase):
         stdin: str = "",
         source: Path | None = None,
         home: Path | None = None,
+        refusal_home: Path | None = None,
+        changes_home: str = "",
         **options: Any,
     ) -> Result:
         """Deploy from source (the fixture source by default) into home, failing the test if the source changed.
 
         Templates are immutable: the deployer renders in memory and writes only under the home, so the source tree is
-        compared, file by file and byte for byte, before and after every deployment a test runs.
+        compared, file by file and byte for byte, before and after every deployment a test runs. refusal_home checks
+        a --canary-home destination without changing the Paths passed to the entry point.
         """
-        source = source or self.source
-        before = tree_state(source)
+        return self.run_command(
+            lambda: pipeline.run(
+                list(arguments), Paths(source or self.source, home or self.home), stdin=io.StringIO(stdin), **options
+            ),
+            source=source,
+            home=refusal_home or home,
+            changes_home=changes_home,
+        )
+
+    def assert_run_unchanged(
+        self,
+        result: Result,
+        source: Path,
+        source_before: dict[str, str],
+        home: Path,
+        home_before: dict[str, str],
+        changes_home: str = "",
+    ) -> None:
+        """Every run preserves its source; a nonzero exit preserves its home unless it states why it changes it."""
+        self.assertEqual(source_before, tree_state(source), f"the deployment changed its source:\n{result.output}")
+        if result.code != 0 and not changes_home:
+            self.assertEqual(home_before, tree_state(home), f"the refusal changed the home:\n{result.output}")
+
+    def run_command(
+        self,
+        command: Callable[[], int],
+        *,
+        source: Path | None = None,
+        home: Path | None = None,
+        changes_home: str = "",
+    ) -> Result:
+        """Run a deployer entry point under the same source and refusal guards, including usage and cancellation."""
+        source, home = source or self.source, home or self.home
+        source_before, home_before = tree_state(source), tree_state(home)
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = pipeline.run(list(arguments), Paths(source, home or self.home), stdin=io.StringIO(stdin), **options)
-        self.assertEqual(before, tree_state(source), f"the deployment changed its source:\n{captured.getvalue()}")
-        return Result(code, captured.getvalue())
+            code = command()
+        result = Result(code, captured.getvalue())
+        self.assert_run_unchanged(result, source, source_before, home, home_before, changes_home)
+        return result
+
+    def run_cli(
+        self,
+        *arguments: str,
+        stdin: str | io.StringIO = "",
+        source: Path | None = None,
+        home: Path | None = None,
+        refusal_home: Path | None = None,
+        changes_home: str = "",
+    ) -> Result:
+        """Run cli.main with its routing and input unchanged, enforcing the harness's deployment invariants."""
+        reader = stdin if isinstance(stdin, io.StringIO) else io.StringIO(stdin)
+        return self.run_command(
+            lambda: cli.main(list(arguments), Paths(source or self.source, home or self.home), reader),
+            source=source,
+            home=refusal_home or home,
+            changes_home=changes_home,
+        )
 
     def repository_source(self) -> Path:
         """Copy this repository's deployable source, so a test deploys it even when run from a linked worktree."""
@@ -258,10 +313,7 @@ class DeployerTestCase(unittest.TestCase):
         (self.source / "deploy-meta" / f"{name}.json").unlink()
 
     def configure(self, *arguments: str, stdin: str = "") -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = configure.run(list(arguments), self.paths, stdin=io.StringIO(stdin))
-        return Result(code, captured.getvalue())
+        return self.run_command(lambda: configure.run(list(arguments), self.paths, stdin=io.StringIO(stdin)))
 
     def deploy_ok(self, *arguments: str, stdin: str = "", **options: Any) -> Result:
         result = self.deploy(*arguments, stdin=stdin, **options)
@@ -283,13 +335,9 @@ class DeployerTestCase(unittest.TestCase):
         byte for byte, before and after a refusal. changes_home states why a failure is expected to change it: one that
         comes after the deployment began, such as a recovery, a lock reclaim, or a run that fails partway.
         """
-        home = home or self.home
-        before = tree_state(home)
-        result = self.deploy(*arguments, stdin=stdin, home=home, **options)
+        result = self.deploy(*arguments, stdin=stdin, home=home, changes_home=changes_home, **options)
         self.assertNotEqual(0, result.code, result.output)
         self.assertRegex(result.output, pattern)
-        if not changes_home:
-            self.assertEqual(before, tree_state(home), f"the refusal changed the home:\n{result.output}")
         return result
 
     def report_groups(self, output: str, title: str) -> dict[str, list[str]]:

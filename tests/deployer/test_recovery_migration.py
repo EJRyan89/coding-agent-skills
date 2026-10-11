@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, forward, tree_state
+from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, Result, forward, tree_state
 
 from deployer import fsops, hashing, journal, pipeline, platform_support, render
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
@@ -686,6 +686,7 @@ class ImmediateRecoveryExceptionTests(RecoveryTestCase):
         self.make_skill("alpha", "Updated alpha")
         self.make_skill("beta", "Updated beta")
         source_before = tree_state(self.source)
+        home_before = tree_state(self.home)
         result = subprocess.run(
             [
                 sys.executable,
@@ -735,7 +736,14 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
             text=True,
             timeout=60,
         )
-        self.assertEqual(source_before, tree_state(self.source), result.stdout + result.stderr)
+        self.assert_run_unchanged(
+            Result(result.returncode, result.stdout + result.stderr),
+            self.source,
+            source_before,
+            self.home,
+            home_before,
+            changes_home=FAILS_PARTWAY,
+        )
         self.assertEqual(130 if recovery_failure == "KeyboardInterrupt" else 1, result.returncode, result.stderr)
         self.assertIn("synthetic deployment failure", result.stderr)
         self.assertIn("Deployment failed; reconciling the current journal before exit...", result.stderr)

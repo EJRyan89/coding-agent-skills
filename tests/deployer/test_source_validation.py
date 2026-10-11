@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 import os
 import re
@@ -13,7 +11,7 @@ from unittest import mock
 
 from harness import DeployerTestCase, Result, forward, tree_state
 
-from deployer import cli, config, names, source
+from deployer import config, names, source
 from deployer.errors import DeployError
 
 
@@ -479,13 +477,11 @@ class SharedAssetValidationTests(DeployerTestCase):
             for arguments in (("--all", "--dry-run"), ("check",)):
                 with self.subTest(value=value, arguments=arguments):
                     self.write_shared_assets(value)
-                    captured = io.StringIO()
-                    with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-                        code = cli.main(list(arguments), self.paths, io.StringIO(""))
-                    self.assertEqual(1, code, captured.getvalue())
+                    result = self.run_cli(*arguments)
+                    self.assertEqual(1, result.code, result.output)
                     self.assertIn(
                         "ERROR: source.json shared_assets must be an object mapping each asset to its role",
-                        captured.getvalue(),
+                        result.output,
                     )
 
     def test_a_role_that_is_not_a_string_fails_discovery_naming_the_asset(self) -> None:
@@ -736,7 +732,22 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         self.canary.mkdir()
 
     def run_from(self, directory: Path, *arguments: str) -> Result:
-        return self.deploy(*arguments, source=directory)
+        return self.deploy(
+            *arguments, source=directory, refusal_home=self.canary if "--canary-home" in arguments else self.home
+        )
+
+    def test_a_canary_refusal_that_changes_its_home_fails_the_test(self) -> None:
+        linked = self.make_linked_worktree()
+
+        def refuse(*_arguments: object) -> None:
+            self.write(self.canary / "unexpected.txt", "mutation\n")
+            raise DeployError("ERROR: synthetic canary refusal")
+
+        with (
+            mock.patch("deployer.source._discover", side_effect=refuse),
+            self.assertRaisesRegex(AssertionError, "the refusal changed the home"),
+        ):
+            self.run_from(linked, "--canary-home", str(self.canary), "--all")
 
     def assert_untouched(self, result: Result, pattern: str) -> None:
         self.assertNotEqual(0, result.code, result.output)

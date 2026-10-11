@@ -450,6 +450,23 @@ class LockTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.deploy_ok("--all")
 
+    def test_a_probe_oserror_during_lock_initialization_removes_the_new_lock(self) -> None:
+        self.fixture()
+        probe = mock.Mock(side_effect=OSError("synthetic process probe failure"))
+        result = self.deploy_fails(
+            "--all", pattern="Failed to initialize deployment lock: synthetic process probe failure", probe=probe
+        )
+        self.assertEqual(1, result.code, result.output)
+        self.assertIn(
+            "ERROR: Failed to initialize deployment lock: synthetic process probe failure\nRetry the deployment.\n",
+            result.output,
+        )
+        probe.assert_called_once_with(platform_support.current_process_id())
+        self.assertFalse(self.paths.lock_dir.exists())
+        self.assertFalse(self.manifest_file.exists())
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.deploy_ok("--all")
+
     def assert_failed_write_changes_nothing(self, fails: Callable[[Path], bool], message: str) -> None:
         self.fixture()
         self.deploy_ok("--all")

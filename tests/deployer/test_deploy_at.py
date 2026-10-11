@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,7 +10,7 @@ from unittest import mock
 
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
 
-from deployer import cli, fsops, platform_support, source_ref
+from deployer import fsops, platform_support, source_ref
 from deployer.errors import DeployError
 
 
@@ -101,10 +99,7 @@ class DeployAtTests(DeployerTestCase):
             return super().deploy(*arguments, stdin=stdin, **options)
 
     def check(self) -> Result:
-        captured = io.StringIO()
-        with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            code = cli.main(["check"], self.paths)
-        return Result(code, captured.getvalue())
+        return self.run_cli("check")
 
     def assert_head_unmoved(self) -> None:
         self.assertEqual(self.head, git(self.source, "rev-parse", "HEAD"))
