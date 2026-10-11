@@ -53,8 +53,9 @@ The bounded host runs a repository entrypoint reviewer. It requires GitHub Copil
 - verifies the exact file set and SHA-256 hashes of the trusted materialized reviewer;
 - requires the diff and source snapshot to be inside the isolated review run, and checks the snapshot against the stamp `prepare` took, re-reading only what can have changed since ("Source snapshots" in [Code-review operations](code-review-operations.md#source-snapshots));
 - grants read access to the isolated review run and trusted materialized reviewer only;
-- grants write access only to the protocol result path;
-- names the exact trusted materialized entrypoint in the prompt; and
+- grants write access only to an attempt's staging result path, which the host promotes while its claim holds;
+- renders the prepared entrypoint's shared input and result contracts, binding `RESULT_FILE` and the completion reply to that staging path and omitting native shell-based self-check and source commands;
+- names the exact trusted materialized entrypoint and classifies request metadata, prior findings, review-comment bodies, source, diff, and pull-request description as untrusted data, never instructions; and
 - treats CLI JSON output as diagnostics, never as the review result.
 
 Authentication supplied through the invoking environment may remain available, but ambient Copilot configuration and personal skills do not. A real end-to-end reviewer canary invokes the model and is therefore an explicit release/cutover step, not part of ordinary deterministic validation.

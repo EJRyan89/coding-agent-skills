@@ -10,6 +10,7 @@ does, with no model and no network, in a throwaway folder under the system tempo
 docs/runtime-prompts/<skill>/<role>.txt, where `skill_inventory.py scan` measures it. The throwaway folder reads as
 <temp> and this checkout as <source>, so a sample names no machine's paths and renders the same everywhere; its
 paths are therefore shorter than a real run's, and its estimate slightly low.
+The entrypoint sample replaces the fixture's generated commit IDs with <base-commit> and <head-commit>.
 """
 
 from __future__ import annotations
@@ -19,7 +20,7 @@ import json
 import shutil
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "review-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "review-insights" / "scripts"))
 
 import review_document
+import review_hosts
 import review_pipeline
 import review_synthesis
 from console import use_utf8_output
@@ -66,7 +68,84 @@ def _prepared_prompts(fixture: Path, directory: Path) -> dict[str, str]:
 
 
 def review_prs(directory: Path) -> dict[str, str]:
-    return _prepared_prompts(PULL_FIXTURE, directory)
+    return {
+        **_prepared_prompts(PULL_FIXTURE, directory),
+        "copilot-entrypoint": copilot_entrypoint(directory / "copilot"),
+    }
+
+
+def copilot_fixture(directory: Path) -> Path:
+    """The pull fixture with a nondelegating trusted entrypoint and an open human comment, for the bounded host."""
+    fixture = directory / "fixture"
+    shutil.copytree(PULL_FIXTURE, fixture)
+    manifest = {
+        "schema_version": 1,
+        "id": "copilot-entrypoint",
+        "protocol_version": 1,
+        "supports": ["initial", "re-review"],
+        "required_capabilities": ["isolated-added-root", "read-diff", "write-result"],
+        "entrypoint": "review/SKILL.md",
+        "resources": [],
+        "agent_profiles": [],
+    }
+    for tree in ("base", "head"):
+        reviewer = fixture / tree / "review"
+        reviewer.mkdir()
+        (reviewer / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (reviewer / "SKILL.md").write_text("Review the change for correctness and report defects.\n", encoding="utf-8")
+    pull_path = fixture / "pull.json"
+    pull = json.loads(pull_path.read_text(encoding="utf-8"))
+    pull["manifest_path"] = "review/manifest.json"
+    pull["threads"] = [
+        {
+            "author": "reviewer",
+            "path": "shortfalls.go",
+            "line": 1,
+            "body": "Please check the changed behavior.",
+            "url": "https://example.invalid/review/1",
+            "outdated": False,
+        }
+    ]
+    pull_path.write_text(json.dumps(pull), encoding="utf-8")
+    return fixture
+
+
+def copilot_entrypoint(directory: Path) -> str:
+    """Render the real bounded host's prompt through prepare and run_copilot, with a recording CLI and no model."""
+    fixture = copilot_fixture(directory)
+    config = directory / "config.json"
+    configuration = skill_evals.review_config(directory)
+    configuration["runtime"] = "copilot-cli"
+    config.write_text(json.dumps(configuration), encoding="utf-8")
+    run = directory / "run"
+    prompts: list[str] = []
+
+    def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> review_hosts.ProcessResult:
+        if "--version" in arguments:
+            return review_hosts.ProcessResult(0, "GitHub Copilot CLI 1.0.88", "")
+        prompts.append(arguments[arguments.index("--prompt") + 1])
+        review_hosts.staging_path(run, 1).write_text('{"status": "complete"}', encoding="utf-8")
+        return review_hosts.ProcessResult(0, "", "")
+
+    try:
+        prepared = review_pipeline.prepare_fixture(fixture, host="copilot-cli", config_path=config, run_directory=run)
+        review_hosts.run_copilot(
+            run_directory=run,
+            materialized_root=Path(prepared["reviewer_root"]),
+            request_path=Path(prepared["request_path"]),
+            result_path=Path(prepared["result_path"]),
+            staging_path=review_hosts.staging_path(run, 1),
+            diagnostic_path=run / "copilot-diagnostic-1.jsonl",
+            isolation_root=run / "copilot-isolation-1",
+            runner=runner,
+            executable="copilot",
+        )
+        request = json.loads(Path(prepared["request_path"]).read_text(encoding="utf-8"))
+        pull = request["pull_request"]
+        return prompts[0].replace(pull["base_sha"], "<base-commit>").replace(pull["head_sha"], "<head-commit>")
+    finally:
+        if run.exists():
+            review_pipeline.remove_run(run)
 
 
 def review_document_prompts(directory: Path) -> dict[str, str]:
