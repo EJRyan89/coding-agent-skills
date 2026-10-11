@@ -733,7 +733,7 @@ class EnumerateBatchTests(unittest.TestCase):
 class CoverageTests(unittest.TestCase):
     POLICY: ClassVar[dict[str, Any]] = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 
-    def request(self) -> tuple[dict, Path]:
+    def request(self, exclude: tuple[str, ...] = ()) -> tuple[dict, Path]:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
@@ -745,6 +745,7 @@ class CoverageTests(unittest.TestCase):
                 root / "source",
                 fetcher=writing(data),
                 changed_paths=("db/Big.sql", "src/A.cs"),
+                exclude=exclude,
             )
             diff = root / "diff.patch"
             diff.write_text(
@@ -805,6 +806,39 @@ class CoverageTests(unittest.TestCase):
         request, _ = self.request()
         self.assertEqual({"unavailable_sources": ["db/Big.sql"]}, request["coverage"])
 
+    def test_report_names_configured_exclusions_and_other_coverage_gap_causes(self) -> None:
+        from review_records import render_markdown, validate_record
+
+        cases = (
+            ((), {"db/Big.sql": "file-size-limit"}),
+            (("db/*.sql",), {"db/Big.sql": "configured"}),
+            (("src/*.cs",), {"db/Big.sql": "file-size-limit", "src/A.cs": "configured"}),
+        )
+        for exclude, excluded_paths in cases:
+            with self.subTest(exclude=exclude):
+                request, root = self.request(exclude)
+                snapshot = json.loads((root / "source" / review_runtime.SOURCE_SNAPSHOT_MANIFEST).read_text("utf-8"))
+                self.assertEqual(excluded_paths, snapshot["excluded_paths"])
+                coverage = {"unavailable_sources": sorted(excluded_paths)}
+                self.assertEqual(coverage, request["coverage"])
+                record = self.record(request, [])
+                self.assertEqual(coverage, record["review"]["coverage"])
+                self.assertEqual("INCOMPLETE", record["review"]["verdict"])
+                validate_record(record)
+                before = json.loads(json.dumps(record))
+                report = render_markdown(record, record_payload_hash="0" * 64)
+                self.assertEqual(before, record)
+                self.assertEqual(
+                    [
+                        "> **Not reviewed in full:** these changed files were excluded by the repository's "
+                        "`snapshot_exclude`, were too large, could not be represented safely, or were documents whose "
+                        "text could not be extracted, so reviewers saw only their diff: "
+                        + ", ".join(f"`{path}`" for path in sorted(excluded_paths))
+                        + "."
+                    ],
+                    [line for line in report.splitlines() if line.startswith("> **Not reviewed in full:**")],
+                )
+
     def test_verdict_precedence_and_rendering(self) -> None:
         from review_records import RecordError, render_markdown, validate_record
 
@@ -819,6 +853,9 @@ class CoverageTests(unittest.TestCase):
         complete = self.record(request, [self.finding("SUGGESTION")])
         self.assertEqual("APPROVED", complete["review"]["verdict"])
         self.assertNotIn("coverage", complete["review"])
+        report = render_markdown(complete, record_payload_hash="0" * 64)
+        self.assertNotIn("Not reviewed in full", report)
+        self.assertNotIn("snapshot_exclude", report)
         broken = json.loads(json.dumps(incomplete))
         del broken["review"]["coverage"]
         with self.assertRaisesRegex(RecordError, "must list its unavailable sources"):
