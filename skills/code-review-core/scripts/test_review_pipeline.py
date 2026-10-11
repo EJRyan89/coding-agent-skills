@@ -3929,7 +3929,10 @@ class DocumentBaseRefusalTests(PipelineFixture):
         document = self.checkout / "docs" / "design.docx"
         document.parent.mkdir()
         document.write_bytes(base)
-        self.base = self.commit({})
+        self.base = self.commit({".gitattributes": "*.docx binary\n"})
+        self.assertEqual(
+            "docs/design.docx: diff: unset", git(self.checkout, "check-attr", "diff", "--", "docs/design.docx")
+        )
         blob = git(self.checkout, "rev-parse", f"{self.base}:docs/design.docx")
         document.write_bytes(
             word_document(
