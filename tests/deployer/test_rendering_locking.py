@@ -281,6 +281,15 @@ class RenderedExecutableTests(DeployerTestCase):
         self.assertFalse((self.skills_dir / "alpha").exists())
         self.assertFalse(self.manifest_file.exists())
 
+    def test_uppercase_powershell_syntax_error_blocks_deployment(self) -> None:
+        self.make_source_json()
+        directory = self.make_skill("alpha", "PowerShell fixture")
+        self.write(directory / "scripts" / "broken.PS1", "function Broken {\n")
+        self.make_config()
+        self.deploy_fails("--all", pattern=r"Rendered PowerShell syntax validation failed: alpha/scripts/broken\.PS1")
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertFalse(self.manifest_file.exists())
+
     def test_unclosed_bash_fence_blocks_deployment(self) -> None:
         self.make_source_json()
         self.make_skill("alpha", "Fence fixture\n\n```bash\necho open")

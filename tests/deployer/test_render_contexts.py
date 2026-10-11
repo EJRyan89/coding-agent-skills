@@ -173,6 +173,22 @@ class ShellCheckBatchTests(unittest.TestCase):
         )
 
 
+class PowerShellExtensionTests(unittest.TestCase):
+    def test_invalid_scripts_are_parsed_regardless_of_extension_case(self) -> None:
+        for suffix in (".ps1", ".PS1", ".Ps1"):
+            with self.subTest(suffix=suffix):
+                staged = render.Staged(skills={"alpha": {f"scripts/broken{suffix}": b"function Broken {\n"}})
+                with self.assertRaisesRegex(
+                    DeployError, r"Rendered PowerShell syntax validation failed: alpha/scripts/broken\." + suffix[1:]
+                ):
+                    render.validate_executables(staged)
+
+    def test_valid_scripts_pass_and_non_powershell_suffixes_are_ignored(self) -> None:
+        files = {f"scripts/fine{suffix}": b"Write-Output 'fine'\n" for suffix in (".ps1", ".PS1", ".Ps1")}
+        files["scripts/notes.ps1.txt"] = b"function Broken {\n"
+        render.validate_executables(render.Staged(skills={"alpha": files}))
+
+
 class NameValidationTests(unittest.TestCase):
     def test_trailing_newlines_never_pass_name_or_hash_validation(self) -> None:
         from deployer import names, source
