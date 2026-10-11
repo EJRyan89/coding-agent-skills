@@ -4,7 +4,7 @@ description: >-
   Run a skill's fixed scenarios once per reviewer model from throwaway homes and judge each review record by script.
   Use it before a pull request that changes a skill's prompt, model guidance, or reviewer instructions. Each run
   calls models.
-argument-hint: "SKILL [--scenario NAME ...] [--model haiku|sonnet|opus ...]"
+argument-hint: "SKILL [--scenario NAME ...] [--model NAME ...]"
 allowed-tools: ["Bash(python -B tools/skill_evals.py*)", "PowerShell(python -B tools/skill_evals.py*)"]
 ---
 
@@ -12,9 +12,11 @@ allowed-tools: ["Bash(python -B tools/skill_evals.py*)", "PowerShell(python -B t
 
 `tools/skill_evals.py` runs a skill's scenarios, the folders under `tests/fixtures/skill-evals/<skill>/`, once per reviewer model, each in a headless Claude Code session started in a throwaway home where this checkout is deployed, and checks every expectation against the record the run wrote. The script does every deterministic step: the deployment, the runs, the checks, the table, and the results file. Your part is choosing what to run and saying what a failure means. Its docstring lists every output line and what still comes from the user's own setup.
 
-It is a manual gate, never part of `tests/run_validation.py`. A full run is one session per scenario per model, each calling models. Two full runs of the first three scenarios on 2026-10-09 took about four minutes each, every session one to two; after deploying the homes, the script bounds the sessions at two and a half hours, since it runs three at once and stops each at 1,800 seconds.
+It is a manual gate, never part of `tests/run_validation.py`. A full run is one session per scenario per model, each calling models. After deploying the homes, the script runs up to `--jobs` sessions concurrently and stops each at `--timeout` seconds.
 
 ## 1. Choose the run
+
+Run `python -B tools/skill_evals.py --help` for the accepted model names and the concurrency and timeout defaults. The script's `MODELS` constant is the authoritative list of reviewer models.
 
 For a pull request, run every scenario on every model: only that run may record its result. Add `--scenario <name>` or `--model <model>` (each repeatable) only to rerun a failure, and leave out `--write`, which a narrowed run refuses. A skill without a folder under `tests/fixtures/skill-evals/` has no scenarios, and the run says so with `FAILED`.
 
