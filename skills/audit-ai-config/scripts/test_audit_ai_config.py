@@ -106,6 +106,13 @@ def _setup_conforming_repo(root: Path) -> None:
     (root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def _assert_scope_status(test: unittest.TestCase, result: audit.AuditResult, expected: str) -> None:
+    test.assertIn(result.scope_status, audit.SCOPE_STATUSES)
+    test.assertEqual(expected, result.scope_status)
+    test.assertEqual(expected, json.loads(audit.format_json(result))["scopeStatus"])
+    test.assertIn(f"Scope: **{expected}**", audit.format_markdown(result).splitlines())
+
+
 # ---------------------------------------------------------------------------
 # Authority classification tests
 # ---------------------------------------------------------------------------
@@ -201,12 +208,14 @@ class ExitCodeTests(unittest.TestCase):
 
     def test_unconfigured_is_inconclusive_with_exit_1(self) -> None:
         result = audit.audit(self.root)
+        _assert_scope_status(self, result, "not-applicable")
         self.assertEqual(1, result.exit_code)
         self.assertEqual("INCONCLUSIVE", result.result)
 
     def test_ambiguous_is_inconclusive_with_exit_1(self) -> None:
         (self.root / "CLAUDE.md").write_text("# CLAUDE.md\n", encoding="utf-8")
         result = audit.audit(self.root)
+        _assert_scope_status(self, result, "not-applicable")
         self.assertEqual(1, result.exit_code)
         self.assertEqual("INCONCLUSIVE", result.result)
 
@@ -218,6 +227,7 @@ class ExitCodeTests(unittest.TestCase):
         }
         (self.root / ".github/ai-config-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         result = audit.audit(self.root)
+        _assert_scope_status(self, result, "not-applicable")
         self.assertEqual(1, result.exit_code)
         self.assertEqual("INCONCLUSIVE", result.result)
 
@@ -1377,25 +1387,26 @@ class CopilotConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
         result = audit.audit(self.root)
-        self.assertEqual("independently-derived", result.scope_status)
+        _assert_scope_status(self, result, "independently-derived")
         manifest = self._manifest()
         manifest["surfaces"] = []
         self._write_manifest(manifest)
         result = audit.audit(self.root)
+        _assert_scope_status(self, result, "independently-derived")
         self.assertTrue(any(f.check == "scope" and f.severity == "ERROR" for f in result.findings))
 
     def test_scope_without_manifest_or_generator_is_informational(self) -> None:
         (self.root / ".github/ai-config-manifest.json").unlink()
         result = audit.audit(self.root)
         self.assertEqual("conforming", result.authority)
-        self.assertEqual("no-declared-scope", result.scope_status)
+        _assert_scope_status(self, result, "no-declared-scope")
         scope = [f for f in result.findings if f.check == "scope"]
         self.assertEqual(["INFO"], [f.severity for f in scope])
         self.assertIn("target-specific checks were not run", scope[0].message)
 
     def test_manifest_without_generator_still_warns_about_editable_scope(self) -> None:
         result = audit.audit(self.root)
-        self.assertEqual("manifest-declared-only", result.scope_status)
+        _assert_scope_status(self, result, "manifest-declared-only")
         self.assertEqual(
             [("WARNING", True)],
             [
@@ -1418,7 +1429,7 @@ class CopilotConfigurationTests(unittest.TestCase):
             with self.subTest(reason=reason):
                 script.write_text(source, encoding="utf-8")
                 result = audit.audit(self.root)
-                self.assertEqual("manifest-declared-only", result.scope_status)
+                _assert_scope_status(self, result, "manifest-declared-only")
                 self.assertEqual(
                     [
                         (
@@ -1430,7 +1441,7 @@ class CopilotConfigurationTests(unittest.TestCase):
                     [(f.severity, f.message) for f in result.findings if f.check == "scope"],
                 )
 
-    def test_the_scope_status_is_always_one_the_report_schema_names(self) -> None:
+    def test_scope_statuses_and_generator_failure_reasons_match_report_schema(self) -> None:
         documented = {"independently-derived", "manifest-declared-only", "no-declared-scope", "not-applicable"}
         text = (Path(audit.__file__).resolve().parent.parent / "references/report-schema.md").read_text(
             encoding="utf-8"
@@ -1626,6 +1637,28 @@ class OutputFormatTests(unittest.TestCase):
         self.assertEqual("conforming", data["authority"])
         self.assertEqual(0, data["exitCode"])
         self.assertIsInstance(data["findings"], list)
+
+    def test_reports_reject_an_undeclared_status_from_the_audit_engine(self) -> None:
+        with mock.patch.object(audit, "check_scope_and_roles", return_value=("undeclared", [])):
+            result = audit.audit(self.root)
+        for formatter in (audit.format_markdown, audit.format_json):
+            with (
+                self.subTest(formatter=formatter.__name__),
+                self.assertRaisesRegex(ValueError, "^Unknown scope status: 'undeclared'$"),
+            ):
+                formatter(result)
+
+    def test_report_validation_reads_the_canonical_scope_statuses(self) -> None:
+        result = audit.audit(self.root)
+        for status in audit.SCOPE_STATUSES:
+            remaining = tuple(value for value in audit.SCOPE_STATUSES if value != status)
+            for formatter in (audit.format_markdown, audit.format_json):
+                with (
+                    self.subTest(status=status, formatter=formatter.__name__),
+                    mock.patch.object(audit, "SCOPE_STATUSES", remaining),
+                    self.assertRaisesRegex(ValueError, f"^Unknown scope status: {status!r}$"),
+                ):
+                    formatter(dataclasses.replace(result, scope_status=status))
 
     def test_markdown_summary_counts_each_severity_and_info_check(self) -> None:
         result = audit.AuditResult(
@@ -3711,6 +3744,7 @@ class ScopeWithoutAValidManifestTests(unittest.TestCase):
     def _scope(self) -> tuple[str, list[tuple[str, str | None, str]]]:
         result = audit.audit(self.root)
         self.assertEqual("conforming", result.authority)
+        _assert_scope_status(self, result, "independently-derived")
         return result.scope_status, [(f.severity, f.path, f.message) for f in result.findings if f.check == "scope"]
 
     def test_a_missing_manifest_is_one_scope_error(self) -> None:

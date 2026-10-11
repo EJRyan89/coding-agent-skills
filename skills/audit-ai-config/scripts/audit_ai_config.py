@@ -2265,13 +2265,19 @@ def _cell(text: str) -> str:
     return re.sub(r"\r\n|\r|\n", "<br>", text.replace("|", r"\|"))
 
 
+def _validated_scope_status(status: str) -> str:
+    if status not in SCOPE_STATUSES:
+        raise ValueError(f"Unknown scope status: {status!r}")
+    return status
+
+
 def format_markdown(result: AuditResult) -> str:
     sorted_findings = result.sorted_findings()
     lines = [
         f"## AI Config Audit — {result.repository}",
         "",
         f"Authority: **{result.authority}**",
-        f"Scope: **{result.scope_status}**",
+        f"Scope: **{_validated_scope_status(result.scope_status)}**",
         "",
         f"RESULT {result.result}",
         *summary_lines(sorted_findings),
@@ -2296,7 +2302,7 @@ def format_json(result: AuditResult) -> str:
     output = {
         "repository": result.repository,
         "authority": result.authority,
-        "scopeStatus": result.scope_status,
+        "scopeStatus": _validated_scope_status(result.scope_status),
         "exitCode": result.exit_code,
         "findings": [asdict(f) for f in result.sorted_findings()],
     }
