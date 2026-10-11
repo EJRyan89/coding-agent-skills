@@ -56,6 +56,7 @@ import json
 import os
 import re
 import stat
+import string
 import sys
 import tempfile
 import time
@@ -76,9 +77,9 @@ INDEX_BYTE_LIMIT = 25_000
 NEAR_LIMIT_FRACTION = 0.9
 OVERLAP_THRESHOLD = 0.3
 OVERLAP_LIMIT = 3
-INDEX_ENTRY = re.compile(r"^\s*-\s*\[(?P<title>[^\]]*)\]\((?P<file>[^)]+)\)")
+INDEX_ENTRY = re.compile(r"^\s*-\s*\[(?P<title>[^\]]*)\]\(")
 # The separator before a hook may be an em dash, an en dash, a colon, or a hyphen, as people write index lines.
-INDEX_HOOK = re.compile(r"^\s*-\s*\[[^\]]*\]\([^)]+\)\s*(?:[—–:-]\s*)?(?P<hook>.*?)\s*$")  # noqa: RUF001 - the en dash is meant
+INDEX_HOOK = re.compile(r"^\s*(?:[—–:-]\s*)?(?P<hook>.*?)\s*$")  # noqa: RUF001 - the en dash is meant
 HOOK_LIMIT = 150
 FRONTMATTER_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*)\s*:\s*(?P<value>.*)$")
 # A literal or folded block scalar header: chomping and an indentation digit in either order, then a comment.
@@ -244,17 +245,57 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return {}, text
 
 
+def parse_target(line: str, start: int) -> tuple[str, int] | None:
+    """Decode a Markdown destination, stopping at its unescaped, balanced closing delimiter."""
+    target: list[str] = []
+    depth = 1
+    position = start
+    while position < len(line):
+        character = line[position]
+        if character == "\\" and position + 1 < len(line) and line[position + 1] in string.punctuation:
+            position += 1
+            target.append(line[position])
+        elif character == "(":
+            depth += 1
+            target.append(character)
+        elif character == ")":
+            depth -= 1
+            if depth == 0:
+                return ("".join(target), position) if target else None
+            target.append(character)
+        else:
+            target.append(character)
+        position += 1
+    return None
+
+
+def parse_index_entry(line: str) -> dict[str, str] | None:
+    match = INDEX_ENTRY.match(line)
+    if not match:
+        return None
+    parsed = parse_target(line, match.end())
+    if parsed is None:
+        return None
+    target, end = parsed
+    hook = INDEX_HOOK.match(line[end + 1 :])
+    return {
+        "title": match.group("title"),
+        "file": line[match.end() : end],
+        "target": target,
+        "hook": hook.group("hook") if hook else "",
+        "text": line,
+    }
+
+
 def parse_index(path: Path) -> tuple[list[dict[str, str]], list[str]]:
     if not path.is_file():
         return [], []
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     entries = []
     for number, line in enumerate(lines, start=1):
-        match = INDEX_ENTRY.match(line)
-        if match:
-            entries.append(
-                {"line": str(number), "title": match.group("title"), "file": match.group("file"), "text": line}
-            )
+        entry = parse_index_entry(line)
+        if entry is not None:
+            entries.append({"line": str(number), **entry})
     return entries, lines
 
 
@@ -365,7 +406,7 @@ def audit(
     index_path = memory_dir / INDEX_NAME
     entries, index_lines = parse_index(index_path)
     index_bytes = index_path.stat().st_size if index_path.is_file() else 0
-    indexed_files = Counter(target_identity(memory_dir, entry["file"]) for entry in entries)
+    indexed_files = Counter(target_identity(memory_dir, entry["target"]) for entry in entries)
     files = memory_files(memory_dir)
     parsed: dict[Path, tuple[dict[str, str], str]] = {
         path: parse_frontmatter(path.read_text(encoding="utf-8", errors="replace")) for path in files
@@ -404,9 +445,9 @@ def audit(
             "over_limit": len(index_lines) > INDEX_LINE_LIMIT or index_bytes > INDEX_BYTE_LIMIT,
             "near_limit": len(index_lines) > INDEX_LINE_LIMIT * NEAR_LIMIT_FRACTION
             or index_bytes > INDEX_BYTE_LIMIT * NEAR_LIMIT_FRACTION,
-            "missing_files": [entry["file"] for entry in entries if not (memory_dir / entry["file"]).is_file()],
+            "missing_files": [entry["file"] for entry in entries if not (memory_dir / entry["target"]).is_file()],
             "duplicate_entries": sorted(
-                {entry["file"] for entry in entries if indexed_files[target_identity(memory_dir, entry["file"])] > 1}
+                {entry["file"] for entry in entries if indexed_files[target_identity(memory_dir, entry["target"])] > 1}
             ),
         },
         "unindexed_files": [memory.file for memory in memories if not memory.indexed],
@@ -421,8 +462,9 @@ def one_line(text: str, limit: int = HOOK_LIMIT) -> str:
     return text[: limit - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") + "..."
 
 
-def index_line(title: str, file: str, hook: str) -> str:
-    return f"- [{title}]({file})" + (f" — {hook}" if hook else "")
+def index_line(title: str, file: str, hook: str, *, original_target: str | None = None) -> str:
+    target = original_target if original_target is not None else re.sub(r"([\\()])", r"\\\1", file)
+    return f"- [{title}]({target})" + (f" — {hook}" if hook else "")
 
 
 def reindex(memory_dir: Path) -> dict:
@@ -445,25 +487,25 @@ def reindex(memory_dir: Path) -> dict:
     seen: set[str] = set()
     dropped: list[tuple[str, str]] = []
     for line in current.splitlines():
-        match = INDEX_ENTRY.match(line)
-        if not match:
+        entry = parse_index_entry(line)
+        if entry is None:
             lines.append(line)
             continue
-        file = match.group("file")
+        file = entry["target"]
         if not (memory_dir / file).is_file():
-            dropped.append(("missing", file))
+            dropped.append(("missing", entry["file"]))
             continue
         identity = target_identity(memory_dir, file)
         if identity in seen:
-            dropped.append(("duplicate", file))
+            dropped.append(("duplicate", entry["file"]))
             continue
         seen.add(identity)
         meta, body = frontmatter(file)
-        hook_match = INDEX_HOOK.match(line)  # matches every line INDEX_ENTRY does
-        existing_hook = hook_match.group("hook") if hook_match else ""
-        hook = one_line(meta["description"]) if meta.get("description") else existing_hook or derived_hook(body)
-        lines.append(index_line(match.group("title").strip() or derived_title(meta, file), file, hook))
-        entries.append(file)
+        hook = one_line(meta["description"]) if meta.get("description") else entry["hook"] or derived_hook(body)
+        lines.append(
+            index_line(entry["title"].strip() or derived_title(meta, file), file, hook, original_target=entry["file"])
+        )
+        entries.append(entry["file"])
     added = sorted(path.name for path in memory_files(memory_dir) if target_identity(memory_dir, path.name) not in seen)
     if added:
         while lines and not lines[-1].strip():
