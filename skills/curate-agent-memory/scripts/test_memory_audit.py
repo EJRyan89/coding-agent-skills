@@ -107,6 +107,30 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertFalse(result["index"]["over_limit"])
         self.assertFalse(result["index"]["near_limit"])
 
+    def test_a_case_variant_index_is_not_a_memory(self) -> None:
+        for name in ("memory.md", "Memory.md"):
+            with self.subTest(name=name):
+                (self.memory_dir / memory_audit.INDEX_NAME).unlink(missing_ok=True)
+                index = write(self.memory_dir / name, "# Memory Index\n\nNotes stay here.\n")
+                required = self.memory_dir / memory_audit.INDEX_NAME
+                self.assertTrue(required.is_file(), "the fixture requires a case-insensitive store")
+                self.assertTrue(required.samefile(index))
+                result = self.run_audit()
+                self.assertTrue(result["index"]["exists"])
+                self.assertEqual(str(required), result["index"]["path"])
+                self.assertEqual(0, result["index"]["entries"])
+                self.assertEqual(3, result["index"]["lines"])
+                self.assertEqual(index.stat().st_size, result["index"]["bytes"])
+                self.assertEqual([], result["memories"])
+                self.assertEqual([], result["unindexed_files"])
+                write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+                result = self.run_audit()
+                self.assertEqual(["rule.md"], list(self.by_file(result)))
+                self.assertEqual(["rule.md"], result["unindexed_files"])
+                self.assertEqual("rule description", self.by_file(result)["rule.md"]["description"])
+                (self.memory_dir / "rule.md").unlink()
+                index.unlink()
+
     def test_a_dot_prefixed_index_target_marks_the_memory_as_indexed(self) -> None:
         write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
         write(self.memory_dir / "MEMORY.md", "- [Rule](./rule.md) — hook\n")
@@ -469,6 +493,56 @@ class ReindexTests(unittest.TestCase):
         self.assertEqual(["UNCHANGED"], self.reindex("--write"))
         self.assertEqual(["MEMORY.md"], [path.name for path in self.memory_dir.iterdir()])
         self.assertEqual(b"", self.index.read_bytes())
+
+    def test_a_case_variant_index_without_memories_never_gets_a_self_entry(self) -> None:
+        self.index.unlink()
+        for name in ("memory.md", "Memory.md"):
+            with self.subTest(name=name):
+                self.index.unlink(missing_ok=True)
+                index = write(self.memory_dir / name, "")
+                self.assertTrue(self.index.is_file(), "the fixture requires a case-insensitive store")
+                self.assertTrue(self.index.samefile(index))
+                for extra in ((), ("--write",), ("--write",)):
+                    self.assertEqual(["UNCHANGED"], self.reindex(*extra))
+                    self.assertEqual([], memory_audit.audit(self.memory_dir)["memories"])
+                    self.assertEqual(b"", index.read_bytes())
+                    self.assertEqual([name], [path.name for path in self.memory_dir.iterdir()])
+                index.unlink()
+
+    def test_a_case_variant_index_rebuild_preserves_memories_and_never_adds_itself(self) -> None:
+        self.index.unlink()
+        rule = write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        before = rule.read_bytes()
+        for name in ("memory.md", "Memory.md"):
+            with self.subTest(name=name):
+                self.index.unlink(missing_ok=True)
+                index = write(self.memory_dir / name, "# Memory Index\n\nNotes stay here.\n")
+                original = index.read_bytes()
+                self.assertTrue(self.index.is_file(), "the fixture requires a case-insensitive store")
+                self.assertTrue(self.index.samefile(index))
+                expected = ["INDEX_LINE rule.md", "ADDED rule.md"]
+                self.assertEqual([*expected, f"WOULD_WRITE {self.index.as_posix()}"], self.reindex())
+                self.assertEqual(original, index.read_bytes(), "preview must leave the index unchanged")
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual(["rule.md"], [entry["file"] for entry in report["memories"]])
+                self.assertEqual(["rule.md"], report["unindexed_files"])
+                self.assertEqual([*expected, f"WROTE {self.index.as_posix()}"], self.reindex("--write"))
+                self.assertEqual(
+                    "# Memory Index\n\nNotes stay here.\n- [rule](rule.md) — rule description\n",
+                    self.index.read_text(encoding="utf-8"),
+                )
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual(["rule.md"], [entry["file"] for entry in report["memories"]])
+                self.assertEqual([], report["unindexed_files"])
+                self.assertTrue(report["memories"][0]["indexed"])
+                self.assertEqual(1, report["index"]["entries"])
+                self.assertEqual([], report["index"]["missing_files"])
+                self.assertEqual([], report["index"]["duplicate_entries"])
+                self.assertEqual(["INDEX_LINE rule.md", "UNCHANGED"], self.reindex("--write"))
+                self.assertEqual(before, rule.read_bytes(), "memory files must never change")
+                self.assertEqual(["rule.md"], memory_audit.reindex(self.memory_dir)["entries"])
+                self.assertEqual(2, len(list(self.memory_dir.iterdir())), "no temporary file may remain")
+                self.index.unlink()
 
     def test_a_block_scalar_description_becomes_the_whole_hook(self) -> None:
         write(
