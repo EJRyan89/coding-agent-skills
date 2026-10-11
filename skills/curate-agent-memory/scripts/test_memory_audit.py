@@ -107,6 +107,40 @@ class MemoryAuditTests(unittest.TestCase):
         self.assertFalse(result["index"]["over_limit"])
         self.assertFalse(result["index"]["near_limit"])
 
+    def test_a_dot_prefixed_index_target_marks_the_memory_as_indexed(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        write(self.memory_dir / "MEMORY.md", "- [Rule](./rule.md) — hook\n")
+        result = self.run_audit()
+        self.assertEqual([], result["unindexed_files"])
+        self.assertTrue(self.by_file(result)["rule.md"]["indexed"])
+        self.assertEqual([], result["index"]["missing_files"])
+        self.assertEqual([], result["index"]["duplicate_entries"])
+
+    def test_duplicate_index_targets_keep_their_original_spellings_in_the_report(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        write(
+            self.memory_dir / "MEMORY.md",
+            "- [Rule](./rule.md) — hook\n- [Rule again](rule.md) — hook\n"
+            "- [Gone](./gone.md) — hook\n- [Gone again](gone.md) — hook\n",
+        )
+        result = self.run_audit()
+        self.assertEqual([], result["unindexed_files"])
+        self.assertEqual(["./gone.md", "gone.md"], result["index"]["missing_files"])
+        self.assertEqual(["./gone.md", "./rule.md", "gone.md", "rule.md"], result["index"]["duplicate_entries"])
+
+    def test_case_only_index_targets_are_indexed_and_duplicate_on_windows(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        self.assertTrue((self.memory_dir / "RULE.md").is_file(), "the fixture requires a case-insensitive store")
+        write(self.memory_dir / "MEMORY.md", "- [Rule](RULE.md) — hook\n")
+        result = self.run_audit()
+        self.assertEqual([], result["unindexed_files"])
+        self.assertTrue(self.by_file(result)["rule.md"]["indexed"])
+        write(self.memory_dir / "MEMORY.md", "- [Rule](./rule.md) — hook\n- [Rule again](RULE.md) — hook\n")
+        result = self.run_audit()
+        self.assertEqual([], result["unindexed_files"])
+        self.assertEqual([], result["index"]["missing_files"])
+        self.assertEqual(["./rule.md", "RULE.md"], result["index"]["duplicate_entries"])
+
     def test_index_line_and_byte_limits_are_both_enforced(self) -> None:
         write(self.memory_dir / "MEMORY.md", "\n".join(f"line {n}" for n in range(250)))
         self.assertTrue(self.run_audit()["index"]["over_limit"])
@@ -403,6 +437,33 @@ class ReindexTests(unittest.TestCase):
         self.reindex("--write")
         self.assertEqual("- [one](one.md) — one description\n", self.index.read_text(encoding="utf-8"))
         self.assertEqual(["MEMORY.md", "one.md"], sorted(path.name for path in self.memory_dir.iterdir()))
+
+    def test_audit_and_reindex_agree_on_target_identity_and_preserve_the_surviving_link(self) -> None:
+        write(self.memory_dir / "rule.md", memory("rule", "Rule body."))
+        before = self.snapshot()
+        for first, second in (("rule.md", "./rule.md"), ("./rule.md", "RULE.md"), ("RULE.md", "rule.md")):
+            with self.subTest(first=first, second=second):
+                original = f"# Index\n\n- [Rule]({first}) — hook\n- [Rule again]({second}) — hook\n"
+                write(self.index, original)
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual([], report["unindexed_files"])
+                self.assertEqual([], report["index"]["missing_files"])
+                self.assertEqual(sorted([first, second]), report["index"]["duplicate_entries"])
+                self.assertTrue(report["memories"][0]["indexed"])
+                expected = [f"INDEX_LINE {first}", f"DROPPED duplicate {second}"]
+                self.assertEqual([*expected, f"WOULD_WRITE {self.index.as_posix()}"], self.reindex())
+                self.assertEqual(original, self.index.read_text(encoding="utf-8"))
+                self.assertEqual([*expected, f"WROTE {self.index.as_posix()}"], self.reindex("--write"))
+                self.assertEqual(
+                    f"# Index\n\n- [Rule]({first}) — rule description\n", self.index.read_text(encoding="utf-8")
+                )
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual([], report["unindexed_files"])
+                self.assertEqual([], report["index"]["missing_files"])
+                self.assertEqual([], report["index"]["duplicate_entries"])
+                self.assertTrue(report["memories"][0]["indexed"])
+                self.assertEqual([f"INDEX_LINE {first}", "UNCHANGED"], self.reindex("--write"))
+                self.assertEqual(before, self.snapshot(), "memory files must never change")
 
     def test_an_empty_index_without_memories_is_unchanged(self) -> None:
         self.assertEqual(["UNCHANGED"], self.reindex("--write"))
