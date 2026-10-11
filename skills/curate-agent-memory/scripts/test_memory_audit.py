@@ -489,6 +489,110 @@ class ReindexTests(unittest.TestCase):
                 self.assertEqual([f"INDEX_LINE {first}", "UNCHANGED"], self.reindex("--write"))
                 self.assertEqual(before, self.snapshot(), "memory files must never change")
 
+    def test_parenthesized_targets_preserve_existing_titles_hooks_and_memories(self) -> None:
+        cases = (
+            ("decision(cache).md", "decision(cache).md"),
+            ("decision(cache).md", r"decision\(cache\).md"),
+            ("decision(cache(inner)).md", "./decision(cache(inner)).md"),
+            ("decision(cache(inner)).md", r"decision\(cache(inner)\).md"),
+            ("decision)cache.md", r"decision\)cache.md"),
+            ("decision(cache.md", r"decision\(cache.md"),
+        )
+        for file, target in cases:
+            with self.subTest(target=target):
+                path = write(self.memory_dir / file, "---\nname: derived title\n---\n\nDerived body hook.\n")
+                original = f"# Index\n\n- [Chosen title]({target}) — Keep this hook (and this detail)\n"
+                write(self.index, original)
+                before = self.snapshot()
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual([], report["unindexed_files"])
+                self.assertEqual([], report["index"]["missing_files"])
+                self.assertEqual([], report["index"]["duplicate_entries"])
+                self.assertEqual(1, report["index"]["entries"])
+                self.assertTrue(report["memories"][0]["indexed"])
+                self.assertEqual(original, memory_audit.reindex(self.memory_dir)["content"])
+                for extra in ((), ("--write",), ("--write",)):
+                    self.assertEqual([f"INDEX_LINE {target}", "UNCHANGED"], self.reindex(*extra))
+                    self.assertEqual(original.encode("utf-8"), self.index.read_bytes())
+                    self.assertEqual(before, self.snapshot(), "memory files must never change")
+                path.unlink()
+
+    def test_escaped_and_balanced_targets_share_identity_but_keep_report_spellings(self) -> None:
+        file = "decision(cache).md"
+        write(self.memory_dir / file, memory("decision-cache", "Body."))
+        first, second, gone = r"./decision\(cache\).md", "DECISION(cache).md", r"gone\(cache\).md"
+        original = f"- [Chosen title]({first}) — stale hook\n- [Duplicate]({second}) — hook\n- [Gone]({gone})\n"
+        write(self.index, original)
+        before = self.snapshot()
+        report = memory_audit.audit(self.memory_dir)
+        self.assertEqual([], report["unindexed_files"])
+        self.assertEqual([gone], report["index"]["missing_files"])
+        self.assertEqual(sorted([first, second]), report["index"]["duplicate_entries"])
+        expected = [f"INDEX_LINE {first}", f"DROPPED duplicate {second}", f"DROPPED missing {gone}"]
+        self.assertEqual([*expected, f"WOULD_WRITE {self.index.as_posix()}"], self.reindex())
+        self.assertEqual(original.encode("utf-8"), self.index.read_bytes())
+        self.assertEqual([*expected, f"WROTE {self.index.as_posix()}"], self.reindex("--write"))
+        self.assertEqual(
+            f"- [Chosen title]({first}) — decision-cache description\n", self.index.read_text(encoding="utf-8")
+        )
+        self.assertEqual([f"INDEX_LINE {first}", "UNCHANGED"], self.reindex("--write"))
+        self.assertEqual([], memory_audit.audit(self.memory_dir)["index"]["missing_files"])
+        self.assertEqual(before, self.snapshot(), "memory files must never change")
+
+    def test_generated_parenthesized_targets_round_trip_through_audit_and_reindex(self) -> None:
+        for file, target in (
+            ("decision(cache).md", r"decision\(cache\).md"),
+            ("decision(cache(inner)).md", r"decision\(cache\(inner\)\).md"),
+            ("decision(cache.md", r"decision\(cache.md"),
+            ("decision)cache.md", r"decision\)cache.md"),
+            ("decision (cache).md", r"decision \(cache\).md"),
+        ):
+            with self.subTest(file=file):
+                path = write(self.memory_dir / file, "---\nname: Chosen title\n---\n\nBody hook.\n")
+                write(self.index, "")
+                before = self.snapshot()
+                expected = ["INDEX_LINE " + file, "ADDED " + file]
+                self.assertEqual([*expected, f"WOULD_WRITE {self.index.as_posix()}"], self.reindex())
+                self.assertEqual(b"", self.index.read_bytes())
+                self.assertEqual([*expected, f"WROTE {self.index.as_posix()}"], self.reindex("--write"))
+                self.assertEqual(f"- [Chosen title]({target}) — Body hook.\n", self.index.read_text(encoding="utf-8"))
+                report = memory_audit.audit(self.memory_dir)
+                self.assertEqual([], report["unindexed_files"])
+                self.assertEqual([], report["index"]["missing_files"])
+                self.assertTrue(report["memories"][0]["indexed"])
+                self.assertEqual([f"INDEX_LINE {target}", "UNCHANGED"], self.reindex("--write"))
+                self.assertEqual(before, self.snapshot(), "memory files must never change")
+                path.unlink()
+
+    def test_target_escape_parity_and_incomplete_links_are_not_misparsed(self) -> None:
+        for target, decoded in (
+            (r"folder\decision\(cache\).md", r"folder\decision(cache).md"),
+            (r"folder\\decision(cache).md", r"folder\decision(cache).md"),
+            (r"decision\_cache.md", "decision_cache.md"),
+            (r"folder\\\(cache\).md", r"folder\(cache).md"),
+        ):
+            with self.subTest(target=target):
+                write(self.index, f"- [Title]({target}) — hook (detail)\n")
+                entries, _ = memory_audit.parse_index(self.index)
+                self.assertEqual(1, len(entries))
+                self.assertEqual(target, entries[0]["file"])
+                self.assertEqual(decoded, entries[0]["target"])
+                self.assertEqual("hook (detail)", entries[0]["hook"])
+                write(self.index, memory_audit.index_line("Title", decoded, "hook"))
+                generated, _ = memory_audit.parse_index(self.index)
+                self.assertEqual(decoded, generated[0]["target"])
+        for line in (
+            "- [Unclosed](decision(cache.md) — hook",
+            r"- [Escaped closing delimiter](decision.md\)",
+            "- [Empty]() — hook",
+            "- [Not a link] decision(cache).md",
+        ):
+            with self.subTest(line=line):
+                write(self.index, line + "\n")
+                self.assertEqual([], memory_audit.parse_index(self.index)[0])
+                self.assertEqual(line + "\n", memory_audit.reindex(self.memory_dir)["content"])
+                self.assertEqual(["UNCHANGED"], self.reindex("--write"))
+
     def test_an_empty_index_without_memories_is_unchanged(self) -> None:
         self.assertEqual(["UNCHANGED"], self.reindex("--write"))
         self.assertEqual(["MEMORY.md"], [path.name for path in self.memory_dir.iterdir()])
