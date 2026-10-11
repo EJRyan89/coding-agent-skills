@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from harness import DeployerTestCase, Result, forward
+from harness import DeployerTestCase, Result, forward, tree_state
 
 from deployer import cli, config, names, source
 from deployer.errors import DeployError
@@ -744,6 +744,16 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         self.assertEqual([], list(self.canary.iterdir()))
         self.assertFalse(self.manifest_file.exists())
 
+    def assert_canary_usage_error(self, directory: Path, value: str, message: str) -> None:
+        before = tree_state(self.root)
+        result = self.run_from(directory, "--canary-home", value, "--all")
+        self.assertEqual(2, result.code, result.output)
+        self.assertEqual(
+            f"\nERROR: {message}\nRun 'python deploy.py --help' for usage.\n\n",
+            result.output,
+        )
+        self.assertEqual(before, tree_state(self.root), result.output)
+
     def test_a_linked_worktree_deploys_into_an_empty_temporary_home(self) -> None:
         linked = self.make_linked_worktree()
         self.make_skill("beta", "Repositories under {{REPOS_ROOT}}", ["REPOS_ROOT"])
@@ -788,22 +798,31 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         elsewhere = self.root / "elsewhere"
         elsewhere.mkdir()
         with mock.patch("tempfile.gettempdir", return_value=str(elsewhere)):
-            result = self.run_from(linked, "--canary-home", str(self.canary), "--all")
-        self.assert_untouched(result, "--canary-home must be inside the temporary directory")
+            self.assert_canary_usage_error(
+                linked,
+                str(self.canary),
+                f"--canary-home must be inside the temporary directory {forward(elsewhere)} "
+                f"(got: {forward(self.canary)})",
+            )
 
     def test_the_temporary_directory_itself_is_refused(self) -> None:
         linked = self.make_linked_worktree()
         with mock.patch("tempfile.gettempdir", return_value=str(self.canary)):
-            result = self.run_from(linked, "--canary-home", str(self.canary), "--all")
-        self.assert_untouched(result, "--canary-home must be inside the temporary directory")
+            self.assert_canary_usage_error(
+                linked,
+                str(self.canary),
+                f"--canary-home must be inside the temporary directory {forward(self.canary)} "
+                f"(got: {forward(self.canary)})",
+            )
 
     def test_a_directory_with_unmarked_content_is_refused(self) -> None:
         linked = self.make_linked_worktree()
         (self.canary / ".claude").mkdir()
-        result = self.run_from(linked, "--canary-home", str(self.canary), "--all")
-        self.assertNotEqual(0, result.code, result.output)
-        self.assertIn(
-            "--canary-home must be an empty directory or one an earlier --canary-home deployment used", result.output
+        self.assert_canary_usage_error(
+            linked,
+            str(self.canary),
+            "--canary-home must be an empty directory or one an earlier --canary-home deployment used: "
+            f"{forward(self.canary)}",
         )
         self.assertEqual([".claude"], [entry.name for entry in self.canary.iterdir()])
 
@@ -814,14 +833,17 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         junction = self.root / "junction"
         make_junction(junction, target)
         (self.root / "file").write_text("", encoding="utf-8")
-        for value, pattern in (
-            ("relative-home", "--canary-home must be an absolute path"),
-            (str(self.root / "missing"), "--canary-home must be an existing directory"),
-            (str(self.root / "file"), "--canary-home must be an existing directory"),
-            (str(junction), "--canary-home must not be a symlink or junction"),
+        for value, message in (
+            ("relative-home", "--canary-home must be an absolute path (got: relative-home)"),
+            (
+                str(self.root / "missing"),
+                f"--canary-home must be an existing directory: {forward(self.root / 'missing')}",
+            ),
+            (str(self.root / "file"), f"--canary-home must be an existing directory: {forward(self.root / 'file')}"),
+            (str(junction), f"--canary-home must not be a symlink or junction: {forward(junction)}"),
         ):
             with self.subTest(value=value):
-                self.assert_untouched(self.run_from(linked, "--canary-home", value, "--all"), pattern)
+                self.assert_canary_usage_error(linked, value, message)
         self.assertEqual([], list(target.iterdir()))
 
     def test_dry_run_migration_and_take_over_cannot_use_a_canary_home(self) -> None:

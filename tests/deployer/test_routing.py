@@ -177,6 +177,46 @@ class DeployUsageErrorTests(DeployerTestCase):
         )
         self.assertEqual([], list(canary.iterdir()), result.output)
 
+    def test_unknown_includes_are_usage_errors_before_any_change(self) -> None:
+        for arguments in (("--all",), ("--all", "--dry-run")):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(
+                    *arguments,
+                    "--include",
+                    "alpha",
+                    "--include",
+                    "missing",
+                    "--include",
+                    "other",
+                    pattern="--include names no bundle or skill",
+                )
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(
+                    f"\nERROR: --include names no bundle or skill in this source: missing, other\n{self.HELP}\n\n",
+                    result.output,
+                )
+
+    def test_unknown_includes_do_not_claim_a_canary_home(self) -> None:
+        canary = self.root / "canary"
+        canary.mkdir()
+        before = tree_state(self.home)
+        result = self.deploy_fails(
+            "--all",
+            "--canary-home",
+            str(canary),
+            "--include",
+            "missing",
+            home=canary,
+            pattern="--include names no bundle or skill",
+        )
+        self.assertEqual(2, result.code, result.output)
+        self.assertEqual(
+            f"\nERROR: --include names no bundle or skill in this source: missing\n{self.HELP}\n\n",
+            result.output,
+        )
+        self.assertEqual([], list(canary.iterdir()), result.output)
+        self.assertEqual(before, tree_state(self.home), result.output)
+
     def test_known_forced_items_still_require_the_selected_run_to_install_them(self) -> None:
         self.make_source_json(
             shared_assets={"shared.md": "owner"}, bundles={"optional": {"members": ["beta"], "opt_in": True}}

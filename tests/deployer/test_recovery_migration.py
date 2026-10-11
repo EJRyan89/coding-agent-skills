@@ -15,6 +15,7 @@ from unittest import mock
 from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, forward, tree_state
 
 from deployer import fsops, hashing, journal, pipeline, platform_support, render
+from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 ZERO_HASH = "sha256:" + "0" * 64
 
@@ -92,6 +93,34 @@ class RecoveryTestCase(DeployerTestCase):
 
 
 class RecoveryTests(RecoveryTestCase):
+    def test_unknown_include_leaves_pending_journal_and_home_untouched(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "interrupted replacement\n")
+        replacement = hashing.hash_path(self.skills_dir / "alpha")
+        self.write_journal(
+            "20260101-000000-fake",
+            backup_entry("alpha", original),
+            install_entry("alpha", replacement),
+        )
+        self.sentinel()
+        (self.home / CANARY_MARKER).write_bytes(CANARY_MARKER_TEXT)
+        for arguments in ((), ("--dry-run",), ("--canary-home", str(self.home))):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(
+                    "--all", *arguments, "--include", "missing", pattern="--include names no bundle or skill"
+                )
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(
+                    "\nERROR: --include names no bundle or skill in this source: missing\n"
+                    "Run 'python deploy.py --help' for usage.\n\n",
+                    result.output,
+                )
+        recovered = self.deploy_ok("--all")
+        self.assertIn("Recovering uncommitted run 20260101-000000-fake (rolling back)...", recovered.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+
     def test_unknown_forced_item_leaves_pending_journal_and_home_untouched(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         original = hashing.hash_path(self.skills_dir / "alpha")

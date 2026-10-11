@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 
 from . import config, source, tools
-from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE
+from .arguments import CHECK_COMMAND_LINE, CONFIGURE_COMMAND_LINE, usage_error
 from .context import Context, Selection
 from .errors import CANCELLED, Cancelled, DeployError
 from .report import currently_chosen, plural, wrap
@@ -25,14 +25,18 @@ def select_all(context: Context, include: list[str]) -> Selection:
     return selection
 
 
+def check_includes(src: source.Source, include: list[str]) -> None:
+    """Refuse unknown --include roots before claiming the home or recovering an earlier deployment."""
+    roots = set(src.bundles) | set(source.root_names(src))
+    unknown = [name for name in include if name not in roots]
+    if unknown:
+        raise usage_error(f"--include names no bundle or skill in this source: {', '.join(unknown)}")
+
+
 def select(context: Context) -> Selection | None:
     src = context.source
     selection = Selection()
     if context.options.select_all:
-        roots = set(src.bundles) | set(source.root_names(src))
-        unknown = [name for name in context.options.include if name not in roots]
-        if unknown:
-            raise DeployError(f"ERROR: --include names no bundle or skill in this source: {', '.join(unknown)}")
         return select_all(context, context.options.include)
     print("")
     if not src.skills:

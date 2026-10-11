@@ -517,16 +517,27 @@ def renames_a_branch(arguments: list[str]) -> bool:
     """Whether git branch is asked to move a branch, which renames HEAD's own when it names none or that one.
 
     git takes a unique prefix of a long option and a bundle of short ones, so --mov and -fm both move.
+    A short option's attached value ends its bundle; -u also takes a separate value, while -t does not.
     """
-    for argument in arguments:
+    options = iter(arguments)
+    for argument in options:
         if argument == "--":
             return False
         if argument.startswith("--"):
-            name = argument[2:].split("=", 1)[0]
+            name, inline, _ = argument[2:].partition("=")
             if len(name) >= 2 and "move".startswith(name):
                 return True
-        elif argument.startswith("-") and {"m", "M"} & set(argument[1:]):
-            return True
+            # Shorter prefixes also match git's hidden, valueless --set-upstream option.
+            if not inline and name.startswith("set-upstream-") and "set-upstream-to".startswith(name):
+                next(options, None)
+        elif argument.startswith("-"):
+            for index, option in enumerate(argument[1:], start=1):
+                if option in {"m", "M"}:
+                    return True
+                if option in {"u", "t"}:
+                    if option == "u" and index == len(argument) - 1:
+                        next(options, None)
+                    break
     return False
 
 

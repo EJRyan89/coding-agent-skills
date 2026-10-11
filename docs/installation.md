@@ -99,6 +99,10 @@ python deploy.py --all --force-item dotnet-format
 
 Every `deploy.py` command exits 0 when it succeeds, 1 when it fails, 2 when its command line is wrong (it names the `--help` to read), and 130 when it is cancelled, by Ctrl+C or by the end of input at a prompt. `python deploy.py --help` lists the deployment options and the `configure`, `check`, and `verify` commands, and each command takes `--help` too. It ends a failure with lines that say what failed, on which path, and what to do next, and prints no traceback. To see the traceback behind the message, add `--debug` to the command, or set the `DEPLOYER_DEBUG` environment variable to `1` for a run whose command line you do not control, such as the one `update-coding-agent-skills` starts. The traceback follows the message.
 
+An unknown `--include` name or a refused `--canary-home` value is a command-line error. The deployer refuses it
+before claiming the home, taking the lock, or recovering an interrupted deployment, leaving the home and any
+pending recovery evidence untouched.
+
 ## Updating
 
 `main` is the supported line, and releases are checkpoints on it, so an installation follows `main` rather than the latest release. From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. See [Versioning](releasing.md#versioning) for what each level means.

@@ -281,7 +281,76 @@ class HookCommandTests(WorktreesTestCase):
                 self.assertEqual(["-B", f"{self.hub}/tools/worktrees.py", "guard"], arguments)
 
 
+class BranchOptionTests(unittest.TestCase):
+    def test_upstream_and_tracking_values_are_not_rename_options(self) -> None:
+        for arguments in (
+            ["-uorigin/main"],
+            ["-uorigin/MAIN"],
+            ["-uorigin/mM-feature"],
+            ["-quorigin/main"],
+            ["-vvuorigin/MAIN"],
+            ["-u", "origin/main"],
+            ["-qu", "origin/MAIN"],
+            ["-um"],
+            ["-uM"],
+            ["-u-mM"],
+            ["-u", "-m"],
+            ["-u", "-M"],
+            ["-tm"],
+            ["-tM"],
+            ["--set-upstream-to=origin/main"],
+            ["--set-upstream-to", "-m"],
+            ["--set-upstream-t", "-M"],
+            ["--", "-m"],
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertFalse(worktrees.renames_a_branch(arguments))
+
+    def test_rename_options_before_or_after_values_are_still_detected(self) -> None:
+        for arguments in (
+            ["-m", "renamed"],
+            ["-M", "renamed"],
+            ["-fm", "main", "renamed"],
+            ["-qM", "main", "renamed"],
+            ["-mM", "renamed"],
+            ["-muorigin/main"],
+            ["-Mtorigin/main"],
+            ["-uorigin/main", "-m", "renamed"],
+            ["-u", "origin/MAIN", "-M", "renamed"],
+            ["-u", "--", "-m", "renamed"],
+            ["-t", "-m", "renamed"],
+            ["-tdirect", "-M", "renamed"],
+            ["--mo", "main", "renamed"],
+            ["--mov", "main", "renamed"],
+            ["--move", "main", "renamed"],
+            ["--move=main", "renamed"],
+            ["--set-upstream-to", "origin/main", "--move", "renamed"],
+            ["--set-upstream", "-m", "renamed"],
+        ):
+            with self.subTest(arguments=arguments):
+                self.assertTrue(worktrees.renames_a_branch(arguments))
+
+
 class CommandGuardTests(WorktreesTestCase):
+    def test_upstream_values_and_real_rename_options_reach_both_shell_guard_decisions(self) -> None:
+        for shell in (self.bash, self.powershell):
+            for options, expected in (
+                ("-uorigin/main", None),
+                ("-uorigin/MAIN", None),
+                ("-quorigin/mM-feature", None),
+                ("-u origin/main", None),
+                ("--set-upstream-to=origin/main", None),
+                ("-fm main renamed", "deny"),
+                ("-qM main renamed", "deny"),
+                ("-uorigin/main -m renamed", "deny"),
+                ("--mov main renamed", "deny"),
+            ):
+                with self.subTest(shell=shell.__name__, options=options):
+                    self.assertEqual(expected, shell(f"git branch {options}", self.hub))
+                    self.assertEqual("", self.stderr)
+        self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
+
     def test_commands_that_move_or_write_the_hub_are_denied(self) -> None:
         for command in (
             "git switch feat/demo",
