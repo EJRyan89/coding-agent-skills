@@ -353,11 +353,17 @@ def rotation_brief(area: Area, files: list[str], head: str) -> str:
 
 def write_briefs(briefs: list[tuple[Area, str]]) -> list[str]:
     """Write each brief to a new temporary directory and return the lines that name them."""
-    directory = Path(tempfile.mkdtemp(prefix="audit-repository-"))
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="audit-repository-"))
+    except OSError as exc:
+        raise AuditError(f"cannot create the briefs directory: {exc}") from exc
     lines = [f'BRIEFS "{directory.as_posix()}"']
     for area, text in briefs:
         path = directory / f"{area.name}.md"
-        path.write_text(text, encoding="utf-8", errors="replace", newline="\n")
+        try:
+            path.write_text(text, encoding="utf-8", errors="replace", newline="\n")
+        except OSError as exc:
+            raise AuditError(f"cannot write the brief {path.as_posix()}: {exc}") from exc
         lines.append(f'BRIEF {area.name} "{path.as_posix()}"')
     return lines
 
