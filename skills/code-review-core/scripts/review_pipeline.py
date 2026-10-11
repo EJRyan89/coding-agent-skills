@@ -2206,7 +2206,7 @@ def wait_for_reviewers(
 def unfinalized_selector(run: Path) -> str | None:
     """The pull request a run directory still holds unfinalized, or None once finalize has removed the run.
 
-    finalize is the only step that removes a prepared run, and prepare never prints RUN for a directory it removed,
+    finalize is the only step that removes a published run, and prepare never prints RUN for a directory it removed,
     so a run directory that is gone was recorded, and so is one finalize marked recorded because it could not remove
     it. One that remains otherwise, after a failure or with nobody finalizing it, is its pull request's failure.
     """
@@ -2753,6 +2753,26 @@ def _run_enumerate(args: argparse.Namespace, services: Services | None) -> int:
     return 1 if failed else 0
 
 
+def _publish_prepared(result: dict[str, Any], failure_label: str | Path) -> bool:
+    """Publish only after marking succeeds; a failed unpublished run has no reviewer work to keep."""
+    if result["dispatch"] != "inline":
+        try:
+            # Other pulls may have taken longer; every reviewer starts from publication, not preparation.
+            mark_dispatched(result["run"])
+        except EXPECTED_ERRORS as exc:
+            reason = str(exc)
+            try:
+                remove_run(result["run"])
+            except OSError as cleanup_error:
+                reason += (
+                    f"; unpublished run {result['run']} could not be removed ({cleanup_error}); inspect or delete it."
+                )
+            print(f"FAILED {failure_label} {reason}")
+            return False
+    _print_ready(result)
+    return True
+
+
 def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
     if args.fixture is not None:
         return _run_prepare_fixture(args, services)
@@ -2780,12 +2800,8 @@ def _run_prepare(args: argparse.Namespace, services: Services | None) -> int:
             continue
         if result["status"] == "skip":
             print(f"SKIP {result['selector']} {result['reason']}")
-        else:
-            # This call's other pull requests may have taken longer; its reviewers all start from here. An inline
-            # role starts when next-role hands it out.
-            if result["dispatch"] != "inline":
-                mark_dispatched(result["run"])
-            _print_ready(result)
+        elif not _publish_prepared(result, selector):
+            failed = True
     return 1 if failed else 0
 
 
@@ -2802,10 +2818,7 @@ def _run_prepare_fixture(args: argparse.Namespace, services: Services | None) ->
     except EXPECTED_ERRORS as exc:
         print(f"FAILED {args.fixture} {exc}")
         return 1
-    if result["dispatch"] != "inline":
-        mark_dispatched(result["run"])
-    _print_ready(result)
-    return 0
+    return 0 if _publish_prepared(result, args.fixture) else 1
 
 
 def _run_next_role(args: argparse.Namespace, services: Services | None) -> int:
