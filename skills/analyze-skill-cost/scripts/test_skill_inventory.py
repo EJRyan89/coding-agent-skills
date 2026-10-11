@@ -466,14 +466,19 @@ class ToolsTests(TemporaryTestCase):
 
     def test_a_shell_fence_uses_every_allowed_shell_since_the_model_may_pick_either(self) -> None:
         # On Windows Claude Code may run a bash fence through its PowerShell tool, so a PowerShell grant is used.
-        for fence in ("bash", "pwsh"):
+        for fence in ("bash", "pwsh", "console", "sh", "shell"):
             with self.subTest(fence=fence):
                 lines = self.tools(
-                    f'---\nallowed-tools: ["Bash(ls *)", "PowerShell(ls *)"]\n---\n```{fence}\nls x\n```\n'
+                    f'---\nallowed-tools: ["Bash(ls *)", "PowerShell(ls *)"]\n---\n```{fence}\nls x\ngit status\n```\n'
                 )
                 self.assertEqual(
-                    ["USED Bash 4", "USED PowerShell 4"],
-                    [line for line in lines if line.startswith(("USED", "UNUSED", "MISSING"))],
+                    [
+                        "USED Bash 4",
+                        "USED PowerShell 4",
+                        "UNGRANTED Bash 6 git status",
+                        "UNGRANTED PowerShell 6 git status",
+                    ],
+                    [line for line in lines if line.startswith(("USED", "UNUSED", "MISSING", "UNGRANTED", "IDLE"))],
                 )
 
     def test_prose_that_implies_running_a_command_implies_either_shell(self) -> None:
