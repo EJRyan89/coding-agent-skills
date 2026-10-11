@@ -9,7 +9,7 @@ The deployer changes your home directory only through a journaled transaction, s
 | `~/.claude/skills/<name>` | A deployed skill or shared asset. |
 | `~/.agents/skills/<name>` | A deployed runtime adapter for Codex and Copilot CLI. |
 | `~/.claude/agents/<name>.md` | A deployed Claude Code subagent definition. |
-| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, the shared assets (`shared_deps`) and agents (`agent_deps`) each skill was deployed with, the checkout and commit each source was deployed from (with the ref, for a deployment made with `--at`), and the last committed run ID. |
+| `~/.claude/skills/.deploy-manifest.json` | The ownership manifest: which source deployed each item, its hash, the direct skills (`skill_deps`), shared assets (`shared_deps`) and agents (`agent_deps`) each skill was deployed with, the checkout and commit each source was deployed from (with the ref, for a deployment made with `--at`), and the last committed run ID. |
 | `~/.claude/deployer/config/<id>.config` | The configuration for one source, written by `python deploy.py configure`. |
 | `~/.claude/deployer/staging/<run-id>/` | One run in progress: its rendered files and its journal, `journal.jsonl`. |
 | `~/.claude/deployer/.deploy.lock.d/` | The lock held by the deployment that is running. |
@@ -22,6 +22,8 @@ The deployer changes your home directory only through a journaled transaction, s
 ## Interrupted deployments
 
 Before a run changes an item, it writes the change to its journal: a `backup` line when it moves the existing copy to `<name>.deploying-bak`, an `install` line when it moves the new copy into place, and a `preserve` line when it moves a backup to `.backups/<run-id>/`. Only after every item is in place does it record its run ID in the manifest, which commits the run. It then removes the transient backups it no longer needs, moves the ones it keeps to `.backups/`, and deletes its staging directory. A transient backup is removed only while it matches the hash the run recorded before moving it. One that differs was changed after the run read it, for example by an editor saving the item just before the move, so it is kept in `.backups/<run-id>/` as a forced replacement's would be, listed under `BACKED UP`, with a `WARNING` naming it.
+
+An older supported manifest is upgraded in memory on read and saved only with an atomic manifest commit. A dry run or refusal never writes the upgrade; an interrupted deployment before the commit rolls back its items and leaves the old manifest, and one after the commit finishes against the upgraded manifest. When an older skill entry has no `skill_deps`, its historical dependencies cannot be recovered from current source metadata: it conservatively records the other skills its source owns. A skipped or preserved skill then keeps those skills and their assets and agents until it is restored or replaced by an unmodified selected deployment, which records its exact current dependencies. Dependencies already removed by an earlier deployment are not recreated by the migration.
 
 A run that fails with an error or is stopped with Ctrl+C reconciles its own journal before it exits. If it cannot, or the process is killed outright, for example by closing the terminal, its staging directory remains and the next run reconciles it before deploying anything:
 

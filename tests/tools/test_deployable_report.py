@@ -71,7 +71,7 @@ class DeployableReportTests(unittest.TestCase):
         self.paths.manifest_file.parent.mkdir(parents=True)
         entry = {
             "wrappers": {name: {"hash": HASH} for name in ADAPTERS},
-            "skills": {name: {"hash": HASH} for name in ADAPTERS},
+            "skills": {name: {"hash": HASH, "skill_deps": []} for name in ADAPTERS},
             "agents": {AGENT: {"hash": HASH}},
         }
         for name in ADAPTERS:

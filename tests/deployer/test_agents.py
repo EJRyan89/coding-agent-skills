@@ -38,7 +38,7 @@ class AgentDeploymentTests(DeployerTestCase):
             self.agent.read_bytes(),
         )
         self.assertEqual({"reviewer.md": {"hash": sha256(self.content)}}, self.owned("agents"))
-        self.assertEqual(7, self.manifest()["manifest_version"])
+        self.assertEqual(8, self.manifest()["manifest_version"])
         self.assertIn("reviewer.md (agent)", self.report_groups(result.output, "DEPLOYED")["INSTALLED"])
         again = self.deploy_ok("--all")
         self.assertIn("reviewer.md (agent)", self.report_groups(again.output, "DEPLOYED")["UNCHANGED"])
@@ -290,7 +290,7 @@ class AgentDeploymentTests(DeployerTestCase):
         self.write_manifest(data)
         self.make_skill("alpha", "Alpha", agent_deps=["reviewer"])
         self.deploy_ok("--all")
-        self.assertEqual(7, self.manifest()["manifest_version"], "saved as 7, which a version 6 deployer refuses")
+        self.assertEqual(8, self.manifest()["manifest_version"], "saved as 8, which older deployers refuse")
         self.assertIn("reviewer.md", self.owned("agents"))
 
     def test_another_source_cannot_take_over_an_owned_agent(self) -> None:

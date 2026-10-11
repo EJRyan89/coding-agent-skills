@@ -4,10 +4,12 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from harness import SOURCE_ID, DeployerTestCase, forward
+from harness import FAILS_PARTWAY, SOURCE_ID, DeployerTestCase, forward
 
 from deployer import fsops, hashing
 from deployer.errors import DeployError
@@ -105,6 +107,199 @@ class RemovalTests(DeployerTestCase):
         self.assertIn("beta", self.owned("skills"))
         self.assertIn("User change", self.skill_text("beta"))
 
+    def dependency_fixture(self) -> None:
+        self.make_source_json(shared_assets={"shared.md": "owner"})
+        public = self.make_skill("public", "Public", skill_deps=["middle"])
+        middle = self.make_skill("middle", "Middle", skill_deps=["core"], selectable=False)
+        core = self.make_skill("core", "Core", shared_deps=["shared.md"], selectable=False, agent_deps=["reviewer"])
+        self.make_skill("unrelated", "Unrelated")
+        self.make_shared_asset("shared.md", "Shared")
+        self.make_agent("reviewer")
+        self.write(core / "scripts" / "support.py", 'VALUE = "dependency ready"\n')
+        self.write(
+            middle / "scripts" / "bridge.py",
+            "import sys\nfrom pathlib import Path\n"
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
+            "from support import VALUE\n",
+        )
+        self.write(
+            public / "scripts" / "run.py",
+            "import sys\nfrom pathlib import Path\n"
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "middle" / "scripts"))\n'
+            "from bridge import VALUE\nprint(VALUE)\n",
+        )
+        self.make_config()
+        self.deploy_ok("--all")
+        self.assert_dependency_script_runs()
+        self.append(self.skills_dir / "public" / "SKILL.md", "\nUser change\n")
+
+    def assert_dependency_script_runs(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-B", str(self.skills_dir / "public" / "scripts" / "run.py")],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("dependency ready\n", result.stdout)
+
+    def assert_dependency_closure_kept(self, output: str) -> None:
+        self.assert_dependency_script_runs()
+        groups = self.report_groups(output, "DEPLOYED")
+        for name, dependent in (("middle", "public"), ("core", "middle")):
+            self.assertIn(f"{name} (needed by {dependent})", groups["KEPT"])
+        self.assertIn("shared.md (shared asset, needed by core)", groups["KEPT"])
+        self.assertIn("reviewer.md (agent, needed by core)", groups["KEPT"])
+        self.assertEqual(["middle"], self.owned("skills")["public"]["skill_deps"])
+        self.assertEqual(["core"], self.owned("skills")["middle"]["skill_deps"])
+        self.assertEqual([], self.owned("skills")["core"]["skill_deps"])
+        self.assertIn("shared.md", self.owned("shared"))
+        self.assertIn("reviewer.md", self.owned("agents"))
+
+    def test_modified_deselected_skill_keeps_transitive_dependencies_assets_and_agents(self) -> None:
+        self.dependency_fixture()
+        for _ in range(2):
+            result = self.deploy_ok(stdin="none\n")
+            self.assert_dependency_closure_kept(result.output)
+            self.assertNotIn("unrelated", self.owned("skills"))
+            self.assertFalse((self.skills_dir / "unrelated").exists())
+            self.assertEqual([], self.manifest()["sources"][SOURCE_ID]["requested_skills"])
+        self.deploy_ok("--all", "--force-item", "public")
+        backups = list((self.skills_dir / ".backups").glob("*/public/SKILL.md"))
+        self.assertEqual(1, len(backups))
+        self.assertIn("User change", backups[0].read_text(encoding="utf-8"))
+        self.deploy_ok(stdin="none\n")
+        self.assertEqual({}, self.owned("skills"))
+        self.assertEqual({}, self.owned("shared"))
+        self.assertEqual({}, self.owned("agents"))
+        self.assertTrue(backups[0].is_file(), "permanent backups survive the uninstall")
+
+    def test_preserved_dependency_closure_uses_deployed_edges_not_current_metadata(self) -> None:
+        self.dependency_fixture()
+        for name in ("public", "middle", "core"):
+            self.remove_skill(name)
+        self.make_source_json()
+        result = self.deploy_ok("--all")
+        self.assert_dependency_closure_kept(result.output)
+
+    def test_skipped_selected_skill_keeps_dependencies_removed_from_current_metadata(self) -> None:
+        self.dependency_fixture()
+        self.make_skill("public", "Updated public")
+        result = self.deploy_ok("--all")
+        self.assert_dependency_closure_kept(result.output)
+        self.assertIn("public (modified since last deploy)", self.report_groups(result.output, "DEPLOYED")["SKIPPED"])
+        self.assertIn("unrelated", self.owned("skills"))
+        self.deploy_ok("--all", "--force-item", "public")
+        self.assertEqual([], self.owned("skills")["public"]["skill_deps"])
+        self.assertNotIn("middle", self.owned("skills"))
+        self.assertNotIn("core", self.owned("skills"))
+        self.assertEqual({}, self.owned("shared"))
+        self.assertEqual({}, self.owned("agents"))
+
+    def test_a_modified_hidden_dependency_keeps_its_own_closure_without_its_public_root(self) -> None:
+        self.dependency_fixture()
+        self.write(
+            self.skills_dir / "public" / "SKILL.md",
+            (self.source / "skills" / "public" / "SKILL.md").read_text(encoding="utf-8"),
+        )
+        self.append(self.skills_dir / "middle" / "SKILL.md", "\nUser change\n")
+        result = self.deploy_ok(stdin="none\n")
+        self.assertNotIn("public", self.owned("skills"))
+        self.assertIn("middle", self.owned("skills"))
+        self.assertIn("core (needed by middle)", self.report_groups(result.output, "DEPLOYED")["KEPT"])
+        self.assertIn("shared.md", self.owned("shared"))
+        self.assertIn("reviewer.md", self.owned("agents"))
+
+    def test_a_missing_dependency_still_drops_ownership_instead_of_reporting_a_kept_skill(self) -> None:
+        self.dependency_fixture()
+        shutil.rmtree(self.skills_dir / "core")
+        result = self.deploy_ok(stdin="none\n")
+        self.assertNotIn("core", self.owned("skills"))
+        self.assertIn("core (already absent)", self.report_groups(result.output, "DEPLOYED")["DROPPED OWNERSHIP"])
+        self.assertIn("middle", self.owned("skills"))
+        self.assertFalse((self.skills_dir / "core").exists(), "retention does not recreate missing files")
+
+    def test_legacy_dependency_migration_is_read_only_until_a_journaled_commit(self) -> None:
+        self.dependency_fixture()
+        data = self.manifest()
+        data["manifest_version"] = 7
+        for details in data["sources"][SOURCE_ID]["skills"].values():
+            del details["skill_deps"]
+        self.write_manifest(data)
+        before = self.manifest_file.read_bytes()
+        for name in ("public", "middle", "core"):
+            self.remove_skill(name)
+        self.make_source_json()
+        preview = self.deploy_ok("--dry-run", stdin="none\n")
+        self.assertEqual(before, self.manifest_file.read_bytes())
+        self.assertIn("KEEP", preview.output)
+        result = self.deploy_ok(stdin="none\n")
+        self.assertEqual(8, self.manifest()["manifest_version"])
+        self.assertEqual(["core", "middle", "unrelated"], self.owned("skills")["public"]["skill_deps"])
+        self.assertIn("unrelated", self.owned("skills"), "unknown historical edges retain only this source's skills")
+        self.assertIn("shared.md", self.owned("shared"))
+        self.assertIn("reviewer.md", self.owned("agents"))
+        self.assert_dependency_script_runs()
+        self.assertIn("unrelated (needed by public)", self.report_groups(result.output, "DEPLOYED")["KEPT"])
+        self.deploy_ok(stdin="none\n")
+        self.assert_dependency_script_runs()
+
+    def assert_legacy_dependency_migration_recovers(self, committed: bool) -> None:
+        self.dependency_fixture()
+        data = self.manifest()
+        data["manifest_version"] = 7
+        for details in data["sources"][SOURCE_ID]["skills"].values():
+            del details["skill_deps"]
+        self.write_manifest(data)
+        before = self.manifest_file.read_bytes()
+        self.make_skill("unrelated", "Updated unrelated")
+        write_atomic = fsops.write_atomic
+
+        def failing_commit(path: Path, content: bytes) -> None:
+            if path != self.manifest_file:
+                write_atomic(path, content)
+                return
+            if committed:
+                write_atomic(path, content)
+            raise OSError("injected manifest commit failure")
+
+        with mock.patch("deployer.fsops.write_atomic", side_effect=failing_commit):
+            result = self.deploy_fails("--all", pattern="injected manifest commit failure", changes_home=FAILS_PARTWAY)
+        self.assertIn("reconciling the current journal", result.output)
+        self.assertEqual(8 if committed else 7, self.manifest()["manifest_version"])
+        if not committed:
+            self.assertEqual(before, self.manifest_file.read_bytes())
+        self.assertIn("Updated unrelated" if committed else "Unrelated", self.skill_text("unrelated"))
+        self.assert_dependency_script_runs()
+        self.deploy_ok("--all", "--force-item", "public")
+        self.deploy_ok(stdin="none\n")
+
+    def test_legacy_dependency_migration_rolls_back_before_commit(self) -> None:
+        self.assert_legacy_dependency_migration_recovers(committed=False)
+
+    def test_legacy_dependency_migration_recovers_after_commit(self) -> None:
+        self.assert_legacy_dependency_migration_recovers(committed=True)
+
+    def test_legacy_migration_refreshes_exact_edges_and_upgrades_other_sources_without_cross_source_edges(self) -> None:
+        self.dependency_fixture()
+        data = self.manifest()
+        data["manifest_version"] = 6
+        for details in data["sources"][SOURCE_ID]["skills"].values():
+            del details["skill_deps"]
+        data["sources"]["other/source"] = {
+            "skills": {name: {"hash": "sha256:" + "0" * 64} for name in ("other-public", "other-core")}
+        }
+        self.write_manifest(data)
+        self.deploy_ok("--all", "--force-item", "public")
+        self.assertEqual(8, self.manifest()["manifest_version"])
+        self.assertEqual(["middle"], self.owned("skills")["public"]["skill_deps"])
+        self.assertEqual(["core"], self.owned("skills")["middle"]["skill_deps"])
+        self.assertEqual([], self.owned("skills")["core"]["skill_deps"])
+        others = self.manifest()["sources"]["other/source"]["skills"]
+        self.assertEqual(["other-core"], others["other-public"]["skill_deps"])
+        self.assertEqual(["other-public"], others["other-core"]["skill_deps"])
+        self.assertTrue(all(details["hash"] == "sha256:" + "0" * 64 for details in others.values()))
+
     def test_obsolete_unmodified_shared_asset_is_removed(self) -> None:
         self.make_source_json(shared_assets={"shared-doc.md": "owner"})
         self.make_skill("alpha", "Alpha", shared_deps=["shared-doc.md"])
@@ -141,6 +336,21 @@ class ManifestValidationTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
         self.make_config()
         self.deploy_ok("--all")
+
+    def test_malformed_or_missing_recorded_skill_dependencies_fail_before_mutation(self) -> None:
+        self.deployed()
+        original = self.manifest()
+        for value in ("core", ["../escape"], ["Bad_Name"], ["core\n"], [1], None):
+            with self.subTest(value=value):
+                data = json.loads(json.dumps(original))
+                data["sources"][SOURCE_ID]["skills"]["alpha"]["skill_deps"] = value
+                self.write_manifest(data)
+                self.deploy_fails("--all", pattern="Manifest entry is malformed")
+        data = json.loads(json.dumps(original))
+        del data["sources"][SOURCE_ID]["skills"]["alpha"]["skill_deps"]
+        self.write_manifest(data)
+        self.deploy_fails("--all", pattern="Manifest entry is malformed")
+        self.write_manifest(original)
 
     def test_owned_names_that_escape_the_deployment_root_are_rejected(self) -> None:
         self.deployed()
@@ -487,7 +697,10 @@ class CrossSourceOwnershipTests(DeployerTestCase):
         self.make_config()
         self.deploy_ok("--all")
         data = self.manifest()
-        data["sources"]["other/source"] = {"skills": {"alpha": {"hash": "sha256:" + "0" * 64}}, "shared": {}}
+        data["sources"]["other/source"] = {
+            "skills": {"alpha": {"hash": "sha256:" + "0" * 64, "skill_deps": []}},
+            "shared": {},
+        }
         self.write_manifest(data)
         self.deploy_fails("--all", pattern="Skill 'alpha' is owned by both")
 

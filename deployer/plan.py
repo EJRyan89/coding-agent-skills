@@ -22,11 +22,11 @@ from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL,
 from .source import Source
 
 KINDS_ALLOWED = {
-    "build": "plans skills first and names the kinds that depend on them: a skill left in place keeps its shared "
-    "assets and agents, a runtime adapter is skipped with its skill, and each kind's rendered content has its own "
-    "shape in render.Staged",
+    "build": "plans skills first and names the kinds that depend on them: a skill left in place keeps its transitive "
+    "skill dependencies, shared assets and agents, a runtime adapter is skipped with its skill, and each kind's "
+    "rendered content has its own shape in render.Staged",
     "_retained": "another source's skills keep a shared asset too, but only this source's skills keep an agent, "
-    "since two sources never own one agent",
+    "since two sources never own one agent; skill dependencies follow the recorded transitive graph",
 }
 
 # Actions that move the rendered copy into place, and actions that end this source's ownership of an item.
@@ -40,7 +40,7 @@ class PlanEntry:
     """What this run does to one item: the dry run prints it, and the deployment carries out exactly that.
 
     state is what the run found at the destination: absent, wrong type, unmodified (it matches the manifest), modified,
-    unmanaged and identical, unmanaged and differs, still needed (a retained shared asset or agent, left unread), or
+    unmanaged and identical, unmanaged and differs, still needed (a retained dependency, left in place), or
     owned by another source (an item the file system treats as another source's, left unread).
     """
 
@@ -158,8 +158,8 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
     """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out.
 
     The owned items it releases come first and then the items it installs, each pass in the kinds' order. Skills are
-    planned before the rest because the others depend on them: a skill left in place keeps the shared assets and agents
-    it was deployed with, and a runtime adapter is skipped with its skill.
+    planned before the rest because the others depend on them: a skill left in place keeps its transitive skill
+    dependencies and their shared assets and agents, and a runtime adapter is skipped with its skill.
     """
     owned = context.owned
     selected, adapters = wanted[SKILL], wanted[ADAPTER_KIND]
@@ -172,14 +172,24 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
         _plan_selected(context, SKILL, name, owned.skills.get(name), staged.skill_hash(name), staged.skills[name])
         for name in selected
     ]
-    # An owned skill whose installed copy this run leaves in place keeps the shared assets and agents it was deployed
-    # with.
     survivors = sorted(
         entry.name
         for entry in [*unselected_skills, *skills]
         if entry.action in ("SKIP", "PRESERVE") and entry.name in owned.skills
     )
-    retained = {kind: _retained(context, kind, survivors, wanted[kind]) for kind in DEPENDENCY_KINDS}
+    removable_skills = {entry.name for entry in unselected_skills if entry.action == "REMOVE"}
+    retained_skills = {
+        name: reason
+        for name, reason in _retained(context, SKILL, survivors, selected).items()
+        if name in removable_skills
+    }
+    retained = {
+        kind: retained_skills
+        if kind is SKILL
+        else _retained(context, kind, [*survivors, *retained_skills], wanted[kind])
+        for kind in DEPENDENCY_KINDS
+    }
+    unselected_skills = [entry for entry in unselected_skills if entry.name not in retained_skills]
     kept = {kind: set(names) for kind, names in wanted.items()}
     for kind, items in retained.items():
         kept[kind] |= set(items)
@@ -326,17 +336,37 @@ def shared_to_stage(context: Context, selected: list[str], assets: dict[str, str
     return sorted(asset for asset in needed if assets.get(asset) == "owner")
 
 
+def _skill_dependencies(context: Context, survivors: list[str]) -> dict[str, str]:
+    """Each owned dependency reachable from a survivor, with its first dependent, without crossing source ownership."""
+    required_by: dict[str, str] = {}
+    pending = list(reversed(survivors))
+    visited: set[str] = set()
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        dependencies = [item for item in context.owned.deps_of(SKILL).get(name, []) if item in context.owned.skills]
+        for item in dependencies:
+            required_by.setdefault(item, name)
+        pending.extend(reversed(dependencies))
+    return {item: reason for item, reason in required_by.items() if item not in survivors}
+
+
 def _retained(context: Context, kind: ItemKind, survivors: list[str], staged: list[str]) -> dict[str, str]:
     """Owned items of a kind skills depend on that this run does not install but keeps, each with what needs it.
 
     A skill another source deploys can depend on a shared asset this source owns, declared there with the role
-    dependency, so another source's skills keep shared assets too. An agent is deployed only by the source whose skill
-    declares it, and two sources never own one agent, so only this source's skills keep an agent.
+    dependency, so another source's skills keep shared assets too. Skills and agents are deployed only by the source
+    whose skill declares them. A retained skill's own dependencies survive too, from the recorded transitive graph.
     """
     required_by: dict[str, str] = {}
-    for name in survivors:
-        for item in context.owned.deps_of(kind).get(name, []):
-            required_by.setdefault(item, name)
+    if kind is SKILL:
+        required_by = _skill_dependencies(context, survivors)
+    else:
+        for name in survivors:
+            for item in context.owned.deps_of(kind).get(name, []):
+                required_by.setdefault(item, name)
     if kind is SHARED:
         for other, entry in sorted(context.manifest.sources.items()):
             if other == context.source_id:

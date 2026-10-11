@@ -44,7 +44,7 @@ class BundleAndDependencyTests(DeployerTestCase):
             (self.agents_dir / "alpha" / "SKILL.md").read_text(encoding="utf-8"),
         )
         entry = self.manifest()["sources"]["test/skills"]
-        self.assertEqual(7, self.manifest()["manifest_version"])
+        self.assertEqual(8, self.manifest()["manifest_version"])
         self.assertEqual(["operations"], entry["requested_bundles"])
         self.assertEqual([], entry["requested_skills"])
         self.assertEqual(["alpha", "beta", "core"], sorted(entry["skills"]))
@@ -250,7 +250,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
         self.make_config()
         self.deploy_ok("--all")
-        for version, message in ((5, "unsupported schema version '5'"), (99, "newer than supported version 7")):
+        for version, message in ((5, "unsupported schema version '5'"), (99, "newer than supported version 8")):
             with self.subTest(version=version):
                 data = self.manifest()
                 data["manifest_version"] = version
