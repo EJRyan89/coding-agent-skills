@@ -1,6 +1,6 @@
 ---
 name: Question
-about: How to install, configure, or use the skills or the deployer, when the documentation does not say
+about: How to install, configure, or use the skills or the deployer, when the documentation does not cover it
 title: ''
 labels: question
 assignees: ''
@@ -14,5 +14,5 @@ assignees: ''
 
 ## What you tried
 
-<!-- The documents you read and the commands you ran, with their output trimmed to the part that matters. For a
-     question about your setup, add the output of python deploy.py check. -->
+<!-- List relevant documentation and troubleshooting steps, including commands and results.
+     For a question about your setup, add the output of python deploy.py check. -->

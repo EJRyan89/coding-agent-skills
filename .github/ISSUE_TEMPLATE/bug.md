@@ -13,13 +13,13 @@ assignees: ''
 ## Reproduction
 
 <!-- The smallest sequence that shows the problem: the exact command or skill invocation, with its arguments, and
-     any configuration it depends on. Isolate which component is at fault before filing. -->
+     any configuration it depends on. If possible, identify the component involved. -->
 
 ## Expected
 
 ## Actual
 
-<!-- What happened instead, with the relevant output or error, trimmed to the part that shows the problem. -->
+<!-- What happens instead, with the relevant output or error, trimmed to the part that shows the problem. -->
 
 ## Commit and environment
 
