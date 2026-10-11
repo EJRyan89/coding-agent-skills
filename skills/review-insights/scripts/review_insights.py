@@ -69,7 +69,7 @@ from review_config import (
     selected_repository_set,
     validate_repository_identity,
 )
-from review_flags import FlagError, default_flags_path, load_store, resolve_flag
+from review_flags import FlagAlreadyResolved, FlagError, default_flags_path, load_store, resolve_flag
 from review_io import PersistenceError, ResourceLock, atomic_write_text, read_json
 from review_records import ANALYZER_COVERAGES, RecordError, ledger_history, valid_analyzer, validate_record_pair
 from skill_roots import skills_directory_holding
@@ -957,8 +957,10 @@ def decide(
         pending, skipped = _open_flags(item["linked_flags"], services) if decision == "accepted" else ([], [])
         entry = _record_decision(item, decision, note, pending, services)
         write_report(report_path, report)
-        _resolve_recorded(report_path, report, [entry], _resolution_text(resolution, note), services)
-        return pending, skipped
+        resolved, already = _resolve_recorded(
+            report_path, report, [entry], _resolution_text(resolution, note), services
+        )
+        return resolved, [*skipped, *already]
 
 
 def _open_flags(flag_ids: list[str], services: Services) -> tuple[list[str], list[str]]:
@@ -979,25 +981,36 @@ def _resolution_text(resolution: str, note: str | None) -> str:
 
 def _resolve_recorded(
     report_path: Path, report: dict[str, Any], entries: list[dict[str, Any]], text: str, services: Services
-) -> None:
+) -> tuple[list[str], list[str]]:
     """Resolve the flags the written decision entries list. The decision is recorded first, so a resolved flag
     always points at a decision the report holds; when the store fails partway, the entries are rewritten to list
-    only the flags resolved, and deciding again resolves the rest."""
+    only the flags resolved, and deciding again resolves the rest. A competing resolution is preserved and omitted
+    from these entries. Returns the flags this call resolved and those resolved by another call."""
     wanted = list(dict.fromkeys(flag for entry in entries for flag in entry["resolved_flags"]))
     resolved: list[str] = []
+    skipped: list[str] = []
     try:
         for flag_id in wanted:
-            resolve_flag(services.flags_path(), flag_id, text)
-            resolved.append(flag_id)
+            try:
+                resolve_flag(services.flags_path(), flag_id, text)
+            except FlagAlreadyResolved:
+                skipped.append(flag_id)
+            else:
+                resolved.append(flag_id)
     except (FlagError, PersistenceError, OSError) as exc:
         for entry in entries:
             entry["resolved_flags"] = [flag for flag in entry["resolved_flags"] if flag in resolved]
         write_report(report_path, report)
-        left = ", ".join(flag for flag in wanted if flag not in resolved)
+        left = ", ".join(flag for flag in wanted if flag not in resolved and flag not in skipped)
         raise InsightError(
             f"The decision is recorded in {report_path}, but flags {left} could not be resolved: {exc}; decide "
             "again to resolve them"
         ) from exc
+    if skipped:
+        for entry in entries:
+            entry["resolved_flags"] = [flag for flag in entry["resolved_flags"] if flag in resolved]
+        write_report(report_path, report)
+    return resolved, skipped
 
 
 def _record_decision(
@@ -1038,8 +1051,10 @@ def decide_custom(
             for item in items
         ]
         write_report(report_path, report)
-        _resolve_recorded(report_path, report, entries, _resolution_text(resolution, note), services)
-        return pending, skipped, len(items)
+        resolved, already = _resolve_recorded(
+            report_path, report, entries, _resolution_text(resolution, note), services
+        )
+        return resolved, [*skipped, *already], len(items)
 
 
 def _as_printed(key: tuple[str, ...]) -> tuple[str, ...]:

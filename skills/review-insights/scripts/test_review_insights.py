@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -1227,6 +1228,95 @@ class RecordingTests(InsightFixture):
     def decide(self, json_path: Path, identifier: str, category: str, flags: str) -> tuple[int, str, str]:
         return self.run_main(
             "decide", "--report", str(json_path), identifier, "--category", category, "--flags", flags, "accepted"
+        )
+
+    @contextlib.contextmanager
+    def competing_resolution(self, flag_id: str) -> Iterator[list[dict[str, Any]]]:
+        resolve = ri.resolve_flag
+        winners: list[dict[str, Any]] = []
+
+        def before_resolve(path: Path, identifier: str, resolution: str) -> dict[str, Any]:
+            if identifier == flag_id:
+                winners.append(resolve(path, identifier, "Resolved elsewhere"))
+            return resolve(path, identifier, resolution)
+
+        with mock.patch.object(ri, "resolve_flag", before_resolve):
+            yield winners
+
+    def test_a_competing_resolution_is_reported_without_claiming_it_in_the_decision_history(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        first, second = self.flag("guideline"), self.flag("noise")
+        json_path, _ = self.report()
+        with self.competing_resolution(first) as winners:
+            code, out, err = self.decide(json_path, "REC-001", "Correctness", f"{first},{second}")
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {second}", f"FLAG_ALREADY_RESOLVED {first}", "DECIDED REC-001 accepted"]),
+            (code, out.splitlines()),
+            err,
+        )
+        self.assertEqual(winners[0], next(flag for flag in load_store(self.flags)["flags"] if flag["id"] == first))
+        item = ri.load_report(json_path)["recommendations"][0]
+        self.assertEqual("accepted", item["decision"])
+        self.assertEqual([[second]], [entry["resolved_flags"] for entry in item["decision_history"]])
+        self.assertIn(f"accepted (resolved {second})", json_path.with_suffix(".md").read_text(encoding="utf-8"))
+
+    def test_custom_decisions_do_not_claim_a_competing_resolution_in_any_history(self) -> None:
+        self.commit(
+            "owner/repo",
+            7,
+            [covered("custom-candidate", "Roslyn", "first-rule"), covered("custom-candidate", "Roslyn", "second-rule")],
+        )
+        first, second = self.flag("guideline"), self.flag("noise", finding="F002")
+        json_path, _ = self.report()
+        with self.competing_resolution(first) as winners:
+            code, out, err = self.run_main(
+                "decide-custom", "--report", str(json_path), "--flags", f"{first},{second}", "accepted"
+            )
+        self.assertEqual(
+            (
+                0,
+                [
+                    f"FLAG_RESOLVED {second}",
+                    f"FLAG_ALREADY_RESOLVED {first}",
+                    "DECIDED custom-candidates rules=2 accepted",
+                ],
+            ),
+            (code, out.splitlines()),
+            err,
+        )
+        self.assertEqual(winners[0], next(flag for flag in load_store(self.flags)["flags"] if flag["id"] == first))
+        items = [
+            item for item in ri.load_report(json_path)["recommendations"] if item.get("coverage") == "custom-candidate"
+        ]
+        self.assertEqual([[], [second]], [item["decision_history"][-1]["resolved_flags"] for item in items])
+        self.assertTrue(all(item["decision"] == "accepted" for item in items))
+
+    def test_a_genuine_store_failure_after_a_competing_resolution_still_fails(self) -> None:
+        self.commit("owner/repo", 7, ["Correctness"])
+        first, second = self.flag("guideline"), self.flag("noise")
+        json_path, _ = self.report()
+        resolve = ri.resolve_flag
+        winners: list[dict[str, Any]] = []
+
+        def before_resolve(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
+            if flag_id == second:
+                raise ri.FlagError(f"Flag is already resolved: {second}")
+            winners.append(resolve(path, flag_id, "Resolved elsewhere"))
+            return resolve(path, flag_id, resolution)
+
+        with mock.patch.object(ri, "resolve_flag", before_resolve):
+            result = self.decide(json_path, "REC-001", "Correctness", f"{first},{second}")
+        self.assertFailed(result, f"but flags {second} could not be resolved: Flag is already resolved: {second}")
+        self.assertNotIn(f"but flags {first}", result[1])
+        self.assertEqual(winners[0], next(flag for flag in load_store(self.flags)["flags"] if flag["id"] == first))
+        item = ri.load_report(json_path)["recommendations"][0]
+        self.assertEqual("accepted", item["decision"])
+        self.assertEqual([[]], [entry["resolved_flags"] for entry in item["decision_history"]])
+        code, out, err = self.decide(json_path, "REC-001", "Correctness", f"{first},{second}")
+        self.assertEqual(
+            (0, [f"FLAG_RESOLVED {second}", f"FLAG_ALREADY_RESOLVED {first}", "DECIDED REC-001 accepted"]),
+            (code, out.splitlines()),
+            err,
         )
 
     def test_a_store_failure_partway_leaves_the_decision_recorded_and_deciding_again_resolves_the_rest(self) -> None:

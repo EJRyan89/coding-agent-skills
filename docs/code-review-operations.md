@@ -163,6 +163,12 @@ A flag is linked to a recommendation when it is open, names a repository, pull r
 
 The flag store is `CODE_REVIEW_FLAGS`, else `~/.coding-agent-skills/code-review/flags.json`, for both `review-insights` and `flag-review-finding`. Flag store schema version 2 adds `review_version`, which a flag naming a finding must set. A version 1 store is read as version 2 with no review versions and is written as version 2 on its next change; its flags that name a finding are never linked by `review-insights`, because their finding IDs cannot be tied to one review. `flag-review-finding add` refuses a finding ID that is not of the form `F001`, such as the whole label `v2 F003`, and a finding that review of the pull request does not have in the configured archive; a flag saved before it checked keeps its finding ID, which links to nothing. A store whose `finding_id` is not a string or null fails to load.
 
+Flag resolution checks the validated store under its lock. If another call resolves a linked flag while an insight
+decision is being recorded, `decide` and `decide-custom` preserve its earlier resolution and timestamp, print
+`FLAG_ALREADY_RESOLVED`, and omit it from the new decision's `resolved_flags`. They still resolve the other linked
+flags. Store, validation, and write failures remain failures, with the decision history listing only flags this
+decision actually resolved.
+
 ### Synthesis
 
 The deterministic recommendations count findings; the synthesis reads them. `report` writes the synthesis files below beside `insights.json`, and `review_synthesis.py` builds them. Every field of the report, of each kind of input line, of the context, and of the result is stated under [Insights report](code-review-operations-contract.md#insights-report), [Synthesis result](code-review-operations-contract.md#synthesis-result), [Synthesis input](code-review-operations-contract.md#synthesis-input), and [Synthesis context](code-review-operations-contract.md#synthesis-context) in the behavior contract's formats:

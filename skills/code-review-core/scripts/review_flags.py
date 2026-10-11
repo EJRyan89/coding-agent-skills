@@ -36,6 +36,14 @@ class FlagError(ValueError):
     pass
 
 
+class FlagAlreadyResolved(FlagError):
+    """The locked, validated store already holds a resolution; no write was made."""
+
+    def __init__(self, flag_id: str) -> None:
+        super().__init__(f"Flag is already resolved: {flag_id}")
+        self.flag_id = flag_id
+
+
 def default_flags_path() -> Path:
     """CODE_REVIEW_FLAGS, else the standard flag store beside the code-review configuration."""
     override = os.environ.get("CODE_REVIEW_FLAGS")
@@ -219,6 +227,7 @@ def add_flag(
 
 
 def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
+    """Resolve under the store lock, or raise FlagAlreadyResolved without changing the earlier resolution."""
     if not resolution.strip():
         raise FlagError("Resolution is required")
     lock = path.parent / ".locks" / "flags.lock"
@@ -229,7 +238,7 @@ def resolve_flag(path: Path, flag_id: str, resolution: str) -> dict[str, Any]:
             raise FlagError(f"Unknown flag ID: {flag_id}")
         flag = matching[0]
         if flag["status"] != "open":
-            raise FlagError(f"Flag is already resolved: {flag_id}")
+            raise FlagAlreadyResolved(flag_id)
         flag["status"] = "resolved"
         flag["resolved_at"] = datetime.now(UTC).isoformat()
         flag["resolution"] = resolution

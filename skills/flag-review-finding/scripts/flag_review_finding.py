@@ -26,7 +26,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from console import use_utf8_output
 from review_archive import ArchiveError, pull_directory, pull_records, record_paths
 from review_config import ConfigurationError, load_config
-from review_flags import FlagError, add_flag, default_flags_path, load_store, resolve_flag, validate_target
+from review_flags import (
+    FlagAlreadyResolved,
+    FlagError,
+    add_flag,
+    default_flags_path,
+    load_store,
+    resolve_flag,
+    validate_target,
+)
 from review_io import PersistenceError
 from review_records import RecordError, carried_findings, validate_record_pair
 
@@ -132,10 +140,11 @@ def run(args: argparse.Namespace) -> list[str]:
         )
         return [f"ADDED {flag['id']}"]
     if args.command == "resolve":
-        existing = [item for item in load_store(args.store)["flags"] if item["id"] == args.flag_id]
-        if len(existing) == 1 and existing[0]["status"] == "resolved":
-            return [f"ALREADY_RESOLVED {args.flag_id}"]
-        return [f"RESOLVED {resolve_flag(args.store, args.flag_id, args.resolution)['id']}"]
+        try:
+            flag = resolve_flag(args.store, args.flag_id, args.resolution)
+        except FlagAlreadyResolved as exc:
+            return [f"ALREADY_RESOLVED {exc.flag_id}"]
+        return [f"RESOLVED {flag['id']}"]
     flags = [item for item in load_store(args.store)["flags"] if item["status"] == "open"]
     return [*(flag_line(flag) for flag in flags), f"COUNT {len(flags)}"]
 
