@@ -238,7 +238,7 @@ def _deploy(
     staged_shared = plan.shared_to_stage(context, selected, plan.validate_shared_assets(context, selected))
     agents = source.agent_closure(src, selected)
     wanted = {SKILL: selected, SHARED: staged_shared, ADAPTER_KIND: adapters, AGENT_KIND: agents}
-    plan.check_forced_items(context, wanted)
+    plan.check_forced_items(options.force_items, wanted)
     plan.check_ownership(context, wanted)
     staged = render.render(src, selected, adapters, staged_shared, values, paths.skills_src, agents)
     render.reject_unexpanded_tokens(staged)
@@ -415,8 +415,10 @@ def _execute(
     run_id = f"{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-{secrets.token_hex(2)}"
     try:
         code = _deploy(paths, options, src, values, stdin, run_id, pin)
-    except Cancelled as exc:
-        # Raised only at the selection prompt, before staging or any destination change.
+    except DeployError as exc:
+        if not isinstance(exc, Cancelled) and exc.exit_code != USAGE_ERROR:
+            return _recover_from_failure(exc, debug, paths, held)
+        # Selection cancellation and usage checks happen before staging or any destination change.
         print_error(exc, debug)
         held.release()
         return exc.exit_code
@@ -442,7 +444,9 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
         if options.canary_home
         else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
     )
-    return paths, source_id, options, values, source.discover(paths, source_id)
+    src = source.discover(paths, source_id)
+    plan.check_source_forced_items(src, options.force_items)
+    return paths, source_id, options, values, src
 
 
 def _reject_other_source_id(paths: Paths, tree_id: str) -> None:

@@ -18,7 +18,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deployer import config, errors, journal, lock, pipeline, platform_support, source
+from deployer import config, errors, journal, lock, pipeline, plan, platform_support, source
+from deployer.arguments import usage_error
 from deployer.context import Options
 from deployer.errors import Cancelled, DeployError
 from deployer.paths import Paths
@@ -103,6 +104,7 @@ class ExecuteTests(unittest.TestCase):
             (pipeline, "validate_managed_roots"): None,
             (config, "load"): {"VALUE": "configured"},
             (source, "discover"): self.src,
+            (plan, "check_source_forced_items"): None,
             (pipeline, "_print_source"): None,
             (pipeline, "_stop_for_pending_recovery"): False,
             (pipeline, "_deploy"): 0,
@@ -153,6 +155,7 @@ class ExecuteTests(unittest.TestCase):
             f"validate_managed_roots(paths({home}))",
             *loaded,
             f"discover(paths({home}), '{SOURCE_ID}')",
+            "check_source_forced_items(src, [])",
             f"_print_source(src, {home})",
         ]
 
@@ -198,6 +201,7 @@ class ExecuteTests(unittest.TestCase):
                 "canary_home('throwaway')",
                 "validate_managed_roots(paths(canary))",
                 f"discover(paths(canary), '{SOURCE_ID}')",
+                "check_source_forced_items(src, [])",
                 "_print_source(src, canary)",
                 "claim_canary_home(canary)",
                 f"canary('{SOURCE_ID}', canary, source)",
@@ -209,6 +213,30 @@ class ExecuteTests(unittest.TestCase):
             ],
             calls,
         )
+
+    def test_unknown_forced_items_stop_before_claim_recovery_or_selection(self) -> None:
+        error = usage_error(
+            "--force-item names 'gamma', which this run does not install.",
+            "Name one of: alpha.",
+        )
+        for options in (
+            Options(force_items=["gamma"]),
+            Options(select_all=True, force_items=["gamma"]),
+            Options(dry_run=True, force_items=["gamma"]),
+            Options(canary_home="throwaway", force_items=["gamma"]),
+        ):
+            self.calls = []
+            with self.subTest(options=options):
+                home = "canary" if options.canary_home else "home"
+                prepared = self.prepared(home)[:-2]
+                self.assertEqual(
+                    (
+                        2,
+                        [*prepared, "check_source_forced_items(src, ['gamma'])"],
+                        ["", *error.lines, ""],
+                    ),
+                    self.execute(options, stdin=self.stdin, check_source_forced_items=error),
+                )
 
     def test_preparation_failures_end_the_run_before_anything_else(self) -> None:
         unreadable = OSError(2, "No such file or directory", "C:/x/source.json")
@@ -393,6 +421,16 @@ class ExecuteTests(unittest.TestCase):
                 ["", "Cancelled.", ""],
             ),
             self.execute(Options(), debug=True, stdin=self.stdin, _deploy=Cancelled("Cancelled.")),
+        )
+
+    def test_a_selection_specific_usage_error_releases_the_lock_without_failure_recovery(self) -> None:
+        error = usage_error(
+            "--force-item names 'alpha', which this run does not install.",
+            "This run installs nothing, so --force-item has nothing to replace.",
+        )
+        self.assertEqual(
+            (2, [*self.prepared(), *self.held(), *self.deployed(), "release"], ["", *error.lines, ""]),
+            self.execute(Options(), stdin=self.stdin, _deploy=error),
         )
 
     def test_a_failed_deployment_is_recovered_before_the_lock_is_released(self) -> None:

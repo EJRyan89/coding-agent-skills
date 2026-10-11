@@ -7,7 +7,7 @@ import io
 import unittest
 from unittest import mock
 
-from harness import DeployerTestCase, Result
+from harness import DeployerTestCase, Result, tree_state
 
 from deployer import cli
 
@@ -151,12 +151,67 @@ class DeployUsageErrorTests(DeployerTestCase):
         self.assert_usage_error(("--migrate-from", "test/skills"), "ERROR: --migrate-from must name a different source")
 
     def test_a_force_item_the_run_does_not_install_is_a_usage_error(self) -> None:
-        for arguments in (("--dry-run",), ()):
+        for arguments in (("--all", "--dry-run"), ("--all",), ("--dry-run",), ()):
             with self.subTest(arguments=arguments):
-                self.assert_usage_error(
-                    ("--all", *arguments, "--force-item", "gamma"),
-                    "ERROR: --force-item names 'gamma', which this run does not install.",
-                    "Name one of: alpha.",
+                before = tree_state(self.home)
+                result = self.run_cli(*arguments, "--force-item", "gamma")
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(
+                    "\nERROR: --force-item names 'gamma', which this run does not install.\n"
+                    f"Name one of: alpha.\n{self.HELP}\n\n",
+                    result.output,
+                )
+                self.assertEqual(before, tree_state(self.home), result.output)
+
+    def test_unknown_forced_items_do_not_claim_a_canary_home(self) -> None:
+        canary = self.root / "canary"
+        canary.mkdir()
+        result = self.deploy_fails(
+            "--all", "--canary-home", str(canary), "--force-item", "gamma", home=canary, pattern="--force-item names"
+        )
+        self.assertEqual(2, result.code, result.output)
+        self.assertEqual(
+            "\nERROR: --force-item names 'gamma', which this run does not install.\n"
+            f"Name one of: alpha.\n{self.HELP}\n\n",
+            result.output,
+        )
+        self.assertEqual([], list(canary.iterdir()), result.output)
+
+    def test_known_forced_items_still_require_the_selected_run_to_install_them(self) -> None:
+        self.make_source_json(
+            shared_assets={"shared.md": "owner"}, bundles={"optional": {"members": ["beta"], "opt_in": True}}
+        )
+        self.make_agent("reviewer")
+        self.make_shared_asset("shared.md")
+        self.make_skill("support", selectable=False)
+        self.make_skill("beta", skill_deps=["support"], shared_deps=["shared.md"], agent_deps=["reviewer"])
+        for name in ("beta", "support", "shared.md", "reviewer", "reviewer.md"):
+            for arguments in (("--dry-run",), ()):
+                with self.subTest(name=name, arguments=arguments):
+                    result = self.deploy_fails("--all", *arguments, "--force-item", name, pattern="--force-item names")
+                    self.assertEqual(2, result.code, result.output)
+                    self.assertIn(
+                        f"\nERROR: --force-item names '{name}', which this run does not install.\n", result.output
+                    )
+                    self.assertIn(f"Name one of: alpha.\n{self.HELP}\n", result.output)
+                    self.assertNotIn("Deployment failed", result.output)
+                    self.assertNotIn("reconciling", result.output)
+            selected = self.deploy_ok("--all", "--include", "optional", "--dry-run", "--force-item", name)
+            self.assertIn("Rendered and validated in memory (dry run).", selected.output)
+
+    def test_source_preflight_does_not_accept_items_no_selection_installs(self) -> None:
+        self.make_skill("orphan", selectable=False)
+        self.make_agent("unused")
+        self.make_source_json(shared_assets={"unused.md": "owner", "external.md": "dependency"})
+        self.make_shared_asset("unused.md")
+        for name in ("orphan", "unused", "unused.md", "external.md"):
+            with self.subTest(name=name):
+                result = self.deploy_fails("--force-item", name, pattern="--force-item names")
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(
+                    f"\nERROR: --force-item names '{name}', which this run does not install.\n"
+                    f"Name one of: alpha.\n{self.HELP}\n\n",
+                    result.output,
                 )
 
 
