@@ -398,6 +398,18 @@ class PriorRecordTests(unittest.TestCase):
         prior = validate_prior_record(copy.deepcopy(self.first), repository=self.repository, number=self.number)
         self.assertEqual(self.first, prior)
 
+    def test_a_prior_fixture_with_a_short_artifact_hash_is_refused_with_its_reason(self) -> None:
+        for field in ("payload_sha256", "markdown_sha256"):
+            with self.subTest(field=field):
+                record = copy.deepcopy(self.first)
+                record["artifacts"][field] = "a" * 40
+                with self.assertRaises(FixtureError) as caught:
+                    validate_prior_record(record, repository=self.repository, number=self.number)
+                self.assertEqual(
+                    f"The prior record is invalid: artifacts.{field} must be a lowercase SHA-256 hash",
+                    str(caught.exception),
+                )
+
     def test_any_other_record_is_refused(self) -> None:
         cases: dict[str, tuple[dict[str, Any], str, int, str]] = {
             "an invalid record": ({**self.first, "review": {}}, self.repository, self.number, "is invalid"),
