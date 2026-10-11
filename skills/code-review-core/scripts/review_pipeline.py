@@ -1620,7 +1620,7 @@ class _Routing(NamedTuple):
 
 def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routing) -> list[str]:
     """What a specialists manifest does with a pull request's changes: each condition's result, each route with its
-    settings, and the changed files no route covers."""
+    settings, and the changed files no specialist matches."""
     results: dict[str, bool] = {}
     condition = functools.partial(
         _route_condition,
@@ -1649,10 +1649,10 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
             + (f" effort={effort}" if effort else "")
         )
         lines.extend([f"NOTE {note}"] if note else [])
-    if not routes:
+    outside = uncovered(manifest, changed)
+    if len(outside) == len(changed):
         lines.append(f"GENERIC files={len(changed)} (no specialist matched; the generic reviewer reviews it)")
         return lines
-    outside = uncovered(manifest, changed)
     lines.extend(f"UNCOVERED {path}" for path in outside)
     if outside and manifest.get("uncovered", "review") == "ignore":
         lines.append(f"UNREVIEWED files={len(outside)} (the manifest sets uncovered to ignore; the record lists them)")

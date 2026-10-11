@@ -2065,8 +2065,45 @@ class UncoveredFilesTests(SpecialistFixture, unittest.TestCase):
             [(r["id"], r["files"], r["dispositions_only"]) for r in plan["roles"]],
         )
 
-    def test_a_change_no_specialist_routes_is_still_reviewed_whole_by_the_generic_reviewer(self) -> None:
-        # Only README.md and the profile change in this request's diff, so no specialist routes at all.
+    def test_every_matching_condition_closed_preserves_the_uncovered_policy(self) -> None:
+        specialists = [{**specialist, "when": "window-open"} for specialist in manifest()["specialists"]]
+        for policy in ("review", "ignore"):
+            with self.subTest(policy=policy):
+                reviewer = self.reviewer_with(specialists=specialists, uncovered=policy)
+                plan = rs.build_plan(self.request(), reviewer, self.root / f"work-closed-{policy}")
+                self.assertEqual(
+                    {},
+                    rs.route(
+                        validate_adapter_manifest(manifest(specialists=specialists)),
+                        plan["changed_files"],
+                        lambda _: False,
+                    ),
+                )
+                self.assertEqual(["generic-review"], [role["id"] for role in plan["roles"]])
+                generic = plan["roles"][0]
+                self.assertEqual(policy == "ignore", generic["dispositions_only"])
+                self.assertEqual(self.UNCOVERED if policy == "ignore" else [], plan["uncovered_files"])
+                if policy == "review":
+                    self.assertEqual(self.UNCOVERED, generic["files"])
+                else:
+                    self.write(
+                        plan, "generic-review", [{"path": "src/A.cs", "line": 2, "severity": "MUST_FIX", "body": "x"}]
+                    )
+                    self.assertEqual(
+                        "generic-review: disposition-only review returned findings",
+                        rs.check(plan)["generic-review"],
+                    )
+                self.write(plan, "generic-review", [])
+                self.assertEqual({}, rs.check(plan))
+                result = rs.assemble(plan, json.loads(self.request_path.read_text(encoding="utf-8")))
+                validate_adapter_result(
+                    result, expected_repository="example/one", expected_number=7, expected_head_sha=self.head
+                )
+                self.assertEqual("complete", result["status"])
+                self.assertEqual([], result["findings"])
+
+    def test_a_change_no_specialist_matches_is_still_reviewed_whole_by_the_generic_reviewer(self) -> None:
+        # Only README.md and the profile change in this request's diff, so no specialist matches at all.
         diff = self.root / "uncovered-only.patch"
         diff.write_bytes(
             subprocess.run(
