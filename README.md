@@ -1,4 +1,4 @@
-# Agent Skills
+# Coding Agent Skills
 
 Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a guarded deployer that renders machine-specific configuration into immutable templates. Skill instructions are authoritative in Claude format; Codex and Copilot read them through generated adapters that map tools and models with the shared `runtime-compatibility.md`.
 
@@ -19,7 +19,7 @@ Portable agent skills for Claude Code, Codex, and GitHub Copilot CLI, with a gua
 
 ## Supported platforms and runtimes
 
-Version 0.4.0 supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, the deployer stops before changing anything.
+The deployer supports Windows only; macOS and Linux support is planned. On those systems, and in WSL, it stops before changing anything.
 
 Install the runtimes you use. None of them is needed to deploy, so you can use the skills from Codex or Copilot without installing Claude Code; [Runtime support](docs/skills.md#runtime-support) says which skills run there in part.
 

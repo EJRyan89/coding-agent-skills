@@ -51,6 +51,8 @@ A change to a contract file is what raises the level, and validation holds that 
 
 ## Tagging
 
+First confirm that `main` has no commit after the release pull request's merge. Step 7 of [Before tagging](#before-tagging) wrote the upgrade-notes section from the commits up to the release branch's head, and the tag is cut from `main`, so a pull request merged in between would be in the tag and in no section: the next release's section starts at this tag. If one has merged, print the section from `main` with `python tools/release_notes.py vX.Y.Z --to origin/main` (`--write` refuses a version the file already has), carry the entries it adds into the committed section through a pull request, and tag once that merges.
+
 Write the notes to a file and create the release from `main`:
 
 ```bash
