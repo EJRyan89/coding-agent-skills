@@ -1960,6 +1960,182 @@ class GitHubTests(unittest.TestCase):
         str(context.exception).encode("utf-8")
 
 
+class GitHubDocumentTests(unittest.TestCase):
+    @staticmethod
+    def _client(*values: Any) -> tuple[GitHubClient, list[list[str]]]:
+        responses = [CommandResult(0, json.dumps(value), "") for value in values]
+        calls: list[list[str]] = []
+
+        def runner(arguments: Sequence[str]) -> CommandResult:
+            calls.append(list(arguments))
+            return responses[len(calls) - 1]
+
+        return GitHubClient(runner), calls
+
+    def test_merge_base_uses_the_compare_endpoint_and_accepts_both_object_id_lengths(self) -> None:
+        for base, head, sha in (("a" * 40, "b" * 64, "c" * 40), ("a" * 64, "b" * 40, "c" * 64)):
+            with self.subTest(base=base, head=head, sha=sha):
+                client, calls = self._client({"merge_base_commit": {"sha": sha}})
+                self.assertEqual(sha, client.get_merge_base("Example/One", base, head))
+                self.assertEqual([["gh", "api", f"repos/example/one/compare/{base}...{head}?per_page=1"]], calls)
+                self.assertEqual(1, client.call_count)
+
+    def test_merge_base_rejects_invalid_commit_ids_before_running_gh(self) -> None:
+        for invalid in ("main", "", "a" * 39, "a" * 41, "a" * 63, "a" * 65, "A" * 40, "g" * 64, "a" * 40 + "\n"):
+            for base, head in ((invalid, "b" * 40), ("a" * 40, invalid)):
+                with self.subTest(base=base, head=head):
+                    client, calls = self._client()
+                    with self.assertRaisesRegex(
+                        GitHubError, "^A merge base is asked for between two commit SHAs$"
+                    ) as context:
+                        client.get_merge_base("example/one", base, head)
+                    self.assertEqual("input", context.exception.kind)
+                    self.assertEqual([], calls)
+                    self.assertEqual(0, client.call_count)
+
+    def test_merge_base_rejects_malformed_compare_responses(self) -> None:
+        values: tuple[Any, ...] = (
+            [],
+            {},
+            {"merge_base_commit": []},
+            {"merge_base_commit": {}},
+            {"merge_base_commit": {"sha": 1}},
+            {"merge_base_commit": {"sha": "a" * 39}},
+            {"merge_base_commit": {"sha": "g" * 40}},
+        )
+        for value in values:
+            with self.subTest(value=value):
+                client, calls = self._client(value)
+                with self.assertRaisesRegex(GitHubError, "^Compare response has an unexpected shape$") as context:
+                    client.get_merge_base("example/one", "a" * 40, "b" * 40)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertFalse(context.exception.retryable)
+                self.assertEqual(1, len(calls))
+
+    def test_file_blob_rejects_invalid_commit_ids_before_running_gh(self) -> None:
+        for commit in ("main", "", "a" * 39, "a" * 41, "a" * 63, "a" * 65, "A" * 40, "g" * 64, "a" * 40 + "\n"):
+            with self.subTest(commit=commit):
+                client, calls = self._client()
+                with self.assertRaisesRegex(GitHubError, "^A file is read at a commit SHA$") as context:
+                    client.get_file_blob("example/one", commit, "docs/design.docx", maximum=1)
+                self.assertEqual("input", context.exception.kind)
+                self.assertEqual([], calls)
+                self.assertEqual(0, client.call_count)
+
+    def test_file_blob_rejects_contents_that_are_not_one_file(self) -> None:
+        values: tuple[Any, ...] = ([], {}, {"type": "dir"}, {"type": "symlink"})
+        for value in values:
+            with self.subTest(value=value):
+                client, calls = self._client(value)
+                with self.assertRaisesRegex(GitHubError, "^Contents response is not one file$") as context:
+                    client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertEqual(1, len(calls))
+
+    def test_file_blob_rejects_contents_with_invalid_blob_ids(self) -> None:
+        for fields in ({}, {"sha": 1}, {"sha": "b" * 39}, {"sha": "g" * 40}, {"sha": "B" * 64}):
+            with self.subTest(fields=fields):
+                client, calls = self._client({"type": "file", "size": 0, **fields})
+                with self.assertRaisesRegex(GitHubError, "^Contents response has an unexpected shape$") as context:
+                    client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertEqual(1, len(calls))
+
+    def test_file_blob_rejects_contents_without_a_nonnegative_integer_size(self) -> None:
+        for fields in ({}, {"size": None}, {"size": "1"}, {"size": 1.5}, {"size": True}, {"size": -1}):
+            with self.subTest(fields=fields):
+                client, calls = self._client({"type": "file", "sha": "b" * 40, **fields})
+                with self.assertRaisesRegex(GitHubError, "^Contents response has an unexpected shape$") as context:
+                    client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertEqual(1, len(calls))
+
+    def test_file_blob_fetches_valid_bytes_below_and_at_the_size_limit_with_quoted_path(self) -> None:
+        payload = b"\x00\xff\n"
+        for commit, sha, maximum in (("a" * 40, "b" * 64, 4), ("a" * 64, "b" * 40, 3)):
+            with self.subTest(commit=commit, sha=sha, maximum=maximum):
+                client, calls = self._client(
+                    {"type": "file", "sha": sha, "size": len(payload)},
+                    {"encoding": "base64", "content": "AP8K\n"},
+                )
+                self.assertEqual(
+                    (sha, payload),
+                    client.get_file_blob("Example/One", commit, "docs/A design #1?+%.docx", maximum=maximum),
+                )
+                self.assertEqual(
+                    [
+                        ["gh", "api", f"repos/example/one/contents/docs/A%20design%20%231%3F%2B%25.docx?ref={commit}"],
+                        ["gh", "api", f"repos/example/one/git/blobs/{sha}"],
+                    ],
+                    calls,
+                )
+                self.assertEqual(2, client.call_count)
+
+    def test_file_blob_fetches_an_empty_file_at_a_zero_size_limit(self) -> None:
+        sha = "b" * 40
+        client, calls = self._client({"type": "file", "sha": sha, "size": 0}, {"encoding": "base64", "content": ""})
+        self.assertEqual((sha, b""), client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=0))
+        self.assertEqual(2, len(calls))
+
+    def test_file_blob_returns_the_id_without_fetching_content_one_byte_over_the_limit(self) -> None:
+        sha, commit = "b" * 40, "a" * 40
+        client, calls = self._client({"type": "file", "sha": sha, "size": 4})
+        self.assertEqual((sha, None), client.get_file_blob("example/one", commit, "docs/design.docx", maximum=3))
+        self.assertEqual([["gh", "api", f"repos/example/one/contents/docs/design.docx?ref={commit}"]], calls)
+        self.assertEqual(1, client.call_count)
+
+    def test_file_blob_rejects_malformed_blob_responses(self) -> None:
+        values: tuple[Any, ...] = (
+            [],
+            {},
+            {"encoding": "utf-8", "content": "text"},
+            {"encoding": "base64"},
+            {"encoding": "base64", "content": 1},
+        )
+        for value in values:
+            with self.subTest(value=value):
+                client, calls = self._client({"type": "file", "sha": "b" * 40, "size": 1}, value)
+                with self.assertRaisesRegex(GitHubError, "^Blob response has an unexpected shape$") as context:
+                    client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertEqual(2, len(calls))
+
+    def test_file_blob_classifies_base64_decode_failures(self) -> None:
+        for content in ("a", "\u00e9"):
+            with self.subTest(content=content):
+                client, calls = self._client(
+                    {"type": "file", "sha": "b" * 40, "size": 1}, {"encoding": "base64", "content": content}
+                )
+                with self.assertRaisesRegex(GitHubError, "^Blob response is not base64$") as context:
+                    client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertFalse(context.exception.retryable)
+                self.assertIsNotNone(context.exception.__cause__)
+                self.assertEqual(2, len(calls))
+
+    def test_document_reads_propagate_gh_and_json_failures_without_fetching_further(self) -> None:
+        contents = CommandResult(0, json.dumps({"type": "file", "sha": "b" * 40, "size": 1}), "")
+        for failure, kind, message in (
+            (CommandResult(1, "", "HTTP 404: Not Found"), "not_found", "^HTTP 404: Not Found$"),
+            (CommandResult(0, "not-json", ""), "malformed", "^GitHub returned malformed JSON:"),
+        ):
+            for stage in ("compare", "contents", "blob"):
+                with self.subTest(stage=stage, kind=kind):
+                    responses = [contents, failure] if stage == "blob" else [failure]
+                    runner = mock.Mock(side_effect=responses)
+                    client = GitHubClient(runner)
+                    with self.assertRaisesRegex(GitHubError, message) as context:
+                        if stage == "compare":
+                            client.get_merge_base("example/one", "a" * 40, "b" * 40)
+                        else:
+                            client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                    self.assertEqual(kind, context.exception.kind)
+                    self.assertFalse(context.exception.retryable)
+                    self.assertEqual(1 if kind == "not_found" else None, context.exception.returncode)
+                    self.assertEqual(len(responses), runner.call_count)
+                    self.assertEqual(len(responses), client.call_count)
+
+
 class RuntimeContractTests(unittest.TestCase):
     @staticmethod
     def _manifest() -> dict:
