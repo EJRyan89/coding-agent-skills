@@ -37,14 +37,14 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 - `MANIFEST_VERSION` and `OLDEST_READABLE_VERSION` in `deployer/manifest.py`;
 - a `required_vars` list under `deploy-meta/`;
 - a schema under `skills/code-review-core/references/`, or a format table in
-  `docs/code-review-operations-contract.md`;
+  `docs/code-review-operations-contract.md`, among them the code-review configuration file's format and the reviewer
+  manifest format;
 - a skill directory name under `skills/`, or a skill's arguments or status lines;
-- a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`;
-- the code-review configuration file's format and the reviewer manifest format.
+- a tool floor in `deployer/tools.py`: `MINIMUM_PYTHON`, or a tool's `minimum`.
 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
-arguments, the status lines, and the two hand-written formats, which no file holds, and fails while this list or the
-Versioning section of [releasing.md](releasing.md) leaves out a file or directory it reads.
+arguments and the status lines, which no file holds, and fails while this list or the Versioning section of
+[releasing.md](releasing.md) leaves out a file or directory it reads.
 
 ## Documentation
 
