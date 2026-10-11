@@ -294,7 +294,7 @@ def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     if isinstance(trusted_ref, str) and trusted_ref.startswith("refs/pull/"):
         raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref cannot be a pull ref")
     scope = reviewer.get("scope", "repository")
-    if scope not in {"generic", "repository"}:
+    if not isinstance(scope, str) or scope not in {"generic", "repository"}:
         raise ConfigurationError(f"repositories.{identity}.reviewer.scope is invalid")
     manifest_path = reviewer.get("manifest_path")
     skill = reviewer.get("skill")
@@ -343,12 +343,12 @@ def _check_configured_repositories(
 
 
 def _validate_runtime(runtime: Any) -> None:
-    if runtime not in RUNTIME_HOSTS:
+    if not isinstance(runtime, str) or runtime not in RUNTIME_HOSTS:
         raise ConfigurationError(f"Unknown runtime host: {runtime!r}")
 
 
 def _validate_reviewer_effort(effort: Any) -> None:
-    if effort is not None and effort not in REVIEWER_EFFORTS:
+    if effort is not None and (not isinstance(effort, str) or effort not in REVIEWER_EFFORTS):
         raise ConfigurationError(
             f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}"
         )
@@ -375,7 +375,7 @@ def _validate_verdict_policy(value: Any) -> dict[str, Any]:
     if not isinstance(request_changes_for, list) or not request_changes_for:
         raise ConfigurationError("verdict_policy.request_changes_for must be non-empty")
     allowed_severities = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-    if any(item not in allowed_severities for item in request_changes_for):
+    if any(not isinstance(item, str) or item not in allowed_severities for item in request_changes_for):
         raise ConfigurationError("verdict_policy.request_changes_for contains an invalid severity")
     threshold = policy.get("should_fix_threshold", 3)
     if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
@@ -392,7 +392,7 @@ def _validate_operation_sets(operation_sets: Any, normalized_sets: dict[str, lis
     for operation, set_name in operation_sets.items():
         if operation not in OPERATIONS:
             raise ConfigurationError(f"operation_repository_sets has an unknown operation: {operation!r}")
-        if set_name not in normalized_sets:
+        if not isinstance(set_name, str) or set_name not in normalized_sets:
             raise ConfigurationError(f"operation_repository_sets.{operation} must name an existing set")
     return operation_sets
 

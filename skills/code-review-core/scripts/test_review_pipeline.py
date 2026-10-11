@@ -2078,6 +2078,76 @@ class ReReviewTests(PipelineFixture):
         self.assertIn("supersedes the migrated legacy review", ready["notes"][0])
 
 
+class MalformedManifestTests(PipelineFixture):
+    @staticmethod
+    def cases() -> list[tuple[dict[str, Any], str]]:
+        cases = []
+        containers: tuple[object, ...] = ([], {})
+        for field, reason in (
+            ("schema_version", "Adapter manifest protocol version is unsupported"),
+            ("required_capabilities", "Adapter required_capabilities is invalid"),
+            ("when", "specialists[0].when names an undeclared condition"),
+        ):
+            for value in containers:
+                manifest = json.loads(json.dumps(SPECIALIST_MANIFEST))
+                if field == "when":
+                    manifest["specialists"][0]["when"] = value
+                else:
+                    manifest[field] = [value] if field == "required_capabilities" else value
+                cases.append((manifest, reason))
+        return cases
+
+    def test_malformed_local_manifests_print_field_errors_without_leaving_runs(self) -> None:
+        for manifest, reason in self.cases():
+            with self.subTest(manifest=manifest):
+                path = self.local_manifest(**manifest)
+                self.configure(self.skill_reviewer("review/solo.md", str(path)))
+                self.assertEqual(
+                    (1, f"FAILED {SELECTOR} {reason}\n", ""),
+                    self.run_main("prepare", "--pull", SELECTOR),
+                )
+                self.assertEqual([], list(self.temporary.iterdir()))
+
+    def test_malformed_committed_manifests_print_field_errors_without_leaving_runs(self) -> None:
+        self.configure(self.repository_reviewer("review/specialists.json"))
+        for manifest, reason in self.cases():
+            with self.subTest(manifest=manifest):
+                self.commit_manifest(manifest)
+                self.assertEqual(
+                    (1, f"FAILED {SELECTOR} {reason}\n", ""),
+                    self.run_main("prepare", "--pull", SELECTOR),
+                )
+                self.assertEqual([], list(self.temporary.iterdir()))
+
+    def commit_manifest(self, manifest: dict[str, Any]) -> None:
+        git(self.checkout, "switch", "main")
+        base = self.commit({"review/specialists.json": json.dumps(manifest)})
+        git(self.checkout, "switch", "feature")
+        git(self.checkout, "rebase", "main")
+        self.github.pulls[12] = rest_pull(12, git(self.checkout, "rev-parse", "HEAD"), base)
+
+    def test_a_malformed_manifest_fails_only_its_pull_and_prints_both_neighboring_runs(self) -> None:
+        self.configure(self.repository_reviewer("review/specialists.json"))
+        self.commit_manifest({**SPECIALIST_MANIFEST, "required_capabilities": [[]]})
+        self.github.pulls[13] = {**self.github.pulls[12], "number": 13}
+        for number in (12, 14):
+            self.github.pulls[number] = rest_pull(number, self.head, self.base)
+        code, out, err = self.run_main(
+            "prepare", "--pull", SELECTOR, "--pull", "example/one#13", "--pull", "example/one#14"
+        )
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual(
+            ["FAILED example/one#13 Adapter required_capabilities is invalid"],
+            [line for line in out.splitlines() if line.startswith("FAILED ")],
+        )
+        runs = [line.split(" ", 2) for line in out.splitlines() if line.startswith("RUN ")]
+        self.assertEqual([SELECTOR, "example/one#14"], [selector for _key, selector, _path in runs])
+        paths = {Path(path) for _key, _selector, path in runs}
+        self.assertEqual(paths, set(self.temporary.iterdir()))
+        for path in paths:
+            self.assertTrue((path / "run.json").is_file())
+
+
 class RepositoryReviewerTests(PipelineFixture):
     def test_specialists_load_from_the_trusted_base(self) -> None:
         self.configure(self.repository_reviewer("review/specialists.json"))

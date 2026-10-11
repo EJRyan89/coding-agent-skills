@@ -392,7 +392,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(specialist["category"], str) or not specialist["category"].strip():
             raise RuntimeContractError(f"{field}.category is required")
         when = specialist["when"]
-        if when is not None and when not in normalized_conditions:
+        if when is not None and (not isinstance(when, str) or when not in normalized_conditions):
             raise RuntimeContractError(f"{field}.when names an undeclared condition")
         normalized_specialists.append(
             {
@@ -483,8 +483,8 @@ def _validate_supports(supports: Any) -> None:
 def _validate_capabilities(capabilities: Any) -> None:
     if (
         not isinstance(capabilities, list)
-        or len(set(capabilities)) != len(capabilities)
         or any(not isinstance(item, str) or not item for item in capabilities)
+        or len(set(capabilities)) != len(capabilities)
     ):
         raise RuntimeContractError("Adapter required_capabilities is invalid")
 
