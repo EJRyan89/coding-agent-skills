@@ -140,7 +140,9 @@ With the guard enabled:
   - `submodule` with no subcommand, `submodule status`, and `submodule summary`; every other subcommand, `foreach`
     included, is refused
   - `branch` without `-m`, `-M`, or `--move`, which rename a branch, `HEAD`'s own included; an abbreviated
-    `--move` or a bundle such as `-fm` counts as one
+    `--move` or a bundle such as `-fm` counts as one. Attached option values are not bundles: `-uorigin/main`
+    is allowed like `-u origin/main` and `--set-upstream-to=origin/main`, while a separate rename option
+    before or after the upstream value is still refused
 - **Aliases.** A subcommand that is not refused itself may be one of your git aliases, so the guard reads it
   with `git config --get alias.<name>` in the hub and judges what it runs, through further aliases. A shell
   alias (`!...`) is read as Bash from the top of the hub. An alias that cannot be read, nests more than four
