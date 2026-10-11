@@ -84,6 +84,11 @@ to give a session asked to post, and no runtime is given it.
 
 ## Review pipeline
 
+Review records validate `artifacts.payload_sha256` and `artifacts.markdown_sha256` as exactly 64-character lowercase
+SHA-256 digests. A record carrying a shorter Git commit hash in either field is malformed and is refused, including when
+used as a fixture's prior review. Commit fields still accept lowercase Git hashes in either supported length;
+records without artifact hashes remain readable, but their JSON/Markdown pair cannot be verified.
+
 `code-review-core/scripts/review_pipeline.py` runs every deterministic step of `review-prs`, so the orchestrating agent only runs its commands and starts reviewer subagents, or, in an inline review, works each reviewer role itself. It follows [Script results](adding-a-skill.md#script-results): every line goes to stdout, exit 0 is a result (including `RUNNING`, a state to poll again), exit 1 is findings to act on or an expected failure printed as a `FAILED <reason>` line, and exit 2 is only a usage error before any work.
 
 | Command | What it does |

@@ -159,6 +159,10 @@ def _validate_sha(value: Any, field: str) -> str:
     return value
 
 
+def _valid_sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
 DISPOSITION_SUBJECTS = {"Prior": "prior finding", "Comment": "review comment"}
 
 
@@ -839,8 +843,7 @@ def _validate_patches(patches: Any) -> None:
         if (
             not isinstance(patch, dict)
             or set(patch) != PATCH_FIELDS
-            or not isinstance(patch["sha256"], str)
-            or not re.fullmatch(r"[0-9a-f]{64}", patch["sha256"])
+            or not _valid_sha256(patch["sha256"])
             or not _count(patch["lines"])
         ):
             raise RecordError(f"Review patch for {path} is malformed")
@@ -1204,7 +1207,7 @@ def _validate_source_hashes(source_hashes: Any) -> None:
     for path, hash_value in source_hashes.items():
         if not safe_repository_path(path):
             raise RecordError("Review adapter source hash path is unsafe")
-        if not isinstance(hash_value, str) or not re.fullmatch(r"[0-9a-f]{64}", hash_value):
+        if not _valid_sha256(hash_value):
             raise RecordError(f"Review adapter source hash is invalid: {path}")
 
 
@@ -1316,8 +1319,9 @@ def _validate_artifacts(artifacts: Any) -> None:
         return
     if not isinstance(artifacts, dict) or set(artifacts) != {"payload_sha256", "markdown_sha256"}:
         raise RecordError("Review artifact hashes are malformed")
-    _validate_sha(artifacts["payload_sha256"], "artifacts.payload_sha256")
-    _validate_sha(artifacts["markdown_sha256"], "artifacts.markdown_sha256")
+    for field in ("payload_sha256", "markdown_sha256"):
+        if not _valid_sha256(artifacts[field]):
+            raise RecordError(f"artifacts.{field} must be a lowercase SHA-256 hash")
 
 
 def validate_record(value: Any) -> dict[str, Any]:
