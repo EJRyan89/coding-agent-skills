@@ -1042,6 +1042,61 @@ class DocumentStagingTests(unittest.TestCase):
         self.assertEqual(base_of(scenario).read_bytes(), committed)
         self.assertEqual(f" M {staged.name}", self.git.output(["status", "--porcelain"], directory=folder).rstrip())
 
+    def test_a_document_base_runs_no_global_prepare_commit_msg_or_post_commit_hook(self) -> None:
+        self.assert_staging_ignores_hooks("core.hooksPath")
+
+    def test_a_document_base_runs_no_template_prepare_commit_msg_or_post_commit_hook(self) -> None:
+        self.assert_staging_ignores_hooks("init.templateDir")
+
+    def assert_staging_ignores_hooks(self, setting: str) -> None:
+        template = self.root / "git template"
+        hooks = template / "hooks"
+        hooks.mkdir(parents=True)
+        for name in ("prepare-commit-msg", "post-commit"):
+            hook = hooks / name
+            hook.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '../hook-effects'\n", encoding="utf-8")
+            hook.chmod(0o755)
+        config = self.root / "global.gitconfig"
+        self.git.output(
+            ["config", "--file", str(config), setting, str(hooks if setting == "core.hooksPath" else template)]
+        )
+        self.git.output(["config", "--file", str(config), "commit.gpgsign", "true"])
+        self.git.output(["config", "--file", str(config), "gpg.program", str(self.root / "missing-signer")])
+        scenario = self.scenarios["committed-edit"]
+        sources = (document_of(scenario), base_of(scenario), config, *hooks.iterdir())
+        before = {path: path.read_bytes() for path in sources}
+        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        environment.update({"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
+        with mock.patch.dict(os.environ, environment, clear=True):
+            control = self.root / "control"
+            control.mkdir()
+            self.git.output(["init", "--quiet"], directory=control)
+            self.git.output(
+                [*skill_evals.COMMIT, "commit", "--quiet", "--no-verify", "--allow-empty", "-m", "Control"],
+                directory=control,
+            )
+            effects = self.root / "hook-effects"
+            self.assertEqual(["prepare-commit-msg", "post-commit"], effects.read_text(encoding="utf-8").splitlines())
+            effects.unlink()
+
+            staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+            self.assertFalse(effects.exists(), "the evaluation base commit ran a user hook")
+            self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
+            self.assertEqual(
+                base_of(scenario).read_bytes(),
+                self.git.run(["show", f"HEAD:{staged.name}"], directory=staged.parent).output_bytes(),
+            )
+            self.assertEqual("1", self.git.output(["rev-list", "--count", "HEAD"], directory=staged.parent).strip())
+            self.assertEqual(
+                "skill-evals <skill-evals@example.invalid>",
+                self.git.output(["log", "-1", "--format=%an <%ae>"], directory=staged.parent).strip(),
+            )
+            self.assertNotIn("gpgsig", self.git.output(["cat-file", "commit", "HEAD"], directory=staged.parent))
+            self.assertEqual(
+                f" M {staged.name}", self.git.output(["status", "--porcelain"], directory=staged.parent).rstrip()
+            )
+        self.assertEqual(before, {path: path.read_bytes() for path in sources})
+
     def test_the_skill_starts_on_the_staged_document_and_a_fixture_scenario_on_its_fixture(self) -> None:
         run = self.root / "run"
         arguments = skill_evals.skill_arguments(self.scenarios["design-clean"], run, self.git)
