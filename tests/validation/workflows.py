@@ -410,8 +410,7 @@ class WorkflowsPolicies(unittest.TestCase):
 
     def test_validate_workflow_runs_four_legs_and_restores_the_pinned_tools_from_caches(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
-        # Four four-core runners take a run of about 1,450 job-seconds to about three minutes; the count changes
-        # here and in the workflow together.
+        # Keep the leg count here and in the workflow synchronized.
         self.assertEqual([], leg_problems(workflow, 4))
         self.assertEqual(
             [],
