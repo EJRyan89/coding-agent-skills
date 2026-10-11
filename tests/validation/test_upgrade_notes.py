@@ -5,6 +5,8 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -18,8 +20,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import upgrade_notes
 from upgrade_notes import contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
+
+from tests import run_validation
 
 
 class UpgradeNotesPolicy(unittest.TestCase):
@@ -171,6 +176,53 @@ class UpgradeNotesPolicy(unittest.TestCase):
         self.commit(f"Change the manifest\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE)
         problems = upgrade_notes_problems(self.root, self.body())
         self.assertEqual(["deployer/manifest.py"], [problem.split(":", 1)[0] for problem in problems])
+
+    def run_with_body(self, body: str | None) -> tuple[int, str]:
+        body_file = self.home / "pull request body.md"
+        if body is not None:
+            body_file.write_text(body, encoding="utf-8")
+        output = io.StringIO()
+        with (
+            mock.patch.object(upgrade_notes, "pull_request_body", None),
+            mock.patch.object(upgrade_notes, "REPOSITORY_ROOT", self.root),
+            mock.patch.object(run_validation, "tool_versions", return_value={}),
+            mock.patch.object(run_validation, "report_prerequisite_problems", return_value=[]),
+            mock.patch.object(run_validation, "all_jobs", return_value=[]),
+            mock.patch.object(run_validation, "append_step_summary"),
+            contextlib.redirect_stdout(output),
+        ):
+            arguments = ["-k", "*UpgradeNotesPolicies.test_the_repository_names_every_contract_change*"]
+            if body is not None:
+                arguments += ["--pr-body", str(body_file)]
+            status = run_validation.main(arguments)
+        return status, output.getvalue()
+
+    def test_runner_reads_the_body_file_instead_of_the_branch_commit_note(self) -> None:
+        self.release()
+        self.commit(f"Change the manifest\n\n{self.body(self.entry('`deployer/manifest.py`'))}", self.MANIFEST_CHANGE)
+        status, output = self.run_with_body(None)
+        self.assertEqual(0, status, output)
+        self.assertIn("1 policy checks and 0 suite jobs", output)
+
+        status, output = self.run_with_body(self.body())
+        self.assertEqual(1, status, output)
+        self.assertIn("deployer/manifest.py: MANIFEST_VERSION or OLDEST_READABLE_VERSION changed", output)
+        self.assertIn("no upgrade note since then names it", output)
+
+        status, output = self.run_with_body(self.body(self.entry("`deployer/manifest.py`")))
+        self.assertEqual(0, status, output)
+        self.assertIn("1 policy checks and 0 suite jobs", output)
+
+    def test_runner_reads_a_note_found_only_in_the_supplied_body_file(self) -> None:
+        self.release()
+        self.commit("Change the manifest without a commit note", self.MANIFEST_CHANGE)
+        status, output = self.run_with_body(None)
+        self.assertEqual(1, status, output)
+        self.assertIn("no upgrade note since then names it", output)
+
+        status, output = self.run_with_body(self.body(self.entry("`deployer/manifest.py`")))
+        self.assertEqual(0, status, output)
+        self.assertIn("1 policy checks and 0 suite jobs", output)
 
     def test_an_entry_merged_into_origin_main_since_the_tag_counts_for_a_later_pull_request(self) -> None:
         self.release()
