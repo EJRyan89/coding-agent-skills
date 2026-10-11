@@ -9,7 +9,7 @@ Validation (`tests/run_validation.py`) compares the contract files at the last t
 An entry is a `###` heading saying what changed, followed by these fields:
 
 - `Level:` starts with a level word from the Versioning section: `patch`, `minor`, or `major`. Before `1.0.0`, a change that would be major is carried in a minor, and the entry says so.
-- `Contract:` the contract items the entry covers, each in backticks as the validation failure names it, or `none` for a demand no contract file records.
+- `Contract:` the contract items the entry covers, each in backticks as the validation failure names it, or `none` for a demand no contract file records. `none` is case-insensitive and may end with a period.
 - `User action:` what the user must do after updating, or `none`.
 - `Pull request:` the pull request as `#N`. The script adds it from the squash commit's title, so a body leaves it out.
 
