@@ -10,7 +10,7 @@ assignees: ''
 
 ## What is wrong or missing
 
-<!-- Name the file and section. For a wrong claim, say what the code does instead and how you checked. -->
+<!-- Name the file and section. For a wrong claim, describe the actual behavior and supporting evidence. -->
 
 ## Done when
 

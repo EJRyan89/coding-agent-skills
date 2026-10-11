@@ -10,8 +10,8 @@ assignees: ''
 
 ## What and why
 
-<!-- What is missing or wrong today and why it matters. Name the skills, files, and symbols involved, and say what
-     you checked. Link related issues and pull requests. -->
+<!-- What is missing or wrong today and why it matters. Name the skills, files, and symbols involved.
+     Summarize relevant investigation and link related issues and pull requests. -->
 
 ## Proposal
 
