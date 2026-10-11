@@ -595,9 +595,9 @@ class PrepareFixture(unittest.TestCase):
         canonical = json.dumps(record["ledger"], sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return {"version": 1, "ledger_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest()}
 
-    def seed_legacy(self) -> None:
+    def seed_legacy(self, **overrides: Any) -> None:
         directory = pull_directory(self.archive, REPOSITORY, NUMBER)
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         (directory / "legacy-review.json").write_text(
             json.dumps(
                 {
@@ -611,6 +611,7 @@ class PrepareFixture(unittest.TestCase):
                     "source_sha256": "e" * 64,
                     "source_path": "legacy.md",
                     "source_file_sha256": "f" * 64,
+                    **overrides,
                 }
             ),
             encoding="utf-8",
@@ -1959,6 +1960,65 @@ class HistoryTests(PrepareFixture):
         self.run_dir = self.root / "second run"
         result, _ = self.prepare()
         self.assertEqual([LINK_NOTE], result["notes"], "an initial review supersedes nothing")
+
+    def test_a_malformed_legacy_verdict_needs_an_initial_review_even_on_the_same_head(self) -> None:
+        verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
+        for index, verdict in enumerate(verdicts):
+            with self.subTest(verdict=verdict):
+                self.seed_legacy(verdict=verdict, reviewed_head_sha=self.head)
+                self.run_dir = self.root / f"run-{index}"
+                self.assertEqual(
+                    (rp.PipelineError, "example/one#12 has no review yet; run review-prs --pull example/one#12", ""),
+                    self.refused(re_review=True, scope="full", force=True),
+                )
+                self.assertFalse(self.run_dir.exists())
+                result, printed = self.prepare()
+                self.assertEqual(
+                    ("ready", "initial", [LINK_NOTE], ""), (result["status"], result["mode"], result["notes"], printed)
+                )
+                self.assertEqual(request(run=f"<root>/run-{index}"), self.json_file("request.json"))
+
+    def test_valid_legacy_verdicts_skip_the_same_head_and_force_an_initial_supersession(self) -> None:
+        cases: list[dict[str, Any]] = [{}, {"re_review": True, "scope": "full"}]
+        for index, verdict in enumerate(("APPROVED", "CHANGES REQUESTED", "CHANGES_REQUESTED")):
+            with self.subTest(verdict=verdict):
+                self.seed_legacy(verdict=verdict, reviewed_head_sha=self.head)
+                self.run_dir = self.root / f"run-{index}"
+                for options in cases:
+                    self.assertEqual(
+                        ({"status": "skip", "selector": SELECTOR, "reason": "head <head12> is already reviewed"}, ""),
+                        self.prepare(**options),
+                    )
+                self.assertFalse(self.run_dir.exists())
+                result, _ = self.prepare(re_review=True, scope="full", force=True)
+                self.assertEqual(
+                    ("ready", "initial", [LEGACY_NOTE, LINK_NOTE]), (result["status"], result["mode"], result["notes"])
+                )
+                self.assertEqual(request(run=f"<root>/run-{index}"), self.json_file("request.json"))
+
+    def test_a_missing_legacy_verdict_reports_the_re_review_refusal_and_prepares_an_initial_review(self) -> None:
+        self.seed_legacy(reviewed_head_sha=self.head)
+        path = pull_directory(self.archive, REPOSITORY, NUMBER) / "legacy-review.json"
+        index = json.loads(path.read_text(encoding="utf-8"))
+        index.pop("verdict")
+        path.write_text(json.dumps(index), encoding="utf-8")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = rp.main(
+                ["--config", str(self.config_path), "prepare", "--re-review", SELECTOR, "--scope", "full"],
+                services=self.services,
+            )
+        self.assertEqual((1, ""), (code, err.getvalue()))
+        self.assertEqual(
+            "FAILED example/one#12 example/one#12 has no review yet; run review-prs --pull example/one#12\n",
+            out.getvalue(),
+        )
+        self.assertFalse(self.run_dir.exists())
+        result, printed = self.prepare()
+        self.assertEqual(
+            ("ready", "initial", [LINK_NOTE], ""), (result["status"], result["mode"], result["notes"], printed)
+        )
+        self.assertEqual(request(), self.json_file("request.json"))
 
 
 SPECIALIST_HASHES = {

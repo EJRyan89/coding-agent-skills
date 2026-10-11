@@ -19,7 +19,7 @@ from review_archive import (
     record_paths,
 )
 from review_config import validate_repository_identity
-from review_io import read_json
+from review_io import PersistenceError, read_json
 from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
 from review_state import watermark_date
 
@@ -360,7 +360,7 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
         return None
     try:
         value = read_json(path)
-    except Exception:
+    except PersistenceError:
         return None
     if (
         not isinstance(value, dict)
@@ -373,6 +373,7 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
         or value["pull_number"] != number
         or not isinstance(value["reviewed_head_sha"], str)
         or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value["reviewed_head_sha"])
+        or not isinstance(value["verdict"], str)
     ):
         return None
     return value

@@ -612,7 +612,7 @@ A pull request migrated from the legacy review skills keeps a `legacy-review.jso
 | `pull_number` | integer | yes | The pull request of the archive folder it is in. |
 | `reviewed_at` | any | yes | When the legacy review was written, as an ISO 8601 time. Not checked when read. |
 | `reviewed_head_sha` | string | yes | The head commit the legacy review covered. |
-| `verdict` | any | yes | The legacy verdict, `APPROVED` or `CHANGES REQUESTED`. Not checked when read. |
+| `verdict` | string | yes | The legacy verdict, normally `APPROVED` or `CHANGES REQUESTED`. Its type is checked when read, but its string value is not; dashboards replace spaces with underscores. A non-string or missing verdict makes the index absent. |
 | `source_sha256` | any | yes | A hash of the legacy review's content. Not checked when read. |
 | `source_path` | any | yes | Where the legacy review was copied from. Not checked when read. |
 | `source_file_sha256` | any | yes | SHA-256 of the legacy review file. Not checked when read. |

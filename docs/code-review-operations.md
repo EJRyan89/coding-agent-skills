@@ -265,6 +265,8 @@ A matching file is recorded in the snapshot's manifest as a `configured` exclusi
 
 A migrated legacy review (`legacy-review.json`, written by the completed legacy migration) counts as a reviewed head for skip detection and the tracker's `current`/`stale` column. It has no structured findings, so `review-prs --re-review` of a legacy-only pull request runs an initial review that becomes version 1.
 
+An index whose `verdict` is missing or not a string is treated as absent, never assigned a replacement verdict: the pull request is offered for an initial review, the tracker shows its AI review as `missing`, and a merged pull request's head does not count as reviewed when advancing the watermark. An explicit `--re-review` requires a readable prior review, so use `--pull` for such a pull request. Existing string verdicts retain their values, with spaces replaced by underscores for dashboards; the index and copied report are not rewritten.
+
 Validate or atomically replace configuration with:
 
 ```powershell
