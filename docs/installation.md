@@ -93,7 +93,7 @@ If an unmanaged or locally modified destination differs from the rendered templa
 python deploy.py --all --force-item dotnet-format
 ```
 
-`--force-item` takes the name the report shows; an agent may also be named without its `.md`, as `code-review-reviewer`. A name that matches no item the run installs is refused before anything changes, with the names it accepts. Forced replacements are retained under `.backups/<run-id>/` in the item's root: `~/.claude/skills/` for skills and shared assets, `~/.agents/skills/` for runtime adapters, and `~/.claude/agents/` for agents.
+`--force-item` takes the name the report shows; an agent may also be named without its `.md`, as `code-review-reviewer`. A name no selection from the source can install is a command-line error (exit 2), refused before taking the lock, recovering an interrupted deployment, claiming a canary home, or prompting for a selection, with the names the source accepts and a help hint. A known name must also match an item the selected run installs; otherwise it is refused before staging, with the names that selection accepts, without reporting a deployment failure or attempting failure recovery. Forced replacements are retained under `.backups/<run-id>/` in the item's root: `~/.claude/skills/` for skills and shared assets, `~/.agents/skills/` for runtime adapters, and `~/.claude/agents/` for agents.
 
 ### When a command fails
 

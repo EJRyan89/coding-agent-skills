@@ -4,7 +4,9 @@ in which it detects faults. The records are literal, so a change to what the pip
 from __future__ import annotations
 
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +21,8 @@ from review_records import (
     is_suite_profile,
     validate_adapter_result,
     validate_record,
+    validate_record_pair,
+    write_record_pair,
 )
 
 Mutation = Callable[[Any], Any]
@@ -34,6 +38,22 @@ ANALYZER_RULE = (
     "lowercase kebab-case pattern name of at most 60 characters"
 )
 SHA_RULE = "must be a lowercase Git or SHA-256 hash"
+DIGEST_RULE = "must be a lowercase SHA-256 hash"
+INVALID_DIGESTS: tuple[Any, ...] = (
+    BASE_SHA,
+    "a" * 63,
+    "a" * 65,
+    "A" * 64,
+    "g" * 64,
+    "",
+    "x",
+    SHA256 + "\n",
+    None,
+    True,
+    1,
+    [],
+    {},
+)
 GENERIC_SOURCE = "Review adapter source is invalid for a generic reviewer"
 
 
@@ -275,6 +295,7 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ),
     ("APPROVED verdict", _record, _set((*REVIEW, "verdict"), "APPROVED")),
     ("source_commit set", _record, _set((*ADAPTER, "source_commit"), BASE_SHA)),
+    ("SHA-256 source_commit", _record, _set((*ADAPTER, "source_commit"), SHA256)),
     ("source hashes", _record, _set((*ADAPTER, "source_hashes"), {"a.md": SHA256, "dir/b.md": SHA256})),
     (
         "a suite profile keyed by its reference beside source hashes",
@@ -309,7 +330,11 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
         _chain(_set(("findings",), []), _set((*REVIEW, "counts"), {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0})),
     ),
     ("prior disposition without a ledger", _record, _set(("prior_dispositions",), [PRIOR])),
-    ("artifacts", _record, _set(("artifacts",), {"payload_sha256": BASE_SHA, "markdown_sha256": SHA256})),
+    (
+        "artifacts with every lowercase hex digit",
+        _record,
+        _set(("artifacts",), {"payload_sha256": "0123456789abcdef" * 4, "markdown_sha256": "fedcba9876543210" * 4}),
+    ),
     ("artifacts null", _record, _set(("artifacts",), None)),
     ("comments without artifacts", _full_record, _delete(("artifacts",))),
     (
@@ -723,17 +748,15 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
         R,
         "Review artifact hashes are malformed",
     ),
-    (
-        "payload hash invalid",
-        _set(("artifacts",), {"payload_sha256": "x", "markdown_sha256": SHA256}),
-        R,
-        f"artifacts.payload_sha256 {SHA_RULE}",
-    ),
-    (
-        "markdown hash invalid",
-        _set(("artifacts",), {"payload_sha256": SHA256, "markdown_sha256": "x"}),
-        R,
-        f"artifacts.markdown_sha256 {SHA_RULE}",
+    *(
+        (
+            f"artifacts.{field} {value!r}",
+            _set(("artifacts",), {"payload_sha256": SHA256, "markdown_sha256": SHA256, field: value}),
+            R,
+            f"artifacts.{field} {DIGEST_RULE}",
+        )
+        for field in ("payload_sha256", "markdown_sha256")
+        for value in INVALID_DIGESTS
     ),
 ]
 
@@ -837,13 +860,13 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
         "payload hash",
         _set(("artifacts",), {"payload_sha256": "x", "markdown_sha256": SHA256}),
         R,
-        f"artifacts.payload_sha256 {SHA_RULE}",
+        f"artifacts.payload_sha256 {DIGEST_RULE}",
     ),
     (
         "markdown hash",
         _set(("artifacts",), {"payload_sha256": SHA256, "markdown_sha256": "x"}),
         R,
-        f"artifacts.markdown_sha256 {SHA_RULE}",
+        f"artifacts.markdown_sha256 {DIGEST_RULE}",
     ),
 ]
 
@@ -904,6 +927,55 @@ class RecordValidationTests(unittest.TestCase):
         stage_errors = {(error, message) for _name, _mutation, error, message in STAGES}
         rejected_errors = {(error, message) for _name, _mutation, error, message in REJECTED}
         self.assertEqual(set(), rejected_errors - stage_errors - VALUE_VARIANTS)
+
+    def test_other_digests_keep_their_strict_sha256_rule_and_errors(self) -> None:
+        for value in INVALID_DIGESTS:
+            with self.subTest(value=value):
+                source = _record()
+                source["review"]["adapter"]["source_hashes"] = {"src/app.py": value}
+                self.assert_refused(source, RecordError, "Review adapter source hash is invalid: src/app.py")
+                patch = _record()
+                patch["review"]["patches"] = {"src/app.py": {"sha256": value, "lines": 1}}
+                self.assert_refused(patch, RecordError, "Review patch for src/app.py is malformed")
+
+
+class ArtifactPairValidationTests(unittest.TestCase):
+    def test_written_artifact_hashes_are_full_sha256_and_the_pair_validates(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            json_path = Path(temporary) / "review.json"
+            markdown_path = Path(temporary) / "review.md"
+            persisted = write_record_pair(json_path, markdown_path, _record())
+            for field in ("payload_sha256", "markdown_sha256"):
+                self.assertRegex(persisted["artifacts"][field], r"\A[0-9a-f]{64}\Z")
+            self.assertEqual(persisted, validate_record_pair(json_path, markdown_path))
+
+    def test_a_short_artifact_hash_is_refused_before_reading_the_report(self) -> None:
+        for field in ("payload_sha256", "markdown_sha256"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                record = _full_record()
+                record["artifacts"][field] = BASE_SHA
+                json_path = Path(temporary) / "review.json"
+                json_path.write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaises(RecordError) as caught:
+                    validate_record_pair(json_path, Path(temporary) / "missing.md")
+                self.assertEqual(f"artifacts.{field} {DIGEST_RULE}", str(caught.exception))
+
+    def test_a_short_artifact_hash_is_not_silently_replaced_when_writing(self) -> None:
+        for field in ("payload_sha256", "markdown_sha256"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as temporary:
+                record = _full_record()
+                record["artifacts"][field] = BASE_SHA
+                before = copy.deepcopy(record)
+                json_path = Path(temporary) / "review.json"
+                markdown_path = Path(temporary) / "review.md"
+                json_path.write_text("existing record", encoding="utf-8")
+                markdown_path.write_text("existing report", encoding="utf-8")
+                with self.assertRaises(RecordError) as caught:
+                    write_record_pair(json_path, markdown_path, record)
+                self.assertEqual(f"artifacts.{field} {DIGEST_RULE}", str(caught.exception))
+                self.assertEqual(before, record)
+                self.assertEqual("existing record", json_path.read_text(encoding="utf-8"))
+                self.assertEqual("existing report", markdown_path.read_text(encoding="utf-8"))
 
 
 # validate_adapter_result, pinned the same way: every reviewer result it accepts, every fault it refuses with its

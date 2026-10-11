@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import fsops, hashing, journal, platform_support, render
+from . import fsops, hashing, journal, platform_support, render, source
 from .arguments import PROG, usage_error
 from .context import Context
 from .errors import DeployError, see_recovery
@@ -22,6 +22,8 @@ from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL,
 from .source import Source
 
 KINDS_ALLOWED = {
+    "check_source_forced_items": "the possible installs come from selectable skills and their dependency closure, "
+    "owned shared assets they need, selectable skills' runtime adapters, and the agents they declare",
     "build": "plans skills first and names the kinds that depend on them: a skill left in place keeps its transitive "
     "skill dependencies, shared assets and agents, a runtime adapter is skipped with its skill, and each kind's "
     "rendered content has its own shape in render.Staged",
@@ -231,11 +233,31 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
     ]
 
 
-def check_forced_items(context: Context, wanted: Mapping[ItemKind, list[str]]) -> None:
+def check_source_forced_items(src: Source, force_items: list[str]) -> None:
+    """Reject names no selection can install, without reading ownership or prompting for a selection.
+
+    Include opt-in roots, bundle members, and hidden dependencies; the selected run still checks its own items.
+    """
+    if not force_items:
+        return
+    selected = source.expand(src, [], sorted(name for name, skill in src.skills.items() if skill.selectable))
+    needed = {asset for name in selected for asset in src.skills[name].shared_deps}
+    check_forced_items(
+        force_items,
+        {
+            SKILL: selected,
+            SHARED: sorted(asset for asset in needed if src.shared_assets.get(asset) == "owner"),
+            ADAPTER_KIND: [name for name in selected if src.skills[name].selectable],
+            AGENT_KIND: source.agent_closure(src, selected),
+        },
+    )
+
+
+def check_forced_items(force_items: list[str], wanted: Mapping[ItemKind, list[str]]) -> None:
     """Refuse, as a usage error, a --force-item that names no item this run installs, by either of its names."""
     accepted = {name: kind.item_name(name) for kind, names in wanted.items() for name in names}
     known = set(accepted) | set(accepted.values())
-    unknown = [f"'{name}'" for name in dict.fromkeys(context.options.force_items) if name not in known]
+    unknown = [f"'{name}'" for name in dict.fromkeys(force_items) if name not in known]
     if not unknown:
         return
     named = " and ".join(unknown) if len(unknown) < 3 else f"{', '.join(unknown[:-1])}, and {unknown[-1]}"

@@ -92,6 +92,31 @@ class RecoveryTestCase(DeployerTestCase):
 
 
 class RecoveryTests(RecoveryTestCase):
+    def test_unknown_forced_item_leaves_pending_journal_and_home_untouched(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        original = hashing.hash_path(self.skills_dir / "alpha")
+        (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
+        self.write(self.skills_dir / "alpha" / "SKILL.md", "interrupted replacement\n")
+        replacement = hashing.hash_path(self.skills_dir / "alpha")
+        self.write_journal(
+            "20260101-000000-fake",
+            backup_entry("alpha", original),
+            install_entry("alpha", replacement),
+        )
+        self.sentinel()
+        expected = (
+            "\nERROR: --force-item names 'gamma', which this run does not install.\n"
+            "Name one of: alpha.\nRun 'python deploy.py --help' for usage.\n\n"
+        )
+        for arguments in (("--all",), (), ("--all", "--dry-run"), ("--dry-run",)):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, "--force-item", "gamma", pattern="--force-item names")
+                self.assertEqual(2, result.code, result.output)
+                self.assertEqual(expected, result.output)
+        recovered = self.deploy_ok("--all")
+        self.assertIn("Recovering uncommitted run 20260101-000000-fake (rolling back)...", recovered.output)
+        self.assertIn("Alpha content", self.skill_text("alpha"))
+
     def test_uncommitted_journal_rolls_back(self) -> None:
         self.deployed(("alpha", "Alpha content"))
         original = hashing.hash_path(self.skills_dir / "alpha")
