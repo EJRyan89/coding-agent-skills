@@ -86,6 +86,27 @@ class ManifestTests(unittest.TestCase):
                 reached[path].add(specialist)
         self.assertEqual(expected, reached)
 
+    def test_entry_validation_and_reviewer_judgment_are_distinct_on_both_surfaces(self) -> None:
+        for name in ("SKILL.md", "references/upgrade-notes.md"):
+            with self.subTest(name=name):
+                text = " ".join((REPOSITORY / SKILL / name).read_text(encoding="utf-8").split())
+                self.assertIn("non-empty `Level`, `Contract`, and `User action` fields", text)
+                self.assertRegex(text, r"`Level` whose first word is .*Versioning")
+                self.assertIn("a `Contract` naming backticked items or `none`", text)
+                self.assertIn("syntactic checks", text)
+                self.assertIn("level and user action fit the actual change and migration", text)
+                self.assertIn("contract with no file", text)
+                self.assertNotIn("holds only that the body names", text)
+                self.assertNotIn("reads neither an entry's level nor its user action", text)
+
+    def test_documentation_profile_leaves_pull_request_lines_to_the_release_script(self) -> None:
+        path = REPOSITORY / SKILL / "references" / "documentation.md"
+        text = " ".join(path.read_text(encoding="utf-8").split())
+        self.assertIn("An entry in the pull request body describes what the code does", text)
+        self.assertIn("leaves out the `Pull request:` line", text)
+        self.assertIn("`tools/release_notes.py` adds it from the squash commit's title", text)
+        self.assertNotIn("once the pull request exists", text)
+
     def test_the_generic_reviewer_takes_tools_skill_scripts_suites_ci_and_the_profiles(self) -> None:
         others = [
             "tools/worktrees.py",
