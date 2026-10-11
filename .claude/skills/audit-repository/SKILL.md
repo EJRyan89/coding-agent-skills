@@ -29,6 +29,10 @@ python -B .claude/skills/audit-repository/scripts/audit_repository.py rotation
 
 Add `--since '<ref>'` to `release` to start from another base. `AREA` lines count each area's changed files; `NEXT` names the rotation area and `FILES` its size. Each `BRIEF <area> "<file>"` is one reader's whole prompt. A `FAILED` line names what stopped the run, such as no tag reachable from `HEAD`.
 
+If the script cannot create the temporary directory or write a brief, it exits 1 with `FAILED`, not a traceback.
+It prints no `BRIEFS` or `BRIEF` lines until every brief is written. A failed write names its path and leaves the
+directory and any complete or partial briefs in place; remove that directory after diagnosing the failure.
+
 ## 3. Start one reader per brief
 
 Start one read-only reader per `BRIEF` line, all at once: in Claude Code a subagent that cannot edit, such as the `Plan` type; elsewhere a separate read-only session. Give each this prompt: `Read <file> and follow it.` For the rotation audit, add the carried issues to the prompt by number and title. If an area is too large for one reader to read whole, split its file list between two readers by directory and tell each which part is theirs.
