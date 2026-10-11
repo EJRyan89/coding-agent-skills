@@ -28,6 +28,9 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   from a folder whose workspace trust was never accepted, which a headless session's never is. A run whose reviewers
   did not all run on the model counts for nothing, and so does one whose record shows a reviewer the guard did not
   hold (`files_read` null).
+  A narrowed run can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order,
+  both when running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios
+  are selected in name order.
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
   on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 

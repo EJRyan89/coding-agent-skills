@@ -174,10 +174,17 @@ class LoaderTests(unittest.TestCase):
         names = [scenario.name for scenario in skill_evals.load_scenarios("demo", ["two"], root=self.root)]
         self.assertEqual(["two"], names)
 
+    def test_named_scenarios_are_distinct_in_first_occurrence_order(self) -> None:
+        for name in ("one", "two", "three"):
+            write_scenario(self.root, name, scenario_spec())
+        selected = ["two", "one", "two", "three", "one"]
+        names = [scenario.name for scenario in skill_evals.load_scenarios("demo", selected, root=self.root)]
+        self.assertEqual(["two", "one", "three"], names)
+
     def test_unknown_scenario_and_skill_fail(self) -> None:
         write_scenario(self.root, "one", scenario_spec())
         with self.assertRaisesRegex(ScenarioError, "no scenario three for demo"):
-            skill_evals.load_scenarios("demo", ["three"], root=self.root)
+            skill_evals.load_scenarios("demo", ["one", "one", "three"], root=self.root)
         with self.assertRaisesRegex(ScenarioError, "no scenarios for other"):
             skill_evals.load_scenarios("other", root=self.root)
 
@@ -639,6 +646,40 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual("| Scenario | opus | haiku |", lines[-3])
         self.assertEqual("| defects | 2/2 | 0/2 |", lines[-1])
+
+    def test_repeated_scenarios_print_each_expectation_and_table_row_once(self) -> None:
+        write_scenario(self.scenarios, "clean", scenario_spec())
+        self.write_record("haiku", record(), "clean")
+        argv = [
+            "demo",
+            "--records",
+            str(self.records),
+            "--model",
+            "haiku",
+            "--scenario",
+            "clean",
+            "--scenario",
+            "defects",
+            "--scenario",
+            "clean",
+            "--scenario",
+            "defects",
+        ]
+        status, lines = run_main(argv, self.scenarios)
+        self.assertEqual(1, status)
+        missing = json.dumps(f"no record at {self.records / 'defects' / 'haiku.json'}")
+        self.assertEqual(
+            [
+                "PASS demo clean haiku verdict APPROVED",
+                f"FAIL demo defects haiku finding a.go:3 MUST_FIX {missing}",
+                f"FAIL demo defects haiku verdict CHANGES_REQUESTED {missing}",
+                "| Scenario | haiku |",
+                "| --- | --- |",
+                "| clean | 1/1 |",
+                "| defects | 0/2 |",
+            ],
+            lines,
+        )
 
     def test_an_unknown_kind_fails_the_run_before_judging(self) -> None:
         write_scenario(self.scenarios, "odd", scenario_spec({"kind": "vibes"}))
@@ -1699,6 +1740,52 @@ class EvaluateTests(unittest.TestCase):
             written,
         )
         self.assertIn("| review-prs | opus | old |", written)
+
+    def test_repeated_scenarios_run_once_per_distinct_model_in_requested_order(self) -> None:
+        claude = StubClaude(self)
+        argv = [
+            "--jobs",
+            "1",
+            "--model",
+            "sonnet",
+            "--model",
+            "haiku",
+            "--model",
+            "sonnet",
+            "--scenario",
+            "planted-defects",
+            "--scenario",
+            "clean-change",
+            "--scenario",
+            "planted-defects",
+            "--scenario",
+            "clean-change",
+        ]
+        status, lines = self.evaluate(argv, self.seams(claude))
+        self.assertEqual(0, status, lines)
+        expected = [
+            (scenario, model) for scenario in ("planted-defects", "clean-change") for model in ("sonnet", "haiku")
+        ]
+        calls = [
+            (Path(environment["TMPDIR"]).parent.name, cwd.name)
+            for arguments, cwd, environment in claude.calls
+            if arguments[1:] != ["--version"]
+        ]
+        self.assertEqual(expected, calls)
+        self.assertEqual(expected, [tuple(line.split(" ")[1:3]) for line in lines if line.startswith("TRANSCRIPT ")])
+        self.assertEqual(14, sum(line.startswith("PASS ") for line in lines))
+        self.assertEqual(4, sum(line.startswith("GUARDED ") for line in lines))
+        self.assertEqual(
+            [
+                "| Scenario | sonnet | haiku |",
+                "| --- | --- | --- |",
+                "| planted-defects | 5/5 | 5/5 |",
+                "| clean-change | 2/2 | 2/2 |",
+            ],
+            [line for line in lines if line.startswith("|")],
+        )
+        self.assertFalse(self.homes.exists())
+        self.assertEqual(RESULTS_TEXT, self.results.read_text(encoding="utf-8"))
 
     def test_a_document_that_cannot_be_staged_fails_its_run(self) -> None:
         def broken(_command: Sequence[str], _timeout: float) -> GitResult:
