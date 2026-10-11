@@ -76,9 +76,10 @@ Edits are accepted, standing in for the user who approves each reviewer's result
 inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
 rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every
 system, so the pipeline's run folders and the canary root that finalize writes land there, and the record judged is the
-highest review version in that canary root. The code-review configuration the runs read is written there too. A
-record any of whose reviewers has a null `files_read` counts for nothing either: the guard's claim starts a role's
-read log, so a reviewer the guard held has a count, if only 0, and null means the boundary was never exercised.
+highest review version in that canary root. The code-review configuration is written once per home at
+`.skill-evals/config.json`, which all runs in that home read. A record any of whose reviewers has a null `files_read`
+counts for nothing either: the guard's claim starts a role's read log, so a reviewer the guard held has a count, if
+only 0, and null means the boundary was never exercised.
 
 What still comes from the user's own setup: their sign-in, user CLAUDE.md and auto-memory, as for the runtime
 canary.
@@ -96,7 +97,8 @@ Output, one fact per line:
   PASS <skill> <scenario> <model> <expectation>
   FAIL <skill> <scenario> <model> <expectation> "<reason>"
   FAILED "<reason>"                               nothing was run or judged: the scenarios could not be loaded,
-                                                  or Claude Code is missing
+                                                  Claude Code is missing, or --write's existing results file
+                                                  cannot be read or lacks its table
 then a Markdown table, one row per scenario and one column per model, each cell the expectations passed of those
 checked, then `WROTE <file>` when --write replaced the skill's rows in docs/skill-evaluations.md, and `REMOVED
 "<dir>"` when nothing failed and the home is gone; otherwise the home stays for its transcripts. It exits 1 on any
