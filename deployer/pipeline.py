@@ -445,6 +445,7 @@ def _prepare(namespace: argparse.Namespace, paths: Paths) -> tuple[Paths, str, O
         else config.load(paths.config_file(source_id), source_id, paths.home, paths.source_dir)
     )
     src = source.discover(paths, source_id)
+    selection_module.check_includes(src, options.include)
     plan.check_source_forced_items(src, options.force_items)
     return paths, source_id, options, values, src
 

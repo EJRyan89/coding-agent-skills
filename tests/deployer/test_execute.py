@@ -104,6 +104,7 @@ class ExecuteTests(unittest.TestCase):
             (pipeline, "validate_managed_roots"): None,
             (config, "load"): {"VALUE": "configured"},
             (source, "discover"): self.src,
+            (pipeline.selection_module, "check_includes"): None,
             (plan, "check_source_forced_items"): None,
             (pipeline, "_print_source"): None,
             (pipeline, "_stop_for_pending_recovery"): False,
@@ -155,6 +156,7 @@ class ExecuteTests(unittest.TestCase):
             f"validate_managed_roots(paths({home}))",
             *loaded,
             f"discover(paths({home}), '{SOURCE_ID}')",
+            "check_includes(src, [])",
             "check_source_forced_items(src, [])",
             f"_print_source(src, {home})",
         ]
@@ -201,6 +203,7 @@ class ExecuteTests(unittest.TestCase):
                 "canary_home('throwaway')",
                 "validate_managed_roots(paths(canary))",
                 f"discover(paths(canary), '{SOURCE_ID}')",
+                "check_includes(src, [])",
                 "check_source_forced_items(src, [])",
                 "_print_source(src, canary)",
                 "claim_canary_home(canary)",
@@ -238,6 +241,22 @@ class ExecuteTests(unittest.TestCase):
                     self.execute(options, stdin=self.stdin, check_source_forced_items=error),
                 )
 
+    def test_unknown_includes_stop_before_claim_recovery_or_selection(self) -> None:
+        error = usage_error("--include names no bundle or skill in this source: missing")
+        for options in (
+            Options(select_all=True, include=["missing"]),
+            Options(select_all=True, dry_run=True, include=["missing"]),
+            Options(select_all=True, canary_home="throwaway", include=["missing"]),
+        ):
+            self.calls = []
+            with self.subTest(options=options):
+                home = "canary" if options.canary_home else "home"
+                prepared = self.prepared(home)[:-3]
+                self.assertEqual(
+                    (2, [*prepared, "check_includes(src, ['missing'])"], ["", *error.lines, ""]),
+                    self.execute(options, stdin=self.stdin, check_includes=error),
+                )
+
     def test_preparation_failures_end_the_run_before_anything_else(self) -> None:
         unreadable = OSError(2, "No such file or directory", "C:/x/source.json")
         cases: list[tuple[str, BaseException, int, list[str]]] = [
@@ -249,7 +268,12 @@ class ExecuteTests(unittest.TestCase):
                 ["", "ERROR: no source", "Fix it.", ""],
             ),
             ("parse_arguments", KeyboardInterrupt(), 130, ["", "Cancelled; nothing was changed.", ""]),
-            ("canary_home", DeployError("ERROR: not a canary"), 1, ["", "ERROR: not a canary", ""]),
+            (
+                "canary_home",
+                usage_error("not a canary"),
+                2,
+                ["", "ERROR: not a canary", "Run 'python deploy.py --help' for usage.", ""],
+            ),
             ("validate_managed_roots", DeployError("ERROR: roots"), 1, ["", "ERROR: roots", ""]),
             ("load", DeployError("ERROR: configuration"), 1, ["", "ERROR: configuration", ""]),
             (

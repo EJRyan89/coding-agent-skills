@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import fsops, platform_support
+from .arguments import usage_error
 from .errors import DeployError, os_error
 
 
@@ -107,17 +108,17 @@ def canary_home(value: str) -> Path:
     """
     value = platform_support.normalize_path_input(value)
     if not platform_support.is_absolute(value):
-        raise DeployError(f"ERROR: --canary-home must be an absolute path (got: {value})")
+        raise usage_error(f"--canary-home must be an absolute path (got: {value})")
     home = Path(value)
     if platform_support.is_link(home) or platform_support.is_reparse_point(home):
-        raise DeployError(f"ERROR: --canary-home must not be a symlink or junction: {platform_support.normalize(home)}")
+        raise usage_error(f"--canary-home must not be a symlink or junction: {platform_support.normalize(home)}")
     if not home.is_dir():
-        raise DeployError(f"ERROR: --canary-home must be an existing directory: {platform_support.normalize(home)}")
+        raise usage_error(f"--canary-home must be an existing directory: {platform_support.normalize(home)}")
     temporary = Path(platform_support.canonical_directory(tempfile.gettempdir()))
     resolved = Path(platform_support.canonical_directory(home))
     if resolved == temporary or not resolved.is_relative_to(temporary):
-        raise DeployError(
-            f"ERROR: --canary-home must be inside the temporary directory {platform_support.normalize(temporary)} "
+        raise usage_error(
+            f"--canary-home must be inside the temporary directory {platform_support.normalize(temporary)} "
             f"(got: {platform_support.normalize(resolved)})"
         )
     try:
@@ -126,8 +127,8 @@ def canary_home(value: str) -> Path:
         remedy = "Choose an empty directory you can read under the temporary directory, then retry."
         raise os_error(exc, "list --canary-home", remedy) from exc
     if entries and CANARY_MARKER not in entries:
-        raise DeployError(
-            "ERROR: --canary-home must be an empty directory or one an earlier --canary-home deployment used: "
+        raise usage_error(
+            "--canary-home must be an empty directory or one an earlier --canary-home deployment used: "
             f"{platform_support.normalize(resolved)}"
         )
     return resolved
