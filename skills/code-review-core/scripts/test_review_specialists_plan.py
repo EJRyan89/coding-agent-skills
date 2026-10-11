@@ -745,6 +745,14 @@ class RefusalTests(PlanFixture):
         )
         self.assertEqual(([], []), (self.effects, self.work_files()))
         self.assertFalse(self.work.exists())
+        for version in (True, 1.0):
+            with self.subTest(version=version):
+                self.request(protocol_version=version, mode="full")
+                self.assertEqual(
+                    (rs.SpecialistError, "Adapter request protocol version is unsupported"), self.refused(None)
+                )
+                self.assertEqual(([], []), (self.effects, self.work_files()))
+                self.assertFalse(self.work.exists())
 
     def test_a_request_mode_other_than_initial_or_re_review_is_refused(self) -> None:
         self.request("full")

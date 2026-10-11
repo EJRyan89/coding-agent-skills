@@ -195,8 +195,6 @@ MAPS = "Source snapshot hashes and exclusions must be objects"
 ACCEPTED: list[tuple[str, Mutation]] = [
     ("base", _same),
     ("a manifest with a byte-order mark", _attribute("bom", True)),
-    ("schema version true, which equals 1", _meta("schema_version", True)),
-    ("schema version 1.0, which equals 1", _meta("schema_version", 1.0)),
     ("a repository in another case", _chain(_meta("repository", "Owner/Repo"), _attribute("repository", "OWNER/repo"))),
     ("a SHA-256 commit", _chain(_meta("source_commit", "b" * 64), _attribute("commit", "b" * 64))),
     (
@@ -241,6 +239,15 @@ ACCEPTED: list[tuple[str, Mutation]] = [
 
 # Snapshots verify_source_snapshot refuses, from the base snapshot, with the exception class and message it raises.
 REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
+    *(
+        (
+            f"schema version {value!r}",
+            _meta("schema_version", value),
+            RuntimeContractError,
+            "Source snapshot schema version is unsupported",
+        )
+        for value in (True, 1.0)
+    ),
     ("a relative root", _attribute("root", "relative"), RuntimeContractError, ROOT_RULE),
     ("a missing root", _attribute("root", "missing"), RuntimeContractError, ROOT_RULE),
     ("a root that is a file", _attribute("root", "file"), RuntimeContractError, ROOT_RULE),
@@ -787,10 +794,11 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
                 self.assertEqual(files, sorted(path.relative_to(root).as_posix() for path in root.rglob("*")))
 
     def test_the_metadata_comes_back_as_written(self) -> None:
-        snapshot = _chain(_meta("repository", "Owner/Repo"), _meta("schema_version", True))(_snapshot())
+        snapshot = _meta("repository", "Owner/Repo")(_snapshot())
         result = self.verify(snapshot, self.materialize(snapshot))
         self.assertEqual("Owner/Repo", result["repository"])
-        self.assertIs(True, result["schema_version"])
+        self.assertIs(int, type(result["schema_version"]))
+        self.assertEqual(1, result["schema_version"])
         self.assertEqual(
             ["schema_version", "repository", "source_commit", "source_hashes", "excluded_paths"], list(result)
         )
@@ -1204,12 +1212,6 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _entrypoint_result(resources=[], agent_profiles=[], required_capabilities=[]),
     ),
     (
-        "protocol version true, which equals 1",
-        _entrypoint_manifest,
-        _put(("protocol_version",), True),
-        _entrypoint_result(protocol_version=True),
-    ),
-    (
         "an id of 64 characters",
         _entrypoint_manifest,
         _put(("id",), "a" + "-" * 63),
@@ -1353,6 +1355,21 @@ MANIFEST_ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
 
 # Manifests validate_adapter_manifest refuses: (name, build, mutation, error, message).
 MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, type[Exception], str]] = [
+    *(
+        (
+            f"{build.__name__} {field} {value!r}",
+            build,
+            _put((field,), value),
+            RuntimeContractError,
+            UNSUPPORTED,
+        )
+        for build in (_entrypoint_manifest, _specialists_manifest)
+        for field, values in (
+            ("schema_version", (True, 1.0) if build is _entrypoint_manifest else (True, 2.0)),
+            ("protocol_version", (True, 1.0)),
+        )
+        for value in values
+    ),
     ("a list", _entrypoint_manifest, _whole([]), RuntimeContractError, MANIFEST_FIELDS),
     ("null", _entrypoint_manifest, _whole(None), RuntimeContractError, MANIFEST_FIELDS),
     ("entrypoint without an id", _entrypoint_manifest, _drop("id"), RuntimeContractError, MANIFEST_FIELDS),

@@ -1723,7 +1723,11 @@ def _validation_targets(
 
 def load_run(run: Path) -> dict[str, Any]:
     state = read_json(run / RUN_FILE)
-    if not isinstance(state, dict) or state.get("schema_version") != RUN_SCHEMA_VERSION:
+    if (
+        not isinstance(state, dict)
+        or type(state.get("schema_version")) is not int
+        or state["schema_version"] != RUN_SCHEMA_VERSION
+    ):
         raise PipelineError(f"{run} is not a prepared review run")
     return state
 
@@ -2505,7 +2509,11 @@ def advance_watermarks(
     previous watermark is None when that watermark could not be read.
     """
     batch = read_json(batch_path)
-    if not isinstance(batch, dict) or batch.get("schema_version") != BATCH_SCHEMA_VERSION:
+    if (
+        not isinstance(batch, dict)
+        or type(batch.get("schema_version")) is not int
+        or batch["schema_version"] != BATCH_SCHEMA_VERSION
+    ):
         raise PipelineError(f"{batch_path} is not a review batch file")
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])

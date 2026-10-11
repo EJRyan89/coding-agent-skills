@@ -280,7 +280,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         "source_hashes",
     }:
         raise RuntimeContractError("Copilot reviewer materialization metadata does not match the contract")
-    if metadata["schema_version"] != 1:
+    if type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1:
         raise RuntimeContractError("Copilot reviewer materialization schema version is unsupported")
     source_commit = metadata["source_commit"]
     if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit):

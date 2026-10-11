@@ -15,7 +15,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from flat_text import flat_text
-from review_config import validate_repository_identity
+from review_config import safe_repository_path, validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
 
 RECORD_SCHEMA_VERSION = 1
@@ -240,7 +240,7 @@ def _validate_result_envelope(value: Any) -> None:
     unknown = sorted(set(value) - ADAPTER_RESULT_FIELDS)
     if unknown:
         raise RecordError("Adapter result contains unknown fields: " + ", ".join(unknown))
-    if value.get("protocol_version") != ADAPTER_PROTOCOL_VERSION:
+    if type(value.get("protocol_version")) is not int or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Unsupported adapter protocol version")
 
 
@@ -294,8 +294,7 @@ def _validate_result_finding(finding: Any, seen_keys: set[str]) -> None:
     for field in ("category", "path", "body", "evidence", "source"):
         if not isinstance(finding[field], str) or not finding[field].strip():
             raise RecordError(f"Finding {key}.{field} must be non-empty")
-    path = finding["path"]
-    if path.startswith(("/", "\\")) or ".." in Path(path).parts or "\\" in path:
+    if not safe_repository_path(finding["path"]):
         raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
     line = finding["line"]
     if not isinstance(line, int) or isinstance(line, bool) or line < 1:
@@ -830,22 +829,12 @@ def _validate_snapshot(snapshot: Any) -> None:
         raise RecordError(f"Review snapshot seconds must give {', '.join(SNAPSHOT_PHASES)} as non-negative numbers")
 
 
-def _safe_relative(path: Any) -> bool:
-    return (
-        isinstance(path, str)
-        and bool(path)
-        and not path.startswith(("/", "\\"))
-        and "\\" not in path
-        and ".." not in Path(path).parts
-    )
-
-
 def _validate_patches(patches: Any) -> None:
     """Each changed file's patch fingerprint, so the next re-review can tell which files changed since."""
     if not isinstance(patches, dict) or not patches:
         raise RecordError("Review patches must be a non-empty object")
     for path, patch in patches.items():
-        if not _safe_relative(path):
+        if not safe_repository_path(path):
             raise RecordError("Review patch path is unsafe")
         if (
             not isinstance(patch, dict)
@@ -1213,7 +1202,7 @@ def _validate_source_hashes(source_hashes: Any) -> None:
     if not isinstance(source_hashes, dict):
         raise RecordError("Review adapter source_hashes is invalid")
     for path, hash_value in source_hashes.items():
-        if not _safe_relative(path):
+        if not safe_repository_path(path):
             raise RecordError("Review adapter source hash path is unsafe")
         if not isinstance(hash_value, str) or not re.fullmatch(r"[0-9a-f]{64}", hash_value):
             raise RecordError(f"Review adapter source hash is invalid: {path}")
@@ -1225,7 +1214,7 @@ def _validate_adapter(adapter: Any) -> None:
     fields = {"name", "protocol_version", "scope", "source_commit", "source_hashes", "reviewer", "status", "usage"}
     if not isinstance(adapter, dict) or not fields <= set(adapter) <= fields | {"source"}:
         raise RecordError("Review adapter metadata is malformed")
-    if adapter["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
+    if type(adapter["protocol_version"]) is not int or adapter["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Review adapter protocol is unsupported")
     if not _one_of(adapter["scope"], {"generic", "repository"}):
         raise RecordError("Review adapter scope is invalid")
@@ -1265,7 +1254,7 @@ def _validate_finding(finding: Any) -> None:
     for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
         if not isinstance(finding[field], str) or not finding[field].strip():
             raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
-    if not _safe_relative(finding["path"]):
+    if not safe_repository_path(finding["path"]):
         raise RecordError(f"Review finding {finding['id']}.path is unsafe")
     if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
         raise RecordError(f"Review finding {finding['id']}.line is invalid")
@@ -1336,6 +1325,7 @@ def validate_record(value: Any) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
         or set(value) - RECORD_FIELDS
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != RECORD_SCHEMA_VERSION
     ):
         raise RecordError("Unsupported or malformed review record")

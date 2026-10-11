@@ -107,6 +107,7 @@ class PullTests(unittest.TestCase):
             "a body that is not text": (changed(body=None), "body must be a string"),
             "a later schema": (changed(schema_version=2), "schema_version must be 1"),
             "a boolean schema": (changed(schema_version=True), "schema_version must be 1"),
+            "a float schema": (changed(schema_version=1.0), "schema_version must be 1"),
             "a short repository": (changed(repository="inventory"), "repository"),
             "number zero": (changed(number=0), "number must be a positive integer"),
             "a boolean number": (changed(number=True), "number must be a positive integer"),

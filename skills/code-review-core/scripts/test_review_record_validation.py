@@ -230,6 +230,14 @@ PRIOR = {"finding_id": "v1:F001", "disposition": "addressed", "rationale": "Done
 # Records validate_record accepts, each built from the minimal record unless it starts from the full one.
 ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
     ("minimal record", _record, _chain()),
+    *(
+        (
+            f"POSIX finding and source hash path {path}",
+            _record,
+            _chain(_set((*FINDING, "path"), path), _set((*ADAPTER, "source_hashes"), {path: SHA256})),
+        )
+        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md")
+    ),
     ("every optional part", _full_record, _chain()),
     ("SHA-256 commit hashes", _record, _chain(_set((*PULL, "base_sha"), SHA256), _set((*PULL, "head_sha"), SHA256))),
     ("head_ref", _record, _set((*PULL, "head_ref"), "fix/zero")),
@@ -309,14 +317,6 @@ ACCEPTED: list[tuple[str, Callable[[], dict[str, Any]], Mutation]] = [
         _full_record,
         _chain(_delete(("github_comments",)), _delete(("comment_dispositions",))),
     ),
-    # Quirks pinned as they stand, not endorsed: the version fields compare with `!=`, so true and 1.0 equal 1, and a
-    # drive-letter path is not caught by the relative-path checks.
-    ("schema_version true", _record, _set(("schema_version",), True)),
-    ("schema_version 1.0", _record, _set(("schema_version",), 1.0)),
-    ("protocol_version true", _record, _set((*ADAPTER, "protocol_version"), True)),
-    ("protocol_version 1.0", _record, _set((*ADAPTER, "protocol_version"), 1.0)),
-    ("drive-letter source hash path", _record, _set((*ADAPTER, "source_hashes"), {"C:/x.md": SHA256})),
-    ("drive-letter finding path", _record, _set((*FINDING, "path"), "C:/x.py")),
 ]
 
 R = RecordError
@@ -336,6 +336,32 @@ def _finding_field(field: str) -> list[tuple[str, Mutation, type[Exception], str
 
 # Records validate_record refuses, from the minimal record, with the exception class and message it raises.
 REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
+    *(
+        (f"schema_version {value!r}", _set(("schema_version",), value), R, "Unsupported or malformed review record")
+        for value in (True, 1.0)
+    ),
+    *(
+        (
+            f"protocol_version {value!r}",
+            _set((*ADAPTER, "protocol_version"), value),
+            R,
+            "Review adapter protocol is unsupported",
+        )
+        for value in (True, 1.0)
+    ),
+    *(
+        (
+            f"drive-letter source hash path {path}",
+            _set((*ADAPTER, "source_hashes"), {path: SHA256}),
+            R,
+            "Review adapter source hash path is unsafe",
+        )
+        for path in ("C:/x.md", "c:/x.md", "C:x.md", "C:\\x.md")
+    ),
+    *(
+        (f"drive-letter finding path {path}", _set((*FINDING, "path"), path), R, "Review finding F001.path is unsafe")
+        for path in ("C:/x.py", "c:/x.py", "C:x.py", "C:\\x.py")
+    ),
     ("record not an object", _replace([]), R, "Unsupported or malformed review record"),
     ("unknown top-level key", _set(("extra",), 1), R, "Unsupported or malformed review record"),
     ("schema_version 2", _set(("schema_version",), 2), R, "Unsupported or malformed review record"),
@@ -951,6 +977,10 @@ DISPOSITION_VALUES = ("addressed", "partially_addressed", "still_present", "supe
 
 # Results validate_adapter_result accepts: the name, the result builder, the mutation, and the extra arguments.
 ACCEPTED_RESULTS: list[tuple[str, Callable[[], dict[str, Any]], Mutation, dict[str, Any]]] = [
+    *(
+        (f"POSIX finding path {path}", _result, _set((*RESULT_FINDING, "path"), path), {})
+        for path in ("src/space name.py", "src/a:b.py", "1:notes.md", "notes:archive/x.md")
+    ),
     ("minimal result", _result, _chain(), {}),
     ("every optional field", _full_result, _chain(), FULL_REQUEST),
     ("no findings", _result, _set(("findings",), []), {}),
@@ -999,12 +1029,8 @@ ACCEPTED_RESULTS: list[tuple[str, Callable[[], dict[str, Any]], Mutation, dict[s
         ),
         {"prior_ids": [f"v1:F00{index}" for index in range(1, 6)]},
     ),
-    # Quirks pinned as they stand, not endorsed: the version and pull number compare with `!=`, so true and 1.0 equal
-    # 1 and 7.0 equals 7, and a drive-letter path is not caught by the relative-path check.
-    ("protocol_version true", _result, _set(("protocol_version",), True), {}),
-    ("protocol_version 1.0", _result, _set(("protocol_version",), 1.0), {}),
+    # The pull-number equality check is independent of schema/protocol version validation.
     ("pull_number 7.0", _result, _set(("pull_number",), 7.0), {}),
-    ("drive-letter finding path", _result, _set((*RESULT_FINDING, "path"), "C:/x.py"), {}),
 ]
 
 
@@ -1086,6 +1112,26 @@ OPEN_RULE = "so that finding's disposition must be still_present or partially_ad
 # Results validate_adapter_result refuses, from the minimal result: the exception class, the message, and the extra
 # arguments.
 REJECTED_RESULTS: list[ResultCase] = [
+    *(
+        (
+            f"protocol_version {value!r}",
+            _set(("protocol_version",), value),
+            R,
+            "Unsupported adapter protocol version",
+            {},
+        )
+        for value in (True, 1.0)
+    ),
+    *(
+        (
+            f"drive-letter finding path {path}",
+            _set((*RESULT_FINDING, "path"), path),
+            R,
+            "Finding key-a.path must be a safe repository-relative path",
+            {},
+        )
+        for path in ("C:/x.py", "c:/x.py", "C:x.py", "C:\\x.py")
+    ),
     ("result not an object", _replace([]), R, "Adapter result must be an object", {}),
     ("result null", _replace(None), R, "Adapter result must be an object", {}),
     ("unknown field", _set(("extra",), 1), R, "Adapter result contains unknown fields: extra", {}),

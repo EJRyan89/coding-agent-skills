@@ -585,31 +585,6 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
             _set(("dashboard", "author_names"), {"a": "A", "B-" + "c" * 37: "Bc"}),
         ),
     ),
-    # Quirks pinned as they stand, not endorsed: the version fields compare with `!=`, so true and 1.0 equal 1; the
-    # schema version passes through as given, and the reviewer protocol is stored as 1. A drive-letter skill or
-    # manifest_path is not caught by the repository-relative check.
-    ("schema_version true", _set(("schema_version",), True), _set(("schema_version",), True)),
-    ("schema_version 1.0", _set(("schema_version",), 1.0), _set(("schema_version",), 1.0)),
-    (
-        "protocol_version true",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "protocol_version"), True)),
-        _repository_expected(),
-    ),
-    (
-        "protocol_version 1.0",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "protocol_version"), 1.0)),
-        _repository_expected(),
-    ),
-    (
-        "drive-letter skill",
-        _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "skill"), "C:/skills/review")),
-        _repository_expected(skill="C:/skills/review"),
-    ),
-    (
-        "drive-letter manifest_path",
-        _chain(MANIFEST_PATH_REVIEWER, _set((*REVIEWER, "manifest_path"), "C:/review/manifest.json")),
-        _repository_expected(manifest_path="C:/review/manifest.json", skill=None),
-    ),
 ]
 
 C = ConfigurationError
@@ -671,6 +646,34 @@ def _unsafe_paths(key: str, base: Mutation, message: str) -> list[Case]:
 
 
 REJECTED: list[Case] = [
+    *(
+        (
+            f"schema_version {value!r}",
+            _set(("schema_version",), value),
+            C,
+            f"Unsupported config schema version: {value!r}",
+        )
+        for value in (True, 1.0)
+    ),
+    *(
+        (
+            f"protocol_version {value!r}",
+            _chain(REPOSITORY_REVIEWER, _set((*REVIEWER, "protocol_version"), value)),
+            C,
+            f"{FIELD}.reviewer protocol is unsupported",
+        )
+        for value in (True, 1.0)
+    ),
+    *(
+        (
+            f"drive-letter {field} {path}",
+            _chain(base, _set((*REVIEWER, field), path)),
+            C,
+            f"{FIELD}.reviewer.{field} is unsafe",
+        )
+        for field, base in (("skill", REPOSITORY_REVIEWER), ("manifest_path", MANIFEST_PATH_REVIEWER))
+        for path in ("C:/review/manifest.json", "c:/review/manifest.json", "C:manifest.json", "C:\\manifest.json")
+    ),
     ("config a list", _replace([]), C, "config must be an object"),
     ("config null", _replace(None), C, "config must be an object"),
     ("unknown top-level field", _set(("extra",), 1), C, "config contains unknown field(s): extra"),
@@ -931,6 +934,9 @@ REJECTED: list[Case] = [
             ("of 201 characters", "a" * 201),
             ("with a backslash", "src\\*.resx"),
             ("absolute", "/src/*.resx"),
+            ("drive absolute", "C:/src/*.resx"),
+            ("lowercase drive absolute", "c:/src/*.resx"),
+            ("drive relative", "C:*.resx"),
             ("ending in a slash", "Reports/"),
             ("with an empty segment", "src//*.resx"),
             ("with a parent segment", "../*.resx"),

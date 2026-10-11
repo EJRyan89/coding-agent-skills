@@ -192,6 +192,14 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
         _change("materialization_schema", 2),
         (RuntimeContractError, "Copilot reviewer materialization schema version is unsupported", 0, None),
     ),
+    *(
+        (
+            f"a materialization schema of {version!r}",
+            _change("materialization_schema", version),
+            (RuntimeContractError, "Copilot reviewer materialization schema version is unsupported", 0, None),
+        )
+        for version in (True, 1.0)
+    ),
     (
         "a relative result path",
         _argument("result_path", "relative"),

@@ -365,6 +365,7 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
     if (
         not isinstance(value, dict)
         or set(value) != LEGACY_INDEX_KEYS
+        or type(value["schema_version"]) is not int
         or value["schema_version"] != 1
         or value["kind"] != "legacy-review-index"
         or not isinstance(value["repository"], str)
