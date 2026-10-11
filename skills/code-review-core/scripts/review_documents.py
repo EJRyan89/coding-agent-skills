@@ -13,7 +13,9 @@ The standard library cannot read a PDF's text, so a `.pdf` is read by `pdftotext
 document is refused with a reason that names it, so the review is incomplete rather than silently partial. It is given
 the bytes as a throwaway file under the system temporary directory, no stdin, and a time limit, and its output is
 read no further than the extraction limit, and asked to keep the text in the order the PDF draws it, so the two
-families that ship it, Xpdf and Poppler, give the same lines. Each line starts with `[p<page> l<line>]`, the line
+families that ship it, Xpdf and Poppler, give the same lines. Before writing document bytes, the shared provider
+policy probes the resolved executable with no input, then extraction uses that checked path; refusal leaves a gap,
+not a fallback to another parser. This is not sandboxing. Each line starts with `[p<page> l<line>]`, the line
 counted among the page's lines that hold text.
 """
 
@@ -37,6 +39,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import streaming
+from pdf_tool import PdfToolRefused, probe_pdftotext
 
 DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
 # A PDF is extracted whether or not the snapshot's NUL test finds it binary: one written without compressed streams
@@ -167,6 +170,13 @@ def _pdftotext(content: bytes) -> bytes:
     executable = shutil.which(PDFTOTEXT)
     if executable is None:
         raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed")
+    try:
+        executable = str(Path(executable).resolve())
+        probe_pdftotext(executable)
+    except PdfToolRefused as exc:
+        raise ExtractionRefused(str(exc)) from exc
+    except OSError as exc:
+        raise ExtractionRefused(f"{PDFTOTEXT} resolved executable could not be accessed") from exc
     with tempfile.TemporaryDirectory(prefix="code-review-pdf-", ignore_cleanup_errors=True) as folder:
         document = Path(folder) / "document.pdf"
         document.write_bytes(content)
