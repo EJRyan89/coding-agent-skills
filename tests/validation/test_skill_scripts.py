@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import ast
 import json
 import sys
 import tempfile
@@ -14,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from skill_scripts import (
+    CommandReader,
     client_command_problems,
     console_setup_problems,
     gh_filter_problems,
@@ -33,6 +35,135 @@ def mark_skills(root: Path) -> Path:
 
 
 class SkillScriptsFixtures(unittest.TestCase):
+    def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(self) -> None:
+        for expression, prefix in (
+            ('f"gh api {endpoint} --template {template}"', "gh api "),
+            ('f"gh " "api " f"{endpoint} copilot"', "gh api "),
+            ('f"gh.exe api {endpoint}"', "gh.exe api "),
+            ('f"gh"', "gh"),
+        ):
+            with self.subTest(expression=expression):
+                tree = ast.parse(expression)
+                statement = tree.body[0]
+                if not isinstance(statement, ast.Expr):
+                    self.fail("Expected an f-string expression")
+                literals = CommandReader(tree).program_literals(statement.value)
+                self.assertEqual([prefix], [node.value for node in literals if isinstance(node, ast.Constant)])
+                self.assertEqual([1], [node.lineno for node in literals])
+
+    def test_client_command_policy_reads_f_string_prefixes_through_runners_and_bound_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess as sp\n"
+                    "from subprocess import check_output\n"
+                    "from bounded_process import run_bounded\n"
+                    "runner = sp.run\n"
+                    "alias = runner\n"
+                    'alias(f"gh api {endpoint}", check=True, timeout=30)\n'
+                    'check_output(args=f"git log {revision}")\n'
+                    'COMMAND = f"gh auth {action}"\n'
+                    "sp.Popen(COMMAND)\n"
+                    'run_bounded([f"git {suffix}", "status"], 5)\n'
+                    'sp.call((f"gh {suffix}", "api"))\n'
+                    'sp.check_call(f"git status " + revision)\n'
+                    'BASE = [f"gh api {endpoint}"]\n'
+                    "sp.run([*BASE])\n"
+                    'sp.run(f"git status")\n'
+                    'sp.run(f"echo {message} gh")\n'
+                    'print(f"gh api {endpoint}")\n',
+                },
+            )
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            self.assertEqual(
+                [
+                    f"skills/alpha/scripts/tool.py:{line} runs {command} itself; {client}; see {doc}"
+                    for line, command, client in (
+                        (6, "gh", gh),
+                        (7, "git", git),
+                        (8, "gh", gh),
+                        (10, "git", git),
+                        (11, "gh", gh),
+                        (12, "git", git),
+                        (13, "gh", gh),
+                        (15, "git", git),
+                    )
+                ],
+                client_command_problems(root),
+            )
+
+    def test_skill_command_policy_reads_f_string_prefixes_and_honors_declared_and_standard_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = root / "skills" / "alpha" / "scripts" / "tool.py"
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess\n"
+                    "runner = subprocess.run\n"
+                    'runner(f"gh api {endpoint}")\n'
+                    'COMMAND = f"copilot {arguments}"\n'
+                    "runner(args=COMMAND)\n"
+                    'runner([f"jq {filter}", filename])\n'
+                    'runner(f"git status {path}")\n'
+                    'runner(f"python {script}")\n'
+                    'runner(f"echo {message} yq")\n'
+                    'print(f"rg {pattern}")\n',
+                },
+            )
+            doc = '"Commands skills may run" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    "skill alpha runs copilot without declaring it in tools",
+                    "skill alpha runs gh without declaring it in tools",
+                    f"skill alpha runs jq, which a standard install lacks; see {doc}",
+                ],
+                skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}),
+            )
+            (root / "deploy-meta" / "alpha.json").write_text(
+                json.dumps({"tools": ["gh"], "optional_tools": ["copilot"]}), encoding="utf-8"
+            )
+            script.write_text(script.read_text(encoding="utf-8").replace("jq ", "python "), encoding="utf-8")
+            self.assertEqual([], skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}))
+
+    def test_command_policies_report_f_strings_without_a_readable_literal_prefix(self) -> None:
+        for expression in (
+            'f"{program} api gh"',
+            'f"   {program} api"',
+            'f"{program=}"',
+            '[f"{program}", "api"]',
+            '(f"{program}", "api")',
+            'f"{program}" + " gh api"',
+        ):
+            with self.subTest(expression=expression), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "deploy-meta/alpha.json": "{}",
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                        "skills/alpha/scripts/tool.py": "import subprocess\n"
+                        "runner = subprocess.run\n"
+                        f"COMMAND = {expression}\n"
+                        "runner(args=COMMAND)\n"
+                        "runner(COMMAND)\n"
+                        'print(f"{label}")\n',
+                    },
+                )
+                expected = [
+                    "skills/alpha/scripts/tool.py:3 cannot read f-string command without a literal program prefix; "
+                    'see "Commands skills may run" in docs/adding-a-skill.md'
+                ]
+                self.assertEqual(expected, client_command_problems(root))
+                self.assertEqual(expected, skill_command_problems(root, {"gh"}, {"git", "python"}))
+
     def test_client_command_policy_resolves_assigned_runners_and_lookups_in_each_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

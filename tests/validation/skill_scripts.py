@@ -199,10 +199,18 @@ class CommandReader:
         self.resolver = CallableResolver(tree)
         self.bindings = _name_bindings(tree)
 
-    def program_literals(self, node: ast.expr | None, seen: frozenset[str] = frozenset()) -> list[ast.Constant]:
+    def program_literals(
+        self, node: ast.expr | None, seen: frozenset[str] = frozenset()
+    ) -> list[ast.Constant | ast.JoinedStr]:
         """The string literals that may name the program a command expression runs: a string, the first item of a
-        list or tuple, the left side of a +, what a which() call looks up, and every value a name is bound to."""
+        list or tuple, the left side of a +, what a which() call looks up, and every value a name is bound to.
+        An f-string contributes only its initial literal prefix, or itself when that prefix names no program."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return [node]
+        if isinstance(node, ast.JoinedStr):
+            first = node.values[0] if node.values else None
+            if isinstance(first, ast.Constant) and isinstance(first.value, str) and _program_name(first.value):
+                return [first]
             return [node]
         if isinstance(node, (ast.List, ast.Tuple)):
             return self.program_literals(node.elts[0], seen) if node.elts else []
@@ -221,18 +229,36 @@ class CommandReader:
         return [
             (literal.lineno, name)
             for literal in self.program_literals(node)
-            if isinstance(literal.value, str) and (name := _program_name(literal.value))
+            if isinstance(literal, ast.Constant)
+            and isinstance(literal.value, str)
+            and (name := _program_name(literal.value))
         ]
+
+    def _command_argument(self, call: ast.Call) -> ast.expr | None:
+        runner = COMMAND_RUNNERS.get(self.resolver.name(call.func))
+        if runner is None:
+            return None
+        position, keyword = runner
+        if len(call.args) > position:
+            return call.args[position]
+        return next((item.value for item in call.keywords if item.arg == keyword), None)
 
     def started(self, call: ast.Call) -> list[tuple[int, str]]:
         """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
-        runner = COMMAND_RUNNERS.get(self.resolver.name(call.func))
-        if runner is None:
-            return []
-        position, keyword = runner
-        if len(call.args) > position:
-            return self._named(call.args[position])
-        return self._named(next((item.value for item in call.keywords if item.arg == keyword), None))
+        return self._named(self._command_argument(call))
+
+    def problems(self, path: str) -> list[str]:
+        unreadable = {
+            literal.lineno
+            for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call)
+            for literal in self.program_literals(self._command_argument(node))
+            if isinstance(literal, ast.JoinedStr)
+        }
+        return self.resolver.problems(path) + [
+            f"{path}:{line} cannot read f-string command without a literal program prefix; see {COMMANDS_DOC}"
+            for line in sorted(unreadable)
+        ]
 
     def commands(self, known: set[str]) -> set[str]:
         """Every program the module runs through a runner or a skill-core client, or looks up with which, and every
@@ -408,8 +434,8 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
-                resolver = CallableResolver(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
-                problems += resolver.problems(path.relative_to(root).as_posix())
+                reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
+                problems += reader.problems(path.relative_to(root).as_posix())
         used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
@@ -770,7 +796,7 @@ def client_command_problems(root: Path) -> list[str]:
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
         reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
-        problems += reader.resolver.problems(name)
+        problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
             problems.append(
