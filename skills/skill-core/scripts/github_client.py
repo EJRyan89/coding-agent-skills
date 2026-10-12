@@ -3,6 +3,10 @@
 One runner, one failure classifier, and one bounded backoff policy, so a failure means the same thing, and a rate
 limit is waited out the same way, in every skill. Tests inject the runner, the sleeper, and the clock.
 
+A transient failure, a gateway briefly down or a connection dropped mid-request, is retried a few times with short
+waits on a read alone. A request that may change something on GitHub is never retried after one, because GitHub may
+have applied it before the answer was lost: it fails as an `unknown_outcome` that tells the user to check first.
+
 GitHub output is untrusted bytes: a diff carries files in any encoding, and a title can hold anything. The runner
 decodes with surrogateescape, which keeps each byte that is not UTF-8 as a lone surrogate, and the client replaces
 each with U+FFFD before a caller sees it, counting them in `CommandResult.replaced`.
@@ -42,6 +46,51 @@ NETWORK_MARKERS = (
     "tls handshake timeout",
     "network is unreachable",
 )
+# Statuses and stderr markers of a failure that may clear on its own within seconds: a gateway or service briefly
+# down, or a connection that broke after it was made. gh prints a status as `(HTTP 502)` or `HTTP 502:`. A DNS
+# failure (gh's `error connecting to`), a refused connection, and an unreachable network are left out: each means
+# this machine cannot reach GitHub at all, which a few seconds' wait does not cure.
+TRANSIENT_STATUSES = frozenset({502, 503, 504})
+TRANSIENT_MARKERS = (
+    "http 502",
+    "http 503",
+    "http 504",
+    "connection reset",
+    "i/o timeout",
+    "tls handshake timeout",
+    "unexpected eof",
+    "server sent goaway",
+)
+# Only these classes can be transient: a rate limit has its own backoff, and every other class is GitHub's answer.
+TRANSIENT_KINDS = frozenset({"api", "network"})
+# `gh <noun> <verb>` commands that only read, besides `gh search`; any other command counts as a change.
+READ_VERBS = frozenset({"view", "list", "status", "diff", "checks"})
+# The `gh api` options that take a value, so a value that looks like an option is never read as one. gh's output
+# filters are left out, since no skill script may use them; a filter's value taken for the endpoint can only make a
+# GraphQL read count as a change.
+API_VALUE_OPTIONS = frozenset(
+    {
+        "-H",
+        "--header",
+        "-f",
+        "--raw-field",
+        "-F",
+        "--field",
+        "-X",
+        "--method",
+        "--input",
+        "--hostname",
+        "-p",
+        "--preview",
+        "--cache",
+    }
+)
+# The `gh api` options that give a request a body, which gh sends as a POST unless a method is named.
+API_BODY_OPTIONS = frozenset({"-f", "--raw-field", "-F", "--field", "--input"})
+READ_METHODS = frozenset({"GET", "HEAD"})
+# Any mention of `mutation` makes a GraphQL document a change; a field so named costs only its retries.
+GRAPHQL_MUTATION = re.compile(r"\bmutation\b")
+UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
 GRAPHQL_KINDS = {"RATE_LIMITED": "rate_limit", "NOT_FOUND": "not_found", "FORBIDDEN": "forbidden"}
 RETRYABLE_KINDS = frozenset({"rate_limit"})
 DEFAULT_TIMEOUT_SECONDS = 300.0
@@ -52,16 +101,24 @@ class GitHubError(RuntimeError):
     """A gh failure, or a response a caller rejected, with its class in `kind`.
 
     `retryable` marks a failure the client waits out with its backoff policy: a rate limit, or whatever a caller's
-    parse flags, such as a search that timed out.
+    parse flags, such as a search that timed out. `transient` marks a gh failure that may clear on its own, which the
+    client retries on a read and reports as an `unknown_outcome` on a change.
     """
 
     def __init__(
-        self, message: str, *, kind: str = "api", retryable: bool = False, returncode: int | None = None
+        self,
+        message: str,
+        *,
+        kind: str = "api",
+        retryable: bool = False,
+        returncode: int | None = None,
+        transient: bool = False,
     ) -> None:
         super().__init__(message)
         self.kind = kind
         self.retryable = retryable
         self.returncode = returncode  # gh's exit code, when gh ran and failed
+        self.transient = transient
 
 
 @dataclass(frozen=True)
@@ -152,6 +209,65 @@ def classify_failure(stderr: str, status: int | None = None, headers: Mapping[st
     return "api"
 
 
+def transient_failure(stderr: str, status: int | None = None) -> bool:
+    """Whether a failed gh command's stderr or `gh api -i` status names a failure that may clear on its own."""
+    lowered = stderr.casefold()
+    return status in TRANSIENT_STATUSES or any(marker in lowered for marker in TRANSIENT_MARKERS)
+
+
+def _option(part: str) -> tuple[str, str | None]:
+    """A `gh api` option's name and the value attached to it, as in `--method=GET` or `-XGET`, or None."""
+    if part.startswith("--"):
+        name, separator, value = part.partition("=")
+        return name, value if separator else None
+    if len(part) > 2:
+        return part[:2], part[2:]
+    return part, None
+
+
+def _api_change(arguments: Sequence[str]) -> str | None:
+    method: str | None = None
+    body = False
+    query: str | None = None
+    endpoint: str | None = None
+    parts = iter(arguments)
+    for part in parts:
+        if not part.startswith("-"):
+            endpoint = endpoint or part
+            continue
+        name, value = _option(part)
+        if name not in API_VALUE_OPTIONS:
+            continue
+        if value is None:
+            value = next(parts, "")
+        if name in ("-X", "--method"):
+            method = value.upper()
+        elif name in API_BODY_OPTIONS:
+            body = True
+            key, _, field = value.partition("=")
+            if name != "--input" and key == "query":
+                query = field
+    method = method or ("POST" if body else "GET")
+    if method in READ_METHODS:
+        return None
+    # A GraphQL query is sent as a POST but only reads; a document read from a file is not known, so it is a change.
+    if endpoint == "graphql" and query and not query.startswith("@") and not GRAPHQL_MUTATION.search(query):
+        return None
+    return method
+
+
+def change_of(arguments: Sequence[str]) -> str | None:
+    """What a gh command may change on GitHub, by its method such as `POST` or its command such as `gh pr comment`,
+    or None when it only reads. A command not known to read counts as a change, so it is never retried."""
+    if not arguments:
+        return "gh"
+    if arguments[0] == "api":
+        return _api_change(arguments[1:])
+    if arguments[0] == "search" or (len(arguments) > 1 and arguments[1] in READ_VERBS):
+        return None
+    return "gh " + " ".join(arguments[:2])
+
+
 def graphql_failure(payload: Any) -> GitHubError | None:
     """The error a GraphQL response body reports, classified by its error types, or None when it reports none."""
     errors = payload.get("errors") if isinstance(payload, dict) else None
@@ -195,11 +311,23 @@ def split_response(stdout: str) -> Response:
 
 @dataclass(frozen=True)
 class Backoff:
-    """How long to wait before retrying a rate limit, and how often."""
+    """How long to wait before retrying a rate limit or a transient failure on a read, and how often.
+
+    The two are counted apart, so one request runs at most once plus both retry counts, each run within the client's
+    time limit.
+    """
 
     base: float = 5.0
     retries: int = 5
     longest: float = 300.0
+    # A gateway blip or a dropped connection clears in seconds; a longer outage should fail fast rather than hold a
+    # skill for minutes, leaving the rerun to the user. A command that ran out its time limit is not retried at all.
+    transient_base: float = 2.0
+    transient_retries: int = 2
+
+    def transient_wait(self, attempt: int) -> float:
+        """The wait before transient retry `attempt`, counted from 0, doubling from `transient_base`."""
+        return self.transient_base * 2**attempt
 
     def wait(self, attempt: int, headers: Mapping[str, str], now: float) -> float:
         """GitHub's Retry-After, else the quota's reset time when it is spent, else exponential from `base`.
@@ -322,13 +450,12 @@ class GitHubClient:
             command = ["gh", "api", "-i", *arguments[1:]]
         else:
             command = ["gh", *arguments]
-        attempts = self.backoff.retries + 1 if retry else 1
-        for attempt in range(attempts):
+        change = change_of(arguments)
+        limits = transients = 0
+        while True:
             if pacer is not None:
                 pacer.before()
-            with self._counting:
-                self.call_count += 1
-            result, response = self._decoded(execute(command), headers)
+            result, response = self._execute(execute, command, change, headers)
             error: GitHubError | None = None
             try:
                 value = self._judge(command, result, response, parse)
@@ -338,17 +465,37 @@ class GitHubClient:
                 pacer.after(error)
             if error is None:
                 return value
+            if error.transient:
+                if change is not None:
+                    raise _unknown_outcome(error, change)
+                if not retry:
+                    raise error
+                if transients == self.backoff.transient_retries:
+                    raise _gave_up(error, transients)
+                self.sleeper(self.backoff.transient_wait(transients))
+                transients += 1
+                continue
             if not (retry and error.retryable):
                 raise error
-            if attempt == attempts - 1:
-                raise GitHubError(
-                    f"{error} (gave up after {self.backoff.retries} retries)",
-                    kind=error.kind,
-                    retryable=True,
-                    returncode=error.returncode,
-                )
-            self.sleeper(self.backoff.wait(attempt, response.headers, self.clock()))
-        raise AssertionError("unreachable")
+            if limits == self.backoff.retries:
+                raise _gave_up(error, limits)
+            self.sleeper(self.backoff.wait(limits, response.headers, self.clock()))
+            limits += 1
+
+    def _execute(
+        self, execute: Runner, command: Sequence[str], change: str | None, headers: bool
+    ) -> tuple[CommandResult, Response]:
+        """Run one attempt, counted, and decode its result."""
+        with self._counting:
+            self.call_count += 1
+        try:
+            raw = execute(command)
+        except GitHubError as exc:
+            # A change stopped at the time limit may have reached GitHub before it was stopped.
+            if exc.kind == "timeout" and change is not None:
+                raise _unknown_outcome(exc, change) from exc
+            raise
+        return self._decoded(raw, headers)
 
     @staticmethod
     def _decoded(raw: CommandResult, headers: bool) -> tuple[CommandResult, Response]:
@@ -371,5 +518,30 @@ class GitHubClient:
         if result.returncode != 0:
             kind = classify_failure(result.stderr, response.status, response.headers)
             message = result.stderr.strip() or f"gh {command[1]} failed with exit code {result.returncode}"
-            raise GitHubError(message, kind=kind, retryable=kind in RETRYABLE_KINDS, returncode=result.returncode)
+            raise GitHubError(
+                message,
+                kind=kind,
+                retryable=kind in RETRYABLE_KINDS,
+                returncode=result.returncode,
+                transient=kind in TRANSIENT_KINDS and transient_failure(result.stderr, response.status),
+            )
         return parse(result)
+
+
+def _gave_up(error: GitHubError, retries: int) -> GitHubError:
+    return GitHubError(
+        f"{error} (gave up after {retries} retries)",
+        kind=error.kind,
+        retryable=error.retryable,
+        returncode=error.returncode,
+        transient=error.transient,
+    )
+
+
+def _unknown_outcome(error: GitHubError, change: str) -> GitHubError:
+    return GitHubError(
+        f"{error} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})",
+        kind="unknown_outcome",
+        returncode=error.returncode,
+        transient=True,
+    )

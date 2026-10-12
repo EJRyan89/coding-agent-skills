@@ -112,7 +112,7 @@ class ClassifyTests(GitTestCase):
 
     def test_query_problems_fail_closed(self) -> None:
         cases = {
-            "gh pr list failed": responder("", returncode=1, stderr="HTTP 502"),
+            "gh pr list failed": responder("", returncode=1, stderr="HTTP 500"),
             "gh pr list failed: GitHub returned malformed JSON": responder("not json"),
             "did not return a list": responder("{}"),
             "unexpected pull request state": responder(listing(pull("OPEN"), pull("DRAFT"))),
@@ -274,7 +274,7 @@ class UpdatedPullRequestTests(GitTestCase):
         commit = {"sha": UPDATE, "parents": [{"sha": TIP}]}
         not_json = "commits of pull request 7 failed: GitHub returned malformed JSON: Expecting value: line 1 column 1"
         cases = {
-            r"commits of pull request 7 failed \(1\): HTTP 502": router(merged, "", 1, "HTTP 502"),
+            r"commits of pull request 7 failed \(1\): HTTP 500": router(merged, "", 1, "HTTP 500"),
             "may be incomplete": router(merged, many),
             f"{not_json} \\(char 0\\)$": router(merged, ""),
             f"^gh api for the {not_json}": router(merged, "not json"),
@@ -372,7 +372,7 @@ class ClassifySequenceTests(GitTestCase):
 
     def test_listing_problems_are_refused_with_their_exact_message(self) -> None:
         cases = (
-            (responder("", 1, "HTTP 502: Bad"), "gh pr list failed (1): HTTP 502: Bad"),
+            (responder("", 1, "HTTP 500: Bad"), "gh pr list failed (1): HTTP 500: Bad"),
             (
                 responder("nope"),
                 "gh pr list failed: GitHub returned malformed JSON: Expecting value: line 1 column 1 (char 0)",
@@ -586,8 +586,8 @@ class BranchClassificationTests(GitFixture):
 
     def test_query_failure_fails_closed(self) -> None:
         self.tracking_branch()
-        with self.assertRaisesRegex(QueryError, re.escape("gh pr list failed (1): HTTP 502")):
-            self.state(responder("", returncode=1, stderr="HTTP 502"))
+        with self.assertRaisesRegex(QueryError, re.escape("gh pr list failed (1): HTTP 500")):
+            self.state(responder("", returncode=1, stderr="HTTP 500"))
 
 
 if __name__ == "__main__":
