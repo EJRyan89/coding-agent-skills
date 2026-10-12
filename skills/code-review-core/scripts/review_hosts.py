@@ -25,9 +25,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import run_bounded
+from executable_locator import find_executables
 from job_tree import JobRefused, JobTree
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import ProcessStatus, path_programs, same_process, shell_script, winget_copilot
+from review_process import ProcessStatus, same_process, shell_script
 from review_runtime import (
     READ,
     SOURCE_SNAPSHOT_MANIFEST,
@@ -237,16 +238,13 @@ def _run_bounded(
 
 
 def find_copilot() -> str:
-    """Copilot CLI's own program: the first PATH names, else WinGet's. An npm install puts a `copilot.cmd` shim on
-    PATH, which Windows would start through cmd.exe, so the lookup passes over every shell script, wherever it stands
-    on PATH, and never returns one."""
-    found = path_programs("copilot")
+    """Copilot CLI's own program: the first skill-core's locator finds, on PATH and then in WinGet's Links folder,
+    that is no shell script. An npm install puts a `copilot.cmd` shim on PATH, which Windows would start through
+    cmd.exe, so the lookup passes over every shell script, wherever it stands on PATH, and never returns one."""
+    found = find_executables("copilot")
     program = next((path for path in found if not shell_script(path)), None)
     if program is not None:
         return program
-    candidate = winget_copilot()
-    if candidate is not None:
-        return str(candidate)
     if found:
         raise RuntimeContractError(
             "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "

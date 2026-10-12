@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bounded_process import run_bounded
 from console import run_main
 from dotnet_format_targets import read_file_list
+from executable_locator import find_executable, located_command
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
 ISSUE = re.compile(
@@ -79,11 +79,12 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path, timeout: float) -> Co
     """Run the formatter with no stdin and every prompt off, and return its exit code and output.
 
     Its stdout and stderr go together, in the order written, to a file rather than a pipe, so a build host it leaves
-    running cannot hold the time limit, and what it wrote is kept when it does not finish.
+    running cannot hold the time limit, and what it wrote is kept when it does not finish. The program runs at the
+    path skill-core's locator finds, the one `deploy.py check` reports and `Services.which` found.
     """
     with tempfile.TemporaryFile() as output:
         try:
-            result = run_bounded(arguments, timeout, stdout=output, stderr=output, cwd=cwd)
+            result = run_bounded(located_command(arguments), timeout, stdout=output, stderr=output, cwd=cwd)
         except subprocess.TimeoutExpired:
             output.seek(0)
             return Completed(-1, output.read(), timed_out=True)
@@ -96,7 +97,7 @@ class Services:
     """External effects, replaceable in tests."""
 
     run: Runner = subprocess_runner
-    which: Callable[[str], str | None] = field(default=shutil.which)
+    which: Callable[[str], str | None] = field(default=find_executable)
     clock: Callable[[], float] = field(default=time.monotonic)
 
 

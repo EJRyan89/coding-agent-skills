@@ -50,15 +50,15 @@ class PdfPolicyTests(unittest.TestCase):
                 if identity is None:
                     self.fail("an outdated vendor banner must retain its identified provider")
                 self.assertEqual(provider, identity.provider)
-                self.assertIn("upgrade", str(raised.exception))
+                self.assertIn("older than", str(raised.exception))
 
     def test_versions_are_named_as_each_vendor_numbers_them_and_compared_as_numbers(self) -> None:
         for banner, version, status, refusal in (
-            (XPDF, "4.00", 99, "pdftotext Xpdf 4.00 is unsupported; upgrade to Xpdf 4.06 or newer"),
-            (XPDF, "4.05", 99, "pdftotext Xpdf 4.05 is unsupported; upgrade to Xpdf 4.06 or newer"),
-            (XPDF, "3.04", 99, "pdftotext Xpdf 3.04 is unsupported; upgrade to Xpdf 4.06 or newer"),
-            (POPPLER, "26.09.0", 0, "pdftotext Poppler 26.09.0 is unsupported; upgrade to Poppler 26.10.0 or newer"),
-            (POPPLER, "0.86.1", 0, "pdftotext Poppler 0.86.1 is unsupported; upgrade to Poppler 26.10.0 or newer"),
+            (XPDF, "4.00", 99, "Xpdf 4.00, older than Xpdf 4.06"),
+            (XPDF, "4.05", 99, "Xpdf 4.05, older than Xpdf 4.06"),
+            (XPDF, "3.04", 99, "Xpdf 3.04, older than Xpdf 4.06"),
+            (POPPLER, "26.09.0", 0, "Poppler 26.09.0, older than Poppler 26.10.0"),
+            (POPPLER, "0.86.1", 0, "Poppler 0.86.1, older than Poppler 26.10.0"),
         ):
             with self.subTest(version=version), self.assertRaises(pdf_tool.PdfToolRefused) as raised:
                 pdf_tool.parse_banner(banner.format(version=version), status)
@@ -75,10 +75,7 @@ class PdfPolicyTests(unittest.TestCase):
         self.assertEqual("Xpdf 4.06 or newer or Poppler 26.10.0 or newer", pdf_tool.requirements())
         with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
             pdf_tool.parse_banner("pdftotext version 26.10.0\n", 0)
-        self.assertEqual(
-            "pdftotext provider/version is unidentifiable; install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
-            str(raised.exception),
-        )
+        self.assertEqual("provider/version is unidentifiable", str(raised.exception))
 
     def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(self) -> None:
         banners = (
@@ -135,6 +132,97 @@ class PdfPolicyTests(unittest.TestCase):
             ):
                 stream.return_value.__enter__.return_value = running
                 pdf_tool.probe_pdftotext("checked path")
+
+
+# Where Git for Windows keeps the Xpdf it bundles, which Git Bash's login profile puts ahead of the Windows PATH.
+GIT_BUNDLED = r"C:\Program Files\Git\mingw64\bin\pdftotext.exe"
+SUPPORTED = r"C:\Tools\Xpdf\pdftotext.exe"
+POPPLER_OLD = r"C:\Tools\Poppler\pdftotext.exe"
+
+
+class SelectPdftotextTests(unittest.TestCase):
+    """The choice among every pdftotext the locator finds, with each probe answered by a banner per path."""
+
+    def select(self, found: list[str], answers: dict[str, tuple[str, int]]) -> tuple[pdf_tool.PdfSelection, list[str]]:
+        probed: list[str] = []
+        by_resolved = {str(Path(path).resolve()): answer for path, answer in answers.items()}
+
+        def probe(path: str) -> pdf_tool.PdfIdentity:
+            probed.append(path)
+            if path not in by_resolved:
+                raise pdf_tool.PdfToolRefused("version probe could not be started")
+            return pdf_tool.parse_banner(*by_resolved[path])
+
+        return pdf_tool.select_pdftotext(found, probe), probed
+
+    def test_a_supported_parser_behind_an_unsupported_one_is_chosen_and_the_skip_named(self) -> None:
+        selection, probed = self.select(
+            [GIT_BUNDLED, SUPPORTED],
+            {GIT_BUNDLED: (XPDF.format(version="4.00"), 99), SUPPORTED: (XPDF.format(version="4.06"), 99)},
+        )
+        self.assertEqual((str(Path(SUPPORTED).resolve()), (4, 6)), (selection.path, selection.identity.version))
+        self.assertEqual([str(Path(path).resolve()) for path in (GIT_BUNDLED, SUPPORTED)], probed)
+        self.assertEqual(
+            r"skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (Xpdf 4.00, older than Xpdf 4.06)",
+            pdf_tool.skipped_text(selection.skipped),
+        )
+
+    def test_the_first_supported_parser_is_chosen_without_probing_the_rest(self) -> None:
+        selection, probed = self.select([SUPPORTED, GIT_BUNDLED], {SUPPORTED: (XPDF.format(version="4.06"), 99)})
+        self.assertEqual(((), [str(Path(SUPPORTED).resolve())]), (selection.skipped, probed))
+
+    def test_only_unsupported_parsers_are_refused_naming_each_with_its_provider_version_and_place(self) -> None:
+        with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+            self.select(
+                [GIT_BUNDLED, POPPLER_OLD],
+                {GIT_BUNDLED: (XPDF.format(version="4.00"), 99), POPPLER_OLD: (POPPLER.format(version="0.86.1"), 0)},
+            )
+        self.assertEqual(
+            r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (Xpdf 4.00, older than "
+            r"Xpdf 4.06), C:\Tools\Poppler\pdftotext.exe (Poppler 0.86.1, older than Poppler 26.10.0); install Xpdf "
+            "4.06 or newer or Poppler 26.10.0 or newer",
+            str(raised.exception),
+        )
+        self.assertEqual(pdf_tool.PdfIdentity("Xpdf", (4, 0)), raised.exception.identity)
+
+    def test_gits_bundled_parser_alone_is_named_as_skipped_and_the_supported_providers_as_what_to_install(
+        self,
+    ) -> None:
+        with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+            self.select([GIT_BUNDLED], {GIT_BUNDLED: (XPDF.format(version="4.00"), 99)})
+        self.assertEqual(
+            r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (Xpdf 4.00, older than "
+            "Xpdf 4.06); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+            str(raised.exception),
+        )
+
+    def test_a_parser_that_cannot_be_identified_or_started_is_skipped_with_what_the_probe_found(self) -> None:
+        with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+            self.select([GIT_BUNDLED, SUPPORTED], {GIT_BUNDLED: ("pdftotext version 26.10.0\n", 0)})
+        self.assertEqual(
+            r"no supported pdftotext: skipped C:\Program Files\Git\mingw64\bin\pdftotext.exe (provider/version is "
+            r"unidentifiable), C:\Tools\Xpdf\pdftotext.exe (version probe could not be started); install Xpdf 4.06 "
+            "or newer or Poppler 26.10.0 or newer",
+            str(raised.exception),
+        )
+        self.assertIsNone(raised.exception.identity)
+
+    def test_a_path_that_cannot_be_resolved_is_skipped_unprobed(self) -> None:
+        with (
+            mock.patch.object(pdf_tool.Path, "resolve", side_effect=OSError("private")),
+            self.assertRaises(pdf_tool.PdfToolRefused) as raised,
+        ):
+            pdf_tool.select_pdftotext([SUPPORTED], mock.Mock(side_effect=AssertionError("probed")))
+        self.assertEqual(
+            r"no supported pdftotext: skipped C:\Tools\Xpdf\pdftotext.exe (could not be accessed); install Xpdf 4.06 "
+            "or newer or Poppler 26.10.0 or newer",
+            str(raised.exception),
+        )
+
+    def test_nothing_to_choose_from_is_the_callers_error(self) -> None:
+        with self.assertRaises(ValueError) as raised:
+            pdf_tool.select_pdftotext([], mock.Mock())
+        self.assertIs(ValueError, type(raised.exception), "not a refusal: the caller reports a missing parser")
 
 
 if __name__ == "__main__":

@@ -36,7 +36,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 import xml.etree.ElementTree as ElementTree
@@ -48,6 +47,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from executable_locator import find_executable
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -83,7 +83,8 @@ class Services:
 
     git: GitClient = field(default_factory=GitClient)
     gh: Callable[[Path], GhRunner] = gh_runner_in
-    which: Callable[[str], str | None] = field(default=shutil.which)
+    # skill-core's locator, which finds a tool where `deploy.py check` does.
+    which: Callable[[str], str | None] = field(default=find_executable)
 
 
 class Stop(Exception):

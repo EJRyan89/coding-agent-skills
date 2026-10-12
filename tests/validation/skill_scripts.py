@@ -170,17 +170,19 @@ EXECUTABLE_RUNNERS = frozenset(
 # skill-core's clients: each runs its one command for every call a script makes through it.
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
-# own name, such as services.which("dotnet"), so a call of any function named which counts too, and so does
-# code-review-core's path_programs, which lists every match on PATH where shutil.which returns the first, and the
-# deployer's platform_support.find_executable, through which it finds git. A lookup takes the program's name first,
-# or by one of LOOKUP_KEYWORDS.
+# own name, such as services.which("dotnet"), so a call of any function named which counts too, and so do
+# skill-core's locator's find_executable, which the deployer's platform_support also names, find_executables, which
+# lists every match in its search order, and path_programs, which lists every match on PATH. A lookup takes the
+# program's name first, or by one of LOOKUP_KEYWORDS.
 COMMAND_LOOKUP = "shutil.which"
-LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable"})
+LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable", "find_executables"})
 LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
 # Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
-# tuple, and a split or a join of a command; and the path methods that do the same for the path they are called on.
+# tuple, a split or a join of a command, and skill-core's located_command, which names a command's program by the
+# path the locator finds for it; and the path methods that do the same for the path they are called on.
 PROGRAM_CONVERSIONS = frozenset(
     {
+        "executable_locator.located_command",
         "str",
         "list",
         "tuple",

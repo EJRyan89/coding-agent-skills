@@ -2763,27 +2763,43 @@ class RuntimeContractTests(GitTestCase):
             with self.subTest(runtime=runtime, kind=kind, inline=inline):
                 self.assertEqual(dispatch, choose_dispatch(runtime, kind, inline=inline))
 
-    def test_runtime_auto_detection_uses_priority_and_winget_fallback(self) -> None:
+    def test_runtime_auto_detection_uses_priority_and_the_shared_locator(self) -> None:
         with mock.patch(
-            "review_runtime.shutil.which",
+            "review_runtime.find_executable",
             side_effect=lambda command: "C:/tools/codex.exe" if command == "codex" else None,
-        ):
+        ) as located:
             self.assertEqual("codex", resolve_runtime("auto"))
+        self.assertEqual([mock.call("claude"), mock.call("codex")], located.call_args_list)
         with (
-            mock.patch("review_runtime.shutil.which", return_value=None),
-            mock.patch("review_runtime.Path.is_file", return_value=True),
-        ):
-            self.assertEqual("copilot-cli", resolve_runtime("auto"))
-        with (
-            mock.patch("review_runtime.shutil.which", return_value=None),
-            mock.patch("review_runtime.Path.is_file", return_value=False),
+            mock.patch("review_runtime.find_executable", return_value=None),
             self.assertRaisesRegex(RuntimeContractError, "No supported"),
         ):
             resolve_runtime("auto")
 
+    def test_runtime_auto_detection_finds_a_cli_only_in_wingets_links_folder(self) -> None:
+        # A sanitized environment: PATH is one empty folder and the local application data folder a fresh one, so
+        # only the fixture's programs answer, as `deploy.py check` finds them.
+        with tempfile.TemporaryDirectory(prefix="runtime locator ") as temporary:
+            root = Path(temporary)
+            on_path = root / "on path"
+            links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+            on_path.mkdir()
+            links.mkdir(parents=True)
+            environment = {"PATH": str(on_path), "PATHEXT": ".COM;.EXE", "LOCALAPPDATA": str(root / "local app data")}
+            with mock.patch.dict(os.environ, environment):
+                self.assertRaisesRegex(RuntimeContractError, "No supported", resolve_runtime, "auto")
+                for command, runtime in (("copilot", "copilot-cli"), ("codex", "codex"), ("claude", "claude-code")):
+                    with self.subTest(command=command):
+                        (links / f"{command}.exe").write_bytes(b"fixture")
+                        self.assertEqual(runtime, resolve_runtime("auto"))
+                for program in links.iterdir():
+                    program.unlink()
+                (on_path / "codex.exe").write_bytes(b"fixture")
+                self.assertEqual("codex", resolve_runtime("auto"), "a CLI on PATH is found there")
+
     def test_runtime_auto_prefers_the_stated_host_over_path(self) -> None:
         # A Codex session on a machine that also has claude installed must not resolve to claude-code.
-        with mock.patch("review_runtime.shutil.which", return_value="C:/tools/claude.exe") as which:
+        with mock.patch("review_runtime.find_executable", return_value="C:/tools/claude.exe") as which:
             self.assertEqual("codex", resolve_runtime("auto", "codex"))
             self.assertEqual("copilot-cli", resolve_runtime("auto", "copilot-cli"))
             which.assert_not_called()
@@ -2792,7 +2808,7 @@ class RuntimeContractTests(GitTestCase):
             resolve_runtime("auto", "cursor")
 
     def test_configured_runtime_overrides_the_stated_host(self) -> None:
-        with mock.patch("review_runtime.shutil.which", return_value=None):
+        with mock.patch("review_runtime.find_executable", return_value=None):
             self.assertEqual("copilot-cli", resolve_runtime("copilot-cli", "claude-code"))
             self.assertEqual("codex", resolve_runtime("codex", None))
 
@@ -4358,6 +4374,12 @@ class RuntimeHostTests(GitTestCase):
             winget.write_bytes(b"fixture")
             with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(winget.parent.parent)}):
                 self.assertEqual(str(winget), find_copilot())
+            on_path = local_app_data / "on path" / "copilot.exe"
+            on_path.parent.mkdir()
+            on_path.write_bytes(b"fixture")
+            environment = {"LOCALAPPDATA": str(local_app_data), "PATH": str(on_path.parent), "PATHEXT": ".EXE"}
+            with mock.patch.dict(os.environ, environment):
+                self.assertEqual(str(on_path.with_suffix(".EXE")), find_copilot(), "the program on PATH comes first")
 
     def test_copilot_jsonl_is_diagnostic_not_the_result(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

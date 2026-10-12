@@ -1950,11 +1950,15 @@ class EvaluateTests(GitTestCase):
         reason = "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
         self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
 
+    def test_claude_code_is_looked_up_where_check_looks_for_it(self) -> None:
+        # skill-core's locator through the deployer, so a Claude Code only in WinGet's Links folder runs too.
+        self.assertIs(platform_support.find_executable, skill_evals.Seams().which)
+
     def test_nothing_runs_without_claude_code_or_the_results_table(self) -> None:
         no_table = self.root / "empty.md"
         no_table.write_text("# Skill evaluations\n", encoding="utf-8")
         cases: dict[str, tuple[list[str], dict[str, Any]]] = {
-            "Claude Code (claude) is not on PATH": ([], {"which": lambda _: None}),
+            "Claude Code (claude) is not installed": ([], {"which": lambda _: None}),
             "needs one": (["--write"], {"results": no_table}),
         }
         for reason, (argv, changes) in cases.items():

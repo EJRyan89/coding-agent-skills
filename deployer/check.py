@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 
+from pdf_tool import skipped_text
+
 from . import manifest, platform_support, source, source_commit, tools
 from .arguments import CHECK_COMMAND, parse_command
 from .errors import DeployError, debug_requested, fail
@@ -89,7 +91,8 @@ def _tool_line(tool: tools.Tool, optional: bool, roots: list[str]) -> ReportLine
         minimum = tools.format_version(tool.minimum)
         return ReportLine(f"{tool.label}{_version_text(probe)}", "OUTDATED", f"needs {minimum} or newer")
     found = "OPTIONAL" if optional else "FOUND"
-    return ReportLine(f"{tool.label}{_version_text(probe)}", found, used_by)
+    detail = f"{used_by}; {skipped_text(probe.skipped)}" if probe.skipped else used_by
+    return ReportLine(f"{tool.label}{_version_text(probe)}", found, detail)
 
 
 def run(arguments: list[str], paths: Paths) -> int:

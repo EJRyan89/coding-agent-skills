@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, probe_pdftotext
+from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, Skipped, probe_pdftotext, select_pdftotext
 
 from . import platform_support
 
@@ -28,7 +28,8 @@ class Tool:
     optional: bool = False
     other_uses: tuple[str, ...] = ()
     # The PDF parser floors, by provider, for a tool pdf_tool probes; it owns the probe, its arguments, and the exit
-    # statuses each provider is allowed, so such a tool sets nothing else about its version.
+    # statuses each provider is allowed, so such a tool sets nothing else about its version. It chooses among every
+    # program the locator finds by the tool's name, as the extraction does, so `locate` only says one is installed.
     provider_minimum: dict[str, tuple[int, ...]] | None = None
 
 
@@ -170,6 +171,8 @@ class Probe:
     version: tuple[int, ...] | None
     pdf_identity: PdfIdentity | None = None
     refusal: str | None = None
+    # The programs a provider probe passed over before the one it chose, or all of them when it refused.
+    skipped: tuple[Skipped, ...] = ()
 
     @property
     def outdated(self) -> bool:
@@ -180,18 +183,27 @@ class Probe:
 
 def probe(tool: Tool) -> Probe:
     """Locate a tool and, when it reports one, read its version."""
+    if tool.provider_minimum is not None:
+        return _provider_probe(tool)
     path = tool.locate()
-    if path is not None and tool.provider_minimum is not None:
-        try:
-            identity = probe_pdftotext(path)
-        except PdfToolRefused as exc:
-            version = None if exc.identity is None else exc.identity.version
-            return Probe(tool, path, version, exc.identity, str(exc))
-        return Probe(tool, path, identity.version, identity)
     if path is None or not tool.version_arguments:
         return Probe(tool, path, None)
     result = platform_support.run_tool([path, *tool.version_arguments])
     return Probe(tool, path, parse_version(result.output) if result.returncode == 0 else None)
+
+
+def _provider_probe(tool: Tool) -> Probe:
+    """The program pdf_tool chooses among every one the locator finds, as each extraction chooses it, or the first
+    found with the refusal that names every one it passed over."""
+    found = platform_support.find_executables(tool.name)
+    if not found:
+        return Probe(tool, None, None)
+    try:
+        selection = select_pdftotext(found, probe_pdftotext)
+    except PdfToolRefused as exc:
+        version = None if exc.identity is None else exc.identity.version
+        return Probe(tool, found[0], version, exc.identity, str(exc))
+    return Probe(tool, selection.path, selection.identity.version, selection.identity, skipped=selection.skipped)
 
 
 def python_version() -> tuple[int, ...]:

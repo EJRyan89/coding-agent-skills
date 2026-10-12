@@ -187,6 +187,12 @@ def find_executable(name: str) -> str | None:
     return executable_locator.find_executable(name)
 
 
+def find_executables(name: str) -> list[str]:
+    """Every program `name` may run, in skill-core's locator's search order, for a tool whose probe passes over one
+    it does not support, as the skills' own lookup does."""
+    return executable_locator.find_executables(name)
+
+
 def find_bash() -> str | None:
     """Find Git for Windows' Bash; never another bash on PATH, such as WSL's."""
     configured = os.environ.get("GIT_BASH")
