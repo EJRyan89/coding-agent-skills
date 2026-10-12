@@ -5,12 +5,14 @@ step with a stub Claude Code. No model is called."""
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import datetime
 import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import unittest
@@ -43,6 +45,36 @@ from tools.skill_evals import Outcome, RecordError, Scenario, ScenarioError
 
 REVIEW_PRS = skill_evals.SCENARIO_ROOT / "review-prs"
 REVIEW_DOCUMENT = skill_evals.SCENARIO_ROOT / "review-document"
+REVIEW_REPOSITORY = skill_evals.SCENARIO_ROOT / "review-repository"
+REVIEW_REPOSITORY_SCENARIOS = ("drifted-guide", "tested-change", "undocumented-change", "untested-change")
+REVIEWER_FOLDER = ".claude/skills/review-repository"
+MANIFEST_PATH = ".claude/skills/review-repository/references/specialists.json"
+# Files a run of a review-repository scenario places from the checkout: the reviewer's own, its condition scripts,
+# and the resources and guidelines its manifest declares.
+REVIEW_REPOSITORY_PLACED = (
+    ".claude/skills/review-repository/SKILL.md",
+    ".claude/skills/review-repository/references/specialists.json",
+    ".claude/skills/review-repository/references/documentation-drift.md",
+    ".claude/skills/review-repository/references/untested-changes.md",
+    ".claude/skills/review-repository/scripts/doc_passages.py",
+    ".claude/skills/review-repository/scripts/untested_functions.py",
+    "docs/design.md",
+    "docs/adding-a-skill.md",
+    "skills/skill-core/scripts/console.py",
+    "skills/skill-core/scripts/flat_text.py",
+    "CLAUDE.md",
+    "docs/implementing-changes.md",
+)
+# What a run never places: the reviewer's own suites, which name the scenarios' files, and the reviewed tree's files a
+# condition's `reads` name.
+REVIEW_REPOSITORY_UNPLACED = (
+    ".claude/skills/review-repository/scripts/test_review_repository.py",
+    ".claude/skills/review-repository/scripts/test_doc_passages.py",
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/skills.md",
+    "tests/tools/test_skill_evals.py",
+)
 SUITE_REFERENCE = skill_evals.REPOSITORY_ROOT / "skills" / "code-review-core" / "references" / "design-reviewer.md"
 # The pdf-gaps draft's text, page by page, one line per block of the page. Its headings are set larger and its body
 # lines alternate between two sizes, so even Xpdf's default reading, which joins evenly set lines into one, reads these
@@ -1110,6 +1142,168 @@ class DocumentStagingTests(GitTestCase):
         self.assertFalse((self.root / "other").exists())
 
 
+def tree_bytes(root: Path) -> dict[str, bytes]:
+    return {path.relative_to(root).as_posix(): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def reviewer_spec(**changes: Any) -> dict[str, Any]:
+    spec = {"skill": "review-prs", "reviewer": "review-repository", "mode": "initial", **changes}
+    spec["expectations"] = [{"kind": "verdict", "verdict": "APPROVED"}]
+    return spec
+
+
+def write_reviewer_scenario(
+    root: Path, spec: dict[str, Any], skill: str = "review-repository", manifest_path: str = MANIFEST_PATH
+) -> Path:
+    directory = write_scenario(root, "case", spec, skill)
+    pull = json.loads((REVIEW_REPOSITORY / "drifted-guide" / "pull.json").read_text(encoding="utf-8"))
+    (directory / "pull.json").write_text(json.dumps({**pull, "manifest_path": manifest_path}), encoding="utf-8")
+    return directory
+
+
+class ReviewerScenarioTests(GitTestCase):
+    """A repository reviewer's scenarios: review-prs starts them, and a run places the reviewer's files from the
+    checkout in a throwaway copy of the fixture, never in the fixture."""
+
+    def setUp(self) -> None:
+        self.root = temporary_root(self)
+        self.copies = self.root / "copies"
+        self.copies.mkdir()
+        patcher = mock.patch.object(tempfile, "tempdir", str(self.copies))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def refusal(self, skill: str = "review-repository", checkout: Path = skill_evals.REPOSITORY_ROOT) -> str:
+        with self.assertRaises(ScenarioError) as raised:
+            skill_evals.load_scenarios(skill, root=self.root, checkout=checkout)
+        return str(raised.exception)
+
+    def test_review_repository_s_scenarios_start_review_prs_with_the_checkout_s_reviewer(self) -> None:
+        scenarios = skill_evals.load_scenarios("review-repository")
+        self.assertEqual(list(REVIEW_REPOSITORY_SCENARIOS), [scenario.name for scenario in scenarios])
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario.name):
+                self.assertEqual(
+                    ("review-prs", "review-repository", skill_evals.REPOSITORY_ROOT),
+                    (scenario.skill, scenario.reviewer, scenario.checkout),
+                )
+                self.assertLessEqual(set(REVIEW_REPOSITORY_PLACED), set(scenario.placed))
+                self.assertEqual(set(), set(REVIEW_REPOSITORY_UNPLACED) & set(scenario.placed))
+                self.assertFalse(any("__pycache__" in path for path in scenario.placed))
+                # The fixtures hold no copy of the skill or of anything else the run places.
+                for tree in ("base", "head"):
+                    self.assertFalse((scenario.directory / tree / ".claude").exists())
+                    self.assertEqual(
+                        [], [path for path in scenario.placed if (scenario.directory / tree / path).exists()]
+                    )
+
+    def test_the_copy_holds_the_checkout_s_files_in_both_trees_and_is_removed_after_the_run(self) -> None:
+        (scenario,) = skill_evals.load_scenarios("review-repository", ["untested-change"])
+        before = tree_bytes(scenario.directory)
+        with skill_evals.reviewed_fixture(scenario) as fixture:
+            self.assertEqual(self.copies, fixture.parent.parent)
+            self.assertEqual("untested-change", fixture.name)
+            copied = tree_bytes(fixture)
+            for tree in ("base", "head"):
+                for path in REVIEW_REPOSITORY_PLACED:
+                    with self.subTest(tree=tree, path=path):
+                        self.assertEqual((skill_evals.REPOSITORY_ROOT / path).read_bytes(), copied[f"{tree}/{path}"])
+                for path in REVIEW_REPOSITORY_UNPLACED:
+                    self.assertEqual(before.get(f"{tree}/{path}"), copied.get(f"{tree}/{path}"), "the fixture's own")
+            self.assertEqual(before, {path: copied[path] for path in before}, "the fixture's own files, unchanged")
+            self.assertEqual(
+                ["--canary", "--fixture", str(fixture)],
+                skill_evals.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
+            )
+        self.assertEqual([], list(self.copies.iterdir()))
+        self.assertEqual(before, tree_bytes(scenario.directory))
+
+    def test_the_copy_is_removed_when_the_run_fails(self) -> None:
+        (scenario,) = skill_evals.load_scenarios("review-repository", ["drifted-guide"])
+        with self.assertRaisesRegex(RuntimeError, "the session broke"), skill_evals.reviewed_fixture(scenario):
+            self.assertEqual(1, len(list(self.copies.iterdir())))
+            raise RuntimeError("the session broke")
+        self.assertEqual([], list(self.copies.iterdir()))
+
+    def test_the_copy_is_removed_when_a_file_cannot_be_placed(self) -> None:
+        (scenario,) = skill_evals.load_scenarios("review-repository", ["drifted-guide"])
+        missing = dataclasses.replace(scenario, placed=(*scenario.placed, "docs/no-such-file.md"))
+        with self.assertRaises(FileNotFoundError), skill_evals.reviewed_fixture(missing):
+            self.fail("the run started without its reviewer's files")
+        self.assertEqual([], list(self.copies.iterdir()))
+
+    def test_any_other_scenario_is_reviewed_in_place(self) -> None:
+        for scenario in skill_evals.load_scenarios("review-prs"):
+            with self.subTest(scenario=scenario.name), skill_evals.reviewed_fixture(scenario) as fixture:
+                self.assertEqual((REVIEW_PRS / scenario.name, None, ()), (fixture, scenario.reviewer, scenario.placed))
+                self.assertEqual(
+                    skill_evals.prepare_arguments(scenario),
+                    skill_evals.skill_arguments(scenario, self.root / "run", GitClient(), fixture),
+                )
+                self.assertEqual("--fixture", skill_evals.prepare_arguments(scenario)[1])
+                self.assertEqual(str(REVIEW_PRS / scenario.name), skill_evals.prepare_arguments(scenario)[2])
+        self.assertEqual([], list(self.copies.iterdir()))
+
+    def test_a_reviewer_that_does_not_exist_is_refused(self) -> None:
+        write_reviewer_scenario(
+            self.root,
+            reviewer_spec(reviewer="review-nothing"),
+            "review-nothing",
+            ".claude/skills/review-nothing/references/specialists.json",
+        )
+        status, lines = run_main(["review-nothing", "--records", str(self.root)], self.root)
+        self.assertEqual(1, status)
+        self.assertEqual(
+            [
+                'FAILED "case: no repository skill review-nothing: the checkout has no '
+                '.claude/skills/review-nothing/SKILL.md"'
+            ],
+            lines,
+        )
+
+    def test_a_file_the_reviewer_declares_that_the_checkout_lacks_is_refused(self) -> None:
+        checkout = self.root / "checkout"
+        shutil.copytree(skill_evals.REPOSITORY_ROOT / REVIEWER_FOLDER, checkout / REVIEWER_FOLDER)
+        write_reviewer_scenario(self.root, reviewer_spec())
+        self.assertEqual(
+            "case: review-repository declares docs/design.md, which the checkout lacks",
+            self.refusal(checkout=checkout),
+        )
+
+    def test_the_reviewer_s_scenario_shape_is_held(self) -> None:
+        cases: list[tuple[dict[str, Any], str, str]] = [
+            (
+                reviewer_spec(reviewer="review-other"),
+                MANIFEST_PATH,
+                'names reviewer "review-other", not review-repository',
+            ),
+            (reviewer_spec(skill="review-document"), MANIFEST_PATH, 'started by review-prs, not "review-document"'),
+            (reviewer_spec(skill="review-repository"), MANIFEST_PATH, 'started by review-prs, not "review-repository"'),
+            (reviewer_spec(document="draft.md"), MANIFEST_PATH, "a reviewer's scenario is a fixture scenario"),
+            (
+                reviewer_spec(),
+                "review/specialists.json",
+                "pull.json's manifest_path must name review-repository's manifest under "
+                ".claude/skills/review-repository/",
+            ),
+            (
+                reviewer_spec(),
+                ".claude/skills/review-repository/references/missing.json",
+                "review-repository's manifest .claude/skills/review-repository/references/missing.json cannot be read",
+            ),
+        ]
+        for spec, manifest_path, message in cases:
+            with self.subTest(message=message):
+                directory = write_reviewer_scenario(self.root, spec, manifest_path=manifest_path)
+                (directory / "draft.md").write_text("# Draft\n", encoding="utf-8")
+                self.assertIn(message, self.refusal())
+
+    def test_a_fixture_that_holds_a_file_the_run_places_is_refused(self) -> None:
+        directory = write_reviewer_scenario(self.root, reviewer_spec())
+        (directory / "head" / "CLAUDE.md").write_text("# A stale copy\n", encoding="utf-8")
+        self.assertEqual("case: its head/ tree holds CLAUDE.md, which the run places from the checkout", self.refusal())
+
+
 class NoGitHub:
     """A gh runner that fails the test on any call."""
 
@@ -1694,6 +1888,8 @@ class StubClaude:
         self.test, self.review, self.reviewer, self.guarded = test, review, reviewer, guarded
         self.calls: list[tuple[list[str], Path, dict[str, str]]] = []
         self.built: dict[str, list[str]] = {}
+        # Each fixture run's fixture, by its scenario and model, and its files as the session found them.
+        self.fixtures: dict[str, tuple[Path, dict[str, bytes]]] = {}
 
     def __call__(self, arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
         self.calls.append((arguments, cwd, environment))
@@ -1706,6 +1902,10 @@ class StubClaude:
             skill, prepare = words[0].removeprefix("/"), words[1:]
             run = Path(environment["TMPDIR"]).parent
             scenario = skill_evals.SCENARIO_ROOT / skill / run.name / "scenario.json"
+            if skill != "review-document":
+                fixture = Path(prepare[prepare.index("--fixture") + 1])
+                self.fixtures[f"{run.name} {model}"] = (fixture, tree_bytes(fixture))
+                scenario = fixture / "scenario.json"
             spec = json.loads(scenario.read_text(encoding="utf-8"))
             files = {key: environment[key] for key in ("CODE_REVIEW_STATE", "CODE_REVIEW_FLAGS")}
             with mock.patch.object(tempfile, "tempdir", environment["TMPDIR"]), mock.patch.dict(os.environ, files):
@@ -1979,6 +2179,87 @@ class EvaluateTests(GitTestCase):
         log = self.homes / "haiku" / skill_evals.STATE / "deploy.log"
         self.assertEqual("broken\n", log.read_text(encoding="utf-8"))
         self.assertEqual([], claude.calls)
+
+    def test_a_repository_reviewer_s_scenarios_run_through_review_prs_on_copies_holding_the_checkout_s_files(
+        self,
+    ) -> None:
+        copies = self.root / "copies"
+        copies.mkdir()
+        before = tree_bytes(REVIEW_REPOSITORY)
+        claude = StubClaude(self)
+        with mock.patch.object(tempfile, "tempdir", str(copies)):
+            status, lines = self.evaluate(["--write", "--jobs", "1"], self.seams(claude), "review-repository")
+        self.assertEqual(0, status, lines)
+        runs = [(scenario, model) for scenario in REVIEW_REPOSITORY_SCENARIOS for model in skill_evals.MODELS]
+        prompts = [arguments[2] for arguments, _, _ in claude.calls if arguments[1:] != ["--version"]]
+        fixtures = [claude.fixtures[f"{scenario} {skill_evals.MODELS[model]}"][0] for scenario, model in runs]
+        self.assertEqual([f'/review-prs --canary --fixture "{fixture}"' for fixture in fixtures], prompts)
+        self.assertEqual([(scenario, copies) for scenario, _ in runs], [(f.name, f.parent.parent) for f in fixtures])
+        for key, (_, files) in claude.fixtures.items():
+            scenario = key.split(" ")[0]
+            for tree in ("base", "head"):
+                for path in REVIEW_REPOSITORY_PLACED:
+                    with self.subTest(run=key, tree=tree, path=path):
+                        self.assertEqual((skill_evals.REPOSITORY_ROOT / path).read_bytes(), files[f"{tree}/{path}"])
+            own = {path[len(scenario) + 1 :]: content for path, content in before.items() if path.startswith(scenario)}
+            self.assertEqual(own, {path: files[path] for path in own})
+        self.assertEqual([], list(copies.iterdir()), "every copy is removed")
+        self.assertEqual(before, tree_bytes(REVIEW_REPOSITORY), "the fixtures are untouched")
+        # Each route's condition opens on the copy as on the fixture, with the reviewer's files beside it.
+        roles = {
+            "drifted-guide": "documentation-drift,generic-review",
+            "tested-change": "generic-review",
+            "undocumented-change": "generic-review",
+            "untested-change": "generic-review,untested-changes",
+        }
+        guarded: dict[str, set[str]] = {}
+        for line in lines:
+            if line.startswith("GUARDED "):
+                _, scenario, model, role, _ = line.split(" ")
+                guarded.setdefault(f"{scenario} {model}", set()).add(role)
+        self.assertEqual(
+            {f"{scenario} {model}": roles[scenario] for scenario, model in runs},
+            {key: ",".join(sorted(value)) for key, value in guarded.items()},
+        )
+        self.assertEqual([], [line for line in lines if line.startswith("FAIL")])
+        self.assertIn(
+            "PASS review-repository untested-change haiku finding tools/report_age.sh:7,8,9,10 "
+            "SHOULD_FIX Test coverage",
+            lines,
+        )
+        written = self.results.read_text(encoding="utf-8")
+        for model, identifier in skill_evals.MODELS.items():
+            self.assertIn(
+                f"| review-repository | {model} | {identifier} | 5/5 | drifted-guide 2/2, tested-change 1/1, "
+                "undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
+                written,
+            )
+        self.assertIn("| review-prs | opus | old |", written)
+
+    def test_a_repository_reviewer_s_copy_is_removed_when_its_run_fails(self) -> None:
+        copies = self.root / "copies"
+        copies.mkdir()
+        argv = ["--model", "haiku", "--scenario", "untested-change"]
+
+        def broken(arguments: list[str], cwd: Path, environment: dict[str, str], timeout: float) -> Any:
+            if arguments[1:] == ["--version"]:
+                return skill_evals.Completed(0, "2.1.291 (Claude Code)\n", "")
+            self.assertEqual(1, len(list(copies.iterdir())))
+            raise RuntimeError("the session broke")
+
+        with mock.patch.object(tempfile, "tempdir", str(copies)):
+            status, lines = self.evaluate(argv, self.seams(StubClaude(self, review=False)), "review-repository")
+            self.assertEqual(1, status)
+            self.assertIn(
+                "FAIL review-repository untested-change haiku finding tools/report_age.sh:7,8,9,10 SHOULD_FIX "
+                'Test coverage "the run recorded no review"',
+                lines,
+            )
+            self.assertEqual([], list(copies.iterdir()))
+        skill_evals.fsops.remove(self.homes)
+        with mock.patch.object(tempfile, "tempdir", str(copies)), self.assertRaisesRegex(RuntimeError, "broke"):
+            self.evaluate(argv, self.seams(broken), "review-repository")
+        self.assertEqual([], list(copies.iterdir()))
 
     def test_write_records_only_a_full_run(self) -> None:
         for argv in (["--model", "haiku"], ["--scenario", "clean-change"], ["--records", str(self.root)]):

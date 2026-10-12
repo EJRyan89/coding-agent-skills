@@ -1,5 +1,6 @@
 {
-  "skill": "review-repository",
+  "skill": "review-prs",
+  "reviewer": "review-repository",
   "mode": "initial",
   "expectations": [
     {"kind": "finding", "path": "tools/export_sweep.sh", "lines": [5], "severity": "SHOULD_FIX", "category": "Code-document drift"},
