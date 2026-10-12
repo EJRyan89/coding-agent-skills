@@ -5,16 +5,24 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import pull_request_title
 from git_test_base import GitTestCase
-from pull_request_title import title_problems, title_types_problems
+from pull_request_title import head_branch, title_problems, title_types_problems
+
+
+def git(repository: Path, *arguments: str) -> None:
+    subprocess.run(["git", "-C", str(repository), *arguments], capture_output=True, check=True)
 
 
 class PullRequestTitlePolicy(GitTestCase):
@@ -78,6 +86,45 @@ class PullRequestTitlePolicy(GitTestCase):
         self.assertEqual([], title_types_problems("GUIDE.md", listed))
         problems = title_types_problems("GUIDE.md", listed.replace(", and `build`", ""))
         self.assertEqual(["GUIDE.md does not name the pull request title type `build`"], problems)
+
+
+class HeadBranch(GitTestCase):
+    """head_branch reads GITHUB_HEAD_REF in CI, where the checkout is a detached merge ref, and the checkout's own
+    branch elsewhere; when neither names a branch, the title's type is left unconstrained."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repository = Path(temporary.name) / "checkout"
+        self.repository.mkdir()
+        git(self.repository, "init", "--initial-branch", "feat/local-branch")
+        git(self.repository, "commit", "--allow-empty", "--message", "Initial")
+        self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository))
+        environment = {name: value for name, value in os.environ.items() if name != "GITHUB_HEAD_REF"}
+        self.enterContext(mock.patch.dict(os.environ, environment, clear=True))
+
+    def test_the_pull_request_branch_ci_names_wins_over_the_checkouts(self) -> None:
+        os.environ["GITHUB_HEAD_REF"] = "fix/ci-branch"
+        self.assertEqual("fix/ci-branch", head_branch())
+
+    def test_without_one_the_checkouts_branch_is_used(self) -> None:
+        self.assertEqual("feat/local-branch", head_branch())
+        # An empty value, as a push event's run sets, names no branch either.
+        os.environ["GITHUB_HEAD_REF"] = ""
+        self.assertEqual("feat/local-branch", head_branch())
+
+    def test_a_detached_head_names_no_branch(self) -> None:
+        git(self.repository, "checkout", "--detach")
+        self.assertIsNone(head_branch())
+
+    def test_a_git_failure_names_no_branch(self) -> None:
+        # Outside any repository git fails; so does any git command the patched runner says failed.
+        self.enterContext(mock.patch.object(pull_request_title, "REPOSITORY_ROOT", self.repository / "missing"))
+        self.assertIsNone(head_branch())
+        failed = subprocess.CompletedProcess(["git"], 128, stdout="feat/local-branch\n", stderr="fatal: failed\n")
+        with mock.patch.object(pull_request_title.subprocess, "run", return_value=failed) as run:
+            self.assertIsNone(head_branch())
+        self.assertEqual(1, run.call_count)
 
 
 if __name__ == "__main__":
