@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import ast
+import difflib
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -18,6 +23,9 @@ from review_specialists import INPUTS, route, uncovered
 REPOSITORY = Path(__file__).resolve().parents[4]
 SKILL = ".claude/skills/review-repository"
 MANIFEST_PATH = f"{SKILL}/references/specialists.json"
+CONDITION = f"{SKILL}/scripts/doc_passages.py"
+SKILL_CORE = "skills/skill-core/scripts"
+SCENARIOS = REPOSITORY / "tests" / "fixtures" / "skill-evals" / "review-repository"
 MANIFEST = validate_adapter_manifest(json.loads((REPOSITORY / MANIFEST_PATH).read_text(encoding="utf-8")))
 
 
@@ -38,12 +46,16 @@ class ManifestTests(GitTestCase):
         files = set(tracked_files())
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if path not in files])
 
-    def test_the_upgrade_notes_route_reads_the_body_by_the_input_every_prompt_names_and_no_route_has_a_condition(
+    def test_the_upgrade_notes_route_reads_the_body_by_the_input_every_prompt_names_and_no_condition_decides_it(
         self,
     ) -> None:
-        # The entry lives in the pull request body, which reviewers are given as a file and a condition script is not.
-        self.assertEqual({}, MANIFEST["conditions"])
-        self.assertEqual([None] * len(MANIFEST["specialists"]), [item["when"] for item in MANIFEST["specialists"]])
+        # The entry lives in the pull request body, which reviewers are given as a file and a condition script is not,
+        # so only the documentation-drift route, which reads no body, has a condition.
+        self.assertEqual(["doc-passages"], list(MANIFEST["conditions"]))
+        self.assertEqual(
+            {"documentation-drift": "doc-passages"},
+            {item["id"]: item["when"] for item in MANIFEST["specialists"] if item["when"] is not None},
+        )
         profile = (REPOSITORY / SKILL / "references" / "upgrade-notes.md").read_text(encoding="utf-8")
         self.assertIn("\nPULL_REQUEST_BODY_FILE={body}\n", INPUTS)
         self.assertIn("The change's upgrade note is the `## Upgrade note` section of PULL_REQUEST_BODY_FILE", profile)
@@ -52,10 +64,10 @@ class ManifestTests(GitTestCase):
 
     def test_each_file_reaches_the_reviewers_its_route_names(self) -> None:
         expected = {
-            "deployer/plan.py": {"deployer"},
-            "deploy.py": {"deployer"},
-            "deployer/manifest.py": {"deployer", "upgrade-notes"},
-            "deployer/arguments.py": {"deployer", "upgrade-notes"},
+            "deployer/plan.py": {"deployer", "documentation-drift"},
+            "deploy.py": {"deployer", "documentation-drift"},
+            "deployer/manifest.py": {"deployer", "upgrade-notes", "documentation-drift"},
+            "deployer/arguments.py": {"deployer", "upgrade-notes", "documentation-drift"},
             "skills/repo-cleanup/SKILL.md": {"skill-contract", "upgrade-notes"},
             "skills/category/example/SKILL.md": {"skill-contract", "upgrade-notes"},
             "deploy-meta/review-prs.json": {"skill-contract", "upgrade-notes"},
@@ -63,27 +75,27 @@ class ManifestTests(GitTestCase):
             "source.json": {"skill-contract"},
             ".claude/skills/audit-repository/SKILL.md": {"skill-contract"},
             ".agents/skills/audit-repository/SKILL.md": {"skill-contract"},
-            "tests/validation/skill_scripts.py": {"validation-policy"},
-            "tests/run_validation.py": {"validation-policy"},
+            "tests/validation/skill_scripts.py": {"validation-policy", "documentation-drift"},
+            "tests/run_validation.py": {"validation-policy", "documentation-drift"},
             "pyproject.toml": {"validation-policy"},
             "docs/code-review-operations-contract.md": {"trust-boundary", "documentation", "upgrade-notes"},
-            "skills/code-review-core/scripts/review_documents.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_guard.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_source.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_pipeline.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_specialists.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/test_adversarial_inputs.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_analyzers.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_github.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_hosts.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_process.py": {"trust-boundary"},
-            "skills/code-review-core/scripts/review_records.py": {"trust-boundary"},
-            "skills/skill-core/scripts/bounded_process.py": {"trust-boundary"},
-            "skills/skill-core/scripts/git_client.py": {"trust-boundary"},
-            "skills/skill-core/scripts/github_client.py": {"trust-boundary"},
-            "skills/skill-core/scripts/job_tree.py": {"trust-boundary"},
-            "skills/skill-core/scripts/pdf_tool.py": {"trust-boundary", "upgrade-notes"},
-            "skills/skill-core/scripts/typed_fields.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_documents.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_guard.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_source.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_pipeline.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_specialists.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/test_adversarial_inputs.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_analyzers.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_github.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_hosts.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_process.py": {"trust-boundary", "documentation-drift"},
+            "skills/code-review-core/scripts/review_records.py": {"trust-boundary", "documentation-drift"},
+            "skills/skill-core/scripts/bounded_process.py": {"trust-boundary", "documentation-drift"},
+            "skills/skill-core/scripts/git_client.py": {"trust-boundary", "documentation-drift"},
+            "skills/skill-core/scripts/github_client.py": {"trust-boundary", "documentation-drift"},
+            "skills/skill-core/scripts/job_tree.py": {"trust-boundary", "documentation-drift"},
+            "skills/skill-core/scripts/pdf_tool.py": {"trust-boundary", "upgrade-notes", "documentation-drift"},
+            "skills/skill-core/scripts/typed_fields.py": {"trust-boundary", "documentation-drift"},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
             "docs/upgrade-notes.md": {"documentation"},
             "docs/design.md": {"documentation"},
@@ -202,6 +214,170 @@ class ManifestTests(GitTestCase):
             with self.subTest(place=place):
                 self.assertIn(place, rule)
                 self.assertIn(place, profile)
+
+
+def drift_route() -> dict[str, Any]:
+    return next(item for item in MANIFEST["specialists"] if item["id"] == "documentation-drift")
+
+
+def run_condition(script: Path, source: Path, diff: str, scratch: Path) -> tuple[int, str, str]:
+    """The condition's exit status, stdout, and file, run as a review runs it on `source` with `diff`."""
+    (scratch / "diff.patch").write_bytes(diff.encode("utf-8"))
+    output = scratch / "passages.txt"
+    output.unlink(missing_ok=True)
+    clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+    given = {"CODE_REVIEW_DIFF_FILE": str(scratch / "diff.patch"), "CODE_REVIEW_CONDITION_OUTPUT": str(output)}
+    finished = subprocess.run(
+        [sys.executable, "-B", str(script), "--source-root", str(source)],
+        env={**clean, **given},
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    written = output.read_bytes().decode("utf-8") if output.exists() else ""
+    return finished.returncode, finished.stdout.decode("utf-8"), written
+
+
+def tree_diff(base: Path, head: Path) -> str:
+    """A unified diff from one tree to the other, with git's file headers."""
+    paths = sorted(
+        {path.relative_to(root).as_posix() for root in (base, head) for path in root.rglob("*") if path.is_file()}
+    )
+    text = ""
+    for path in paths:
+        before = (base / path).read_text(encoding="utf-8").splitlines() if (base / path).is_file() else []
+        after = (head / path).read_text(encoding="utf-8").splitlines() if (head / path).is_file() else []
+        if before != after:
+            hunks = difflib.unified_diff(before, after, f"a/{path}", f"b/{path}", lineterm="")
+            text += f"diff --git a/{path} b/{path}\n" + "".join(f"{line}\n" for line in hunks)
+    return text
+
+
+class DocumentationDriftTests(GitTestCase):
+    def test_the_drift_route_shares_the_scripts_and_reads_the_documents_its_condition_searches(self) -> None:
+        route_entry = drift_route()
+        self.assertEqual(
+            {
+                "category": "Documentation",
+                "profile": f"{SKILL}/references/documentation-drift.md",
+                "include": [r"\.(?:py|ps1|sh)$"],
+                "when": "doc-passages",
+                "shares_files": True,
+            },
+            {key: route_entry[key] for key in ("category", "profile", "include", "when", "shares_files")},
+        )
+        documents = [
+            "docs/**/*.md",
+            "README.md",
+            "CONTRIBUTING.md",
+            "CLAUDE.md",
+            "skills/**/SKILL.md",
+            ".claude/skills/*/SKILL.md",
+        ]
+        self.assertEqual({"script": CONDITION, "reads": documents}, MANIFEST["conditions"]["doc-passages"])
+        script = ast.parse((REPOSITORY / CONDITION).read_text(encoding="utf-8"))
+        searched = next(
+            node.value
+            for node in script.body
+            if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "DOCUMENTS" for t in node.targets)
+        )
+        self.assertEqual(
+            documents, list(ast.literal_eval(searched)), "the condition reads only what the route declares"
+        )
+        # Sharing, it takes no script from the generic reviewer.
+        self.assertIn("documentation-drift", route(MANIFEST, ["tools/worktrees.py"], lambda name: True))
+        self.assertEqual(["tools/worktrees.py"], uncovered(MANIFEST, ["tools/worktrees.py"]))
+
+    def test_the_condition_imports_only_the_standard_library_and_the_skill_core_modules_the_manifest_declares(
+        self,
+    ) -> None:
+        # A review materializes only the files a manifest declares, so every skill-core module the condition loads,
+        # through its imports and theirs, is a resource; anything else would be missing beside it.
+        pending, needed = [REPOSITORY / CONDITION], set()
+        while pending:
+            tree = ast.parse(pending.pop().read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                names = (
+                    [alias.name for alias in node.names]
+                    if isinstance(node, ast.Import)
+                    else [node.module or ""]
+                    if isinstance(node, ast.ImportFrom)
+                    else []
+                )
+                for name in names:
+                    module = REPOSITORY / SKILL_CORE / f"{name.split('.')[0]}.py"
+                    if module.is_file():
+                        if f"{SKILL_CORE}/{module.name}" not in needed:
+                            needed.add(f"{SKILL_CORE}/{module.name}")
+                            pending.append(module)
+                    else:
+                        self.assertIn(name.split(".")[0], {*sys.stdlib_module_names, "__future__"}, name)
+        self.assertEqual({f"{SKILL_CORE}/console.py", f"{SKILL_CORE}/flat_text.py"}, needed)
+        self.assertLessEqual(needed, set(MANIFEST["resources"]))
+
+    def test_the_condition_runs_from_a_reviewer_folder_holding_only_the_declared_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            scratch = Path(temporary)
+            reviewer, source = scratch / "reviewer", scratch / "source"
+            for path in declared_reviewer_files(MANIFEST):
+                (reviewer / path).parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(REPOSITORY / path, reviewer / path)
+            (source / "docs").mkdir(parents=True)
+            (source / "docs" / "guide.md").write_bytes(b"Run `python -B tools/sweep.py` daily.\n")
+            diff = "diff --git a/tools/sweep.py b/tools/sweep.py\n--- a/tools/sweep.py\n+++ b/tools/sweep.py\n"
+            diff += "@@ -1 +1 @@\n-DAYS = 30\n+DAYS = 7\n"
+            code, out, written = run_condition(reviewer / CONDITION, source, diff, scratch)
+        self.assertEqual((0, "PASSAGES 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("PASSAGE docs/guide.md:1 names sweep.py (script in tools/sweep.py)"))
+
+    def test_the_drift_profile_reads_the_condition_file_and_anchors_on_added_lines(self) -> None:
+        profile = " ".join((REPOSITORY / SKILL / "references" / "documentation-drift.md").read_text("utf-8").split())
+        for phrase in ("CONDITION_FILE", "`OMITTED`", "the added line of the hunk", "the sentence rewritten"):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, profile)
+
+
+class DocumentationDriftScenarioTests(GitTestCase):
+    """The evaluation scenarios: a change the guide describes, which the condition hands the route, and one no
+    document names, which closes it. Each fixture is the reviewed repository alone; the reviewer is this skill's."""
+
+    def scenario(self, name: str) -> tuple[Path, dict[str, Any], str]:
+        directory = SCENARIOS / name
+        pull = json.loads((directory / "pull.json").read_text(encoding="utf-8"))
+        self.assertEqual(MANIFEST_PATH, pull["manifest_path"])
+        return (
+            directory,
+            json.loads((directory / "scenario.json").read_text(encoding="utf-8")),
+            tree_diff(directory / "base", directory / "head"),
+        )
+
+    def test_the_scenarios(self) -> None:
+        self.assertEqual(["drifted-guide", "undocumented-change"], sorted(p.name for p in SCENARIOS.iterdir()))
+
+    def test_the_drifted_guide_hands_the_route_its_passage_and_expects_findings_on_added_lines(self) -> None:
+        directory, spec, diff = self.scenario("drifted-guide")
+        self.assertIn("documentation-drift", route(MANIFEST, ["tools/export_sweep.sh"], lambda name: True))
+        with tempfile.TemporaryDirectory() as temporary:
+            code, out, written = run_condition(REPOSITORY / CONDITION, directory / "head", diff, Path(temporary))
+        self.assertEqual((0, "PASSAGES 2 given=2\n"), (code, out))
+        self.assertIn("PASSAGE docs/exports.md:3 names export_sweep.sh (script in tools/export_sweep.sh)", written)
+        head = (directory / "head" / "tools" / "export_sweep.sh").read_text(encoding="utf-8").splitlines()
+        base = (directory / "base" / "tools" / "export_sweep.sh").read_text(encoding="utf-8").splitlines()
+        for item in spec["expectations"]:
+            with self.subTest(expectation=item):
+                self.assertEqual(("finding", "Code-document drift"), (item["kind"], item["category"]))
+                (line,) = item["lines"]
+                self.assertNotIn(head[line - 1], base, "the expectation sits on a line the change adds")
+
+    def test_the_undocumented_change_closes_the_route(self) -> None:
+        directory, spec, diff = self.scenario("undocumented-change")
+        self.assertIn("+++ b/tools/cache_trim.sh", diff)
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertEqual(
+                (1, "PASSAGES 0 given=0\n", ""),
+                run_condition(REPOSITORY / CONDITION, directory / "head", diff, Path(temporary)),
+            )
+        self.assertEqual([{"kind": "no_finding_above", "severity": "SUGGESTION"}], spec["expectations"])
 
 
 class RecommendedConfigurationTests(GitTestCase):

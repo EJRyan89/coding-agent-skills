@@ -5,7 +5,12 @@
   "kind": "specialists",
   "supports": ["initial", "re-review"],
   "required_capabilities": ["read-diff", "write-result"],
-  "resources": ["docs/design.md", "docs/adding-a-skill.md"],
+  "resources": [
+    "docs/design.md",
+    "docs/adding-a-skill.md",
+    "skills/skill-core/scripts/console.py",
+    "skills/skill-core/scripts/flat_text.py"
+  ],
   "finding_categories": [
     "Correctness",
     "Code-document drift",
@@ -79,6 +84,16 @@
       "when": null
     },
     {
+      "id": "documentation-drift",
+      "category": "Documentation",
+      "profile": ".claude/skills/review-repository/references/documentation-drift.md",
+      "include": ["\\.(?:py|ps1|sh)$"],
+      "exclude": [],
+      "resources": [],
+      "when": "doc-passages",
+      "shares_files": true
+    },
+    {
       "id": "upgrade-notes",
       "category": "Upgrade notes",
       "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
@@ -95,5 +110,17 @@
       "when": null
     }
   ],
-  "conditions": {}
+  "conditions": {
+    "doc-passages": {
+      "script": ".claude/skills/review-repository/scripts/doc_passages.py",
+      "reads": [
+        "docs/**/*.md",
+        "README.md",
+        "CONTRIBUTING.md",
+        "CLAUDE.md",
+        "skills/**/SKILL.md",
+        ".claude/skills/*/SKILL.md"
+      ]
+    }
+  }
 }

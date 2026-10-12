@@ -1,0 +1,7 @@
+{
+  "skill": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "no_finding_above", "severity": "SUGGESTION"}
+  ]
+}

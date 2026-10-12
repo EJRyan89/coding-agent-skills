@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-exports",
+  "number": 7,
+  "title": "Let the cache trim skip an entry already removed",
+  "base_ref": "main",
+  "head_ref": "trim-race",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}
