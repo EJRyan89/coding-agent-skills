@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import toolchain
 from git_test_base import GitTestCase
+from job_pool import Terminated
 from toolchain import (
     PREREQUISITES,
     find_psscriptanalyzer,
@@ -123,6 +124,27 @@ class ToolchainFixtures(GitTestCase):
                 read.__getitem__,
             ),
         )
+
+    def test_a_probe_ended_before_output_is_named_rather_than_read_as_a_missing_module(self) -> None:
+        with (
+            mock.patch.object(toolchain, "find_powershell", return_value="C:/tools/pwsh.exe"),
+            mock.patch.object(
+                platform_support, "run_tool", return_value=platform_support.ToolResult(2_147_483_652, "")
+            ),
+        ):
+            with self.assertRaises(Terminated) as raised:
+                find_psscriptanalyzer()
+            self.assertTrue(
+                str(raised.exception).startswith(
+                    "pwsh.exe was ended with status 0x80000004 before its first line of output: C:/tools/pwsh.exe "
+                )
+            )
+            prerequisite = (("PSScriptAnalyzer", "PSScriptAnalyzer", find_psscriptanalyzer),)
+            self.assertEqual(
+                [f"  - PSScriptAnalyzer: could not be looked for, because {raised.exception}; run validation again"],
+                missing_prerequisites(prerequisite),
+            )
+            self.assertEqual({}, tool_versions(prerequisite, read_version=lambda path: (1, 25, 0)))
 
 
 if __name__ == "__main__":

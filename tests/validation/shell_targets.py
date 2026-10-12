@@ -12,7 +12,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 
-from job_pool import run_process
+from job_pool import refuse_termination, run_process
 from toolchain import VALIDATION_FLOORS, find_git_bash, find_powershell, find_psscriptanalyzer, find_shellcheck
 from validation_support import (
     REPOSITORY_ROOT,
@@ -215,12 +215,15 @@ def run_git_bash(command: str) -> None:
     prefix = ""
     shellcheck = find_shellcheck()
     if shellcheck is not None:
-        # A login shell rebuilds PATH, which can drop the directory ShellCheck was found in.
+        # ShellCheck can be found in a package manager's link folder that PATH does not name.
         environment["SHELLCHECK_BIN_DIR"] = platform_support.to_shell_path(str(Path(shellcheck).parent))
         prefix = 'export PATH="$SHELLCHECK_BIN_DIR:$PATH"; '
     root = shell_quote(platform_support.to_shell_path(str(REPOSITORY_ROOT)))
+    # Not a login shell: Git for Windows' bin/bash.exe puts its own /mingw64/bin and /usr/bin first on PATH, so a plain
+    # shell finds the same commands, and it skips the profile, which starts more MSYS processes before the command and
+    # sets nothing a job reads. Every other start of this Bash in the repository is a plain one too.
     run_process(
-        [find_git_bash(), "-l", "-c", f"{prefix}set -euo pipefail; cd {root}; {command}"],
+        [find_git_bash(), "-c", f"{prefix}set -euo pipefail; cd {root}; {command}"],
         environment,
     )
 
@@ -303,13 +306,15 @@ def script_analyzer_check(root: Path, files: list[Path]) -> None:
             ),
             encoding="utf-8",
         )
+        analyzer = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT_ANALYZER_RUN]
         result = platform_support.run_tool(
-            [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", SCRIPT_ANALYZER_RUN],
+            analyzer,
             {
                 "PSSA_TARGETS": str(request),
                 "PSSA_FLOOR": tools.format_version(VALIDATION_FLOORS["PSScriptAnalyzer"]),
             },
         )
+    refuse_termination(analyzer, result.returncode, result.output)
     lines = [line for line in result.output.splitlines() if line.strip()]
     try:
         findings = json.loads(lines[-1]) if result.returncode == 0 and lines else None
@@ -382,7 +387,9 @@ def markdown_shell_check(root: Path, files: list[Path]) -> None:
             path = Path(directory) / f"{index}.sh"
             path.write_text(f"{render.SHELLCHECK_HEADER}{target.text}\n", encoding="utf-8", newline="\n")
             fragments[platform_support.normalize(path)] = target
-        result = platform_support.run_tool([shellcheck, "--format=gcc", "--severity=warning", *fragments])
+        check = [shellcheck, "--format=gcc", "--severity=warning", *fragments]
+        result = platform_support.run_tool(check)
+    refuse_termination(check, result.returncode, result.output)
     if result.returncode == 0:
         return
     reported: list[str] = []

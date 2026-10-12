@@ -5,6 +5,7 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,14 +16,17 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import job_pool
 import shell_targets
 import toolchain
 from git_test_base import GitTestCase
+from job_pool import Terminated
 from shell_targets import (
     PowerShellTarget,
     markdown_shell_check,
     markdown_shell_targets,
     powershell_targets,
+    run_git_bash,
     script_analyzer_check,
     shell_script_targets,
     shell_token_problems,
@@ -308,6 +312,67 @@ class ShellTargetsFixtures(GitTestCase):
                 ],
                 shell_targets.shell_suppression_problems(root, [root / name for name in files]),
             )
+
+
+class ProgramEndingFixtures(GitTestCase):
+    """Each program a shell or analyzer job starts is recognized when it is ended before its first line of output."""
+
+    def test_bash_starts_as_a_plain_shell_and_its_ending_names_the_status_and_the_command(self) -> None:
+        bash = "C:/Program Files/Git/bin/bash.exe"
+        started: list[list[str]] = []
+
+        def ended(arguments: list[str], **_: object) -> subprocess.CompletedProcess[bytes]:
+            started.append(arguments)
+            return subprocess.CompletedProcess(arguments, 2_147_483_652)
+
+        with (
+            mock.patch.object(shell_targets, "find_git_bash", return_value=bash),
+            mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shell check/shellcheck.exe"),
+            mock.patch.object(job_pool.subprocess, "run", side_effect=ended),
+            self.assertRaises(Terminated) as raised,
+        ):
+            run_git_bash("bash 'suite.sh'")
+        root = shell_targets.shell_quote(platform_support.to_shell_path(str(REPOSITORY_ROOT)))
+        command = f"export PATH=\"$SHELLCHECK_BIN_DIR:$PATH\"; set -euo pipefail; cd {root}; bash 'suite.sh'"
+        self.assertEqual([[bash, "-c", command]], started, "not a login shell")
+        self.assertEqual(
+            f"bash.exe was ended with status 0x80000004 before its first line of output: {bash} -c {command}",
+            str(raised.exception),
+        )
+
+    def test_the_analyzer_and_markdown_shellcheck_report_an_ending_before_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "tools").mkdir()
+            (root / "tools" / "run.ps1").write_text("Get-Date\n", encoding="utf-8")
+            (root / "docs").mkdir()
+            (root / "docs" / "guide.md").write_text("```bash\necho 'hello'\n```\n", encoding="utf-8")
+            files = [root / "tools" / "run.ps1", root / "docs" / "guide.md"]
+            with (
+                mock.patch.object(shell_targets, "find_psscriptanalyzer", return_value="C:/m/PSScriptAnalyzer.psd1"),
+                mock.patch.object(shell_targets, "find_powershell", return_value="C:/tools/pwsh.exe"),
+                mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shellcheck.exe"),
+                mock.patch.object(
+                    platform_support, "run_tool", return_value=platform_support.ToolResult(2_147_483_652, "")
+                ),
+            ):
+                for check, program in ((script_analyzer_check, "pwsh.exe"), (markdown_shell_check, "shellcheck.exe")):
+                    with self.subTest(program=program), self.assertRaises(Terminated) as raised:
+                        check(root, files)
+                    self.assertTrue(
+                        str(raised.exception).startswith(
+                            f"{program} was ended with status 0x80000004 before its first line of output: C:/tools/"
+                        )
+                    )
+            # Output before the ending is the program's own report, a failed check as before.
+            with (
+                mock.patch.object(shell_targets, "find_shellcheck", return_value="C:/tools/shellcheck.exe"),
+                mock.patch.object(
+                    platform_support, "run_tool", return_value=platform_support.ToolResult(2_147_483_652, "partial\n")
+                ),
+                self.assertRaises(AssertionError),
+            ):
+                markdown_shell_check(root, files)
 
 
 if __name__ == "__main__":
