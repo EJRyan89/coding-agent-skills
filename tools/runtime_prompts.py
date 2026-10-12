@@ -129,17 +129,13 @@ def copilot_entrypoint(directory: Path) -> str:
 
     try:
         prepared = review_pipeline.prepare_fixture(fixture, host="copilot-cli", config_path=config, run_directory=run)
-        review_hosts.run_copilot(
-            run_directory=run,
-            materialized_root=Path(prepared["reviewer_root"]),
-            request_path=Path(prepared["request_path"]),
-            result_path=Path(prepared["result_path"]),
-            staging_path=review_hosts.staging_path(run, 1),
-            diagnostic_path=run / "copilot-diagnostic-1.jsonl",
-            isolation_root=run / "copilot-isolation-1",
-            runner=runner,
-            executable="copilot",
-        )
+        services = review_pipeline.Services(copilot_runner=runner, copilot_executable="copilot")
+        with review_hosts.host_lock(run):
+            claim = review_hosts.new_claim(run, generation=0, now=services.clock())
+        review_pipeline.run_host(run, claim["token"], services)
+        host = review_hosts.host_state(run, probe=services.probe, now=services.clock())
+        if host.outcome != "dispatched":
+            raise RenderError(f"Copilot prompt fixture host {host.status}/{host.outcome}: {host.reason}")
         request = json.loads(Path(prepared["request_path"]).read_text(encoding="utf-8"))
         pull = request["pull_request"]
         return prompts[0].replace(pull["base_sha"], "<base-commit>").replace(pull["head_sha"], "<head-commit>")

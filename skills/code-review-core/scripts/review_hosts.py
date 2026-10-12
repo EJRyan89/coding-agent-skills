@@ -37,15 +37,6 @@ from review_specialists import parse_unified_diff, render_entrypoint_prompt, sym
 
 
 @dataclass(frozen=True)
-class HostResult:
-    runtime: str
-    version: str
-    returncode: int
-    diagnostic_path: Path
-    result_path: Path
-
-
-@dataclass(frozen=True)
 class ProcessResult:
     returncode: int
     stdout: str
@@ -93,11 +84,6 @@ def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[
         **hidden_window(),
     )
     return ProcessResult(process.returncode, process.stdout, process.stderr)
-
-
-def replace_result(staging_path: Path, result_path: Path) -> bool:
-    staging_path.replace(result_path)
-    return True
 
 
 def staging_path(run: Path, attempt: int) -> Path:
@@ -371,16 +357,17 @@ def run_copilot(
     result_path: Path,
     diagnostic_path: Path,
     isolation_root: Path,
+    promote: Promote,
     staging_path: Path | None = None,
     snapshot_stamp: str | None = None,
-    promote: Promote = replace_result,
     runner: Runner = subprocess_runner,
     executable: str | None = None,
     base_environment: Mapping[str, str] | None = None,
-) -> HostResult:
-    """Run one Copilot CLI review. Copilot writes only the staging file; once it is a JSON object, `promote`
-    renames it to the result path, so a reader sees the whole result or none, and a refused promotion is
-    HostSuperseded. `snapshot_stamp` is the stamp `prepare` took of the source snapshot, so the snapshot is re-read
+) -> None:
+    """Run one Copilot CLI review. Copilot writes only the staging file; once it is a JSON object, the required
+    `promote` callback checks the caller's claim and renames it to the result path, so a reader sees the whole
+    result or none. A refused promotion is HostSuperseded. `snapshot_stamp` is the stamp `prepare` took of the
+    source snapshot, so the snapshot is re-read
     before Copilot starts only as far as something can have changed since (see `verify_stamped_snapshot`)."""
     staging_path = staging_path or result_path.with_name(f"{result_path.stem}.staging{result_path.suffix}")
     materialized_resolved, entrypoint_resolved = _copilot_reviewer(
@@ -390,7 +377,7 @@ def run_copilot(
     source_resolved = _verified_copilot_source(run_directory, request, snapshot_stamp)
     execution_directory, environment = isolated_copilot_environment(isolation_root, base_environment)
     executable = executable or find_copilot()
-    version_result = _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
+    _copilot_version(runner, executable, execution_directory, environment, diagnostic_path)
     prompt = _copilot_prompt(
         request.value, request_path, entrypoint_resolved, materialized_resolved, source_resolved, staging_path
     )
@@ -413,13 +400,6 @@ def run_copilot(
         raise HostSuperseded(
             f"the Copilot CLI host's result came after its role was set aside; it stays in {staging_path}"
         )
-    return HostResult(
-        runtime="copilot-cli",
-        version=version_result.stdout.strip(),
-        returncode=result.returncode,
-        diagnostic_path=diagnostic_path,
-        result_path=result_path,
-    )
 
 
 def _copilot_reviewer(
@@ -502,8 +482,8 @@ def _verified_copilot_source(run_directory: Path, request: _CopilotRequest, stam
 
 def _copilot_version(
     runner: Runner, executable: str, execution_directory: Path, environment: Mapping[str, str], diagnostic_path: Path
-) -> ProcessResult:
-    """The bounded `--version` run, once it succeeds and names a version at least the minimum."""
+) -> None:
+    """Require the bounded `--version` run to succeed and name a version at least the minimum."""
     version_result = _run_bounded(runner, [executable, "--version"], execution_directory, environment, diagnostic_path)
     if version_result.returncode != 0:
         raise RuntimeContractError("Cannot determine GitHub Copilot CLI version")
@@ -511,7 +491,6 @@ def _copilot_version(
     if version < MINIMUM_COPILOT_CLI_VERSION:
         minimum = ".".join(str(part) for part in MINIMUM_COPILOT_CLI_VERSION)
         raise RuntimeContractError(f"GitHub Copilot CLI {minimum} or newer is required")
-    return version_result
 
 
 def _copilot_prompt(

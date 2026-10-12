@@ -3142,6 +3142,12 @@ class ReviewOperationTests(unittest.TestCase):
 
 class RuntimeHostTests(unittest.TestCase):
     @staticmethod
+    def _promote_fixture_result(staging: Path, result: Path) -> bool:
+        """Rename a result in this test's owned temporary fixture."""
+        staging.replace(result)
+        return True
+
+    @staticmethod
     def _materialized_reviewer(root: Path) -> tuple[Path, Path]:
         materialized = root / "trusted"
         materialized.mkdir()
@@ -3277,6 +3283,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=run_directory / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=run_directory / "diagnostic.jsonl",
                     isolation_root=run_directory / "isolation",
                     executable="copilot",
@@ -3315,19 +3322,21 @@ class RuntimeHostTests(unittest.TestCase):
                 staging.write_text('{"protocol_version": 1}', encoding="utf-8")
                 return ProcessResult(0, '{"type":"assistant.message","text":"done"}\n', "")
 
-            result = run_copilot(
+            run_copilot(
                 run_directory=root,
                 materialized_root=materialized,
                 request_path=request,
                 result_path=result_path,
                 staging_path=staging,
+                promote=self._promote_fixture_result,
                 diagnostic_path=diagnostic,
                 isolation_root=isolation,
                 runner=runner,
                 executable="copilot",
                 base_environment={"GH_TOKEN": "test-token"},
             )
-            self.assertEqual("GitHub Copilot CLI 1.2.3", result.version)
+            self.assertEqual(2, len(invocations))
+            self.assertEqual(["copilot", "--version"], invocations[0][0])
             self.assertIn("assistant.message", diagnostic.read_text(encoding="utf-8"))
             self.assertEqual({"protocol_version": 1}, json.loads(result_path.read_text()))
             self.assertFalse(staging.exists(), "the staging file is renamed into place, never copied")
@@ -3410,6 +3419,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=root / "isolation",
                     executable="copilot",
@@ -3427,6 +3437,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=root / "isolation",
                     executable="copilot",
@@ -3450,6 +3461,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=root / "isolation",
                     runner=runner,
@@ -3487,6 +3499,7 @@ class RuntimeHostTests(unittest.TestCase):
                         materialized_root=materialized,
                         request_path=request,
                         result_path=root / "result.json",
+                        promote=self._promote_fixture_result,
                         diagnostic_path=diagnostic,
                         isolation_root=root / "isolation",
                         runner=runner,
@@ -3516,6 +3529,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=root / "isolation",
                     executable="copilot",
@@ -3535,6 +3549,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=root / "isolation",
                     executable="copilot",
@@ -3551,6 +3566,7 @@ class RuntimeHostTests(unittest.TestCase):
                     materialized_root=materialized,
                     request_path=request,
                     result_path=root / "result.json",
+                    promote=self._promote_fixture_result,
                     diagnostic_path=root / "diagnostic.jsonl",
                     isolation_root=isolation,
                     executable="copilot",
