@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import doc_passages
+
 SCRIPT = Path(__file__).resolve().parent / "doc_passages.py"
 
 
@@ -20,6 +22,26 @@ def changed(path: str, *hunks: tuple[str, list[str]]) -> str:
         text += f"@@ -{start},{removed} +{start},{added} @@{' ' + context if context else ''}\n"
         text += "".join(f"{line}\n" for line in lines)
     return text
+
+
+class UnitTests(unittest.TestCase):
+    def test_a_document_splits_into_headings_rows_items_paragraphs_and_fenced_blocks(self) -> None:
+        text = (
+            "# Title\n\nA paragraph\nthat wraps.\n\n- An item\n  that wraps.\n- Another item.\n\n"
+            "| A | B |\n| --- | :-: |\n| one | two |\n\n```bash\nrun it\n```\n"
+        )
+        self.assertEqual(
+            [
+                (1, "# Title", False),
+                (3, "A paragraph\nthat wraps.", False),
+                (6, "- An item\n  that wraps.", False),
+                (8, "- Another item.", False),
+                (10, "| A | B |", False),
+                (12, "| one | two |", False),
+                (15, "run it", True),
+            ],
+            [(unit.line, unit.text, unit.code) for unit in doc_passages.units(text)],
+        )
 
 
 class ConditionTests(unittest.TestCase):
