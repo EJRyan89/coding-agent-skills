@@ -677,7 +677,11 @@ def load_report(path: Path) -> dict[str, Any]:
         report = read_json(path, maximum_bytes=synthesis_stage.MAXIMUM_BYTES)
     except PersistenceError as exc:
         raise InsightError(f"Cannot read insights report {path}: {exc}") from exc
-    if not isinstance(report, dict) or report.get("schema_version") not in READABLE_SCHEMA_VERSIONS:
+    if (
+        not isinstance(report, dict)
+        or type(report.get("schema_version")) is not int
+        or report["schema_version"] not in READABLE_SCHEMA_VERSIONS
+    ):
         raise InsightError(f"{path} is not a supported insights report")
     recommendations = report.get("recommendations")
     if not isinstance(recommendations, list) or not isinstance(report.get("records"), list):

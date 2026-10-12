@@ -1622,5 +1622,33 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("SUMMARY\t  Local-only (kept):       1 — caf�", result.stdout.decode("utf-8").splitlines())
 
 
+class PlanVersionTests(unittest.TestCase):
+    def test_a_plan_whose_schema_version_is_not_the_integer_one_is_refused(self) -> None:
+        # A boolean or an integral float compares equal to the version; only the integer itself is it.
+        root = Path(tempfile.mkdtemp(prefix="repo cleanup plan ")).resolve()
+        self.addCleanup(remove_tree, root)
+        plan = root / "plan.json"
+        recorded = {
+            "repo_name": "my repo",
+            "default": {"name": "main", "status": "up to date"},
+            "branches": [],
+            "worktrees": [],
+            "events": [],
+        }
+        plan.write_text(json.dumps({"schema_version": 1, **recorded}), encoding="utf-8")
+        self.assertEqual(1, rc.load_plan(plan)["schema_version"])
+        for version in (True, 1.0, "1", [1], {"version": 1}, None, 0, 2):
+            with self.subTest(version=version):
+                plan.write_text(json.dumps({"schema_version": version, **recorded}), encoding="utf-8")
+                with self.assertRaisesRegex(rc.CleanupError, "is not a repo-cleanup plan"):
+                    rc.load_plan(plan)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    code = rc.main(["summary", "--plan", str(plan)], rc.Services())
+                self.assertEqual(
+                    (1, [f"FAILED\t{plan} is not a repo-cleanup plan"]), (code, out.getvalue().splitlines())
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
