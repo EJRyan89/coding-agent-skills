@@ -41,7 +41,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from frontmatter import COMMENT, NESTED_KEY, SEQUENCE_ITEM, Frontmatter, FrontmatterError
 
 # ---------------------------------------------------------------------------
@@ -2348,5 +2348,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

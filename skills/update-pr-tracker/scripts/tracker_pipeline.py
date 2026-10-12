@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from console import use_utf8_output
+from console import run_main
 from pr_change import FATAL_ERROR_KINDS, ChangeDetector, at_or_before
 from review_archive import ArchiveError, pull_records
 from review_config import (
@@ -450,5 +450,4 @@ def _override(sets: list[str], clears: list[str], config_path: Path | None) -> i
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

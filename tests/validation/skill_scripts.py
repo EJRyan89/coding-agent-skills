@@ -522,8 +522,8 @@ def gh_filter_problems(root: Path) -> list[str]:
 
 
 CONSOLE_CORE = "skill-core"
-CONSOLE_SETUP = "use_utf8_output"
-CONSOLE_FUNCTION = f"console.{CONSOLE_SETUP}"
+CONSOLE_RUNNER = "run_main"
+CONSOLE_FUNCTION = f"console.{CONSOLE_RUNNER}"
 CONSOLE_DOC = '"Script results" in docs/adding-a-skill.md'
 
 
@@ -543,7 +543,7 @@ def console_entry_points(root: Path) -> list[Path]:
     )
 
 
-# The standard streams use_utf8_output configures, under every name sys gives them.
+# The standard streams run_main configures, under every name sys gives them.
 STANDARD_STREAMS = frozenset(
     f"sys.{name}" for stream in ("stdin", "stdout", "stderr") for name in (stream, f"__{stream}__")
 )
@@ -624,8 +624,8 @@ def _stream_change_lines(tree: ast.Module, aliases: dict[str, str]) -> list[int]
     )
 
 
-def _sets_up_the_console(statement: ast.stmt, aliases: dict[str, str]) -> bool:
-    """Whether a statement calls skill-core's use_utf8_output, resolved through the module's imports."""
+def _runs_through_the_runner(statement: ast.stmt, aliases: dict[str, str]) -> bool:
+    """Whether a statement calls skill-core's run_main, resolved through the module's imports."""
     return (
         isinstance(statement, ast.Expr)
         and isinstance(statement.value, ast.Call)
@@ -634,11 +634,12 @@ def _sets_up_the_console(statement: ast.stmt, aliases: dict[str, str]) -> bool:
 
 
 def console_setup_problems(root: Path) -> list[str]:
-    """Report an entry point whose __main__ block does not start by calling skill-core's use_utf8_output(), and a
-    module that reconfigures a stream's encoding itself.
+    """Report an entry point whose __main__ block does not start by calling skill-core's run_main(), and a module
+    that reconfigures a stream's encoding itself.
 
     Skill scripts, deploy.py, the deployer, and tools/ print paths and text the user wrote, which a Windows pipe's
-    legacy code page cannot encode; one function sets it up, so the copies cannot drift apart again.
+    legacy code page cannot encode, and promise a FAILED line, never a traceback, when they fail; one runner sets up
+    the console and keeps that promise, so the copies cannot drift apart again.
     """
     problems: list[str] = []
     for path in console_entry_points(root):
@@ -646,16 +647,16 @@ def console_setup_problems(root: Path) -> list[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         aliases = import_aliases(tree)
         problems += [
-            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_SETUP}() from {CONSOLE_CORE} instead; "
+            f"{name}:{line} reconfigures a stream itself; call {CONSOLE_RUNNER}() from {CONSOLE_CORE} instead; "
             f"see {CONSOLE_DOC}"
             for line in _stream_change_lines(tree, aliases)
         ]
         for node in tree.body:
             if not (isinstance(node, ast.If) and ast.unparse(node.test) == "__name__ == '__main__'"):
                 continue
-            if not _sets_up_the_console(node.body[0], aliases):
+            if not _runs_through_the_runner(node.body[0], aliases):
                 problems.append(
-                    f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_SETUP}() first in its __main__ "
+                    f"{name}:{node.lineno} does not call {CONSOLE_CORE}'s {CONSOLE_RUNNER}() first in its __main__ "
                     f"block; see {CONSOLE_DOC}"
                 )
     return problems

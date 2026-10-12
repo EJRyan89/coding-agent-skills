@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from bounded_process import run_bounded
-from console import use_utf8_output
+from console import run_main
 from dotnet_format_targets import read_file_list
 
 # dotnet-format's MSBuildIssueFormatter: "<file>(<line>,<column>): <severity> <id>: <message> [<project>]".
@@ -300,5 +300,4 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="replace")
-    sys.exit(main())
+    run_main(main, errors="replace")

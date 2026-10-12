@@ -58,7 +58,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_synthesis as synthesis_stage
-from console import use_utf8_output
+from console import run_main
 from flat_text import flat_text
 from git_client import GitClient
 from review_archive import list_versions, pull_directory, record_files, record_paths
@@ -1277,5 +1277,4 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

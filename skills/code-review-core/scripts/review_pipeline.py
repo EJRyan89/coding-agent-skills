@@ -50,7 +50,7 @@ from typing import Any, NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from git_client import Runner, subprocess_runner
 from review_analyzers import reads_settings
 from review_archive import ArchiveError, archive_head, commit_record, pull_records
@@ -2989,5 +2989,4 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

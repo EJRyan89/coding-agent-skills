@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from github_client import (
     Clock,
     CommandResult,
@@ -516,5 +516,4 @@ def main(
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    sys.exit(main())
+    run_main(main)

@@ -615,6 +615,28 @@ class HookTests(GuardFixture):
         self.assertIn("may only look inside your own review run", decision["permissionDecisionReason"])
         self.assertEqual("deny", json.loads(self.hook("not json").stdout)["hookSpecificOutput"]["permissionDecision"])
 
+    def test_a_stream_the_console_cannot_decode_is_denied_not_left_to_the_runner(self) -> None:
+        # The runner's FAILED line and exit 1 would read to Claude Code as a hook error, which lets the call through.
+        # 0x81 is undefined in code page 1252.
+        result = self.hook(b'{"tool_name": "Read", "x": "\x81"}', PYTHONIOENCODING="cp1252")
+        self.assertEqual((0, b""), (result.returncode, result.stderr))
+        decision = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(
+            ("deny", "Code-review reviewer boundary: the guard could not evaluate this call (JSONDecodeError)."),
+            (decision["permissionDecision"], decision["permissionDecisionReason"]),
+        )
+
+    def test_ctrl_c_while_the_guard_decides_denies_the_call(self) -> None:
+        event = {"tool_name": "Read", "tool_input": {"file_path": self.prompt()}, "agent_id": AGENT}
+        stdout = io.StringIO()
+        with mock.patch.object(guard, "decide", side_effect=KeyboardInterrupt), contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, guard.main(json.dumps(event)))
+        decision = json.loads(stdout.getvalue())["hookSpecificOutput"]
+        self.assertEqual(
+            ("deny", "Code-review reviewer boundary: the guard could not evaluate this call (KeyboardInterrupt)."),
+            (decision["permissionDecision"], decision["permissionDecisionReason"]),
+        )
+
     def test_a_decision_survives_a_console_that_cannot_encode_it(self) -> None:
         # A Windows pipe defaults to a legacy code page, and a deny reason names the path the reviewer asked for.
         outside = self.root / "repo → ✓" / "x.cs"

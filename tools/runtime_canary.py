@@ -79,7 +79,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
-from console import use_utf8_output
+from console import run_main
 
 from deployer import discovery, pipeline, platform_support, runtime_support
 from deployer import source as deploy_source
@@ -829,5 +829,4 @@ def main(arguments: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    raise SystemExit(main(sys.argv[1:]))
+    run_main(lambda: main(sys.argv[1:]), errors="backslashreplace")

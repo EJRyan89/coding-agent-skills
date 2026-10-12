@@ -38,7 +38,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 
 from deployer import discovery, manifest, platform_support, tools, verify
 from deployer.errors import DeployError, print_error
@@ -302,5 +302,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    sys.exit(main())
+    run_main(main, errors="backslashreplace")
