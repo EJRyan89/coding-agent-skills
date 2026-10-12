@@ -14,11 +14,16 @@ client given a `runner` alone refuses a call with input rather than run real git
 
 `stream` runs a git command that answers requests while it runs, such as `cat-file --batch`, with the same
 environment; there the time limit bounds each wait for output rather than the whole command.
+
+A transient failure of a command that only fetches from a remote, a connection dropped or a host briefly not found, is
+retried a few times with short waits inside the call's own time limit, and `run` returns the last answer. Every other
+command runs once, and `push` is never repeated. Tests inject the sleeper and the clock.
 """
 
 from __future__ import annotations
 
 import subprocess
+import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -32,6 +37,57 @@ T = TypeVar("T")
 DEFAULT_TIMEOUT_SECONDS = 300.0
 NOT_REPOSITORY_MARKERS = ("not a git repository",)
 MISSING_GIT = "Git executable 'git' was not found; install Git first"
+
+# The subcommands retried after a transient failure: each only reads from the remote, and a fetch cut off after it
+# updated some refs leaves them where a second fetch of the same refspecs puts them, so a repeat is safe. `push` may
+# have landed before its answer was lost, and `clone` runs through no skill's client, so neither is here.
+RETRIED_SUBCOMMANDS = frozenset({"fetch", "ls-remote"})
+# git's options that take their value as the next argument, so the subcommand is never read from a value.
+GLOBAL_VALUE_OPTIONS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+# A dropped connection, a failed handshake, a host briefly not found, or a gateway briefly down clears in seconds; a
+# longer outage should fail fast rather than hold a skill for minutes, leaving the rerun to the user.
+TRANSIENT_RETRIES = 2
+TRANSIENT_BASE_SECONDS = 2.0
+# The lines git and its transports print themselves. A transient marker counts only on one of them, so the words in
+# a line the remote sent (`remote:`) or a hook printed, such as a quoted commit message, never make a failure
+# transient.
+GIT_LINE_PREFIXES = ("fatal:", "error:", "fetch-pack:", "ssh:")
+# Lowered markers of a transport failure that may clear on its own. Unlike gh's policy, a host git could not resolve
+# is here: git looks the host up afresh on every fetch, and a lookup that fails while a network or VPN connection
+# comes back is the commonest brief fault on a workstation; offline, the retries cost seconds.
+TRANSIENT_MARKERS = (
+    "rpc failed",
+    "early eof",
+    "unexpected disconnect",
+    "remote end hung up",
+    "could not resolve host",
+    "connection reset",
+    "connection was reset",
+    "connection timed out",
+    "failed to receive handshake",
+    "gnutls_handshake() failed",
+    "ssl_error_syscall",
+    "returned error: 502",
+    "returned error: 503",
+    "returned error: 504",
+)
+# Lowered markers of an answer no retry changes: an unknown ref, a refused authentication, a missing repository, a
+# bad object, a certificate problem, or any 4xx status. Read anywhere in stderr, the remote's lines included, and
+# checked first, so a failure that names one is never retried whatever transport message comes with it.
+PERMANENT_MARKERS = (
+    "couldn't find remote ref",
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "invalid username or password",
+    "permission denied",
+    "not found",
+    "does not appear to be a git repository",
+    "bad object",
+    "not our ref",
+    "ssl certificate problem",
+    "returned error: 4",
+)
 
 
 class GitError(RuntimeError):
@@ -105,6 +161,44 @@ def classify_failure(stderr: str) -> str:
     return "git"
 
 
+def subcommand(arguments: Sequence[str]) -> str | None:
+    """The git subcommand `arguments` run, after any of git's own options, or None when they name none."""
+    parts = iter(arguments)
+    for part in parts:
+        if part in GLOBAL_VALUE_OPTIONS:
+            next(parts, None)
+        elif not part.startswith("-"):
+            return part
+    return None
+
+
+def transient_failure(result: GitResult) -> bool:
+    """Whether a git command's result is a transport failure that may clear on its own.
+
+    A zero exit is an answer. A failure is transient when one of git's own lines names a transient fault and no line
+    names a permanent one.
+    """
+    if result.returncode == 0:
+        return False
+    lowered = result.stderr.casefold()
+    if any(marker in lowered for marker in PERMANENT_MARKERS):
+        return False
+    own = [line for line in lowered.splitlines() if line.lstrip().startswith(GIT_LINE_PREFIXES)]
+    return any(marker in line for line in own for marker in TRANSIENT_MARKERS)
+
+
+def transient_wait(retry: int) -> float:
+    """The wait before transient retry `retry`, counted from 0, doubling from `TRANSIENT_BASE_SECONDS`."""
+    return TRANSIENT_BASE_SECONDS * 2**retry
+
+
+def _gave_up(result: GitResult, retries: int, why: str = "") -> GitResult:
+    """`result` with the retries spent on it named on a line after git's own stderr."""
+    stderr = result.stderr if result.stderr.endswith("\n") or not result.stderr else result.stderr + "\n"
+    note = f"gave up after {retries} {'retry' if retries == 1 else 'retries'}{why}"
+    return GitResult(result.returncode, result.stdout, f"{stderr}({note})\n")
+
+
 def _command(arguments: Sequence[str], directory: str | Path | None) -> list[str]:
     return ["git", *(["-C", str(directory)] if directory is not None else []), *arguments]
 
@@ -150,7 +244,8 @@ class GitClient:
     failures.
 
     `input_runner` runs the calls given `input_bytes`. It defaults to the real runner only while `runner` is the real
-    runner too, so a client built on a test's runner never reaches real git through a call with input.
+    runner too, so a client built on a test's runner never reaches real git through a call with input. `sleeper`
+    makes the waits between retries, and `clock` measures what is left of a call's time limit.
     """
 
     def __init__(
@@ -159,12 +254,17 @@ class GitClient:
         *,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         input_runner: InputRunner | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.runner = runner
         if input_runner is None:
             input_runner = subprocess_runner if runner is subprocess_runner else _refuse_input
         self.input_runner = input_runner
         self.timeout = timeout
+        # Looked up per client, so a test that patches time.sleep reaches a client built deep inside a call.
+        self.sleeper = sleeper or time.sleep
+        self.clock = clock or time.monotonic
 
     def run(
         self,
@@ -178,13 +278,45 @@ class GitClient:
 
         With `input_bytes`, git's stdin is exactly those bytes and then closed, through `input_runner`.
         Raises GitError when git is missing, cannot start, or does not finish within `timeout` (the client's default
-        when None).
+        when None). A subcommand in `RETRIED_SUBCOMMANDS` that fails transiently runs again within that limit: the
+        result is the last attempt's, and one that outlasts the retries names them on its stderr.
         """
         command = _command(arguments, directory)
         limit = self.timeout if timeout is None else timeout
-        if input_bytes is None:
-            return self.runner(command, limit)
-        return self.input_runner(command, limit, input_bytes=input_bytes)
+
+        def attempt(seconds: float) -> GitResult:
+            if input_bytes is None:
+                return self.runner(command, seconds)
+            return self.input_runner(command, seconds, input_bytes=input_bytes)
+
+        if subcommand(arguments) not in RETRIED_SUBCOMMANDS:
+            return attempt(limit)
+        return self._retried(attempt, limit)
+
+    def _retried(self, attempt: Callable[[float], GitResult], limit: float) -> GitResult:
+        """Run `attempt` with the whole limit, then retry a transient failure with what is left of it.
+
+        A wait that would leave no time is not made, and a retry that runs out the time left gives back the failure
+        before it, so the call never runs longer than `limit`. A first attempt that runs out the limit still raises.
+        """
+        started = self.clock()
+        result = attempt(limit)
+        retries = 0
+        while transient_failure(result):
+            if retries == TRANSIENT_RETRIES:
+                return _gave_up(result, retries)
+            wait = transient_wait(retries)
+            if limit - (self.clock() - started) <= wait:
+                return _gave_up(result, retries, f": its {limit:g}-second time limit left no room for another")
+            self.sleeper(wait)
+            retries += 1
+            try:
+                result = attempt(limit - (self.clock() - started))
+            except GitError as exc:
+                if exc.kind != "timeout":
+                    raise
+                return _gave_up(result, retries, f": it ran out its {limit:g}-second time limit")
+        return result
 
     def output(
         self,

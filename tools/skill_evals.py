@@ -17,11 +17,21 @@ With a base, that folder is a new git checkout whose one commit holds the base u
 is written over it uncommitted, so the skill reviews only the edit; without one, nothing encloses it and the skill
 reviews it whole. The checkout's Git commands use a temporary empty hook directory, overriding global and
 template-installed hooks, and the base commit disables signing. A finding's path is then the document's file name.
+A repository reviewer's scenario judges one of this repository's own reviewers under .claude/skills/, such as
+review-repository, which review-prs runs and no session starts: it sits under the reviewer's name, and is a fixture
+scenario naming the reviewer and review-prs, whose pull.json manifest_path names the reviewer's manifest. Since
+--canary-home ships no repository skill, each run copies the fixture into a throwaway folder outside the home and writes
+there, at its path in both trees, each of the reviewer's files from this checkout: its SKILL.md, references/, scripts/
+but its regression suites, and every file its manifest declares. A condition's `reads` add none, since they name what
+its script reads of the reviewed tree. The copy is removed when the run ends, however it ends, and the fixture itself is
+never written. The run starts review-prs on the copy, and its rows are the reviewer's. A reviewer the checkout lacks, a
+file it declares that the checkout lacks, or a fixture already holding a file the run places, fails the load.
 The scenario.json:
 
   {"skill": "<skill>", "mode": "initial" | "re-review",
    "prior": "<prior record file in the scenario>"  (re-review only),
    "document": "<path>",  "base": "<path>"  (a document scenario, initial only; base optional),
+   "reviewer": "<reviewer>"  (a repository reviewer's scenario, whose skill is review-prs),
    "expectations": [<expectation>, ...]}
 
 A document or base path leads from the scenario's folder to a file, which may be another scenario's under the same
@@ -66,8 +76,9 @@ frontmatter and body, with one change: its hook runs the home's review_guard.py 
 so the guard checks the home's prompts against the home's copy of the pipeline that wrote them.
 Then, for each scenario and model, up to --jobs at once, it starts Claude Code headless with the model's home as
 its working directory, so the deployed skills and agent load as project ones, and the prompt
-`/<skill> <prepare_arguments>`, or `/<skill> "<document>"` with the path of a document scenario's document, staged in
-the run's folder; a document that cannot be staged fails the run before any session starts. The session, which
+`/<skill> <prepare_arguments>`, on a repository reviewer's scenario's copy, or `/<skill> "<document>"` with the path
+of a document scenario's document, staged in the run's folder; a document or a copy that cannot be staged fails the
+run before any session starts. The session, which
 orchestrates the skill, stays on SESSION_MODEL's ID. It has no Workflow tool, so reviewers start as native
 subagents, whose messages --forward-subagent-text puts in the transcript with the model each ran on, and
 --include-hook-events puts each guard decision beside them. A run counts only if every one of those messages names
@@ -114,14 +125,16 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
 import datetime
 import itertools
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -135,6 +148,7 @@ from console import run_main
 from git_client import GitClient, GitError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK
+from review_runtime import RuntimeContractError, declared_reviewer_files, validate_adapter_manifest
 
 from deployer import fsops, platform_support, tools
 from tools import runtime_canary
@@ -189,6 +203,11 @@ MODES = ("initial", "re-review")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
 DOCUMENT_FOLDER = "document"
+# A repository reviewer's scenario: the skill that runs a reviewer manifest on a fixture, where this repository's own
+# skills are, and the folders of a reviewer whose files are placed, besides its SKILL.md and what its manifest declares.
+REVIEWER_SKILL = "review-prs"
+REPOSITORY_SKILLS = PurePosixPath(".claude", "skills")
+REVIEWER_FOLDERS = ("references", "scripts")
 # The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded,
 # and signing is disabled.
 COMMIT = ["-c", "user.name=skill-evals", "-c", "user.email=skill-evals@example.invalid", "-c", "commit.gpgsign=false"]
@@ -222,6 +241,11 @@ class Scenario:
     # A document scenario's document, and the version committed before it, if any; None for a fixture scenario.
     document: Path | None = None
     base: Path | None = None
+    # A repository reviewer's scenario: the reviewer, the checkout its files come from, and those files, each by its
+    # path in the checkout, which the run places at the same path in both trees of a throwaway copy of the fixture.
+    reviewer: str | None = None
+    checkout: Path | None = None
+    placed: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -466,7 +490,70 @@ def _fixture(directory: Path) -> None:
         raise ScenarioError("has no pull.json")
 
 
-def load_scenario(skill: str, directory: Path) -> Scenario:
+def _regression_suite(name: str) -> bool:
+    """Whether a file is named as validation names a regression suite: test_*, test-*, *_test, *-test, or *.test.*."""
+    stem = PurePosixPath(name).stem
+    return stem.startswith(("test_", "test-")) or stem.endswith(("_test", "-test")) or ".test." in name
+
+
+def _reviewer_folder(checkout: Path, folder: PurePosixPath) -> list[str]:
+    """Every file a run places from the reviewer's folders, by its path in the checkout: all of references/, and all
+    of scripts/ but its regression suites and Python's caches. The suites test the reviewer, which no review runs,
+    and they name the scenarios' own files, which would show a condition script that looks for a change's tests one
+    that is not there."""
+    files = []
+    for name in REVIEWER_FOLDERS:
+        for path in sorted((checkout / folder / name).rglob("*")):
+            relative = PurePosixPath(path.relative_to(checkout).as_posix())
+            if path.is_file() and "__pycache__" not in relative.parts and not _regression_suite(relative.name):
+                files.append(str(relative))
+    return files
+
+
+def reviewer_files(reviewer: str, directory: Path, checkout: Path) -> tuple[str, ...]:
+    """The files a run of a repository reviewer's scenario places from the checkout: the reviewer's SKILL.md, its
+    folders, its manifest, at the fixture's pull.json manifest_path, and every file that manifest declares (its
+    resources, its specialists' profiles and resources, and its condition scripts). A condition's `reads` are not
+    among them: they name what the script reads of the reviewed tree, the fixture's own. Raise ScenarioError when the
+    reviewer or one of its files is missing from the checkout, or the fixture already holds a file the run places."""
+    folder = REPOSITORY_SKILLS / reviewer
+    if not (checkout / folder / "SKILL.md").is_file():
+        raise ScenarioError(f"no repository skill {reviewer}: the checkout has no {folder}/SKILL.md")
+    try:
+        manifest_path = json.loads((directory / "pull.json").read_text(encoding="utf-8")).get("manifest_path")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise ScenarioError(f"cannot read pull.json's manifest_path: {exc}") from exc
+    if not isinstance(manifest_path, str) or not PurePosixPath(_path(manifest_path)).is_relative_to(folder):
+        raise ScenarioError(f"pull.json's manifest_path must name {reviewer}'s manifest under {folder}/")
+    try:
+        manifest = validate_adapter_manifest(json.loads((checkout / manifest_path).read_text(encoding="utf-8")))
+    except (OSError, ValueError, RuntimeContractError) as exc:
+        raise ScenarioError(f"{reviewer}'s manifest {manifest_path} cannot be read: {exc}") from exc
+    own = [str(folder / "SKILL.md"), *_reviewer_folder(checkout, folder), manifest_path]
+    files = tuple(dict.fromkeys([*own, *declared_reviewer_files(manifest)]))
+    for relative in files:
+        if not (checkout / relative).is_file():
+            raise ScenarioError(f"{reviewer} declares {relative}, which the checkout lacks")
+        for tree in ("base", "head"):
+            if (directory / tree / relative).exists():
+                raise ScenarioError(f"its {tree}/ tree holds {relative}, which the run places from the checkout")
+    return files
+
+
+def _reviewer(spec: Mapping[str, Any], skill: str, directory: Path, checkout: Path) -> tuple[str, tuple[str, ...]]:
+    """A repository reviewer's scenario's reviewer and the files a run places: the scenario sits under the
+    reviewer's name, and the skill it names is the one that runs the reviewer on a fixture."""
+    if spec["reviewer"] != skill:
+        raise ScenarioError(f"scenario.json names reviewer {quote(str(spec['reviewer']))}, not {skill}")
+    if spec["skill"] != REVIEWER_SKILL:
+        raise ScenarioError(f"a reviewer's scenario is started by {REVIEWER_SKILL}, not {quote(str(spec['skill']))}")
+    if "document" in spec:
+        raise ScenarioError("a reviewer's scenario is a fixture scenario, with no document")
+    _fixture(directory)
+    return skill, reviewer_files(skill, directory, checkout)
+
+
+def load_scenario(skill: str, directory: Path, checkout: Path = REPOSITORY_ROOT) -> Scenario:
     try:
         spec = json.loads((directory / "scenario.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -478,9 +565,15 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
         allowed = SCENARIO_FIELDS | ({"prior"} if mode == "re-review" else set())
         if "document" in spec:
             allowed |= {"document"} | ({"base"} if "base" in spec else set())
+        if "reviewer" in spec:
+            allowed |= {"reviewer"}
         if set(spec) != allowed:
             raise ScenarioError(f"scenario.json must have exactly {', '.join(sorted(allowed))}")
-        if spec["skill"] != skill:
+        reviewer: str | None = None
+        placed: tuple[str, ...] = ()
+        if "reviewer" in spec:
+            reviewer, placed = _reviewer(spec, skill, directory, checkout)
+        elif spec["skill"] != skill:
             raise ScenarioError(f"scenario.json names skill {quote(str(spec['skill']))}, not {skill}")
         document: Path | None = None
         base: Path | None = None
@@ -501,13 +594,25 @@ def load_scenario(skill: str, directory: Path) -> Scenario:
         expectations = tuple(expectation(item, mode) for item in spec["expectations"])
     except ScenarioError as exc:
         raise ScenarioError(f"{directory.name}: {exc}") from exc
-    return Scenario(skill, directory.name, directory, mode, prior, expectations, document, base)
+    return Scenario(
+        str(spec["skill"]),
+        directory.name,
+        directory,
+        mode,
+        prior,
+        expectations,
+        document,
+        base,
+        reviewer,
+        checkout if reviewer else None,
+        placed,
+    )
 
 
-def prepare_arguments(scenario: Scenario) -> list[str]:
+def prepare_arguments(scenario: Scenario, fixture: Path | None = None) -> list[str]:
     """The arguments that prepare a run of a fixture scenario, which `review_pipeline.py prepare` and review-prs both
-    take: a fixture canary, and for a re-review its prior record."""
-    arguments = ["--canary", "--fixture", str(scenario.directory)]
+    take: a fixture canary of the scenario, or of the copy of it given, and for a re-review its prior record."""
+    arguments = ["--canary", "--fixture", str(scenario.directory if fixture is None else fixture)]
     if scenario.prior is not None:
         arguments += ["--re-review", "--prior", str(scenario.prior)]
     return arguments
@@ -535,16 +640,43 @@ def stage_document(scenario: Scenario, folder: Path, git: GitClient) -> Path:
     return staged
 
 
-def skill_arguments(scenario: Scenario, run: Path, git: GitClient) -> list[str]:
-    """What the skill is started with: a fixture scenario's prepare arguments, or the path of a document scenario's
-    document, staged in the run's folder."""
+@contextlib.contextmanager
+def reviewed_fixture(scenario: Scenario) -> Iterator[Path]:
+    """The fixture a run reviews. A repository reviewer's scenario's is a throwaway copy of it, outside the run's home
+    so the session never finds the copied skill as one of its own, with each placed file written from the checkout at
+    its path in both trees; the copy is removed when the block ends, however it ends. Any other scenario's is its own
+    folder, untouched."""
+    if scenario.reviewer is None or scenario.checkout is None:
+        yield scenario.directory
+        return
+    copy = Path(tempfile.mkdtemp(prefix="skill-evals-fixture-")).resolve()
+    try:
+        fixture = copy / scenario.name
+        shutil.copytree(scenario.directory, fixture)
+        for relative in scenario.placed:
+            content = (scenario.checkout / relative).read_bytes()
+            for tree in ("base", "head"):
+                target = fixture / tree / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+        yield fixture
+    finally:
+        fsops.remove(copy)
+
+
+def skill_arguments(scenario: Scenario, run: Path, git: GitClient, fixture: Path | None = None) -> list[str]:
+    """What the skill is started with: a fixture scenario's prepare arguments, on the fixture given when it is a
+    copy, or the path of a document scenario's document, staged in the run's folder."""
     if scenario.document is None:
-        return prepare_arguments(scenario)
+        return prepare_arguments(scenario, fixture)
     return [str(stage_document(scenario, run / DOCUMENT_FOLDER, git))]
 
 
-def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_ROOT) -> list[Scenario]:
-    """Each named scenario once in first-occurrence order, or every scenario in name order."""
+def load_scenarios(
+    skill: str, names: Sequence[str] = (), root: Path = SCENARIO_ROOT, checkout: Path = REPOSITORY_ROOT
+) -> list[Scenario]:
+    """Each named scenario once in first-occurrence order, or every scenario in name order; a repository reviewer's
+    files come from the checkout."""
     folder = root / skill
     if not folder.is_dir():
         raise ScenarioError(f"no scenarios for {skill} under {folder}")
@@ -552,7 +684,7 @@ def load_scenarios(skill: str, names: Sequence[str] = (), root: Path = SCENARIO_
     unknown = [name for name in names if name not in found]
     if unknown:
         raise ScenarioError(f"no scenario {', '.join(unknown)} for {skill}")
-    return [load_scenario(skill, folder / name) for name in dict.fromkeys(names or found)]
+    return [load_scenario(skill, folder / name, checkout) for name in dict.fromkeys(names or found)]
 
 
 # Reading a record
@@ -917,11 +1049,23 @@ def run_scenario(scenario: Scenario, model: str, home: Path, session: Session) -
     run = home / STATE / scenario.name
     (run / "tmp").mkdir(parents=True)
     transcript = run / "transcript.jsonl"
-    try:
-        arguments = skill_arguments(scenario, run, session.git)
-    except (GitError, OSError) as exc:
-        transcript.write_text("", encoding="utf-8")
-        return Run(None, f"the document could not be staged: {exc}", frozenset(), frozenset()), transcript
+    with contextlib.ExitStack() as copies:
+        try:
+            fixture = copies.enter_context(reviewed_fixture(scenario))
+            arguments = skill_arguments(scenario, run, session.git, fixture)
+        except (GitError, OSError) as exc:
+            transcript.write_text("", encoding="utf-8")
+            staged = "fixture" if scenario.document is None else "document"
+            return Run(None, f"the {staged} could not be staged: {exc}", frozenset(), frozenset()), transcript
+        return _session_run(scenario, model, home, session, arguments, transcript)
+
+
+def _session_run(
+    scenario: Scenario, model: str, home: Path, session: Session, arguments: Sequence[str], transcript: Path
+) -> tuple[Run, Path]:
+    """Start the session on the skill with its arguments in the model's home, keep its transcript, and find the
+    record the run wrote."""
+    run = transcript.parent
     environment = run_environment(session.base, run, home / STATE / "config.json")
     command = claude_command(session.executable, prompt(scenario.skill, arguments), home / STATE / AGENTS)
     completed = session.runner(command, home, environment, session.timeout)
