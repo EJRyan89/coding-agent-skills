@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +27,22 @@ def default_state_path() -> Path:
     if override:
         return Path(override)
     return Path.home() / ".coding-agent-skills" / "code-review" / "state.json"
+
+
+def utc_today() -> date:
+    """Today's date in UTC, the calendar GitHub's merge and update times are read on.
+
+    A watermark set from the local date east of UTC would be a day ahead of a pull request merged later that UTC day.
+    """
+    return datetime.fromtimestamp(time.time(), UTC).date()
+
+
+def utc_date(value: str) -> date:
+    """The UTC date of an ISO 8601 time, such as GitHub's `mergedAt`; a time without an offset is already UTC."""
+    moment = datetime.fromisoformat(value)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).date()
 
 
 def watermark_date(identity: str, value: str) -> date:

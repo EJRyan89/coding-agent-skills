@@ -21,7 +21,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - JSON is the machine source of truth. Markdown is a hash-linked projection.
 - Review versions are allocated under a per-PR lock and never overwrite history.
 - Merged-pull watermarks are independent per repository. Incomplete enumeration or a failed eligible merge cannot advance that repository past the missing work.
-- A merged pull request is eligible when it merged on or after its repository's watermark date, judged by its merge time alone: one merged before the watermark stays out however recently it was updated (commented on, labeled, or edited) after merging. Because merging updates a pull request, every one merged on or after the watermark was last updated on or after it, so enumeration may stop listing closed pull requests, read from the most recently updated, at the first page whose last pull request was updated before the watermark. A repository without a watermark lists its whole history once.
+- A merged pull request is eligible when it merged on or after its repository's watermark date, judged by the UTC date of its merge time alone: one merged before the watermark stays out however recently it was updated (commented on, labeled, or edited) after merging. Because merging updates a pull request, every one merged on or after the watermark was last updated on or after it, so enumeration may stop listing closed pull requests, read from the most recently updated, at the first page whose last pull request was updated before the watermark. A repository without a watermark lists its whole history once.
 - Mutable state, flags, and review versions use separate short-lived locks; network and semantic review work occurs outside those locks. The configuration file takes none: nothing in the suite changes it in place, and `review_config.py write` replaces it whole through a uniquely named temporary file, so a reader sees the old file or the new one, and of two writes at once the later one stays.
 
 ## Reviewer behavior
@@ -604,8 +604,8 @@ The mutable state `review-prs` keeps per repository, at `~/.coding-agent-skills/
 
 | Field | Type | Required | Meaning |
 | --- | --- | --- | --- |
-| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this date are eligible. Its first ten characters are a `YYYY-MM-DD` calendar date, and only they are read; `validate_state` refuses any other value, so a state that holds one fails every operation that reads it. Absent until a batch run first advances it. |
-| `updated_at` | string | no | The date `advance` last moved the watermark. |
+| `merged_since` | string | no | The merged-pull watermark: pull requests merged on or after this UTC date are eligible. Its first ten characters are a `YYYY-MM-DD` calendar date, and only they are read; `validate_state` refuses any other value, so a state that holds one fails every operation that reads it. Absent until a batch run first advances it. |
+| `updated_at` | string | no | The UTC date of the batch run whose `advance` last moved the watermark. |
 
 ### Legacy review index
 

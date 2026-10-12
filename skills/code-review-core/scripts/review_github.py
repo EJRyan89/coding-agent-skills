@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import github_client
 from github_client import Clock, GitHubError, Runner, Sleeper, subprocess_runner
 from review_config import validate_repository_identity
+from review_state import utc_date
 
 PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
@@ -33,7 +34,7 @@ class PullListing:
 
 def _updated_date(value: Any) -> date:
     try:
-        return date.fromisoformat(value["updated_at"][:10])
+        return utc_date(value["updated_at"])
     except (KeyError, TypeError, ValueError) as exc:
         raise GitHubError("Pull response has no valid update time", kind="malformed") from exc
 

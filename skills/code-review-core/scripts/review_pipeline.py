@@ -182,7 +182,7 @@ from review_specialists import (
     symbolic_links,
     uncovered,
 )
-from review_state import StateError, default_state_path, load_state, update_state
+from review_state import StateError, default_state_path, load_state, update_state, utc_today
 
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1
@@ -263,7 +263,7 @@ class Services:
     git: Runner = subprocess_runner
     fetch_tarball: Callable[[str, str, Path], None] = github_tarball_fetcher
     resolve_runtime: Callable[[str, str | None], str] = resolve_runtime
-    today: Callable[[], date] = date.today
+    today: Callable[[], date] = utc_today
     # The detached Copilot CLI host: how it starts, how its process is probed, and the clock wait and check use.
     launch: Callable[[Sequence[str], Path, Path], int] = start_detached
     probe: Callable[[int], ProcessStatus] = process_status
@@ -2466,8 +2466,8 @@ def enumerate_batch(
 
         try:
             recorded = recorded_watermark(state, repository)
-            # A repository without a watermark starts today, so its first batch run reviews the open pull requests and
-            # those merged today instead of every merged pull request in its history.
+            # A repository without a watermark starts today in UTC, so its first batch run reviews the open pull
+            # requests and those merged today instead of every merged pull request in its history.
             watermark = today if recorded is None else recorded
             entry["previous_watermark"] = watermark.isoformat()
             if recorded is None:
