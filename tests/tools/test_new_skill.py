@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,9 +14,12 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+# The policies a scaffolded script header must pass.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation"))
 
 import frontmatter as fm
 from git_test_base import GitTestCase
+from skill_layout import script_dependency_problems, sibling_path_problems
 
 from tools import new_skill, skill_reference, skill_shims
 
@@ -186,6 +190,9 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
             ("alpha", {}, "already a skill"),
             ("suite", {}, "already a skill, a bundle"),
             ("fresh", {"tools": ["jq"]}, "unknown tool jq"),
+            ("fresh", {"skill_deps": ["absent"]}, "--skill-dep absent names no skill in the source"),
+            # A skill given a sibling also depends on skill-core, which this fixture source lacks.
+            ("fresh", {"skill_deps": ["alpha"]}, "--skill-dep skill-core names no skill in the source"),
             ("fresh", {"description": "Two\nlines."}, "one non-empty line"),
             ("fresh", {"description": "  "}, "one non-empty line"),
             ("fresh", {"argument_hint": "A\nB"}, "one non-empty line"),
@@ -232,6 +239,79 @@ class NewSkillTestCase(FixtureRepositoryTestCase):
         code, stdout, stderr = run("widget-report", "--description", DESCRIPTION)
         self.assertEqual((2, ""), (code, stdout))
         self.assertIn("FAILED 'widget-report' is already a skill", stderr)
+
+
+class SkillDependencyTestCase(FixtureRepositoryTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # skill-core, holding the real lookup, and a sibling with a module a dependent script imports.
+        for name in ("skill-core", "alpha"):
+            (self.root / "skills" / name / "scripts").mkdir(parents=True)
+        skill_roots = Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts" / "skill_roots.py"
+        (self.root / "skills" / "skill-core" / "scripts" / "skill_roots.py").write_bytes(skill_roots.read_bytes())
+        (self.root / "skills" / "alpha" / "scripts" / "alpha_values.py").write_text(
+            'VALUE = "alpha found"\n', encoding="utf-8"
+        )
+        (self.root / "skills" / "skill-core" / "SKILL.md").write_text(
+            "---\nname: skill-core\ndescription: Shared modules.\ndisable-model-invocation: true\n"
+            "user-invocable: false\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+        (self.root / "deploy-meta" / "skill-core.json").write_text(
+            json.dumps({"required_vars": [], "shared_deps": [], "selectable": False}), encoding="utf-8"
+        )
+
+    def run_main(self, *arguments: str) -> tuple[int, list[str]]:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = new_skill.main(["--root", str(self.root), *arguments])
+        return code, stdout.getvalue().splitlines()
+
+    def test_a_sibling_reaches_skill_deps_and_a_script_header_that_runs_and_passes_the_policies(self) -> None:
+        code, lines = self.run_main("widget-report", "--description", DESCRIPTION, "--skill-dep", "alpha")
+        self.assertEqual(0, code)
+        header = [line.removeprefix("SCRIPT_HEADER ") for line in lines if line.startswith("SCRIPT_HEADER ")]
+        self.assertEqual(
+            [
+                'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))',
+                "from skill_roots import sibling_scripts",
+                'sys.path.insert(0, str(sibling_scripts("alpha")))',
+            ],
+            header,
+        )
+        self.assertEqual(
+            ["alpha", "skill-core"],
+            json.loads((self.root / "deploy-meta" / "widget-report.json").read_text(encoding="utf-8"))["skill_deps"],
+        )
+        script = self.root / "skills" / "widget-report" / "scripts" / "widget_report.py"
+        script.parent.mkdir()
+        start = ["import sys", "from pathlib import Path", *header]
+        script.write_text("\n".join([*start, "from alpha_values import VALUE", "print(VALUE)", ""]), encoding="utf-8")
+        result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
+        self.assertEqual((0, "alpha found\n"), (result.returncode, result.stdout), result.stderr)
+        self.assertEqual([], sibling_path_problems(self.root))
+        self.assertEqual([], script_dependency_problems(self.root))
+
+    def test_skill_core_alone_starts_a_script_with_its_line_only(self) -> None:
+        code, lines = self.run_main("widget-report", "--description", DESCRIPTION, "--skill-dep", "skill-core")
+        self.assertEqual(0, code)
+        self.assertEqual(
+            ['SCRIPT_HEADER sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))'],
+            [line for line in lines if line.startswith("SCRIPT_HEADER ")],
+        )
+        self.assertEqual(
+            ["skill-core"],
+            json.loads((self.root / "deploy-meta" / "widget-report.json").read_text(encoding="utf-8"))["skill_deps"],
+        )
+
+    def test_a_skill_with_no_dependencies_prints_no_header(self) -> None:
+        code, lines = self.run_main("widget-report", "--description", DESCRIPTION)
+        self.assertEqual(0, code)
+        self.assertEqual([], [line for line in lines if line.startswith("SCRIPT_HEADER")])
+        self.assertNotIn(
+            "skill_deps",
+            json.loads((self.root / "deploy-meta" / "widget-report.json").read_text(encoding="utf-8")),
+        )
 
 
 class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
@@ -300,7 +380,7 @@ class NewRepositorySkillTestCase(FixtureRepositoryTestCase):
                 with self.assertRaisesRegex(new_skill.ScaffoldError, message):
                     new_skill.scaffold_repository(self.root, name, description, **arguments)
                 self.assertEqual(before, self.snapshot())
-        for option in (["--tool", "gh"], ["--opt-in"]):
+        for option in (["--tool", "gh"], ["--opt-in"], ["--skill-dep", "alpha"]):
             with self.subTest(option=option):
                 code, stdout, stderr = self.run_main("fresh", "--description", "Fresh. Use it when testing.", *option)
                 self.assertEqual((2, ""), (code, stdout))

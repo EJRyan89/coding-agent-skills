@@ -17,10 +17,13 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
 # The extraction the code-review skills run, which must find the pdftotext check reports.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
 # The formatter skill, which must find and run the dotnet and dotnet-format check reports.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "dotnet-format" / "scripts"))
+sys.path.insert(0, str(sibling_scripts("dotnet-format")))
 
 import bounded_process
 import github_client

@@ -1,7 +1,8 @@
-"""Regression tests for the skills directories scripts refuse to write inside."""
+"""Regression tests for the sibling lookup and the skills directories scripts refuse to write inside."""
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,7 +12,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import skill_roots
-from skill_roots import deployed_skill_roots, skills_directory_holding
+from skill_roots import MissingSibling, deployed_skill_roots, sibling_scripts, skills_directory_holding
 
 
 class DeployedSkillRootsTests(unittest.TestCase):
@@ -23,6 +24,98 @@ class DeployedSkillRootsTests(unittest.TestCase):
     def test_the_running_skills_directory_is_the_one_holding_skill_core(self) -> None:
         self.assertEqual(Path(__file__).resolve().parents[2], skill_roots.SKILLS_ROOT)
         self.assertTrue((skill_roots.SKILLS_ROOT / "skill-core" / "scripts" / "skill_roots.py").is_file())
+
+
+class SiblingScriptsTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def use_skills_root(self, root: Path) -> None:
+        patch = mock.patch.object(skill_roots, "SKILLS_ROOT", root)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    @staticmethod
+    def make_skill(directory: Path) -> Path:
+        (directory / "scripts").mkdir(parents=True)
+        (directory / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
+        return directory / "scripts"
+
+    def test_this_checkout_finds_a_sibling_beside_skill_core(self) -> None:
+        here = Path(__file__).resolve()
+        self.assertEqual(here.parents[2] / "code-review-core" / "scripts", sibling_scripts("code-review-core"))
+        self.assertEqual(here.parent, sibling_scripts("skill-core"))
+
+    def test_a_flat_checkout_finds_the_sibling_beside_the_skills_root(self) -> None:
+        skills = self.root / "source tree" / "skills"
+        scripts = self.make_skill(skills / "shared-dep")
+        self.make_skill(skills / "skill-core")
+        self.use_skills_root(skills)
+        self.assertEqual(self.root / "source tree" / "skills" / "shared-dep" / "scripts", sibling_scripts("shared-dep"))
+        self.assertEqual(scripts, sibling_scripts("shared-dep"))
+
+    def test_a_categorized_checkout_finds_the_sibling_in_its_category(self) -> None:
+        skills = self.root / "source tree" / "skills"
+        self.make_skill(skills / "skill-core")
+        self.make_skill(skills / "review tools" / "shared-dep")
+        # A category is a plain folder: one without SKILL.md beside a skill of that name is not the sibling.
+        (skills / "other" / "shared-dep" / "scripts").mkdir(parents=True)
+        self.use_skills_root(skills)
+        self.assertEqual(
+            self.root / "source tree" / "skills" / "review tools" / "shared-dep" / "scripts",
+            sibling_scripts("shared-dep"),
+        )
+
+    def test_a_deployed_home_finds_the_flattened_sibling(self) -> None:
+        deployed = self.root / "a home" / ".claude" / "skills"
+        self.make_skill(deployed / "skill-core")
+        self.make_skill(deployed / "shared-dep")
+        self.use_skills_root(deployed)
+        self.assertEqual(
+            self.root / "a home" / ".claude" / "skills" / "shared-dep" / "scripts", sibling_scripts("shared-dep")
+        )
+
+    def test_an_absent_sibling_raises_with_its_name(self) -> None:
+        skills = self.root / "skills"
+        self.make_skill(skills / "skill-core")
+        (skills / "no-scripts").mkdir()
+        self.use_skills_root(skills)
+        for name in ("shared-dep", "no-scripts"):
+            with self.subTest(name=name), self.assertRaises(MissingSibling) as caught:
+                sibling_scripts(name)
+            self.assertEqual(name, caught.exception.name)
+            self.assertIn(f"skill {name} has no scripts under {skills}", str(caught.exception))
+
+    def test_a_sibling_in_two_categories_raises_naming_both(self) -> None:
+        skills = self.root / "skills"
+        first = self.make_skill(skills / "one" / "shared-dep")
+        second = self.make_skill(skills / "two" / "shared-dep")
+        self.use_skills_root(skills)
+        with self.assertRaises(MissingSibling) as caught:
+            sibling_scripts("shared-dep")
+        self.assertIn(f"{first}, {second}", str(caught.exception))
+
+    def test_a_script_whose_sibling_is_absent_exits_1_without_a_traceback(self) -> None:
+        deployed = self.root / "a home" / ".claude" / "skills"
+        core = self.make_skill(deployed / "skill-core")
+        (core / "skill_roots.py").write_text(
+            (Path(__file__).resolve().parent / "skill_roots.py").read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        script = self.make_skill(deployed / "dependent") / "run.py"
+        script.write_text(
+            "import sys\nfrom pathlib import Path\n"
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))\n'
+            "from skill_roots import sibling_scripts\n"
+            'sys.path.insert(0, str(sibling_scripts("shared-dep")))\n',
+            encoding="utf-8",
+        )
+        result = subprocess.run([sys.executable, "-B", str(script)], capture_output=True, text=True, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("skill shared-dep has no scripts under", result.stderr)
 
 
 class SkillsDirectoryHoldingTests(unittest.TestCase):

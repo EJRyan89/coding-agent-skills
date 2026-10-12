@@ -25,9 +25,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "code-review-core" / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "review-document" / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "review-insights" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("review-document")))
+sys.path.insert(0, str(sibling_scripts("review-insights")))
 
 import review_document
 import review_hosts

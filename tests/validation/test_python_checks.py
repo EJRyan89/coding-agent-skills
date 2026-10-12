@@ -359,7 +359,8 @@ class PythonChecksFixtures(GitTestCase):
             (root / "skills" / "user" / "scripts").mkdir(parents=True)
             (root / "skills" / "user" / "SKILL.md").write_text("# user\n", encoding="utf-8")
             sibling = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
-            (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling, encoding="utf-8")
+            looked_up = 'sys.path.insert(0, str(sibling_scripts("looked-up")))\n'
+            (root / "skills" / "user" / "scripts" / "user.py").write_text(sibling + looked_up, encoding="utf-8")
             # A regression suite is type-checked too, so the directories it puts on sys.path count.
             suite = 'sys.path.insert(0, str(ROOT / "skills" / "suite-only" / "scripts"))\nimport user\n'
             (root / "skills" / "user" / "scripts" / "test_user.py").write_text(suite, encoding="utf-8")
@@ -380,6 +381,8 @@ class PythonChecksFixtures(GitTestCase):
                 [
                     "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/core/scripts, which "
                     "skills/user/scripts/user.py puts on sys.path",
+                    "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/looked-up/scripts, "
+                    "which skills/user/scripts/user.py puts on sys.path",
                     "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/skills/suite-only/scripts, "
                     "which skills/user/scripts/test_user.py puts on sys.path",
                     "pyproject.toml: [tool.mypy] mypy_path lacks $MYPY_CONFIG_FILE_DIR/tests/suites, which "

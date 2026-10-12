@@ -141,7 +141,10 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "code-review-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import frontmatter
 from console import run_main
