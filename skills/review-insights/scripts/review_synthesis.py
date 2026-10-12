@@ -886,7 +886,7 @@ def check_result(result: Any, context: dict[str, Any], input_sha256: str) -> dic
         raise SynthesisError(
             [f"the result must be an object with exactly the fields {', '.join(sorted(RESULT_FIELDS))}"]
         )
-    if result["schema_version"] != RESULT_SCHEMA_VERSION:
+    if type(result["schema_version"]) is not int or result["schema_version"] != RESULT_SCHEMA_VERSION:
         checker.problem("schema_version", f"must be {RESULT_SCHEMA_VERSION}")
     if result["input_sha256"] != input_sha256:
         checker.problem("input_sha256", "does not match the input; copy it from the seal line")
