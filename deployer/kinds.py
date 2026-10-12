@@ -37,6 +37,9 @@ class ItemKind:
     # The field of a skill's manifest entry that lists the items of this kind it was deployed with, for the kinds a
     # skill depends on; empty for the others.
     dependency_key: str = ""
+    # Whether each item is named for the skill it serves and stays with it: an item of this kind is kept while its
+    # skill stays in the home, preserved or kept for another skill, and goes with it otherwise.
+    follows_skill: bool = False
 
     def item_name(self, deployed: str) -> str:
         """The item's own name, as the source and --force-item give it: an agent's file name without its .md."""
@@ -75,7 +78,16 @@ SHARED = ItemKind(
     dependency_key="shared_deps",
 )
 ADAPTER_KIND = ItemKind(
-    ADAPTERS, ADAPTER, ADAPTER, "Runtime adapter", "agents", ADAPTER_STAGING, True, "obsolete", DIFFERS
+    ADAPTERS,
+    ADAPTER,
+    ADAPTER,
+    "Runtime adapter",
+    "agents",
+    ADAPTER_STAGING,
+    True,
+    "obsolete",
+    DIFFERS,
+    follows_skill=True,
 )
 AGENT_KIND = ItemKind(
     "agents",

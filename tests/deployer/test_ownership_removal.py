@@ -106,6 +106,54 @@ class RemovalTests(DeployerTestCase):
         self.assertIn("beta (modified since last deploy)", self.report_groups(result.output, "DEPLOYED")["PRESERVED"])
         self.assertIn("beta", self.owned("skills"))
         self.assertIn("User change", self.skill_text("beta"))
+        self.assertIn("beta", self.owned("wrappers"), "a preserved skill keeps its runtime adapter")
+        self.assertTrue((self.agents_dir / "beta" / "SKILL.md").is_file())
+
+    def test_a_skill_kept_for_a_preserved_skill_keeps_its_runtime_adapter_and_a_removed_one_loses_it(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"])
+        self.make_skill("beta", "Beta")
+        self.make_skill("gamma", "Gamma")
+        self.make_config()
+        self.deploy_ok("--all")
+        adapters = {name: hashing.hash_path(self.agents_dir / name) for name in ("alpha", "beta")}
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "\nUser change\n")
+        preview = self.deploy_ok("--dry-run", stdin="none\n")
+        groups = self.report_groups(preview.output, "DRY RUN")
+        self.assertEqual(["alpha (modified since last deploy)"], groups["PRESERVE"])
+        self.assertEqual(["beta (needed by alpha)"], groups["KEEP"], "each adapter's line folds into its skill's")
+        self.assertEqual(["gamma (deselected or absent from source)"], groups["REMOVE"])
+        for _ in range(2):
+            result = self.deploy_ok(stdin="none\n")
+            self.assertEqual(["beta (needed by alpha)"], self.report_groups(result.output, "DEPLOYED")["KEPT"])
+            self.assertEqual(["alpha", "beta"], sorted(self.owned("wrappers")))
+            for name, adapter in adapters.items():
+                self.assertEqual(adapter, hashing.hash_path(self.agents_dir / name), name)
+                self.assertEqual(adapter, self.owned("wrappers")[name]["hash"], name)
+            self.assertFalse((self.agents_dir / "gamma").exists())
+            self.assertFalse((self.skills_dir / "gamma").exists())
+        self.deploy_ok("--all", "--force-item", "alpha")
+        self.deploy_ok(stdin="none\n")
+        self.assertEqual({}, self.owned("skills"))
+        self.assertEqual({}, self.owned("wrappers"))
+        for name in ("alpha", "beta", "gamma"):
+            self.assertFalse((self.agents_dir / name).exists(), name)
+
+    def test_a_kept_skill_whose_adapter_was_modified_preserves_it_and_a_missing_one_drops_ownership(self) -> None:
+        self.make_source_json()
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"])
+        self.make_skill("beta", "Beta")
+        self.make_config()
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "\nUser change\n")
+        self.append(self.agents_dir / "beta" / "SKILL.md", "\nAdapter change\n")
+        shutil.rmtree(self.agents_dir / "alpha")
+        groups = self.report_groups(self.deploy_ok(stdin="none\n").output, "DEPLOYED")
+        self.assertIn("beta (runtime adapter, modified since last deploy)", groups["PRESERVED"])
+        self.assertEqual(["alpha (runtime adapter, already absent)"], groups["DROPPED OWNERSHIP"])
+        self.assertEqual(["beta"], sorted(self.owned("wrappers")))
+        self.assertIn("Adapter change", (self.agents_dir / "beta" / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertFalse((self.agents_dir / "alpha").exists(), "keeping an adapter does not recreate a missing one")
 
     def dependency_fixture(self) -> None:
         self.make_source_json(shared_assets={"shared.md": "owner"})
