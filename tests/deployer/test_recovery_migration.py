@@ -607,6 +607,19 @@ class RecoveryFailureTests(RecoveryTestCase):
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock_dir.exists())
 
+    def test_journaled_runs_says_which_remaining_run_the_manifest_records_as_committed(self) -> None:
+        self.deployed(("alpha", "Alpha content"))
+        self.assertEqual([], journal.journaled_runs(self.paths))
+        self.write_journal("20260101-000000-done", install_entry("alpha", ZERO_HASH))
+        self.write_journal("20260101-000000-kill", install_entry("alpha", ZERO_HASH))
+        self.staging_run("20260101-000000-none")
+        self.commit("20260101-000000-done")
+        self.assertEqual(
+            [("20260101-000000-done", True), ("20260101-000000-kill", False)], journal.journaled_runs(self.paths)
+        )
+        self.write(self.manifest_file, "not a manifest\n")
+        self.assertIsNone(journal.journaled_runs(self.paths))
+
     def interrupted_startup_run(self, committed: bool) -> Path:
         """Deploy alpha, then leave the journal of a run killed after it replaced alpha, committed or not."""
         self.deployed(("alpha", "Alpha content"))
