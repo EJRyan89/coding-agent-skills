@@ -10,9 +10,11 @@ from typing import TypeVar, cast
 from urllib.parse import quote
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from review_github import GitHubClient, GitHubError
+from review_github import READ, GitHubClient, GitHubError
 from review_io import NETWORK_WORKERS, map_in_order
+from typed_fields import FieldError
 
 UNCHANGED = "unchanged"
 CHANGED = "changed"
@@ -47,18 +49,18 @@ class ComparisonError(RuntimeError):
 
 def tree_modes(tree: object) -> dict[str, str] | None:
     """Map every path in a recursive Git tree to its mode; None when the tree may be incomplete."""
-    if not isinstance(tree, dict) or tree.get("truncated") is not False or not isinstance(tree.get("tree"), list):
+    try:
+        listing = READ.json_object(tree, "tree")
+        entries = READ.array(listing.get("tree"), "tree.tree", READ.json_object)
+        modes = {
+            READ.string(entry.get("path"), f"tree.tree[{index}].path", empty=True): READ.string(
+                entry.get("mode"), f"tree.tree[{index}].mode", empty=True
+            )
+            for index, entry in enumerate(entries)
+        }
+    except FieldError:
         return None
-    modes: dict[str, str] = {}
-    for entry in tree["tree"]:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("path"), str)
-            or not isinstance(entry.get("mode"), str)
-        ):
-            return None
-        modes[entry["path"]] = entry["mode"]
-    return modes
+    return modes if listing.get("truncated") is False else None
 
 
 def changed_files(comparison: object) -> ChangedFiles | None:
@@ -66,29 +68,24 @@ def changed_files(comparison: object) -> ChangedFiles | None:
 
     Returns None when the comparison is malformed or may be truncated.
     """
-    if not isinstance(comparison, dict) or not isinstance(comparison.get("files"), list):
-        return None
-    files = comparison["files"]
-    if len(files) >= COMPARE_FILE_LIMIT:
-        return None
-    entries: list[tuple[str, str, str, str]] = []
-    for entry in files:
-        if not isinstance(entry, dict):
+    try:
+        files = READ.array(READ.json_object(comparison, "comparison").get("files"), "comparison.files")
+        if len(files) >= COMPARE_FILE_LIMIT:
             return None
-        filename, status, content = entry.get("filename"), entry.get("status"), entry.get("sha")
-        previous = entry.get("previous_filename") or ""
-        if not (
-            isinstance(filename, str)
-            and filename
-            and isinstance(status, str)
-            and status
-            and isinstance(content, str)
-            and content
-            and isinstance(previous, str)
-        ):
-            return None
-        entries.append((filename, status, previous, content))
+        entries = [_changed_file(entry, f"comparison.files[{index}]") for index, entry in enumerate(files)]
+    except FieldError:
+        return None
     return tuple(sorted(entries))
+
+
+def _changed_file(value: object, path: str) -> tuple[str, str, str, str]:
+    """One file a comparison changes: its path, status, previous path (empty when it was not renamed), and blob ID."""
+    entry = READ.json_object(value, path)
+    filename = READ.string(entry.get("filename"), f"{path}.filename")
+    status = READ.string(entry.get("status"), f"{path}.status")
+    content = READ.string(entry.get("sha"), f"{path}.sha")
+    previous = READ.string(entry.get("previous_filename") or "", f"{path}.previous_filename", empty=True)
+    return filename, status, previous, content
 
 
 def with_modes(files: ChangedFiles | None, modes: dict[str, str] | None) -> Fingerprint | None:
@@ -125,12 +122,11 @@ def at_or_before(client: GitHubClient, repository: str, earlier: str, later: str
     """Whether commit `earlier` is `later` or one of its ancestors; None when GitHub cannot say, such as for a commit
     a force-push removed. Any other failure is raised."""
     comparison = client.api_json(f"repos/{repository}/compare/{earlier}...{later}?per_page=1", allow_absent=True)
-    status = comparison.get("status") if isinstance(comparison, dict) else None
-    return (
-        {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status)
-        if isinstance(status, str)
-        else None
-    )
+    try:
+        status = READ.string(READ.json_object(comparison, "comparison").get("status"), "comparison.status")
+    except FieldError:
+        return None
+    return {"identical": True, "ahead": True, "behind": False, "diverged": False}.get(status)
 
 
 class ChangeDetector:
