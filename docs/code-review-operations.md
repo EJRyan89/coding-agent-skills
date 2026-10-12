@@ -5,7 +5,7 @@ The `code-review-operations` bundle installs the public workflows `review-prs`, 
 ## Prerequisites
 
 - GitHub CLI (`gh`) installed and authenticated for every configured repository.
-- Python 3.11 or newer.
+- Python 3.11.4 or newer.
 - A supported local agent runtime: Claude Code, Codex, or GitHub Copilot CLI 1.0.88 or newer. Only Claude Code runs every reviewer path. Codex starts reviewers as native subagents on the session's model, so a reviewer `model` or `effort` setting has no effect: `prepare` prints a `NOTE` for a role that names a model. Copilot CLI runs the generic reviewer and the specialists of a manifest without `agent-delegation` inline, and a repository entrypoint reviewer on its bounded host; a specialists manifest that keeps `agent-delegation` fails there. [Runtime support](skills.md#runtime-support) lists each skill.
 - A configuration file, written once before the first skill run as described below.
 
