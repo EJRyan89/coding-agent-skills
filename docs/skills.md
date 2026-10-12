@@ -355,7 +355,7 @@ It updates the clone these skills were deployed from: it fast-forwards `main` to
 Without arguments it also stops, reporting `MAJOR_UPDATE <current>..<target>`, when the highest release tag on `origin/main` raises the major version above the one on local `main` (or the minor version, while the major is 0), because such a release may ask you to act, as [Versioning](releasing.md#versioning) explains; read the release notes for `<target>`, then rerun it with `--cross-major` to apply the update. A release tag is `vMAJOR.MINOR.PATCH`, optionally with a pre-release suffix such as `-rc.1` that counts as its version; other tags are ignored. When no release tag reaches local `main`, it counts as version 0.0.0 and `<current>` reads `untagged`, so any release on `origin/main` stops the update. When no release tag reaches `origin/main`, whether or not local `main` has one, there is no release to cross and the update proceeds without stopping.
 
 - `--cross-major`: apply an update across such a release boundary. The output names the crossing as `CROSSED <current>..<target>`.
-- `--unpin`: update and deploy over a pinned deployment, passing `--unpin` to the deployer. The deployer's report then ends with `Replaced the deployment pinned with --at <ref>`, which the skill reports.
+- `--unpin`: update and deploy over a pinned deployment, passing `--unpin` to the deployer. The deployer's report then prints `Replaced the deployment pinned with --at <ref> ...` before its Run ID and Manifest lines, which the skill reports.
 
 In Copilot CLI, start it from an interactive session: a headless `copilot -p` session cannot start a user-only skill ([Headless sessions](copilot-support.md#headless-sessions)). It runs fully in Claude Code and Codex.
 
