@@ -38,7 +38,6 @@ import os
 import re
 import sys
 import tempfile
-import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import partial
@@ -52,6 +51,7 @@ from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
+from xml_reader import XmlRefused, read_xml
 
 WEB_PROJECT = re.compile(
     r"Microsoft\.NET\.Sdk\.Web|<WebApplication>|<WebSiteType>|349c5851-65df-11da-9384-00065b846f21",
@@ -61,15 +61,6 @@ SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
 SOLUTION_SUFFIXES = (".sln", ".slnx")
-# Constants that tests/run_validation.py allows another file to hold too, with the reason.
-DUPLICATION_ALLOWED = {
-    "XML_DECLARATION": (
-        "skills/code-review-core/scripts/review_analyzers.py holds the same XML declaration pattern; dotnet-format "
-        "does not depend on code-review-core, and the guarded XML reading both scripts do belongs in skill-core, "
-        "where a change of its own moves it and removes this entry"
-    ),
-}
-XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 
 
 def gh_runner_in(directory: Path) -> GhRunner:
@@ -250,15 +241,9 @@ def listed_projects(solution: Path) -> list[str]:
     lists none, as a .sln line that does not match lists nothing."""
     text = read_text(solution)
     if solution.name.casefold().endswith(".slnx"):
-        # Declarations can expand entities without bound; no solution needs them.
-        if "<!DOCTYPE" in text or "<!ENTITY" in text:
-            return []
         try:
-            # The text is already decoded, so a declaration naming another encoding would only contradict it.
-            document = ElementTree.fromstring(  # noqa: S314 - DOCTYPE and ENTITY are refused above, so nothing expands
-                XML_DECLARATION.sub("", text, count=1)
-            )
-        except (ElementTree.ParseError, ValueError):
+            document = read_xml(text)
+        except XmlRefused:
             return []
         return [path for element in document.iter("Project") if (path := element.get("Path"))]
     return [match.group(1) for line in text.splitlines() if (match := SOLUTION_PROJECT.match(line))]

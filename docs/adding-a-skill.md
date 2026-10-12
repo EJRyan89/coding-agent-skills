@@ -194,7 +194,7 @@ Reach for these substitutes instead:
 | `rg` | `grep -E` in Bash, Python's `re` module, or the agent's built-in search tool |
 | `yq` | JSON instead of YAML; Python's standard library cannot read YAML |
 | `curl` or `wget` against the GitHub API | `gh api`, which handles authentication |
-| `xmllint` | Python's `xml.etree.ElementTree` |
+| `xmllint` | `read_xml` from skill-core's `xml_reader.py`, which refuses a `DOCTYPE` or `ENTITY` declaration before parsing with Python's `xml.etree.ElementTree` |
 | `python3` | `python` |
 
 If a skill truly needs another tool, add it to `SKILL_TOOLS` in `deployer/tools.py` and declare it, so that `check` reports it and deployment warns when it is missing.
