@@ -115,12 +115,12 @@ class _NameScope:
         return self.parent.owner(name) if self.parent is not None else None
 
 
-def _literal_items(node: ast.expr) -> list[ast.expr] | None:
+def _literal_items(node: ast.expr) -> list[ast.expr | None] | None:
     """The items of a literal tuple, list, or set that unpacks nothing, or None for any other expression."""
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and not any(
         isinstance(item, ast.Starred) for item in node.elts
     ):
-        return list(node.elts)
+        return [*node.elts]
     return None
 
 
