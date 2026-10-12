@@ -15,6 +15,12 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   The checkout's Git commands point at a temporary empty hook directory, so neither global nor template-installed
   user hooks run; the base commit also disables signing, without changing the user's Git configuration.
   `tools/skill_evals.py`'s docstring defines the format.
+- **A repository reviewer's scenarios**, such as `review-repository`'s, sit under the reviewer's name, and each
+  `scenario.json` names `review-prs` as the skill beside the reviewer, since `review-prs` runs a reviewer and no
+  session starts one. `--canary-home` ships none of this repository's own skills, so each run copies the fixture into a
+  throwaway folder and places the reviewer's files there from the checkout, in both trees: its `SKILL.md`,
+  `references/`, `scripts/` but its regression suites, and every file its manifest declares. The fixtures hold no copy
+  that could drift from the skill under test, the copy is removed when the run ends, and the rows are the reviewer's.
 - **A `repeats` expectation** names a ledger entry and the lines it was raised on, and holds when every finding the
   re-review raises there is linked to that entry, so a still-present problem counts once. It considers only findings
   at the entry's severity: restating the entry at that severity without the link fails, since that is the double
@@ -54,10 +60,17 @@ changes a skill's prompt, model guidance, or reviewer instructions cites this ru
 | review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-repository | haiku | claude-haiku-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-repository | sonnet | claude-sonnet-5-5 | 4/5 | drifted-guide 2/2, tested-change 0/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-repository | opus | claude-opus-5-5 | 5/5 | drifted-guide 2/2, tested-change 1/1, undocumented-change 1/1, untested-change 1/1 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 <!-- skill-evals:end -->
 
 ### Notes
 
+- **`review-repository`, `tested-change`:** Sonnet's should-fix finding, raised again on a rerun, is correct: the
+  fixture's `main` prints `days_old`'s output through `echo "$(...)"`, which drops the refusal's exit status, so the
+  change the scenario calls clean holds a defect the other models did not report. The fixture needs the fix, not the
+  reviewer.
 - **`review-document`, `pdf-gaps`:** not run on any model, because the `pdftotext` first on the session's `PATH`
   was the one Git for Windows bundles, below the extraction floor, so the PDF's text was refused before a reviewer
   started. Putting a supported parser ahead of Git's lets it run.

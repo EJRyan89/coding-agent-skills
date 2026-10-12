@@ -22,7 +22,7 @@ For a pull request, run every scenario on every model: only that run may record 
 
 ## 2. Run it
 
-From the worktree, in the background, since it outlasts a command's time limit, and wait for it to end. For another skill with scenarios, put its name in place of `review-prs`:
+From the worktree, in the background, since it outlasts a command's time limit, and wait for it to end. For another skill with scenarios, put its name in place of `review-prs`; for a repository reviewer such as `review-repository`, put the reviewer's name, and the script starts `review-prs` on a throwaway copy of each fixture holding the reviewer's files from this checkout:
 
 ```bash
 python -B tools/skill_evals.py review-prs --write
