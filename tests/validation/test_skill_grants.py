@@ -26,6 +26,10 @@ from skill_grants import (
 )
 from validation_support import write_fixture_tree
 
+# The allowance a script that starts the command a repository configures states, since its program is not the
+# script's to name.
+CONFIGURED = '{"<module>": "starts the command the repository configures"}'
+
 
 class SkillGrantsFixtures(GitTestCase):
     def test_repository_skill_shim_check_detects_each_mismatch(self) -> None:
@@ -214,6 +218,7 @@ class SkillGrantsFixtures(GitTestCase):
         handshake = f'{own}start.py" --root "<repository root>"'
         declaring = (
             'import subprocess\n\nRUNS_REPOSITORY_CODE = "starts each configured server"\nsubprocess.run(command)\n'
+            f"COMMANDS_ALLOWED = {CONFIGURED}\n"
         )
         grants = {
             "wide": json.dumps([f"Bash({own}*)", f"PowerShell({own}*)"]),
@@ -241,22 +246,25 @@ class SkillGrantsFixtures(GitTestCase):
             )
 
     def test_repository_code_declarations_accept_process_routes_but_refuse_their_grants(self) -> None:
+        # A script that starts a configured command states why, beside the code, for each scope that starts one.
+        configured = f"COMMANDS_ALLOWED = {CONFIGURED}\n"
         sources = (
             'import subprocess as sp\nsp.run(f"python {script}")\n',
-            "from subprocess import Popen as start\nstart(command)\n",
-            "import os as operating\noperating.system(command)\n",
-            "from os import popen as start\nstart(cmd=command)\n",
-            "from os import system\nrunner = system\nalias = runner\nalias(command)\n",
-            "import asyncio as tasks\ntasks.create_subprocess_exec(program=program)\n",
-            "from asyncio import create_subprocess_shell as start\nstart(cmd=command)\n",
-            "import bounded_process as bounded\nbounded.run_bounded(command, 5)\n",
-            "from bounded_process import streaming as start\nstart(command, 5)\n",
+            f"from subprocess import Popen as start\nstart(command)\n{configured}",
+            f"import os as operating\noperating.system(command)\n{configured}",
+            f"from os import popen as start\nstart(cmd=command)\n{configured}",
+            f"from os import system\nrunner = system\nalias = runner\nalias(command)\n{configured}",
+            f"import asyncio as tasks\ntasks.create_subprocess_exec(program=program)\n{configured}",
+            f"from asyncio import create_subprocess_shell as start\nstart(cmd=command)\n{configured}",
+            f"import bounded_process as bounded\nbounded.run_bounded(command, 5)\n{configured}",
+            f"from bounded_process import streaming as start\nstart(command, 5)\n{configured}",
             'from git_client import GitClient as Client\nClient().run(["status"])\n',
             'import github_client as api\napi.GitHubClient().run(["api"])\n',
             "from github_client import GitHubClient\nclient = GitHubClient\nalias = client\nalias()\n",
             "import os\n"
             "def first():\n    runner = os.system\n    runner(command)\n"
-            "def second():\n    runner = os.popen\n    runner(command)\n",
+            "def second():\n    runner = os.popen\n    runner(command)\n"
+            'COMMANDS_ALLOWED = {"first": "starts the configured server", "second": "reads the configured server"}\n',
         )
         own = 'python -B "${CLAUDE_SKILL_DIR}/scripts/'
         command = f'{own}start.py" --root "<repository root>"'
@@ -313,24 +321,33 @@ class SkillGrantsFixtures(GitTestCase):
 
     def test_repository_code_declarations_report_unresolved_aliases_and_unreadable_commands(self) -> None:
         alias_error = "cannot resolve callable alias runner; use a single binding to a known callable"
+        unread = (
+            "; name the program with a literal or a lookup, or state why in COMMANDS_ALLOWED; "
+            'see "Commands skills may run" in docs/adding-a-skill.md'
+        )
         rebound = "import os\nrunner = os.system\nrunner = None\nrunner(command)\n"
         sources = (
-            (rebound, 5, alias_error, False),
-            (rebound + "from os import popen as valid_start\nvalid_start(command)\n", 5, alias_error, True),
+            (rebound, [(5, alias_error)], False),
+            (
+                rebound + "from os import popen as valid_start\nvalid_start(command)\n",
+                [
+                    (5, alias_error),
+                    (7, f"cannot read the program in `command`, which the module binds to nothing it reads{unread}"),
+                ],
+                True,
+            ),
             (
                 'import subprocess\nrunner = subprocess.run\nCOMMAND = f"{program} arguments"\nrunner(COMMAND)\n',
-                4,
-                "cannot read f-string command without a literal program prefix; "
-                'see "Commands skills may run" in docs/adding-a-skill.md',
+                [(4, f"cannot read f-string command without a literal program prefix{unread}")],
                 True,
             ),
         )
-        for source, line, error, starts_process in sources:
+        for source, errors, starts_process in sources:
             with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 name = "skills/a/scripts/start.py"
                 write_fixture_tree(root, {name: 'RUNS_REPOSITORY_CODE = "starts servers"\n' + source})
-                expected = [f"{name}:{line} {error}"]
+                expected = [f"{name}:{line} {error}" for line, error in errors]
                 if not starts_process:
                     expected.append(
                         f"{name}: declares RUNS_REPOSITORY_CODE but starts no process; remove the declaration"
@@ -339,20 +356,22 @@ class SkillGrantsFixtures(GitTestCase):
 
     def test_repository_code_declarations_must_be_readable_and_current(self) -> None:
         declared = 'RUNS_REPOSITORY_CODE = "starts servers"\n'
+        command = '["server", "--stdio"]'
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             write_fixture_tree(
                 root,
                 {
-                    "skills/a/scripts/good.py": f"from subprocess import Popen\n\n{declared}Popen(command)\n",
+                    "skills/a/scripts/good.py": f"from subprocess import Popen\n\n{declared}Popen({command})\n",
                     "skills/a/scripts/bounded.py": "import bounded_process\n\n"
-                    'RUNS_REPOSITORY_CODE: str = "x"\nbounded_process.run_bounded(command, 5)\n',
+                    f'RUNS_REPOSITORY_CODE: str = "x"\nbounded_process.run_bounded({command}, 5)\n',
                     "skills/a/scripts/plain.py": "import json\n",
                     "skills/a/scripts/empty.py": 'import subprocess\n\nRUNS_REPOSITORY_CODE = ""\n'
-                    "subprocess.run(command)\n",
-                    "skills/a/scripts/twice.py": f"import subprocess\n\n{declared}{declared}subprocess.run(command)\n",
+                    f"subprocess.run({command})\n",
+                    "skills/a/scripts/twice.py": f"import subprocess\n\n{declared}{declared}"
+                    f"subprocess.run({command})\n",
                     "skills/a/scripts/nested.py": f"import subprocess\n\n\ndef f() -> None:\n    {declared}"
-                    "    subprocess.run(command)\n",
+                    f"    subprocess.run({command})\n",
                     ".claude/skills/b/scripts/stale.py": f"import json\n\n{declared}",
                 },
             )

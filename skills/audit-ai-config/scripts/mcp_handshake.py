@@ -220,6 +220,15 @@ def tool_count(session: Session) -> int:
     raise RuntimeError(f"tools/list did not finish within {MAX_TOOL_PAGES} pages")
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "resolve_command": "finds the stdio MCP server the audited repository configures, by the command its "
+    "configuration names; the program is the repository's, never the skill's",
+    "handshake": "starts the stdio MCP server the audited repository configures, which "
+    "RUNS_REPOSITORY_CODE declares; the program is the repository's, never the skill's",
+}
+
+
 def resolve_command(command: str, cwd: Path) -> str | None:
     """The program a server's command names: a path is relative to the server's working directory, the directory a
     client starts it in, and a bare name is looked up on PATH."""

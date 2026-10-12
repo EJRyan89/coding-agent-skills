@@ -16,7 +16,7 @@ from pathlib import Path
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
-from skill_scripts import CommandReader
+from skill_scripts import command_reader
 from toolchain import find_powershell
 from validation_support import (
     PYTHON_ENTRY_POINT,
@@ -422,7 +422,7 @@ class RepositoryModules:
             elif any(_starts_git(node) for node in ast.walk(self.tree(path))):
                 self._runs_git[path] = True
             else:
-                self._runs_git[path] = "git" in CommandReader(self.tree(path)).commands({"git"})
+                self._runs_git[path] = "git" in command_reader(path).commands({"git"})
         return self._runs_git[path]
 
     def git_runner(self, path: Path) -> Path | None:

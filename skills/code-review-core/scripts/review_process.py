@@ -198,6 +198,13 @@ def _end_job(job: int) -> None:
     kernel32.CloseHandle(job)
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "start_detached": "starts the command review_pipeline.py passes it as its launch service, this skill's own "
+    "host script under sys.executable, which the policy reads there",
+}
+
+
 def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     """Start a process that outlives the command that started it, with its output in a log file; return its PID.
 

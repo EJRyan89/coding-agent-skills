@@ -5,13 +5,15 @@
 from __future__ import annotations
 
 import ast
+import functools
 import json
 import re
 import shlex
 import tempfile
 import unittest
 from collections import defaultdict
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 
 from duplication import SKILL_CORE, SKILL_CORE_SCRIPTS
 from toolchain import find_powershell
@@ -20,6 +22,7 @@ from validation_support import (
     CallableResolver,
     import_aliases,
     is_test_script,
+    module_allowance,
     module_imports,
     qualified_name,
     skill_script_directories,
@@ -133,27 +136,100 @@ def _fences(markdown: str, context: str) -> list[str]:
 
 
 # The calls that start a command, as the module's imports resolve them, and the position and keyword of the argument
-# that names it: a list or tuple whose first item is the program, or a string whose first word is.
+# that names it: a list or tuple whose first item is the program, or a string whose first word is. The exec and spawn
+# calls of os take the program itself, by path or by name, ahead of its arguments.
 COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
     **{f"subprocess.{name}": (0, "args") for name in ("run", "Popen", "call", "check_call", "check_output")},
     "subprocess.getoutput": (0, "cmd"),
     "subprocess.getstatusoutput": (0, "cmd"),
     "os.system": (0, "command"),
     "os.popen": (0, "cmd"),
+    "os.execv": (0, "path"),
+    "os.execve": (0, "path"),
+    **{f"os.{name}": (0, "file") for name in ("execl", "execle", "execlp", "execlpe", "execvp", "execvpe")},
+    **{
+        f"os.{name}": (1, "file")
+        for name in ("spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp", "spawnvpe")
+    },
+    "os.posix_spawn": (0, "path"),
+    "os.posix_spawnp": (0, "path"),
     "asyncio.create_subprocess_exec": (0, "program"),
     "asyncio.create_subprocess_shell": (0, "cmd"),
     # skill-core's runner, which bounds a command with a time limit and gives it no stdin.
     "bounded_process.run_bounded": (0, "command"),
     "bounded_process.streaming": (0, "command"),
 }
+# The runners that hand their keywords to subprocess.Popen, whose executable= replaces the program the command names.
+EXECUTABLE_RUNNERS = frozenset(
+    {
+        *(f"subprocess.{name}" for name in ("run", "Popen", "call", "check_call", "check_output")),
+        "asyncio.create_subprocess_exec",
+        "asyncio.create_subprocess_shell",
+    }
+)
 # skill-core's clients: each runs its one command for every call a script makes through it.
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
 # own name, such as services.which("dotnet"), so a call of any function named which counts too, and so does
 # code-review-core's path_programs, which lists every match on PATH where shutil.which returns the first, and the
-# deployer's platform_support.find_executable, through which it finds git.
+# deployer's platform_support.find_executable, through which it finds git. A lookup takes the program's name first,
+# or by one of LOOKUP_KEYWORDS.
 COMMAND_LOOKUP = "shutil.which"
 LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable"})
+LOOKUP_KEYWORDS = frozenset({"cmd", "name"})
+# Calls whose result names the program their first argument does: a path or text conversion, a copy into a list or a
+# tuple, and a split or a join of a command; and the path methods that do the same for the path they are called on.
+PROGRAM_CONVERSIONS = frozenset(
+    {
+        "str",
+        "list",
+        "tuple",
+        "os.fspath",
+        "os.path.abspath",
+        "os.path.normpath",
+        "os.path.realpath",
+        "pathlib.Path",
+        "pathlib.PurePath",
+        "shlex.join",
+        "shlex.split",
+    }
+)
+PATH_METHODS = frozenset({"absolute", "resolve"})
+# The interpreter running the script, which "Commands skills may run" calls python.
+INTERPRETER = "sys.executable"
+INTERPRETER_PROGRAM = "python"
+# A module states why it starts a command whose program the policy cannot read beside the code, as a module-level
+# COMMANDS_ALLOWED = {scope: reason}, where a scope is the function or class holding what cannot be read, by qualified
+# name, or a module-level assignment's target. An allowance the module no longer needs is reported.
+COMMANDS_ALLOWANCE = "COMMANDS_ALLOWED"
+MODULE_SCOPE = "<module>"
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    """A place the program a command starts cannot be read from, and what it holds."""
+
+    node: ast.AST
+    description: str
+
+    @property
+    def line(self) -> int:
+        return int(getattr(self.node, "lineno", 0))
+
+
+# What the reader finds for a command: the string literal that names its program, or where it cannot read one.
+Source = ast.Constant | Unreadable
+Function = ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda
+
+
+@dataclass(frozen=True)
+class _Element:
+    """A name bound to each element of a collection in turn, by a for loop or a comprehension."""
+
+    collection: ast.expr
+
+
+Binding = ast.expr | _Element | None
 
 
 def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:
@@ -167,6 +243,13 @@ def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:
     )
 
 
+def _lookup_argument(call: ast.Call) -> ast.expr | None:
+    """The name a lookup looks up: its first argument, or its cmd or name keyword."""
+    if call.args:
+        return call.args[0]
+    return next((item.value for item in call.keywords if item.arg in LOOKUP_KEYWORDS), None)
+
+
 def _program_name(command: str) -> str | None:
     """The program a command string starts, by its first word and without a .exe suffix, or None for a path or a word
     that names no program."""
@@ -176,80 +259,384 @@ def _program_name(command: str) -> str | None:
     return name if COMMAND_NAME.fullmatch(name) else None
 
 
-def _name_bindings(tree: ast.Module) -> dict[str, list[ast.expr]]:
-    """Every value the module assigns to each name, anywhere in it."""
-    bindings: dict[str, list[ast.expr]] = defaultdict(list)
-    for node in ast.walk(tree):
-        targets: list[ast.expr]
-        if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
-            targets, value = [node.target], node.value
-        else:
+class _NameBindings:
+    """Every value the module binds each name to, in the lexical scope that owns the name: an assigned value, each
+    element of what a loop or a comprehension walks, or None for a store whose value the reader cannot read, such as
+    a with statement's target, an import, or an unpacking it cannot pair. A function's parameters are read through
+    its calls instead."""
+
+    def __init__(self, tree: ast.Module, resolver: CallableResolver) -> None:
+        self.scopes = resolver.scopes
+        self.values: dict[tuple[int, str], list[Binding]] = defaultdict(list)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    self._bind(target, node.value, node)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                self._bind(node.target, node.value, node)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                element = _Element(node.iter) if isinstance(node.target, ast.Name) else None
+                self._bind(node.target, element, node.target)
+            elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+                self._bind(node.optional_vars, None, node.optional_vars)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    self.values[self.key(node, (alias.asname or alias.name).split(".")[0])].append(None)
+
+    def key(self, node: ast.AST, name: str) -> tuple[int, str]:
+        """The scope that owns a name where node uses or stores it, and the name."""
+        scope = self.scopes.get(id(node))
+        owner = scope.owner(name) if scope is not None else None
+        return (id(owner) if owner is not None else 0, name)
+
+    def _bind(self, target: ast.expr, value: Binding, anchor: ast.AST) -> None:
+        """Bind each name a target stores: a name to value, and each name an unpacking stores to the item it pairs
+        with, or to None when it cannot pair them. A walrus target is placed by its expression, its anchor."""
+        if isinstance(target, ast.Starred):
+            self._bind(target.value, None, anchor)
+        elif isinstance(target, ast.Name):
+            self.values[self.key(target if id(target) in self.scopes else anchor, target.id)].append(value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            items = value.elts if isinstance(value, (ast.Tuple, ast.List)) else []
+            paired = len(items) == len(target.elts) and not any(isinstance(item, ast.Starred) for item in target.elts)
+            for index, item in enumerate(target.elts):
+                self._bind(item, items[index] if paired else None, anchor)
+
+    def of(self, node: ast.Name) -> tuple[tuple[int, str], list[Binding]]:
+        """The key of the name a node uses, and every value its scope binds it to."""
+        key = self.key(node, node.id)
+        return key, self.values.get(key, [])
+
+
+def _scope_names(tree: ast.Module) -> dict[int, str]:
+    """The scope holding each node: the innermost function or class holding it, by qualified name, or else the
+    module-level assignment holding it, by its target, or else the module."""
+    scopes: dict[int, str] = {}
+
+    def visit(node: ast.AST, scope: str) -> None:
+        scopes[id(node)] = scope
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                visit(child, child.name if scope == MODULE_SCOPE else f"{scope}.{child.name}")
+            else:
+                visit(child, scope)
+
+    for statement in tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            visit(statement, statement.name)
             continue
-        for target in targets:
-            if isinstance(target, ast.Name):
-                bindings[target.id].append(value)
-    return bindings
+        targets = statement.targets if isinstance(statement, ast.Assign) else []
+        if isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+        named = [target.id for target in targets if isinstance(target, ast.Name)]
+        visit(statement, named[0] if len(targets) == len(named) == 1 else MODULE_SCOPE)
+    return scopes
+
+
+def _own_nodes(function: Function) -> list[ast.AST]:
+    """The nodes of a function's body, without those of the functions and classes it defines."""
+    pending: list[ast.AST] = [*function.body] if isinstance(function.body, list) else [function.body]
+    found: list[ast.AST] = []
+    while pending:
+        node = pending.pop()
+        found.append(node)
+        pending += [
+            child
+            for child in ast.iter_child_nodes(node)
+            if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda))
+        ]
+    return found
+
+
+def _calls(call: ast.Call, name: str) -> bool:
+    """Whether a call may call the function of that name: by the name itself, or as a method of anything."""
+    function = call.func
+    return (isinstance(function, ast.Name) and function.id == name) or (
+        isinstance(function, ast.Attribute) and function.attr == name
+    )
+
+
+def _argument(function: Function, parameter: ast.arg, call: ast.Call) -> ast.expr | Unreadable | None:
+    """What a call passes a parameter: its argument, its default when it passes none, None when it has neither, or
+    Unreadable when an unpacked argument may hold it."""
+    arguments = function.args
+    keyword = next((item.value for item in call.keywords if item.arg == parameter.arg), None)
+    if keyword is not None:
+        return keyword
+    positional = [*arguments.posonlyargs, *arguments.args]
+    bound = isinstance(call.func, ast.Attribute) and bool(positional) and positional[0].arg in {"self", "cls"}
+    unpacked = any(isinstance(item, ast.Starred) for item in call.args) or any(
+        item.arg is None for item in call.keywords
+    )
+    if parameter in positional:
+        index = positional.index(parameter) - bound
+        if 0 <= index < len(call.args) and not unpacked:
+            return call.args[index]
+    if unpacked:
+        return Unreadable(call, f"the program in `{ast.unparse(call)}`, which unpacks its arguments")
+    if parameter in positional:
+        offset = positional.index(parameter) - (len(positional) - len(arguments.defaults))
+        return arguments.defaults[offset] if offset >= 0 else None
+    return arguments.kw_defaults[arguments.kwonlyargs.index(parameter)]
+
+
+def _prefixes(sources: list[Source], placeholder: str, kind: str) -> list[Source]:
+    """Each string's literal prefix before its first placeholder, or Unreadable where that prefix names no program."""
+    found: list[Source] = []
+    for source in sources:
+        if isinstance(source, ast.Constant) and isinstance(source.value, str) and placeholder in source.value:
+            prefix = source.value.split(placeholder, 1)[0]
+            if _program_name(prefix):
+                found.append(ast.copy_location(ast.Constant(prefix), source))
+            else:
+                found.append(Unreadable(source, f"{kind} command without a literal program prefix"))
+        else:
+            found.append(source)
+    return found
 
 
 class CommandReader:
-    """The programs a Python module runs, each call resolved through the module's imports and each name it passes
-    followed to every literal the module binds that name to, so an alias or a command list held in a variable is
-    read as the command it is."""
+    """The programs a Python module runs, each call resolved through the module's imports and each command it passes
+    followed to what names its program: a literal the module binds the name to, a lookup, or, for a parameter, what
+    each call of its function in the module passes. Where none can be read, the reader says so, so a command whose
+    program it cannot read never passes unseen.
+    """
 
     def __init__(self, tree: ast.Module) -> None:
         self.tree = tree
         self.resolver = CallableResolver(tree)
-        self.bindings = _name_bindings(tree)
+        self.bindings = _NameBindings(tree, self.resolver)
+        self.scope_names = _scope_names(tree)
+        self.calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+        self.called = {id(call.func) for call in self.calls}
+        # The names the module uses other than by calling them, such as a function it hands on as a value.
+        self.handed_on = {
+            node.id if isinstance(node, ast.Name) else node.attr
+            for node in ast.walk(tree)
+            if (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)) or isinstance(node, ast.Attribute)
+            if id(node) not in self.called
+        }
+        # The functions other modules may call: the module's own and its classes' methods, by a public name.
+        self.public = {
+            id(definition)
+            for statement in tree.body
+            for definition in ([statement] if not isinstance(statement, ast.ClassDef) else statement.body)
+            if isinstance(definition, (ast.FunctionDef, ast.AsyncFunctionDef)) and not definition.name.startswith("_")
+        }
+        self.functions: dict[str, list[Function]] = defaultdict(list)
+        self.parameters: dict[tuple[int, str], tuple[Function, ast.arg]] = {}
+        self.parameter_functions: dict[int, Function] = {}
+        self.attributes: dict[str, list[ast.expr]] = defaultdict(list)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                self._read_function(node)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    if isinstance(target, ast.Attribute):
+                        self.attributes[target.attr].append(node.value)
+        self._commands: dict[frozenset[str], set[str]] = {}
+        self._problems: dict[str, list[str]] = {}
+        self._unreadable: list[Unreadable] | None = None
 
-    def program_literals(
-        self, node: ast.expr | None, seen: frozenset[str] = frozenset()
-    ) -> list[ast.Constant | ast.JoinedStr]:
-        """The string literals that may name the program a command expression runs: a string, the first item of a
-        list or tuple, the left side of a +, what a which() call looks up, and every value a name is bound to.
-        An f-string contributes only its initial literal prefix, or itself when that prefix names no program."""
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return [node]
+    def _read_function(self, function: Function) -> None:
+        if not isinstance(function, ast.Lambda):
+            self.functions[function.name].append(function)
+        arguments = function.args
+        variadic = [argument for argument in (arguments.vararg, arguments.kwarg) if argument is not None]
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs, *variadic]:
+            self.parameters[(id(self.resolver.scopes[id(argument)]), argument.arg)] = (function, argument)
+            self.parameter_functions[id(argument)] = function
+
+    def program_literals(self, node: ast.expr | None, seen: frozenset[object] = frozenset()) -> list[Source]:
+        """What names the program a command expression runs: a string, the first item of a list or tuple, the left
+        side of a +, the literal prefix of an f-string or of a % or .format() string, what a join, a split, a path
+        conversion, or a lookup is given, what one of the module's own functions returns, every value a name is bound
+        to, and, for a parameter, what every call of its function passes it. Anything else is Unreadable, and so is an
+        f-string or a format whose prefix names no program."""
+        if node is None:
+            return []
+        if isinstance(node, ast.Constant):
+            return [node] if isinstance(node.value, str) else []
         if isinstance(node, ast.JoinedStr):
             first = node.values[0] if node.values else None
             if isinstance(first, ast.Constant) and isinstance(first.value, str) and _program_name(first.value):
                 return [first]
-            return [node]
+            return [Unreadable(node, "f-string command without a literal program prefix")]
         if isinstance(node, (ast.List, ast.Tuple)):
-            return self.program_literals(node.elts[0], seen) if node.elts else []
-        if isinstance(node, ast.Starred):
+            if node.elts:
+                return self.program_literals(node.elts[0], seen)
+            return [Unreadable(node, f"the program in `{ast.unparse(node)}`, which the module fills in elsewhere")]
+        if isinstance(node, (ast.Starred, ast.NamedExpr, ast.Await)):
             return self.program_literals(node.value, seen)
+        if isinstance(node, ast.IfExp):
+            return self.program_literals(node.body, seen) + self.program_literals(node.orelse, seen)
+        if isinstance(node, ast.BoolOp):
+            return [found for value in node.values for found in self.program_literals(value, seen)]
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-            return self.program_literals(node.left, seen)
-        if isinstance(node, ast.Call) and _is_lookup(node, self.resolver.aliases(node.func)) and node.args:
-            return self.program_literals(node.args[0], seen)
-        if isinstance(node, ast.Name) and node.id not in seen:
-            values = self.bindings.get(node.id, [])
-            return [found for value in values for found in self.program_literals(value, seen | {node.id})]
+            empty = isinstance(node.left, (ast.List, ast.Tuple)) and not node.left.elts
+            return self.program_literals(node.right if empty else node.left, seen)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            return _prefixes(self.program_literals(node.left, seen), "%", "%-format")
+        if isinstance(node, ast.Call):
+            return self._call_sources(node, seen)
+        if isinstance(node, ast.Name):
+            return self._name_sources(node, seen)
+        if isinstance(node, ast.Attribute):
+            return self._attribute_sources(node, seen)
+        return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
+
+    def _call_sources(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
+        function = call.func
+        if _is_lookup(call, self.resolver.aliases(function)):
+            return self.program_literals(_lookup_argument(call), seen)
+        if self.resolver.name(function) in PROGRAM_CONVERSIONS and call.args:
+            return self.program_literals(call.args[0], seen)
+        if isinstance(function, ast.Attribute):
+            receiver = function.value
+            if function.attr in PATH_METHODS:
+                return self.program_literals(receiver, seen)
+            if function.attr == "format":
+                return _prefixes(self.program_literals(receiver, seen), "{", ".format()")
+            if function.attr == "join" and isinstance(receiver, ast.Constant) and isinstance(receiver.value, str):
+                return self.program_literals(call.args[0] if call.args else None, seen)
+        return self._returned(call, seen)
+
+    def _returned(self, call: ast.Call, seen: frozenset[object]) -> list[Source]:
+        """What a call of one of the module's own functions returns, or Unreadable for any other call."""
+        function = call.func
+        name = function.attr if isinstance(function, ast.Attribute) else getattr(function, "id", "")
+        own = not isinstance(function, ast.Name) or self.resolver.name(function) == f"<local>.{name}"
+        definitions = self.functions.get(name, []) if own else []
+        if not definitions:
+            return [Unreadable(call, f"the program in `{ast.unparse(call)}`")]
+        found: list[Source] = []
+        for definition in definitions:
+            if ("returns", id(definition)) in seen:
+                continue
+            inner = seen | {("returns", id(definition))}
+            values = [node.value for node in _own_nodes(definition) if isinstance(node, ast.Return) and node.value]
+            if not values:
+                found.append(Unreadable(call, f"the program in `{ast.unparse(call)}`, whose function returns none"))
+            found += [source for value in values for source in self.program_literals(value, inner)]
+        return found
+
+    def _name_sources(self, node: ast.Name, seen: frozenset[object]) -> list[Source]:
+        key, values = self.bindings.of(node)
+        if ("name", key) in seen:
+            return []
+        inner = seen | {("name", key)}
+        found: list[Source] = []
+        for value in values:
+            if isinstance(value, _Element):
+                found += self._element_sources(value.collection, inner)
+            elif value is not None:
+                found += self.program_literals(value, inner)
+        parameter = self.parameters.get(key)
+        if parameter is not None:
+            found += self._argument_sources(*parameter, inner)
+        elif not values or None in values:
+            found.append(Unreadable(node, f"the program in `{node.id}`, which the module binds to nothing it reads"))
+        return found
+
+    def _element_sources(self, collection: ast.expr, seen: frozenset[object]) -> list[Source]:
+        """What names the program of each element of a collection a loop or a comprehension walks."""
+        if isinstance(collection, (ast.List, ast.Tuple, ast.Set)):
+            return [found for item in collection.elts for found in self.program_literals(item, seen)]
+        key, values = self.bindings.of(collection) if isinstance(collection, ast.Name) else ((0, ""), [])
+        if values and all(isinstance(value, (ast.List, ast.Tuple, ast.Set)) for value in values):
+            if ("elements", key) in seen:
+                return []
+            inner = seen | {("elements", key)}
+            return [
+                found
+                for value in values
+                if isinstance(value, (ast.List, ast.Tuple, ast.Set))
+                for found in self._element_sources(value, inner)
+            ]
+        return [Unreadable(collection, f"the program in each item of `{ast.unparse(collection)}`")]
+
+    def _attribute_sources(self, node: ast.Attribute, seen: frozenset[object]) -> list[Source]:
+        """The interpreter for sys.executable, or every value the module assigns an attribute of that name."""
+        if self.resolver.name(node) == INTERPRETER:
+            return [ast.copy_location(ast.Constant(INTERPRETER_PROGRAM), node)]
+        values = self.attributes.get(node.attr, [])
+        if not values:
+            return [Unreadable(node, f"the program in `{ast.unparse(node)}`")]
+        if ("attribute", node.attr) in seen:
+            return []
+        inner = seen | {("attribute", node.attr)}
+        return [found for value in values for found in self.program_literals(value, inner)]
+
+    def _argument_sources(self, function: Function, parameter: ast.arg, seen: frozenset[object]) -> list[Source]:
+        """What every call of a function in the module passes a parameter that names a program, and Unreadable when
+        the module may not hold every call: none calls it, it hands the function on as a value, other modules may call
+        it by its public name, or the parameter is variadic."""
+        name = "" if isinstance(function, ast.Lambda) else function.name
+        variadic = parameter in (function.args.vararg, function.args.kwarg)
+        calls = [call for call in self.calls if _calls(call, name)] if name and not variadic else []
+        if not calls:
+            return [
+                Unreadable(parameter, f"the program in parameter {parameter.arg}, which no call in this module passes")
+            ]
+        found: list[Source] = []
+        if name in self.handed_on:
+            found.append(
+                Unreadable(parameter, f"the program in parameter {parameter.arg}, whose function is passed on")
+            )
+        elif id(function) in self.public:
+            found.append(
+                Unreadable(parameter, f"the program in parameter {parameter.arg}, which other modules may pass")
+            )
+        if ("parameter", id(parameter)) in seen:
+            return found
+        inner = seen | {("parameter", id(parameter))}
+        for call in calls:
+            argument = _argument(function, parameter, call)
+            found += [argument] if isinstance(argument, Unreadable) else self.program_literals(argument, inner)
+        return found
+
+    def _command_arguments(self, call: ast.Call) -> list[ast.expr | Unreadable]:
+        """The argument of a COMMAND_RUNNERS call that names the program it starts, its executable= when it gives one,
+        since that replaces the program and leaves the command's first item only the name the program is told, and
+        nothing for another call."""
+        name = self.resolver.name(call.func)
+        runner = COMMAND_RUNNERS.get(name)
+        if runner is None:
+            return []
+        executable = next((item.value for item in call.keywords if item.arg == "executable"), None)
+        if executable is not None and name in EXECUTABLE_RUNNERS:
+            return [executable]
+        position, keyword = runner
+        starred = any(isinstance(item, ast.Starred) for item in call.args[: position + 1])
+        given = next((item.value for item in call.keywords if item.arg == keyword), None)
+        if len(call.args) > position and not starred:
+            return [call.args[position]]
+        if given is not None:
+            return [given]
+        if starred or any(item.arg is None for item in call.keywords):
+            return [Unreadable(call, f"the program in `{ast.unparse(call)}`, which unpacks its arguments")]
         return []
 
-    def _named(self, node: ast.expr | None) -> list[tuple[int, str]]:
+    def _sources(self, call: ast.Call) -> list[Source]:
         return [
-            (literal.lineno, name)
-            for literal in self.program_literals(node)
-            if isinstance(literal, ast.Constant)
-            and isinstance(literal.value, str)
-            and (name := _program_name(literal.value))
+            found
+            for argument in self._command_arguments(call)
+            for found in ([argument] if isinstance(argument, Unreadable) else self.program_literals(argument))
         ]
 
-    def _command_argument(self, call: ast.Call) -> ast.expr | None:
-        runner = COMMAND_RUNNERS.get(self.resolver.name(call.func))
-        if runner is None:
-            return None
-        position, keyword = runner
-        if len(call.args) > position:
-            return call.args[position]
-        return next((item.value for item in call.keywords if item.arg == keyword), None)
+    @staticmethod
+    def _named(sources: list[Source]) -> list[tuple[int, str]]:
+        return [
+            (source.lineno, name)
+            for source in sources
+            if isinstance(source, ast.Constant)
+            and isinstance(source.value, str)
+            and (name := _program_name(source.value))
+        ]
 
     def started(self, call: ast.Call) -> list[tuple[int, str]]:
         """The line and program of each command a COMMAND_RUNNERS call may start, and nothing for another call."""
-        return self._named(self._command_argument(call))
+        return self._named(self._sources(call))
 
     def starts_process(self) -> bool:
         """Whether the module calls a command runner or a skill-core client, even with a dynamic command.
@@ -258,40 +645,93 @@ class CommandReader:
         runs code from the target repository; that is the script's RUNS_REPOSITORY_CODE declaration.
         """
         return any(
-            isinstance(node, ast.Call)
-            and (self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES)
-            for node in ast.walk(self.tree)
+            self.resolver.name(node.func) in COMMAND_RUNNERS or self.resolver.name(node.func) in CLIENT_CLASSES
+            for node in self.calls
         )
 
+    def scope(self, source: Unreadable) -> str:
+        """The function, class, or module-level assignment holding what cannot be read, as COMMANDS_ALLOWED names it."""
+        return self.scope_names.get(id(source.node), MODULE_SCOPE)
+
+    def unreadable(self) -> list[Unreadable]:
+        """Each place a command the module starts names a program the reader cannot read, once, in line order."""
+        if self._unreadable is None:
+            found = {
+                (source.line, source.description, self.scope(source)): source
+                for call in self.calls
+                for source in self._sources(call)
+                if isinstance(source, Unreadable)
+            }
+            self._unreadable = [found[key] for key in sorted(found)]
+        return self._unreadable
+
+    def declared_runner(self, source: Unreadable, module: str) -> bool:
+        """Whether what cannot be read is the command parameter of a function COMMAND_RUNNERS names, whose command is
+        read instead at every call of it."""
+        function = self.parameter_functions.get(id(source.node))
+        if function is None or isinstance(function, ast.Lambda) or id(function) not in self.public:
+            return False
+        runner = COMMAND_RUNNERS.get(f"{module}.{function.name}")
+        positional = [*function.args.posonlyargs, *function.args.args]
+        return runner is not None and positional[runner[0] : runner[0] + 1] == [source.node]
+
     def problems(self, path: str) -> list[str]:
-        unreadable = {
-            literal.lineno
-            for node in ast.walk(self.tree)
-            if isinstance(node, ast.Call)
-            for literal in self.program_literals(self._command_argument(node))
-            if isinstance(literal, ast.JoinedStr)
-        }
-        return self.resolver.problems(path) + [
-            f"{path}:{line} cannot read f-string command without a literal program prefix; see {COMMANDS_DOC}"
-            for line in sorted(unreadable)
+        """Each call through an alias that cannot be resolved, and each command whose program cannot be read where the
+        module's COMMANDS_ALLOWED does not state why, then each allowance the module no longer needs."""
+        if path not in self._problems:
+            self._problems[path] = self._read_problems(path)
+        return list(self._problems[path])
+
+    def _read_problems(self, path: str) -> list[str]:
+        problems = self.resolver.problems(path)
+        allowed = module_allowance(self.tree, COMMANDS_ALLOWANCE)
+        if allowed is None:
+            problems.append(f"{path}: {COMMANDS_ALLOWANCE} must map each scope to the reason its program is unread")
+            allowed = {}
+        module = PurePosixPath(path).stem
+        found = [source for source in self.unreadable() if not self.declared_runner(source, module)]
+        problems += [
+            f"{path}:{source.line} cannot read {source.description}; name the program with a literal or a lookup, "
+            f"or state why in {COMMANDS_ALLOWANCE}; see {COMMANDS_DOC}"
+            for source in found
+            if self.scope(source) not in allowed
         ]
+        problems += [
+            f"{path}: {COMMANDS_ALLOWANCE} allows {scope}, which starts no command whose program is unread"
+            for scope in sorted(set(allowed) - {self.scope(source) for source in found})
+        ]
+        return problems
 
     def commands(self, known: set[str]) -> set[str]:
         """Every program the module runs through a runner or a skill-core client, or looks up with which, and every
         known tool a list or tuple begins with, since a module may hand that command to a function of its own."""
-        found: set[str] = set()
-        for node in ast.walk(self.tree):
-            if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
-                first = node.elts[0]
-                if isinstance(first, ast.Constant) and first.value in known:
-                    found.add(first.value)
-            elif isinstance(node, ast.Call):
-                client = CLIENT_CLASSES.get(self.resolver.name(node.func))
-                found |= {client} if client else set()
-                if _is_lookup(node, self.resolver.aliases(node.func)) and node.args:
-                    found |= {name for _, name in self._named(node.args[0])}
-                found |= {name for _, name in self.started(node)}
-        return found
+        key = frozenset(known)
+        if key not in self._commands:
+            found: set[str] = set()
+            for node in ast.walk(self.tree):
+                if isinstance(node, (ast.List, ast.Tuple)) and node.elts:
+                    first = node.elts[0]
+                    if isinstance(first, ast.Constant) and first.value in known:
+                        found.add(first.value)
+                elif isinstance(node, ast.Call):
+                    client = CLIENT_CLASSES.get(self.resolver.name(node.func))
+                    found |= {client} if client else set()
+                    if _is_lookup(node, self.resolver.aliases(node.func)):
+                        found |= {name for _, name in self._named(self.program_literals(_lookup_argument(node)))}
+                    found |= {name for _, name in self.started(node)}
+            self._commands[key] = found
+        return self._commands[key]
+
+
+@functools.cache
+def _read_commands(source: str) -> CommandReader:
+    return CommandReader(ast.parse(source))
+
+
+def command_reader(path: Path) -> CommandReader:
+    """The CommandReader of a Python file as it is now, built once for each content in a validation run, so every
+    policy that reads a file's commands shares one reading of it and a file that changes is read again."""
+    return _read_commands(path.read_text(encoding="utf-8", errors="replace"))
 
 
 # Prints one JSON array of {source, name} for each external command run by the PowerShell sources in the JSON file
@@ -366,7 +806,7 @@ def _file_commands(path: Path, known: set[str], powershell: dict[str, set[str]])
     suffix = path.suffix.casefold()
     found = {command for source in _powershell_sources(path) for command in powershell[source]}
     if suffix == ".py":
-        found |= CommandReader(ast.parse(text)).commands(known)
+        found |= command_reader(path).commands(known)
     elif suffix in {".sh", ".bash"}:
         found |= shell_commands(text)
     elif suffix == ".md":
@@ -382,11 +822,16 @@ def _skill_files(directory: Path) -> list[Path]:
 NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
 
 
-def _referenced_scripts(path: Path) -> set[str]:
+def _referenced_scripts(path: Path) -> frozenset[str]:
     """Module names a file imports, and script names it gives by a path through another skill's scripts/."""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    if path.suffix.casefold() != ".py":
-        return {name for _, name in NAMED_SCRIPT.findall(text)}
+    return _references(path.read_text(encoding="utf-8", errors="replace"), path.suffix.casefold() == ".py")
+
+
+@functools.cache
+def _references(text: str, python: bool) -> frozenset[str]:
+    """What _referenced_scripts finds in a file's text, read once for each content in a validation run."""
+    if not python:
+        return frozenset(name for _, name in NAMED_SCRIPT.findall(text))
     tree = ast.parse(text)
     # A module-level sanction such as DUPLICATION_ALLOWED names, in its reasons, the other files that hold a copy,
     # which the module does not run.
@@ -400,7 +845,7 @@ def _referenced_scripts(path: Path) -> set[str]:
     unsanctioned = "".join(
         line for number, line in enumerate(text.splitlines(keepends=True), 1) if number not in sanctions
     )
-    return {name for _, name in NAMED_SCRIPT.findall(unsanctioned)} | {
+    return frozenset({name for _, name in NAMED_SCRIPT.findall(unsanctioned)}) | {
         found.module.split(".")[0] for found in module_imports(tree)
     }
 
@@ -464,8 +909,7 @@ def skill_command_problems(root: Path, known: set[str], standard: set[str]) -> l
     for skill, declared, own, dependency_scripts in skills:
         for path in own + dependency_scripts:
             if path.suffix.casefold() == ".py":
-                reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
-                problems += reader.problems(path.relative_to(root).as_posix())
+                problems += command_reader(path).problems(path.relative_to(root).as_posix())
         used = {command for path in own for command in _file_commands(path, known, powershell)}
         reached: dict[str, Path] = {}
         for path in dependency_scripts:
@@ -826,7 +1270,7 @@ def client_command_problems(root: Path) -> list[str]:
         name = path.relative_to(root).as_posix()
         if is_test_script(path) or name.startswith(f"{SKILL_CORE_SCRIPTS}/"):
             continue
-        reader = CommandReader(ast.parse(path.read_text(encoding="utf-8", errors="replace")))
+        reader = command_reader(path)
         problems += reader.problems(name)
         commands = {found for node in ast.walk(reader.tree) for found in _client_commands(node, reader)}
         for line, command in sorted(commands):
