@@ -67,6 +67,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from flat_text import flat_text
 from git_client import GitClient
 from skill_roots import skills_directory_holding
 
@@ -456,7 +457,7 @@ def audit(
 
 
 def one_line(text: str, limit: int = HOOK_LIMIT) -> str:
-    text = " ".join(text.split())
+    text = flat_text(text)
     if len(text) <= limit:
         return text
     return text[: limit - 3].rsplit(" ", 1)[0].rstrip(" ,;:.") + "..."
@@ -480,7 +481,7 @@ def reindex(memory_dir: Path) -> dict:
         return one_line(first)
 
     def derived_title(meta: dict[str, str], file: str) -> str:
-        return " ".join((meta.get("name") or Path(file).stem).replace("[", "(").replace("]", ")").split())
+        return flat_text((meta.get("name") or Path(file).stem).replace("[", "(").replace("]", ")"))
 
     lines: list[str] = []
     entries: list[str] = []
@@ -680,7 +681,7 @@ def resolve(repo: Path, home: Path, environment: dict[str, str], managed: Path) 
 
 def reason(exc: OSError) -> str:
     """An expected OSError's reason on one line."""
-    return " ".join((exc.strerror or str(exc)).split())
+    return flat_text(exc.strerror or str(exc))
 
 
 def describe(exc: OSError) -> str:
@@ -726,7 +727,7 @@ def resolve_lines(repo: Path, result: dict) -> list[str]:
     else:
         lines.append("NO_MEMORY_DIR")
     lines += [f"CANDIDATE {candidate}" for candidate in result.get("candidates", [])]
-    lines += [f"NOTE {' '.join(note.split())}" for note in result["notes"]]
+    lines += [f"NOTE {flat_text(note)}" for note in result["notes"]]
     return lines
 
 
