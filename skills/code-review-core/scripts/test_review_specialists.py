@@ -8,6 +8,8 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -17,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_specialists as rs
 from git_test_base import GitTestCase
-from review_process import process_status
+from review_process import JobTree, process_status
 from review_records import validate_adapter_result
 from review_runtime import (
     RuntimeContractError,
@@ -29,6 +31,35 @@ from review_runtime import (
     validate_adapter_manifest,
     write_adapter_request,
 )
+
+# A condition that never exits is refused at CONDITION_SECONDS, a short limit, because StartedCondition starts the
+# clock only once the condition has signalled that it reached its wait, which it gets up to CONDITION_STARTUP_SECONDS
+# to do on a loaded machine. The refusal may come up to CONDITION_MARGIN_SECONDS past the limit, which covers killing
+# the condition and ending what it started.
+CONDITION_SECONDS = 1
+CONDITION_STARTUP_SECONDS = 60
+CONDITION_MARGIN_SECONDS = 30
+
+
+class StartedCondition(JobTree):
+    """A condition's process tree, held as JobTree holds it, that starts the condition's time limit only once the
+    condition has created `started`, so how long start-up takes never decides whether the limit is what refuses it.
+    `released` is when the clock started."""
+
+    def __init__(self, started: Path) -> None:
+        super().__init__()
+        self.started = started
+        self.released: float | None = None
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+        with super().hold(process):
+            deadline = time.monotonic() + CONDITION_STARTUP_SECONDS
+            while not self.started.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.released = time.monotonic()
+            yield
+
 
 DIFF = (
     "diff --git a/db/Procs.sql b/db/Procs.sql\r\n"
@@ -1971,13 +2002,16 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         )
 
     def test_a_condition_script_that_never_exits_is_killed_without_writing_a_plan(self) -> None:
+        signal = self.root / "condition-started"
         self.use_condition(
             "import json, os, subprocess, sys, threading\n"
             "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
             "print(json.dumps({'argv': sys.argv, 'cwd': os.getcwd(), 'child': child.pid}), flush=True)\n"
+            f"open({str(signal)!r}, 'w').close()\n"
             "threading.Event().wait()\n",
             "nonterminating",
         )
+        tree = StartedCondition(signal)
         processes: list[subprocess.Popen[str]] = []
         popen = subprocess.Popen
 
@@ -1988,12 +2022,18 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
 
         began = time.monotonic()
         with (
-            mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", 5),
+            mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", CONDITION_SECONDS),
+            mock.patch.object(rs, "JobTree", return_value=tree),
             mock.patch.object(rs.subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
         ):
             self.plan()
-        self.assertLess(time.monotonic() - began, 60, "no wait on the program, which holds no pipe to wait on")
+        refused = time.monotonic()
+        self.assertLess(refused - began, 60, "no wait on the program, which holds no pipe to wait on")
+        if tree.released is None:
+            self.fail("the condition ran outside its process tree")
+        self.assertGreaterEqual(refused - tree.released, CONDITION_SECONDS, "refused no sooner than its limit")
+        self.assertLess(refused - tree.released, CONDITION_SECONDS + CONDITION_MARGIN_SECONDS)
         self.assertEqual("Condition script timed out: tools/window.py", str(raised.exception))
         expired = raised.exception.__cause__
         if not isinstance(expired, subprocess.TimeoutExpired):
@@ -2002,7 +2042,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         snapshot = self.request_args["source_snapshot_root"]
         work = self.root / "work-initial"
         self.assertEqual([sys.executable, "-B", str(script), "--source-root", str(snapshot)], expired.cmd)
-        self.assertEqual(5, expired.timeout)
+        self.assertEqual(CONDITION_SECONDS, expired.timeout)
         started = json.loads(expired.output)
         self.assertEqual(
             {"argv": [str(script), "--source-root", str(snapshot)], "cwd": str(work)},
