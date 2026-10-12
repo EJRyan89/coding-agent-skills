@@ -74,8 +74,9 @@ expect_failed() {
 }
 # The pin is read with check before the fetch; the deployment is the one run with --all, and it comes last.
 expect_deployed() {
-  [ "$(grep -cx -e "--all" "$FAKE_DEPLOY_LOG")" = "1" ] && [ "$(tail -n 1 "$FAKE_DEPLOY_LOG")" = "--all" ] ||
+  if [ "$(grep -cx -e "--all" "$FAKE_DEPLOY_LOG")" != "1" ] || [ "$(tail -n 1 "$FAKE_DEPLOY_LOG")" != "--all" ]; then
     fail "$1: deploy.py was not run once with --all: $(cat "$FAKE_DEPLOY_LOG")"
+  fi
 }
 expect_not_deployed() { ! grep -qx -e "--all" "$FAKE_DEPLOY_LOG" || fail "$1: deploy.py ran"; }
 expect_nothing_run() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"; }
