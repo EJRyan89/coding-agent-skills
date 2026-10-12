@@ -12,9 +12,14 @@ import builtins
 import fnmatch
 import re
 import subprocess
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from markdown_sections import markdown_section as markdown_section
 
 from deployer import render
 
@@ -458,16 +463,6 @@ def scripts_put_on_path(source: str) -> list[str]:
             ):
                 names.append(part.left.right.value)
     return names
-
-
-def markdown_section(text: str, heading: str) -> str | None:
-    """The lines after the heading line up to the next second-level heading, or None when the heading is absent."""
-    lines = text.split("\n")
-    if heading not in lines:
-        return None
-    start = lines.index(heading) + 1
-    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
-    return "\n".join(lines[start:end])
 
 
 def is_executable_script(path: Path) -> bool:
