@@ -8,7 +8,7 @@ Every deployment needs:
 
 | Tool | Why |
 |---|---|
-| Python 3.11 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
+| Python 3.11.4 or newer | Runs the deployer. The deployer and the `audit-ai-config` engine use only the standard library. |
 | Git for Windows | Its Bash checks the syntax of rendered Bash scripts and Bash blocks in Markdown; several skills run Bash commands. |
 | ShellCheck | Lints the same rendered Bash content. Deployment stops if it is missing. CI uses 0.9.0 and checks the latest release weekly; newer releases also work. |
 | PowerShell | Parses rendered `.ps1` files regardless of extension case. Windows PowerShell 5.1 is enough for deployment; the validation suite needs PowerShell 7 (`pwsh`). |
@@ -41,7 +41,7 @@ Use whichever installer your machine allows. [winget](https://learn.microsoft.co
 | GitHub CLI | `GitHub.cli` | `gh` | `gh` | [cli.github.com](https://cli.github.com/) |
 | Claude Code | none | none | none | `npm install -g @anthropic-ai/claude-code` with Node.js |
 | Codex CLI | none | none | none | `npm install -g @openai/codex` with Node.js, or [GitHub releases](https://github.com/openai/codex/releases) |
-| GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases) |
+| GitHub Copilot CLI | `GitHub.Copilot` | `github-copilot-cli` (community-maintained) | `copilot-cli` | `npm install -g @github/copilot` with Node.js 22 or newer, or [GitHub releases](https://github.com/github/copilot-cli/releases); the code-review host needs WinGet's or the release's program ([Copilot support](copilot-support.md#bounded-code-review-host)) |
 
 The deployer finds Git Bash in `C:\Program Files\Git`, or next to the `git` on your `PATH`, which covers Scoop and per-user Git installs. It never uses another `bash`, such as WSL's. If Git isn't on your `PATH`, set `GIT_BASH` to its `bin\bash.exe`.
 

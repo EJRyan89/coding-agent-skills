@@ -187,7 +187,7 @@ class ToolchainPolicies(unittest.TestCase):
     def test_validation_floors_are_the_documented_versions(self) -> None:
         self.assertEqual(
             {
-                "Python": (3, 11),
+                "Python": (3, 11, 4),
                 "ShellCheck": (0, 9, 0),
                 "PSScriptAnalyzer": (1, 25, 0),
                 "PowerShell 7 (pwsh)": (7, 0),
@@ -198,7 +198,7 @@ class ToolchainPolicies(unittest.TestCase):
         )
         document = (REPOSITORY_ROOT / DEPENDENCY_DOC).read_text(encoding="utf-8")
         for row in (
-            "| Python | 3.11 |",
+            "| Python | 3.11.4 |",
             "| ShellCheck | 0.9.0 |",
             "| PSScriptAnalyzer | 1.25.0 |",
             "| PowerShell 7 (`pwsh`) | 7.0 |",
