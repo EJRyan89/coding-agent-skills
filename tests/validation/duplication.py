@@ -99,8 +99,10 @@ def _literals(node: ast.expr) -> list[str | bytes] | None:
     """The items of a tuple, list, or set literal that holds only string or bytes literals, or None."""
     if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         return None
-    items = [item.value for item in node.elts if isinstance(item, ast.Constant)]
-    return items if len(items) == len(node.elts) and all(isinstance(item, (str, bytes)) for item in items) else None
+    items: list[str | bytes] = [
+        item.value for item in node.elts if isinstance(item, ast.Constant) and isinstance(item.value, (str, bytes))
+    ]
+    return items if len(items) == len(node.elts) else None
 
 
 def _constant_key(value: ast.expr, resolver: CallableResolver) -> str | None:
@@ -176,8 +178,8 @@ def duplicated_definition_problems(root: Path) -> list[str]:
             problems.append(f"{name}: {DUPLICATION_ALLOWANCE} must map each name to the reason it is allowed")
             allowed = {}
         allowances[name] = allowed
-        for key, copy in _module_copies(name, tree):
-            copies.setdefault(key, []).append(copy)
+        for key, place in _module_copies(name, tree):
+            copies.setdefault(key, []).append(place)
     found: list[str] = []
     copied: dict[str, set[str]] = {}
     for key, group in copies.items():
