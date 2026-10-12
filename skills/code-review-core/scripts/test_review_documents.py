@@ -276,6 +276,18 @@ class ExtractionTests(GitTestCase):
 
         self.assertEqual(lines(content), ["[P1 R1] | one / two |", "[P2] a b c d", "[P3] box"])
 
+    def test_runs_of_whitespace_fold_to_one_space_and_empty_tracked_changes_leave_none_behind(self) -> None:
+        spaced = "  one \t two\u00a0\u00a0three\u2028four  "
+        blank_insertion = '<w:ins w:id="1" w:author="a"><w:r><w:t xml:space="preserve"> </w:t></w:r></w:ins>'
+        blank_deletion = '<w:del w:id="2" w:author="a"><w:r><w:delText xml:space="preserve"> </w:delText></w:r></w:del>'
+        content = word_document(
+            paragraph(spaced),
+            paragraph("A", inner=blank_insertion + '<w:r><w:t xml:space="preserve">  B</w:t></w:r>'),
+            paragraph("C", inner=blank_deletion + '<w:r><w:t xml:space="preserve">\n\nD</w:t></w:r>'),
+        )
+
+        self.assertEqual(lines(content), ["[P1] one two three four", "[P2] A B", "[P3] C D"])
+
     def test_a_document_without_text_extracts_to_nothing(self) -> None:
         self.assertEqual(extract("docx", word_document(paragraph())), b"")
 

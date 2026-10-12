@@ -19,6 +19,7 @@ from urllib.parse import quote
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import flat_text
 from github_client import (
     Clock,
     CommandResult,
@@ -509,7 +510,7 @@ def main(
         activity = collect_activity(client or GitHubSearchClient(), options.org, options.user, options.months, current)
     except GitHubError as exc:
         # The reason can carry gh's multi-line stderr; the FAILED line stays one line.
-        print(f"FAILED {' '.join(str(exc).split())} [{exc.kind}]")
+        print(f"FAILED {flat_text(str(exc))} [{exc.kind}]")
         return 1
     sys.stdout.write(render_report(activity, options.org, options.user, current))
     return 0

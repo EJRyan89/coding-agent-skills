@@ -170,6 +170,21 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(["[flake8] select = E,W"], self.settings(result, "lib/.flake8"))
         self.assertEqual(["enable=require-variable-braces", "disable=SC1091"], self.settings(result, ".shellcheckrc"))
 
+    def test_a_setting_spread_over_lines_or_padded_is_listed_on_one_line(self) -> None:
+        paths = self.write(
+            {
+                "App.csproj": (
+                    '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup>'
+                    "<NoWarn>\n    CA1000;\n\tCA2000\u00a0;  CA2007\n</NoWarn>"
+                    "</PropertyGroup></Project>"
+                ),
+                "setup.cfg": "[flake8]\nextend-ignore =\n    E203,\n    W503\u2003\n",
+            }
+        )
+        result = inventory(self.root, paths)
+        self.assertEqual(["<NoWarn>CA1000; CA2000 ; CA2007</NoWarn>"], self.settings(result, "App.csproj"))
+        self.assertEqual(["[flake8] extend-ignore = E203, W503"], self.settings(result, "setup.cfg"))
+
     def test_unparseable_files_are_listed_as_unread_and_never_expanded(self) -> None:
         paths = self.write(
             {
