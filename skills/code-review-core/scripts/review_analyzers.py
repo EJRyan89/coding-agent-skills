@@ -18,11 +18,16 @@ import codecs
 import configparser
 import json
 import re
+import sys
 import tomllib
 import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from flat_text import flat_text
 
 INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400
@@ -142,7 +147,7 @@ class _Inventory:
         if len(self.settings) >= MAX_SETTINGS:
             self.truncated = True
             return
-        self.settings.append({"file": path, "setting": " ".join(text.split())})
+        self.settings.append({"file": path, "setting": flat_text(text)})
 
     def result(self) -> dict[str, Any]:
         tools = []

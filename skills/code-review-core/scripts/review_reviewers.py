@@ -27,6 +27,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import frontmatter
+from flat_text import flat_text
 from git_client import Runner, subprocess_runner
 from review_config import default_manifest_path
 from review_runtime import (
@@ -151,7 +152,7 @@ def inspect_skill(skill: str, text: str, commit: str, repository_files: set[str]
     for number, line in enumerate(text.splitlines()[body_start - 1 :], start=body_start):
         named = [stem for stem in agents if _names_agent(stem, line)]
         if DELEGATION_TEXT.search(line) or named:
-            evidence.append((number, " ".join(line.split())[:160]))
+            evidence.append((number, flat_text(line)[:160]))
         for match in PATH_TOKEN.finditer(line):
             token = next(group for group in match.groups() if group).split("#", 1)[0]
             token = token.removeprefix("./")
