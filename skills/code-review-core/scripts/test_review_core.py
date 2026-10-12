@@ -3401,7 +3401,6 @@ class RuntimeHostTests(unittest.TestCase):
             root = Path(temporary).resolve()
             command = copilot_command(
                 "copilot",
-                prompt="Review",
                 run_directory=root,
                 materialized_root=root,
                 result_path=root / "result.json",
@@ -3428,7 +3427,6 @@ class RuntimeHostTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeContractError, "result path must be inside the run directory"):
                 copilot_command(
                     "copilot",
-                    prompt="Review",
                     run_directory=run_directory,
                     materialized_root=root,
                     result_path=root / "result.json",
@@ -3482,10 +3480,12 @@ class RuntimeHostTests(unittest.TestCase):
             staging = root / "copilot-result-1.json"
             diagnostic = root / "diagnostic.jsonl"
             isolation = root / "isolation"
-            invocations: list[tuple[list[str], Path, dict[str, str]]] = []
+            invocations: list[tuple[list[str], Path, dict[str, str], str]] = []
 
-            def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
-                invocations.append((list(arguments), cwd, dict(environment)))
+            def runner(
+                arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str
+            ) -> ProcessResult:
+                invocations.append((list(arguments), cwd, dict(environment), stdin))
                 if "--version" in arguments:
                     return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
                 self.assertFalse(result_path.exists())
@@ -3506,25 +3506,23 @@ class RuntimeHostTests(unittest.TestCase):
                 base_environment={"GH_TOKEN": "test-token"},
             )
             self.assertEqual(2, len(invocations))
-            self.assertEqual(["copilot", "--version"], invocations[0][0])
+            self.assertEqual((["copilot", "--version"], ""), (invocations[0][0], invocations[0][3]))
             self.assertIn("assistant.message", diagnostic.read_text(encoding="utf-8"))
             self.assertEqual({"protocol_version": 1}, json.loads(result_path.read_text()))
             self.assertFalse(staging.exists(), "the staging file is renamed into place, never copied")
-            command, cwd, environment = invocations[-1]
+            command, cwd, environment, prompt = invocations[-1]
             # Copilot may write only its staging file; the result appears whole, by rename, or not at all.
             self.assertIn(f"--allow-tool=write({staging.as_posix()})", command)
             self.assertNotIn(f"--allow-tool=write({result_path.as_posix()})", command)
-            self.assertIn(str(staging), command[-1])
+            self.assertIn(str(staging), prompt)
             self.assertEqual(isolation / "workspace", cwd)
             self.assertEqual(str(isolation / "home"), environment["HOME"])
             self.assertEqual(str(isolation / "home"), environment["USERPROFILE"])
             self.assertEqual(str(isolation / "copilot-home"), environment["COPILOT_HOME"])
             self.assertEqual("test-token", environment["GH_TOKEN"])
-            self.assertIn(f"REVIEWER_ROOT={materialized.resolve()}", command[-1])
-            self.assertIn(
-                f"Follow REVIEWER_ROOT/{entrypoint.relative_to(materialized).as_posix()}",
-                command[-1],
-            )
+            self.assertIn(f"REVIEWER_ROOT={materialized.resolve()}", prompt)
+            self.assertIn(f"Follow REVIEWER_ROOT/{entrypoint.relative_to(materialized).as_posix()}", prompt)
+            self.assertEqual([], [argument for argument in command if "REVIEWER_ROOT" in argument])
 
     def test_copilot_result_is_promoted_only_when_valid_and_allowed(self) -> None:
         for case in ("partial", "refused"):
@@ -3541,11 +3539,12 @@ class RuntimeHostTests(unittest.TestCase):
                     arguments: Sequence[str],
                     cwd: Path,
                     environment: Mapping[str, str],
+                    stdin: str,
                     *,
                     case: str = case,
                     staging: Path = staging,
                 ) -> ProcessResult:
-                    del cwd, environment
+                    del cwd, environment, stdin
                     if "--version" in arguments:
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
                     content = '{"protocol_version": 1, "fin' if case == "partial" else '{"protocol_version": 1}'
@@ -3620,8 +3619,10 @@ class RuntimeHostTests(unittest.TestCase):
             request = root / "request.json"
             self._write_request_with_snapshot(root, request)
 
-            def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
-                del cwd, environment
+            def runner(
+                arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str
+            ) -> ProcessResult:
+                del cwd, environment, stdin
                 self.assertIn("--version", arguments)
                 return ProcessResult(0, "GitHub Copilot CLI 1.0.87\n", "")
 
@@ -3651,11 +3652,12 @@ class RuntimeHostTests(unittest.TestCase):
                     arguments: Sequence[str],
                     cwd: Path,
                     environment: Mapping[str, str],
+                    stdin: str,
                     *,
                     timed_out: str = timed_out,
                     partial: bytes | None = partial,
                 ) -> ProcessResult:
-                    del cwd, environment
+                    del cwd, environment, stdin
                     if "--version" in arguments and timed_out == "review":
                         return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
                     raise subprocess.TimeoutExpired(arguments, 1800, output=partial, stderr="still working")

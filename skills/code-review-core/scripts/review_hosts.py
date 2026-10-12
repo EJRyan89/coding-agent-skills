@@ -23,7 +23,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import ProcessStatus, hidden_window, same_process, winget_copilot
+from review_process import ProcessStatus, hidden_window, same_process, shell_script, winget_copilot
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
@@ -43,7 +43,8 @@ class ProcessResult:
     stderr: str
 
 
-Runner = Callable[[Sequence[str], Path, Mapping[str, str]], ProcessResult]
+# A command's arguments, working directory, environment, and the text it reads on stdin, which is all it reads there.
+Runner = Callable[[Sequence[str], Path, Mapping[str, str], str], ProcessResult]
 Promote = Callable[[Path, Path], bool]
 
 MINIMUM_COPILOT_CLI_VERSION = (1, 0, 88)
@@ -71,11 +72,12 @@ class HostState:
     reason: str | None = None
 
 
-def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> ProcessResult:
+def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
     process = subprocess.run(
         list(arguments),
         cwd=cwd,
         env=dict(environment),
+        input=stdin,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -194,10 +196,11 @@ def _run_bounded(
     cwd: Path,
     environment: Mapping[str, str],
     diagnostic_path: Path,
+    stdin: str = "",
 ) -> ProcessResult:
     """Run Copilot; a timeout keeps its partial output and becomes a contract error."""
     try:
-        return runner(arguments, cwd, environment)
+        return runner(arguments, cwd, environment, stdin)
     except subprocess.TimeoutExpired as exc:
         # The partial output is bytes or text depending on the platform, or absent.
         stdout, stderr = (
@@ -211,12 +214,19 @@ def _run_bounded(
 
 
 def find_copilot() -> str:
-    executable = shutil.which("copilot")
-    if executable:
-        return executable
+    """Copilot CLI's own program: the one PATH names, else WinGet's. An npm install puts a `copilot.cmd` shim on PATH,
+    which Windows would start through cmd.exe, so a shell script is never returned."""
+    found = shutil.which("copilot")
+    if found and not shell_script(found):
+        return found
     candidate = winget_copilot()
     if candidate is not None:
         return str(candidate)
+    if found:
+        raise RuntimeContractError(
+            f"GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: {found}; install "
+            "the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+        )
     raise RuntimeContractError("GitHub Copilot CLI is not available")
 
 
@@ -304,7 +314,6 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
 def copilot_command(
     executable: str,
     *,
-    prompt: str,
     run_directory: Path,
     materialized_root: Path,
     result_path: Path,
@@ -320,6 +329,9 @@ def copilot_command(
     result_path_resolved = result_path.resolve(strict=False)
     if not result_path_resolved.is_relative_to(run_directory_resolved):
         raise RuntimeContractError("Copilot result path must be inside the run directory")
+    # No prompt argument: the prompt, which carries review-comment bodies, prior findings, and diff paths, goes on
+    # stdin, which Copilot CLI reads as its prompt in non-interactive mode when no -p is given. A command line holds
+    # none of that text, so no program's parsing of one can turn it into a command.
     return [
         executable,
         f"--add-dir={run_directory}",
@@ -344,8 +356,6 @@ def copilot_command(
         "--deny-tool=url",
         "--deny-tool=memory",
         "--deny-tool=ask_user",
-        "--prompt",
-        prompt,
     ]
 
 
@@ -385,7 +395,6 @@ def run_copilot(
         runner,
         copilot_command(
             executable,
-            prompt=prompt,
             run_directory=run_directory,
             materialized_root=materialized_root,
             result_path=staging_path,
@@ -393,6 +402,7 @@ def run_copilot(
         execution_directory,
         environment,
         diagnostic_path,
+        stdin=prompt,
     )
     _write_diagnostic(diagnostic_path, result)
     _require_copilot_result(result, staging_path, diagnostic_path)

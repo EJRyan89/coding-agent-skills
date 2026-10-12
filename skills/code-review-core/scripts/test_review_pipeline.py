@@ -2766,7 +2766,7 @@ class CopilotHostTests(PipelineFixture):
         self.alive[pid] = 7
         return pid
 
-    def copilot(self, arguments: Sequence[str], cwd: Path, environment: Any) -> ProcessResult:
+    def copilot(self, arguments: Sequence[str], cwd: Path, environment: Any, stdin: str) -> ProcessResult:
         if "--version" in arguments:
             return ProcessResult(0, "GitHub Copilot CLI 1.2.3\n", "")
         self.copilot_calls += 1
