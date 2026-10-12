@@ -75,6 +75,13 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
     return identity
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "probe_pdftotext": "probes the pdftotext path its caller resolved; deployer/tools.py and code-review-core's "
+    "review_documents.py look it up by name, and the policy reads the program there",
+}
+
+
 def probe_pdftotext(path: str) -> PdfIdentity:
     """Check this exact resolved path with no document or stdin, bounded combined output, and a deadline."""
     try:

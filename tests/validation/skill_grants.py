@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from skill_layout import embedded_program_problems, output_placeholder_problems
-from skill_scripts import CommandReader
+from skill_scripts import command_reader
 from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT, skills_by_name
 
 from deployer import render
@@ -115,7 +115,7 @@ def repository_code_declaration_problems(root: Path) -> list[str]:
         name = script.relative_to(root).as_posix()
         if len(assigned) != 1 or assigned[0] not in tree.body or not skill_inventory.runs_repository_code(script):
             problems.append(f"{name}: {declaration} must be one module-level assignment of a non-empty reason")
-        reader = CommandReader(tree)
+        reader = command_reader(script)
         problems += reader.problems(name)
         if not reader.starts_process():
             problems.append(f"{name}: declares {declaration} but starts no process; remove the declaration")

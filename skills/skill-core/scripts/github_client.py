@@ -161,6 +161,15 @@ def _bounded(
         raise GitHubError(f"GitHub CLI could not be started: {exc}", kind="execution") from exc
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "subprocess_runner": "GitHubClient's default runner, which runs the gh commands GitHubClient builds; the "
+    "policy reads every GitHubClient as running gh",
+    "subprocess_downloader": "GitHubClient's runner for a download, which runs the gh commands GitHubClient builds; "
+    "the policy reads every GitHubClient as running gh",
+}
+
+
 def subprocess_runner(
     arguments: Sequence[str], *, timeout: float = DEFAULT_TIMEOUT_SECONDS, cwd: Path | None = None
 ) -> CommandResult:

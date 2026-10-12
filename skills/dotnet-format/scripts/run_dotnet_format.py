@@ -68,6 +68,13 @@ class Completed:
 Runner = Callable[[Sequence[str], Path, float], Completed]
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "subprocess_runner": "the default runner of Services, which runs the dotnet or dotnet-format command command()"
+    " builds; the policy reads both programs there",
+}
+
+
 def subprocess_runner(arguments: Sequence[str], cwd: Path, timeout: float) -> Completed:
     """Run the formatter with no stdin and every prompt off, and return its exit code and output.
 

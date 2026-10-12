@@ -67,6 +67,13 @@ class InputRunner(Protocol):
     def __call__(self, command: Sequence[str], timeout: float, *, input_bytes: bytes) -> GitResult: ...
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "subprocess_runner": "GitClient's default runner, which runs the git commands GitClient builds; the policy "
+    "reads every GitClient as running git",
+}
+
+
 def subprocess_runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
     """Run a command through the bounded, non-interactive layer, classifying why it could not run or finish.
 

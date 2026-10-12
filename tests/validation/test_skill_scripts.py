@@ -13,10 +13,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import skill_scripts
 from git_test_base import GitTestCase
 from skill_scripts import (
     CLIENT_CLASSES,
@@ -41,15 +43,35 @@ def mark_skills(root: Path) -> Path:
     return root
 
 
+COMMANDS_DOC = '"Commands skills may run" in docs/adding-a-skill.md'
+
+
+def unreadable(path: str, line: int, description: str) -> str:
+    """The finding the command policies report for a command whose program they cannot read."""
+    return (
+        f"{path}:{line} cannot read {description}; name the program with a literal or a lookup, or state why in "
+        f"COMMANDS_ALLOWED; see {COMMANDS_DOC}"
+    )
+
+
 class SkillScriptsFixtures(GitTestCase):
     def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(self) -> None:
         for callable_name in (*COMMAND_RUNNERS, *CLIENT_CLASSES):
             with self.subTest(callable_name=callable_name):
                 module, function = callable_name.split(".")
-                tree = ast.parse(f"import {module} as process\nstart = process.{function}\nstart(command)\n")
+                # The command goes where the runner takes it: os's spawn calls take a mode first.
+                position = COMMAND_RUNNERS[callable_name][0] if callable_name in COMMAND_RUNNERS else 0
+                arguments = ", ".join([*(["mode"] * position), "command"])
+                tree = ast.parse(f"import {module} as process\nstart = process.{function}\nstart({arguments})\n")
                 reader = CommandReader(tree)
                 self.assertTrue(reader.starts_process())
-                self.assertEqual([], reader.problems("start.py"))
+                # A runner given a command the module never binds reports it; a client's argument is not a command.
+                expected = (
+                    [unreadable("start.py", 3, "the program in `command`, which the module binds to nothing it reads")]
+                    if callable_name in COMMAND_RUNNERS
+                    else []
+                )
+                self.assertEqual(expected, reader.problems("start.py"))
                 self.assertFalse(CommandReader(ast.parse(f"from {module} import {function}\n")).starts_process())
 
     def test_command_reader_keeps_only_the_f_strings_initial_literal_arguments(self) -> None:
@@ -65,8 +87,10 @@ class SkillScriptsFixtures(GitTestCase):
                 if not isinstance(statement, ast.Expr):
                     self.fail("Expected an f-string expression")
                 literals = CommandReader(tree).program_literals(statement.value)
-                self.assertEqual([prefix], [node.value for node in literals if isinstance(node, ast.Constant)])
-                self.assertEqual([1], [node.lineno for node in literals])
+                constants = [node for node in literals if isinstance(node, ast.Constant)]
+                self.assertEqual(literals, constants)
+                self.assertEqual([prefix], [node.value for node in constants])
+                self.assertEqual([1], [node.lineno for node in constants])
 
     def test_client_command_policy_reads_f_string_prefixes_through_runners_and_bound_names(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -175,11 +199,346 @@ class SkillScriptsFixtures(GitTestCase):
                     },
                 )
                 expected = [
-                    "skills/alpha/scripts/tool.py:3 cannot read f-string command without a literal program prefix; "
-                    'see "Commands skills may run" in docs/adding-a-skill.md'
+                    unreadable("skills/alpha/scripts/tool.py", 3, "f-string command without a literal program prefix")
                 ]
                 self.assertEqual(expected, client_command_problems(root))
                 self.assertEqual(expected, skill_command_problems(root, {"gh"}, {"git", "python"}))
+
+    def test_command_policies_read_format_join_and_split_commands_and_report_one_without_a_program(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import shlex\n"
+                    "import subprocess\n"
+                    'subprocess.run("gh api %s" % endpoint)\n'  # 3
+                    'subprocess.run("gh api {}".format(endpoint))\n'  # 4
+                    'TEMPLATE = "git log {revision}"\n'  # 5
+                    "subprocess.run(TEMPLATE.format(revision=revision), shell=True)\n"
+                    'subprocess.run(" ".join(("gh", "auth", "status")), shell=True)\n'  # 7
+                    'subprocess.run(shlex.split("git status --short"))\n'  # 8
+                    'subprocess.run(shlex.join(("jq", ".")), shell=True)\n'  # 9
+                    'subprocess.run("%s api" % program)\n'  # 10
+                    'subprocess.run("{} api".format(program))\n'  # 11
+                    'subprocess.run(" ".join(parts))\n',  # 12
+                },
+            )
+            unread = [
+                unreadable("skills/alpha/scripts/tool.py", line, description)
+                for line, description in (
+                    (10, "%-format command without a literal program prefix"),
+                    (11, ".format() command without a literal program prefix"),
+                    (12, "the program in `parts`, which the module binds to nothing it reads"),
+                )
+            ]
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            self.assertEqual(
+                [
+                    *unread,
+                    *(
+                        f"skills/alpha/scripts/tool.py:{line} runs {command} itself; {client}; see {doc}"
+                        for line, command, client in (
+                            (3, "gh", gh),
+                            (4, "gh", gh),
+                            (5, "git", git),
+                            (7, "gh", gh),
+                            (8, "git", git),
+                        )
+                    ),
+                ],
+                client_command_problems(root),
+            )
+            self.assertEqual(
+                [
+                    *unread,
+                    "skill alpha runs gh without declaring it in tools",
+                    f"skill alpha runs jq, which a standard install lacks; see {COMMANDS_DOC}",
+                ],
+                skill_command_problems(root, {"gh"}, {"git", "python"}),
+            )
+
+    def test_command_policies_follow_a_parameter_to_the_calls_that_pass_it(self) -> None:
+        script = (
+            "import subprocess\n"
+            "from bounded_process import streaming\n"
+            "def _run(command):\n"
+            "    return subprocess.run(command, check=False)\n"
+            '_run(["yq", "."])\n'
+            '_run(command=["rg", "x"])\n'
+            'def _probe(path, arguments=("-v",)):\n'
+            "    with streaming([path, *arguments]) as running:\n"
+            "        return running\n"
+            "def probe_tool(path):\n"  # 10: the pdf_tool shape, whose callers are in other modules
+            "    return _probe(path)\n"
+            "def checked(program):\n"  # 12: a public function another module may call too
+            '    return subprocess.run([program, "--version"])\n'
+            'checked("perl")\n'
+            "def handed(command):\n"  # 15: a function handed on, so not every call is in view
+            "    subprocess.run(command)\n"
+            "RUNNERS = [handed]\n"
+            'handed(["ruby"])\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": script,
+                },
+            )
+            unread = [
+                unreadable("skills/alpha/scripts/tool.py", line, f"the program in parameter {name}, {reason}")
+                for line, name, reason in (
+                    (10, "path", "which no call in this module passes"),
+                    (12, "program", "which other modules may pass"),
+                    (15, "command", "whose function is passed on"),
+                )
+            ]
+            self.assertEqual(unread, client_command_problems(root))
+            self.assertEqual(
+                [
+                    *unread,
+                    *(
+                        f"skill alpha runs {name}, which a standard install lacks; see {COMMANDS_DOC}"
+                        for name in ("perl", "rg", "ruby", "yq")
+                    ),
+                ],
+                skill_command_problems(root, {"gh"}, {"git", "python"}),
+            )
+
+    def test_command_policies_hold_commands_allowed_to_its_shape_and_to_what_it_excuses(self) -> None:
+        script = (
+            "import subprocess\n"
+            "def probe_tool(path):\n"
+            '    return subprocess.run([path, "-v"])\n'
+            "def checked(program):\n"
+            "    return subprocess.run(program)\n"
+        )
+        for allowance, expected in (
+            # Each function the module states a reason for passes, and a stated function that starts no unread
+            # command is reported, so an allowance cannot outlive the code it excuses.
+            (
+                '{"probe_tool": "runs the tool its caller found", "stale": "no longer needed"}',
+                [
+                    unreadable(
+                        "skills/alpha/scripts/tool.py",
+                        4,
+                        "the program in parameter program, which no call in this module passes",
+                    ),
+                    "skills/alpha/scripts/tool.py: COMMANDS_ALLOWED allows stale, which starts no command whose "
+                    "program is unread",
+                ],
+            ),
+            # A reason that says nothing, or an allowance that is not a literal dictionary, sanctions nothing.
+            (
+                '{"probe_tool": " "}',
+                [
+                    "skills/alpha/scripts/tool.py: COMMANDS_ALLOWED must map each scope to the reason its program "
+                    "is unread",
+                    unreadable(
+                        "skills/alpha/scripts/tool.py",
+                        2,
+                        "the program in parameter path, which no call in this module passes",
+                    ),
+                    unreadable(
+                        "skills/alpha/scripts/tool.py",
+                        4,
+                        "the program in parameter program, which no call in this module passes",
+                    ),
+                ],
+            ),
+        ):
+            with self.subTest(allowance=allowance), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_fixture_tree(
+                    root,
+                    {
+                        "deploy-meta/alpha.json": "{}",
+                        "skills/alpha/SKILL.md": "# alpha\n",
+                        "skills/alpha/scripts/tool.py": f"{script}COMMANDS_ALLOWED = {allowance}\n",
+                    },
+                )
+                self.assertEqual(expected, client_command_problems(root))
+                self.assertEqual(expected, skill_command_problems(root, {"gh"}, {"git", "python"}))
+
+    def test_command_policies_read_a_runner_the_table_names_at_its_callers_instead(self) -> None:
+        # bounded_process.run_bounded is a COMMAND_RUNNERS entry, so its command parameter is read where each caller
+        # passes it; the same parameter in another module, or another function of the module, is unread.
+        runner = "import subprocess\ndef run_bounded(command, timeout):\n    return subprocess.Popen(command)\n"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/bounded_process.py": f"{runner}def other(command):\n"
+                    "    return subprocess.Popen(command)\n",
+                    "skills/alpha/scripts/elsewhere.py": runner,
+                },
+            )
+            self.assertEqual(
+                [
+                    unreadable(
+                        "skills/alpha/scripts/bounded_process.py",
+                        4,
+                        "the program in parameter command, which no call in this module passes",
+                    ),
+                    unreadable(
+                        "skills/alpha/scripts/elsewhere.py",
+                        2,
+                        "the program in parameter command, which no call in this module passes",
+                    ),
+                ],
+                client_command_problems(root),
+            )
+
+    def test_command_policies_read_os_exec_and_spawn_through_aliases_and_keywords(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import os\n"
+                    "import os as system\n"
+                    "from os import execvp as replace, spawnv\n"
+                    'os.execv("git", ["status"])\n'  # 4
+                    'system.execlp("gh", "gh", "api")\n'  # 5
+                    'replace(file="git", args=["log"])\n'  # 6
+                    'spawnv(os.P_WAIT, "gh", ["api"])\n'  # 7
+                    'system.spawnlp(mode, file="git")\n'  # 8
+                    'os.posix_spawn("gh", ["api"], {})\n'  # 9
+                    "os.execvp(program, [program])\n"  # 10
+                    'system.spawnve(mode, "jq", ["."], {})\n',  # 11
+                },
+            )
+            doc = '"Script results" in docs/adding-a-skill.md'
+            git = "run it through skill-core's git_client.py's GitClient, which bounds it and turns prompts off"
+            gh = "run it through skill-core's github_client.py's GitHubClient, which bounds it and turns prompts off"
+            unread = unreadable(
+                "skills/alpha/scripts/tool.py",
+                10,
+                "the program in `program`, which the module binds to nothing it reads",
+            )
+            self.assertEqual(
+                [
+                    unread,
+                    *(
+                        f"skills/alpha/scripts/tool.py:{line} runs {command} itself; {client}; see {doc}"
+                        for line, command, client in (
+                            (4, "git", git),
+                            (5, "gh", gh),
+                            (6, "git", git),
+                            (7, "gh", gh),
+                            (8, "git", git),
+                            (9, "gh", gh),
+                        )
+                    ),
+                ],
+                client_command_problems(root),
+            )
+            self.assertEqual(
+                [
+                    unread,
+                    "skill alpha runs gh without declaring it in tools",
+                    f"skill alpha runs jq, which a standard install lacks; see {COMMANDS_DOC}",
+                ],
+                skill_command_problems(root, {"gh"}, {"git", "python"}),
+            )
+
+    def test_command_policies_read_each_other_way_a_program_reaches_a_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/alpha.json": "{}",
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/tool.py": "import subprocess\n"
+                    "import sys\n"
+                    'subprocess.run([sys.executable, "-B", "x.py"])\n'  # the interpreter is python
+                    'subprocess.run(["status"], executable="perl")\n'  # executable= replaces the program
+                    'COMMANDS = (["node", "x"], ["ruby", "y"])\n'
+                    "for command in COMMANDS:\n"
+                    "    subprocess.run(command)\n"
+                    'subprocess.run(["rg", "x"] if flag else ["jq", "y"])\n'
+                    "class Runner:\n"
+                    "    def __init__(self):\n"
+                    '        self.program = "yq"\n'
+                    "    def go(self):\n"
+                    '        subprocess.run([self.program, "api"])\n'
+                    "subprocess.run(**options)\n"  # 14
+                    "later = []\n"  # 15: filled in by a call the reader does not follow
+                    'later.append("git")\n'
+                    "subprocess.run(later)\n"
+                    "subprocess.run(sys.argv[1:])\n"  # 18
+                    'with open("x") as handle:\n'
+                    "    subprocess.run(handle)\n",  # 20
+                },
+            )
+            path = "skills/alpha/scripts/tool.py"
+            self.assertEqual(
+                [
+                    unreadable(path, 14, "the program in `subprocess.run(**options)`, which unpacks its arguments"),
+                    unreadable(path, 15, "the program in `[]`, which the module fills in elsewhere"),
+                    unreadable(path, 18, "the program in `sys.argv[1:]`"),
+                    unreadable(path, 20, "the program in `handle`, which the module binds to nothing it reads"),
+                    *(
+                        f"skill alpha runs {name}, which a standard install lacks; see {COMMANDS_DOC}"
+                        for name in ("jq", "node", "perl", "python", "rg", "ruby", "yq")
+                    ),
+                ],
+                skill_command_problems(root, {"gh"}, {"git"}),
+            )
+
+    def test_command_reader_is_built_once_per_content_and_again_when_a_file_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deploy-meta/core.json": json.dumps({"tools": ["gh"], "selectable": False}),
+                    "deploy-meta/alpha.json": json.dumps({"tools": ["gh"], "skill_deps": ["core"]}),
+                    "deploy-meta/beta.json": json.dumps({"tools": ["gh"], "skill_deps": ["core"]}),
+                    "skills/core/SKILL.md": "# core\n",
+                    "skills/core/scripts/github.py": 'import subprocess\nsubprocess.run(["gh", "api"])\n',
+                    "skills/alpha/SKILL.md": "# alpha\n",
+                    "skills/alpha/scripts/run.py": "import github\n",
+                    "skills/beta/SKILL.md": "# beta\n",
+                    "skills/beta/scripts/run.py": "import github  # beta\n",
+                },
+            )
+            skill_scripts._read_commands.cache_clear()
+            with mock.patch.object(
+                skill_scripts.CommandReader, "__init__", autospec=True, side_effect=skill_scripts.CommandReader.__init__
+            ) as built:
+                # The policies read core's github.py for each skill that reaches it, and the client policy reads every
+                # script again, yet each content is read once in the run.
+                self.assertEqual([], skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}))
+                client_command_problems(root)
+                self.assertEqual(3, built.call_count)
+                github = root / "skills" / "core" / "scripts" / "github.py"
+                github.write_text('import subprocess\nsubprocess.run(["copilot", "api"])\n', encoding="utf-8")
+                self.assertEqual(
+                    [
+                        "skill alpha runs copilot through skills/core/scripts/github.py without declaring it in tools",
+                        "skill alpha declares tool gh but never runs it",
+                        "skill beta runs copilot through skills/core/scripts/github.py without declaring it in tools",
+                        "skill beta declares tool gh but never runs it",
+                        "skill core runs copilot without declaring it in tools",
+                        "skill core declares tool gh but never runs it",
+                    ],
+                    skill_command_problems(root, {"copilot", "gh"}, {"git", "python"}),
+                )
+                self.assertEqual(4, built.call_count)
 
     def test_client_command_policy_resolves_assigned_runners_and_lookups_in_each_scope(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

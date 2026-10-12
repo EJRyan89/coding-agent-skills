@@ -78,6 +78,13 @@ class HostState:
     reason: str | None = None
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "subprocess_runner": "the default Copilot CLI runner, which this module's calls reach through _run_bounded, "
+    "where the policy reads the program each passes",
+}
+
+
 def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
     """Run Copilot CLI with `stdin` as all it reads, without a window, keeping at most COPILOT_OUTPUT_BYTES of each
     output stream with the cut named; at COPILOT_TIMEOUT_SECONDS it is killed and subprocess.TimeoutExpired raised.
