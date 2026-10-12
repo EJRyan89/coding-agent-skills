@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any, ClassVar
@@ -14,6 +15,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_specialists as rs
+from review_process import process_status
 from review_records import validate_adapter_result
 from review_runtime import (
     RuntimeContractError,
@@ -1805,20 +1807,25 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         (snapshot / "source-snapshot.json").write_text(json.dumps(metadata), encoding="utf-8")
         self.assertIn("compat-review", [r["id"] for r in self.plan()["roles"]])
 
-    def test_a_condition_script_that_never_exits_is_killed_without_writing_a_plan(self) -> None:
-        (self.checkout / "tools/window.py").write_text(
-            "import json, os, sys, threading\n"
-            "print(json.dumps({'argv': sys.argv, 'cwd': os.getcwd()}), flush=True)\n"
-            "threading.Event().wait()\n",
-            encoding="utf-8",
-        )
-        trusted = self.commit(self.checkout, "nonterminating condition")
-        self.reviewer = self.root / "timeout-reviewer"
+    def use_condition(self, program: str, name: str) -> None:
+        """Make the window condition `program`, committed at a new trusted commit and materialized as the reviewer."""
+        (self.checkout / "tools/window.py").write_text(program, encoding="utf-8")
+        trusted = self.commit(self.checkout, name)
+        self.reviewer = self.root / f"{name}-reviewer"
         materialize_reviewer(
             self.checkout,
             trusted,
             load_manifest_from_commit(self.checkout, trusted, ".review/manifest.json"),
             self.reviewer,
+        )
+
+    def test_a_condition_script_that_never_exits_is_killed_without_writing_a_plan(self) -> None:
+        self.use_condition(
+            "import json, os, subprocess, sys, threading\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(json.dumps({'argv': sys.argv, 'cwd': os.getcwd(), 'child': child.pid}), flush=True)\n"
+            "threading.Event().wait()\n",
+            "nonterminating",
         )
         processes: list[subprocess.Popen[str]] = []
         popen = subprocess.Popen
@@ -1828,12 +1835,14 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
             processes.append(process)
             return process
 
+        began = time.monotonic()
         with (
             mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", 5),
             mock.patch.object(rs.subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
         ):
             self.plan()
+        self.assertLess(time.monotonic() - began, 60, "no wait on the program, which holds no pipe to wait on")
         self.assertEqual("Condition script timed out: tools/window.py", str(raised.exception))
         expired = raised.exception.__cause__
         if not isinstance(expired, subprocess.TimeoutExpired):
@@ -1843,16 +1852,62 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         work = self.root / "work-initial"
         self.assertEqual([sys.executable, "-B", str(script), "--source-root", str(snapshot)], expired.cmd)
         self.assertEqual(5, expired.timeout)
+        started = json.loads(expired.output)
         self.assertEqual(
             {"argv": [str(script), "--source-root", str(snapshot)], "cwd": str(work)},
-            json.loads(expired.output),
+            {key: started[key] for key in ("argv", "cwd")},
             "the condition reached its indefinite wait, not merely the interpreter's startup",
         )
         self.assertEqual(1, len(processes))
-        self.assertIsNotNone(processes[0].returncode, "subprocess.run killed and reaped the condition before refusing")
+        self.assertIsNotNone(processes[0].returncode, "the condition was killed and reaped before refusing")
         self.assertNotEqual(0, processes[0].returncode)
+        deadline = time.monotonic() + 20
+        while process_status(started["child"]).alive and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(process_status(started["child"]).alive, "the program the condition started is gone too")
         self.assertTrue(self.request_path.is_file(), "planning consumed a real written request")
         self.assertEqual([], list(work.iterdir()), "no plan, prompt, or result is published")
+
+    def test_a_condition_scripts_output_past_its_limit_is_cut_and_the_cut_named(self) -> None:
+        self.use_condition("import sys\nsys.stderr.write('e' * 100000)\nsys.exit(2)\n", "talkative")
+        with (
+            mock.patch.object(rs, "CONDITION_OUTPUT_BYTES", 16),
+            self.assertRaises(rs.SpecialistError) as raised,
+        ):
+            self.plan()
+        self.assertEqual(
+            "Condition script failed: tools/window.py: eeeeeeeeeeeeeeee\n"
+            "[output cut: 99984 bytes past the first 16 not kept]",
+            str(raised.exception),
+        )
+
+    def test_a_condition_script_reads_no_stdin_of_the_reviews(self) -> None:
+        self.use_condition(
+            "import sys\ngiven = sys.stdin.read()\nprint(repr(given))\nsys.exit(0 if given == '' else 2)\n",
+            "reading",
+        )
+        write_adapter_request(self.request_path, build_adapter_request(mode="initial", **self.request_args))
+        # The review plans in a process of its own whose stdin holds text, which a condition that inherited it would
+        # read.
+        planning = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, {str(Path(rs.__file__).parent)!r})\n"
+            "import review_specialists as rs\n"
+            "plan = rs.build_plan(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))\n"
+            "print(json.dumps([role['id'] for role in plan['roles']]))\n"
+        )
+        planned = subprocess.run(
+            [sys.executable, "-B", "-c", planning, str(self.request_path), str(self.reviewer), str(self.root / "work")],
+            input="the review's stdin\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(0, planned.returncode, planned.stderr)
+        self.assertIn("compat-review", json.loads(planned.stdout), "the condition read an empty stdin and opened")
 
     def test_missing_result_and_tampered_reviewer_fail(self) -> None:
         plan = self.plan()

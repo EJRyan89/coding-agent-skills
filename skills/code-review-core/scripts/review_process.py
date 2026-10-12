@@ -1,19 +1,22 @@
-"""Process identity and detached starts for the Copilot CLI host. Only Windows is implemented.
+"""Process identity, detached starts, and process trees for the review's processes. Only Windows is implemented.
 
 A process is identified by its PID and its start time, as the deployer's lock does in
 deployer/platform_support.py; a deployed skill cannot import the deployer, so this is its own copy. Every
-operating-system-specific step of the host's lifecycle lives here, and so does where WinGet installs Copilot CLI.
+operating-system-specific step of the host's lifecycle lives here, and so does where WinGet installs Copilot CLI and
+the job object that ends a condition script's or Copilot CLI's descendants with it.
 """
 
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import warnings
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -87,6 +90,112 @@ class HiddenWindow(TypedDict):
 def hidden_window() -> HiddenWindow:
     """Keyword arguments for subprocess that start a console program without a window of its own."""
     return {"creationflags": CREATE_NO_WINDOW}
+
+
+PROCESS_TERMINATE = 0x0001
+PROCESS_SET_QUOTA = 0x0100
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [
+        ("PerProcessUserTimeLimit", ctypes.c_int64),
+        ("PerJobUserTimeLimit", ctypes.c_int64),
+        ("LimitFlags", ctypes.c_uint32),
+        ("MinimumWorkingSetSize", ctypes.c_size_t),
+        ("MaximumWorkingSetSize", ctypes.c_size_t),
+        ("ActiveProcessLimit", ctypes.c_uint32),
+        ("Affinity", ctypes.c_size_t),
+        ("PriorityClass", ctypes.c_uint32),
+        ("SchedulingClass", ctypes.c_uint32),
+    ]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [
+        ("BasicLimitInformation", _BasicLimits),
+        ("IoInfo", ctypes.c_uint64 * 6),
+        ("ProcessMemoryLimit", ctypes.c_size_t),
+        ("JobMemoryLimit", ctypes.c_size_t),
+        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+        ("PeakJobMemoryUsed", ctypes.c_size_t),
+    ]
+
+
+class JobTree:
+    """A command and every process it starts, held in one Windows job object: a `ProcessTree` for skill-core's
+    `run_bounded`. Leaving `hold` ends every process of the job still running, and the job ends them too if this
+    process dies first, since it kills its processes when its last handle closes.
+
+    A process joins the job right after it starts, before it has loaded enough to start a program of its own, and
+    every process it then starts joins with it. One that cannot join, as when it is already gone, is held without a
+    job, and the caller's kill on timeout still ends the command itself.
+    """
+
+    def __init__(self, *, hidden_window: bool = False) -> None:
+        self.hidden_window = hidden_window
+
+    def start_options(self) -> dict[str, Any]:
+        return {"creationflags": CREATE_NO_WINDOW} if self.hidden_window else {}
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+        job = _job_holding(process.pid)
+        try:
+            yield
+        finally:
+            if job is not None:
+                _end_job(job)
+
+
+def _kernel32() -> Any:
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel32
+
+
+def _job_holding(pid: int) -> int | None:
+    """A new job that kills its processes when closed, holding the process `pid`; None when it cannot be made.
+
+    The caller's Popen still holds the process's handle, so its PID names no other process here.
+    """
+    kernel32 = _kernel32()
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    limits = _ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    process = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+    joined = bool(
+        process
+        and kernel32.SetInformationJobObject(
+            job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
+        )
+        and kernel32.AssignProcessToJobObject(job, process)
+    )
+    if process:
+        kernel32.CloseHandle(process)
+    if not joined:
+        kernel32.CloseHandle(job)
+        return None
+    return int(job)
+
+
+def _end_job(job: int) -> None:
+    """End every process of the job still running, and close it."""
+    kernel32 = _kernel32()
+    kernel32.TerminateJobObject(job, 1)
+    kernel32.CloseHandle(job)
 
 
 def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:

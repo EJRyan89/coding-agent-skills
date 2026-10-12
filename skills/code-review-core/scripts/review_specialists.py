@@ -19,9 +19,13 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from bounded_process import run_bounded
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
+from review_process import JobTree
 from review_records import (
     ANALYZER_RULE,
     MODEL_RULE,
@@ -53,6 +57,8 @@ from review_runtime import (
 
 PLAN_SCHEMA_VERSION = 1
 CONDITION_TIMEOUT_SECONDS = 120
+# Bytes of each of a condition script's output streams kept for a failure's detail; the rest is cut and the cut named.
+CONDITION_OUTPUT_BYTES = 64 * 1024
 SEVERITY = {
     "MUST_FIX": "MUST_FIX",
     "MUST FIX": "MUST_FIX",
@@ -312,15 +318,19 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
 
 
 def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work: Path) -> bool:
+    """Run a condition script: exit 0 holds, 1 does not, and anything else fails the review.
+
+    It reads no stdin, at most CONDITION_OUTPUT_BYTES of each output stream is kept, for the failure's detail, and
+    it is killed at CONDITION_TIMEOUT_SECONDS; every process it started is ended with it either way.
+    """
     path = reviewer_root.joinpath(*PurePosixPath(script).parts)
     try:
-        process = subprocess.run(
+        process = run_bounded(
             [sys.executable, "-B", str(path), "--source-root", str(source_root)],
+            CONDITION_TIMEOUT_SECONDS,
             cwd=work,
-            capture_output=True,
-            text=True,
-            timeout=CONDITION_TIMEOUT_SECONDS,
-            check=False,
+            output_limit=CONDITION_OUTPUT_BYTES,
+            tree=JobTree(),
         )
     except subprocess.TimeoutExpired as exc:
         raise SpecialistError(f"Condition script timed out: {script}") from exc
@@ -328,7 +338,8 @@ def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work
         return True
     if process.returncode == 1:
         return False
-    detail = process.stderr.strip() or process.stdout.strip() or f"exit code {process.returncode}"
+    stderr, stdout = (stream.decode("utf-8", "replace").strip() for stream in (process.stderr, process.stdout))
+    detail = stderr or stdout or f"exit code {process.returncode}"
     raise SpecialistError(f"Condition script failed: {script}: {detail}")
 
 

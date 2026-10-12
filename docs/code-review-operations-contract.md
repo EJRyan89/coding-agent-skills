@@ -55,7 +55,7 @@ Repository targeting is always one or more full `owner/repo` identities or a nam
 - Review source is materialized from the exact PR head into a hash-verified snapshot. On the checkout route it is lazy: the changed files and the analyzer settings are written up front, and any other file the head holds is written only when a reviewer asks for it, from the commit by its blob id and checked against that id. Agent configuration and instruction paths from the PR head are excluded; only reviewer-manifest files from the trusted base may instruct the reviewer.
 - The suite-owned generic reviewer and result schema are resolved in the installed `code-review-core` skill's `references/` directory. They never depend on a configured repository checkout, its current branch, or a hard-coded main-worktree path.
 
-When configuration selects `copilot-cli`, the pipeline runs the bounded host in `code-review-core/scripts/review_hosts.py`, never Copilot directly. The host requires Copilot CLI 1.0.88 or newer, verifies the exact file set and hashes of every materialized reviewer resource, requires the diff and source snapshot to be inside the isolated run directory, runs with isolated `HOME`, `USERPROFILE`, `COPILOT_HOME`, and working directory values, disables ambient instructions and MCP servers, and grants write access only to its attempt's staging file, which the host renames to the result path once it is a JSON object and the role has not been set aside. `dispatch` starts the host detached and `wait` follows it, so no runtime's command time limit stops a review. Authentication tokens inherited from the invoking environment remain available by design, so treat this as configuration isolation rather than credential isolation.
+When configuration selects `copilot-cli`, the pipeline runs the bounded host in `code-review-core/scripts/review_hosts.py`, never Copilot directly. The host requires Copilot CLI 1.0.88 or newer, verifies the exact file set and hashes of every materialized reviewer resource, requires the diff and source snapshot to be inside the isolated run directory, runs with isolated `HOME`, `USERPROFILE`, `COPILOT_HOME`, and working directory values, disables ambient instructions and MCP servers, and grants write access only to its attempt's staging file, which the host renames to the result path once it is a JSON object and the role has not been set aside. `dispatch` starts the host detached and `wait` follows it, so no runtime's command time limit stops a review. The host gives Copilot its prompt as its whole stdin, kills it at `COPILOT_TIMEOUT_SECONDS` in `review_hosts.py`, keeps at most `COPILOT_OUTPUT_BYTES` of each output stream in the attempt's diagnostic, naming how many bytes past that were cut, and runs it in a Windows job object, so every process Copilot started is ended with it. Authentication tokens inherited from the invoking environment remain available by design, so treat this as configuration isolation rather than credential isolation.
 
 ## Runtime roles
 
@@ -242,7 +242,10 @@ A repository reviewer's manifest, validated by `validate_adapter_manifest` in `r
 
 A condition must finish within `CONDITION_TIMEOUT_SECONDS` in `review_specialists.py`. A script that exceeds that
 deadline is killed and waited for, and fails the review with `Condition script timed out: <script>` before any
-reviewer plan is written. A refused `prepare` leaves no published run.
+reviewer plan is written. A refused `prepare` leaves no published run. A script reads no stdin, and its output goes
+to files, of which at most `CONDITION_OUTPUT_BYTES` a stream is kept for a failure's detail, which ends by naming
+how many bytes past that were cut. It runs in a Windows job object, so every process it started is ended when it
+exits or is killed, and none holds the review waiting.
 
 ### Adapter request
 
