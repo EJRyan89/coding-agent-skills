@@ -425,7 +425,7 @@ def _execute(
     try:
         recovered = journal.recover_incomplete(paths)
     except (Exception, KeyboardInterrupt) as exc:
-        return _stopped_recovery(exc, debug, held)
+        return _stopped_recovery(exc, debug, paths, held)
     if not recovered:
         _report_failed_recovery()
         held.release()
@@ -516,8 +516,9 @@ def _claim(
 
 
 def _report_failed_recovery() -> None:
+    # Whether each run was committed is printed above, with the run, since an earlier run's changes may be installed.
     print("", file=sys.stderr)
-    print("ERROR: Recovery failed, so nothing was deployed.", file=sys.stderr)
+    print("ERROR: Recovery failed, so this deployment stopped before deploying anything.", file=sys.stderr)
     print(
         f"Reconcile the run named above by hand, then rerun with --dry-run. {see_recovery(RECOVERY_FAILED)}",
         file=sys.stderr,
@@ -525,17 +526,33 @@ def _report_failed_recovery() -> None:
     print("", file=sys.stderr)
 
 
-def _stopped_recovery(exc: BaseException, debug: bool, held: lock.Lock) -> int:
+def _run_states(paths: Paths) -> list[str]:
+    """Say, for each run whose journal remains, whether the manifest holds its changes or the retry rolls them back.
+
+    A run committed before recovery stopped is installed, so the report must not say that nothing was deployed.
+    """
+    return [
+        f"Run {run_id} was committed to the manifest, so its changes are installed and the manifest holds them; "
+        "the next deployment finishes its cleanup."
+        if committed
+        else f"Run {run_id} was not committed to the manifest, so the manifest does not hold its changes; "
+        "the next deployment rolls them back."
+        for run_id, committed in journal.journaled_runs(paths) or []
+    ]
+
+
+def _stopped_recovery(exc: BaseException, debug: bool, paths: Paths, held: lock.Lock) -> int:
     """Report recovery stopped by Ctrl+C or an unexpected error, then release the lock.
 
     Recovery replays its journal, which stays on disk until a run is reconciled, so the next deployment finishes it.
     """
     if isinstance(exc, KeyboardInterrupt):
-        error = DeployError(RECOVERY_CANCELLED, exit_code=130)
+        error = DeployError(RECOVERY_CANCELLED, *_run_states(paths), exit_code=130)
     else:
         error = DeployError(
             f"ERROR: Unexpected {type(exc).__name__}: {exc}",
-            "Recovery stopped, so nothing was deployed; the next deployment retries it.",
+            "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
+            *_run_states(paths),
             see_recovery(RECOVERY_FAILED),
         )
     error.__cause__ = exc
@@ -561,7 +578,7 @@ def _recover_from_failure(exc: BaseException, debug: bool, paths: Paths, held: l
     try:
         recovered = journal.recover_incomplete(paths)
     except (Exception, KeyboardInterrupt) as recovery_error:
-        return _stopped_recovery(recovery_error, debug, held)
+        return _stopped_recovery(recovery_error, debug, paths, held)
     if recovered:
         held.release()
     else:

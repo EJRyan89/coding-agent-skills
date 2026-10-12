@@ -33,7 +33,7 @@ CHECK = "Check that the path exists and that you can read it, then retry."
 HINT = "Rerun with --debug to see the traceback."
 RECOVERY_FAILED = [
     "",
-    "ERROR: Recovery failed, so nothing was deployed.",
+    "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
     'Reconcile the run named above by hand, then rerun with --dry-run. See "When recovery fails" in docs/recovery.md.',
     "",
 ]
@@ -99,7 +99,7 @@ class ExecuteTests(GitTestCase):
     @contextlib.contextmanager
     def replaced(self, options: Options, **outcomes: Any) -> Iterator[None]:
         held = Held(self.calls)
-        steps = {
+        steps: dict[tuple[Any, str], Any] = {
             (platform_support, "ensure_supported"): None,
             (source, "load_source_id"): SOURCE_ID,
             (pipeline, "parse_arguments"): options,
@@ -118,6 +118,8 @@ class ExecuteTests(GitTestCase):
             (lock, "acquire"): held,
             (pipeline, "_reject_other_checkout"): None,
             (journal, "recover_incomplete"): True,
+            # A list outcome is a sequence of returns, so the one return, a list of runs, is wrapped.
+            (journal, "journaled_runs"): [[]],
             (pipeline, "print_traceback"): None,
             (errors, "print_traceback"): None,
         }
@@ -513,49 +515,108 @@ class ExecuteTests(GitTestCase):
             ),
         )
 
-    def test_an_exception_in_immediate_recovery_is_reported_and_releases_the_lock(self) -> None:
-        failure = DeployError("ERROR: apply failed", exit_code=3)
-        cases: list[tuple[BaseException, int, list[str]]] = [
-            (KeyboardInterrupt(), 130, [pipeline.RECOVERY_CANCELLED]),
+    def stopped_recovery_cases(self) -> list[tuple[BaseException, int, list[str]]]:
+        """Each way recovery stops, its exit code, and the lines that open its report."""
+        return [
+            (
+                KeyboardInterrupt(),
+                130,
+                ["Cancelled during recovery; the next deployment finishes recovering before it deploys."],
+            ),
             (
                 RuntimeError("recovery defect"),
                 1,
                 [
                     "ERROR: Unexpected RuntimeError: recovery defect",
-                    "Recovery stopped, so nothing was deployed; the next deployment retries it.",
-                    'See "When recovery fails" in docs/recovery.md.',
+                    "Recovery stopped before it finished; the next deployment retries it before deploying anything.",
                 ],
             ),
         ]
-        for recovery_error, code, lines in cases:
-            for debug in (False, True):
-                self.calls = []
-                with self.subTest(recovery_error=recovery_error, debug=debug):
-                    printed_error = DeployError(*lines, exit_code=code)
-                    tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
-                    before_recovery = ["print_traceback(DeployError('ERROR: apply failed'))"] if debug else []
-                    self.assertEqual(
-                        (
-                            code,
-                            [
-                                *self.prepared(),
-                                *self.held(),
-                                *self.deployed(),
-                                *before_recovery,
-                                "recover_incomplete(paths(home))",
-                                *tracebacks,
-                                "release",
-                            ],
-                            ["", "ERROR: apply failed", "", RECONCILING, "", *lines, ""],
-                        ),
-                        self.execute(
-                            Options(),
-                            debug=debug,
-                            stdin=self.stdin,
-                            _deploy=failure,
-                            recover_incomplete=[True, recovery_error],
-                        ),
-                    )
+
+    def run_states(self) -> list[tuple[list[tuple[str, bool]] | None, list[str]]]:
+        """What journaled_runs may find after recovery stops, and the lines that report it."""
+        return [
+            (
+                [("20260101-000000-done", True), ("20260101-000000-kill", False)],
+                [
+                    "Run 20260101-000000-done was committed to the manifest, so its changes are installed and the "
+                    "manifest holds them; the next deployment finishes its cleanup.",
+                    "Run 20260101-000000-kill was not committed to the manifest, so the manifest does not hold its "
+                    "changes; the next deployment rolls them back.",
+                ],
+            ),
+            ([], []),
+            (None, []),
+        ]
+
+    def test_an_exception_in_startup_recovery_says_whether_each_run_was_committed_and_releases_the_lock(self) -> None:
+        for recovery_error, code, opening in self.stopped_recovery_cases():
+            for runs, states in self.run_states():
+                for debug in (False, True):
+                    self.calls = []
+                    see = ['See "When recovery fails" in docs/recovery.md.'] if code == 1 else []
+                    lines = [*opening, *states, *see]
+                    with self.subTest(recovery_error=recovery_error, runs=runs, debug=debug):
+                        printed_error = DeployError(*lines, exit_code=code)
+                        tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
+                        self.assertEqual(
+                            (
+                                code,
+                                [
+                                    *self.prepared(),
+                                    *self.held(),
+                                    "recover_incomplete(paths(home))",
+                                    "journaled_runs(paths(home))",
+                                    *tracebacks,
+                                    "release",
+                                ],
+                                ["", *lines, ""],
+                            ),
+                            self.execute(
+                                Options(),
+                                debug=debug,
+                                stdin=self.stdin,
+                                recover_incomplete=recovery_error,
+                                journaled_runs=[runs],
+                            ),
+                        )
+
+    def test_an_exception_in_immediate_recovery_is_reported_and_releases_the_lock(self) -> None:
+        failure = DeployError("ERROR: apply failed", exit_code=3)
+        for recovery_error, code, opening in self.stopped_recovery_cases():
+            for runs, states in self.run_states():
+                for debug in (False, True):
+                    self.calls = []
+                    see = ['See "When recovery fails" in docs/recovery.md.'] if code == 1 else []
+                    lines = [*opening, *states, *see]
+                    with self.subTest(recovery_error=recovery_error, runs=runs, debug=debug):
+                        printed_error = DeployError(*lines, exit_code=code)
+                        tracebacks = [f"print_traceback({printed_error!r})"] if debug else []
+                        before_recovery = ["print_traceback(DeployError('ERROR: apply failed'))"] if debug else []
+                        self.assertEqual(
+                            (
+                                code,
+                                [
+                                    *self.prepared(),
+                                    *self.held(),
+                                    *self.deployed(),
+                                    *before_recovery,
+                                    "recover_incomplete(paths(home))",
+                                    "journaled_runs(paths(home))",
+                                    *tracebacks,
+                                    "release",
+                                ],
+                                ["", "ERROR: apply failed", "", RECONCILING, "", *lines, ""],
+                            ),
+                            self.execute(
+                                Options(),
+                                debug=debug,
+                                stdin=self.stdin,
+                                _deploy=failure,
+                                recover_incomplete=[True, recovery_error],
+                                journaled_runs=[runs],
+                            ),
+                        )
 
 
 if __name__ == "__main__":
