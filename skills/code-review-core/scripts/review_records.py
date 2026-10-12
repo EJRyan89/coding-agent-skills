@@ -250,7 +250,7 @@ def _validate_result_envelope(value: Any) -> None:
     """An object of known fields, in the protocol version this module reads."""
     result = READ.json_object(value, "adapter-result", optional=ADAPTER_RESULT_FIELDS)
     if (
-        READ.integer(result.get("adapter-result.protocol_version"), "adapter-result.protocol_version")
+        READ.integer(result.get("protocol_version"), "adapter-result.protocol_version")
         != ADAPTER_PROTOCOL_VERSION
     ):
         raise RecordError("Unsupported adapter protocol version")
@@ -260,18 +260,18 @@ def _validate_result_request(
     value: dict[str, Any], expected_repository: str, expected_number: int, expected_head_sha: str
 ) -> None:
     """The result answers the request: the same repository, pull request, and head."""
-    repository = READ.string(value.get("adapter-result.repository"), "adapter-result.repository")
+    repository = READ.string(value.get("repository"), "adapter-result.repository")
     if validate_repository_identity(repository) != expected_repository.lower():
         raise RecordError("Adapter result repository does not match request")
-    if READ.integer(value.get("adapter-result.pull_number"), "adapter-result.pull_number") != expected_number:
+    if READ.integer(value.get("pull_number"), "adapter-result.pull_number") != expected_number:
         raise RecordError("Adapter result pull number does not match request")
     if READ.hex_digest(value.get("head_sha"), "adapter-result.head_sha", 40, 64) != expected_head_sha:
         raise RecordError("Adapter result head SHA does not match request")
 
 
 def _validate_result_metadata(value: dict[str, Any]) -> None:
-    READ.string(value.get("adapter-result.summary"), "adapter-result.summary")
-    READ.string(value.get("adapter-result.reviewer"), "adapter-result.reviewer")
+    READ.string(value.get("summary"), "adapter-result.summary")
+    READ.string(value.get("reviewer"), "adapter-result.reviewer")
     READ.one_of(value.get("status"), "adapter-result.status", ("complete", "partial", "failed"))
 
 
@@ -1256,11 +1256,11 @@ def _validate_artifacts(value: Any) -> None:
 def validate_record(value: Any) -> dict[str, Any]:
     """A review record, checked part by part in a fixed order; the first fault found is the one raised."""
     record = READ.json_object(value, "record", optional=RECORD_FIELDS)
-    if READ.integer(record.get("record.schema_version"), "record.schema_version") != RECORD_SCHEMA_VERSION:
+    if READ.integer(record.get("schema_version"), "record.schema_version") != RECORD_SCHEMA_VERSION:
         raise RecordError("Unsupported or malformed review record")
     _validate_comments(record)
     validate_repository_identity(READ.string(record.get("repository"), "record.repository"))
-    pull = READ.json_object(record.get("record.pull_request"), "record.pull_request")
+    pull = READ.json_object(record.get("pull_request"), "record.pull_request")
     review = READ.json_object(record.get("review"), "record.review")
     _validate_pull_request(pull)
     _validate_review(review)
