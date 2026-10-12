@@ -9,7 +9,9 @@ using namespace System.Management.Automation.Language
 # none of it; otherwise {"events": [...]}, each one of:
 #   {"kind": "command", "words": [{"text", "dynamic"}]}  a command, its name first; dynamic means the text does
 #                                                        not settle the word's value
-#   {"kind": "gitEnv"}                                   $env:GIT_DIR or $env:GIT_WORK_TREE was assigned
+#   {"kind": "gitEnv", "name": name}                     a location variable (GIT_DIR, GIT_WORK_TREE, or
+#                                                        GIT_COMMON_DIR) was assigned through $env: or
+#                                                        [Environment]::SetEnvironmentVariable
 #   {"kind": "push"} ... {"kind": "pop"}                 around a child pwsh's commands, whose location dies with it
 #   {"kind": "note", "text": text}                       a nested command that could not be read
 #
@@ -20,6 +22,8 @@ $ErrorActionPreference = 'Stop'
 
 # How deep Invoke-Expression and pwsh -Command are followed; deeper nesting is left unread.
 $MaxDepth = 4
+# The variables that choose the repository or work tree git writes; worktrees.py names the same three.
+$LocationVariable = '^(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)$'
 
 function ConvertTo-Word([string] $Text, [bool] $Dynamic = $false) {
     [ordered]@{ text = $Text; dynamic = $Dynamic }
@@ -112,15 +116,28 @@ function Read-CommandEvent([string] $Text, [int] $Depth, [Collections.Generic.Li
     # in; of two that end together, the inner one starts later and runs first.
     $nodes = $ast.FindAll({
             param($node)
-            $node -is [CommandAst] -or $node -is [AssignmentStatementAst]
+            $node -is [CommandAst] -or $node -is [AssignmentStatementAst] -or $node -is [InvokeMemberExpressionAst]
         }, $true) |
         Sort-Object { $_.Extent.EndOffset }, @{ Expression = { $_.Extent.StartOffset }; Descending = $true }
 
     foreach ($node in $nodes) {
         if ($node -is [AssignmentStatementAst]) {
-            if ($node.Left -is [VariableExpressionAst] -and
-                $node.Left.VariablePath.UserPath -match '^env:(GIT_DIR|GIT_WORK_TREE)$') {
-                $Events.Add([ordered]@{ kind = 'gitEnv' })
+            if ($node.Left -is [VariableExpressionAst] -and $node.Left.VariablePath.IsDriveQualified -and
+                $node.Left.VariablePath.DriveName -eq 'env') {
+                $name = $node.Left.VariablePath.UserPath.Substring(4)
+                if ($name -match $LocationVariable) {
+                    $Events.Add([ordered]@{ kind = 'gitEnv'; name = $name.ToUpperInvariant() })
+                }
+            }
+            continue
+        }
+        if ($node -is [InvokeMemberExpressionAst]) {
+            # [Environment]::SetEnvironmentVariable('GIT_DIR', ...) sets the variable as $env: does.
+            $name = $node.Arguments | Select-Object -First 1
+            if ($node.Member -is [StringConstantExpressionAst] -and
+                $node.Member.Value -eq 'SetEnvironmentVariable' -and
+                $name -is [StringConstantExpressionAst] -and $name.Value -match $LocationVariable) {
+                $Events.Add([ordered]@{ kind = 'gitEnv'; name = $name.Value.ToUpperInvariant() })
             }
             continue
         }

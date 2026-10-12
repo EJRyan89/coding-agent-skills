@@ -139,8 +139,15 @@ class WorktreesTestCase(GitTestCase):
         key = "notebook_path" if tool == "NotebookEdit" else "file_path"
         return self.decision({"tool_name": tool, "tool_input": {key: str(path)}, "cwd": str(cwd or self.root)})
 
-    def bash(self, command: str, cwd: Path) -> str | None:
-        return self.decision({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
+    def bash(self, command: str, cwd: Path, environment: dict[str, str] | None = None) -> str | None:
+        return self.decision({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}, environment)
+
+    def other_repository(self) -> Path:
+        """A throwaway repository outside the hub, for a location variable to name."""
+        other = self.root / "other repository"
+        other.mkdir()
+        self.git(other, "init", "-q")
+        return other
 
     def powershell(self, command: str, cwd: Path, environment: dict[str, str] | None = None) -> str | None:
         event = {"tool_name": "PowerShell", "tool_input": {"command": command}, "cwd": str(cwd)}
@@ -226,7 +233,7 @@ class HookCommandTests(WorktreesTestCase):
     all, and with what, without depending on which Python the machine has.
     """
 
-    def run_hook(self) -> tuple[int, list[str] | None]:
+    def run_hook(self, variables: Mapping[str, str] | None = None) -> tuple[int, list[str] | None]:
         bash = platform_support.find_bash()
         if bash is None:
             raise AssertionError("Git Bash was not found; it is required for repository validation.")
@@ -243,6 +250,7 @@ class HookCommandTests(WorktreesTestCase):
             "CLAUDE_PROJECT_DIR": str(self.hub),
             "SHIM_RECORD": str(record),
             "PATH": str(shims) + os.pathsep + self.environment["PATH"],
+            **(variables or {}),
         }
         event = json.dumps({"tool_name": "Bash", "tool_input": {"command": "git status"}, "cwd": str(self.hub)})
         completed = subprocess.run(
@@ -272,6 +280,14 @@ class HookCommandTests(WorktreesTestCase):
                 code, arguments = self.run_hook()
                 self.assertEqual(0, code)
                 self.assertEqual(["-B", f"{self.hub}/tools/worktrees.py", "guard"], arguments)
+
+    def test_an_inherited_git_dir_cannot_switch_the_opt_in_off(self) -> None:
+        other = self.other_repository()
+        self.git(other, "config", "coding-agent-skills.hubGuard", "false")
+        for name in ("GIT_DIR", "GIT_COMMON_DIR"):
+            with self.subTest(name=name):
+                code, arguments = self.run_hook({name: str(other / ".git")})
+                self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
 
 
 class BranchOptionTests(GitTestCase):
@@ -540,6 +556,46 @@ class CommandGuardTests(WorktreesTestCase):
         self.assertEqual("", result.stdout)
         self.assertIn("worktrees guard skipped", result.stderr)
 
+    def test_a_location_variable_in_force_leaves_the_target_unknown_and_allowed_with_a_note(self) -> None:
+        other = self.other_repository() / ".git"
+        unknown = "could not tell where `git reset` runs"
+        for command, expected in (
+            (f'GIT_DIR="{other}" git reset --hard', None),
+            (f'export GIT_DIR="{other}"; git reset --hard', None),
+            (f'export GIT_DIR="{other}" && git reset --hard', None),
+            (f'env GIT_DIR="{other}" git reset --hard', None),
+            (f'GIT_DIR="{other}"; export GIT_DIR; git reset --hard', None),
+            (f'set -a; GIT_DIR="{other}"; git reset --hard', None),
+            (f'export GIT_COMMON_DIR="{other}"; git reset --hard', None),
+            # Not exported, so git never sees it, and the hub is what it writes.
+            (f'GIT_DIR="{other}"; git reset --hard', "deny"),
+            (f'export GIT_DIR="{other}"; unset GIT_DIR; git reset --hard', "deny"),
+            (f'(export GIT_DIR="{other}"; git status); git reset --hard', "deny"),
+            (f"bash -c 'export GIT_DIR=\"{other}\"'; git reset --hard", "deny"),
+            (f'export GIT_WORK_TREE="{self.hub}"; cd "{self.tree}" && git reset --hard', "deny"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.bash(command, self.hub))
+                if expected is None:
+                    self.assertIn(unknown, self.stderr)
+        inherited = {**self.environment, "GIT_DIR": str(other)}
+        self.assertIsNone(self.bash("git reset --hard", self.hub, inherited))
+        self.assertIn(unknown, self.stderr)
+        self.assertIsNone(self.powershell("git reset --hard", self.hub, inherited))
+        self.assertIn(unknown, self.stderr)
+        self.assertEqual("deny", self.bash("env -u GIT_DIR git reset --hard", self.hub, inherited))
+        self.assertEqual("deny", self.bash("unset GIT_DIR; git reset --hard", self.hub, inherited))
+        self.assertEqual("deny", self.bash(f'git -C "{self.hub}" reset --hard', self.tree, inherited))
+        self.assertEqual("main\n", self.git(self.hub, "branch", "--show-current"))
+        self.assertEqual("", self.git(self.hub, "status", "--porcelain"))
+
+    def test_an_inherited_location_variable_cannot_hide_the_hub_from_the_file_guard(self) -> None:
+        other = self.other_repository() / ".git"
+        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR"):
+            with self.subTest(name=name):
+                event = {"tool_name": "Edit", "tool_input": {"file_path": str(self.hub / "README.md")}}
+                self.assertEqual("deny", self.decision(event, {**self.environment, name: str(other)}))
+
 
 def shown(directory: Path | None) -> str | None:
     return None if directory is None else os.path.normcase(os.path.normpath(directory))
@@ -664,6 +720,94 @@ class CommandReadingTests(WorktreesTestCase):
             ],
             self.read(command, tool="Bash"),
         )
+
+    def test_bash_applies_location_variables_from_every_source_like_a_command_local_one(self) -> None:
+        tree = f'"{self.tree}"'
+        for command, expected in (
+            ("GIT_DIR=.git git commit", self.at(None, "commit")),
+            ("export GIT_DIR=.git; git commit; git add .", self.at(None, "commit", "add")),
+            ("env GIT_DIR=.git git commit", self.at(None, "commit")),
+            ("env -i GIT_DIR=.git PATH=x git commit", self.at(None, "commit")),
+            ("GIT_DIR=.git; git commit", self.at(self.hub, "commit")),
+            ("GIT_DIR=.git; export GIT_DIR; git commit", self.at(None, "commit")),
+            ("declare -x GIT_COMMON_DIR=x; git commit", self.at(None, "commit")),
+            ("typeset -rx GIT_DIR=x; git commit", self.at(None, "commit")),
+            ("set -a; GIT_DIR=.git; set +a; git commit", self.at(None, "commit")),
+            ("set -o allexport; GIT_DIR=.git; git commit", self.at(None, "commit")),
+            ("set -eu; GIT_DIR=.git; git commit", self.at(self.hub, "commit")),
+            ("export GIT_DIR=.git; unset GIT_DIR; git commit", self.at(self.hub, "commit")),
+            ("export GIT_DIR=.git; export -n GIT_DIR; git commit", self.at(self.hub, "commit")),
+            ("export GIT_DIR=.git; declare +x GIT_DIR; git commit", self.at(self.hub, "commit")),
+            (f"export GIT_WORK_TREE={tree}; git commit", self.at(self.tree, "commit")),
+            (f"GIT_WORK_TREE={tree} git --git-dir=.git commit", self.at(self.tree, "commit")),
+            ("(export GIT_DIR=.git; git commit); git add .", [*self.at(None, "commit"), *self.at(self.hub, "add")]),
+            ("export GIT_DIR=.git; bash -c 'git commit'", self.at(None, "commit")),
+            ("bash -c 'export GIT_DIR=.git'; git commit", self.at(self.hub, "commit")),
+            (f"(cd {tree}); git commit", self.at(self.hub, "commit")),
+            (
+                f"echo $(cd {tree} && git commit) && git add .",
+                [*self.at(self.tree, "commit"), *self.at(self.hub, "add")],
+            ),
+            (f"pushd {tree}; git commit; popd; git add .", [*self.at(self.tree, "commit"), *self.at(self.hub, "add")]),
+            ("cd; git commit; cd -; git add .", [*self.at(Path.home(), "commit"), *self.at(None, "add")]),
+            (f"env -C {tree} git commit", self.at(self.tree, "commit")),
+            (f"bash -lc 'cd {tree} && git commit'", self.at(self.tree, "commit")),
+            (f"bash <<< 'cd {tree} && git commit'", self.at(self.tree, "commit")),
+            (f"git -c core.worktree={tree} commit", self.at(self.tree, "commit")),
+            (f"git -c core.worktree={tree} --git-dir=.git commit", self.at(self.tree, "commit")),
+            (f'git --work-tree="{self.hub}" -c core.worktree={tree} commit', self.at(self.hub, "commit")),
+            ("git -c core.worktree=relative commit", self.at(None, "commit")),
+            ("git --config-env=core.worktree=TREE commit", self.at(None, "commit")),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.read(command, tool="Bash"))
+                self.assertEqual([], self.notes)
+
+    def test_inherited_location_variables_apply_until_a_command_removes_them(self) -> None:
+        inherited = {**self.environment, "GIT_DIR": str(self.hub / ".git")}
+        for command, expected in (
+            ("git commit", self.at(None, "commit")),
+            (f'git -C "{self.tree}" commit', self.at(self.tree, "commit")),
+            ("env -i git commit", self.at(self.hub, "commit")),
+            ("env -u GIT_DIR git commit", self.at(self.hub, "commit")),
+            ("env --unset=GIT_DIR git commit", self.at(self.hub, "commit")),
+            ("unset GIT_DIR; git commit", self.at(self.hub, "commit")),
+            ("GIT_DIR=x; git commit", self.at(None, "commit")),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(expected, self.read(command, tool="Bash", environment=inherited))
+        allexport = {**self.environment, "SHELLOPTS": "braceexpand:allexport:hashall"}
+        self.assertEqual(
+            self.at(None, "commit"), self.read("GIT_DIR=x; git commit", tool="Bash", environment=allexport)
+        )
+        self.assertEqual([], self.read("env -S 'git commit'", tool="Bash"))
+        self.assertEqual(["could not read the option -S passed to env"], self.notes)
+
+    def test_powershell_applies_inherited_and_assigned_location_variables(self) -> None:
+        inherited = {**self.environment, "GIT_WORK_TREE": str(self.tree)}
+        self.assertEqual(
+            [*self.at(self.tree, "commit"), *self.at(None, "add")],
+            self.read("git commit; $env:GIT_WORK_TREE = 'x'; git add .", environment=inherited),
+        )
+        command = (
+            'pwsh -c "Set-Item env:GIT_DIR x; git rm x"; git restore x\n'
+            "pwsh -c \"[Environment]::SetEnvironmentVariable('GIT_DIR', 'x'); git mv a b\"; git am\n"
+            "pwsh -c \"New-Item -Path Env:\\GIT_DIR -Value x; bash -c 'git revert x'\"; git clean -fd\n"
+            f"$env:GIT_COMMON_DIR = 'x'; git commit; Set-Location '{self.tree}'; pwsh -c 'git add .'"
+        )
+        self.assertEqual(
+            [
+                *self.at(None, "rm"),
+                *self.at(self.hub, "restore"),
+                *self.at(None, "mv"),
+                *self.at(self.hub, "am"),
+                *self.at(None, "revert"),
+                *self.at(self.hub, "clean"),
+                *self.at(None, "commit", "add"),
+            ],
+            self.read(command),
+        )
+        self.assertEqual([], self.notes)
 
     def test_what_cannot_be_read_is_left_unjudged_with_a_note(self) -> None:
         self.assertEqual([], self.read("& $git commit; git $verb x; pwsh -c $script; iex $text; pwsh -c"))
