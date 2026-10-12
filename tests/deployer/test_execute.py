@@ -99,7 +99,7 @@ class ExecuteTests(GitTestCase):
     @contextlib.contextmanager
     def replaced(self, options: Options, **outcomes: Any) -> Iterator[None]:
         held = Held(self.calls)
-        steps = {
+        steps: dict[tuple[Any, str], Any] = {
             (platform_support, "ensure_supported"): None,
             (source, "load_source_id"): SOURCE_ID,
             (pipeline, "parse_arguments"): options,
