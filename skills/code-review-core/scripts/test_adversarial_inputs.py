@@ -37,8 +37,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_canary
 import review_documents
 import review_guard as guard
+import review_hosts
 import review_io
 import review_pipeline as rp
+import review_process
 import review_runtime
 import review_source
 from git_client import GitResult, subprocess_runner
@@ -1269,6 +1271,144 @@ class EntrypointPromptTests(AdversarialFixture):
             [{**self.github.threads[0], "body": body[:4000] + cut}], json.loads(prompt.partition(heading)[2])
         )
         self.assertEqual(1, prompt.count(f"reply with exactly: WROTE {role['result_file']}\n"))
+
+
+class CopilotCommandLineTests(AdversarialFixture):
+    """On Windows, cmd.exe parses the command line of a .cmd or .bat program by its own rules, so a quote, `&`, `|`,
+    `%`, or `^` in an argument can end it and start a command. Text from a pull request never reaches a command line
+    the Copilot CLI host starts, and the host never starts a shell script."""
+
+    SKILL = "review/SKILL.md"
+    HOSTILE = '" & echo injected | more ^& %PATH% \\" \\\\server\\share ^'
+
+    def setUp(self) -> None:
+        super().setUp()
+        config = json.loads(self.config_path.read_text(encoding="utf-8"))
+        config["repositories"][REPOSITORY]["reviewer"] = {
+            "id": "team",
+            "protocol_version": 1,
+            "trusted_ref": None,
+            "scope": "repository",
+            "manifest_path": None,
+            "skill": self.SKILL,
+        }
+        write_config(config, self.config_path)
+        self.services.resolve_runtime = lambda configured, host: "copilot-cli"
+        self.services.copilot_executable = "copilot"
+        self.skill = files({self.SKILL: b"---\nname: review\ntools: Read\n---\n\nReview every change.\n"})
+        self.runs: list[tuple[list[str], str]] = []  # each Copilot CLI run: its arguments and its stdin
+
+    def copilot(self, result: dict[str, Any]) -> Callable[..., Any]:
+        """A Copilot CLI that records each run and, reviewing, writes `result` to the staging file it may write."""
+
+        def run(arguments: Sequence[str], cwd: Path, environment: Any, stdin: str) -> Any:
+            self.runs.append((list(arguments), stdin))
+            if "--version" in arguments:
+                return review_hosts.ProcessResult(0, "GitHub Copilot CLI 1.0.88\n", "")
+            allowed = next(argument for argument in arguments if argument.startswith("--allow-tool=write("))
+            staging = Path(allowed.removeprefix("--allow-tool=write(").removesuffix(")"))
+            staging.write_text(json.dumps(result), encoding="utf-8")
+            return review_hosts.ProcessResult(0, '{"type":"assistant.message"}\n', "")
+
+        return run
+
+    def host_review(self, ready: dict[str, Any], **result: Any) -> None:
+        """Run the run's Copilot CLI host in this process, as dispatch starts it, and require its result recorded."""
+        run = ready["run"]
+        self.services.copilot_runner = self.copilot(
+            {
+                "protocol_version": 1,
+                "repository": REPOSITORY,
+                "pull_number": NUMBER,
+                "head_sha": self.github.head,
+                "summary": "Reviewed.",
+                "reviewer": "team",
+                "status": "complete",
+                "findings": [],
+                "prior_dispositions": [],
+                "comment_dispositions": [],
+                "usage": None,
+                **result,
+            }
+        )
+        with review_hosts.host_lock(run):
+            claim = review_hosts.new_claim(run, generation=0, now=self.services.clock())
+        self.assertEqual("dispatched", rp.run_host(run, claim["token"], self.services))
+
+    def test_no_argument_of_the_copilot_command_carries_a_comment_body_a_prior_finding_or_a_diff_path(self) -> None:
+        service = files({"app/service.py": b"def total(items):\n    return 0\n"})
+        self.pull_request({**BASE, **self.skill, **service}, {**BASE, **self.skill})
+        finding = {
+            "candidate_key": "candidate-a",
+            "severity": "SHOULD_FIX",
+            "category": "Correctness",
+            "path": "app/service.py",
+            "line": 2,
+            "title": f"FINDING-MARKER {self.HOSTILE}",
+            "body": f"FINDING-BODY-MARKER {self.HOSTILE}",
+            "evidence": "The total is always zero.",
+            "source": "team",
+        }
+        initial = rp.prepare(SELECTOR, host="copilot-cli", config_path=self.config_path, services=self.services)
+        self.host_review(initial, findings=[finding])
+        rp.finalize(initial["run"], self.services)
+
+        # The author pushes again, adds a link whose name is the shell punctuation a Windows name can hold, and starts
+        # a thread. The prompt names a link it excludes, and a name Windows cannot hold is a coverage gap instead.
+        link = "app/LINK-MARKER & echo injected ^& %PATH% 'x'"
+        head = {**BASE, **self.skill, **service, link.encode("utf-8"): ("120000", b"service.py")}
+        self.github.head = write_commit(self.checkout, head, [self.github.head])
+        git(self.checkout, "update-ref", f"refs/pull/{NUMBER}/head", self.github.head)
+        body = f"COMMENT-MARKER {self.HOSTILE}"
+        thread = {"id": "C1", "author": "author", "path": "app/service.py", "line": 2, "outdated": False}
+        self.github.threads = [{**thread, "body": body, "url": f"https://github.com/{REPOSITORY}/pull/{NUMBER}"}]
+        self.runs.clear()
+        again = rp.prepare(
+            SELECTOR,
+            re_review=True,
+            scope="full",
+            host="copilot-cli",
+            config_path=self.config_path,
+            services=self.services,
+        )
+        self.host_review(again)
+
+        [(version, no_input), (arguments, prompt)] = self.runs
+        self.assertEqual((["copilot", "--version"], ""), (version, no_input))
+        for marker in ("COMMENT-MARKER", "FINDING-MARKER", "FINDING-BODY-MARKER", "LINK-MARKER", "injected"):
+            self.assertIn(marker, prompt, "the hostile text reaches Copilot, on stdin")
+            self.assertEqual([], [argument for argument in arguments if marker in argument])
+        for character in ("&", "|", "%", "^", '"'):
+            self.assertEqual([], [argument for argument in arguments if character in argument], character)
+
+    def test_the_lookup_refuses_a_shell_script_first_on_path_and_takes_the_winget_program(self) -> None:
+        shims = self.root / "npm"
+        shims.mkdir()
+        local = self.root / "local app data"
+        environment = {"PATH": str(shims), "PATHEXT": ".COM;.EXE;.BAT;.CMD", "LOCALAPPDATA": str(local)}
+        for suffix in (".cmd", ".bat", ".CMD"):
+            with self.subTest(suffix=suffix), mock.patch.dict(os.environ, environment):
+                for old in shims.iterdir():
+                    old.unlink()
+                shim = shims / f"copilot{suffix}"
+                shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\n', encoding="utf-8")
+                self.assertEqual(str(shim).casefold(), (shutil.which("copilot") or "").casefold())
+                with self.assertRaises(review_runtime.RuntimeContractError) as refused:
+                    review_hosts.find_copilot()
+                self.assertEqual(
+                    "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+                    f"{shutil.which('copilot')}; install the program from WinGet (winget install GitHub.Copilot) or "
+                    "the GitHub release",
+                    str(refused.exception),
+                )
+        self.assertTrue(review_process.shell_script("C:/tools/copilot.ps1"))
+        self.assertFalse(review_process.shell_script("C:/tools/copilot.exe"))
+
+        winget = local / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
+        winget.parent.mkdir(parents=True)
+        winget.write_bytes(b"fixture")
+        with mock.patch.dict(os.environ, environment):
+            self.assertEqual(str(winget), review_hosts.find_copilot(), "a WinGet program beats a shim on PATH")
 
 
 class BranchNameTests(AdversarialFixture):
