@@ -34,6 +34,8 @@ from typing import IO, Any, Protocol
 KILL_WAIT_SECONDS = 10.0
 # Seconds a stopped streaming command gets to exit by itself before it is killed.
 EXIT_WAIT_SECONDS = 60.0
+# Seconds a closing streaming session waits, once its command is gone, for the reader to see stdout end.
+READER_WAIT_SECONDS = 1.0
 CHUNK_BYTES = 64 * 1024
 QUEUED_CHUNKS = 16  # how far a streaming command's reader runs ahead of its caller
 POLL_SECONDS = 0.1
@@ -186,11 +188,15 @@ class Streaming:
     itself; it is killed only if it has not exited `exit_wait` seconds later. A killed launcher's program
     can hold its working directory a moment longer, so ending it this way matters.
 
+    Once the command is gone, its stdout ends at once unless a program it started still holds it, for as long as that
+    program runs. Closing therefore waits at most READER_WAIT_SECONDS for the reader, and a reader still waiting then
+    closes the pipe itself when that program lets go. Waiting for a killed command to be reported gone is a separate
+    allowance, KILL_WAIT_SECONDS, which ends as soon as the kill has taken effect.
+
     A session `timeout` bounds all of it. Every read and `wait` also raises subprocess.TimeoutExpired once that many
     seconds have passed since the command started, however steadily output arrives. Closing then waits for nothing
-    past that moment but a killed command to be reported gone, for at most KILL_WAIT_SECONDS: the command gets
-    `exit_wait` seconds to exit or what is left of the session, whichever is less, and the reader is not waited for
-    once the session is over, since a program the command started can hold its stdout open for as long as it runs.
+    past that moment but a killed command to be reported gone: the command gets `exit_wait` seconds to exit or what is
+    left of the session, whichever is less, and the reader is not waited for once the session is over.
     """
 
     def __init__(
@@ -303,8 +309,8 @@ class Streaming:
         return self._errors.read()
 
     def close(self) -> None:
-        """Stop reading, let the command exit, and kill it if it has not exited `exit_wait` seconds later or by the end
-        of the session."""
+        """Stop reading, let the command exit, kill it if it has not exited `exit_wait` seconds later or by the end of
+        the session, and give the reader READER_WAIT_SECONDS to finish; closing again does nothing."""
         if self._closed:
             return
         self._closed = True
@@ -317,5 +323,6 @@ class Streaming:
             self._process.kill()
             with suppress(subprocess.TimeoutExpired):
                 self._process.wait(timeout=KILL_WAIT_SECONDS)
-        # Bounded, and not past the session's end: a program the command started may still hold its stdout.
-        self._reader.join(self._within(KILL_WAIT_SECONDS))
+        # Short, and not past the session's end: a program the command started may still hold its stdout, and then the
+        # reader closes it when that program lets go.
+        self._reader.join(self._within(READER_WAIT_SECONDS))
