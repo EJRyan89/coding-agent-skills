@@ -24,31 +24,45 @@ is a manual gate like the [runtime canary](../.claude/skills/runtime-canary/SKIL
   finding at least as severe; a scenario that expects the escalation states it with its own `finding` expectation.
 - **A run** is the [`evaluate-skill`](../.claude/skills/evaluate-skill/SKILL.md) repository skill, which runs
   `python -B tools/skill_evals.py <skill> --write`. It deploys the checkout into throwaway homes, one per model,
-  sets that model on the home's reviewer agent, and runs each scenario through the skill in a headless Claude Code
-  session on the strongest model, so only the reviewers' model varies. The session gets the home's reviewer agent
-  with `--agents`, its hook pointed at the home's reviewer guard, because Claude Code runs no hook of an agent loaded
-  from a folder whose workspace trust was never accepted, which a headless session's never is. A run whose reviewers
-  did not all run on the model counts for nothing, and so does one whose record shows a reviewer the guard did not
-  hold (`files_read` null).
-  A narrowed run can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order,
-  both when running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios
-  are selected in name order.
+  sets that model's ID on the home's reviewer agent, and runs each scenario through the skill in a headless Claude
+  Code session on the strongest model's ID, so only the reviewers' model varies. It sets IDs rather than Claude
+  Code's aliases, since an alias can resolve to an older generation of the family. The session gets the home's
+  reviewer agent with `--agents`, its hook pointed at the home's reviewer guard, because Claude Code runs no hook of
+  an agent loaded from a folder whose workspace trust was never accepted, which a headless session's never is. A run
+  whose reviewers did not all run on that ID, a dated suffix allowed, or whose session ran on another, counts for
+  nothing, and so does one whose record shows a reviewer the guard did not hold (`files_read` null). A narrowed run
+  can repeat `--scenario` and `--model`; each distinct name counts once, in first-occurrence order, both when
+  running scenarios and when judging existing records with `--records`. Without `--scenario`, scenarios are selected
+  in name order.
 - **What is recorded** is pass or fail per expectation, the model identifiers the reviewers and the session ran
   on, the Claude Code version, and the date. Nothing else: no tokens, cost, or timings.
 
 ## Latest result
 
 One row per skill and reviewer model, replaced by each full run with `--write`. "Passed" counts expectations over
-every scenario. A model is "not run" when none of its reviewers ran, with the first reason in place of the
-scenarios. A pull request that changes a skill's prompt, model guidance, or reviewer instructions cites this run.
+every scenario a reviewer ran on. A scenario is "not run" for a model when none of its reviewers started, such as
+when the session refused before reviewing, since it holds no judgment of the model; the notes below say why. A model
+is "not run" when none of its reviewers ran, with the first reason in place of the scenarios. A pull request that
+changes a skill's prompt, model guidance, or reviewer instructions cites this run.
 
 <!-- skill-evals:begin -->
 | Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| review-document | haiku | claude-haiku-5-5 | 14/20 | committed-edit 0/3, design-clean 0/2, design-gaps 4/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
-| review-document | sonnet | claude-sonnet-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
-| review-document | opus | claude-opus-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
+| review-document | haiku | claude-haiku-5-5 | 14/15 | committed-edit 3/3, design-clean 1/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-document | sonnet | claude-sonnet-5-5 | 15/15 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-document | opus | claude-opus-5-5 | 15/15 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps not run, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 | review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 <!-- skill-evals:end -->
+
+### Notes
+
+- **`review-document`, `pdf-gaps`:** not run on any model, because the `pdftotext` first on the session's `PATH`
+  was the one Git for Windows bundles, below the extraction floor, so the PDF's text was refused before a reviewer
+  started. Putting a supported parser ahead of Git's lets it run.
+- **Haiku as a reviewer:** its misses are judgment misses that recur on a rerun and with the earlier wording of the
+  shared reviewer guidance, so they are the model's, not the guidance's: it raises should-fix findings on a clean
+  design document, and misses a wrong value in an error message that the other models report. The suite supports it
+  for finding the planted must-fix and should-fix defects and for re-review, not for approving a clean design or
+  for suggestion-level detail.
