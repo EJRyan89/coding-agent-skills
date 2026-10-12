@@ -10,14 +10,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "skills" / "skill-core"
 
 from console import use_utf8_output
 
-MINIMUM_PYTHON = (3, 11)
+MINIMUM_PYTHON = (3, 11, 4)
 
 
 def require_supported_python(version_info=sys.version_info):
-    if tuple(version_info[:2]) < MINIMUM_PYTHON:
+    if tuple(version_info[:3]) < MINIMUM_PYTHON:
         sys.stderr.write(
-            f"\nERROR: Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer "
-            f"is required; this is Python {version_info[0]}.{version_info[1]}.\n"
+            f"\nERROR: Python {'.'.join(map(str, MINIMUM_PYTHON))} or newer "
+            f"is required; this is Python {'.'.join(map(str, version_info[:3]))}.\n"
             'See "Installing the tools" in docs/installation.md.\n\n'
         )
         raise SystemExit(1)

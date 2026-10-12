@@ -82,7 +82,7 @@ class ToolchainFixtures(unittest.TestCase):
     def test_prerequisite_check_reports_every_tool_older_than_its_floor(self) -> None:
         self.assertEqual(
             [
-                "  - Python 3.10.12 is older than the floor 3.11 in docs/dependency-updates.md",
+                "  - Python 3.11.3 is older than the floor 3.11.4 in docs/dependency-updates.md",
                 "  - ShellCheck 0.8.0 is older than the floor 0.9.0 in docs/dependency-updates.md: "
                 "winget install --id koalaman.shellcheck",
                 "  - PowerShell 7 (pwsh): its version could not be read; the floor is 7.0 in "
@@ -92,14 +92,14 @@ class ToolchainFixtures(unittest.TestCase):
             ],
             outdated_prerequisites(
                 {"Git Bash": None, "ShellCheck": (0, 8, 0), "PowerShell 7 (pwsh)": None, "ruff": (0, 16, 9)},
-                (3, 10, 12),
+                (3, 11, 3),
             ),
         )
         self.assertEqual(
             [],
             outdated_prerequisites(
                 {"Git Bash": None, "ShellCheck": (0, 9, 0), "PowerShell 7 (pwsh)": (7, 5, 3), "ruff": (0, 16, 10)},
-                (3, 11, 0),
+                (3, 11, 4),
             ),
         )
         # A missing tool is reported by missing_prerequisites, not again here.

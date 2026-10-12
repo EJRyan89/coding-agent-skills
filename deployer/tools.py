@@ -11,7 +11,8 @@ from pdf_tool import MINIMUMS, VERSION_ARGUMENTS, PdfIdentity, PdfToolRefused, p
 
 from . import platform_support
 
-MINIMUM_PYTHON = (3, 11)
+# 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts a commit's tree with.
+MINIMUM_PYTHON = (3, 11, 4)
 VERSION = re.compile(r"\d+\.\d+(?:\.\d+)?")
 
 
