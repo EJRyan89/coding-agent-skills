@@ -24,9 +24,10 @@ with `path:`). [Parallel sessions](parallel-sessions.md) explains why and how a 
 
 ## Validation
 
-Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py` in full,
-split across its legs, for every pull request and every push, and a pull request merges only when it passes. Locally,
-run what the change touches:
+Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py`, split
+across its legs, in full on every push and on every pull request that is not documentation-only. A documentation-only
+pull request runs the subset the runner selects (the policy checks, the suites that name a changed file, and the
+Markdown fence checks), and a pull request merges only when the check passes. Locally, run what the change touches:
 
 - `python -m ruff format --check` and `python -m ruff check` on the changed Python paths;
 - `python -B tests/run_validation.py -k <pattern>` for the policies and suites that name the touched files, with
@@ -36,7 +37,7 @@ run what the change touches:
 
 Run the suite in full locally only when the change's reach warrants it, such as a validation policy, the runner, or a
 shared module whose callers `-k` does not capture. When a leg fails in continuous integration, reproduce that leg with
-`python -B tests/run_validation.py --shard <index>/4`. Bringing an open pull request current with its base needs no
+`python -B tests/run_validation.py --shard <index>/<count>`. Bringing an open pull request current with its base needs no
 local rerun, since continuous integration runs on the result.
 
 The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
