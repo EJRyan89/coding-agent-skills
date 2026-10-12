@@ -226,5 +226,20 @@ class ProgramNameTests(GitTestCase):
                 self.assertEqual(expected, platform_support.program_name(name))
 
 
+class TerminationStatusTests(GitTestCase):
+    def test_the_floor_is_the_lowest_ntstatus_with_a_severity_bit(self) -> None:
+        self.assertEqual(2_147_483_648, platform_support.TERMINATION_STATUS_FLOOR)
+
+    def test_a_status_at_or_above_the_floor_is_named_in_hexadecimal(self) -> None:
+        self.assertEqual("0x80000004", platform_support.termination_status(2_147_483_652))
+        self.assertEqual("0x80000000", platform_support.termination_status(2_147_483_648))
+        self.assertEqual("0xC0000005", platform_support.termination_status(3_221_225_477))
+
+    def test_a_program_s_own_exit_code_is_not_a_termination(self) -> None:
+        for returncode in (0, 1, 2, 127, 255, 2_147_483_647):
+            with self.subTest(returncode=returncode):
+                self.assertIsNone(platform_support.termination_status(returncode))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -247,6 +247,19 @@ def install_hint(tool: str) -> str:
     return INSTALL_HINTS[tool]
 
 
+# Windows reports a process that an exception or another process ended, rather than the program itself, by an NTSTATUS
+# whose severity bits put it at 0x80000000 or above, read unsigned as Python reads every exit code here. A program's
+# own exit code stays below it, as Bash's, which is at most 255, does. Git Bash ended with 0x80000004 on the hosted
+# runners before it printed anything.
+TERMINATION_STATUS_FLOOR = 0x80000000
+
+
+def termination_status(returncode: int) -> str | None:
+    """The status, in hexadecimal, of a process ended by an exception or by another process rather than by the
+    program, or None for a program's own exit code."""
+    return f"0x{returncode:08X}" if returncode >= TERMINATION_STATUS_FLOOR else None
+
+
 @dataclass(frozen=True)
 class ToolResult:
     returncode: int

@@ -17,8 +17,39 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import job_pool
 from git_test_base import GitTestCase
-from job_pool import OUTPUT_LOCK, Job, append_step_summary, run_beside, run_jobs, step_summary, worker_count
+from job_pool import (
+    OUTPUT_LOCK,
+    Job,
+    Retry,
+    Terminated,
+    append_step_summary,
+    run_beside,
+    run_jobs,
+    run_process,
+    step_summary,
+    worker_count,
+)
+
+# Stand-ins for the program a job starts, Bash among them. Windows reports a process that exits with -2147483644 as
+# 0x80000004, the status Git Bash was ended with on the hosted runners before it printed anything.
+ENDED = [sys.executable, "-c", "import os; os._exit(-2147483644)"]
+ENDED_AFTER_OUTPUT = [sys.executable, "-c", "import os; print('ran', flush=True); os._exit(-2147483644)"]
+FAILS_AFTER_OUTPUT = [sys.executable, "-c", "import sys; print('1 test failed', flush=True); sys.exit(1)"]
+PASSES = [sys.executable, "-c", "pass"]
+
+
+def job_running(label: str, *commands: list[str]) -> tuple[Job, list[list[str]]]:
+    """A job that starts the next of `commands` on each attempt, the last one again once they run out."""
+    started: list[list[str]] = []
+
+    def run() -> None:
+        command = commands[min(len(started), len(commands) - 1)]
+        started.append(command)
+        run_process(command)
+
+    return Job(label, label, 1, run), started
 
 
 class JobPoolFixtures(GitTestCase):
@@ -68,7 +99,7 @@ class JobPoolFixtures(GitTestCase):
             Job("also passes", "also passes", 0, lambda: ran.append("also passes")),
         ]
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            failures = run_jobs(jobs, verbose=False, workers=1)
+            failures, _ = run_jobs(jobs, verbose=False, workers=1)
         self.assertEqual(["passes", "also passes"], ran, "a raising job stops neither the pool nor the jobs after it")
         self.assertEqual(["cannot read", "check fails", "exits"], [failure.job.label for failure in failures])
         failed = {failure.job.label: failure for failure in failures}
@@ -98,7 +129,7 @@ class JobPoolFixtures(GitTestCase):
 
         jobs = [Job("waits", "waits", 1, job), Job("fails", "fails", 2, lambda: self.fail("2 suite failures"))]
         with contextlib.redirect_stdout(io.StringIO()):
-            result, failures = run_beside(foreground, jobs, verbose=False, workers=2)
+            result, (failures, _) = run_beside(foreground, jobs, verbose=False, workers=2)
         self.assertEqual("policies passed", result)
         self.assertEqual(["fails"], [failure.job.label for failure in failures])
 
@@ -118,7 +149,7 @@ class JobPoolFixtures(GitTestCase):
                 return printed.getvalue()
 
         with contextlib.redirect_stdout(io.StringIO()) as printed:
-            during, failures = run_beside(foreground, [Job("fails", "fails", 1, job)], verbose=False, workers=1)
+            during, (failures, _) = run_beside(foreground, [Job("fails", "fails", 1, job)], verbose=False, workers=1)
         self.assertEqual("", during)
         self.assertEqual(["fails"], [failure.job.label for failure in failures])
         self.assertRegex(printed.getvalue(), r"\AFAIL +[0-9.]+s fails\n\Z")
@@ -162,6 +193,115 @@ class JobPoolFixtures(GitTestCase):
             self.assertEqual("earlier\n## Repository validation\n", path.read_text(encoding="utf-8"))
             append_step_summary({}, "ignored\n")
             self.assertEqual(["summary with spaces.md"], [child.name for child in Path(temporary).iterdir()])
+
+
+class TerminationFixtures(GitTestCase):
+    """A program ended with a termination status before its first line is the program's ending, not a failed check."""
+
+    def test_a_job_is_started_again_once(self) -> None:
+        self.assertEqual(1, job_pool.TERMINATION_RETRIES)
+
+    def test_a_program_ended_before_any_output_is_a_termination_naming_its_status_and_command(self) -> None:
+        with self.assertRaises(Terminated) as raised:
+            run_process(ENDED)
+        self.assertEqual("0x80000004", raised.exception.status)
+        self.assertEqual(" ".join(ENDED), raised.exception.command)
+        self.assertEqual(
+            f"{Path(sys.executable).name} was ended with status 0x80000004 before its first line of output: "
+            f"{' '.join(ENDED)}",
+            str(raised.exception),
+        )
+        self.assertNotIsInstance(raised.exception, AssertionError, "a termination is not a failed check")
+
+    def test_a_program_ended_after_its_output_began_is_a_failed_check_naming_the_status(self) -> None:
+        with self.assertRaises(AssertionError) as raised:
+            run_process(ENDED_AFTER_OUTPUT)
+        self.assertIn("exit code 2147483652 (status 0x80000004, ended after its output began)", str(raised.exception))
+        self.assertIn("ran", str(raised.exception))
+
+    def test_a_job_ended_before_output_is_started_once_more_and_reported_when_it_passes(self) -> None:
+        job, started = job_running("bash suite", ENDED, PASSES)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            failures, retries = run_jobs([job], verbose=False, workers=1)
+        self.assertEqual([ENDED, PASSES], started)
+        self.assertEqual([], failures)
+        ending = f"{Path(sys.executable).name} was ended with status 0x80000004 before its first line of output: "
+        self.assertEqual([Retry(job, f"{ending}{' '.join(ENDED)}", "passed")], retries)
+        self.assertRegex(
+            printed.getvalue(),
+            r"\ARETRY +[0-9.]+s bash suite: .+ was ended with status 0x80000004 before its first line of output: .+; "
+            r"a termination, not a failed check, so it starts once more\n"
+            r"ok +[0-9.]+s bash suite \(retried after status 0x80000004\)\n\Z",
+        )
+
+    def test_a_second_ending_is_a_failed_job_that_names_each_status(self) -> None:
+        job, started = job_running("bash suite", ENDED)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            failures, retries = run_jobs([job], verbose=False, workers=1)
+        self.assertEqual([ENDED, ENDED], started, "started once more, and no more")
+        self.assertEqual(["bash suite"], [failure.job.label for failure in failures])
+        failure = failures[0]
+        self.assertEqual((True, False), (failure.terminated, failure.raised))
+        self.assertTrue(
+            failure.report.startswith(
+                "Ended before its first line of output on each of 2 attempts, a termination rather than a failed "
+                "check, so nothing in it reached a verdict:\n  "
+            )
+        )
+        self.assertEqual(2, failure.report.count(f"with status 0x80000004 before its first line of output: {ENDED[0]}"))
+        self.assertEqual(["was ended again"], [retry.result for retry in retries])
+        self.assertRegex(printed.getvalue(), r"\nFAIL +[0-9.]+s bash suite \(retried after status 0x80000004\)\n\Z")
+
+    def test_a_job_that_wrote_output_is_never_started_again(self) -> None:
+        failing, failing_started = job_running("fails", FAILS_AFTER_OUTPUT, PASSES)
+        ended, ended_started = job_running("ended after output", ENDED_AFTER_OUTPUT, PASSES)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            failures, retries = run_jobs([failing, ended], verbose=False, workers=1)
+        self.assertEqual(([FAILS_AFTER_OUTPUT], [ENDED_AFTER_OUTPUT]), (failing_started, ended_started))
+        self.assertEqual(["ended after output", "fails"], [failure.job.label for failure in failures])
+        self.assertEqual([(False, False), (False, False)], [(f.terminated, f.raised) for f in failures])
+        self.assertIn("1 test failed", failures[1].report)
+        self.assertEqual([], retries)
+        self.assertNotIn("RETRY", printed.getvalue())
+
+    def test_a_retry_that_fails_reports_the_ending_and_the_retry_s_result(self) -> None:
+        job, started = job_running("bash suite", ENDED, FAILS_AFTER_OUTPUT)
+        with contextlib.redirect_stdout(io.StringIO()):
+            failures, retries = run_jobs([job], verbose=False, workers=1)
+        self.assertEqual([ENDED, FAILS_AFTER_OUTPUT], started)
+        self.assertEqual(["failed"], [retry.result for retry in retries])
+        report = failures[0].report
+        self.assertTrue(report.startswith("Started once more after: "), report)
+        self.assertIn("with status 0x80000004 before its first line of output", report)
+        self.assertIn("\nThe retry failed:\nCommand failed with exit code 1: ", report)
+        self.assertIn("1 test failed", report)
+
+    def test_step_summary_names_a_termination_and_each_retry(self) -> None:
+        ended = "bash.exe was ended with status 0x80000004 before its first line of output: bash.exe -c 'x'"
+        text = step_summary(
+            (3, 11, 9),
+            {},
+            "Mode.",
+            1,
+            3,
+            4.0,
+            ["suite a.sh"],
+            {"suite a.sh": f"Ended before its first line of output on each of 2 attempts:\n  {ended}\n  {ended}"},
+            "1/4",
+            {"suite a.sh": f"{ended}\nStarted once more, it was ended again.", "suite b.sh": f"{ended}\nIt passed."},
+        )
+        self.assertEqual(
+            "## Repository validation, shard 1/4\n\n- Python 3.11.9\n- Mode.\n"
+            "- 1 policy checks and 3 suite jobs in 4s: **validation FAILED**\n"
+            "- Failed: `suite a.sh`\n\n  ```text\n"
+            "  Ended before its first line of output on each of 2 attempts:\n"
+            f"    {ended}\n    {ended}\n  ```\n\n"
+            "- Retried once: `suite a.sh`\n\n  ```text\n"
+            f"  {ended}\n  Started once more, it was ended again.\n  ```\n\n"
+            "- Retried once: `suite b.sh`\n\n  ```text\n"
+            f"  {ended}\n  It passed.\n  ```\n\n",
+            text,
+        )
 
 
 if __name__ == "__main__":
