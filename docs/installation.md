@@ -107,7 +107,7 @@ pending recovery evidence untouched.
 
 ## Updating
 
-`main` is the supported line, and releases are checkpoints on it, so an installation follows `main` rather than the latest release. From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. See [Versioning](releasing.md#versioning) for what each level means.
+`main` is the supported line, and releases are checkpoints on it, so an installation follows `main` rather than the latest release. From any runtime, start `update-coding-agent-skills`: `/update-coding-agent-skills` in Claude Code or Copilot CLI, `$update-coding-agent-skills` in Codex. It fast-forwards this clone to `origin/main` and redeploys, and it stops without changing anything if the clone has uncommitted changes or local commits. It also stops before a release that raises the major version (or the minor version, while the major is 0), since that release may ask you to act; read its notes, then start the skill again with `--cross-major` to apply it. Over a deployment pinned with `--at`, described below, it stops until you start it with `--unpin`. See [Versioning](releasing.md#versioning) for what each level means.
 
 To update by hand, update the clone, preview the deployment, and then apply it:
 
@@ -123,7 +123,7 @@ Deploy from the same clone each time: the manifest records it, and a deployment 
 
 If an updated skill requires a new configuration value, the deployer stops and asks you to run `python deploy.py configure` first.
 
-To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). The next deployment without it, `update-coding-agent-skills` included, moves the installation back to the clone's `HEAD` and reports that it replaced the pinned deployment.
+To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). `update-coding-agent-skills` then stops with `PINNED <ref> <commit>` and changes nothing until you start it with `--unpin`; that run, or any deployment without `--at`, moves the installation back to the clone's `HEAD` and reports that it replaced the pinned deployment.
 
 ## Uninstalling
 

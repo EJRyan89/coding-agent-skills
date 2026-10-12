@@ -105,7 +105,7 @@ python deploy.py --all --at '<tag-or-commit>'
 
 A ref that starts with `-`, that names no commit, or whose `source.json` carries another source ID is refused before anything changes; a change of source ID needs an explicit migration.
 
-Report the regression with the commit range between the two deployments. The next deployment without `--at`, including the one `update-coding-agent-skills` makes, replaces the pinned one and says so: the deployer's report ends with `Replaced the deployment pinned with --at <ref>`, and the skill reports that line.
+Report the regression with the commit range between the two deployments. `update-coding-agent-skills` leaves a pinned deployment in place: it stops before fetching with `PINNED <ref> <commit>`. To move back to `main`, start it again with `--unpin`, or run `python deploy.py --all` from the clone. Either deployment without `--at` replaces the pinned one and says so: the deployer's report ends with `Replaced the deployment pinned with --at <ref>`, and the skill reports that line.
 
 ## Configuration that no longer reads
 

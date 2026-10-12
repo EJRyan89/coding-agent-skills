@@ -9,7 +9,9 @@ trap 'rm -rf -- "$FIXTURE"' EXIT
 git_quiet() { git -c user.name=Test -c user.email=test@example.invalid "$@" >/dev/null 2>&1; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-# The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT.
+# The upstream carries a stand-in deploy.py that records its arguments and exits with $FAKE_DEPLOY_EXIT. Its check
+# prints $FAKE_CHECK_OUTPUT, by default the line a deployment with no recorded commit gets, and exits with
+# $FAKE_CHECK_EXIT.
 UPSTREAM="$FIXTURE/upstream.git"
 SEED="$FIXTURE/seed"
 git_quiet init --bare -b main "$UPSTREAM"
@@ -18,6 +20,9 @@ cat >"$SEED/deploy.py" <<'EOF'
 import os, sys
 with open(os.environ["FAKE_DEPLOY_LOG"], "a", encoding="utf-8") as log:
     log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:] == ["check"]:
+    print(os.environ.get("FAKE_CHECK_OUTPUT", "Deployed commit: unknown"))
+    raise SystemExit(int(os.environ.get("FAKE_CHECK_EXIT", "0")))
 if os.environ.get("FAKE_DEPLOY_MOVE"):
     os.rename(os.environ["FAKE_DEPLOY_MOVE"], os.environ["FAKE_DEPLOY_MOVE"] + ".bak")
 print("fake deploy ran")
@@ -67,8 +72,13 @@ expect_failed() {
     *) fail "$2: expected a line starting '$1', got: $OUTPUT" ;;
   esac
 }
-expect_deployed() { [ "$(cat "$FAKE_DEPLOY_LOG")" = "--all" ] || fail "$1: deploy.py was not run once with --all"; }
-expect_not_deployed() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran"; }
+# The pin is read with check before the fetch; the deployment is the one run with --all, and it comes last.
+expect_deployed() {
+  [ "$(grep -cx -e "--all" "$FAKE_DEPLOY_LOG")" = "1" ] && [ "$(tail -n 1 "$FAKE_DEPLOY_LOG")" = "--all" ] ||
+    fail "$1: deploy.py was not run once with --all: $(cat "$FAKE_DEPLOY_LOG")"
+}
+expect_not_deployed() { ! grep -qx -e "--all" "$FAKE_DEPLOY_LOG" || fail "$1: deploy.py ran"; }
+expect_nothing_run() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"; }
 head_of() { git -C "$1" rev-parse --short "$2"; }
 
 # Usage errors: the wrong number of arguments, on stderr with exit 2.
@@ -77,7 +87,11 @@ expect_status 2 "no argument"
 [ -z "$OUTPUT" ] || fail "no argument: usage went to stdout: $OUTPUT"
 grep -q "^usage: update.sh" "$FIXTURE/stderr" || fail "no argument: usage text missing"
 run_subject "$FIXTURE" --cross-major extra
-expect_status 2 "three arguments"
+expect_status 2 "an extra argument"
+run_subject "$FIXTURE" --unpin --unpin
+expect_status 2 "a repeated option"
+run_subject "$FIXTURE" --cross-major --unpin extra
+expect_status 2 "four arguments"
 
 # A path that is not a clone is a named failure, not a usage error.
 run_subject "$FIXTURE"
@@ -136,7 +150,7 @@ expect_first_line "DIRTY" "dirty"
 expect_no_stderr "dirty"
 printf '%s\n' "$OUTPUT" | grep -q "notes.txt" || fail "dirty: changed file not listed"
 [ "$(git -C "$CLONE" rev-parse origin/main)" = "$BEFORE" ] || fail "dirty: fetched anyway"
-expect_not_deployed "dirty"
+expect_nothing_run "dirty"
 
 # A main with its own commits is never merged, rebased, or reset.
 new_clone
@@ -390,6 +404,56 @@ run_subject "$CLONE"
 expect_status 0 "pre-release to release"
 if printf '%s\n' "$OUTPUT" | grep -q "CROSSED"; then fail "pre-release to release: crossing reported"; fi
 expect_deployed "pre-release to release"
+
+# A deployment made with deploy.py --at stops the update before the fetch, naming the ref and the commit check reports.
+PINNED_COMMIT=0123456789abcdef0123456789abcdef01234567
+PINNED_CHECK="
+Source: coding-agent-skills
+Deployed commit: v1.0.0 ($PINNED_COMMIT), pinned with --at v1.0.0
+Home: home"
+new_clone
+BEFORE=$(git -C "$CLONE" rev-parse HEAD)
+FETCHED=$(git -C "$CLONE" rev-parse origin/main)
+publish "after the pin"
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE"
+expect_status 1 "pinned"
+[ "$OUTPUT" = "PINNED v1.0.0 $PINNED_COMMIT" ] || fail "pinned: expected only the PINNED line, got: $OUTPUT"
+expect_no_stderr "pinned"
+[ "$(git -C "$CLONE" rev-parse origin/main)" = "$FETCHED" ] || fail "pinned: fetched anyway"
+[ "$(git -C "$CLONE" rev-parse HEAD)" = "$BEFORE" ] || fail "pinned: main moved"
+[ "$(cat "$FAKE_DEPLOY_LOG")" = "check" ] || fail "pinned: expected only check to run: $(cat "$FAKE_DEPLOY_LOG")"
+
+# A pin check names by its commit alone, when no tag describes it, is read the same way.
+FAKE_CHECK_OUTPUT="Deployed commit: $PINNED_COMMIT, pinned with --at main~2" run_subject "$CLONE"
+expect_status 1 "pinned untagged"
+[ "$OUTPUT" = "PINNED main~2 $PINNED_COMMIT" ] || fail "pinned untagged: got: $OUTPUT"
+expect_not_deployed "pinned untagged"
+
+# With --unpin, before or after --cross-major, the update moves past the pin and deploys main.
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin
+expect_status 0 "unpin"
+expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin"
+expect_deployed "unpin"
+publish "after the unpin"
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --cross-major --unpin
+expect_status 0 "unpin after cross-major"
+expect_deployed "unpin after cross-major"
+publish "unpin first"
+FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin --cross-major
+expect_status 0 "unpin before cross-major"
+expect_deployed "unpin before cross-major"
+
+# A deployment check names without a pin, or a check that fails, does not stop the update.
+publish "unpinned change"
+FAKE_CHECK_OUTPUT="Deployed commit: v1.0.0 ($PINNED_COMMIT)" run_subject "$CLONE"
+expect_status 0 "not pinned"
+printf '%s\n' "$OUTPUT" | grep -q "^UPDATED " || fail "not pinned: expected UPDATED: $OUTPUT"
+expect_deployed "not pinned"
+FAKE_CHECK_OUTPUT="" FAKE_CHECK_EXIT=1 run_subject "$CLONE"
+expect_status 0 "check failed"
+expect_first_line "UP_TO_DATE $(head_of "$CLONE" HEAD)" "check failed"
+expect_no_stderr "check failed"
+expect_deployed "check failed"
 
 # An unknown option is a usage error.
 run_subject "$CLONE" --force

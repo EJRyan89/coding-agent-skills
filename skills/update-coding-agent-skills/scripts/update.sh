@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Fast-forward a coding-agent-skills clone to origin/main, then redeploy it with `deploy.py --all`.
 #
-# Usage: update.sh <clone> [--cross-major]
+# Usage: update.sh <clone> [--cross-major] [--unpin]
 # Prints one status line first, then details:
 #   DIRTY            followed by the tracked files with uncommitted changes
+#   PINNED <ref> <commit> alone: `deploy.py check` names the deployment as made with `deploy.py --at <ref>`, which
+#                    deployed <commit>, and --unpin was not given
 #   FETCH_FAILED     followed by Git's error
 #   MAJOR_UPDATE <current>..<target> followed by the commits it would pull; origin/main's highest
 #                    release tag raises the breaking component (the major, or the minor while the
@@ -23,13 +25,20 @@
 set -uo pipefail
 
 # Usage is checked before any work, so a usage error never becomes a FAILED line.
-CROSS_MAJOR=
-if [ "$#" -eq 2 ] && [ "$2" = "--cross-major" ]; then
-  CROSS_MAJOR=1
-elif [ "$#" -ne 1 ]; then
-  echo "usage: update.sh <clone containing deploy.py> [--cross-major]" >&2
+usage() {
+  echo "usage: update.sh <clone containing deploy.py> [--cross-major] [--unpin]" >&2
   exit 2
-fi
+}
+[ "$#" -ge 1 ] || usage
+CROSS_MAJOR=
+UNPIN=
+for OPTION in "${@:2}"; do
+  case "$OPTION" in
+    --cross-major) [ -z "$CROSS_MAJOR" ] || usage; CROSS_MAJOR=1 ;;
+    --unpin) [ -z "$UNPIN" ] || usage; UNPIN=1 ;;
+    *) usage ;;
+  esac
+done
 
 # A command's error output as one line, for a FAILED reason.
 one_line() {
@@ -72,6 +81,24 @@ if [ -n "$DIRTY" ]; then
   echo "DIRTY"
   printf '%s\n' "$DIRTY" | tr -d '\r'
   exit 1
+fi
+
+# A deployment made with `deploy.py --at` is pinned to that commit, and deploying main would replace it, so the update
+# stops until --unpin. check names the pin after the deployed commit, which it describes as "<name> (<commit>)" or
+# the commit alone. A check that fails or names no pin does not stop the update; the deployer's report still says
+# when a deployment replaces a pin.
+if [ -z "$UNPIN" ]; then
+  PIN_MARK=", pinned with --at "
+  PINNED=$(python "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: .*$PIN_MARK")
+  if [ -n "$PINNED" ]; then
+    DEPLOYED=${PINNED#Deployed commit: }
+    DEPLOYED=${DEPLOYED%"$PIN_MARK"*}
+    case "$DEPLOYED" in
+      *")") DEPLOYED=${DEPLOYED##*"("} && DEPLOYED=${DEPLOYED%")"} ;;
+    esac
+    echo "PINNED ${PINNED##*"$PIN_MARK"} $DEPLOYED"
+    exit 1
+  fi
 fi
 
 # Release tags are fetched too, so both sides' versions can be compared below.
