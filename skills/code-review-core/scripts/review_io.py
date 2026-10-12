@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
 import os
@@ -147,6 +146,13 @@ def read_diff(path: Path) -> str:
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
+    """Replace `path` with `content` through a synced copy beside it; on any failure the copy is removed, `path` is
+    untouched, and the error is a PersistenceError.
+
+    The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
+    that closed it first would free its number for another thread's open, and a second close would close that file.
+    """
+    data = content.encode("utf-8")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
@@ -154,14 +160,12 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
         temporary = Path(temporary_name)
         try:
             temporary.chmod(mode)
-            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
-            raise
+            view = memoryview(data)
+            while view:
+                view = view[os.write(descriptor, view) :]
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         temporary.replace(path)
         temporary = None
     except OSError as exc:
