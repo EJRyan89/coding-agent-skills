@@ -150,11 +150,27 @@ With the guard enabled:
 - **Both shell tools.** The same commands are refused, with the same allowances, whether they run through the
   `Bash` tool or the `PowerShell` tool.
 - **How the target is found.** The guard follows where each git call runs, so the hub can still act on a
-  worktree and a worktree session cannot reach into the hub. In both shells it follows `git -C <dir>` and
-  `--work-tree`. A `--git-dir`, or a `GIT_DIR` that is set, leaves the directory unknown. Each shell also has
-  its own rules:
-  - **Bash.** The guard follows `cd <dir>` and a `GIT_WORK_TREE=` prefix. Git Bash paths such as `/c/...` are
-    understood.
+  worktree and a worktree session cannot reach into the hub. In both shells it follows `git -C <dir>`,
+  `--work-tree`, and an absolute `-c core.worktree=<dir>`. A `--git-dir`, or a `core.worktree` that is relative
+  or comes from `--config-env`, leaves the directory unknown unless a work tree is named.
+- **Location variables.** `GIT_DIR`, `GIT_WORK_TREE`, and `GIT_COMMON_DIR` point git at a repository or work
+  tree wherever the command runs. Whichever way one is set, the guard applies it to every git call that sees it:
+  a `GIT_WORK_TREE` settles the directory, and a `GIT_DIR` or `GIT_COMMON_DIR` without one leaves it unknown. It
+  finds them:
+  - inherited from the environment Claude Code gives the hook, in either shell;
+  - in Bash, set for one command (`GIT_DIR=<dir> git ...`, or `env GIT_DIR=<dir> git ...`), or exported for the
+    rest of the command (`export`, `declare -x`, `typeset -x`, or an assignment while `set -a` or
+    `set -o allexport` holds or to a variable already exported). An assignment that is not exported does not
+    reach git and is ignored, and `unset`, `export -n`, `env -i`, and `env -u` remove one;
+  - in PowerShell, assigned through `$env:`, `Set-Item` or `New-Item` on the `env:` drive, or
+    `[Environment]::SetEnvironmentVariable`.
+
+  The guard's own git calls drop these variables, as does the hook's check of the opt-in setting, so an
+  inherited one cannot hide the hub from the guard.
+- **Each shell's own rules.**
+  - **Bash.** The guard follows `cd <dir>` (a bare `cd` goes home, `cd -` leaves the directory unknown),
+    `pushd`, `popd`, and `env -C <dir>`. A directory or variable set inside `( )`, `$( )`, or `<( )` stays
+    there. Git Bash paths such as `/c/...` are understood.
   - **PowerShell.** The guard follows `cd`, `chdir`, `sl`, and `Set-Location`, with `-Path` or `-LiteralPath`
     written out, abbreviated, or omitted:
     - a bare `cd` goes home, and a leading `~` means home;
@@ -162,10 +178,12 @@ With the guard enabled:
     - `Push-Location` and `Pop-Location` keep a stack, and a pop past its bottom leaves the directory unknown;
     - a location set inside a script block outlives the block, as it does in PowerShell;
     - `$env:NAME`, and strings whose only expansions are environment variables that are set, are expanded;
-    - once `$env:GIT_DIR` or `$env:GIT_WORK_TREE` is assigned, the directory is unknown.
-  - **Nested shells.** `bash -c` and `pwsh -c` (or `powershell -Command`) with a fixed script are read in
-    either shell. The nested script runs as its own process, so its `cd` does not outlive it. PowerShell's
-    `Invoke-Expression` (`iex`) with a fixed string is read as part of the same session.
+    - a location variable the command assigns has no value the guard follows, so it leaves the directory
+      unknown, and removing it does not settle it again.
+  - **Nested shells.** `bash -c` (alone or in a bundle such as `-lc`), `bash <<< '<script>'`, and `pwsh -c` (or
+    `powershell -Command`) with a fixed script are read in either shell. The nested script runs as its own
+    process with the variables its parent exported, so its `cd` and what it exports do not outlive it.
+    PowerShell's `Invoke-Expression` (`iex`) with a fixed string is read as part of the same session.
 - **How PowerShell is read.** A PowerShell command is read by PowerShell's own parser, not by a second
   hand-written grammar. Here-strings, backtick escapes, and comments are where a tokenizer would misread a
   quote and miss the command beside it. `tools/worktrees-powershell.ps1` only reports what the parser found,
@@ -181,6 +199,10 @@ The guard catches mistakes, not determined effort. It does not see:
 - shell redirection or other programs writing files;
 - git run indirectly from inside a script, or through `Start-Process`, `cmd /c`, or `pwsh -EncodedCommand`;
 - a git subcommand spelled with escapes or computed at run time, or a directory the text does not settle;
+- a location variable set by the shell's own startup files, a sourced script, or `eval`, or configuration given
+  through git's `GIT_CONFIG_*` variables;
+- `GIT_INDEX_FILE`, which moves only the index: the guard still judges the call by the checkout whose `HEAD` and
+  tree it writes, so it does not see an index file of the hub named from another checkout;
 - Bash commands whose quoting it cannot tokenize;
 - a PowerShell command when `pwsh` cannot be started, or does not finish reading it within 20 seconds.
 

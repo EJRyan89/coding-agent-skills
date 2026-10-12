@@ -12,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$(git -C \"$CLAUDE_PROJECT_DIR\" config --type=bool --get coding-agent-skills.hubGuard)\" = true ] || exit 0; python -B \"$CLAUDE_PROJECT_DIR/tools/worktrees.py\" guard",
+            "command": "[ \"$(unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR; git -C \"$CLAUDE_PROJECT_DIR\" config --type=bool --get coding-agent-skills.hubGuard)\" = true ] || exit 0; python -B \"$CLAUDE_PROJECT_DIR/tools/worktrees.py\" guard",
             "timeout": 30
           }
         ]
