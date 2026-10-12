@@ -492,6 +492,22 @@ class DocumentationDriftScenarioTests(GitTestCase):
             with self.subTest(line=line):
                 self.assertNotIn(head[line - 1], base, "the expectation sits on a line the change adds")
 
+    def test_the_report_script_keeps_the_status_of_the_function_it_calls(self) -> None:
+        # A command substitution inside an argument of echo drops its exit status even under set -e, so main would
+        # print an empty age and exit 0 where days_old refused the report with status 2: a real defect a reviewer
+        # reports, which would fail a clean scenario. The status is kept by assigning the age first, and the
+        # change's hunk is the function's alone because base and head agree on main.
+        for name in ("tested-change", "untested-change"):
+            for side in ("base", "head"):
+                with self.subTest(scenario=name, side=side):
+                    lines = (SCENARIOS / name / side / "tools" / "report_age.sh").read_text("utf-8").splitlines()
+                    assignment = lines.index('    age=$(days_old "$path")')
+                    self.assertEqual('    echo "$age $path"', lines[assignment + 1])
+                    self.assertEqual([], [line for line in lines if 'echo "$(days_old' in line])
+            _, _, diff = self.scenario(name)
+            self.assertIn("@@ -4,6 +4,10 @@", diff)
+            self.assertNotIn('age=$(days_old "$path")', diff, "main is context, not part of the change")
+
     def test_the_tested_change_adds_the_suite_that_names_the_function_and_closes_the_route(self) -> None:
         directory, spec, diff = self.scenario("tested-change")
         self.assertIn("+++ b/tests/test_report_age.sh", diff)
