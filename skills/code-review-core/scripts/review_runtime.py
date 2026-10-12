@@ -1230,8 +1230,7 @@ def verify_stamped_snapshot(
     for relative, expected_hash in metadata["source_hashes"].items():
         if tree.modified[relative] < written:
             continue
-        if hashlib.sha256(_snapshot_path(root, relative).read_bytes()).hexdigest() != expected_hash:
-            raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
+        _require_hash(root, relative, expected_hash)
     for relative, blob in metadata.get(SNAPSHOT_FETCHABLE, {}).items():
         if relative in tree.files:
             _require_blob(root, relative, blob)
@@ -1253,10 +1252,15 @@ def _snapshot_path(root: Path, relative: str) -> Path:
     return root.joinpath(*PurePosixPath(relative).parts)
 
 
+def _require_hash(root: Path, relative: str, expected_hash: str) -> None:
+    """A listed file's bytes hash to its SHA-256 hash."""
+    if hashlib.sha256(_snapshot_path(root, relative).read_bytes()).hexdigest() != expected_hash:
+        raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
+
+
 def _require_blob(root: Path, relative: str, blob: str) -> None:
     """A fetched file's bytes hash to its blob id."""
-    content = _snapshot_path(root, relative).read_bytes()
-    if _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
+    if not blob_matches(blob, _snapshot_path(root, relative).read_bytes()):
         raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
 
 
@@ -1329,12 +1333,11 @@ def _verify_snapshot_files(tree: _SnapshotTree, hashes: dict[str, Any], *, conte
     expected_files = {SOURCE_SNAPSHOT_MANIFEST}
     total_bytes = 0
     for relative, expected_hash in hashes.items():
-        target, size = _snapshot_file(tree, relative, expected_hash)
-        total_bytes += size
+        total_bytes += _snapshot_file_size(tree, relative, expected_hash)
         if total_bytes > MAX_SOURCE_SNAPSHOT_BYTES:
             raise RuntimeContractError("Source snapshot exceeds the size limit")
-        if contents and hashlib.sha256(target.read_bytes()).hexdigest() != expected_hash:
-            raise RuntimeContractError(f"Source snapshot hash mismatch: {relative}")
+        if contents:
+            _require_hash(tree.root, relative, expected_hash)
         expected_files.add(relative)
     return expected_files, total_bytes
 
@@ -1375,20 +1378,18 @@ def _verify_fetched_files(
     return total_bytes
 
 
-def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tuple[Path, int]:
-    """A listed file's path and size, once its name, its hash's format, its place under the root, and its size check
-    out."""
+def _snapshot_file_size(tree: _SnapshotTree, relative: str, expected_hash: Any) -> int:
+    """A listed file's size, once its name, its hash's format, its place under the root, and its size check out."""
     normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.source_hashes")
     if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
         raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
     if _is_agent_instruction_path(relative):
         raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
     READ.hex_digest(expected_hash, f"{SOURCE_SNAPSHOT_MANIFEST}.source_hashes.{relative}", 64)
-    target = tree.root.joinpath(*PurePosixPath(relative).parts)
     size = tree.size(relative)
     if size > MAX_CHANGED_FILE_BYTES:
         raise RuntimeContractError(f"Source snapshot file exceeds the size limit: {relative}")
-    return target, size
+    return size
 
 
 def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, Any]) -> None:
@@ -1909,9 +1910,7 @@ def fetch_source_file(
     if blob is None:
         raise RuntimeContractError(f"The head commit has no file {json.dumps(relative)} the snapshot can hold")
     if relative in tree.files:
-        held_content = target.read_bytes()
-        if _git_blob_id(_blob_algorithm(blob), len(held_content), [held_content]) != blob:
-            raise RuntimeContractError(f"Source snapshot file does not match its blob: {relative}")
+        _require_blob(root, relative, blob)
         return target
     blobs = iter(blob_reader(checkout, [blob]))
     try:
@@ -1920,7 +1919,7 @@ def fetch_source_file(
         close = getattr(blobs, "close", None)
         if close is not None:  # a generator reader ends its git process
             close()
-    if content is None or _git_blob_id(_blob_algorithm(blob), len(content), [content]) != blob:
+    if content is None or not blob_matches(blob, content):
         raise RuntimeContractError(f"The checkout did not return blob {blob} of {json.dumps(relative)}")
     if _binary(content):
         return "binary"
