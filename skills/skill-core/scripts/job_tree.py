@@ -102,7 +102,8 @@ def _kernel32() -> Any:
 
 def _failed(call: str) -> OSError:
     error = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
-    return OSError(f"{call} failed: {ctypes.FormatError(error).strip()} (Windows error {error})")  # type: ignore[attr-defined]  # Windows only
+    reason = ctypes.FormatError(error).strip()  # type: ignore[attr-defined]  # Windows only
+    return OSError(f"{call} failed: {reason} (Windows error {error})")
 
 
 def job_holding(pid: int) -> int:
