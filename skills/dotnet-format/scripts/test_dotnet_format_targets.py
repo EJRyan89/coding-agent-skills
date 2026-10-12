@@ -761,12 +761,13 @@ class FileListTests(GitTestCase):
             targets.read_file_list(self.path)
 
 
-class LocatedToolsTests(unittest.TestCase):
+class LocatedToolsTests(GitTestCase):
     """gh and the .NET SDK are found by skill-core's locator, as `deploy.py check` finds them, and gh runs at that
     absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
     fresh one, so the only programs found are the ones a test puts there."""
 
     def setUp(self) -> None:
+        super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="targets locator ")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)

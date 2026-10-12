@@ -256,7 +256,7 @@ class DeploymentTests(RuntimeCanaryTestCase):
         self.assertIn("unknown skill: no-such-skill", output.getvalue())
 
 
-class LookupTests(unittest.TestCase):
+class LookupTests(GitTestCase):
     def test_a_runtime_is_looked_up_where_check_and_verify_look_for_it(self) -> None:
         # skill-core's locator through the deployer, so a runtime only in WinGet's Links folder is checked too.
         self.assertIs(

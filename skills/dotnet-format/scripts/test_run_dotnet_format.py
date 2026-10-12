@@ -228,12 +228,13 @@ class SubprocessRunnerTests(GitTestCase):
         self.assertIn(b"loading", result.output)
 
 
-class LocatedFormatterTests(unittest.TestCase):
+class LocatedFormatterTests(GitTestCase):
     """The formatter is found by skill-core's locator, as `deploy.py check` finds it, and run by that absolute path.
     The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so the
     only programs found are the ones a test puts there."""
 
     def setUp(self) -> None:
+        super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="formatter locator ")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
