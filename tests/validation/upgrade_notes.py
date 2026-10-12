@@ -6,11 +6,15 @@ import ast
 import json
 import re
 import subprocess
+import sys
 import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from release_levels import RELEASING_DOC, VERSION, VERSIONING_HEADING, level_word, versioning_levels
 from validation_support import REPOSITORY_ROOT, is_skill_file, markdown_section, repository_files
 
 from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_entries, range_entries
@@ -19,7 +23,6 @@ from tools.release_notes import BODY_HEADING, UPGRADE_NOTES, SourcedEntry, body_
 # the last tag and in the working tree. Each is compared by its contract value, so an edit that leaves the value alone
 # needs no entry. The entries are the upgrade notes tools/release_notes.py reads from the commits since the tag, and
 # the pull request body the runner was given with --pr-body.
-RELEASING_DOC = "docs/releasing.md"
 PROFILE_DOC = "docs/implementing-changes.md"
 CONTRACT_FILES_HEADING = "## Contract files"
 RELEASE_BRANCH = "origin/main"
@@ -31,12 +34,9 @@ DEPLOY_META = re.compile(r"deploy-meta/[^/]+\.json")
 REVIEW_SCHEMA = re.compile(r"skills/code-review-core/references/.+\.schema\.json")
 FORMATS_DOC = "docs/code-review-operations-contract.md"
 FORMATS_HEADING = "## Formats"
-VERSIONING_HEADING = "## Versioning"
-LEVEL_ITEM = re.compile(r"- \*\*([A-Za-z]+)\.\*\*")
 NOTES_FIELDS = ("Level", "Contract", "User action")
 # The only sections the notes file has below its title are versions', which tools/release_notes.py writes.
 NOTES_SECTION = re.compile(r"^## (.*)$", re.MULTILINE)
-VERSION = re.compile(r"v\d+\.\d+\.\d+")
 PULL_REQUESTS = re.compile(r"#\d+(?:,? (?:and )?#\d+)*")
 
 
@@ -196,19 +196,6 @@ def contract_list_problems(document: str, text: str, heading: str) -> list[str]:
     ]
 
 
-def versioning_levels(releasing: str) -> list[str]:
-    """The level names of the **Levels** list in the Versioning section, lowercased, in the order written."""
-    section = markdown_section(releasing.replace("\r\n", "\n"), VERSIONING_HEADING) or ""
-    _, found, rest = section.partition("**Levels**")
-    levels: list[str] = []
-    for line in rest.split("\n")[1:] if found else []:
-        if match := LEVEL_ITEM.match(line):
-            levels.append(match.group(1).lower())
-        elif line.strip() and not line.startswith(("- ", "  ")):
-            break
-    return levels
-
-
 def _either(words: list[str]) -> str:
     return words[0] if len(words) == 1 else f"{', '.join(words[:-1])}, or {words[-1]}"
 
@@ -224,10 +211,10 @@ def notes_entry_problems(item: SourcedEntry, levels: list[str]) -> list[str]:
     ]
     # The Level is a sentence that starts with a level word. A value that starts with anything else, such as a
     # version number, punctuation, or a word run into a digit, is named by its first token, so it fails the same way.
-    level = re.match(r"[A-Za-z]+\b|\S+", entry.fields.get("Level", ""))
-    if level and level.group(0).lower() not in levels:
+    level = level_word(entry.fields.get("Level", ""))
+    if level and level.lower() not in levels:
         problems.append(
-            f"{where} starts its Level with '{level.group(0)}', not one of the levels in the Versioning section of "
+            f"{where} starts its Level with '{level}', not one of the levels in the Versioning section of "
             f"{RELEASING_DOC}: {_either(levels)}"
         )
     contract = entry.fields.get("Contract")
