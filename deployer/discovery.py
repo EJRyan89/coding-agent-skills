@@ -71,8 +71,11 @@ def converse(
     timeout: float,
 ) -> list[str]:
     lines: queue.Queue[str | None] = queue.Queue()
-    with tempfile.TemporaryFile() as errors:
+    with tempfile.TemporaryFile() as errors, contextlib.ExitStack() as held:
         process, stdin, stdout = _start(arguments, cwd, environment, errors)
+        # Leaving the tree ends whatever the program started, such as the runtime a launcher script runs, which a kill
+        # of the program alone would leave running.
+        _hold(held, process, stdin, stdout)
         reader = threading.Thread(target=_read_lines, args=(stdout, lines), daemon=True)
         reader.start()
         received: list[str] = []
@@ -115,6 +118,17 @@ def _start(
         process.wait()
         raise ListingError("its pipes did not open")
     return process, stdin, stdout
+
+
+def _hold(held: contextlib.ExitStack, process: subprocess.Popen[str], stdin: IO[str], stdout: IO[str]) -> None:
+    """Hold the started program in a process tree until `held` closes; one that cannot be held is ended."""
+    try:
+        held.enter_context(platform_support.process_tree().hold(process))
+    except OSError as exc:
+        for pipe in (stdin, stdout):
+            with contextlib.suppress(OSError):
+                pipe.close()
+        raise ListingError(f"cannot end what it starts: {exc}") from exc
 
 
 def _read_lines(stdout: IO[str], lines: queue.Queue[str | None]) -> None:

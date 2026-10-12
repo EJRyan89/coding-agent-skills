@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import TypedDict
 
 import executable_locator
+from bounded_process import run_bounded
+from job_tree import JobRefused, JobTree
 
-from .errors import DeployError
+from .errors import DeployError, see_recovery
 
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
 WINDOWS_ROOT = re.compile(r"^[A-Za-z]:/$")
@@ -24,6 +26,13 @@ FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 CREATE_NO_WINDOW = 0x08000000
 # The longest command line CreateProcess accepts, in characters. A tool given one path per file batches below it.
 COMMAND_LINE_LIMIT = 32_767
+# Seconds a tool the deployer runs, such as Git Bash, ShellCheck, PowerShell, or git, may take before it is ended with
+# every process it started. Minutes, not seconds: ShellCheck and PowerShell over a large selection on a loaded machine
+# take far longer than on an idle one and must still finish. The limit exists because a deployment holds its lock
+# while it validates, so a tool that hangs would otherwise hold the lock, and stall every later run, until killed.
+TOOL_DEADLINE_SECONDS = 600
+# The recovery guide's section a refusal for a tool that ran out of time points at.
+TOOL_DEADLINE_SECTION = "A tool that does not finish"
 INSTALL_HINTS = {
     "Git Bash": "winget install --id Git.Git",
     "ShellCheck": "winget install --id koalaman.shellcheck",
@@ -245,26 +254,56 @@ def command_line_length(arguments: list[str]) -> int:
     return len(subprocess.list2cmdline(arguments))
 
 
-def run_tool(arguments: list[str], environment: dict[str, str] | None = None) -> ToolResult:
-    """Run a tool with stdout and stderr captured through files, never inherited pipes."""
+def process_tree() -> JobTree:
+    """A tree for one command and every process it starts, which ends them all when it is left: a job object."""
+    return JobTree()
+
+
+class ToolTimedOut(DeployError):
+    """A tool did not finish within its deadline, so it was ended with every process it started."""
+
+    def __init__(self, program: str, seconds: float) -> None:
+        name = Path(program).name
+        super().__init__(
+            f"ERROR: {name} did not finish within {seconds:g} seconds, the deadline TOOL_DEADLINE_SECONDS in "
+            "deployer/platform_support.py sets, so it was ended with every process it started.",
+            f"The tool was {normalize(program)}. Run it by itself to see whether it finishes, then retry.",
+            see_recovery(TOOL_DEADLINE_SECTION),
+        )
+        self.program = program
+        self.seconds = seconds
+
+
+def run_tool(
+    arguments: list[str], environment: dict[str, str] | None = None, *, timeout: float | None = None
+) -> ToolResult:
+    """Run a tool with stdout and stderr captured through a file, never inherited pipes, within a deadline.
+
+    The tool and every process it starts are held in one process tree, which ends them all once it has finished.
+    Raises ToolTimedOut when it has not finished within `timeout` seconds, TOOL_DEADLINE_SECONDS unless given, and
+    DeployError when it cannot be held with the processes it starts.
+    """
     import subprocess
     import tempfile
 
+    seconds = TOOL_DEADLINE_SECONDS if timeout is None else timeout
     merged = dict(os.environ)
     if environment:
         merged.update(environment)
     # MSYS tools can reject inherited anonymous pipes with a spurious text/binary mode error.
     with tempfile.TemporaryFile() as captured:
-        completed = subprocess.run(
-            arguments,
-            env=merged,
-            stdin=subprocess.DEVNULL,
-            stdout=captured,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
+        try:
+            finished = run_bounded(
+                arguments, seconds, stdout=captured, stderr=captured, env=merged, tree=process_tree()
+            )
+        except subprocess.TimeoutExpired:
+            raise ToolTimedOut(arguments[0], seconds) from None
+        except JobRefused as exc:
+            raise DeployError(
+                f"ERROR: {Path(arguments[0]).name} could not be run with an end to every process it starts: {exc}."
+            ) from exc
         captured.seek(0)
-        return ToolResult(completed.returncode, captured.read().decode("utf-8", "replace"))
+        return ToolResult(finished.returncode, captured.read().decode("utf-8", "replace"))
 
 
 @dataclass(frozen=True)
