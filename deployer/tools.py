@@ -7,7 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from pdf_tool import MINIMUMS, VERSION_ARGUMENTS, PdfIdentity, PdfToolRefused, probe_pdftotext
+from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, probe_pdftotext
 
 from . import platform_support
 
@@ -27,8 +27,8 @@ class Tool:
     minimum: tuple[int, ...] = ()
     optional: bool = False
     other_uses: tuple[str, ...] = ()
-    # The exit statuses after which the version arguments' output is read.
-    version_statuses: frozenset[int] = frozenset({0})
+    # The PDF parser floors, by provider, for a tool pdf_tool probes; it owns the probe, its arguments, and the exit
+    # statuses each provider is allowed, so such a tool sets nothing else about its version.
     provider_minimum: dict[str, tuple[int, ...]] | None = None
 
 
@@ -126,13 +126,11 @@ SKILL_TOOLS = {
         # The .NET SDK's `dotnet format` formats a .slnx solution, which the dotnet-format global tool cannot open;
         # 9.0.200 is the first SDK that reads .slnx.
         Tool("dotnet", "dotnet", lambda: platform_support.find_executable("dotnet"), minimum=(9, 0, 200)),
-        # Shared maintained-release policy; check and each extraction use the same bounded vendor probe.
+        # Shared maintained-release policy; check and each extraction use the same locator and bounded vendor probe.
         Tool(
             "pdftotext",
             "pdftotext",
             lambda: platform_support.find_executable("pdftotext"),
-            version_arguments=VERSION_ARGUMENTS,
-            version_statuses=frozenset({0, 99}),
             provider_minimum=MINIMUMS,
         ),
     )
@@ -183,17 +181,17 @@ class Probe:
 def probe(tool: Tool) -> Probe:
     """Locate a tool and, when it reports one, read its version."""
     path = tool.locate()
-    if path is None or not tool.version_arguments:
-        return Probe(tool, path, None)
-    if tool.provider_minimum is not None:
+    if path is not None and tool.provider_minimum is not None:
         try:
             identity = probe_pdftotext(path)
         except PdfToolRefused as exc:
             version = None if exc.identity is None else exc.identity.version
             return Probe(tool, path, version, exc.identity, str(exc))
         return Probe(tool, path, identity.version, identity)
+    if path is None or not tool.version_arguments:
+        return Probe(tool, path, None)
     result = platform_support.run_tool([path, *tool.version_arguments])
-    return Probe(tool, path, parse_version(result.output) if result.returncode in tool.version_statuses else None)
+    return Probe(tool, path, parse_version(result.output) if result.returncode == 0 else None)
 
 
 def python_version() -> tuple[int, ...]:

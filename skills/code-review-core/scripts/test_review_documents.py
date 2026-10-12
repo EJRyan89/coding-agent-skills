@@ -172,6 +172,14 @@ def path_without_pdftotext() -> str:
     return os.pathsep.join(folder for folder in folders if folder and shutil.which("pdftotext", path=folder) is None)
 
 
+def no_link_folder(test: unittest.TestCase) -> str:
+    """A fresh, empty local application data folder, so the locator's fallback to WinGet's Links folder finds no
+    pdftotext the machine running the test has installed there."""
+    folder = tempfile.mkdtemp(prefix="no links ")
+    test.addCleanup(shutil.rmtree, folder, True)
+    return folder
+
+
 class StubPdftotext:
     """A `pdftotext` first on PATH for the rest of a test, which records each call and answers by `rules`: the first
     rule whose marker the document holds gives its output (its `joined` output, if any, to a call without -raw), then
@@ -185,7 +193,10 @@ class StubPdftotext:
         (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
         self.answer(*rules, **default)
         self.version()
-        environment = mock.patch.dict(os.environ, {"PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}"})
+        environment = mock.patch.dict(
+            os.environ,
+            {"PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}", "LOCALAPPDATA": no_link_folder(test)},
+        )
         environment.start()
         test.addCleanup(environment.stop)
 
@@ -220,8 +231,8 @@ class StubPdftotext:
 
 
 def without_pdftotext(test: unittest.TestCase) -> None:
-    """No pdftotext on PATH for the rest of a test."""
-    environment = mock.patch.dict(os.environ, {"PATH": path_without_pdftotext()})
+    """No pdftotext on PATH or in WinGet's Links folder for the rest of a test."""
+    environment = mock.patch.dict(os.environ, {"PATH": path_without_pdftotext(), "LOCALAPPDATA": no_link_folder(test)})
     environment.start()
     test.addCleanup(environment.stop)
 
@@ -488,8 +499,8 @@ class PdfExtractionTests(GitTestCase):
         second.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
         original = shutil.which
         with mock.patch.object(
-            documents.shutil,
-            "which",
+            documents,
+            "find_executable",
             side_effect=[str(first.folder / "pdftotext.cmd"), str(second.folder / "pdftotext.cmd")],
         ) as located:
             self.assertEqual(b"[p1 l1] First\n", extract("pdf", PDF))

@@ -21,8 +21,9 @@ BLOCKED_LEADS = {
 
 
 def _version_text(probe: tools.Probe) -> str:
-    provider = f" {probe.pdf_identity.provider}" if probe.pdf_identity is not None else ""
-    return f"{provider} {tools.format_version(probe.version)}" if probe.version else ""
+    if probe.pdf_identity is not None:
+        return f" {probe.pdf_identity.provider} {probe.pdf_identity.version_text}"
+    return f" {tools.format_version(probe.version)}" if probe.version else ""
 
 
 def _deploy_lines() -> list[ReportLine]:

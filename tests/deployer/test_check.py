@@ -2,23 +2,32 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import dataclasses
 import importlib.util
 import io
 import json
+import os
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+# The extraction the code-review skills run, which must find the pdftotext check reports.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 
+import review_documents
 from git_test_base import GitTestCase
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
-from pdf_tool import MINIMUMS, PdfToolRefused, parse_banner
+from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, parse_banner
 
 from deployer import platform_support, tools
+from deployer.check import _tool_line
 
+XPDF_4_06 = "pdftotext version 4.06\nCopyright 1996-2025 Glyph & Cog, LLC\n"
+XPDF_4_00 = "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"
 BUNDLE = {"operations": {"members": ["reviewer"]}}
 INSTALLED = {
     "shellcheck": ("C:/tools/shellcheck.exe", "ShellCheck - shell script analysis tool\nversion: 0.11.0\n"),
@@ -28,7 +37,7 @@ INSTALLED = {
     "dotnet-format": ("C:/tools/dotnet-format.exe", "5.1.250801+4a851ea9\n"),
     "claude": ("C:/tools/claude.exe", "2.1.291 (Claude Code)\n"),
     "dotnet": ("C:/tools/dotnet.exe", "10.0.301\n"),
-    "pdftotext": ("C:/tools/pdftotext.exe", "pdftotext version 4.06\nCopyright 1996-2025 Glyph & Cog, LLC\n"),
+    "pdftotext": ("C:/tools/pdftotext.exe", XPDF_4_06),
 }
 # Xpdf's pdftotext exits 99 after printing its version.
 STATUSES = {"C:/tools/pdftotext.exe": 99}
@@ -230,14 +239,19 @@ class CheckCommandTests(DeployerTestCase):
     def test_pdftotext_reports_separate_provider_floors_and_unusable_probes(self) -> None:
         set_tools(self, "core", ["pdftotext"], key="optional_tools")
         groups = self.report_groups(self.check(Machine()).output, "CHECK")
-        self.assertIn("pdftotext Xpdf 4.6 (used by operations)", groups["OPTIONAL"])
+        self.assertIn("pdftotext Xpdf 4.06 (used by operations)", groups["OPTIONAL"])
         groups = self.report_groups(self.check(Machine(missing=("pdftotext",))).output, "CHECK")
         self.assertIn("pdftotext (not installed; used by operations)", groups["OPTIONAL"])
         self.assertNotIn("MISSING", groups)
         for banner, provider, version, floor in (
-            ("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n", "Xpdf", "4.0", "4.6"),
+            (XPDF_4_00, "Xpdf", "4.00", "4.06"),
             ("pdftotext version 0.86.1\nCopyright 2005-2020 The Poppler Developers\n", "Poppler", "0.86.1", "26.10.0"),
-            ("pdftotext version 26.09.0\nCopyright 2005-2026 The Poppler Developers\n", "Poppler", "26.9.0", "26.10.0"),
+            (
+                "pdftotext version 26.09.0\nCopyright 2005-2026 The Poppler Developers\n",
+                "Poppler",
+                "26.09.0",
+                "26.10.0",
+            ),
         ):
             with self.subTest(provider=provider, version=version):
                 groups = self.report_groups(self.check(Machine(versions={"pdftotext": banner})).output, "CHECK")
@@ -260,8 +274,6 @@ class CheckCommandTests(DeployerTestCase):
             Machine().patches(),
             mock.patch("deployer.tools.probe_pdftotext", side_effect=PdfToolRefused("pdftotext version probe failed")),
         ):
-            from deployer.check import _tool_line
-
             line = _tool_line(tools.SKILL_TOOLS["pdftotext"], True, ["operations"])
         self.assertEqual(("UNUSABLE", "pdftotext version probe failed"), (line.action, line.detail))
 
@@ -533,8 +545,30 @@ class VersionTests(GitTestCase):
         self.assertEqual(floors, dict(re.findall(r"(?m)^\| `([a-z-]+)` \| ([0-9.]+) \|", section)))
         self.assertIs(MINIMUMS, tools.SKILL_TOOLS["pdftotext"].provider_minimum)
         self.assertEqual({"Xpdf": (4, 6), "Poppler": (26, 10, 0)}, MINIMUMS)
-        for provider, minimum in MINIMUMS.items():
-            self.assertIn(f"| `pdftotext` ({provider}) | {tools.format_version(minimum)} |", section)
+        # Each provider's floor as the vendor numbers it.
+        for row in ("| `pdftotext` (Xpdf) | 4.06 |", "| `pdftotext` (Poppler) | 26.10.0 |"):
+            self.assertIn(row, section)
+
+    def test_the_pdftotext_entry_sets_nothing_the_probe_does_not_read(self) -> None:
+        # pdf_tool owns the probe's arguments and each provider's exit statuses, so the entry names only where to
+        # find the tool and its floors; every other field is the default.
+        entry = tools.SKILL_TOOLS["pdftotext"]
+        default = tools.Tool("pdftotext", "pdftotext", entry.locate)
+        changed = {
+            field.name
+            for field in dataclasses.fields(tools.Tool)
+            if getattr(entry, field.name) != getattr(default, field.name)
+        }
+        self.assertEqual({"provider_minimum"}, changed)
+        self.assertNotIn("version_statuses", {field.name for field in dataclasses.fields(tools.Tool)})
+        with (
+            mock.patch("deployer.platform_support.find_executable", return_value="C:/tools/pdftotext.exe"),
+            mock.patch("deployer.platform_support.run_tool") as run_tool,
+            mock.patch("deployer.tools.probe_pdftotext", side_effect=lambda path: parse_banner(XPDF_4_06, 99)),
+        ):
+            probe = tools.probe(entry)
+        run_tool.assert_not_called()
+        self.assertEqual(("C:/tools/pdftotext.exe", (4, 6), None), (probe.path, probe.version, probe.refusal))
 
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
@@ -586,6 +620,81 @@ class VersionTests(GitTestCase):
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 7))
         with self.assertRaises(SyntaxError):
             ast.parse("if (found := 1):\n    pass\n", feature_version=(3, 7))
+
+
+class SharedLocatorTests(GitTestCase):
+    """`check` and the PDF extraction find pdftotext through one locator, so on one fixture they report the same tool.
+    The fixture is sanitized: PATH is one empty folder, and the local application data folder is a fresh one whose
+    WinGet Links folder holds the only pdftotext, as a portable WinGet install leaves it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory(prefix="shared locator ")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        (root / "empty path").mkdir()
+        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        self.links.mkdir(parents=True)
+        environment = mock.patch.dict(
+            os.environ, {"PATH": str(root / "empty path"), "LOCALAPPDATA": str(root / "local app data")}
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.banner = XPDF_4_06
+        self.probed: list[str] = []
+        self.started: list[list[str]] = []
+
+    def install(self, banner: str) -> Path:
+        program = self.links / "pdftotext.exe"
+        program.write_bytes(b"")
+        self.banner = banner
+        return program
+
+    def probe(self, path: str) -> PdfIdentity:
+        self.probed.append(path)
+        return parse_banner(self.banner, 99)
+
+    def start(self, command: list[str], **_: object) -> None:
+        self.started.append(command)
+        raise OSError("the fixture's pdftotext is no program")
+
+    def check_and_extract(self) -> tuple[tuple[str, str, str], str]:
+        """check's pdftotext line, and why the extraction stopped: the fixture's program cannot start, so a
+        supported one is refused only once the extraction runs it."""
+        with (
+            mock.patch("deployer.tools.probe_pdftotext", side_effect=self.probe),
+            mock.patch.object(review_documents, "probe_pdftotext", side_effect=self.probe),
+            mock.patch.object(review_documents, "streaming", side_effect=self.start),
+        ):
+            line = _tool_line(tools.SKILL_TOOLS["pdftotext"], True, ["operations"])
+            with self.assertRaises(review_documents.ExtractionRefused) as refused:
+                review_documents.extract("pdf", b"%PDF-1.4 fixture")
+        return (line.name, line.action, line.detail), str(refused.exception)
+
+    def test_a_supported_pdftotext_only_in_wingets_links_folder_is_found_by_both_and_run_at_the_checked_path(
+        self,
+    ) -> None:
+        program = self.install(XPDF_4_06)
+        line, refusal = self.check_and_extract()
+        self.assertEqual(("pdftotext Xpdf 4.06", "OPTIONAL", "used by operations"), line)
+        self.assertEqual("pdftotext could not be started", refusal)
+        self.assertEqual([program.resolve()] * 2, [Path(path).resolve() for path in self.probed])
+        self.assertEqual([str(program.resolve())], [command[0] for command in self.started])
+
+    def test_an_unsupported_pdftotext_only_there_gets_the_same_refusal_from_both(self) -> None:
+        self.install(XPDF_4_00)
+        line, refusal = self.check_and_extract()
+        unsupported = "pdftotext Xpdf 4.00 is unsupported; upgrade to Xpdf 4.06 or newer"
+        self.assertEqual(("pdftotext Xpdf 4.00", "OUTDATED", unsupported), line)
+        self.assertEqual(unsupported, refusal)
+        self.assertEqual(2, len(self.probed))
+        self.assertEqual([], self.started)
+
+    def test_with_no_pdftotext_in_either_both_say_it_is_not_installed(self) -> None:
+        line, refusal = self.check_and_extract()
+        self.assertEqual(("pdftotext", "OPTIONAL", "not installed; used by operations"), line)
+        self.assertEqual("pdftotext, which extracts a PDF's text, is not installed", refusal)
+        self.assertEqual(([], []), (self.probed, self.started))
 
 
 if __name__ == "__main__":

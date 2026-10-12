@@ -14,9 +14,9 @@ document is refused with a reason that names it, so the review is incomplete rat
 the bytes as a throwaway file under the system temporary directory, no stdin, and a time limit, and its output is
 read no further than the extraction limit, and asked to keep the text in the order the PDF draws it, so the two
 families that ship it, Xpdf and Poppler, give the same lines. Before writing document bytes, the shared provider
-policy probes the resolved executable with no input, then extraction uses that checked path; refusal leaves a gap,
-not a fallback to another parser. This is not sandboxing. Each line starts with `[p<page> l<line>]`, the line
-counted among the page's lines that hold text.
+policy probes the executable skill-core's locator finds, the one `deploy.py check` reports, with no input, then
+extraction uses that checked path; refusal leaves a gap, not a fallback to another parser. This is not sandboxing.
+Each line starts with `[p<page> l<line>]`, the line counted among the page's lines that hold text.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from __future__ import annotations
 import difflib
 import io
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +38,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import streaming
+from executable_locator import find_executable
 from flat_text import flat_text
 from pdf_tool import PdfToolRefused, probe_pdftotext
 
@@ -168,7 +168,7 @@ def _pdftotext(content: bytes) -> bytes:
     accept: without it, Xpdf joins a paragraph's evenly set lines into one where Poppler keeps one line per line of
     text, so a finding's line would depend on which of them is first on PATH.
     """
-    executable = shutil.which(PDFTOTEXT)
+    executable = find_executable(PDFTOTEXT)
     if executable is None:
         raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed")
     try:

@@ -52,6 +52,34 @@ class PdfPolicyTests(unittest.TestCase):
                 self.assertEqual(provider, identity.provider)
                 self.assertIn("upgrade", str(raised.exception))
 
+    def test_versions_are_named_as_each_vendor_numbers_them_and_compared_as_numbers(self) -> None:
+        for banner, version, status, refusal in (
+            (XPDF, "4.00", 99, "pdftotext Xpdf 4.00 is unsupported; upgrade to Xpdf 4.06 or newer"),
+            (XPDF, "4.05", 99, "pdftotext Xpdf 4.05 is unsupported; upgrade to Xpdf 4.06 or newer"),
+            (XPDF, "3.04", 99, "pdftotext Xpdf 3.04 is unsupported; upgrade to Xpdf 4.06 or newer"),
+            (POPPLER, "26.09.0", 0, "pdftotext Poppler 26.09.0 is unsupported; upgrade to Poppler 26.10.0 or newer"),
+            (POPPLER, "0.86.1", 0, "pdftotext Poppler 0.86.1 is unsupported; upgrade to Poppler 26.10.0 or newer"),
+        ):
+            with self.subTest(version=version), self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+                pdf_tool.parse_banner(banner.format(version=version), status)
+            self.assertEqual(refusal, str(raised.exception))
+        for banner, version, status, named in (
+            (XPDF, "4.06", 99, "4.06"),
+            (XPDF, "4.10", 99, "4.10"),
+            (XPDF, "4.06.0", 0, "4.06.0"),
+            (POPPLER, "26.10.0", 0, "26.10.0"),
+            (POPPLER, "27.01.2", 0, "27.01.2"),
+        ):
+            with self.subTest(version=version):
+                self.assertEqual(named, pdf_tool.parse_banner(banner.format(version=version), status).version_text)
+        self.assertEqual("Xpdf 4.06 or newer or Poppler 26.10.0 or newer", pdf_tool.requirements())
+        with self.assertRaises(pdf_tool.PdfToolRefused) as raised:
+            pdf_tool.parse_banner("pdftotext version 26.10.0\n", 0)
+        self.assertEqual(
+            "pdftotext provider/version is unidentifiable; install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+            str(raised.exception),
+        )
+
     def test_unknown_ambiguous_malformed_and_failed_banners_are_refused(self) -> None:
         banners = (
             ("pdftotext version 26.10.0\n", 0),
