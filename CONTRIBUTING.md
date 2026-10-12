@@ -60,7 +60,7 @@ Run the validation entry point from PowerShell or Git Bash, and use Git Bash for
 
 ## Working in a worktree
 
-Each task gets its own git worktree, so agent sessions working in parallel never share a working tree. The main checkout, the hub, stays on `main`, stays clean, and is never edited. From the hub, bring `main` up to date and create the task's worktree, with `feat` or `fix` as the kind:
+Each task gets its own git worktree, so agent sessions working in parallel never share a working tree. The main checkout, the hub, stays on `main`, stays clean, and is never edited. From the hub, bring `main` up to date and create the task's worktree, with the type its pull request's title will carry as the kind, such as `feat` or `fix`:
 
 ```bash
 git pull --ff-only origin main
@@ -95,11 +95,13 @@ A change to a contract, such as a skill directory name, a `required_vars` list, 
 
 ## Validation
 
-Run the complete validation sequence from the repository root:
+Validation is continuous integration's job. The `Validation` check runs the complete sequence on every pull request and every push, and a pull request merges only when it passes. From the repository root, the sequence is:
 
 ```powershell
 python -B tests/run_validation.py
 ```
+
+Locally, run what the change touches, as [Validation](docs/implementing-changes.md#validation) in the implementation profile lists: `python -m ruff format --check` and `python -m ruff check` on the changed Python paths, and the runner with `-k <pattern>` for the policies and suites that name the touched files, such as `-k upgrade_notes`. Some reaches a file's name misses: a change to a shipped skill's scripts also runs the deployer's rendering tests with `-k rendering_locking`, and a change to a tool floor runs the suites that read the floors with `-k toolchain -k upgrade_notes -k test_check`. Run the sequence in full locally only when the change's reach warrants it, such as a change to a validation policy, the runner, or a shared module whose callers `-k` does not capture. When a leg fails on the pull request, reproduce that leg locally with its `--shard` option, as below.
 
 Fetch `main` and the tags first, as in [Getting the source](#getting-the-source). A full run took about a minute and a half on a 24-CPU workstation. In CI the `Validation` check runs four legs, each a `windows-latest` runner that runs a quarter of the policy checks and suite jobs with `--shard <index>/4`, and takes about two minutes. The suite jobs are dealt by the seconds each took on a recent `main` run, recorded in `tests/validation/job_seconds.json` and refreshed at each release, so the legs carry about the same work; a new suite with no entry is dealt by its test count until the next refresh. A leg's log and step summary name its shard and how many of the run's policy checks and suite jobs it ran; to rerun one leg's share locally, pass the same option, as in `python -B tests/run_validation.py --shard 2/4`. When every changed file is documentation, such as `docs/`, `README.md`, or this file, the runner itself runs only the policy checks, the suites that name a changed file, and the Markdown fence checks, which took about a minute; `--full` runs everything.
 
@@ -141,21 +143,23 @@ Branch protection and these settings are live repository settings, not tracked f
 
 Open issues from the templates in `.github/ISSUE_TEMPLATE/`, one per kind of issue, and pull requests from `.github/pull_request_template.md`, whose Validation checklist is the list below. From the command line, write the body to a file based on the template and pass it with `gh issue create --body-file` or `gh pr create --body-file`; `--body` skips the template. Report a suspected vulnerability as the [Security policy](SECURITY.md) describes, never in an issue.
 
-The [project board](https://github.com/users/EJRyan89/projects/1) is the view of the issues by release: every issue on a milestone is an item on it, grouped by milestone, and milestones remain the record of scope. A pull request's `Closes #<number>` line is what moves its issue across the board, from Todo to In Progress when the pull request opens and to Done when it merges, so the line in step 4 below is required, not a courtesy.
+The [project board](https://github.com/users/EJRyan89/projects/1) is the view of the issues by release: every issue on a milestone is an item on it, grouped by milestone, and milestones remain the record of scope. A pull request's `Closes #<number>` line is what moves its issue across the board, from Todo to In Progress when the pull request opens and to Done when it merges, so the line in step 4 below is required, not a courtesy, for every issue the change resolves: an issue a change resolved without its own line stays open.
+
+A pull request's title becomes its squash commit's title, so `main`'s history reads by the titles. The title opens with a type, an optional scope in parentheses, a colon, and a space, as in `fix(deployer): ...`. The types are `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, and `build`, and [Pull requests](docs/implementing-changes.md#pull-requests) in the implementation profile says what each covers. The type agrees with the worktree's branch kind when the kind is one of them, and a title carries no `!`: the Level under `## Upgrade note` is the one statement of a release level. Validation's title check reads the title from the pull request in CI, and locally from a file with `python -B tests/run_validation.py --pr-title '<file>'`; editing the title reruns it.
 
 To open a pull request from the task's worktree:
 
-1. Commit the change, and run the validation sequence until it passes.
-2. Bring the branch current with `main`: run `git fetch origin main --tags` and `git rebase origin/main`. The branch is unpublished, so the rebase rewrites nothing anyone has. Rerun validation if it brought in commits.
+1. Commit the change, and run the local checks [Validation](#validation) names until they pass.
+2. Bring the branch current with `main`: run `git fetch origin main --tags` and `git rebase origin/main`. The branch is unpublished, so the rebase rewrites nothing anyone has. CI validates the result, so it needs no local rerun.
 3. Push the branch, to `origin` or, without push access, to `fork`, as in `git push -u fork '<kind>/<name>'`. With two remotes, run `gh repo set-default EJRyan89/coding-agent-skills` once, so `gh` opens pull requests here.
-4. Write the body from `.github/pull_request_template.md` to a file, keeping its headings, name the issue with `Closes #<number>`, fill in its two model lines, and open it with `gh pr create --body-file '<file>'`.
-5. While it is open, merge `origin/main` into the branch before pushing more commits, never rebase or force-push it, and rerun validation whenever the merge brings in commits. If a push is rejected, fetch and inspect the remote branch first: the maintainer may have updated it.
+4. Write the body from `.github/pull_request_template.md` to a file, keeping its headings, name each issue the change resolves in its own `Closes #<number>` line, and open it with `gh pr create --title '<title>' --body-file '<file>'`, the title typed as above.
+5. While it is open, merge `origin/main` into the branch to bring it current, never rebase or force-push it. `gh pr update-branch` is one way to make that merge; it moves the remote branch, so pull it into the worktree before the next push. The merge needs no local rerun: CI runs on it. If a push is rejected, fetch and inspect the remote branch first: the maintainer may have updated it.
 
 The maintainer merges; the repository squash-merges only, so the pull request lands as one commit.
 
-The template's sections ask for the problem and the chosen behavior, the user-visible, compatibility, or security implications, and the models that planned and implemented the change. Before requesting review, check each item of its Validation checklist:
+The template's sections ask for the problem and the chosen behavior, and the user-visible, compatibility, or security implications. Before requesting review, check each item of its Validation checklist:
 
-- `python -B tests/run_validation.py` passes in full, with no skipped prerequisites;
+- the local checks [Validation](#validation) names for the touched files pass, with no skipped prerequisites, and the `Validation` check runs the full suite;
 - regression coverage is added or updated for every behavior change;
 - for a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are in the body, with each runtime's version and any `SKIPPED` reason;
 - for a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited with its table, and `docs/skill-evaluations.md` holds its result;
