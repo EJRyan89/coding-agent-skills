@@ -22,6 +22,7 @@ class Options:
     take_over_source: bool = False
     canary_home: str = ""
     at: str | None = None
+    unpin: bool = False
     debug: bool = False
 
 

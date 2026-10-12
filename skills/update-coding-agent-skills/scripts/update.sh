@@ -85,8 +85,8 @@ fi
 
 # A deployment made with `deploy.py --at` is pinned to that commit, and deploying main would replace it, so the update
 # stops until --unpin. check names the pin after the deployed commit, which it describes as "<name> (<commit>)" or
-# the commit alone. A check that fails or names no pin does not stop the update; the deployer's report still says
-# when a deployment replaces a pin.
+# the commit alone. A check that fails or names no pin does not stop the update here; the deployer itself refuses to
+# replace a pin without --unpin.
 if [ -z "$UNPIN" ]; then
   PIN_MARK=", pinned with --at "
   PINNED=$(python "$CLONE/deploy.py" check </dev/null 2>/dev/null | tr -d '\r' | grep -m 1 -e "^Deployed commit: .*$PIN_MARK")
@@ -185,8 +185,13 @@ if [ -n "$CROSSED" ]; then
   echo "CROSSED $CROSSED"
 fi
 
-# A fresh process runs the deployer exactly as it now is on main.
-python "$CLONE/deploy.py" --all </dev/null
+# A fresh process runs the deployer exactly as it now is on main. It refuses to replace a pin without --unpin, so a
+# pin check could not read stops there too.
+DEPLOY_OPTIONS=(--all)
+if [ -n "$UNPIN" ]; then
+  DEPLOY_OPTIONS+=(--unpin)
+fi
+python "$CLONE/deploy.py" "${DEPLOY_OPTIONS[@]}" </dev/null
 CODE=$?
 if [ "$CODE" -ne 0 ]; then
   echo "DEPLOY_FAILED $CODE"
