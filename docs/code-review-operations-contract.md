@@ -116,6 +116,7 @@ How to read a table:
 - **One of** in a field's meaning lists every value it may have, besides `null` when its type allows null.
 - A validated object rejects any field its table does not list. A field whose meaning says what it is keyed by is an object of named entries rather than of fixed fields.
 - Paths are repository-relative POSIX paths: no leading `/`, no `\`, and no `..` part. Absolute paths are Windows drive-letter paths. Hashes are lowercase hexadecimal, 40 or 64 characters for a commit, 64 for SHA-256.
+- Every validator reads a field's type through the one typed-field reader, `typed_fields.py` in skill-core, by these kinds: `string` (not blank, unless its meaning allows an empty one), `integer` (never `true` or a float such as `1.0`), `number` (finite), `boolean`, `hex_digest` (the hashes above), `one_of` (the values **One of** lists), `array`, `json_object` (with the fields its table lists), `optional` (a type that allows `null`), and `either` (several types joined by `or`). A value of another kind is refused as `<path> must be <expected>, found <what it is>`, the path starting with the format's name from its table's heading, as in `config.repositories.owner/repo.reviewer.id`.
 
 ### Configuration
 
