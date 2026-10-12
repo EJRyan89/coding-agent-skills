@@ -3,13 +3,9 @@ stops as any failure does, with the lock released and the journal as recovery ex
 
 from __future__ import annotations
 
-import contextlib
-import subprocess
 import sys
 import textwrap
-import time
 import unittest
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -18,11 +14,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import job_tree
 from harness import DeployerTestCase, Result, forward
+from test_job_tree import SignalledTree, ended
 
 from deployer import errors, plan, platform_support
 
-# Seconds a stub tool gets to start on a loaded machine, and its processes to be reported gone once ended.
-STARTUP_SECONDS = 60.0
+# Seconds a stub tool's processes get to be reported gone once ended; SignalledTree bounds its start-up.
 GONE_SECONDS = 10.0
 # The deadline the tests give a stub that hangs; the tree holding it starts the clock only once the stub is up.
 SHORT_DEADLINE = 2
@@ -47,22 +43,6 @@ def timed_out_lines(tool: str, seconds: float) -> list[str]:
         f"The tool was {forward(Path(tool))}. Run it by itself to see whether it finishes, then retry.",
         'See "A tool that does not finish" in docs/recovery.md.',
     ]
-
-
-class StartedTree(job_tree.JobTree):
-    """Holds a stub tool as the deployer's tree does, and starts its deadline only once the stub has written its
-    process IDs, so how long start-up takes never decides whether it ran."""
-
-    def __init__(self, written: Path) -> None:
-        self.written = written
-
-    @contextlib.contextmanager
-    def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
-        with super().hold(process):
-            deadline = time.monotonic() + STARTUP_SECONDS
-            while not self.written.exists() and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-            yield
 
 
 class Stubs:
@@ -113,14 +93,11 @@ class DeadlineCase(DeployerTestCase):
         self.stubs = Stubs(self.root)
 
     def assert_ended(self, pids: list[int]) -> None:
-        deadline = time.monotonic() + GONE_SECONDS
-        while any(platform_support.process_status(pid).alive for pid in pids) and time.monotonic() < deadline:
-            time.sleep(0.05)
         for pid in pids:
-            self.assertFalse(platform_support.process_status(pid).alive, f"process {pid} the tool started still runs")
+            self.assertTrue(ended(pid, GONE_SECONDS), f"process {pid} the tool started still runs")
 
     def held_until_started(self) -> Any:
-        return mock.patch.object(platform_support, "process_tree", return_value=StartedTree(self.stubs.pids))
+        return mock.patch.object(platform_support, "process_tree", return_value=SignalledTree(self.stubs.pids))
 
 
 class RunToolTests(DeadlineCase):

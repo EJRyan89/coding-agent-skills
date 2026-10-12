@@ -154,16 +154,17 @@ def read_diff(path: Path) -> str:
 
 
 def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
-    """Replace `path` with `content` through a synced copy beside it; on any failure the copy is removed, `path` is
-    untouched, and the error is a PersistenceError.
+    """Replace `path` with `content` through a synced copy beside it; on any failure, including content that is not
+    text UTF-8 can encode and a folder that cannot be made, `path` is untouched, the copy is removed, and the error is
+    a PersistenceError, which names the copy when it cannot be removed.
 
     The copy's descriptor is never handed to a stream: this function alone closes it, once, whatever fails. A stream
     that closed it first would free its number for another thread's open, and a second close would close that file.
     """
-    data = content.encode("utf-8")
-    path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
+        data = content.encode("utf-8")
+        path.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
         temporary = Path(temporary_name)
         try:
@@ -176,11 +177,14 @@ def atomic_write_text(path: Path, content: str, *, mode: int = 0o600) -> None:
             os.close(descriptor)
         temporary.replace(path)
         temporary = None
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise PersistenceError(f"Cannot atomically replace {path}: {exc}") from exc
     finally:
         if temporary is not None:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as exc:
+                raise PersistenceError(f"Cannot remove {temporary}, the unfinished copy of {path}: {exc}") from exc
 
 
 def atomic_write_json(

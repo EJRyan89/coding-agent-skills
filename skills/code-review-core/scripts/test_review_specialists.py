@@ -8,8 +8,6 @@ import sys
 import tempfile
 import time
 import unittest
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest import mock
@@ -19,7 +17,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_specialists as rs
 from git_test_base import GitTestCase
-from review_process import JobTree, process_status
 from review_records import validate_adapter_result
 from review_runtime import (
     RuntimeContractError,
@@ -31,35 +28,7 @@ from review_runtime import (
     validate_adapter_manifest,
     write_adapter_request,
 )
-
-# A condition that never exits is refused at CONDITION_SECONDS, a short limit, because StartedCondition starts the
-# clock only once the condition has signalled that it reached its wait, which it gets up to CONDITION_STARTUP_SECONDS
-# to do on a loaded machine. The refusal may come up to CONDITION_MARGIN_SECONDS past the limit, which covers killing
-# the condition and ending what it started.
-CONDITION_SECONDS = 1
-CONDITION_STARTUP_SECONDS = 60
-CONDITION_MARGIN_SECONDS = 30
-
-
-class StartedCondition(JobTree):
-    """A condition's process tree, held as JobTree holds it, that starts the condition's time limit only once the
-    condition has created `started`, so how long start-up takes never decides whether the limit is what refuses it.
-    `released` is when the clock started."""
-
-    def __init__(self, started: Path) -> None:
-        super().__init__()
-        self.started = started
-        self.released: float | None = None
-
-    @contextmanager
-    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
-        with super().hold(process):
-            deadline = time.monotonic() + CONDITION_STARTUP_SECONDS
-            while not self.started.exists() and process.poll() is None and time.monotonic() < deadline:
-                time.sleep(0.05)
-            self.released = time.monotonic()
-            yield
-
+from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
 
 DIFF = (
     "diff --git a/db/Procs.sql b/db/Procs.sql\r\n"
@@ -2011,7 +1980,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
             "threading.Event().wait()\n",
             "nonterminating",
         )
-        tree = StartedCondition(signal)
+        tree = SignalledTree(signal)
         processes: list[subprocess.Popen[str]] = []
         popen = subprocess.Popen
 
@@ -2022,7 +1991,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
 
         began = time.monotonic()
         with (
-            mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", CONDITION_SECONDS),
+            mock.patch.object(rs, "CONDITION_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
             mock.patch.object(rs, "JobTree", return_value=tree),
             mock.patch.object(rs.subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
@@ -2030,10 +1999,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
             self.plan()
         refused = time.monotonic()
         self.assertLess(refused - began, 60, "no wait on the program, which holds no pipe to wait on")
-        if tree.released is None:
-            self.fail("the condition ran outside its process tree")
-        self.assertGreaterEqual(refused - tree.released, CONDITION_SECONDS, "refused no sooner than its limit")
-        self.assertLess(refused - tree.released, CONDITION_SECONDS + CONDITION_MARGIN_SECONDS)
+        tree.assert_refused_at_the_limit(self, refused)
         self.assertEqual("Condition script timed out: tools/window.py", str(raised.exception))
         expired = raised.exception.__cause__
         if not isinstance(expired, subprocess.TimeoutExpired):
@@ -2042,7 +2008,7 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         snapshot = self.request_args["source_snapshot_root"]
         work = self.root / "work-initial"
         self.assertEqual([sys.executable, "-B", str(script), "--source-root", str(snapshot)], expired.cmd)
-        self.assertEqual(CONDITION_SECONDS, expired.timeout)
+        self.assertEqual(SHORT_LIMIT_SECONDS, expired.timeout)
         started = json.loads(expired.output)
         self.assertEqual(
             {"argv": [str(script), "--source-root", str(snapshot)], "cwd": str(work)},
@@ -2052,12 +2018,38 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
         self.assertEqual(1, len(processes))
         self.assertIsNotNone(processes[0].returncode, "the condition was killed and reaped before refusing")
         self.assertNotEqual(0, processes[0].returncode)
-        deadline = time.monotonic() + 20
-        while process_status(started["child"]).alive and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertFalse(process_status(started["child"]).alive, "the program the condition started is gone too")
+        self.assertTrue(ended(started["child"]), "the program the condition started is gone too")
         self.assertTrue(self.request_path.is_file(), "planning consumed a real written request")
         self.assertEqual([], list(work.iterdir()), "no plan, prompt, or result is published")
+
+    def test_a_condition_script_no_job_object_holds_is_ended_and_fails_the_review(self) -> None:
+        signal = self.root / "condition-started"
+        self.use_condition(
+            f"open({str(signal)!r}, 'w').close()\nimport threading\nthreading.Event().wait()\n", "unheld"
+        )
+        processes: list[subprocess.Popen[str]] = []
+        popen = subprocess.Popen
+
+        def start(command: list[str], **options: Any) -> subprocess.Popen[str]:
+            process: subprocess.Popen[str] = popen(command, **options)
+            processes.append(process)
+            return process
+
+        with (
+            mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
+            mock.patch.object(rs.subprocess, "Popen", side_effect=start),
+            self.assertRaises(rs.SpecialistError) as raised,
+        ):
+            self.plan()
+        self.assertRegex(
+            str(raised.exception),
+            r"^Condition script could not run: tools/window\.py: it could not join a Windows job object: "
+            r"AssignProcessToJobObject failed: .+ \(Windows error 5\)$",
+        )
+        self.assertEqual(1, len(processes))
+        self.assertIsNotNone(processes[0].returncode, "the condition was ended and reaped before the refusal")
+        self.assertFalse(signal.exists(), "the condition was ended before it ran")
+        self.assertEqual([], list((self.root / "work-initial").iterdir()), "no plan, prompt, or result is published")
 
     def test_a_condition_scripts_output_past_its_limit_is_cut_and_the_cut_named(self) -> None:
         self.use_condition("import sys\nsys.stderr.write('e' * 100000)\nsys.exit(2)\n", "talkative")

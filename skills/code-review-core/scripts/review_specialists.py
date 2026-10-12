@@ -22,11 +22,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import run_bounded
+from job_tree import JobTree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import JobTree
 from review_records import (
     SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
@@ -330,7 +330,8 @@ def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work
     """Run a condition script: exit 0 holds, 1 does not, and anything else fails the review.
 
     It reads no stdin, at most CONDITION_OUTPUT_BYTES of each output stream is kept, for the failure's detail, and
-    it is killed at CONDITION_TIMEOUT_SECONDS; every process it started is ended with it either way.
+    it is killed at CONDITION_TIMEOUT_SECONDS; every process it started is ended with it either way. One that cannot
+    start, or that no job object can hold to end what it starts, is ended and fails the review.
     """
     path = reviewer_root.joinpath(*PurePosixPath(script).parts)
     try:
@@ -343,6 +344,8 @@ def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work
         )
     except subprocess.TimeoutExpired as exc:
         raise SpecialistError(f"Condition script timed out: {script}") from exc
+    except OSError as exc:
+        raise SpecialistError(f"Condition script could not run: {script}: {exc}") from exc
     if process.returncode == 0:
         return True
     if process.returncode == 1:
