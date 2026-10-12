@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -49,6 +50,15 @@ class FakeGit:
         self.modes = modes or {}
         self.calls: list[list[str]] = []
 
+    def content(self, path: str) -> bytes:
+        value = self.files[path]
+        return value if isinstance(value, bytes) else value.encode("utf-8")
+
+    def blob(self, path: str) -> str:
+        """The path's git blob id, which the reader holds its bytes to."""
+        content = self.content(path)
+        return hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).hexdigest()
+
     def __call__(self, arguments: Sequence[str], timeout: float) -> GitResult:
         arguments = list(arguments)
         self.calls.append(arguments)
@@ -57,15 +67,14 @@ class FakeGit:
         command = arguments[3:]
         if command == ["ls-tree", "-r", "--name-only", "-z", COMMIT]:
             return GitResult(0, "".join(f"{path}\0" for path in sorted(self.files)), "")
-        if command[:3] == ["ls-tree", COMMIT, "--"] and len(command) == 4:
-            path = command[3]
+        if command[:4] == ["ls-tree", "-z", COMMIT, "--"] and len(command) == 5:
+            path = command[4]
             if path not in self.files:
                 return GitResult(0, "", "")
-            return GitResult(0, f"{self.modes.get(path, '100644')} blob {'b' * 40}\t{path}\n", "")
-        if command[0] == "show" and command[1].startswith(f"{COMMIT}:"):
-            content = self.files[command[1].split(":", 1)[1]]
-            text = content.decode("utf-8", "surrogateescape") if isinstance(content, bytes) else content
-            return GitResult(0, text, "")
+            return GitResult(0, f"{self.modes.get(path, '100644')} blob {self.blob(path)}\t{path}\0", "")
+        blobs = {self.blob(path): path for path in self.files}
+        if command[:2] == ["cat-file", "blob"] and len(command) == 3 and command[2] in blobs:
+            return GitResult(0, self.content(blobs[command[2]]).decode("utf-8", "surrogateescape"), "")
         return GitResult(128, "", f"fatal: unexpected {command}")
 
 
