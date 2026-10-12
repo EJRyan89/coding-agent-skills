@@ -189,6 +189,7 @@ REMOVAL_ROWS: dict[Kind, list[Row]] = {
         removal("modified", "PRESERVE", "PRESERVED", "modified since last deploy"),
         removal("wrong type", "PRESERVE", "PRESERVED", "destination is not a directory"),
         removal("deleted by hand", "DROP OWNERSHIP", "DROPPED OWNERSHIP", "already absent"),
+        removal("skill preserved", "KEEP", "KEPT", "its skill stays", shown=False),
     ],
     AGENT: [
         removal("unchanged", "REMOVE", "REMOVED", "no selected skill needs it"),
@@ -260,7 +261,7 @@ class PlanTests(DeployerTestCase):
         """Build the home for one state of the item; any other item may be in any state."""
         if state == "fresh":
             return
-        if state in ("needed by a preserved skill", "skill skipped"):
+        if state in ("needed by a preserved skill", "skill skipped", "skill preserved"):
             self.deploy_ok("--all")
             self.modify(SKILL)
             return

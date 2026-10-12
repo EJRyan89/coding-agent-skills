@@ -18,15 +18,23 @@ from .errors import DeployError, see_recovery
 from .kinds import ADAPTER_KIND, AGENT_KIND, BY_LABEL, DEPENDENCY_KINDS, KINDS, MODIFIED, SHARED, SKILL, ItemKind
 from .names import require_safe_name
 from .paths import Paths
-from .report import ACTION_LABELS, DRY_RUN, DRY_RUN_ACTIONS, SKIPPED_WITH_SKILL, ReportLine, print_report
+from .report import (
+    ACTION_LABELS,
+    DRY_RUN,
+    DRY_RUN_ACTIONS,
+    KEPT_WITH_SKILL,
+    SKIPPED_WITH_SKILL,
+    ReportLine,
+    print_report,
+)
 from .source import Source
 
 KINDS_ALLOWED = {
     "check_source_forced_items": "the possible installs come from selectable skills and their dependency closure, "
     "owned shared assets they need, selectable skills' runtime adapters, and the agents they declare",
     "build": "plans skills first and names the kinds that depend on them: a skill left in place keeps its transitive "
-    "skill dependencies, shared assets and agents, a runtime adapter is skipped with its skill, and each kind's "
-    "rendered content has its own shape in render.Staged",
+    "skill dependencies, shared assets and agents, a runtime adapter selected with its skill is skipped with it, and "
+    "each kind's rendered content has its own shape in render.Staged",
     "_retained": "another source's skills keep a shared asset too, but only this source's skills keep an agent, "
     "since two sources never own one agent; skill dependencies follow the recorded transitive graph",
 }
@@ -156,12 +164,26 @@ def _plan_unselected(context: Context, kind: ItemKind, name: str, owned_hash: st
     return PlanEntry(name, kind.label, "absent", "DROP", "already absent")
 
 
+def _plan_owned(context: Context, kind: ItemKind, name: str, owned_hash: str, staying: set[str]) -> PlanEntry:
+    """Plan an owned item of a kind other than skills that this run does not install.
+
+    An item that follows its skill is kept while that skill stays in the home, preserved or kept for another skill,
+    when it would otherwise be removed; modified, misplaced, absent, or shared with another source, it is planned as
+    any other item is, so keeping it never hides a change, recreates a file, or claims another source's.
+    """
+    entry = _plan_unselected(context, kind, name, owned_hash)
+    if kind.follows_skill and name in staying and entry.action == "REMOVE":
+        return replace(entry, state="still needed", action="KEEP", reason=KEPT_WITH_SKILL)
+    return entry
+
+
 def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render.Staged) -> list[PlanEntry]:
     """Decide once what this run does to every item it selects or owns, in the order the deployment carries it out.
 
     The owned items it releases come first and then the items it installs, each pass in the kinds' order. Skills are
     planned before the rest because the others depend on them: a skill left in place keeps its transitive skill
-    dependencies and their shared assets and agents, and a runtime adapter is skipped with its skill.
+    dependencies and their shared assets and agents, and an item that follows its skill, a runtime adapter, stays
+    while its skill stays and is skipped with it.
     """
     owned = context.owned
     selected, adapters = wanted[SKILL], wanted[ADAPTER_KIND]
@@ -192,6 +214,7 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
         for kind in DEPENDENCY_KINDS
     }
     unselected_skills = [entry for entry in unselected_skills if entry.name not in retained_skills]
+    staying = {*survivors, *retained_skills}
     kept = {kind: set(names) for kind, names in wanted.items()}
     for kind, items in retained.items():
         kept[kind] |= set(items)
@@ -223,7 +246,7 @@ def build(context: Context, wanted: Mapping[ItemKind, list[str]], staged: render
             for name, reason in items.items()
         ),
         *(
-            _plan_unselected(context, kind, name, value)
+            _plan_owned(context, kind, name, value, staying)
             for kind in KINDS
             if kind is not SKILL
             for name, value in sorted(owned.of(kind).items())

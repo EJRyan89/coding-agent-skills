@@ -452,6 +452,18 @@ class VerifyCommandTests(DeployerTestCase):
         self.assertEqual(0, result.code, result.output)
         self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, "COPILOT CLI"))
 
+    def test_a_skill_kept_for_a_preserved_skill_is_still_found_by_both_runtimes(self) -> None:
+        self.make_skill("alpha", "Alpha", skill_deps=["beta"])
+        self.deploy_ok("--all")
+        self.append(self.skills_dir / "alpha" / "SKILL.md", "\nUser change\n")
+        self.deploy_ok(stdin="none\n")
+        self.answer()
+        result = self.verify()
+        self.assertEqual(0, result.code, result.output)
+        self.assertIn(f"Adapters: 2 in {forward(self.agents_dir)}\n", result.output)
+        for runtime in ("CODEX CLI", "COPILOT CLI"):
+            self.assertEqual({"FOUND": ["alpha", "beta"]}, self.groups(result.output, runtime))
+
     def test_a_runtime_that_is_not_installed_is_skipped(self) -> None:
         del self.installed["codex"]
         self.answer()
