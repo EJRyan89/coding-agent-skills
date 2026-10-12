@@ -19,6 +19,7 @@ import dotnet_format_targets as targets
 import git_client
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
+from git_test_base import GitTestCase
 from github_client import CommandResult
 from github_client import Runner as GhRunner
 
@@ -128,7 +129,7 @@ class Services(targets.Services):
         )
 
 
-class ResolveTests(unittest.TestCase):
+class ResolveTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -709,7 +710,7 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([["Lib.sln", "1"]], self.values(lines, "SOLUTION"))
 
 
-class ConsoleTests(unittest.TestCase):
+class ConsoleTests(GitTestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repository = Repository(Path(directory).resolve())
@@ -730,7 +731,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertEqual(f"STOP\tno .sln or .slnx found under {repository.root}", lines[-1])
 
 
-class FileListTests(unittest.TestCase):
+class FileListTests(GitTestCase):
     """The one reader of a FILE_LIST, which the formatter and the layout checker both use."""
 
     def setUp(self) -> None:

@@ -150,9 +150,10 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
 # own name, such as services.which("dotnet"), so a call of any function named which counts too, and so does
-# code-review-core's path_programs, which lists every match on PATH where shutil.which returns the first.
+# code-review-core's path_programs, which lists every match on PATH where shutil.which returns the first, and the
+# deployer's platform_support.find_executable, through which it finds git.
 COMMAND_LOOKUP = "shutil.which"
-LOOKUP_NAMES = frozenset({"which", "path_programs"})
+LOOKUP_NAMES = frozenset({"which", "path_programs", "find_executable"})
 
 
 def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:

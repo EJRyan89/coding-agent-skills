@@ -11,11 +11,13 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from repository_hygiene import hub_guard_matcher_problems, private_references, tracked_settings_problems
 
 
-class RepositoryHygieneFixtures(unittest.TestCase):
+class RepositoryHygieneFixtures(GitTestCase):
     def test_tracked_settings_policy_pins_the_keys_the_schema_and_no_attribution(self) -> None:
         # Pinned here as literals, not read back from the policy's constants.
         schema = "https://json.schemastore.org/claude-code-settings.json"

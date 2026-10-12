@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import memory_audit
 import skill_roots
 from flat_text import flat_text
+from git_test_base import GitTestCase
 
 
 def write(path: Path, text: str) -> Path:
@@ -43,7 +44,7 @@ def run_main(*arguments: str) -> tuple[int, str, str]:
     return code, stdout.getvalue(), stderr.getvalue()
 
 
-class CommandLineContractTests(unittest.TestCase):
+class CommandLineContractTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -75,7 +76,7 @@ class CommandLineContractTests(unittest.TestCase):
                 self.assertIn("usage:", stderr)
 
 
-class MemoryAuditTests(unittest.TestCase):
+class MemoryAuditTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -392,7 +393,7 @@ class MemoryAuditTests(unittest.TestCase):
                 self.assertEqual([str(expected)], [o["file"] for o in report["memories"][0]["overlaps"]])
 
 
-class ReindexTests(unittest.TestCase):
+class ReindexTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.memory_dir = Path(self._temporary.name) / "memory"
@@ -739,7 +740,7 @@ class ReindexTests(unittest.TestCase):
             self.assertEqual(["FAILED Access is denied: one.md"], self.reindex(code=1))
 
 
-class DeleteTests(unittest.TestCase):
+class DeleteTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)
@@ -859,7 +860,7 @@ class DeleteTests(unittest.TestCase):
         )
 
 
-class MemoryStoreGuardTests(unittest.TestCase):
+class MemoryStoreGuardTests(GitTestCase):
     """delete and reindex change only a directory that is a memory store, and never one inside a skills directory."""
 
     def setUp(self) -> None:
@@ -925,7 +926,7 @@ class MemoryStoreGuardTests(unittest.TestCase):
         )
 
 
-class ConsoleTests(unittest.TestCase):
+class ConsoleTests(GitTestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             memory_dir = Path(temporary) / "memory dir"
@@ -948,7 +949,7 @@ def git(*arguments: str) -> None:
     subprocess.run(["git", *arguments], check=True, capture_output=True)
 
 
-class ResolveTests(unittest.TestCase):
+class ResolveTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
         self.root = Path(self._temporary.name)

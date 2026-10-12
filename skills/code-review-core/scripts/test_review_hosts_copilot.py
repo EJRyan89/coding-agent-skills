@@ -20,8 +20,10 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_hosts
+from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_process import process_status
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
@@ -457,7 +459,7 @@ STAGE_NAMES = [
 ]
 
 
-class CopilotHostTests(unittest.TestCase):
+class CopilotHostTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="copilot-host-")
         self.addCleanup(temporary.cleanup)
@@ -926,7 +928,7 @@ MATERIALIZATION_KINDS: list[tuple[str, Any, str]] = [
 ]
 
 
-class MaterializationRecordTests(unittest.TestCase):
+class MaterializationRecordTests(GitTestCase):
     """materialized_reviewer_entrypoint, the Copilot host's reader of the trusted reviewer's materialization record."""
 
     def setUp(self) -> None:
@@ -956,7 +958,7 @@ def run_directory_files(paths: dict[str, Path]) -> list[str]:
     return sorted(path.name for path in paths["run"].iterdir() if path.is_file())
 
 
-class CopilotProcessTests(unittest.TestCase):
+class CopilotProcessTests(GitTestCase):
     """The real runner, with a Python program standing in for Copilot CLI: what it reads, keeps, and leaves behind."""
 
     def setUp(self) -> None:

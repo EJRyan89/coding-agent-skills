@@ -15,11 +15,13 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from job_pool import OUTPUT_LOCK, Job, append_step_summary, run_beside, run_jobs, step_summary, worker_count
 
 
-class JobPoolFixtures(unittest.TestCase):
+class JobPoolFixtures(GitTestCase):
     def test_step_summary_reports_the_result_and_each_failure(self) -> None:
         text = step_summary(
             (3, 11, 9),

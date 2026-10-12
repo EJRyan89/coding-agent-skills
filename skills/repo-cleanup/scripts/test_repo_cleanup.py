@@ -12,8 +12,9 @@ import sys
 import tempfile
 import threading
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeVar
 from unittest import mock
 
@@ -21,11 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import git_client
+import git_test_base
 import repo_cleanup as rc
 from git_client import GitClient, GitError, GitResult
+from git_test_base import GitTestCase
 from github_client import MISSING_CLI, CommandResult, GitHubError
 
 REMOTE_URL = "https://github.com/owner/repo.git"
+# The suite's configuration refuses a bare repository Git is not pointed at explicitly, as an agent sandbox's may, so
+# every test holds that a bare fixture is inspected with `bare_git`.
+GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main", "safe.bareRepository": "explicit"})
 # The repositories every Fixture test starts from, built once per process by setUpModule.
 TEMPLATE: Path | None = None
 # What a sweep step returns.
@@ -33,45 +39,16 @@ T = TypeVar("T")
 
 
 def setUpModule() -> None:
-    """Isolate Git from the user's configuration for this process and every Git it starts.
-
-    Command-scope configuration (`GIT_CONFIG_COUNT` with its `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n`, and
-    `GIT_CONFIG_PARAMETERS`) outranks the global file, so it is cleared too. The suite's own configuration refuses a
-    bare repository Git is not pointed at explicitly, as an agent sandbox's may, so every test holds that a bare
-    fixture is inspected with `bare_git`."""
-    directory = Path(tempfile.mkdtemp(prefix="repo-cleanup-config-"))
-    config = directory / "gitconfig"
-    config.write_text(
-        "[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n"
-        "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[core]\n\tautocrlf = false\n"
-        "[safe]\n\tbareRepository = explicit\n",
-        encoding="utf-8",
-    )
-    patch = {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
-    inherited = [
-        name
-        for name in os.environ
-        if name in ("GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS")
-        or name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
-    ]
-    saved = {name: os.environ.get(name) for name in [*patch, *inherited]}
-    for name in inherited:
-        del os.environ[name]
-    os.environ.update(patch)
+    """Build the repositories every Fixture test starts from, with Git isolated as each test isolates it."""
+    git_test_base.isolate_module(GIT_CONFIG)
     global TEMPLATE
     TEMPLATE = Path(tempfile.mkdtemp(prefix="repo-cleanup-template-")).resolve() / "root"
     build_fixture(TEMPLATE)
+    unittest.addModuleCleanup(remove_tree, TEMPLATE.parent)
 
-    def restore() -> None:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        remove_tree(directory)
-        remove_tree(TEMPLATE.parent)
 
-    unittest.addModuleCleanup(restore)
+class CleanupTestCase(GitTestCase):
+    git_config = GIT_CONFIG
 
 
 def remove_tree(path: Path) -> None:
@@ -211,7 +188,7 @@ class FakeGitHub:
         self.commits[number] = commits
 
 
-class Fixture(unittest.TestCase):
+class Fixture(CleanupTestCase):
     """A clone under a REPOS_ROOT with spaces, whose github.com origin is rewritten to a local bare remote."""
 
     def setUp(self) -> None:
@@ -346,7 +323,7 @@ class Fixture(unittest.TestCase):
         return next(fields for fields in facts(planned, "BRANCH") if fields[0] == name)
 
 
-class FixtureTemplateTests(unittest.TestCase):
+class FixtureTemplateTests(CleanupTestCase):
     def test_git_reads_only_the_suites_configuration_which_refuses_a_bare_repository_not_named_explicitly(self) -> None:
         if TEMPLATE is None:
             self.fail("setUpModule builds the template")
@@ -1368,7 +1345,7 @@ class SweepTests(Fixture):
                 self.assertEqual(2, raised.exception.code)
 
 
-class DefaultBranchTests(unittest.TestCase):
+class DefaultBranchTests(CleanupTestCase):
     """The branch origin/HEAD names, else origin/main, else origin/master."""
 
     def repository(self, branch: str) -> Path:
@@ -1397,7 +1374,7 @@ class DefaultBranchTests(unittest.TestCase):
             rc.default_branch(rc.Services(), self.repository("topic"))
 
 
-class RemoveWorktreeTests(unittest.TestCase):
+class RemoveWorktreeTests(CleanupTestCase):
     """git worktree remove, then git branch -d, as apply runs them for a stale worktree."""
 
     def setUp(self) -> None:
@@ -1503,7 +1480,7 @@ class RemoveWorktreeTests(unittest.TestCase):
         self.assertEqual(sha, self.tip("unmerged"))
 
 
-class UnitTests(unittest.TestCase):
+class UnitTests(CleanupTestCase):
     def test_release_branches_and_worktrees_under_a_release_directory_are_protected(self) -> None:
         for branch, path, expected in (
             ("release/4.10", "C:/GitHub/Worktrees/example/topic", True),
@@ -1587,7 +1564,7 @@ class UnitTests(unittest.TestCase):
         self.assertEqual(2, rc.dirty_count(rc.Services(), root))
 
 
-class ConsoleTests(unittest.TestCase):
+class ConsoleTests(CleanupTestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         root = Path(tempfile.mkdtemp(prefix="repo cleanup console ")).resolve()
         self.addCleanup(remove_tree, root)
@@ -1622,7 +1599,7 @@ class ConsoleTests(unittest.TestCase):
         self.assertIn("SUMMARY\t  Local-only (kept):       1 — caf�", result.stdout.decode("utf-8").splitlines())
 
 
-class PlanVersionTests(unittest.TestCase):
+class PlanVersionTests(CleanupTestCase):
     def test_a_plan_whose_schema_version_is_not_the_integer_one_is_refused(self) -> None:
         # A boolean or an integral float compares equal to the version; only the integer itself is it.
         root = Path(tempfile.mkdtemp(prefix="repo cleanup plan ")).resolve()

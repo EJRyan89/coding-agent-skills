@@ -14,6 +14,9 @@ from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from deployer import platform_support
 from tools import worktrees
@@ -25,19 +28,9 @@ HUB = "Repo With Spaces"
 TREE = Path(".claude") / "worktrees" / "feat-demo"
 
 
-def isolated_environment(root: Path) -> dict[str, str]:
-    """Git settings that ignore the developer's own configuration, with a fixed author."""
-    empty = root / "empty.gitconfig"
-    empty.write_text("", encoding="utf-8")
-    return {
-        **os.environ,
-        "GIT_CONFIG_GLOBAL": str(empty),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_AUTHOR_NAME": "Test",
-        "GIT_AUTHOR_EMAIL": "test@example.invalid",
-        "GIT_COMMITTER_NAME": "Test",
-        "GIT_COMMITTER_EMAIL": "test@example.invalid",
-    }
+def isolated_environment() -> dict[str, str]:
+    """A copy of this process's environment, whose git GitTestCase isolates, for a test to hand a command or change."""
+    return dict(os.environ)
 
 
 def run_git(cwd: Path, environment: dict[str, str], *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -87,7 +80,7 @@ def copy_hub(hub: Path, environment: dict[str, str]) -> None:
     root = Path(_TEMPLATE_DIRECTORY.name).resolve()
     with _TEMPLATE_LOCK:
         if not _TEMPLATE_BUILT:
-            build_hub(root / HUB, isolated_environment(root))
+            build_hub(root / HUB, isolated_environment())
             _TEMPLATE_BUILT = True
     shutil.copytree(root / HUB, hub, symlinks=True)
     repaired = run_git(hub, environment, "worktree", "repair", str(hub / TREE))
@@ -95,11 +88,11 @@ def copy_hub(hub: Path, environment: dict[str, str]) -> None:
         raise AssertionError(repaired.stderr)
 
 
-class WorktreesTestCase(unittest.TestCase):
+class WorktreesTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="worktrees-test.")
         self.root = Path(self._temporary.name).resolve()
-        self.environment = isolated_environment(self.root)
+        self.environment = isolated_environment()
         self.hub = self.root / HUB
         copy_hub(self.hub, self.environment)
         self.worktrees = self.hub / ".claude" / "worktrees"
@@ -154,7 +147,7 @@ class WorktreesTestCase(unittest.TestCase):
         return self.decision(event, environment)
 
 
-class FixtureTemplateTests(unittest.TestCase):
+class FixtureTemplateTests(GitTestCase):
     def test_a_copied_hub_matches_a_freshly_built_one_and_its_worktree_is_its_own(self) -> None:
         def shape(root: Path, environment: dict[str, str]) -> dict[str, str]:
             hub, tree = root / HUB, root / HUB / TREE
@@ -177,7 +170,7 @@ class FixtureTemplateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as fresh_directory, tempfile.TemporaryDirectory() as copy_directory:
             fresh, copied = Path(fresh_directory).resolve(), Path(copy_directory).resolve()
-            fresh_environment, copied_environment = isolated_environment(fresh), isolated_environment(copied)
+            fresh_environment, copied_environment = isolated_environment(), isolated_environment()
             build_hub(fresh / HUB, fresh_environment)
             copy_hub(copied / HUB, copied_environment)
             copied_shape = shape(copied, copied_environment)
@@ -281,7 +274,7 @@ class HookCommandTests(WorktreesTestCase):
                 self.assertEqual(["-B", f"{self.hub}/tools/worktrees.py", "guard"], arguments)
 
 
-class BranchOptionTests(unittest.TestCase):
+class BranchOptionTests(GitTestCase):
     def test_upstream_and_tracking_values_are_not_rename_options(self) -> None:
         for arguments in (
             ["-uorigin/main"],

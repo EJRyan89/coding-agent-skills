@@ -32,6 +32,7 @@ import review_runtime
 import review_state
 import skill_roots
 from git_client import GitResult
+from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_archive import (
     ArchiveError,
@@ -245,7 +246,7 @@ def valid_adapter_result(repository: str = "example/one", number: int = 12) -> d
     }
 
 
-class ConfigurationTests(unittest.TestCase):
+class ConfigurationTests(GitTestCase):
     def test_model_names_map_model_identifiers_to_display_names(self) -> None:
         self.assertEqual({}, validate_config(valid_config())["model_names"])
         arn = "arn:aws:bedrock:us-east-1:111122223333:application-inference-profile/abc"
@@ -460,7 +461,7 @@ class ConfigurationTests(unittest.TestCase):
                     validate_config(config)
 
 
-class ParallelCallTests(unittest.TestCase):
+class ParallelCallTests(GitTestCase):
     def test_results_keep_item_order_and_at_most_four_run_at_once(self) -> None:
         active = peak = 0
         guard = threading.Lock()
@@ -510,7 +511,7 @@ class ParallelCallTests(unittest.TestCase):
         self.assertEqual([(caller, None)] * 2, map_in_order(lambda item: threading.get_ident(), "ab", workers=1))
 
 
-class WorkingPathTests(unittest.TestCase):
+class WorkingPathTests(GitTestCase):
     """working_path refuses a path in the skills directories skill-core names, and keeps any other path."""
 
     def setUp(self) -> None:
@@ -551,7 +552,7 @@ class WorkingPathTests(unittest.TestCase):
         self.assertEqual([], list(path.parent.iterdir()))
 
 
-class StateAndLockTests(unittest.TestCase):
+class StateAndLockTests(GitTestCase):
     def test_state_update_writes_the_validated_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "state.json"
@@ -922,7 +923,7 @@ class StateAndLockTests(unittest.TestCase):
                 self.assertEqual(0o600, path.stat().st_mode & 0o777)
 
 
-class AtomicWriteTests(unittest.TestCase):
+class AtomicWriteTests(GitTestCase):
     @contextlib.contextmanager
     def watched_descriptors(self) -> Iterator[tuple[list[int], list[int], list[int]]]:
         """The descriptors atomic_write_text opens, each close of one, and each close that found its descriptor
@@ -999,7 +1000,7 @@ class AtomicWriteTests(unittest.TestCase):
             self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
 
 
-class RecordTests(unittest.TestCase):
+class RecordTests(GitTestCase):
     def test_adapter_schema_matches_runtime_finding_contract(self) -> None:
         schema = json.loads(
             (SCRIPT_DIRECTORY.parent / "references" / "review-adapter.schema.json").read_text(encoding="utf-8")
@@ -1688,7 +1689,7 @@ class RecordTests(unittest.TestCase):
                     validate_record(broken)
 
 
-class ArchiveTests(unittest.TestCase):
+class ArchiveTests(GitTestCase):
     def _record(self, repository: str, number: int, version: int) -> dict:
         request = valid_request(repository, number)
         result = validate_adapter_result(
@@ -1793,7 +1794,7 @@ class ArchiveTests(unittest.TestCase):
             self.assertEqual(11, latest["review"]["version"])
 
 
-class FlagTests(unittest.TestCase):
+class FlagTests(GitTestCase):
     def test_add_and_resolve_flag(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "flags.json"
@@ -1879,7 +1880,7 @@ class FlagTests(unittest.TestCase):
                 load_store(path)
 
 
-class GitHubTests(unittest.TestCase):
+class GitHubTests(GitTestCase):
     @staticmethod
     def _api_pull(number: int, *, state: str = "open", merged_at: str | None = None) -> dict:
         return {
@@ -2371,7 +2372,7 @@ class GitHubTests(unittest.TestCase):
         str(context.exception).encode("utf-8")
 
 
-class GitHubDocumentTests(unittest.TestCase):
+class GitHubDocumentTests(GitTestCase):
     @staticmethod
     def _client(*values: Any) -> tuple[GitHubClient, list[list[str]]]:
         responses = [CommandResult(0, json.dumps(value), "") for value in values]
@@ -2575,7 +2576,7 @@ class GitHubDocumentTests(unittest.TestCase):
                     self.assertEqual(len(responses), client.call_count)
 
 
-class RuntimeContractTests(unittest.TestCase):
+class RuntimeContractTests(GitTestCase):
     @staticmethod
     def _manifest() -> dict:
         return {
@@ -2617,7 +2618,7 @@ class RuntimeContractTests(unittest.TestCase):
         }.items():
             target = checkout / Path(relative)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_bytes(content.encode("utf-8"))
         self._git(checkout, "add", ".")
         self._git(
             checkout,
@@ -3263,7 +3264,7 @@ class RuntimeContractTests(unittest.TestCase):
                 verify_checkout_remote(checkout, "different/one")
 
 
-class ReviewOperationTests(unittest.TestCase):
+class ReviewOperationTests(GitTestCase):
     @staticmethod
     def _pull(number: int, state: str = "OPEN", merged_at: str | None = None) -> dict:
         return {
@@ -3704,7 +3705,7 @@ class ReviewOperationTests(unittest.TestCase):
             )
 
 
-class RuntimeHostTests(unittest.TestCase):
+class RuntimeHostTests(GitTestCase):
     @staticmethod
     def _promote_fixture_result(staging: Path, result: Path) -> bool:
         """Rename a result in this test's owned temporary fixture."""

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
 import harness  # noqa: F401 - imported for its effect: it puts the repository root on sys.path for deployer
+from git_test_base import GitTestCase
 
 from deployer import hashing, platform_support, render
 from deployer.errors import DeployError
 
 
-class SubstitutionContextTests(unittest.TestCase):
+class SubstitutionContextTests(GitTestCase):
     def test_json_values_are_escaped_inside_strings(self) -> None:
         rendered = render.render_file("s/config.json", b'{"root": "{{X}}"}', {"X": 'a"b\\c'})
         self.assertEqual({"root": 'a"b\\c'}, json.loads(rendered))
@@ -63,7 +67,7 @@ class SubstitutionContextTests(unittest.TestCase):
         self.assertEqual(b"{{X}}", render.render_file("s/image.bin", b"{{X}}", {"X": "v"}))
 
 
-class FenceTests(unittest.TestCase):
+class FenceTests(GitTestCase):
     """The one fence detector, which rendering, ShellCheck extraction, and validation's Markdown policies share."""
 
     def fences(self, text: str) -> list[tuple[int, int | None, str, str]]:
@@ -124,7 +128,7 @@ class FenceTests(unittest.TestCase):
                 render._extract_units(staged, Path(workspace))
 
 
-class ShellCheckBatchTests(unittest.TestCase):
+class ShellCheckBatchTests(GitTestCase):
     def test_units_past_one_command_line_run_in_batches_and_every_finding_is_reported_once(self) -> None:
         units = [render.ShellUnit(Path(f"C:/work/blocks/{n}.sh"), f"s/SKILL.md block {n + 1}", True) for n in range(6)]
         failing = {"C:/work/blocks/1.sh", "C:/work/blocks/4.sh"}
@@ -173,7 +177,7 @@ class ShellCheckBatchTests(unittest.TestCase):
         )
 
 
-class PowerShellExtensionTests(unittest.TestCase):
+class PowerShellExtensionTests(GitTestCase):
     def test_invalid_scripts_are_parsed_regardless_of_extension_case(self) -> None:
         for suffix in (".ps1", ".PS1", ".Ps1"):
             with self.subTest(suffix=suffix):
@@ -189,7 +193,7 @@ class PowerShellExtensionTests(unittest.TestCase):
         render.validate_executables(render.Staged(skills={"alpha": files}))
 
 
-class NameValidationTests(unittest.TestCase):
+class NameValidationTests(GitTestCase):
     def test_trailing_newlines_never_pass_name_or_hash_validation(self) -> None:
         from deployer import names, source
 
@@ -199,7 +203,7 @@ class NameValidationTests(unittest.TestCase):
         self.assertIsNone(hashing.HASH_PATTERN.fullmatch("sha256:" + "0" * 64 + "\n"))
 
 
-class HashTests(unittest.TestCase):
+class HashTests(GitTestCase):
     def test_tree_hash_is_independent_of_insertion_order_and_sensitive_to_paths(self) -> None:
         first = hashing.tree_hash({"a.txt": b"1", "b/c.txt": b"2"})
         second = hashing.tree_hash({"b/c.txt": b"2", "a.txt": b"1"})

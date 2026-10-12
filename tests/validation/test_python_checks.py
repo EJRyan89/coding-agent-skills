@@ -13,8 +13,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import python_checks
+from git_test_base import GitTestCase
 from job_selection import all_jobs
 from python_checks import (
     FORMAT_ROOTS,
@@ -36,7 +38,7 @@ from validation_support import REPOSITORY_ROOT, SKILLS_ROOT, relative, write_fix
 from deployer import platform_support
 
 
-class PythonChecksFixtures(unittest.TestCase):
+class PythonChecksFixtures(GitTestCase):
     def test_format_check_names_an_unformatted_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

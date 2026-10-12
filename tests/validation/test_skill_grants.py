@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from skill_grants import (
     GRANTS_DOC,
     REPOSITORY_TOOL_COMMAND,
@@ -25,7 +27,7 @@ from skill_grants import (
 from validation_support import write_fixture_tree
 
 
-class SkillGrantsFixtures(unittest.TestCase):
+class SkillGrantsFixtures(GitTestCase):
     def test_repository_skill_shim_check_detects_each_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

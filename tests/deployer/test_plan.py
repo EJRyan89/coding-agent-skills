@@ -7,6 +7,7 @@ import hashlib
 import io
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -15,6 +16,9 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import DeployerTestCase
 
 from deployer import hashing, manifest, migrate, plan, report, selection
@@ -395,7 +399,7 @@ DEPENDENCY_BYTES = b"shared by another source\n"
 DEPENDENCY_HASH = "sha256:" + hashlib.sha256(DEPENDENCY_BYTES).hexdigest()
 
 
-class ValidateSharedAssetsTests(unittest.TestCase):
+class ValidateSharedAssetsTests(GitTestCase):
     """plan.validate_shared_assets called directly: the mapping it returns, and each refusal's exact message in the
     order its checks run."""
 
@@ -553,7 +557,7 @@ class ValidateSharedAssetsTests(unittest.TestCase):
         )
 
 
-class ContextStepTests(unittest.TestCase):
+class ContextStepTests(GitTestCase):
     """The selection and migration steps pipeline.py runs, called directly on a Context."""
 
     def setUp(self) -> None:

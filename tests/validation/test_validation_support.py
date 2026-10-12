@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from validation_support import (
     CallableResolver,
     ModuleImport,
@@ -35,7 +37,7 @@ SOURCE = (
 )
 
 
-class ImportReaderFixtures(unittest.TestCase):
+class ImportReaderFixtures(GitTestCase):
     def test_module_imports_reads_every_absolute_import_and_no_text(self) -> None:
         self.assertEqual(
             [
@@ -64,7 +66,7 @@ class ImportReaderFixtures(unittest.TestCase):
         self.assertEqual("", qualified_name(ast.parse("make().run", mode="eval").body, aliases))
 
 
-class CallableResolverFixtures(unittest.TestCase):
+class CallableResolverFixtures(GitTestCase):
     def test_assigned_aliases_follow_imports_builtins_and_other_aliases(self) -> None:
         tree = ast.parse(
             "import shutil as sh\nfrom io import open as read\n"
@@ -220,7 +222,7 @@ class CallableResolverFixtures(unittest.TestCase):
         self.assertEqual([], resolver.problems("fixture.py"))
 
 
-class SharedReaderFixtures(unittest.TestCase):
+class SharedReaderFixtures(GitTestCase):
     def test_a_section_runs_from_its_heading_to_the_next_second_level_heading(self) -> None:
         text = "# Title\n## One\nfirst\n### Inner\nkept\n## Two\nsecond"
         self.assertEqual("first\n### Inner\nkept", markdown_section(text, "## One"))

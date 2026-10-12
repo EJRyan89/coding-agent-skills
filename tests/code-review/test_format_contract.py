@@ -40,10 +40,12 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "review-insights" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import review_insights
 import review_runtime
 import review_synthesis
+from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger
 from review_canary import validate_fixture_pull
 from review_config import validate_config
@@ -1405,12 +1407,13 @@ def schema_rows(described: dict[str, Any]) -> dict[str, Row]:
     return rows
 
 
-class FormatContractTest(unittest.TestCase):
+class FormatContractTest(GitTestCase):
     scratch: tempfile.TemporaryDirectory
     fixtures: ClassVar[dict[str, list[Fixture]]]
 
     @classmethod
     def setUpClass(cls) -> None:
+        super().setUpClass()
         cls.scratch = tempfile.TemporaryDirectory()
         scratch = Path(cls.scratch.name)
         records = record_fixtures()
@@ -1642,7 +1645,7 @@ def toy_rows(**changed: list[str] | None) -> dict[str, Row]:
     return {name: parse_row(row) for name, row in cells.items() if row is not None}
 
 
-class CheckTableTests(unittest.TestCase):
+class CheckTableTests(GitTestCase):
     """check_table called directly on literal rows and fixtures, with every message it gives, in its order."""
 
     def check(self, rows: dict[str, Row], found: list[Instance]) -> list[str]:

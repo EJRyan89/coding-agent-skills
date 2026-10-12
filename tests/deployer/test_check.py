@@ -8,8 +8,12 @@ import json
 import re
 import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 from pdf_tool import MINIMUMS, PdfToolRefused, parse_banner
 
@@ -437,13 +441,13 @@ class DeployWarningTests(DeployerTestCase):
             self.assertNotIn("WARNING", self.deploy_ok("--all", "--dry-run").output)
 
 
-class InstallationGuideTests(unittest.TestCase):
+class InstallationGuideTests(GitTestCase):
     def test_the_section_install_messages_name_exists(self) -> None:
         guide = (REPOSITORY_ROOT / "docs" / "installation.md").read_text(encoding="utf-8")
         self.assertIn("Installing the tools", re.findall(r"^## (.+)$", guide, re.MULTILINE))
 
 
-class StandardCommandTests(unittest.TestCase):
+class StandardCommandTests(GitTestCase):
     def test_standard_commands_are_the_documented_set(self) -> None:
         # "Commands skills may run" in docs/adding-a-skill.md lists these; the Windows part comes from platform_support.
         self.assertEqual(
@@ -502,7 +506,7 @@ class StandardCommandTests(unittest.TestCase):
         )
 
 
-class VersionTests(unittest.TestCase):
+class VersionTests(GitTestCase):
     def test_verify_runtimes_are_catalogued_with_their_floors(self) -> None:
         from deployer import discovery
 

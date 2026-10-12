@@ -9,8 +9,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import csharp_layout as layout
+from git_test_base import GitTestCase
 
 
 def source(*lines: str) -> str:
@@ -55,7 +57,7 @@ TRICKY = source(
 )
 
 
-class LexerTests(unittest.TestCase):
+class LexerTests(GitTestCase):
     def test_literals_and_comments_hide_braces_and_directives(self) -> None:
         scan = layout.Lexer(TRICKY).lex()
         directives = [(event.line + 1, event.name) for event in scan.events if event.kind == "directive"]
@@ -119,7 +121,7 @@ def lexed(text: str, hole: int = 0) -> Lexed:
     return lexer.i, lexer.line, events, sorted(lexer.scan.continuation)
 
 
-class CodeTests(unittest.TestCase):
+class CodeTests(GitTestCase):
     """Lexer.code called directly, for each arm, with where it stops and every event and continuation it records."""
 
     def test_code_outside_a_hole_records_braces_and_directives_to_the_end(self) -> None:
@@ -194,7 +196,7 @@ class CodeTests(unittest.TestCase):
                 self.assertEqual(expected, lexed(text, hole))
 
 
-class RuleTests(unittest.TestCase):
+class RuleTests(GitTestCase):
     def test_endregion_must_close_in_the_scope_its_region_opened(self) -> None:
         text = source(
             "class C",  # 1
@@ -316,7 +318,7 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(["endregion-description"], [violation.rule for violation in applied])
 
 
-class FileTests(unittest.TestCase):
+class FileTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -487,7 +489,7 @@ SDK_PROJECT = '<Project Sdk="Microsoft.NET.Sdk"></Project>\n'
 SOLUTION = 'Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "App", "src\\App\\App.csproj", "{1}"\r\nEndProject\r\n'
 
 
-class ConfigTests(unittest.TestCase):
+class ConfigTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)

@@ -7,13 +7,16 @@ from __future__ import annotations
 import ast
 import fnmatch
 import functools
+import re
 import sys
+import tomllib
 import unittest
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job, run_process
 from shell_targets import run_git_bash, shell_quote
+from skill_scripts import CommandReader
 from toolchain import find_powershell
 from validation_support import (
     PYTHON_ENTRY_POINT,
@@ -306,6 +309,228 @@ def unsuited_script_problems(root: Path) -> list[str]:
     return problems
 
 
+# The base every test class in a suite that runs git inherits, and the call a setUpModule of such a suite starts with.
+GIT_TEST_BASE = "git_test_base.GitTestCase"
+GIT_MODULE_ISOLATION = "git_test_base.isolate_module"
+TEST_CASE_BASES = frozenset({"unittest.TestCase", "unittest.IsolatedAsyncioTestCase"})
+MYPY_PATH_PREFIX = "$MYPY_CONFIG_FILE_DIR/"
+# What a module that runs git holds: a string that starts with the word git, or the git client.
+GIT_MARKER = re.compile(r"""["']git(?![\w-])|GitClient""")
+
+
+def _starts_git(node: ast.AST) -> bool:
+    """Whether a node is a list or tuple whose first item is the string git."""
+    return (
+        isinstance(node, (ast.List, ast.Tuple))
+        and bool(node.elts)
+        and isinstance(node.elts[0], ast.Constant)
+        and node.elts[0].value == "git"
+    )
+
+
+class RepositoryModules:
+    """The repository modules a Python file imports, resolved as they are at run time, and whether each runs git.
+
+    A dotted import resolves beside the file, then from the repository root, as deployer.x, tools.x, and tests.x
+    do; a relative import from the file's package; and a name each candidate resolves to in the mypy_path
+    directories, which validation keeps equal to the directories code puts on sys.path. A module runs git as
+    skill_scripts.CommandReader reads it: a list or tuple that starts with git, a command runner or a lookup given
+    git, or a GitClient.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        pyproject = root / "pyproject.toml"
+        configuration = tomllib.loads(pyproject.read_text(encoding="utf-8")) if pyproject.is_file() else {}
+        entries = configuration.get("tool", {}).get("mypy", {}).get("mypy_path", [])
+        self.path_directories = [root / entry.removeprefix(MYPY_PATH_PREFIX) for entry in entries]
+        self._trees: dict[Path, ast.Module] = {}
+        self._aliases: dict[Path, dict[str, str]] = {}
+        self._imports: dict[Path, list[Path]] = {}
+        self._resolved: dict[tuple[Path, str, int], list[Path]] = {}
+        self._runs_git: dict[Path, bool] = {}
+
+    def tree(self, path: Path) -> ast.Module:
+        if path not in self._trees:
+            self._trees[path] = ast.parse(path.read_text(encoding="utf-8"))
+        return self._trees[path]
+
+    def aliases(self, path: Path) -> dict[str, str]:
+        if path not in self._aliases:
+            self._aliases[path] = import_aliases(self.tree(path))
+        return self._aliases[path]
+
+    @staticmethod
+    def _module_file(base: Path, parts: list[str]) -> Path | None:
+        target = base.joinpath(*parts)
+        for candidate in (target.with_name(f"{target.name}.py"), target / "__init__.py"):
+            if candidate.is_file():
+                return candidate.resolve()
+        return None
+
+    def resolve(self, path: Path, module: str, level: int = 0) -> list[Path]:
+        """The files an import of module from path may load, each package's __init__.py included."""
+        key = (path.parent, module, level)
+        if key not in self._resolved:
+            self._resolved[key] = self._resolve(path, module, level)
+        return self._resolved[key]
+
+    def _resolve(self, path: Path, module: str, level: int) -> list[Path]:
+        parts = module.split(".") if module else []
+        if level:
+            base = path.parent
+            for _ in range(level - 1):
+                base = base.parent
+            bases = [base]
+        else:
+            bases = [path.parent, self.root, *self.path_directories]
+        found: list[Path] = []
+        for base in bases:
+            for count in range(1, len(parts) + 1) if parts else [0]:
+                candidate = self._module_file(base, parts[:count]) if count else base / "__init__.py"
+                if candidate is not None and candidate.is_file() and candidate.resolve() not in found:
+                    found.append(candidate.resolve())
+            if found and not level:
+                break
+        return [file for file in found if file.is_relative_to(self.root.resolve())]
+
+    def imports(self, path: Path) -> list[Path]:
+        """The repository files path's imports may load, in the order they appear."""
+        if path in self._imports:
+            return self._imports[path]
+        found: list[Path] = []
+        for node in ast.walk(self.tree(path)):
+            if isinstance(node, ast.Import):
+                names = [(alias.name, 0) for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                module = node.module or ""
+                names = [(module, node.level)]
+                names += [(f"{module}.{alias.name}" if module else alias.name, node.level) for alias in node.names]
+            else:
+                continue
+            found += [file for name, level in names for file in self.resolve(path, name, level)]
+        self._imports[path] = list(dict.fromkeys(found))
+        return self._imports[path]
+
+    def runs_git_itself(self, path: Path) -> bool:
+        if path not in self._runs_git:
+            # The reader finds git only in a string that starts with it or in GitClient, so a module without either
+            # is not read, and a command list that starts with git answers before the reader resolves every name.
+            source = path.read_text(encoding="utf-8")
+            if not GIT_MARKER.search(source):
+                self._runs_git[path] = False
+            elif any(_starts_git(node) for node in ast.walk(self.tree(path))):
+                self._runs_git[path] = True
+            else:
+                self._runs_git[path] = "git" in CommandReader(self.tree(path)).commands({"git"})
+        return self._runs_git[path]
+
+    def git_runner(self, path: Path) -> Path | None:
+        """The first module, path itself first and then what it imports breadth first, that runs git."""
+        queue, seen = [path.resolve()], {path.resolve()}
+        while queue:
+            current = queue.pop(0)
+            if self.runs_git_itself(current):
+                return current
+            for imported in self.imports(current):
+                if imported not in seen:
+                    seen.add(imported)
+                    queue.append(imported)
+        return None
+
+    def class_bases(self, path: Path, name: str, seen: frozenset[tuple[Path, str]] = frozenset()) -> set[str]:
+        """The test bases a class of path's derives from, through its own classes and the repository's: each of
+        TEST_CASE_BASES and GIT_TEST_BASE it reaches."""
+        tree = self.tree(path)
+        definition = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == name), None)
+        if definition is None or (path, name) in seen:
+            return set()
+        aliases = self.aliases(path)
+        found: set[str] = set()
+        for base in definition.bases:
+            qualified = qualified_name(base, aliases)
+            if qualified in TEST_CASE_BASES or qualified == GIT_TEST_BASE:
+                found.add(qualified)
+            elif "." not in qualified:
+                found |= self.class_bases(path, qualified, seen | {(path, name)})
+            else:
+                module, _, imported = qualified.rpartition(".")
+                for file in self.resolve(path, module):
+                    found |= self.class_bases(file, imported, seen | {(path, name)})
+        return found
+
+
+def _starts_with_call(function: ast.FunctionDef | ast.AsyncFunctionDef, matches: Callable[[ast.expr], bool]) -> bool:
+    """Whether the function's first statement after its docstring is a call whose callable `matches` accepts."""
+    body = function.body[1:] if function.body and ast.get_docstring(function) is not None else function.body
+    first = body[0] if body else None
+    return isinstance(first, ast.Expr) and isinstance(first.value, ast.Call) and matches(first.value.func)
+
+
+def _is_parent_set_up_class(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "setUpClass"
+        and isinstance(node.value, ast.Call)
+        and ast.unparse(node.value.func) == "super"
+    )
+
+
+def _suite_git_problems(modules: RepositoryModules, path: Path, name: str, runner: str) -> list[str]:
+    tree = modules.tree(path)
+    aliases = modules.aliases(path)
+    reason = f"runs git ({'itself' if runner == name else f'through {runner}'})"
+    problems: list[str] = []
+    for node in tree.body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "setUpModule"
+            and not _starts_with_call(node, lambda call: qualified_name(call, aliases) == GIT_MODULE_ISOLATION)
+        ):
+            problems.append(f"{name}:{node.lineno} {reason}, so its setUpModule starts with {GIT_MODULE_ISOLATION}()")
+        if not isinstance(node, ast.ClassDef):
+            continue
+        bases = modules.class_bases(path, node.name)
+        if not bases:
+            continue
+        if GIT_TEST_BASE not in bases:
+            problems.append(
+                f"{name}:{node.lineno} {node.name} does not inherit {GIT_TEST_BASE}, and the suite {reason}"
+            )
+        for item in node.body:
+            if (
+                isinstance(item, ast.FunctionDef)
+                and item.name == "setUpClass"
+                and not _starts_with_call(item, _is_parent_set_up_class)
+            ):
+                problems.append(
+                    f"{name}:{item.lineno} {node.name}.setUpClass does not start with super().setUpClass(), which "
+                    f"isolates its git, and the suite {reason}"
+                )
+    return problems
+
+
+def git_isolation_problems(root: Path) -> list[str]:
+    """Report a Python regression suite that runs git, itself or through a repository module it imports, with a test
+    class that does not inherit git_test_base.GitTestCase, a setUpClass that does not start by calling its parent's,
+    or a setUpModule that does not start with git_test_base.isolate_module().
+
+    The shell that starts a suite reaches its git otherwise: a command-scope setting outranks every file, a global
+    hook runs on a fixture's commit, and a hook's GIT_DIR points every command at another repository.
+    """
+    modules = RepositoryModules(root)
+    problems: list[str] = []
+    for path in regression_suites(root):
+        if path.suffix.casefold() != ".py":
+            continue
+        runner = modules.git_runner(path)
+        if runner is None:
+            continue
+        name = path.relative_to(root).as_posix()
+        problems += _suite_git_problems(modules, path.resolve(), name, runner.relative_to(root.resolve()).as_posix())
+    return problems
+
+
 class SuiteDiscoveryPolicies(unittest.TestCase):
     def test_scripted_skills_have_regression_suites(self) -> None:
         self.assertEqual([], unsuited_script_problems(REPOSITORY_ROOT))
@@ -338,3 +563,6 @@ class SuiteDiscoveryPolicies(unittest.TestCase):
 
     def test_every_module_is_named_by_a_test(self) -> None:
         self.assertEqual([], untested_module_problems(REPOSITORY_ROOT))
+
+    def test_every_suite_that_runs_git_isolates_it(self) -> None:
+        self.assertEqual([], git_isolation_problems(REPOSITORY_ROOT))

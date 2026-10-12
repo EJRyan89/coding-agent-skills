@@ -14,9 +14,11 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_insights as ri
 import review_synthesis as rs
+from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger
 from review_flags import add_flag, load_store, resolve_flag
 from review_records import build_record, write_record_pair
@@ -40,7 +42,7 @@ def _lines(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-class ScreeningTests(unittest.TestCase):
+class ScreeningTests(GitTestCase):
     def test_a_value_is_flattened_to_one_line_and_each_character_a_shell_expands_is_marked(self) -> None:
         self.assertEqual("a b ?x? ? ?", rs.screened(' a\n\t b $x" \x1b `\u2028'))
         self.assertEqual("R'(1)&;", rs.screened("R'(1)&;"), "punctuation literal inside double quotes stays")
@@ -704,7 +706,7 @@ class RenderTests(SynthesisFixture):
         )
 
 
-class StageTests(unittest.TestCase):
+class StageTests(GitTestCase):
     """The synthesis stage's own choices, without a report around them."""
 
     def pair(self, index: int, body: str, severity: str = "SUGGESTION") -> tuple[dict, dict, tuple]:

@@ -13,12 +13,14 @@ from collections.abc import Mapping
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from markdown_links import THREAT_MODEL_DOC, THREAT_MODEL_SUITES, markdown_link_problems, threat_model_test_problems
 from validation_support import write_fixture_tree
 
 
-class MarkdownLinkPolicy(unittest.TestCase):
+class MarkdownLinkPolicy(GitTestCase):
     TARGET = (
         "# Guide\n\n## The `run_validation` step_two\n\n## Notes: (draft) & more!\n\n## Notes: (draft) & more!\n\n"
         "```markdown\n## Not a heading\n```\n"
@@ -78,7 +80,7 @@ class MarkdownLinkPolicy(unittest.TestCase):
         )
 
 
-class ThreatModelPolicy(unittest.TestCase):
+class ThreatModelPolicy(GitTestCase):
     TABLE = (
         "# Contract\n\n## Threat model\n\n"
         "| The author controls | The suite guarantees | Held by |\n| --- | --- | --- |\n"

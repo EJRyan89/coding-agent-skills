@@ -20,11 +20,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_insights as ri
 import review_records
 import review_synthesis
 import skill_roots
+from git_test_base import GitTestCase
 from review_archive import commit_record, current_ledger, pull_records
 from review_config import write_config
 from review_flags import add_flag, load_store, resolve_flag
@@ -121,7 +123,7 @@ def record(
     )
 
 
-class InsightFixture(unittest.TestCase):
+class InsightFixture(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

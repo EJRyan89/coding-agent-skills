@@ -15,9 +15,11 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_guard as guard
 import review_pipeline as rp
+from git_test_base import GitTestCase
 from review_source import source_commands
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -51,7 +53,7 @@ def make_run(folder: Path, roles: list[str], *, entrypoint: bool = False) -> Pat
     return folder
 
 
-class GuardFixture(unittest.TestCase):
+class GuardFixture(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

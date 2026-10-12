@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import Finished
+from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubError
 from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify
 
@@ -65,7 +66,7 @@ def state_of(*pulls: dict) -> str:
     return classify("owner/repo", "topic", TIP, runner=responder(listing(*pulls)))
 
 
-class ClassifyTests(unittest.TestCase):
+class ClassifyTests(GitTestCase):
     def test_any_open_pull_request_makes_the_branch_active(self) -> None:
         cases = (
             (pull("OPEN"),),
@@ -209,7 +210,7 @@ def in_main(sha: str) -> bool:
 UPDATED = history((TIP, BASE), (UPDATE, TIP, MAIN_NOW))
 
 
-class UpdatedPullRequestTests(unittest.TestCase):
+class UpdatedPullRequestTests(GitTestCase):
     def state(self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields) -> str:
         run = router(listing(dict(pull(state, head, **pull_fields), number=7)), commits)
         self.runner = run
@@ -324,7 +325,7 @@ def commits_call(number: int) -> list[str]:
     return ["api", "--paginate", "--slurp", f"repos/owner/repo/pulls/{number}/commits?per_page=100"]
 
 
-class ClassifySequenceTests(unittest.TestCase):
+class ClassifySequenceTests(GitTestCase):
     """classify called directly: each outcome with the exact gh calls it made, and each refusal's exact message."""
 
     def outcome(
@@ -472,7 +473,7 @@ class ClassifySequenceTests(unittest.TestCase):
         )
 
 
-class GitFixture(unittest.TestCase):
+class GitFixture(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="pr-status.")
         root = Path(self._temporary.name)

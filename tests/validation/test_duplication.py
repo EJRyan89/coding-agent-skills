@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from duplication import duplicated_definition_problems, skill_core_copy_problems, skill_core_import_problems
+from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 
 
-class DuplicatedDefinitionPolicy(unittest.TestCase):
+class DuplicatedDefinitionPolicy(GitTestCase):
     SHARED = "def shared(value):\n    total = value + 1\n    total *= 2\n    return total\n"
 
     DOCUMENTED = SHARED.replace(":\n", ':\n    """The same body, documented."""\n', 1)
@@ -164,7 +166,7 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
         )
 
 
-class DuplicatedConstantPolicy(unittest.TestCase):
+class DuplicatedConstantPolicy(GitTestCase):
     FIX = " hold the same value; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
 
     def problems(self, files: Mapping[str, str]) -> list[str]:
@@ -290,7 +292,7 @@ class DuplicatedConstantPolicy(unittest.TestCase):
         )
 
 
-class SkillCoreHomePolicy(unittest.TestCase):
+class SkillCoreHomePolicy(GitTestCase):
     STATEMENT = 'sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))\n'
 
     HEADER = "import sys\nfrom pathlib import Path\n\n"

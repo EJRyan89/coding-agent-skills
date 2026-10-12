@@ -17,10 +17,12 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_guard
 import review_runtime
 import review_source
+from git_test_base import GitTestCase
 from review_analyzers import reads_settings
 from review_guard import read_log
 from review_runtime import (
@@ -84,7 +86,7 @@ def build_checkout(checkout: Path) -> str:
     return git(checkout, "rev-parse", "HEAD")
 
 
-class LazySnapshotFixture(unittest.TestCase):
+class LazySnapshotFixture(GitTestCase):
     # The repository's configured snapshot_exclude globs.
     EXCLUDE: tuple[str, ...] = ()
 
@@ -621,7 +623,7 @@ class ConfiguredExclusionTests(LazySnapshotFixture):
             self.assertEqual(["src/changed.py"], review_runtime.unavailable_sources(diff, snapshot))
 
 
-class GlobMatcherTests(unittest.TestCase):
+class GlobMatcherTests(GitTestCase):
     def test_each_pattern_matches_whole_paths_by_segment_ignoring_case(self) -> None:
         for pattern, path, expected in (
             ("*.resx", "Strings.resx", True),

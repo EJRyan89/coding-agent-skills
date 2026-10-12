@@ -14,12 +14,15 @@ from pathlib import Path
 from typing import ClassVar
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from job_selection import name_patterns
 from suite_discovery import (
     MAXIMUM_SHARDS,
     SHARD_RUNNER,
     TESTS_PER_SHARD,
+    git_isolation_problems,
     recorded_cost_problems,
     recorded_shard_problems,
     regression_suites,
@@ -33,7 +36,7 @@ from suite_discovery import (
 from validation_support import TEST_NAME_PATTERNS, is_test_script, write_fixture_tree
 
 
-class SuiteDiscoveryFixtures(unittest.TestCase):
+class SuiteDiscoveryFixtures(GitTestCase):
     def test_entry_point_policy_requires_a_last_main_block_that_calls_unittest_main(self) -> None:
         main = 'if __name__ == "__main__":\n'
         case = "import unittest\n\n\nclass Case(unittest.TestCase):\n    def test_it(self):\n        pass\n\n\n"
@@ -282,7 +285,7 @@ class SuiteDiscoveryFixtures(unittest.TestCase):
                 self.assertFalse(is_test_script(Path(name)))
 
 
-class SkillSuiteFixtures(unittest.TestCase):
+class SkillSuiteFixtures(GitTestCase):
     FILES: ClassVar[dict[str, str]] = {
         "tests/test_top.py": "",
         "tests/deployer/harness.py": "",
@@ -332,7 +335,7 @@ class SkillSuiteFixtures(unittest.TestCase):
             )
 
 
-class TestedModulePolicy(unittest.TestCase):
+class TestedModulePolicy(GitTestCase):
     def problems(self, files: Mapping[str, str]) -> list[str]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -390,6 +393,82 @@ class TestedModulePolicy(unittest.TestCase):
         self.assertEqual(
             [], self.problems({"deployer/__init__.py": "", "tools/__init__.py": "", "skills/s/scripts/__init__.py": ""})
         )
+
+
+PLAIN_CASE = "class Case(unittest.TestCase):\n    def test_it(self):\n        pass\n"
+GIT_SUITE_FILES = {
+    "pyproject.toml": '[tool.mypy]\nmypy_path = ["$MYPY_CONFIG_FILE_DIR/lib"]\n',
+    "lib/runner.py": "import subprocess\n\n\ndef run():\n    subprocess.run(['git', 'status'])\n",
+    "lib/finder.py": "def find(which):\n    return which('git')\n",
+    "lib/git_client.py": "class GitClient:\n    pass\n",
+    "lib/client_user.py": "from git_client import GitClient\n\nCLIENT = GitClient()\n",
+    "lib/quiet.py": "URL = 'https://github.com/owner/repo'\nCOMMAND = ['gh', 'git']\n",
+    "pkg/__init__.py": "",
+    "pkg/helper.py": "from . import located\n",
+    "pkg/located.py": "import shutil\n\nGIT = shutil.which('git')\n",
+    "tests/harness.py": (
+        "import subprocess\nimport unittest\n\nfrom git_test_base import GitTestCase\n\n\n"
+        "class Isolated(GitTestCase):\n    pass\n\n\nclass Plain(unittest.TestCase):\n    pass\n\n\n"
+        "def git(*arguments):\n    subprocess.run(['git', *arguments])\n"
+    ),
+    "tests/test_direct_plain.py": f"import subprocess\nimport unittest\n\nCOMMAND = ['git', 'init']\n\n\n{PLAIN_CASE}",
+    "tests/test_direct_isolated.py": (
+        "import subprocess\n\nfrom git_test_base import GitTestCase as Base\n\n\nclass Local(Base):\n    pass\n\n\n"
+        "class Case(Local):\n    def test_it(self):\n        subprocess.run(['git', 'init'])\n\n\n"
+        "class Helper:\n    pass\n"
+    ),
+    "tests/test_through_runner.py": f"import unittest\n\nimport runner\n\n\n{PLAIN_CASE}",
+    "tests/test_through_harness_plain.py": (
+        "from harness import Plain, git\n\n\nclass Case(Plain):\n    def test_it(self):\n        git('init')\n"
+    ),
+    "tests/test_through_harness_isolated.py": "import harness\n\n\nclass Case(harness.Isolated):\n    pass\n",
+    "tests/test_through_package.py": f"import unittest\n\nfrom pkg import helper\n\n\n{PLAIN_CASE}",
+    "tests/test_through_lookup.py": f"import unittest\n\nimport finder\n\n\n{PLAIN_CASE}",
+    "tests/test_through_client.py": f"import unittest\n\nimport client_user\n\n\n{PLAIN_CASE}",
+    "tests/test_no_git.py": f"import unittest\n\nimport quiet\n\nTEXT = 'git is named here'\n\n\n{PLAIN_CASE}",
+    "tests/test_async.py": (
+        "import unittest\n\nimport runner\n\n\nclass Case(unittest.IsolatedAsyncioTestCase):\n    pass\n"
+    ),
+    "tests/test_class_fixture.py": (
+        "import runner\nfrom git_test_base import GitTestCase\n\n\nclass Late(GitTestCase):\n    @classmethod\n"
+        "    def setUpClass(cls):\n        cls.value = 1\n        super().setUpClass()\n\n\n"
+        'class First(GitTestCase):\n    @classmethod\n    def setUpClass(cls):\n        """Isolated first."""\n'
+        "        super().setUpClass()\n        cls.value = 1\n"
+    ),
+    "tests/test_module_plain.py": (
+        "import os\n\nimport runner\nfrom git_test_base import GitTestCase\n\n\n"
+        "def setUpModule():\n    os.environ['GIT_CONFIG_NOSYSTEM'] = '1'\n\n\nclass Case(GitTestCase):\n    pass\n"
+    ),
+    "tests/test_module_isolated.py": (
+        'import git_test_base\nimport runner\n\n\ndef setUpModule():\n    """Fixtures."""\n'
+        "    git_test_base.isolate_module({'init.defaultBranch': 'main'})\n\n\n"
+        "class Case(git_test_base.GitTestCase):\n    pass\n"
+    ),
+}
+
+
+class GitIsolationPolicy(GitTestCase):
+    def test_a_suite_that_runs_git_must_isolate_every_test_class_class_fixture_and_module_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(root, GIT_SUITE_FILES)
+            plain = "does not inherit git_test_base.GitTestCase, and the suite runs git"
+            self.assertEqual(
+                [
+                    f"tests/test_async.py:6 Case {plain} (through lib/runner.py)",
+                    "tests/test_class_fixture.py:7 Late.setUpClass does not start with super().setUpClass(), which "
+                    "isolates its git, and the suite runs git (through lib/runner.py)",
+                    f"tests/test_direct_plain.py:7 Case {plain} (itself)",
+                    "tests/test_module_plain.py:7 runs git (through lib/runner.py), so its setUpModule starts with "
+                    "git_test_base.isolate_module()",
+                    f"tests/test_through_client.py:6 Case {plain} (through lib/client_user.py)",
+                    f"tests/test_through_harness_plain.py:4 Case {plain} (through tests/harness.py)",
+                    f"tests/test_through_lookup.py:6 Case {plain} (through lib/finder.py)",
+                    f"tests/test_through_package.py:6 Case {plain} (through pkg/located.py)",
+                    f"tests/test_through_runner.py:6 Case {plain} (through lib/runner.py)",
+                ],
+                git_isolation_problems(root),
+            )
 
 
 if __name__ == "__main__":

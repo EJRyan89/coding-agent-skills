@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from git_client import GitResult
+from git_test_base import GitTestCase
 from review_reviewers import (
     entrypoint_manifest,
     frontmatter_value,
@@ -68,7 +69,7 @@ class FakeGit:
         return GitResult(128, "", f"fatal: unexpected {command}")
 
 
-class InspectionTests(unittest.TestCase):
+class InspectionTests(GitTestCase):
     def test_tool_lists_in_every_frontmatter_form(self) -> None:
         for frontmatter, expected in (
             ("tools: Read, Grep, Glob", ["Read", "Grep", "Glob"]),
@@ -367,7 +368,7 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual("Adapter manifest id is invalid", str(raised.exception))
 
 
-class RepositoryTests(unittest.TestCase):
+class RepositoryTests(GitTestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()

@@ -15,7 +15,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from skill_scripts import (
     CLIENT_CLASSES,
     COMMAND_RUNNERS,
@@ -39,7 +41,7 @@ def mark_skills(root: Path) -> Path:
     return root
 
 
-class SkillScriptsFixtures(unittest.TestCase):
+class SkillScriptsFixtures(GitTestCase):
     def test_process_detection_uses_every_command_runner_and_client_with_dynamic_arguments(self) -> None:
         for callable_name in (*COMMAND_RUNNERS, *CLIENT_CLASSES):
             with self.subTest(callable_name=callable_name):

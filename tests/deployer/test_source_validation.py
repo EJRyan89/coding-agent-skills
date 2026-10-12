@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import DeployerTestCase, Result, forward, tree_state
 
 from deployer import config, names, source
@@ -502,18 +505,7 @@ class LinkedWorktreeTestCase(DeployerTestCase):
     """A source checkout made a git repository with a linked worktree, for the classes below."""
 
     def git(self, *arguments: str) -> None:
-        empty = self.root / "empty.gitconfig"
-        empty.touch()
-        environment = {
-            **os.environ,
-            "GIT_CONFIG_GLOBAL": str(empty),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "Test",
-            "GIT_AUTHOR_EMAIL": "test@example.invalid",
-            "GIT_COMMITTER_NAME": "Test",
-            "GIT_COMMITTER_EMAIL": "test@example.invalid",
-        }
-        subprocess.run(["git", "-C", str(self.source), *arguments], check=True, capture_output=True, env=environment)
+        subprocess.run(["git", "-C", str(self.source), *arguments], check=True, capture_output=True)
 
     def make_linked_worktree(self) -> Path:
         self.make_source_json()
@@ -877,7 +869,7 @@ class CanaryHomeTests(LinkedWorktreeTestCase):
         self.assert_untouched(result, "is a linked git worktree")
 
 
-class DerivedAllowlistTests(unittest.TestCase):
+class DerivedAllowlistTests(GitTestCase):
     def test_derived_paths_admit_letters_of_any_script_and_path_punctuation_only(self) -> None:
         source = Path("C:/src")
         for name in ("Jos\u00e9", "\u0141ukasz M\u00fcller", "\u7530\u4e2d", "first.last@corp", "a_b-c (2)"):
