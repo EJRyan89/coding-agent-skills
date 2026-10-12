@@ -17,6 +17,376 @@ An entry is a `###` heading saying what changed, followed by these fields:
 
 A pull request whose change no user meets writes `None` under its `## Upgrade note`.
 
+## v0.6.0
+
+Level: minor.
+
+### The Copilot CLI host finds the program past an npm shim on PATH
+
+- Level: patch, a defect fix with no contract change.
+- Contract: none
+- User action: none
+- Pull request: #620
+
+### A deployment without --at refuses to replace a pinned deployment until it passes --unpin
+
+- Level: minor. A new refusal and a new `--unpin` option on `deploy.py`: over a deployment made with `deploy.py --at`, a deployment without `--at` stops before it changes anything unless it passes `--unpin`.
+- Contract: none
+- User action: none, unless the installation was deployed with `deploy.py --at`; to move it back to the clone's `HEAD`, run `python deploy.py --all --unpin` from the clone, or start `update-coding-agent-skills` with `--unpin` when it stopped with `PINNED`.
+- Pull request: #622
+
+### A skill the deployer leaves in place keeps its runtime adapter
+
+- Level: patch. A fix: a preserved skill, and a skill kept because a preserved skill needs it, keep their runtime adapters under `~/.agents/skills` instead of losing them as obsolete.
+- Contract: none
+- User action: a user whose kept or preserved skill lost its adapter in an earlier deployment redeploys that skill once to restore it.
+- Pull request: #621
+
+### The skill evaluation judges reviewers on exact model IDs
+
+- Level: patch, a correction to a manual development gate that ships nothing.
+- Contract: none.
+- User action: none.
+- Pull request: #605
+
+### The design document records the port's platform decisions and the repository's direction
+
+- Level: patch. Documentation only: the design document gains decisions and a direction section; nothing changes for an installation.
+- Contract: none
+- User action: none
+- Pull request: #603
+
+### Condition scripts and Copilot CLI are bounded in stdin, output, and descendants
+
+- Level: patch. A fix: a specialists manifest's condition script reads no stdin and runs with prompts turned off, a condition's failure detail keeps at most 64 KiB of each stream and Copilot's diagnostic at most 1 MiB, each naming what it cut, and every process either starts is ended with it on exit or timeout, so a timeout no longer waits on a process holding its output.
+- Contract: none
+- User action: none
+- Pull request: #601
+
+### Pull request titles carry a type, and validation is CI's job
+
+- Level: patch. A contributor workflow change: validation holds pull request titles to a typed prefix, and local runs are targeted while CI runs the full suite; nothing changes for an installation.
+- Contract: none
+- User action: none
+- Pull request: #602
+
+### The merged-pull watermark is the UTC date
+
+- Level: patch. A fix: the batch date and every merge and update date the watermark is compared with are UTC dates, so a pull request merged later on the UTC day of a batch run that found nothing pending stays eligible.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none; east of UTC a pull request merged late in the UTC day after an earlier batch run may have been skipped, and `/review-prs --pull <owner/repo#number>` reviews it.
+- Pull request: #596
+
+### update-coding-agent-skills stops at a deployment pinned with deploy.py --at until you pass --unpin
+
+- Level: minor. A new status line, `PINNED <ref> <commit>`, and a new argument, `--unpin`, for `update-coding-agent-skills`.
+- Contract: the `update-coding-agent-skills` status lines and arguments
+- User action: none, unless the installation was deployed with `deploy.py --at`; then the update stops with `PINNED <ref> <commit>` and changes nothing, and to move back to `main` start it again with `--unpin` or run `python deploy.py --all` from the clone.
+- Pull request: #600
+
+### The deployer needs Python 3.11.4 or newer
+
+- Level: minor. A raised tool floor, which would be major after 1.0.0: `deploy.py` refuses a Python older than 3.11.4, the first 3.11 release whose `tarfile` has the extraction filters `deploy.py --at` uses, and `python deploy.py check` reports one as `OUTDATED`.
+- Contract: `deployer/tools.py`
+- User action: none on Python 3.11.4 or newer; otherwise update Python before the next deployment, as "Installing the tools" in docs/installation.md says.
+- Pull request: #598
+
+### deploy.py --at refuses a link or an unsafe member by name
+
+- Level: patch. A fix: a commit whose tree holds a symbolic link, a hard link, or a special file, or a member the extraction filter refuses, is refused with an `ERROR:` line naming the member and why, before anything is deployed, instead of ending in a traceback.
+- Contract: none
+- User action: none
+- Pull request: #598
+
+### The Copilot CLI review host reads its prompt on standard input and refuses an npm shim
+
+- Level: patch. A fix: the Copilot CLI host gives Copilot its prompt on standard input instead of as the `--prompt` argument, and refuses a `copilot.cmd`, `.bat`, or `.ps1` found on `PATH`, falling back to WinGet's `copilot.exe` or failing with an error that names the path and says to install the program from WinGet or the GitHub release.
+- Contract: none
+- User action: update and redeploy so the host picks up the change; a user whose Copilot CLI came from npm installs it from WinGet (`winget install GitHub.Copilot`) or the GitHub release before the next Copilot CLI review.
+- Pull request: #599
+
+### A boolean, decimal, or container schema version is refused in review-insights and repo-cleanup
+
+- Level: patch, because the readers now enforce the documented integer versions; no format or version changes.
+- Contract: none.
+- User action: none.
+- Pull request: #597
+
+### An atomic code-review write closes its descriptor once when it fails
+
+- Level: patch. A fix: a code-review state or record write that fails while writing, syncing, or replacing no longer closes its temporary file's descriptor twice, which could close an unrelated file another thread had just opened.
+- Contract: none
+- User action: none
+- Pull request: #595
+
+### Generated release sections state their overall upgrade level
+
+- Level: minor. Additive output: the release-note tool writes the largest documented entry level below the version heading, or an explicit no-entry summary, and refuses unreadable entry levels before writing.
+- Contract: none.
+- User action: none. Published sections stay unchanged; entry explanations and migration actions remain authoritative.
+- Pull request: #558
+
+### Invalid pending merge dates report the standard review-operation error
+
+- Level: patch. A fix: `advance` reports `FAILED Pull <number> has invalid mergedAt` for malformed pending merge dates instead of an uncaught date-parser error, leaving state unchanged.
+- Contract: none.
+- User action: none.
+- Pull request: #556
+
+### Shared reviewers are told the existing repeat dispositions and permitted read roots accurately
+
+- Level: patch. Correct contradictory guidance without changing accepted results or the enforced boundary.
+- Contract: none.
+- User action: none.
+- Pull request: #545
+
+### PDF review requires a supported, identifiable Xpdf or Poppler parser at runtime
+
+- Level: minor before 1.0.0: raised tool floors and enforced extraction refusals would be major after 1.0.0; `check` also adds the `UNUSABLE` report group.
+- Contract: `deployer/tools.py` (the provider-specific tool requirements), `skills/skill-core/scripts/pdf_tool.py` (Xpdf 4.06 and Poppler 26.10.0 maintained-release floors), and `docs/code-review-operations-contract.md` (runtime PDF probe/refusal guarantees; existing snapshot and record formats remain unchanged).
+- User action: for PDF review, install or upgrade a trusted Xpdf or Poppler command-line parser to its provider's floor and put that directory before any older Git-bundled parser on PATH. Run `python deploy.py check` in the reviewing environment. No action is needed for reviews without PDFs; refused PDFs are explicit coverage gaps, never silent skips. Version gating is not sandboxing or a guarantee against native parser exploits. No package manager on Windows currently delivers a parser that meets either floor (Poppler from WinGet is 25.07.0 against 26.10.0, and Git's bundled Xpdf is 4.0 against 4.06), so PDF review needs Xpdf installed from its publisher and placed ahead of Git's `bin` directory on PATH until packages catch up.
+- Pull request: #542
+
+### Evaluation guidance follows the evaluator's authoritative options
+
+- Level: patch. A guidance fix: the repository evaluation skill uses a generic model-name hint, refers to the evaluator's help for accepted names and defaults, and describes concurrency and per-session timeouts rather than a dated measurement.
+- Contract: none.
+- User action: none.
+- Pull request: #541
+
+### New review reports display supplied prose literally
+
+- Level: patch, because this fixes report rendering without changing record formats or review decisions.
+- Contract: none.
+- User action: update the deployed skills to use the literal projection for newly written reports. Existing reports are left unchanged; supplied Markdown/HTML now displays as text rather than formatting or active content.
+- Pull request: #538
+
+### Copilot entrypoint reviewers share the prepared input and result rules
+
+- Level: patch, because the host now follows the existing reviewer protocol without changing arguments, configuration, or stored formats.
+- Contract: none.
+- User action: update and redeploy the code-review operations bundle to pick up the host prompt; no configuration migration is needed.
+- Pull request: #537
+
+### Nested run-like source directories remain readable within the claimed review
+
+- Level: patch. Fix a legitimate source-read denial by keeping the claimed review root authoritative rather than interpreting source directory names as run metadata.
+- Contract: none
+- User action: none
+- Pull request: #536
+
+### Guarded command values refuse smart double quotes
+
+- Level: patch. Tighten the existing conservative quoted-value rule to reject PowerShell smart double-quote delimiters without changing the Bash-only guarded tool surface or the existing terminal-backslash rejection.
+- Contract: none
+- User action: none, unless manually supplying a source path or pattern containing U+201C, U+201D, or U+201E; those command values are refused.
+- Pull request: #536
+
+### Review trust documentation distinguishes author bytes from trusted infrastructure and compatibility from parser safety
+
+- Level: patch. Correct the documentation of existing fixture, PDF extraction, and release-note approval boundaries without changing behavior or requirements.
+- Contract: `docs/code-review-operations-contract.md` (trust-model prose only; no format table changes).
+- User action: none. PDF parser policy changes remain deferred pending verified provider and version evidence.
+- Pull request: #535
+
+### Malformed review configuration and reviewer manifests fail without tracebacks
+
+- Level: patch, because invalid inputs now follow the existing error contract without changing valid formats.
+- Contract: none.
+- User action: none; correct malformed fields to the documented types before retrying.
+- Pull request: #534
+
+### Legacy reviews with missing or non-string verdicts are offered for an initial review instead of crashing
+
+- Level: minor, because requiring a string narrows a durable-data contract before 1.0.0; valid string legacy indexes remain readable.
+- Contract: `docs/code-review-operations-contract.md`.
+- User action: none for valid migrated reviews. For an affected pull request, run `review-prs --pull owner/repo#N` to create an initial structured review rather than `--re-review`; no stored index or report is rewritten.
+- Pull request: #533
+
+### Repository audit brief-write failures report FAILED instead of tracebacks
+
+- Level: patch. A fix to the documented expected-error behavior for temporary-directory allocation and brief writes.
+- Contract: none.
+- User action: none. If a brief write fails, its FAILED reason names the path; remove the retained temporary directory after diagnosing the failure.
+- Pull request: #532
+
+### Coverage notes name repository-configured snapshot exclusions
+
+- Level: patch. A report-text fix: **Not reviewed in full** now names the repository's `snapshot_exclude` alongside size, safety, and document-extraction causes; coverage and verdict behavior are unchanged.
+- Contract: none
+- User action: none
+- Pull request: #531
+
+### One prepared pull's dispatch-write failure no longer hides the others
+
+- Level: patch, because this fixes failure isolation and cleanup without changing invocation or stored formats.
+- Contract: none; restores the documented `FAILED <selector> <reason>` and independent-pull behavior.
+- User action: none. When cleanup also fails, inspect or delete the unpublished run directory named in its failure.
+- Pull request: #530
+
+### The hub guard accepts attached upstream values without treating them as rename flags
+
+- Level: patch. A fix: `git branch -uorigin/main` is allowed like `-u origin/main`; value boundaries are respected while actual `-m`, `-M`, and `--move` forms remain refused.
+- Contract: none.
+- User action: none.
+- Pull request: #529
+
+### Invalid include names and refused canary-home values exit as usage errors
+
+- Level: patch. A fix to the documented CLI behavior: these invalid values now exit 2 with the standard `--help` diagnostic, before claiming the home or recovering a pending deployment.
+- Contract: none.
+- User action: none; scripts distinguishing exit statuses should treat these refusals as command-line errors rather than deployment failures.
+- Pull request: #528
+
+### The branch-protection check distinguishes missing issue configuration from read failures and accepts YAML comments
+
+- Level: patch. Fixes incorrect exit codes for absent issue-template configuration and false drift reports for a whitespace-separated comment after `blank_issues_enabled: false`.
+- Contract: none
+- User action: none
+- Pull request: #527
+
+### Concurrent flag resolution preserves the first resolution and reports already resolved
+
+- Level: patch. Fixes `flag-review-finding resolve` reporting `FAILED` when another caller resolves the flag first; it now prints `ALREADY_RESOLVED` and preserves the earlier resolution and timestamp. Insight decisions likewise report competing resolutions without claiming them in their histories. A blank resolution is now a validation failure for an already-resolved flag too: where v0.5.0 printed `ALREADY_RESOLVED` and exited 0, it now prints `FAILED Resolution is required` and exits 1, as it already did for an open flag.
+- Contract: none.
+- User action: none.
+- Pull request: #526
+
+### Review artifact hashes must be full SHA-256 digests
+
+- Level: patch, fixing enforcement of the existing documented rule without changing a format.
+- Contract: none.
+- User action: None for records generated by the pipeline, which already writes full SHA-256 digests. Hand-built records or prior-review fixtures with invalid artifact hashes must supply the correct payload/report SHA-256 digests rather than commit hashes.
+- Pull request: #525
+
+### Invalid force-item names are refused before deployment recovery
+
+- Level: patch. Fix the documented refusal behavior: an unknown `--force-item` exits 2 before the lock, startup recovery, canary-home claim, or selection prompt, with accepted names and the help hint, rather than reporting a failed deployment. Known names still have to belong to the selected run.
+- Contract: none.
+- User action: none.
+- Pull request: #524
+
+### Malformed review versions and repository paths are refused
+
+- Level: patch, because validators now enforce the existing documented integer and repository-relative path contracts; no supported format or version changes.
+- Contract: none.
+- User action: none for valid suite-generated or hand-written files. If a hand-written file used `true` or a decimal version, replace it with its documented integer. If a repository-relative field starts with a Windows drive, replace it with the intended repository-relative POSIX path before retrying. There is no automatic coercion or migration of malformed data.
+- Pull request: #523
+
+### Memory indexes preserve entries whose Markdown targets contain parentheses
+
+- Level: patch, because this repairs existing link preservation and makes generated targets round-trip without changing commands or report formats.
+- Contract: none.
+- User action: none.
+- Pull request: #522
+
+### Repository-code declarations use the same process reader as command validation
+
+- Level: patch. A validation fix: `RUNS_REPOSITORY_CODE` is no longer rejected for supported `os`, `asyncio`, or skill-core client calls. Unused process imports no longer keep a stale declaration current, and unresolved callable aliases or unreadable f-string command prefixes fail explicitly.
+- Contract: none.
+- User action: none for existing shipped skills; contributors should remove stale declarations only when the script starts no process, and retain declarations for scripts that execute target-repository code.
+- Pull request: #521
+
+### Document evaluation base commits do not run user Git hooks
+
+- Level: patch. A fix: throwaway document-base setup overrides global and template-installed hooks with an empty temporary hook directory; signing remains disabled.
+- Contract: none
+- User action: none
+- Pull request: #520
+
+### Interrupting recovery of a failed deployment releases the lock and keeps the journal
+
+- Level: patch. A fix to documented behavior: Ctrl+C during immediate rollback or committed-run recovery exits 130 without a traceback unless debug output was requested; unexpected recovery exceptions are reported and exit 1. Both release the lock and retain the journal for a safe retry.
+- Contract: none.
+- User action: none; rerun the deployment to finish recovery.
+- Pull request: #519
+
+### Case-variant memory indexes are no longer audited as memories or added to themselves
+
+- Level: patch. A fix: Windows stores whose index is named `memory.md` or `Memory.md` now exclude that file from memory enumeration consistently in audit and reindex.
+- Contract: none
+- User action: none
+- Pull request: #518
+
+### Contributor validation reads f-string commands instead of ignoring them
+
+- Level: patch. Fixes the declared-tool and shared-client command-policy bypass for Python f-strings.
+- Contract: none.
+- User action: contributors whose scripts fail the corrected checks must keep the program name literal, declare nonstandard tools, and run Git/GitHub commands through skill-core's shared clients. No action for installed skills.
+- Pull request: #517
+
+### Repeated evaluation scenario names count once
+
+- Level: patch. A fix: repeated `--scenario` options now select each scenario once in first-occurrence order, preventing duplicate records output and temporary-directory collisions during model runs.
+- Contract: none
+- User action: none
+- Pull request: #516
+
+### Memory audits recognize alternative link spellings consistently with index rebuilding
+
+- Level: patch. A fix: `./rule.md` and Windows case-only `RULE.md` links identify `rule.md` in both audit and reindex, instead of causing false unindexed findings or missed duplicates. Reports keep the original target spelling.
+- Contract: none
+- User action: none
+- Pull request: #515
+
+### Validation resolves filesystem and command calls through simple assignment aliases
+
+- Level: patch. Fixes validation missing calls such as `writer = open; writer(path, "w")` and `runner = subprocess.run; runner("git status")`, and reports ambiguous callable aliases instead of guessing.
+- Contract: none.
+- User action: none for installed skills. Contributors whose validation reports a callable alias must use a single resolvable binding and route writes or commands through the existing approved helpers.
+- Pull request: #513
+
+### Closed specialist conditions no longer reopen intentionally skipped review scope
+
+- Level: patch. Fixes generic fallback and ignored-file coverage to honor the documented specialist matching behavior.
+- Contract: `docs/code-review-operations-contract.md`
+- User action: none.
+- Pull request: #514
+
+### Preserved skills retain their deployed skill dependencies
+
+- Level: minor. Before 1.0.0 this carries a change that would be major: the ownership manifest advances to schema 8, which older deployers refuse. Supported schema 6/7 manifests migrate automatically at the atomic commit; recorded `skill_deps` retain the transitive closure, shared assets, and agents.
+- Contract: `deployer/manifest.py`
+- User action: none for an ordinary update. Use the updated deployer after migration. Missing historical edges conservatively keep other same-source skills until an unmodified or forced selected deployment refreshes exact edges. Redeploy the source if an earlier deployment already removed dependency files; migration does not recreate them.
+- Pull request: #512
+
+### PowerShell syntax validation includes uppercase and mixed-case extensions
+
+- Level: patch. A fix: deployment now parses rendered `.PS1` and `.Ps1` files as it already parsed `.ps1`, rejecting malformed scripts before installation.
+- Contract: none
+- User action: none for valid sources; if deployment now reports a syntax error in a previously unchecked file, fix that script in its source and redeploy.
+- Pull request: #511
+
+### Community guidance is available locally
+
+- Level: patch, because the change clarifies documentation and makes the existing default policy available in clones.
+- Contract: none.
+- User action: none.
+- Pull request: #509
+
+### `deploy.py --at <ref>` deploys a release or earlier commit without moving the clone
+
+- Level: minor. A new deploy option.
+- Contract: none
+- User action: none; to step back from a regression, run `python deploy.py --all --at <tag-or-commit>` from the clone on `main`, which deploys that commit's skills with the current deployer and leaves the clone's `HEAD` where it is (`check` names the pin). The pin stays until you lift it: a deployment without `--at` refuses to replace it, and `update-coding-agent-skills` stops with `PINNED` and changes nothing, until either is given `--unpin` (`python deploy.py --all --unpin` from the clone, or the update started again with `--unpin`), which replaces the pinned deployment and reports `Replaced the deployment pinned with --at <ref>`, as the entries for #600 and #622 say.
+- Pull request: #507
+
+### The README names the project Coding Agent Skills and states the platform without a version
+
+- Level: patch. Documentation only: the README's title and its platform sentence change wording, and no behavior changes.
+- Contract: none
+- User action: none
+- Pull request: #503
+
+### The code-review contract's failure line, inline seal, manifest rule, and coverage row match the code
+
+- Level: patch. A documentation fix that states what the code already does; no behavior changes.
+- Contract: `docs/code-review-operations-contract.md` now says a `check` or `finalize` failure names its run directory (threat model), the inline seal also skips a fixture's throwaway repository and `recorded.json` (inline reviewer row), a reviewer manifest names no file twice in a list and gives no file two roles (reviewer manifests), the suite profile catalogue is named without its members, and `coverage.unavailable_sources` also holds changed documents whose text extraction was refused (request coverage row).
+- User action: none
+- Pull request: #504
+
+**Deferred.** The v0.6.0 release audit deferred its drift and polish findings to v0.7.0: #609, #610, #611, #612, #613, #614, #615, #616, #617, #618, and #619, and the comments it added to #567, #576, and #579.
+
 ## v0.5.0
 
 ### A status override of `incomplete` is refused as a computed state
