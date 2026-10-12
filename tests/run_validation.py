@@ -1,6 +1,7 @@
 """Run the complete repository validation suite.
 
-Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE] [--shard INDEX/COUNT]
+Usage: python -B tests/run_validation.py [-k PATTERN ...] [-v] [--full] [--pr-body FILE] [--pr-title FILE]
+                                        [--shard INDEX/COUNT]
 
 It runs every regression suite under tests/ and each skill's scripts/ in one pool of worker processes, largest first,
 and the policy checks in this process while the pool works, printing their report when they finish. The policies live
@@ -16,7 +17,9 @@ anything else, or a change it cannot determine, runs everything. --full always r
 
 --pr-body names a file holding the pull request's body, whose `## Upgrade note` the upgrade-notes check reads beside
 the notes merged into origin/main since the last tag; CI passes the body this way. Without it, the check reads the
-notes in the commit messages since that tag on HEAD, the branch's own included.
+notes in the commit messages since that tag on HEAD, the branch's own included. --pr-title names a file holding the
+pull request's title, which the title check holds to the typed prefix; CI passes it the same way, and without it the
+check passes.
 
 --shard 2/4 runs the second of four legs, as CI's runners do: once -k or the documentation path has selected the
 policy checks and suite jobs, tests/validation/job_selection.py deals them across the legs the same way on every leg,
@@ -45,6 +48,7 @@ import fsops_platform
 import job_selection
 import kinds_table
 import markdown_links
+import pull_request_title
 import python_checks
 import repository_hygiene
 import shell_targets
@@ -80,6 +84,7 @@ POLICY_MODULES = (
     job_selection,
     kinds_table,
     markdown_links,
+    pull_request_title,
     python_checks,
     repository_hygiene,
     shell_targets,
@@ -185,6 +190,29 @@ class PullRequestBodyOption(unittest.TestCase):
         self.assertIn(f"--pr-body is not a file: {missing}", error.getvalue())
         versions.assert_not_called()
 
+    def test_a_title_that_is_not_a_file_is_a_usage_error_before_any_check_runs(self) -> None:
+        missing = REPOSITORY_ROOT / "tests" / "no such title.txt"
+        with (
+            mock.patch.object(pull_request_title, "pull_request_title", None),
+            mock.patch(f"{__name__}.tool_versions") as versions,
+            contextlib.redirect_stderr(io.StringIO()) as error,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            main(["--pr-title", str(missing)])
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn(f"--pr-title is not a file: {missing}", error.getvalue())
+        versions.assert_not_called()
+
+    def test_the_title_reaches_the_title_check(self) -> None:
+        title = REPOSITORY_ROOT / "tests" / "run_validation.py"
+        with (
+            mock.patch.object(pull_request_title, "pull_request_title", None),
+            mock.patch(f"{__name__}.report_prerequisite_problems", return_value=True),
+            mock.patch(f"{__name__}.tool_versions"),
+        ):
+            self.assertEqual(2, main(["--pr-title", str(title)]))
+            self.assertEqual(title, pull_request_title.pull_request_title)
+
 
 class ShardOption(unittest.TestCase):
     def test_a_shard_is_an_index_from_one_up_to_its_count(self) -> None:
@@ -256,6 +284,12 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
         help="a file holding the pull request body, whose ## Upgrade note the upgrade-notes check reads",
     )
     parser.add_argument(
+        "--pr-title",
+        type=Path,
+        metavar="FILE",
+        help="a file holding the pull request title, which the title check holds to the typed prefix",
+    )
+    parser.add_argument(
         "--shard",
         type=shard_option,
         metavar="INDEX/COUNT",
@@ -264,12 +298,15 @@ def parse_arguments(argv: list[str] | None) -> argparse.Namespace:
     arguments = parser.parse_args(argv)
     if arguments.pr_body is not None and not arguments.pr_body.is_file():
         parser.error(f"--pr-body is not a file: {arguments.pr_body}")
+    if arguments.pr_title is not None and not arguments.pr_title.is_file():
+        parser.error(f"--pr-title is not a file: {arguments.pr_title}")
     return arguments
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = parse_arguments(argv)
     upgrade_notes.pull_request_body = arguments.pr_body
+    pull_request_title.pull_request_title = arguments.pr_title
     versions = tool_versions()
     if report_prerequisite_problems(versions):
         return 2
