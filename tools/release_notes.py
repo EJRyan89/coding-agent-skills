@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from markdown_sections import markdown_section
 from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 
@@ -244,5 +244,4 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
 
 if __name__ == "__main__":
     # The section is Markdown the repository keeps with LF endings, so a redirected run writes LF too.
-    use_utf8_output(errors="backslashreplace", newline="\n")
-    sys.exit(main(sys.argv[1:]))
+    run_main(lambda: main(sys.argv[1:]), errors="backslashreplace", newline="\n")

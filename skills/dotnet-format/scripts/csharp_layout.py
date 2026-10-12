@@ -40,7 +40,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from console import use_utf8_output
+from console import run_main
 from dotnet_format_targets import read_file_list, read_text, same_path, solution_projects
 
 LINE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
@@ -779,5 +779,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="replace")
-    sys.exit(main())
+    run_main(main, errors="replace")

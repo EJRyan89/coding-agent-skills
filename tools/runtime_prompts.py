@@ -33,7 +33,7 @@ import review_document
 import review_hosts
 import review_pipeline
 import review_synthesis
-from console import use_utf8_output
+from console import run_main
 from git_client import GitClient
 
 from tools import skill_evals
@@ -249,5 +249,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    sys.exit(main())
+    run_main(main, errors="backslashreplace")

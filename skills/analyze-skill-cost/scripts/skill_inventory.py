@@ -82,7 +82,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import frontmatter
-from console import use_utf8_output
+from console import run_main
 from git_client import GitClient
 from markdown_sections import CODE_SPAN
 
@@ -1063,5 +1063,4 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

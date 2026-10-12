@@ -56,6 +56,10 @@ RECORDED_TEST_SECONDS: dict[str, dict[str, float]] = {
         # Pushes nine branches to a local remote, deletes them there, and plans and applies a cleanup of each with git.
         "PlanApplyTests.test_gone_branches_are_deleted_only_when_their_pull_request_proves_them_stale": 13,
     },
+    "tests/validation/test_skill_scripts.py": {
+        # Starts a Python per entry point, which imports the entry point and runs its __main__ block twice.
+        "EntryPointRunnerTests.test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130": 10,
+    },
 }
 
 

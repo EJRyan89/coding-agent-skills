@@ -132,7 +132,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-c
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "code-review-core" / "scripts"))
 
 import frontmatter
-from console import use_utf8_output
+from console import run_main
 from git_client import GitClient, GitError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK
@@ -1255,5 +1255,4 @@ def main(argv: Sequence[str], root: Path = SCENARIO_ROOT, seams: Seams | None = 
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    sys.exit(main(sys.argv[1:]))
+    run_main(lambda: main(sys.argv[1:]), errors="backslashreplace")

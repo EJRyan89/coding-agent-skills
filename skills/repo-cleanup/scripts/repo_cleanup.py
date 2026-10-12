@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import git_client
 import pr_status
-from console import use_utf8_output
+from console import run_main
 from git_client import GitClient, GitResult
 from github_client import GitHubClient, GitHubError, replace_undecodable, subprocess_runner
 from github_client import Runner as GhRunner
@@ -1090,5 +1090,4 @@ def main(arguments: list[str] | None = None, services: Services | None = None) -
 
 
 if __name__ == "__main__":
-    use_utf8_output(newline="\n")
-    raise SystemExit(main())
+    run_main(main, newline="\n")

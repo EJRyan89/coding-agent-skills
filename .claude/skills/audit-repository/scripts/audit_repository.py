@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from git_client import GitClient, GitError
 
 # The rotation record, relative to the top of the repository it describes.
@@ -455,5 +455,4 @@ def main(
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="replace", newline="\n")
-    raise SystemExit(main())
+    run_main(main, errors="replace", newline="\n")

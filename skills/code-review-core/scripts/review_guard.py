@@ -46,7 +46,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from typed_fields import FieldError, FieldReader
 
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
@@ -347,5 +347,4 @@ def main(stream: str) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    sys.exit(main(sys.stdin.read()))
+    run_main(lambda: main(sys.stdin.read()))

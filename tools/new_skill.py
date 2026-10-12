@@ -36,7 +36,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 
 from deployer import runtime_support
 from deployer import source as deploy_source
@@ -274,5 +274,4 @@ def _main_repository(arguments: argparse.Namespace, allowed: list[str] | None) -
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    sys.exit(main())
+    run_main(main, errors="backslashreplace")

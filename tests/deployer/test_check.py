@@ -571,11 +571,12 @@ class VersionTests(unittest.TestCase):
         entry.require_supported_python(sys.version_info)
 
     def test_deploy_py_and_its_console_setup_parse_as_python_3_7(self) -> None:
-        # deploy.py imports skill-core's console module before its version check, so an older Python reaches the
-        # check only while both files keep to a grammar it reads.
+        # deploy.py imports skill-core's console module, and the module imports flat_text, before its version check,
+        # so an older Python reaches the check only while these files keep to a grammar it reads.
         for path in (
             REPOSITORY_ROOT / "deploy.py",
             REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "console.py",
+            REPOSITORY_ROOT / "skills" / "skill-core" / "scripts" / "flat_text.py",
         ):
             with self.subTest(path=path.name):
                 ast.parse(path.read_text(encoding="utf-8"), feature_version=(3, 7))

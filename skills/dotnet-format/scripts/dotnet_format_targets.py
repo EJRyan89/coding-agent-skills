@@ -47,7 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
@@ -393,5 +393,4 @@ def main(argv: Sequence[str] | None = None, services: Services | None = None) ->
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="replace")
-    sys.exit(main())
+    run_main(main, errors="replace")

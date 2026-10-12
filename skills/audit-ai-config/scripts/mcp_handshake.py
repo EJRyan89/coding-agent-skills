@@ -50,7 +50,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from audit_ai_config import _parse_mcp_json, _read_codex_mcp
 from bounded_process import Streaming, streaming
-from console import use_utf8_output
+from console import run_main
 
 # Every server this starts is a command the target repository configures, so the skill leaves this script ungranted
 # and the user approves each run.
@@ -320,5 +320,4 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)

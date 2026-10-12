@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
-from console import use_utf8_output
+from console import run_main
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SKILLS = Path(".claude") / "skills"
@@ -117,5 +117,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output(errors="backslashreplace")
-    sys.exit(main())
+    run_main(main, errors="backslashreplace")

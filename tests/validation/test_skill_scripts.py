@@ -1,12 +1,14 @@
 """Fixture tests for tests/validation/skill_scripts.py.
 
-Each policy fails on a violating input and passes on a conforming one.
+Each policy fails on a violating input and passes on a conforming one. The console policy's entry points are also
+run as written, each with its main failing, to show the runner each block starts with keeps the FAILED-line promise.
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +21,7 @@ from skill_scripts import (
     COMMAND_RUNNERS,
     CommandReader,
     client_command_problems,
+    console_entry_points,
     console_setup_problems,
     gh_filter_problems,
     script_contract_problems,
@@ -26,7 +29,7 @@ from skill_scripts import (
     shell_commands,
     skill_command_problems,
 )
-from validation_support import write_fixture_tree
+from validation_support import REPOSITORY_ROOT, write_fixture_tree
 
 
 def mark_skills(root: Path) -> Path:
@@ -673,20 +676,25 @@ class SkillScriptsFixtures(unittest.TestCase):
                 skill_command_problems(root, {"gh"}, {"git", "python"}),
             )
 
-    def test_console_setup_policy_detects_a_missing_late_unresolved_or_copied_setup(self) -> None:
+    def test_console_setup_policy_detects_a_missing_late_unresolved_or_bypassed_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             main = 'if __name__ == "__main__":\n'
-            imported = "from console import use_utf8_output\n\n"
+            imported = "from console import run_main\n\n"
             files = {
-                "skills/alpha/scripts/good.py": f"{imported}{main}    use_utf8_output()\n    main()\n",
-                "skills/alpha/scripts/aliased.py": f"import console as c\n\n{main}    c.use_utf8_output()\n",
-                "skills/alpha/scripts/late.py": f"{imported}{main}    parse()\n    use_utf8_output()\n",
+                "skills/alpha/scripts/good.py": f"{imported}{main}    run_main(main)\n",
+                "skills/alpha/scripts/aliased.py": "import console as c\n\n"
+                f"{main}    c.run_main(main, errors='replace')\n",
+                "skills/alpha/scripts/arguments.py": f"{imported}{main}    run_main(lambda: main(sys.argv[1:]))\n",
+                "skills/alpha/scripts/late.py": f"{imported}{main}    parse()\n    run_main(main)\n",
                 "skills/alpha/scripts/missing.py": f"{main}    raise SystemExit(main())\n",
-                # A function of the same name that is not skill-core's is a second setup.
-                "skills/alpha/scripts/local.py": f"def use_utf8_output():\n    pass\n\n\n{main}    use_utf8_output()\n",
+                # The console setup alone leaves an unhandled exception to print a traceback.
+                "skills/alpha/scripts/setup_only.py": "from console import use_utf8_output\n\n"
+                f"{main}    use_utf8_output()\n    raise SystemExit(main())\n",
+                # A function of the same name that is not skill-core's is a second runner.
+                "skills/alpha/scripts/local.py": f"def run_main(main):\n    main()\n\n\n{main}    run_main(main)\n",
                 "skills/alpha/scripts/copied.py": 'def main():\n    sys.stdout.reconfigure(encoding="utf-8")\n\n\n'
-                f"{imported}{main}    use_utf8_output()\n",
+                f"{imported}{main}    run_main(main)\n",
                 "skills/alpha/scripts/library.py": "def helper():\n    return 1\n",
                 # Suites are not entry points.
                 "skills/alpha/scripts/test_good.py": f"{main}    unittest.main()\n",
@@ -696,15 +704,15 @@ class SkillScriptsFixtures(unittest.TestCase):
                 "deployer/platform_support.py": "def setup():\n    reconfigure = sys.stdout.reconfigure\n"
                 '    reconfigure(encoding="utf-8")\n',
                 "deployer/cli.py": "def main():\n    return 0\n",
-                "tools/good_tool.py": f"{imported}{main}    use_utf8_output(errors='backslashreplace')\n    main()\n",
-                "tools/late_tool.py": f"{imported}{main}    options = parse()\n    use_utf8_output()\n",
+                "tools/good_tool.py": f"{imported}{main}    run_main(main, errors='backslashreplace')\n",
+                "tools/late_tool.py": f"{imported}{main}    options = parse()\n    run_main(main)\n",
                 "tools/test_tool.py": f"{main}    unittest.main()\n",
             }
             write_fixture_tree(root, files)
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
-            late = f"does not call skill-core's use_utf8_output() first in its __main__ block; see {doc}"
-            copied = f"reconfigures a stream itself; call use_utf8_output() from skill-core instead; see {doc}"
+            late = f"does not call skill-core's run_main() first in its __main__ block; see {doc}"
+            copied = f"reconfigures a stream itself; call run_main() from skill-core instead; see {doc}"
             self.assertEqual(
                 [
                     f"deploy.py:3 {late}",
@@ -713,6 +721,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     f"skills/alpha/scripts/late.py:3 {late}",
                     f"skills/alpha/scripts/local.py:5 {late}",
                     f"skills/alpha/scripts/missing.py:1 {late}",
+                    f"skills/alpha/scripts/setup_only.py:3 {late}",
                     f"tools/late_tool.py:3 {late}",
                 ],
                 console_setup_problems(root),
@@ -742,7 +751,7 @@ class SkillScriptsFixtures(unittest.TestCase):
             write_fixture_tree(root, files)
             mark_skills(root)
             doc = '"Script results" in docs/adding-a-skill.md'
-            copied = f"reconfigures a stream itself; call use_utf8_output() from skill-core instead; see {doc}"
+            copied = f"reconfigures a stream itself; call run_main() from skill-core instead; see {doc}"
             self.assertEqual(
                 [
                     f"deployer/renamed.py:4 {copied}",
@@ -755,6 +764,75 @@ class SkillScriptsFixtures(unittest.TestCase):
                 ],
                 console_setup_problems(root),
             )
+
+
+# Run in a child Python for one entry point: import it under another name, so its __main__ block does not run, replace
+# its main with a stub that raises each failure in turn, then execute the block as written, and print each outcome.
+ENTRY_POINT_PROBE = r"""
+import ast, contextlib, importlib.util, io, json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+sys.path.insert(0, str(path.parent))
+specification = importlib.util.spec_from_file_location("entry_point_under_test", path)
+module = importlib.util.module_from_spec(specification)
+sys.modules[specification.name] = module
+specification.loader.exec_module(module)
+tree = ast.parse(path.read_text(encoding="utf-8"))
+main_test = "__name__ == '__main__'"
+block = next(node for node in tree.body if isinstance(node, ast.If) and ast.unparse(node.test) == main_test)
+code = compile(ast.Module(body=block.body, type_ignores=[]), str(path), "exec")
+outcomes = []
+for failure in (LookupError("injected" + chr(10) + "failure"), KeyboardInterrupt()):
+    def stub(*arguments, failure=failure, **keywords):
+        raise failure
+    for name in ("main", "_main"):
+        if hasattr(module, name):
+            setattr(module, name, stub)
+    output, errors = io.StringIO(), io.StringIO()
+    status = "returned"
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        try:
+            exec(code, vars(module))
+        except SystemExit as exited:
+            status = exited.code
+    outcomes.append([status, output.getvalue(), errors.getvalue()])
+sys.__stdout__.write(json.dumps(outcomes))
+"""
+
+
+def entry_points_with_a_main_block() -> list[Path]:
+    """The entry points the console policy covers that run as programs."""
+    return [
+        path
+        for path in console_entry_points(REPOSITORY_ROOT)
+        if 'if __name__ == "__main__":' in path.read_text(encoding="utf-8")
+    ]
+
+
+class EntryPointRunnerTests(unittest.TestCase):
+    def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
+        # The policy proves each block starts with the runner; this runs each block as written with its main failing.
+        entry_points = entry_points_with_a_main_block()
+        self.assertIn(REPOSITORY_ROOT / "deploy.py", entry_points)
+        for path in entry_points:
+            name = path.relative_to(REPOSITORY_ROOT).as_posix()
+            with self.subTest(entry_point=name):
+                result = subprocess.run(
+                    [sys.executable, "-B", "-c", ENTRY_POINT_PROBE, str(path)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    stdin=subprocess.DEVNULL,
+                    cwd=REPOSITORY_ROOT,
+                    timeout=120,
+                    check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(
+                    [[1, "FAILED LookupError: injected failure\n", ""], [130, "FAILED interrupted\n", ""]],
+                    json.loads(result.stdout),
+                )
 
 
 if __name__ == "__main__":

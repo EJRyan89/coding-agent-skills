@@ -1,13 +1,15 @@
-"""Regression tests for the UTF-8 console setup every skill entry point calls."""
+"""Regression tests for the UTF-8 console setup and the runner every skill entry point calls."""
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import io
 import os
 import subprocess
 import sys
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,6 +68,98 @@ class Utf8OutputTests(unittest.TestCase):
             self.assertIs(output, sys.stdout)
             self.assertIs(errors, sys.stderr)
         self.assertEqual("→ ✓\n", output.getvalue())
+
+
+def run_in_process(main: Callable[[], int | None]) -> tuple[object, str, str]:
+    """Run `main` through the runner with captured streams: the exit code, stdout, and stderr."""
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        try:
+            console.run_main(main)
+        except SystemExit as exited:
+            return exited.code, output.getvalue(), errors.getvalue()
+    raise AssertionError("run_main returned instead of exiting")
+
+
+def raises(error: BaseException) -> Callable[[], int]:
+    def main() -> int:
+        raise error
+
+    return main
+
+
+class RunMainTests(unittest.TestCase):
+    def test_exits_with_what_main_returns(self) -> None:
+        self.assertEqual((0, "done\n", ""), run_in_process(lambda: print("done") or 0))
+        self.assertEqual((1, "", ""), run_in_process(lambda: 1))
+        self.assertEqual((None, "", ""), run_in_process(lambda: None))
+
+    def test_a_system_exit_passes_through_with_its_code(self) -> None:
+        self.assertEqual((2, "", ""), run_in_process(raises(SystemExit(2))))
+        self.assertEqual(("stop", "", ""), run_in_process(raises(SystemExit("stop"))))
+
+    def test_an_argparse_usage_error_keeps_exit_2_and_its_usage_on_stderr(self) -> None:
+        parser = argparse.ArgumentParser(prog="tool.py")
+        parser.add_argument("--count", type=int)
+
+        def main() -> int:
+            parser.parse_args(["--count", "x"])
+            return 0
+
+        code, output, errors = run_in_process(main)
+        self.assertEqual((2, ""), (code, output))
+        self.assertIn("tool.py: error: argument --count: invalid int value: 'x'", errors)
+
+    def test_an_unhandled_exception_prints_one_failed_line_and_exits_1(self) -> None:
+        self.assertEqual(
+            (1, "FAILED LookupError: no such pull request\n", ""),
+            run_in_process(raises(LookupError("no such pull request"))),
+        )
+
+    def test_the_failed_line_flattens_the_message_onto_one_line(self) -> None:
+        self.assertEqual(
+            (1, "FAILED ValueError: first line second line\n", ""),
+            run_in_process(raises(ValueError("  first line\n\n  second\tline \n"))),
+        )
+
+    def test_an_exception_with_no_message_names_its_type(self) -> None:
+        self.assertEqual((1, "FAILED RuntimeError\n", ""), run_in_process(raises(RuntimeError())))
+        self.assertEqual((1, "FAILED KeyError: 'title'\n", ""), run_in_process(raises(KeyError("title"))))
+
+    def test_output_printed_before_the_failure_stays_ahead_of_the_failed_line(self) -> None:
+        def main() -> int:
+            print("COLLECTED 3")
+            raise OSError("disk full")
+
+        self.assertEqual((1, "COLLECTED 3\nFAILED OSError: disk full\n", ""), run_in_process(main))
+
+    def test_ctrl_c_prints_failed_interrupted_and_exits_130(self) -> None:
+        self.assertEqual((130, "FAILED interrupted\n", ""), run_in_process(raises(KeyboardInterrupt())))
+
+    def test_a_program_prints_no_traceback_and_exits_with_the_contract_codes(self) -> None:
+        for body, code, line in (
+            ("raise LookupError('gone → away')", 1, "FAILED LookupError: gone → away\n"),
+            ("raise KeyboardInterrupt", 130, "FAILED interrupted\n"),
+            ("return 0", 0, ""),
+        ):
+            with self.subTest(body=body):
+                result = child(f"def main():\n    {body}\nconsole.run_main(main)")
+                self.assertEqual(code, result.returncode, result.stderr)
+                self.assertEqual(line.encode(), result.stdout.replace(b"\r\n", b"\n"))
+                self.assertEqual(b"", result.stderr)
+
+    def test_the_runner_sets_up_utf8_output_first_with_its_options(self) -> None:
+        result = child(
+            "def main():\n    print('→ ✓')\n    sys.stdout.write('\\udcff')\n"
+            "console.run_main(main, errors='replace', newline='\\n')"
+        )
+        self.assertEqual((0, "→ ✓\n?".encode()), (result.returncode, result.stdout), result.stderr)
+
+    def test_a_message_utf8_cannot_encode_prints_escaped_on_a_strict_stream(self) -> None:
+        result = child("def main():\n    raise OSError('bad \\udcff path')\nconsole.run_main(main)")
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertEqual(b"FAILED OSError: bad \\udcff path", result.stdout.rstrip())
+        self.assertEqual(b"", result.stderr)
 
 
 if __name__ == "__main__":

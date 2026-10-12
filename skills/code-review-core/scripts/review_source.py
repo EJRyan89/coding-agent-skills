@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
-from console import use_utf8_output
+from console import run_main
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
@@ -138,5 +138,4 @@ def main(arguments: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    use_utf8_output()
-    raise SystemExit(main())
+    run_main(main)
