@@ -1013,10 +1013,10 @@ def g(*arguments: str) -> tuple[str, ...]:
     return ("git", "-C", "<root>/checkout", *arguments)
 
 
+# The snapshot verifies origin again, which one prepare answers from its first check, since nothing in between wrote.
 LOCAL_SNAPSHOT = [
     g("remote", "get-url", "origin"),
     g("cat-file", "-e", "<head>^{commit}"),
-    g("remote", "get-url", "origin"),
     g("rev-parse", "--verify", "<head>^{commit}"),
     g("ls-tree", "-r", "-z", "-l", "--full-tree", "<head>"),
 ]
@@ -1719,6 +1719,8 @@ class LocalCommitTests(PrepareFixture):
                 g(*self.HEAD_PRESENT),
                 g(*self.FETCH_HEAD),
                 g(*self.HEAD_PRESENT),
+                # The fetch is not a read, so the snapshot's check of origin is asked again rather than reused.
+                g("remote", "get-url", "origin"),
                 *LOCAL_SNAPSHOT[2:],
             ],
             self.git.calls,
@@ -1749,6 +1751,22 @@ class LocalCommitTests(PrepareFixture):
             self.refused(),
         )
         self.assertEqual([g("remote", "get-url", "origin")], self.git.calls)
+
+    def test_a_second_prepare_asks_git_again(self) -> None:
+        self.prepare()
+        shutil.rmtree(self.run_dir)
+        self.prepare()
+        self.assertEqual([*LOCAL_SNAPSHOT, *LOCAL_SNAPSHOT], self.git.calls)
+        self.assertIs(self.git, self.services.git, "the caller's runner is left as it was")
+
+    def test_an_origin_changed_after_a_prepare_is_refused_by_the_next(self) -> None:
+        self.prepare()
+        shutil.rmtree(self.run_dir)
+        git(self.checkout, "remote", "set-url", "origin", "https://github.com/other/repo.git")
+        self.assertEqual(
+            (RuntimeContractError, "Checkout origin mismatch: expected example/one, found other/repo", ""),
+            self.refused(),
+        )
 
 
 PRIOR = {
@@ -2031,12 +2049,12 @@ SPECIALIST_HASHES = {
 }
 # The manifest is one file, listed and read by its blob id; the reviewer's files are listed once per commit, the
 # guidelines at the base first, and their bytes come from one `git cat-file --batch`, which the runner does not run.
+# The base resolves once: the guidelines' check of it is answered from the reviewer's.
 SPECIALIST_GIT = [
     g("cat-file", "-e", "<base>^{commit}"),
     g("rev-parse", "--verify", "<base>^{commit}"),
     g("ls-tree", "-z", "<base>", "--", "review/specialists.json"),
     g("cat-file", "blob", blob(BASE_FILES["review/specialists.json"])),
-    g("rev-parse", "--verify", "<base>^{commit}"),
     g("ls-tree", "-z", "<base>", "--", "review/python-guide.md"),
     g("ls-tree", "-z", "<base>", "--", "review/rules.md", "review/python.md"),
 ]
@@ -2196,7 +2214,6 @@ class RepositoryReviewerTests(PrepareFixture):
                 g("rev-parse", "--verify", "<base>^{commit}"),
                 g("ls-tree", "-z", "<base>", "--", "review/entrypoint.json"),
                 g("cat-file", "blob", blob(BASE_FILES["review/entrypoint.json"])),
-                g("rev-parse", "--verify", "<base>^{commit}"),
                 g("ls-tree", "-z", "<base>", "--", "review/SKILL.md", "review/rules.md"),
             ],
             self.git.calls,
@@ -2357,6 +2374,12 @@ class RepositoryReviewerTests(PrepareFixture):
         for role in roles:
             self.assertNotIn("source-file", self.text_file(f"work/{role}.prompt.md"))
 
+    def test_the_snapshot_taken_again_reuses_what_git_told_the_first(self) -> None:
+        # Retaking it verifies origin and the head and lists the head's tree again, which nothing since has written.
+        self.configure(self.repository("review/conditional.json", trusted_ref="refs/heads/reviewers"))
+        self.prepare()
+        self.assertEqual(LOCAL_SNAPSHOT, [call for call in self.git.calls if call in LOCAL_SNAPSHOT])
+
     def test_the_size_limit_holds_for_the_files_each_route_writes(self) -> None:
         # At a limit of exactly what the lazy route writes, the same pull request fits lazily and not whole.
         written = len(HEAD_FILES["app/service.py"]) + len(BASE_FILES["review/rules.md"])
@@ -2476,7 +2499,7 @@ class ReviewerFallbackTests(PrepareFixture):
                 g("ls-tree", "-r", "--name-only", "-z", "<trusted>"),
                 g("ls-tree", "-z", "<trusted>", "--", "review/late.md"),
                 g("cat-file", "blob", blob(LATE_SKILL)),
-                g("rev-parse", "--verify", "<base>^{commit}"),
+                # The guidelines' check of the base is answered from the first: ls-remote and the rest only read.
                 g("ls-tree", "-z", "<trusted>", "--", "review/late.md", "review/rules.md"),
             ],
             self.reviewer_calls(),
