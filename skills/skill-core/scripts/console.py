@@ -30,13 +30,18 @@ def use_utf8_output(*, errors: str = "strict", newline: str | None = None) -> No
     `newline`, when given, sets both streams' line ending; otherwise they keep the platform's. A stream that is not a
     text wrapper, such as a test's StringIO, is left alone.
     """
-    for stream, stream_errors in ((sys.stdout, errors), (sys.stderr, "backslashreplace")):
-        if not isinstance(stream, io.TextIOWrapper):
-            continue
-        if newline is None:
-            stream.reconfigure(encoding="utf-8", errors=stream_errors)
-        else:
-            stream.reconfigure(encoding="utf-8", errors=stream_errors, newline=newline)
+    _use_utf8(sys.stdout, errors, newline)
+    _use_utf8(sys.stderr, "backslashreplace", newline)
+
+
+def _use_utf8(stream: object, errors: str, newline: str | None) -> None:
+    """Write UTF-8 to one stream with these errors and, when given, this line ending, unless it is no text wrapper."""
+    if not isinstance(stream, io.TextIOWrapper):
+        return
+    if newline is None:
+        stream.reconfigure(encoding="utf-8", errors=errors)
+    else:
+        stream.reconfigure(encoding="utf-8", errors=errors, newline=newline)
 
 
 def failed_line(error: BaseException) -> str:

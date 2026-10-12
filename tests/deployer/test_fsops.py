@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import os
 import stat
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -173,6 +175,42 @@ class FilesystemOperationTests(GitTestCase):
             fsops.write_atomic(target, b"next\n")
         self.assertEqual("previous\n", target.read_text(encoding="utf-8"))
         self.assertEqual(["deploy.config"], sorted(path.name for path in self.root.iterdir()))
+
+    def archive(self, *names: str) -> Path:
+        """A tar archive holding a file under each name, its content the name itself."""
+        archive = self.root / "tree.tar"
+        with tarfile.open(archive, "w") as handle:
+            for name in names:
+                info = tarfile.TarInfo(name)
+                info.size = len(name.encode("utf-8"))
+                handle.addfile(info, io.BytesIO(name.encode("utf-8")))
+        return archive
+
+    def test_extract_archive_strips_leading_slashes_and_extracts_inside_the_destination(self) -> None:
+        destination = self.root / "tree"
+        fsops.extract_archive(self.archive("/skills/alpha/SKILL.md", "//server/share/notes.md"), destination)
+        extracted = {
+            path.relative_to(destination).as_posix(): path.read_text(encoding="utf-8")
+            for path in destination.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(
+            {"server/share/notes.md": "//server/share/notes.md", "skills/alpha/SKILL.md": "/skills/alpha/SKILL.md"},
+            extracted,
+        )
+
+    def test_extract_archive_refuses_a_drive_qualified_name_and_one_leading_outside_the_destination(self) -> None:
+        for name, refusal in (
+            ("C:/Windows/notes.md", tarfile.AbsolutePathError),
+            ("../notes.md", tarfile.OutsideDestinationError),
+            ("/../notes.md", tarfile.OutsideDestinationError),
+            ("skills/../../notes.md", tarfile.OutsideDestinationError),
+        ):
+            with self.subTest(name=name):
+                destination = self.root / "tree"
+                with self.assertRaises(refusal):
+                    fsops.extract_archive(self.archive(name), destination)
+                self.assertFalse((self.root / "notes.md").exists())
 
 
 if __name__ == "__main__":

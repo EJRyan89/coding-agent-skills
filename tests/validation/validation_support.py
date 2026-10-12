@@ -115,22 +115,53 @@ class _NameScope:
         return self.parent.owner(name) if self.parent is not None else None
 
 
+def _literal_items(node: ast.expr) -> list[ast.expr] | None:
+    """The items of a literal tuple, list, or set that unpacks nothing, or None for any other expression."""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)) and not any(
+        isinstance(item, ast.Starred) for item in node.elts
+    ):
+        return list(node.elts)
+    return None
+
+
 class _BindingReader(ast.NodeVisitor):
     def __init__(self, tree: ast.Module) -> None:
         self.scope = _NameScope(None)
         self.scopes: dict[int, _NameScope] = {}
-        self.values = {
-            id(target): node.value
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Assign, ast.AnnAssign))
-            for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
-            if isinstance(target, ast.Name) and node.value is not None
-        }
+        self.values: dict[int, list[ast.expr | None]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)) and node.value is not None:
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    self._pair(target, node.value)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+                for item in _literal_items(node.iter) or [None]:
+                    self._pair(node.target, item)
         self.annotations = {
             id(node.target) for node in ast.walk(tree) if isinstance(node, ast.AnnAssign) and node.value is None
         }
         self._declare(tree)
         self.visit(tree)
+
+    def _pair(self, target: ast.expr, value: ast.expr | None) -> None:
+        """Record what each name in an assignment or loop target is bound to: the matching item of a literal tuple or
+        list unpacked into it, or None for a name whose value is built some other way, such as a starred name."""
+        if isinstance(target, ast.Name):
+            self.values.setdefault(id(target), []).append(value)
+            return
+        if isinstance(target, ast.Starred):
+            self._pair(target.value, None)
+            return
+        if not isinstance(target, (ast.Tuple, ast.List)):
+            return
+        items = _literal_items(value) if isinstance(value, (ast.Tuple, ast.List)) else None
+        star = next((index for index, part in enumerate(target.elts) if isinstance(part, ast.Starred)), None)
+        if items is not None and star is not None:
+            tail = len(target.elts) - star - 1
+            items = [*items[:star], None, *items[len(items) - tail :]] if len(items) >= star + tail else None
+        if items is None or len(items) != len(target.elts):
+            items = [None] * len(target.elts)
+        for part, item in zip(target.elts, items, strict=True):
+            self._pair(part, item)
 
     def _declare(self, tree: ast.AST) -> None:
         """Reserve lexical locals before visiting nested functions, including a nonlocal bound later in its parent."""
@@ -170,10 +201,8 @@ class _BindingReader(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)) and id(node) not in self.annotations:
-            self.scope.bind(node.id, self.values.get(id(node)))
-
-    def visit_arg(self, node: ast.arg) -> None:
-        self.scope.bind(node.arg, f"<local>.{node.arg}")
+            for value in self.values.get(id(node), [None]):
+                self.scope.bind(node.id, value)
 
     def _argument_expressions(self, arguments: ast.arguments) -> None:
         for expression in [*arguments.defaults, *arguments.kw_defaults]:
@@ -187,11 +216,24 @@ class _BindingReader(ast.NodeVisitor):
                 self.visit(variadic.annotation)
 
     def _parameters(self, arguments: ast.arguments) -> None:
-        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
-            self.visit(argument)
-        for variadic in [arguments.vararg, arguments.kwarg]:
-            if variadic is not None:
-                self.visit(variadic)
+        """Bind each parameter as a local value, or to its default when the default is a name or an attribute, as an
+        assignment binds it: what a caller passes is never resolved, so a call through the parameter is read as a call
+        of its default."""
+        positional = [*arguments.posonlyargs, *arguments.args]
+        defaults: dict[int, ast.expr | None] = {
+            id(argument): default
+            for argument, default in [
+                *zip(positional[len(positional) - len(arguments.defaults) :], arguments.defaults, strict=True),
+                *zip(arguments.kwonlyargs, arguments.kw_defaults, strict=True),
+            ]
+        }
+        for argument in [*positional, *arguments.kwonlyargs, arguments.vararg, arguments.kwarg]:
+            if argument is None:
+                continue
+            self.scopes[id(argument)] = self.scope
+            default = defaults.get(id(argument))
+            named = isinstance(default, (ast.Name, ast.Attribute))
+            self.scope.bind(argument.arg, default if named else f"<local>.{argument.arg}")
 
     def visit_Import(self, node: ast.Import) -> None:
         for found in module_imports(node):
@@ -277,7 +319,7 @@ class _BindingReader(ast.NodeVisitor):
         while scope.is_comprehension and scope.parent is not None:
             scope = scope.parent
         if isinstance(node.target, ast.Name):
-            scope.bind(node.target.id, None)
+            scope.bind(node.target.id, node.value)
         self.visit(node.value)
 
     def visit_Global(self, node: ast.Global) -> None:
@@ -297,6 +339,21 @@ class _BindingReader(ast.NodeVisitor):
             self.scope.bind(node.name, None)
         self.generic_visit(node)
 
+    def visit_Match(self, node: ast.Match) -> None:
+        self.visit(node.subject)
+        for case in node.cases:
+            # A case's whole pattern captured by name binds the subject itself; any other capture binds a part of it.
+            if isinstance(case.pattern, ast.MatchAs) and case.pattern.name is not None:
+                self.scope.bind(case.pattern.name, node.subject)
+                if case.pattern.pattern is not None:
+                    self.visit(case.pattern.pattern)
+            else:
+                self.visit(case.pattern)
+            if case.guard is not None:
+                self.visit(case.guard)
+            for statement in case.body:
+                self.visit(statement)
+
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
         if node.name is not None:
             self.scope.bind(node.name, None)
@@ -315,7 +372,10 @@ class _BindingReader(ast.NodeVisitor):
 class CallableResolver:
     """Resolve import and simple-assignment aliases in their lexical scopes, never guessing after a rebinding.
 
-    Other value construction is not an alias. Once a name is an alias, any other binding makes it unresolvable.
+    A simple assignment binds a name to a name or an attribute: an assignment or an assignment expression, an item of
+    a literal tuple or list unpacked or looped over, a parameter's default, or the subject a case captures whole.
+    Other value construction is not an alias, such as a call's result, an item of anything but a literal, a with
+    target, or a caught exception. Once a name is an alias, any other binding makes it unresolvable.
     """
 
     def __init__(self, tree: ast.Module) -> None:
