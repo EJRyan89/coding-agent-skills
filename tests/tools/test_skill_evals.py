@@ -1350,7 +1350,7 @@ class RunPieceTests(unittest.TestCase):
         command = skill_evals.claude_command("claude.exe", '/review-prs "fixture"', agents)
         self.assertEqual(["claude.exe", "-p", '/review-prs "fixture"'], command[:3])
         pairs = {command[index]: command[index + 1] for index in range(3, len(command) - 1)}
-        self.assertEqual("opus", pairs["--model"])
+        self.assertEqual("claude-opus-5-5", pairs["--model"])
         self.assertEqual("project,local", pairs["--setting-sources"])
         self.assertEqual(str(agents), pairs["--agents"])
         self.assertEqual("Workflow", pairs["--disallowedTools"])
@@ -1372,8 +1372,16 @@ class RunPieceTests(unittest.TestCase):
         )
 
     def test_the_session_model_is_the_strongest_and_one_of_the_models(self) -> None:
-        self.assertEqual(("haiku", "sonnet", "opus"), skill_evals.MODELS)
+        self.assertEqual(
+            {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}, skill_evals.MODELS
+        )
         self.assertEqual("opus", skill_evals.SESSION_MODEL)
+
+    def test_a_model_is_named_by_its_id_with_or_without_a_dated_suffix(self) -> None:
+        self.assertTrue(skill_evals.names_model("claude-haiku-5-5", "claude-haiku-5-5"))
+        self.assertTrue(skill_evals.names_model("claude-haiku-5-5-20261001", "claude-haiku-5-5"))
+        for other in ("claude-haiku-4-5-20251001", "claude-haiku-5", "claude-haiku-5-5-fast", "claude-haiku-5-55"):
+            self.assertFalse(skill_evals.names_model(other, "claude-haiku-5-5"), other)
 
     def test_the_environment_keeps_the_users_and_gives_the_run_its_own_files(self) -> None:
         run, config = self.root / "run", self.root / "config.json"
@@ -1400,7 +1408,7 @@ class RunPieceTests(unittest.TestCase):
         after = (self.root / skill_evals.REVIEWER_AGENT).read_text(encoding="utf-8").splitlines()
         self.assertEqual(len(before), len(after))
         self.assertEqual(
-            [("model: inherit", "model: haiku")],
+            [("model: inherit", "model: claude-haiku-5-5")],
             [pair for pair in zip(before, after, strict=True) if pair[0] != pair[1]],
         )
         self.assertIn(
@@ -1421,7 +1429,7 @@ class RunPieceTests(unittest.TestCase):
         self.assertTrue(definition["prompt"].startswith("You run one reviewer role of a code review"))
         self.assertTrue(REVIEWER_AGENT_SOURCE.read_text(encoding="utf-8").rstrip("\n").endswith(definition["prompt"]))
         self.assertEqual(["Read", "Grep", "Glob", "Write", "Edit", "Bash"], definition["tools"])
-        self.assertEqual("haiku", definition["model"])
+        self.assertEqual("claude-haiku-5-5", definition["model"])
         self.assertIs(True, definition["omitClaudeMd"])
         self.assertEqual(["PreToolUse"], list(definition["hooks"]))
         [group] = definition["hooks"]["PreToolUse"]
@@ -1525,11 +1533,22 @@ class RunPieceTests(unittest.TestCase):
 
     def test_why_a_run_counts_for_nothing(self) -> None:
         completed = skill_evals.Completed
-        reviewed = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-4-5', subagent=True)}", "")
+        reviewed = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-5-5', subagent=True)}", "")
         self.assertIsNone(skill_evals.run_failure("haiku", reviewed, 60, "review-prs", None))
         self.assertEqual(
-            "reviewers ran on claude-haiku-4-5, not sonnet",
+            "reviewers ran on claude-haiku-5-5, not claude-sonnet-5-5",
             skill_evals.run_failure("sonnet", reviewed, 60, "review-prs", None),
+        )
+        # Another generation of the family is another model, and an alias may resolve to it.
+        older = completed(0, f"{assistant('claude-opus-5-5')}\n{assistant('claude-haiku-4-5-20251001', True)}", "")
+        self.assertEqual(
+            "reviewers ran on claude-haiku-4-5-20251001, not claude-haiku-5-5",
+            skill_evals.run_failure("haiku", older, 60, "review-prs", None),
+        )
+        elsewhere = completed(0, f"{assistant('claude-sonnet-5-5')}\n{assistant('claude-haiku-5-5', True)}", "")
+        self.assertEqual(
+            "the session ran on claude-sonnet-5-5, not claude-opus-5-5",
+            skill_evals.run_failure("haiku", elsewhere, 60, "review-prs", None),
         )
         self.assertEqual(
             "no reviewer subagent ran, so the record is not the model's",
@@ -1663,7 +1682,7 @@ class StubClaude:
                     built = self.built[f"{run.name} {model}"] = build_document(Path(*prepare))
                     prepare = ["--canary", "--fixture", fixture_of(built)]
                 Pipeline(self.test, Path(environment["CODE_REVIEW_CONFIG"])).review(prepare, spec, self.guarded)
-        reviewer = self.reviewer or f"claude-{model}-0-0"
+        reviewer = self.reviewer or model
         return skill_evals.Completed(0, f"{assistant('claude-opus-5-5')}\n{assistant(reviewer, subagent=True)}", "")
 
 
@@ -1718,7 +1737,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertEqual([[scenario, model] for scenario in scenarios for model in skill_evals.MODELS], ended)
         # A design scenario's manifest routes its one changed document to the suite's design specialist alone.
         role = {"design-clean": "design-review", "design-gaps": "design-review"}
-        self.assertIn("REVIEWER haiku claude-haiku-0-0", lines)
+        self.assertIn("REVIEWER haiku claude-haiku-5-5", lines)
         guarded = [line for line in lines if line.startswith("GUARDED ")]
         self.assertEqual(
             [
@@ -1734,7 +1753,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertFalse(self.homes.exists())
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-prs | haiku | claude-haiku-0-0 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, "
+            "| review-prs | haiku | claude-haiku-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, "
             "planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
@@ -1773,7 +1792,7 @@ class EvaluateTests(unittest.TestCase):
             {
                 f"{scenario} {model}": "committed" if scenario == "committed-edit" else "none"
                 for scenario in scenarios
-                for model in skill_evals.MODELS
+                for model in skill_evals.MODELS.values()
             },
             {key: built[1].split(" ")[1] for key, built in claude.built.items()},
         )
@@ -1790,7 +1809,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn("PASS review-document committed-edit haiku only_at export-download-links.md:17", lines)
         written = self.results.read_text(encoding="utf-8")
         self.assertIn(
-            "| review-document | haiku | claude-haiku-0-0 | 20/20 | committed-edit 3/3, design-clean 2/2, "
+            "| review-document | haiku | claude-haiku-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, "
             "design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.291 | 2026-10-08 |",
             written,
         )
@@ -1882,7 +1901,7 @@ class EvaluateTests(unittest.TestCase):
         self.assertIn('FAIL review-prs clean-change haiku verdict APPROVED "the run recorded no review"', lines)
         self.assertFalse(any(line.startswith(("PASS", "REMOVED")) for line in lines))
         self.assertTrue(self.homes.is_dir())
-        self.assertIn("| review-prs | sonnet | claude-sonnet-0-0 | 0/21 |", self.results.read_text(encoding="utf-8"))
+        self.assertIn("| review-prs | sonnet | claude-sonnet-5-5 | 0/21 |", self.results.read_text(encoding="utf-8"))
 
     def test_a_model_none_of_whose_reviewers_ran_is_recorded_as_not_run(self) -> None:
         status, lines = self.evaluate(["--write"], self.seams(StubClaude(self, review=False, reviewer="<synthetic>")))
@@ -1897,7 +1916,7 @@ class EvaluateTests(unittest.TestCase):
         claude = StubClaude(self, reviewer="claude-opus-5-5")
         status, lines = self.evaluate(["--model", "haiku", "--scenario", "clean-change"], self.seams(claude))
         self.assertEqual(1, status)
-        reason = "reviewers ran on claude-opus-5-5, not haiku"
+        reason = "reviewers ran on claude-opus-5-5, not claude-haiku-5-5"
         self.assertIn(f'FAIL review-prs clean-change haiku verdict APPROVED "{reason}"', lines)
 
     def test_nothing_runs_without_claude_code_or_the_results_table(self) -> None:
