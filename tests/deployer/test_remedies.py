@@ -286,7 +286,7 @@ class RecoveryRemedyTests(RemedyTestCase):
             "A replaced copy sits beside its item as <name>.deploying-bak; a retained backup is under "
             ".backups/20260101-000000-gone/ in the same root.",
             f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
-            "ERROR: Recovery failed, so nothing was deployed.",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
             f"Reconcile the run named above by hand, then rerun with --dry-run. {SEE_RECOVERY_FAILED}",
         )
 

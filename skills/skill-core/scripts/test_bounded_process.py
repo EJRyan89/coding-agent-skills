@@ -49,6 +49,10 @@ LAUNCHER_PROGRAM = (
     "subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
     "print('ready'); sys.stdout.flush()\n"
 )
+# Appended to LAUNCHER_PROGRAM, keeps the launcher running after it says ready, as a command that stalls does.
+STALL_PROGRAM = "import time\ntime.sleep(60)\n"
+# The grace a stalled command gets to exit by itself before it is killed.
+EXIT_SECONDS = 0.5
 
 
 class RecordingTree:
@@ -331,22 +335,35 @@ class StreamingTests(unittest.TestCase):
             self.assertEqual(0, running.wait())
 
     def test_a_read_that_waits_too_long_raises_even_while_a_child_holds_the_pipe(self) -> None:
-        # The command answers once, then stalls, and a child it started holds its stdout open, as the program Git for
-        # Windows' git.exe launches does. Killing the command would not end the read; the idle bound does.
-        child = "import time; time.sleep(30)"
-        program = (
-            f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\n"
-            "print('ready'); sys.stdout.flush(); time.sleep(60)\n"
-        )
-        command = [sys.executable, "-c", program]
-        with bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, exit_wait=0.5) as running:
-            self.assertEqual(b"ready\n", running.readline().replace(b"\r", b""))
-            running.idle_timeout = IDLE_SECONDS
-            started = time.monotonic()
-            with self.assertRaises(subprocess.TimeoutExpired):
-                running.readline()
-            self.assertLess(time.monotonic() - started, IDLE_SECONDS + IDLE_MARGIN_SECONDS)
-        self.assertLess(time.monotonic() - started, 25)
+        # The command answers once, then stalls, and a program it started holds its stdout open until the test
+        # releases it, as the program Git for Windows' git.exe launches does. Killing the command would not end the
+        # read; the idle bound does. Closing then kills the command, which is reported gone at once, and gives the
+        # reader only READER_WAIT_SECONDS: a close that waited on it for the kill allowance, here made far longer than
+        # the bound, would wait out the program.
+        with tempfile.TemporaryDirectory() as temporary:
+            release = Path(temporary) / "release"
+            command = [sys.executable, "-c", LAUNCHER_PROGRAM + STALL_PROGRAM, str(release)]
+            try:
+                with (
+                    mock.patch.object(bounded_process, "KILL_WAIT_SECONDS", 600.0),
+                    bounded_process.streaming(command, idle_timeout=STARTUP_SECONDS, exit_wait=EXIT_SECONDS) as running,
+                ):
+                    self.assertEqual(b"ready\n", running.readline().replace(b"\r", b""))
+                    running.idle_timeout = IDLE_SECONDS
+                    started = time.monotonic()
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        running.readline()
+                    self.assertLess(time.monotonic() - started, IDLE_SECONDS + IDLE_MARGIN_SECONDS)
+                    closing = time.monotonic()
+                closed = time.monotonic()
+                bound = EXIT_SECONDS + bounded_process.READER_WAIT_SECONDS + IDLE_MARGIN_SECONDS
+                self.assertLess(closed - closing, bound)
+                running.close()
+                self.assertLess(time.monotonic() - closed, IDLE_MARGIN_SECONDS, "closing again returns at once")
+                self.assertNotEqual(0, running.wait(), "the stalled command was killed")
+            finally:
+                release.touch()
+            self.assert_nothing_left_behind(running)
 
     def test_leaving_early_lets_a_command_still_writing_exit_by_itself(self) -> None:
         program = "import sys\nfor _ in range(64):\n    sys.stdout.buffer.write(b'y' * (1024 * 1024))\n"
@@ -423,7 +440,8 @@ class StreamingTests(unittest.TestCase):
 
     def test_closing_after_the_session_never_waits_on_a_program_holding_stdout(self) -> None:
         # The launcher exits at once while the program it started holds stdout until the test releases it. A close
-        # that waited on the reader would wait the whole stop allowance, here made far longer than the bound.
+        # that waited on the reader would wait the whole reader allowance, here made far longer than the bound, as is
+        # the kill allowance.
         with tempfile.TemporaryDirectory() as temporary:
             release = Path(temporary) / "release"
             command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(release)]
@@ -431,6 +449,7 @@ class StreamingTests(unittest.TestCase):
             try:
                 with (
                     mock.patch.object(bounded_process, "KILL_WAIT_SECONDS", 600.0),
+                    mock.patch.object(bounded_process, "READER_WAIT_SECONDS", 600.0),
                     bounded_process.streaming(
                         command, idle_timeout=STARTUP_SECONDS, timeout=SESSION_SECONDS
                     ) as running,
@@ -439,8 +458,39 @@ class StreamingTests(unittest.TestCase):
                     while running.readline():
                         pass
                 self.assertLess(time.monotonic() - started, SESSION_SECONDS + IDLE_MARGIN_SECONDS)
+                closed = time.monotonic()
+                running.close()
+                self.assertLess(time.monotonic() - closed, IDLE_MARGIN_SECONDS, "closing again returns at once")
             finally:
                 release.touch()
+            self.assert_nothing_left_behind(running)
+
+    def test_a_session_that_ends_by_itself_drains_its_output_and_leaves_nothing_behind(self) -> None:
+        # Four megabytes, far more than the reader's queue holds, so the reader waits on the caller as it reads.
+        program = "import sys\nfor _ in range(64):\n    sys.stdout.buffer.write(b'w' * 65536); sys.stdout.flush()\n"
+        with bounded_process.streaming([sys.executable, "-c", program], idle_timeout=STARTUP_SECONDS) as running:
+            self.assertEqual(b"w" * 65536 * 64, running.read(65536 * 64))
+            self.assertEqual(b"", running.read(1))
+            self.assertEqual(0, running.wait())
+            closing = time.monotonic()
+        self.assertLess(time.monotonic() - closing, bounded_process.READER_WAIT_SECONDS + IDLE_MARGIN_SECONDS)
+        self.assertFalse(running._reader.is_alive(), "the reader ended with the output")
+        self.assertTrue(running._stdout.closed, "the reader closed the command's stdout")
+        running.close()
+
+    def test_each_wait_on_closing_has_its_own_allowance(self) -> None:
+        # The grace a command gets to exit by itself, the wait for a killed command to be reported gone, and the wait
+        # for the reader once the command is gone.
+        self.assertEqual(
+            (60.0, 10.0, 1.0),
+            (bounded_process.EXIT_WAIT_SECONDS, bounded_process.KILL_WAIT_SECONDS, bounded_process.READER_WAIT_SECONDS),
+        )
+
+    def assert_nothing_left_behind(self, running: bounded_process.Streaming) -> None:
+        """Once the released program exits, the reader sees stdout end, closes it, and ends."""
+        running._reader.join(STARTUP_SECONDS)
+        self.assertFalse(running._reader.is_alive(), "the reader ended once the program let go of stdout")
+        self.assertTrue(running._stdout.closed, "the reader closed the command's stdout")
 
     def test_a_command_started_without_its_pipes_is_stopped_and_raises(self) -> None:
         for missing in ("stdin", "stdout"):

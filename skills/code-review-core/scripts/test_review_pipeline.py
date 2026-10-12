@@ -47,6 +47,7 @@ from review_process import ProcessStatus, process_status
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
+from test_review_specialists import CONDITION_MARGIN_SECONDS, CONDITION_SECONDS, StartedCondition
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -3557,9 +3558,18 @@ class ReviewerSourceTests(PipelineFixture):
             encoding="utf-8",
         )
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
-        with mock.patch("review_specialists.CONDITION_TIMEOUT_SECONDS", 5):
+        tree = StartedCondition(started)
+        with (
+            mock.patch("review_specialists.CONDITION_TIMEOUT_SECONDS", CONDITION_SECONDS),
+            mock.patch("review_specialists.JobTree", return_value=tree),
+        ):
             code, out, err = self.run_main("prepare", "--pull", SELECTOR)
+        refused = time.monotonic()
         self.assertEqual((1, f"FAILED {SELECTOR} Condition script timed out: window.py\n", ""), (code, out, err))
+        if tree.released is None:
+            self.fail("the condition ran outside its process tree")
+        self.assertGreaterEqual(refused - tree.released, CONDITION_SECONDS, "refused no sooner than its limit")
+        self.assertLess(refused - tree.released, CONDITION_SECONDS + CONDITION_MARGIN_SECONDS)
         invocation = json.loads(started.read_text(encoding="utf-8"))
         work = Path(invocation["cwd"])
         run = work.parent
