@@ -98,6 +98,32 @@ class FindPwshTests(DeployerTestCase):
                 self.assertIsNone(platform_support.find_pwsh(search_path))
 
 
+class FindExecutableTests(DeployerTestCase):
+    """The deployer finds a program by skill-core's locator, the one the skills' scripts use."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / "empty path").mkdir()
+        self.links = self.root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        self.links.mkdir(parents=True)
+        patcher = mock.patch.dict(
+            os.environ, {"PATH": str(self.root / "empty path"), "LOCALAPPDATA": str(self.root / "local app data")}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_a_program_only_in_wingets_links_folder_is_found_there(self) -> None:
+        program = self.links / "fixture-deployer-tool.exe"
+        program.write_bytes(b"")
+        self.assertEqual(str(program), platform_support.find_executable("fixture-deployer-tool"))
+        self.assertIsNone(platform_support.find_executable("fixture-absent-tool"))
+
+    def test_it_is_skill_cores_lookup(self) -> None:
+        with mock.patch("executable_locator.find_executable", return_value="C:/located.exe") as located:
+            self.assertEqual("C:/located.exe", platform_support.find_executable("tool"))
+        located.assert_called_once_with("tool")
+
+
 class HiddenWindowTests(GitTestCase):
     def test_console_programs_start_without_a_window(self) -> None:
         self.assertEqual({"creationflags": subprocess.CREATE_NO_WINDOW}, platform_support.hidden_window())

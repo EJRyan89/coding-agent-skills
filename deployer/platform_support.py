@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
+import executable_locator
+
 from .errors import DeployError
 
 WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:/")
@@ -172,11 +174,8 @@ def is_reparse_point(path: Path) -> bool:
 
 
 def find_executable(name: str) -> str | None:
-    found = shutil.which(name)
-    if found:
-        return found
-    winget = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / f"{name}.exe"
-    return str(winget) if winget.is_file() else None
+    """The program `name` runs, by skill-core's locator, so a tool `check` finds is the one a skill's script finds."""
+    return executable_locator.find_executable(name)
 
 
 def find_bash() -> str | None:

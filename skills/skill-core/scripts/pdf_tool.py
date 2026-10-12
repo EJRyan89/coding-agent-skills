@@ -17,12 +17,18 @@ BANNER = re.compile(r"pdftotext version ([0-9]{1,4}\.[0-9]{1,4}(?:\.[0-9]{1,4})?
 COPYRIGHT = re.compile(r"Copyright [0-9, -]+ (Glyph & Cog, LLC|The Poppler Developers)(?: - https?://\S+)?")
 
 
-def version_text(version: tuple[int, ...]) -> str:
-    return ".".join(map(str, version))
+def version_text(provider: str, version: tuple[int, ...]) -> str:
+    """A version as its vendor numbers it: Xpdf's minor and Poppler's month, since its year-numbered releases, in two
+    digits, as in Xpdf 4.06 and Poppler 26.09.0; the comparison stays numeric."""
+    two_digit_minor = provider == "Xpdf" or (provider == "Poppler" and version[0] >= 20)
+    parts = [str(part) for part in version]
+    if two_digit_minor and len(version) > 1:
+        parts[1] = f"{version[1]:02d}"
+    return ".".join(parts)
 
 
 def requirements() -> str:
-    return " or ".join(f"{provider} {version_text(floor)} or newer" for provider, floor in MINIMUMS.items())
+    return " or ".join(f"{provider} {version_text(provider, floor)} or newer" for provider, floor in MINIMUMS.items())
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,10 @@ class PdfIdentity:
     @property
     def outdated(self) -> bool:
         return self.version < self.minimum
+
+    @property
+    def version_text(self) -> str:
+        return version_text(self.provider, self.version)
 
 
 class PdfToolRefused(ValueError):
@@ -68,8 +78,8 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
         raise PdfToolRefused(f"pdftotext version probe failed (exit status {status}); install {requirements()}")
     if identity.outdated:
         raise PdfToolRefused(
-            f"pdftotext {provider} {version_text(version)} is unsupported; "
-            f"upgrade to {provider} {version_text(identity.minimum)} or newer",
+            f"pdftotext {provider} {identity.version_text} is unsupported; "
+            f"upgrade to {provider} {version_text(provider, identity.minimum)} or newer",
             identity,
         )
     return identity
@@ -78,7 +88,7 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
 # The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
 COMMANDS_ALLOWED = {
     "probe_pdftotext": "probes the pdftotext path its caller resolved; deployer/tools.py and code-review-core's "
-    "review_documents.py look it up by name, and the policy reads the program there",
+    "review_documents.py look it up by name through executable_locator, and the policy reads the program there",
 }
 
 
