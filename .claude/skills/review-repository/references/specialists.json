@@ -61,8 +61,9 @@
       "profile": ".claude/skills/review-repository/references/trust-boundary.md",
       "include": [
         "^docs/code-review-operations-contract\\.md$",
-        "^skills/code-review-core/scripts/review_(?:documents|guard|pipeline|runtime|source|specialists)\\.py$",
-        "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$"
+        "^skills/code-review-core/scripts/review_(?:analyzers|documents|github|guard|hosts|pipeline|process|records|runtime|source|specialists)\\.py$",
+        "^skills/code-review-core/scripts/test_adversarial_inputs\\.py$",
+        "^skills/skill-core/scripts/(?:bounded_process|git_client|github_client|pdf_tool|typed_fields)\\.py$"
       ],
       "exclude": [],
       "resources": ["docs/code-review-operations-contract.md"],
@@ -83,6 +84,7 @@
       "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
       "include": [
         "^deployer/(?:manifest|tools|arguments)\\.py$",
+        "^skills/skill-core/scripts/pdf_tool\\.py$",
         "^deploy-meta/[^/]+\\.json$",
         "^skills/code-review-core/references/[^/]+\\.schema\\.json$",
         "^docs/code-review-operations-contract\\.md$",
