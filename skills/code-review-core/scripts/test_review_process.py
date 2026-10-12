@@ -85,25 +85,6 @@ def terminate_and_wait(pid: int) -> bool:
         library.CloseHandle(handle)
 
 
-def ended(pid: int, seconds: float = 20.0) -> bool:
-    """Whether the process `pid` has ended within `seconds`, counted only once Windows has signaled its process
-    object, which it does after closing every handle the process held, its working directory's among them, so the
-    folder it ran in can then be removed. process_status reports it gone as soon as its exit code is set, before that.
-    """
-    synchronize, wait_object_0, invalid_parameter = 0x00100000, 0, 87
-    library = kernel32()
-    handle = library.OpenProcess(synchronize, False, pid)
-    if not handle:
-        error = ctypes.get_last_error()
-        if error == invalid_parameter:
-            return True  # no process has this PID any more
-        raise ctypes.WinError(error)
-    try:
-        return library.WaitForSingleObject(handle, int(seconds * 1000)) == wait_object_0
-    finally:
-        library.CloseHandle(handle)
-
-
 def wait_until(condition, seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:

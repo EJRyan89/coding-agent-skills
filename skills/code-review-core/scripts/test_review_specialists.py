@@ -28,8 +28,7 @@ from review_runtime import (
     validate_adapter_manifest,
     write_adapter_request,
 )
-from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree
-from test_review_process import ended
+from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
 
 DIFF = (
     "diff --git a/db/Procs.sql b/db/Procs.sql\r\n"

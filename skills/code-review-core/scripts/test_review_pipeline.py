@@ -44,10 +44,10 @@ from review_github import GitHubClient, GitHubFieldError
 from review_hosts import ProcessResult
 from review_io import PersistenceError
 from review_operation import ReviewOperationError
-from review_process import ProcessStatus, process_status
+from review_process import ProcessStatus
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
-from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree
+from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree, ended
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -3055,9 +3055,7 @@ class CopilotHostTests(PipelineFixture):
 
     @staticmethod
     def until_ended(pid: int) -> None:
-        deadline = time.monotonic() + 30
-        while process_status(pid).alive and time.monotonic() < deadline:
-            time.sleep(0.1)
+        ended(pid, 30)
 
 
 class ProfileModelTests(PipelineFixture):

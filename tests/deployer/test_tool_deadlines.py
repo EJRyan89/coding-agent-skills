@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import sys
 import textwrap
-import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 import job_tree
 from harness import DeployerTestCase, Result, forward
-from test_job_tree import SignalledTree
+from test_job_tree import SignalledTree, ended
 
 from deployer import errors, plan, platform_support
 
@@ -94,11 +93,8 @@ class DeadlineCase(DeployerTestCase):
         self.stubs = Stubs(self.root)
 
     def assert_ended(self, pids: list[int]) -> None:
-        deadline = time.monotonic() + GONE_SECONDS
-        while any(platform_support.process_status(pid).alive for pid in pids) and time.monotonic() < deadline:
-            time.sleep(0.05)
         for pid in pids:
-            self.assertFalse(platform_support.process_status(pid).alive, f"process {pid} the tool started still runs")
+            self.assertTrue(ended(pid, GONE_SECONDS), f"process {pid} the tool started still runs")
 
     def held_until_started(self) -> Any:
         return mock.patch.object(platform_support, "process_tree", return_value=SignalledTree(self.stubs.pids))

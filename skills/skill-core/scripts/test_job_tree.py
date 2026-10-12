@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,30 @@ LAUNCHER_PROGRAM = (
     "    time.sleep(0.05)\n"
     "if len(sys.argv) > 2: time.sleep(120)\n"
 )
+
+
+def ended(pid: int, seconds: float = 20.0) -> bool:
+    """Whether the process `pid` has ended within `seconds`, counted only once Windows has signaled its process
+    object, which it does after closing every handle the process held, its working directory's among them, so the
+    folder it ran in can then be removed. A probe of its exit code reports it gone before that."""
+    from ctypes import wintypes
+
+    synchronize, wait_object_0, invalid_parameter = 0x00100000, 0, 87
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]  # Windows only
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
+        if error == invalid_parameter:
+            return True  # no process has this PID any more
+        raise ctypes.WinError(error)  # type: ignore[attr-defined]  # Windows only
+    try:
+        return bool(kernel32.WaitForSingleObject(handle, int(seconds * 1000)) == wait_object_0)
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class SignalledTree(JobTree):
@@ -183,6 +208,15 @@ class JobTreeTests(unittest.TestCase):
             self.held.unlink()
         self.assertTrue(job_tree._kernel32().CloseHandle(kernel.failed["CloseHandle"][0]))
         self.assert_released()
+
+    def test_a_process_has_ended_only_once_windows_has_let_go_of_it(self) -> None:
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.assertFalse(ended(process.pid, 0.2), "a running process has not ended")
+        process.kill()
+        self.assertTrue(ended(process.pid), "a killed process has ended")
+        process.wait(timeout=STARTUP_SECONDS)
 
     def test_the_hidden_window_is_a_start_option(self) -> None:
         self.assertEqual({}, JobTree().start_options())

@@ -27,8 +27,7 @@ from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
-from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree
-from test_review_process import ended
+from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
 
 HEAD = "b" * 40
 SOURCE = b"class Example {}\n"
