@@ -274,6 +274,26 @@ class FlagCliTests(unittest.TestCase):
             self.assertEqual((1, f"FAILED {error}\n", ""), (code, stdout.getvalue(), stderr.getvalue()))
             self.assertEqual(before, Path(self.store).read_bytes())
 
+    def test_a_failure_spread_over_lines_is_one_failed_line(self) -> None:
+        self.store_cli("add", "guideline", "Body")
+        error = PersistenceError("The store\n\tcannot be\u00a0written:  \r\n disk full\n")
+        stdout = io.StringIO()
+        with (
+            mock.patch.object(review_flags, "ResourceLock", side_effect=error),
+            contextlib.redirect_stdout(stdout),
+        ):
+            code = main(["--store", self.store, "resolve", "RF-000001", "Done"])
+        self.assertEqual((1, "FAILED The store cannot be written: disk full\n"), (code, stdout.getvalue()))
+
+    def test_a_category_and_body_with_odd_whitespace_print_on_one_line_and_the_body_is_cut(self) -> None:
+        self.store_cli("add", "mis\n\tsed\u00a0bug", "Line one\x0bline\x1ftwo\u2003three " + "word " * 50)
+        result = self.store_cli("list")
+        self.assert_result(
+            result,
+            0,
+            "FLAG RF-000001 mis sed bug - Line one line two three " + " ".join(["word"] * 27) + "…\nCOUNT 1\n",
+        )
+
     def test_list_prints_one_line_per_open_flag(self) -> None:
         long_body = "word " * 50
         self.store_cli("add", "noise", "No pull request")

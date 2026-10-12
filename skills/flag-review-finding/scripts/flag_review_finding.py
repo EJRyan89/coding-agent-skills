@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import run_main
+from flat_text import flat_text
 from review_archive import ArchiveError, pull_directory, pull_records, record_paths
 from review_config import ConfigurationError, load_config
 from review_flags import (
@@ -74,28 +75,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def one_line(text: str) -> str:
-    return " ".join(text.split())
-
-
 def target(flag: dict[str, Any]) -> str:
     """Where the flag points: owner/repo#pull, then the review version and finding it names, or -."""
     text = (flag["repository"] or "") + (f"#{flag['pull_number']}" if flag["pull_number"] is not None else "")
     if flag["review_version"] is not None:
         text += f" v{flag['review_version']}"
     if flag["finding_id"]:
-        text += f" {one_line(flag['finding_id'])}"
+        text += f" {flat_text(flag['finding_id'])}"
     return text.strip() or "-"
 
 
 def cut(text: str) -> str:
     """Text on one line, cut to BODY_LIMIT characters."""
-    text = one_line(text)
+    text = flat_text(text)
     return text if len(text) <= BODY_LIMIT else text[: BODY_LIMIT - 1].rstrip() + "…"
 
 
 def flag_line(flag: dict[str, Any]) -> str:
-    return f"FLAG {flag['id']} {one_line(flag['category'])} {target(flag)} {cut(flag['body'])}"
+    return f"FLAG {flag['id']} {flat_text(flag['category'])} {target(flag)} {cut(flag['body'])}"
 
 
 def check_finding(config: Path | None, repository: str, pull: int, version: int, finding_id: str) -> None:
@@ -154,7 +151,7 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         lines = run(args)
     except (FlagError, ConfigurationError, PersistenceError, RecordError, ArchiveError, OSError) as exc:
-        print(f"FAILED {one_line(str(exc))}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
     return 0
