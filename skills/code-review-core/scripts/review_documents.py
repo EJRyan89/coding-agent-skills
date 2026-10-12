@@ -13,10 +13,12 @@ The standard library cannot read a PDF's text, so a `.pdf` is read by `pdftotext
 document is refused with a reason that names it, so the review is incomplete rather than silently partial. It is given
 the bytes as a throwaway file under the system temporary directory, no stdin, and a time limit, and its output is
 read no further than the extraction limit, and asked to keep the text in the order the PDF draws it, so the two
-families that ship it, Xpdf and Poppler, give the same lines. Before writing document bytes, the shared provider
-policy probes the executable skill-core's locator finds, the one `deploy.py check` reports, with no input, then
-extraction uses that checked path; refusal leaves a gap, not a fallback to another parser. This is not sandboxing.
-Each line starts with `[p<page> l<line>]`, the line counted among the page's lines that hold text.
+families that ship it, Xpdf and Poppler, each read one line per line of text. Their lines can still differ where one
+line's pieces are drawn apart, such as a raised suffix, which Poppler may put on a line of its own. Before writing
+document bytes, the shared provider policy probes the executable skill-core's locator finds, the one `deploy.py check`
+reports, with no input, then extraction uses that checked path; refusal leaves a gap, not a fallback to another
+parser. This is not sandboxing. Each line starts with `[p<page> l<line>]`, the line counted among the page's lines
+that hold text.
 """
 
 from __future__ import annotations

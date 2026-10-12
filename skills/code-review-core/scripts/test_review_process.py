@@ -8,12 +8,16 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from ctypes import wintypes
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import review_process
 from review_process import (
     JobTree,
     ProcessStatus,
@@ -96,6 +100,25 @@ def terminate_and_wait(pid: int) -> bool:
         library.CloseHandle(handle)
 
 
+def ended(pid: int, seconds: float = 20.0) -> bool:
+    """Whether the process `pid` has ended within `seconds`, counted only once Windows has signaled its process
+    object, which it does after closing every handle the process held, its working directory's among them, so the
+    folder it ran in can then be removed. process_status reports it gone as soon as its exit code is set, before that.
+    """
+    synchronize, wait_object_0, invalid_parameter = 0x00100000, 0, 87
+    library = kernel32()
+    handle = library.OpenProcess(synchronize, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()
+        if error == invalid_parameter:
+            return True  # no process has this PID any more
+        raise ctypes.WinError(error)
+    try:
+        return library.WaitForSingleObject(handle, int(seconds * 1000)) == wait_object_0
+    finally:
+        library.CloseHandle(handle)
+
+
 def wait_until(condition, seconds: float = 20.0) -> bool:
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -103,6 +126,69 @@ def wait_until(condition, seconds: float = 20.0) -> bool:
             return True
         time.sleep(0.1)
     return condition()
+
+
+# A command that never exits is refused at SHORT_LIMIT_SECONDS, a short limit, because SignalledTree starts the clock
+# only once the command has signalled that it reached its wait, which it gets up to STARTUP_SECONDS to do on a loaded
+# machine. The refusal may come up to REFUSAL_MARGIN_SECONDS past the limit, which covers killing the command and
+# ending what it started.
+SHORT_LIMIT_SECONDS = 1
+STARTUP_SECONDS = 60
+REFUSAL_MARGIN_SECONDS = 30
+
+
+class SignalledTree(JobTree):
+    """A command's process tree, held as JobTree holds it, that starts the command's time limit only once the command
+    has created `signal`, so how long start-up takes never decides whether the limit is what refuses it. `released`
+    is when the clock started. The condition and Copilot CLI host suites both time their never-exiting commands here.
+    """
+
+    def __init__(self, signal: Path, *, hidden_window: bool = False) -> None:
+        super().__init__(hidden_window=hidden_window)
+        self.signal = signal
+        self.released: float | None = None
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+        with super().hold(process):
+            deadline = time.monotonic() + STARTUP_SECONDS
+            while not self.signal.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.released = time.monotonic()
+            yield
+
+    def assert_refused_at_the_limit(self, test: unittest.TestCase, refused: float) -> None:
+        """That `refused`, a monotonic time, came no sooner than SHORT_LIMIT_SECONDS after the signal, and within
+        REFUSAL_MARGIN_SECONDS of it."""
+        if self.released is None:
+            test.fail("the command ran outside its process tree")
+        test.assertGreaterEqual(refused - self.released, SHORT_LIMIT_SECONDS, "refused no sooner than its limit")
+        test.assertLess(refused - self.released, SHORT_LIMIT_SECONDS + REFUSAL_MARGIN_SECONDS, "refused at its limit")
+
+
+ACCESS_DENIED = 5
+
+
+class FailingKernel:
+    """kernel32 as review_process calls it, with each call named in `failing` failing as a kernel call does: it
+    returns no result and leaves ACCESS_DENIED as the thread's last error. Each failed call's arguments are kept."""
+
+    def __init__(self, *failing: str) -> None:
+        self.real = review_process._kernel32()
+        self.failing = set(failing)
+        self.failed: dict[str, tuple[Any, ...]] = {}
+
+    def __getattr__(self, name: str) -> Callable[..., Any]:
+        call: Callable[..., Any] = getattr(self.real, name)
+        if name not in self.failing:
+            return call
+
+        def fail(*arguments: Any) -> int:
+            self.failed[name] = arguments
+            ctypes.set_last_error(ACCESS_DENIED)
+            return 0
+
+        return fail
 
 
 class SameProcessTests(unittest.TestCase):
@@ -238,11 +324,74 @@ class JobTreeTests(unittest.TestCase):
                 self.assertTrue(process_status(child).alive, "the program outlives the command until the tree ends")
             self.assertTrue(wait_until(lambda: not process_status(child).alive), "the program it started is gone")
 
-    def test_a_command_that_cannot_join_a_job_is_held_without_one(self) -> None:
+    def test_a_command_no_job_holds_is_ended_and_refused_before_it_runs(self) -> None:
+        for call in ("CreateJobObjectW", "SetInformationJobObject", "OpenProcess", "AssignProcessToJobObject"):
+            with (
+                self.subTest(failing=call),
+                tempfile.TemporaryDirectory() as temporary,
+                mock.patch.object(review_process, "_kernel32", return_value=FailingKernel(call)),
+            ):
+                process, pid_file = self.launch(Path(temporary), "stay")
+                with self.assertRaises(OSError) as raised, JobTree().hold(process):
+                    self.fail("the command ran without a job object")
+                self.assertRegex(
+                    str(raised.exception),
+                    r"^Cannot hold the command in a Windows job object, so it was ended: "
+                    rf"\[WinError 5\] {call} failed: ",
+                )
+                cause = raised.exception.__cause__
+                self.assertIsInstance(cause, OSError)
+                self.assertEqual(ACCESS_DENIED, getattr(cause, "winerror", None))
+                self.assertIsNotNone(process.returncode, "the command was ended and reaped before the refusal")
+                self.assertNotEqual(0, process.returncode)
+                self.assertFalse(wait_until(pid_file.exists, 1), "nothing the command could start is running")
+
+    def test_a_command_already_gone_is_refused_rather_than_held_without_a_job(self) -> None:
         process = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
-        process.wait(timeout=60)
-        with JobTree().hold(process):
-            pass  # its handle is closed and its PID free, so no job takes it; the caller still kills it on timeout
+        self.assertEqual(0, process.wait(timeout=60))
+        with self.assertRaises(OSError) as raised, JobTree().hold(process):
+            self.fail("the command was held without a job object")
+        self.assertRegex(
+            str(raised.exception),
+            r"^Cannot hold the command in a Windows job object, so it was ended: \[WinError \d+\] "
+            r"(OpenProcess|AssignProcessToJobObject) failed: ",
+        )
+
+    def test_a_job_that_cannot_end_its_processes_ends_them_when_it_closes(self) -> None:
+        for failing in ("TerminateJobObject", "CloseHandle"):
+            with self.subTest(failing=failing), tempfile.TemporaryDirectory() as temporary:
+                process, pid_file = self.launch(Path(temporary), "stay")
+                kernel = FailingKernel(failing)
+                ending = mock.patch.object(review_process, "_kernel32", return_value=kernel)
+                self.addCleanup(ending.stop)
+                with JobTree().hold(process):
+                    child = self.started_child(pid_file)
+                    ending.start()
+                ending.stop()
+                self.assertIn(failing, kernel.failed)
+                process.wait(timeout=20)  # it sleeps far longer, so returning at all means it was ended
+                gone = wait_until(lambda pid=child: not process_status(pid).alive)
+                self.assertTrue(gone, "the program it started is gone")
+
+    def test_a_job_that_can_neither_end_its_processes_nor_close_says_they_may_still_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            process, pid_file = self.launch(Path(temporary), "stay")
+            kernel = FailingKernel("TerminateJobObject", "CloseHandle")
+            ending = mock.patch.object(review_process, "_kernel32", return_value=kernel)
+            self.addCleanup(ending.stop)
+            with self.assertRaises(OSError) as raised, JobTree().hold(process):
+                child = self.started_child(pid_file)
+                ending.start()
+            ending.stop()
+            self.assertRegex(
+                str(raised.exception),
+                r"^The job's processes may still run: \[WinError 5\] TerminateJobObject failed: .*; "
+                r"\[WinError 5\] CloseHandle failed: ",
+            )
+            self.assertIsNone(process.poll(), "the error is true: the command still runs")
+            self.assertTrue(review_process._kernel32().CloseHandle(kernel.failed["CloseHandle"][0]))
+            process.wait(timeout=20)  # it sleeps far longer, so returning at all means closing the job ended it
+            self.assertTrue(wait_until(lambda: not process_status(child).alive), "and the program it started")
 
     def test_the_hidden_window_is_a_start_option(self) -> None:
         self.assertEqual({}, JobTree().start_options())

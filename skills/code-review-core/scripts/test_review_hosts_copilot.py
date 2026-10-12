@@ -25,9 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_hosts
 from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
-from review_process import process_status
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
+from test_review_process import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
 
 HEAD = "b" * 40
 SOURCE = b"class Example {}\n"
@@ -992,16 +992,20 @@ class CopilotProcessTests(GitTestCase):
         )
 
     def test_a_copilot_that_never_exits_is_killed_at_its_limit_with_the_program_it_started(self) -> None:
+        signal = self.folder / "copilot-started"
         program = (
             "import json, subprocess, sys, threading\n"
             "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
             "print(json.dumps({'child': child.pid}), flush=True)\n"
+            f"open({str(signal)!r}, 'w').close()\n"
             "threading.Event().wait()\n"
         )
         diagnostic = self.folder / "copilot-diagnostic.txt"
+        tree = SignalledTree(signal, hidden_window=True)
         started = time.monotonic()
         with (
-            mock.patch.object(review_hosts, "COPILOT_TIMEOUT_SECONDS", 5),
+            mock.patch.object(review_hosts, "COPILOT_TIMEOUT_SECONDS", SHORT_LIMIT_SECONDS),
+            mock.patch.object(review_hosts, "JobTree", return_value=tree) as made,
             self.assertRaises(RuntimeContractError) as raised,
         ):
             review_hosts._run_bounded(
@@ -1012,13 +1016,47 @@ class CopilotProcessTests(GitTestCase):
                 diagnostic,
                 stdin="prompt",
             )
-        self.assertLess(time.monotonic() - started, 60, "no wait on the program, which holds no pipe to wait on")
-        self.assertEqual(f"GitHub Copilot CLI timed out after 5s; see {diagnostic}", str(raised.exception))
+        refused = time.monotonic()
+        self.assertLess(refused - started, 60, "no wait on the program, which holds no pipe to wait on")
+        made.assert_called_once_with(hidden_window=True)
+        tree.assert_refused_at_the_limit(self, refused)
+        self.assertEqual(
+            f"GitHub Copilot CLI timed out after {SHORT_LIMIT_SECONDS}s; see {diagnostic}", str(raised.exception)
+        )
         child = json.loads(diagnostic.read_text(encoding="utf-8"))["child"]
-        deadline = time.monotonic() + 20
-        while process_status(child).alive and time.monotonic() < deadline:
-            time.sleep(0.1)
-        self.assertFalse(process_status(child).alive, "the program Copilot started is gone too")
+        self.assertTrue(ended(child), "the program Copilot started is gone too")
+
+    def test_a_copilot_no_job_object_holds_is_ended_before_it_runs(self) -> None:
+        signal = self.folder / "copilot-started"
+        processes: list[subprocess.Popen[bytes]] = []
+        popen = subprocess.Popen
+
+        def start(command: list[str], **options: Any) -> subprocess.Popen[bytes]:
+            process: subprocess.Popen[bytes] = popen(command, **options)
+            processes.append(process)
+            return process
+
+        with (
+            mock.patch("review_process._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
+            mock.patch("bounded_process.subprocess.Popen", side_effect=start),
+            self.assertRaises(OSError) as raised,
+        ):
+            review_hosts._run_bounded(
+                review_hosts.subprocess_runner,
+                [sys.executable, "-c", f"open({str(signal)!r}, 'w').close()\nimport time\ntime.sleep(120)\n"],
+                self.folder,
+                self.environment,
+                self.folder / "copilot-diagnostic.txt",
+                stdin="prompt",
+            )
+        self.assertRegex(
+            str(raised.exception),
+            r"^Cannot hold the command in a Windows job object, so it was ended: \[WinError 5\] "
+            r"AssignProcessToJobObject failed: ",
+        )
+        self.assertEqual(1, len(processes))
+        self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")
+        self.assertFalse(signal.exists(), "Copilot was ended before it ran")
 
 
 if __name__ == "__main__":

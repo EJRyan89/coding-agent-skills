@@ -11,12 +11,17 @@ from __future__ import annotations
 import ctypes
 import os
 import subprocess
+import sys
 import warnings
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from bounded_process import KILL_WAIT_SECONDS
 
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CREATE_BREAKAWAY_FROM_JOB = 0x01000000
@@ -32,8 +37,6 @@ class ProcessStatus:
 # Definitions that tests/run_validation.py allows to be copied in another file, with the reason.
 DUPLICATION_ALLOWED = {
     "process_status": "a permanent copy of deployer/platform_support.py's: a deployed skill cannot import the "
-    "deployer, and the deployer cannot import a skill; this policy keeps the two identical",
-    "HiddenWindow": "a permanent copy of deployer/platform_support.py's: a deployed skill cannot import the "
     "deployer, and the deployer cannot import a skill; this policy keeps the two identical",
 }
 
@@ -81,17 +84,6 @@ def same_process(status: ProcessStatus, recorded_start: int | None) -> bool | No
     return status.start_time == recorded_start
 
 
-class HiddenWindow(TypedDict):
-    """The subprocess keyword hidden_window gives, typed so that `**hidden_window()` checks as that keyword."""
-
-    creationflags: int
-
-
-def hidden_window() -> HiddenWindow:
-    """Keyword arguments for subprocess that start a console program without a window of its own."""
-    return {"creationflags": CREATE_NO_WINDOW}
-
-
 PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
@@ -129,8 +121,10 @@ class JobTree:
     process dies first, since it kills its processes when its last handle closes.
 
     A process joins the job right after it starts, before it has loaded enough to start a program of its own, and
-    every process it then starts joins with it. One that cannot join, as when it is already gone, is held without a
-    job, and the caller's kill on timeout still ends the command itself.
+    every process it then starts joins with it. One that cannot join, as when the job cannot be made, it already sits
+    in a job that forbids another, or it is already gone, is never run without one: `hold` ends it and raises the
+    OSError naming the call that failed, as `run_bounded` raises one for a command that cannot start. When the job can
+    neither end its processes nor be closed, leaving `hold` raises an OSError saying they may still run.
     """
 
     def __init__(self, *, hidden_window: bool = False) -> None:
@@ -141,12 +135,16 @@ class JobTree:
 
     @contextmanager
     def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
-        job = _job_holding(process.pid)
+        try:
+            job = _job_holding(process.pid)
+        except OSError as exc:
+            process.kill()
+            process.wait(timeout=KILL_WAIT_SECONDS)
+            raise OSError(f"Cannot hold the command in a Windows job object, so it was ended: {exc}") from exc
         try:
             yield
         finally:
-            if job is not None:
-                _end_job(job)
+            _end_job(job)
 
 
 def _kernel32() -> Any:
@@ -164,38 +162,53 @@ def _kernel32() -> Any:
     return kernel32
 
 
-def _job_holding(pid: int) -> int | None:
-    """A new job that kills its processes when closed, holding the process `pid`; None when it cannot be made.
+def _failed(call: str) -> OSError:
+    """The error of the kernel call `call` that just failed on this thread, naming it."""
+    code = ctypes.get_last_error()
+    return ctypes.WinError(code, f"{call} failed: {ctypes.FormatError(code)}")
+
+
+def _job_holding(pid: int) -> int:
+    """A new job that kills its processes when closed, holding the process `pid`. Raises the OSError of the first
+    call that failed, with nothing left open; a process handle it could not close holds no process in the job.
 
     The caller's Popen still holds the process's handle, so its PID names no other process here.
     """
     kernel32 = _kernel32()
     job = kernel32.CreateJobObjectW(None, None)
     if not job:
-        return None
-    limits = _ExtendedLimits()
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    process = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
-    joined = bool(
-        process
-        and kernel32.SetInformationJobObject(
+        raise _failed("CreateJobObjectW")
+    try:
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel32.SetInformationJobObject(
             job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(limits), ctypes.sizeof(limits)
-        )
-        and kernel32.AssignProcessToJobObject(job, process)
-    )
-    if process:
-        kernel32.CloseHandle(process)
-    if not joined:
-        kernel32.CloseHandle(job)
-        return None
+        ):
+            raise _failed("SetInformationJobObject")
+        process = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
+        if not process:
+            raise _failed("OpenProcess")
+        try:
+            if not kernel32.AssignProcessToJobObject(job, process):
+                raise _failed("AssignProcessToJobObject")
+        finally:
+            kernel32.CloseHandle(process)
+    except OSError:
+        kernel32.CloseHandle(job)  # it holds no process, so closing it ends nothing and a failure leaks only it
+        raise
     return int(job)
 
 
 def _end_job(job: int) -> None:
-    """End every process of the job still running, and close it."""
+    """End every process of the job still running, and close it. Either ends them, since the job kills its processes
+    when its last handle closes, so this raises only when both fail and they may still run."""
     kernel32 = _kernel32()
-    kernel32.TerminateJobObject(job, 1)
-    kernel32.CloseHandle(job)
+    if kernel32.TerminateJobObject(job, 1):
+        kernel32.CloseHandle(job)  # its processes are ended, so a failure leaks only the handle
+        return
+    error = _failed("TerminateJobObject")
+    if not kernel32.CloseHandle(job):
+        raise OSError(f"The job's processes may still run: {error}; {_failed('CloseHandle')}") from error
 
 
 # The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
