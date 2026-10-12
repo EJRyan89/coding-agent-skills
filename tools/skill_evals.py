@@ -55,8 +55,8 @@ Records come from a record source, a function of a scenario and a model that ret
 every expectation of its scenario and model.
 
 Without --records, it runs the scenarios. For each model it makes a fresh home under one throwaway directory,
-deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model
-in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
+deploys this checkout into it with `deploy.py --canary-home`, as tools/runtime_canary.py does, and sets the model's
+ID in that home's copy of the reviewer agent, whose `model: inherit` would otherwise run every reviewer on the
 session's model: a fixture's reviewers have no MODEL line, since neither the generic reviewer nor a scenario's
 specialist names a model, and `inherit` outranks CLAUDE_CODE_SUBAGENT_MODEL.
 The session gets that agent with `--agents`, which outranks the same agent loaded from the home's .claude/agents:
@@ -68,10 +68,12 @@ Then, for each scenario and model, up to --jobs at once, it starts Claude Code h
 its working directory, so the deployed skills and agent load as project ones, and the prompt
 `/<skill> <prepare_arguments>`, or `/<skill> "<document>"` with the path of a document scenario's document, staged in
 the run's folder; a document that cannot be staged fails the run before any session starts. The session, which
-orchestrates the skill, stays on SESSION_MODEL. It has no Workflow tool, so reviewers start as native subagents, whose
-messages --forward-subagent-text puts in the transcript with the model each ran on, and --include-hook-events puts
-each guard decision beside them. A run counts only if every one of those messages names that model's family; a run
-with no subagent, or one on another model, fails every expectation, since the model was not the one judged.
+orchestrates the skill, stays on SESSION_MODEL's ID. It has no Workflow tool, so reviewers start as native
+subagents, whose messages --forward-subagent-text puts in the transcript with the model each ran on, and
+--include-hook-events puts each guard decision beside them. A run counts only if every one of those messages names
+that model's ID, a dated suffix allowed, and every message of the session names the session's; a run with no
+subagent, or one on another model or another generation of the same family, fails every expectation, since the model
+was not the one judged.
 Edits are accepted, standing in for the user who approves each reviewer's result file, which the reviewers write
 inside the home, and the reviewers' self-check and source commands are allowed; the skill's allowed-tools grant the
 rest. Each run's temporary directory is its own folder in the home, through TMPDIR, which Python reads first on every
@@ -139,10 +141,14 @@ from tools.runtime_canary import Completed, Runner
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "skill-evals"
 RESULTS = REPOSITORY_ROOT / "docs" / "skill-evaluations.md"
-# The reviewer subagent models a run is judged on, as Claude Code names them. The one place they are named.
-MODELS = ("haiku", "sonnet", "opus")
+# The reviewer subagent models a run is judged on, each by its name and the model ID a run sets and must find in its
+# messages. The one place they are named. A run sets the ID, never Claude Code's alias of the same name, since an alias
+# can resolve to another generation of the family, which would then be recorded under this name.
+MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
 # The session's own model, which orchestrates the skill: the strongest, so the orchestration never limits a result.
-SESSION_MODEL = MODELS[-1]
+SESSION_MODEL = list(MODELS)[-1]
+# The dated suffix a model's messages may carry after its ID.
+DATED = re.compile(r"-[0-9]{8}")
 DEFAULT_TIMEOUT = 1800
 DEFAULT_JOBS = 3
 # The reviewer agent the runs set the model of, in each model's home, and the guard its hook runs: the hook names
@@ -676,7 +682,7 @@ def claude_command(executable: str, request: str, agents: Path) -> list[str]:
         "-p",
         request,
         "--model",
-        SESSION_MODEL,
+        MODELS[SESSION_MODEL],
         "--output-format",
         "stream-json",
         "--verbose",
@@ -709,17 +715,19 @@ def run_environment(base: Mapping[str, str], run: Path, config: Path) -> dict[st
 
 
 def set_reviewer_model(home: Path, model: str) -> str | None:
-    """Put the model in the home's copy of the reviewer agent in place of `model: inherit`; return why it could
-    not, or None."""
+    """Put the model's ID in the home's copy of the reviewer agent in place of `model: inherit`; return why it
+    could not, or None."""
     path = home / REVIEWER_AGENT
     try:
         lines = path.read_text(encoding="utf-8").split("\n")
         at = lines.index("model: inherit", 1, lines.index("---", 1))
     except (OSError, ValueError):
         return f"{runtime_canary.forward(path)} has no frontmatter line `model: inherit` to set"
-    lines[at] = f"model: {model}"
+    lines[at] = f"model: {MODELS[model]}"
     path.write_text("\n".join(lines), encoding="utf-8")
-    return None if frontmatter.read(path).string("model") == model else f"the reviewer agent does not read as {model}"
+    if frontmatter.read(path).string("model") == MODELS[model]:
+        return None
+    return f"the reviewer agent does not read as {MODELS[model]}"
 
 
 class AgentError(Exception):
@@ -825,6 +833,11 @@ def stream_models(output: str) -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(session), frozenset(subagents)
 
 
+def names_model(name: str, model_id: str) -> bool:
+    """Whether a message's model is that model ID, with or without a dated suffix."""
+    return name == model_id or (name.startswith(model_id) and DATED.fullmatch(name[len(model_id) :]) is not None)
+
+
 def find_record(directory: Path) -> Record:
     """The highest review version under the canary roots in a run's temporary directory."""
     records = []
@@ -844,7 +857,7 @@ def find_record(directory: Path) -> Record:
 def run_failure(model: str, completed: Completed, timeout: float, skill: str, missing: str | None) -> str | None:
     """Why a run counts for nothing, or None when it recorded a review on the model it was given."""
     listed, denials = runtime_canary.claude_stream(completed.stdout)
-    reviewers = stream_models(completed.stdout)[1]
+    session, reviewers = stream_models(completed.stdout)
     if missing is not None:
         reasons = [missing]
         if completed.timed_out:
@@ -858,9 +871,12 @@ def run_failure(model: str, completed: Completed, timeout: float, skill: str, mi
         return "; ".join(reasons)
     if not reviewers:
         return "no reviewer subagent ran, so the record is not the model's"
-    other = sorted(name for name in reviewers if f"claude-{model}-" not in name)
+    other = sorted(name for name in reviewers if not names_model(name, MODELS[model]))
     if other:
-        return f"reviewers ran on {', '.join(other)}, not {model}"
+        return f"reviewers ran on {', '.join(other)}, not {MODELS[model]}"
+    elsewhere = sorted(name for name in session if not names_model(name, MODELS[SESSION_MODEL]))
+    if elsewhere:
+        return f"the session ran on {', '.join(elsewhere)}, not {MODELS[SESSION_MODEL]}"
     return None
 
 
@@ -1016,24 +1032,34 @@ def result_rows(
     today: datetime.date,
 ) -> list[str]:
     """One row per model: the model IDs its reviewers ran on, its expectations passed, and the run's versions; a
-    model none of whose reviewers ran is recorded as not run, with the first reason."""
+    model none of whose reviewers ran is recorded as not run, with the first reason. A scenario none of whose
+    reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model,
+    so its cell says `not run` and its expectations are left out of the model's count."""
     rows = []
     for model in models:
         mine = [runs[(scenario.name, model)] for scenario in scenarios if (scenario.name, model) in runs]
         reviewers = sorted({name for run in mine for name in run.reviewers})
         session = ", ".join(sorted({name for run in mine for name in run.session})) or "unknown"
         theirs = [outcome for outcome in outcomes if outcome.model == model]
-        passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         if reviewers:
+            unreviewed = {
+                scenario.name
+                for scenario in scenarios
+                if (scenario.name, model) in runs and not runs[(scenario.name, model)].reviewers
+            }
+            theirs = [outcome for outcome in theirs if outcome.scenario not in unreviewed]
             identifier = ", ".join(reviewers)
             detail = ", ".join(
-                f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
+                f"{scenario.name} not run"
+                if scenario.name in unreviewed
+                else f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
                 f"/{sum(1 for o in theirs if o.scenario == scenario.name)}"
                 for scenario in scenarios
             )
         else:
             identifier = "not run"
             detail = next((outcome.failure for outcome in theirs if outcome.failure), "no run")
+        passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         cells = [skill, model, identifier, passed, detail, session, version, today.isoformat()]
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows
@@ -1199,7 +1225,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("skill", help="the skill whose scenarios to judge, a folder under tests/fixtures/skill-evals")
     result.add_argument("--records", type=Path, help="judge a folder of <scenario>/<model>.json records; run nothing")
     result.add_argument("--scenario", action="append", default=[], help="judge only this scenario (repeatable)")
-    result.add_argument("--model", action="append", choices=MODELS, help="judge only this model (repeatable)")
+    result.add_argument("--model", action="append", choices=list(MODELS), help="judge only this model (repeatable)")
     result.add_argument("--write", action="store_true", help="replace the skill's rows in docs/skill-evaluations.md")
     result.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"seconds for each run (default {DEFAULT_TIMEOUT})"
