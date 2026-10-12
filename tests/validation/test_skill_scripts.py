@@ -812,7 +812,7 @@ def entry_points_with_a_main_block() -> list[Path]:
     ]
 
 
-class EntryPointRunnerTests(unittest.TestCase):
+class EntryPointRunnerTests(GitTestCase):
     def test_every_entry_point_turns_a_failure_into_a_failed_line_and_ctrl_c_into_exit_130(self) -> None:
         # The policy proves each block starts with the runner; this runs each block as written with its main failing.
         entry_points = entry_points_with_a_main_block()
