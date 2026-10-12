@@ -112,6 +112,18 @@ Report the regression with the commit range between the two deployments. The pin
 
 To move back to `main`, run `python deploy.py --all --unpin` from the clone, or, when the skill stopped with `PINNED`, start it again with `--unpin`. Either replaces the pinned deployment and says so: the deployer's report prints `Replaced the deployment pinned with --at <ref> to <commit>.` after the deployed items and any backups, before the Run ID and Manifest lines, and the skill reports that line.
 
+## A tool that does not finish
+
+Every tool the deployer runs, such as Git Bash, ShellCheck, and PowerShell checking the rendered skills, git reading the checkout, and the version probes of `check` and `verify`, runs under one deadline, `TOOL_DEADLINE_SECONDS` in `deployer/platform_support.py`. It is minutes long, so a slow but working tool on a busy machine still finishes; a tool that reaches it is almost always stuck. The deployer then ends the tool and every process it started, and stops with `ERROR: <tool> did not finish within <seconds> seconds`, followed by the tool's path.
+
+What that leaves depends on when it happened:
+
+- While the deployment was checking the rendered skills, or reading the checkout, it had changed nothing yet. It refuses as a failed validation does, releases the lock, and leaves no journal, so you can retry at once.
+- A tool that times out after the deployment began changing items fails it like any other error: the run reconciles its own journal before it exits, as [Interrupted deployments](#interrupted-deployments) describes, and releases the lock.
+- `check` and `verify` change nothing, and stop with the same message.
+
+Run the tool named in the message by itself, such as `shellcheck --version`, to see whether it hangs there too. An antivirus scan of a freshly installed tool, a prompt the tool shows only in a window of its own, or a broken install are the usual causes; repair or reinstall it as [Installing the tools](installation.md#installing-the-tools) says, then retry.
+
 ## Configuration that no longer reads
 
 `python deploy.py configure` writes each source's configuration, and every deployment reads it strictly. When an update removes a variable the file still sets, deployment stops, names the key, and asks you to run `python deploy.py configure`, which drops that key with a `NOTE`, keeps every other value, and saves the file. If the file no longer parses for another reason, for example because it was edited by hand, deployment stops and names the problem. `configure` reads the same file, so start from an empty one:
