@@ -1,6 +1,12 @@
-"""The second-level Markdown section reader shared by repository tools and validation."""
+"""The Markdown readers shared by skills, repository tools, and validation: the second-level section reader and the
+inline code span pattern."""
 
 from __future__ import annotations
+
+import re
+
+# An inline code span on one line, with its text as the first group, as a skill reads commands or cited paths from it.
+CODE_SPAN = re.compile(r"`([^`\n]+)`")
 
 
 def markdown_section(text: str, heading: str) -> str | None:

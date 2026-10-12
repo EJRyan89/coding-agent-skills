@@ -129,6 +129,23 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
             ),
         )
 
+    def test_a_definition_in_a_module_level_if_try_or_with_block_is_a_copy(self) -> None:
+        nested = "".join(f"    {line}" for line in self.SHARED.splitlines(keepends=True))
+        self.assertEqual(
+            [
+                "shared is defined identically in deployer/branch.py:4, deployer/guarded.py:4, deployer/one.py:1 and "
+                f"tools/managed.py:2{self.FIX}"
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": self.SHARED,
+                    "deployer/branch.py": "if FLAG:\n    pass\nelse:\n" + nested,
+                    "deployer/guarded.py": "try:\n    import json\nexcept ImportError:\n" + nested,
+                    "tools/managed.py": "with OPENED:\n" + nested,
+                }
+            ),
+        )
+
     def test_short_nested_test_and_other_root_definitions_and_repeats_in_one_file_are_not_copies(self) -> None:
         short = "def short(value):\n    total = value + 1\n    return total\n"
         nested = "".join(f"    {line}" for line in self.SHARED.splitlines(keepends=True))
@@ -137,11 +154,137 @@ class DuplicatedDefinitionPolicy(unittest.TestCase):
             self.problems(
                 {
                     "deployer/one.py": self.SHARED + "\n\n" + short + "\n\n" + self.SHARED,
-                    "deployer/nested.py": "if True:\n" + nested,
+                    "deployer/nested.py": "def outer():\n" + nested + "    return shared\n",
                     "deployer/test_one.py": self.SHARED,
                     "skills/s/scripts/test_two.py": self.SHARED,
                     "tests/three.py": self.SHARED,
                     "tools/short.py": short,
+                }
+            ),
+        )
+
+
+class DuplicatedConstantPolicy(unittest.TestCase):
+    FIX = " hold the same value; import one copy, or sanction it in each copy's module with DUPLICATION_ALLOWED"
+
+    def problems(self, files: Mapping[str, str]) -> list[str]:
+        with tempfile.TemporaryDirectory() as temporary:
+            write_fixture_tree(Path(temporary), files)
+            return duplicated_definition_problems(Path(temporary))
+
+    def test_a_pattern_compiled_in_another_module_under_another_name_fails_and_names_both(self) -> None:
+        self.assertEqual(
+            [f"VERSION at deployer/one.py:3 and TAG at tools/two.py:4{self.FIX}"],
+            self.problems(
+                {
+                    "deployer/one.py": 'import re\n\nVERSION = re.compile(r"v[0-9]+")\n',
+                    # The import alias and an annotation do not hide the copy.
+                    "tools/two.py": (
+                        'import re as regex\nfrom typing import Final\n\nTAG: Final = regex.compile("v[0-9]+")\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_a_pattern_is_compared_with_its_flags_by_value_and_through_a_from_import(self) -> None:
+        pattern = '"^v[0-9]+$"'
+        self.assertEqual(
+            [f"FLAGGED at deployer/one.py:3 and SAME at tools/two.py:4{self.FIX}"],
+            self.problems(
+                {
+                    "deployer/one.py": f"import re\n\nFLAGGED = re.compile({pattern}, re.I | re.M)\n",
+                    "tools/two.py": (
+                        "import re\nfrom re import compile as build\n\n"
+                        f"SAME = build(pattern={pattern}, flags=re.MULTILINE | re.IGNORECASE)\n"
+                    ),
+                    "tools/plain.py": f"import re\n\nPLAIN = re.compile({pattern})\n",
+                    "tools/other.py": f"import re\n\nOTHER = re.compile({pattern}, re.ASCII)\n",
+                }
+            ),
+        )
+
+    def test_a_long_literal_or_a_collection_of_literals_copied_fails_wherever_it_is_assigned(self) -> None:
+        self.assertEqual(
+            [
+                f"ROOTS at deployer/one.py:2 and FOLDERS at tools/two.py:3{self.FIX}",
+                f"SPAN at deployer/one.py:1, FIRST at tools/two.py:1 and SECOND at tools/two.py:1{self.FIX}",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": (
+                        'SPAN = "a long enough literal"\nROOTS = frozenset({"skills", "deployer", "tools"})\n'
+                        'OTHER = ("skills", "deployer", "docs")\n'
+                    ),
+                    # A collection compares by its members in any order, and a conditional assignment is still one.
+                    "tools/two.py": (
+                        'FIRST = SECOND = "a long enough literal"\n'
+                        'if READY:\n    FOLDERS = ["tools", "skills", "deployer"]\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_a_copy_sanctioned_in_every_module_under_its_own_name_passes(self) -> None:
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": (
+                        'DUPLICATION_ALLOWED = {"SPAN": "skills/s/scripts/two.py holds a copy"}\n'
+                        'SPAN = "a long enough literal"\n'
+                    ),
+                    "skills/s/scripts/two.py": (
+                        'DUPLICATION_ALLOWED = {"WIDE": "a copy of deployer/one.py\'s, which a skill cannot '
+                        'import"}\nWIDE = "a long enough literal"\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_a_stale_sanction_or_one_that_does_not_name_the_other_copy_fails(self) -> None:
+        self.assertEqual(
+            [
+                "deployer/one.py: DUPLICATION_ALLOWED allows SPAN, which no other file defines identically",
+                "skills/s/scripts/two.py: DUPLICATION_ALLOWED gives a reason for WIDE that does not name every other "
+                "copy: tools/three.py",
+                "tools/three.py: DUPLICATION_ALLOWED gives a reason for NARROW that does not name every other copy: "
+                "skills/s/scripts/two.py",
+            ],
+            self.problems(
+                {
+                    "deployer/one.py": (
+                        'DUPLICATION_ALLOWED = {"SPAN": "copied into tools/four.py"}\nSPAN = "a long enough literal"\n'
+                    ),
+                    "tools/four.py": 'SPAN = "a long enough literal, changed"\n',
+                    "skills/s/scripts/two.py": (
+                        'DUPLICATION_ALLOWED = {"WIDE": "a skill cannot import tools"}\nWIDE = "another long literal"\n'
+                    ),
+                    "tools/three.py": (
+                        'DUPLICATION_ALLOWED = {"NARROW": "a skill cannot import it"}\n'
+                        'NARROW = "another long literal"\n'
+                    ),
+                }
+            ),
+        )
+
+    def test_short_common_literals_exports_sanctions_and_values_below_module_level_are_not_copies(self) -> None:
+        common = (
+            'UNKNOWN = "unknown"\nRUN_FILE = "run.json"\nSHELLS = ("bash", "sh", "shell")\nTIMEOUT = 120\n'
+            '__all__ = ["first_exported_name", "second_exported_name"]\n'
+            'KINDS_ALLOWED = ("a sanction written as a tuple",)\n'
+            'def outer():\n    INNER = "a long enough literal"\n    return INNER\n'
+            'class Holder:\n    INNER = "a long enough literal"\n'
+            'BUILT = "a long enough " + "literal"\n'
+        )
+        self.assertEqual(
+            [],
+            self.problems(
+                {
+                    "deployer/one.py": common,
+                    "tools/two.py": common,
+                    "deployer/test_one.py": 'SPAN = "a long enough literal"\n',
+                    "tests/three.py": 'SPAN = "a long enough literal"\n',
+                    "tools/four.py": 'SPAN = "a long enough literal"\n',
                 }
             ),
         )

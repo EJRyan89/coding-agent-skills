@@ -590,6 +590,13 @@ class SkillScriptsFixtures(unittest.TestCase):
                 # Text that reads like an import is not one.
                 "skills/quoted/SKILL.md": "# quoted\n",
                 "skills/quoted/scripts/run.py": 'HELP = """\nimport github\nfrom github import Client\n"""\n',
+                # A sanction's reason names a file that holds a copy, which the module does not run.
+                "deploy-meta/sanctioned.json": json.dumps({"skill_deps": ["core"]}),
+                "skills/shared/core/scripts/store.py": (
+                    'DUPLICATION_ALLOWED = {\n    "LIMIT": "skills/shared/core/scripts/github.py holds a copy",\n}\n'
+                ),
+                "skills/sanctioned/SKILL.md": "# sanctioned\n",
+                "skills/sanctioned/scripts/run.py": "import store\n",
             }
             write_fixture_tree(root, files)
             self.assertEqual(

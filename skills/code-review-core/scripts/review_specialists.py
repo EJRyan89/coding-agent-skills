@@ -112,6 +112,13 @@ def _header_path(rest: str) -> str | None:
     return None
 
 
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "LINE_UNSAFE": (
+        "skills/code-review-core/scripts/review_documents.py holds the same unsafe-line pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 # A character that could end or reshape a line of a reviewer prompt: every C0 control, DEL, and the characters
 # Python's own `splitlines` also breaks on.
 LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")

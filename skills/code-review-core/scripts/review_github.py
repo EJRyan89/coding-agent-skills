@@ -21,6 +21,13 @@ from review_config import validate_repository_identity
 from review_state import utc_date
 
 PULL_PAGE_SIZE = 100  # the most GitHub's REST API returns per page
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "OBJECT_ID": (
+        "skills/code-review-core/scripts/review_runtime.py holds the same Git object ID pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 

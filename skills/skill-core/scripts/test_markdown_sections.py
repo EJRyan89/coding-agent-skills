@@ -1,4 +1,4 @@
-"""Regression tests for the shared second-level Markdown section reader."""
+"""Regression tests for the shared Markdown readers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from markdown_sections import markdown_section
+from markdown_sections import CODE_SPAN, markdown_section
 
 
 class MarkdownSectionTests(unittest.TestCase):
@@ -27,6 +27,14 @@ class MarkdownSectionTests(unittest.TestCase):
         text = "## One \t\r\n\r\nfirst  \r\nlast\t\r\n"
         self.assertEqual("\nfirst  \nlast\t\n", markdown_section(text, "## One"))
         self.assertEqual("", markdown_section("## One", "## One"))
+
+
+class CodeSpanTests(unittest.TestCase):
+    def test_a_code_span_is_one_backtick_pair_on_one_line_with_its_text_as_the_group(self) -> None:
+        self.assertEqual(["git status", " a.py "], CODE_SPAN.findall("Run `git status`, then ` a.py `."))
+
+    def test_a_span_does_not_cross_a_line_or_match_an_unclosed_backtick(self) -> None:
+        self.assertEqual([], CODE_SPAN.findall("`open\nclose and `unclosed"))
 
 
 if __name__ == "__main__":

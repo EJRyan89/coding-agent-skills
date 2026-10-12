@@ -129,10 +129,13 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "code-review-core" / "scripts"))
 
 import frontmatter
 from console import use_utf8_output
 from git_client import GitClient, GitError
+from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
+from review_records import LEDGER_ID, SEVERITY_RANK
 
 from deployer import fsops, tools
 from tools import runtime_canary
@@ -178,9 +181,11 @@ RESULTS_HEADER = (
     "| Skill | Model | Model ID | Passed | By scenario | Session model | Claude Code | Date |",
     "| --- | --- | --- | --- | --- | --- | --- | --- |",
 )
-SEVERITIES = ("SUGGESTION", "SHOULD_FIX", "MUST_FIX")
+# The record's own vocabulary, from code-review-core's record module, in a stable order for messages: severities from
+# the lowest rank, dispositions alphabetically.
+SEVERITIES = tuple(sorted(SEVERITY_RANK, key=SEVERITY_RANK.__getitem__))
 VERDICTS = ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE")
-DISPOSITIONS = ("addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify")
+DISPOSITIONS = tuple(sorted(RECORD_DISPOSITIONS))
 MODES = ("initial", "re-review")
 SCENARIO_FIELDS = frozenset({"skill", "mode", "expectations"})
 # The folder in a run's own folder where a document scenario's document is written for the skill to review.
@@ -188,7 +193,6 @@ DOCUMENT_FOLDER = "document"
 # The identity the throwaway checkout's one commit is made under, so no identity of the user's is needed or recorded,
 # and signing is disabled.
 COMMIT = ["-c", "user.name=skill-evals", "-c", "user.email=skill-evals@example.invalid", "-c", "commit.gpgsign=false"]
-ENTRY = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 
 Record = Mapping[str, Any]
 
@@ -279,7 +283,7 @@ def _lines(value: Any) -> tuple[int, ...]:
 
 
 def _entry(value: Any) -> tuple[int, str]:
-    match = ENTRY.fullmatch(value) if isinstance(value, str) else None
+    match = LEDGER_ID.fullmatch(value) if isinstance(value, str) else None
     if match is None:
         raise ScenarioError(f"entry must look like v1:F001, not {quote(str(value))}")
     return int(match[1]), match[2]

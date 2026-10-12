@@ -75,6 +75,13 @@ HEADING_MARKER = re.compile(r"#{1,6} ")
 HASH_FIRST = re.compile(r"\\*#")
 XML_ENCODING = re.compile(r"""<\?xml[^>]*?\bencoding\s*=\s*["']([^"']*)["']""")
 DECLARATION = re.compile(rb"<!(?:doctype|entity)", re.IGNORECASE)
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "LINE_UNSAFE": (
+        "skills/code-review-core/scripts/review_specialists.py holds the same unsafe-line pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 # Every C0 control, DEL, and the characters Python's `splitlines` also breaks on: none may split or reshape a line.
 LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 EXTRACTED_NOTES = {

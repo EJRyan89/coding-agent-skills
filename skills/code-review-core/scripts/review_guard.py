@@ -78,6 +78,13 @@ SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
 FIRST = "read the prompt file your task names first"
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "ROLE_ID": (
+        "skills/code-review-core/scripts/review_runtime.py holds the same slug pattern; code-review-core's validators "
+        "are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Claim = tuple[Path, dict[str, str]]

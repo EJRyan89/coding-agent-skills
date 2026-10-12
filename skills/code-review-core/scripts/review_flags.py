@@ -28,6 +28,13 @@ FIELDS = frozenset(
         "resolution",
     }
 )
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "FINDING_ID": (
+        "skills/code-review-core/scripts/review_records.py holds the same finding ID pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 # A finding's ID within its review, as records assign it.
 FINDING_ID = re.compile(r"F[0-9]{3,}")
 
