@@ -12,6 +12,9 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import DeployerTestCase, Result, forward
 
 from deployer import discovery, platform_support, verify
@@ -72,7 +75,7 @@ class Runtimes:
         return answer
 
 
-class AdapterLineTests(unittest.TestCase):
+class AdapterLineTests(GitTestCase):
     def test_an_adapter_is_found_only_as_the_one_enabled_copy_of_its_name_in_its_own_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             ours, other = Path(temporary) / "ours", Path(temporary) / "other"
@@ -92,7 +95,7 @@ class AdapterLineTests(unittest.TestCase):
                     self.assertEqual(expected, verify.adapter_line("alpha", copies, ours))
 
 
-class ParsingTests(unittest.TestCase):
+class ParsingTests(GitTestCase):
     def test_copilot_paths_are_skill_directories_with_forward_slashes(self) -> None:
         found = discovery.parse_copilot(
             copilot_answer(

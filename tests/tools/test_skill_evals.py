@@ -29,6 +29,7 @@ import review_guard
 import review_pipeline
 import review_specialists
 from git_client import GitClient, GitResult
+from git_test_base import GitTestCase
 from review_config import write_config
 from review_documents import document_format, extract, locations, split_label
 from review_github import GitHubClient
@@ -150,7 +151,7 @@ def run_main(argv: Sequence[str], root: Path) -> tuple[int, list[str]]:
     return status, output.getvalue().splitlines()
 
 
-class LoaderTests(unittest.TestCase):
+class LoaderTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -342,7 +343,7 @@ class LoaderTests(unittest.TestCase):
                 self.assertIn(message, str(raised.exception))
 
 
-class FindingTests(unittest.TestCase):
+class FindingTests(GitTestCase):
     spec: ClassVar[dict[str, Any]] = {
         "kind": "finding",
         "path": "store.go",
@@ -395,7 +396,7 @@ class FindingTests(unittest.TestCase):
         )
 
 
-class NoFindingAboveTests(unittest.TestCase):
+class NoFindingAboveTests(GitTestCase):
     def test_on_listed_paths(self) -> None:
         spec = {"kind": "no_finding_above", "severity": "SUGGESTION", "paths": ["labels.go"]}
         self.assertIsNone(
@@ -413,7 +414,7 @@ class NoFindingAboveTests(unittest.TestCase):
         self.assertEqual("no_finding_above SUGGESTION *", skill_evals.expectation(spec, "initial").label)
 
 
-class OnlyAtTests(unittest.TestCase):
+class OnlyAtTests(GitTestCase):
     spec: ClassVar[dict[str, Any]] = {"kind": "only_at", "path": "draft.md", "lines": [17]}
 
     def test_every_finding_of_any_severity_must_be_there(self) -> None:
@@ -432,7 +433,7 @@ class OnlyAtTests(unittest.TestCase):
         self.assertIn("distinct positive line", refusal({**self.spec, "lines": []}, "initial"))
 
 
-class VerdictTests(unittest.TestCase):
+class VerdictTests(GitTestCase):
     def test_verdict(self) -> None:
         spec = {"kind": "verdict", "verdict": "CHANGES_REQUESTED"}
         self.assertIsNone(check(spec, record(verdict="CHANGES_REQUESTED")))
@@ -440,7 +441,7 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual("verdict CHANGES_REQUESTED", skill_evals.expectation(spec, "initial").label)
 
 
-class LedgerTests(unittest.TestCase):
+class LedgerTests(GitTestCase):
     ledger: ClassVar[list[dict[str, Any]]] = [
         entry(1, "F001", (2, "still_present")),
         entry(1, "F002", (2, "still_present")),
@@ -465,7 +466,7 @@ class LedgerTests(unittest.TestCase):
             check(spec, record(version=2))
 
 
-class DispositionTests(unittest.TestCase):
+class DispositionTests(GitTestCase):
     ledger: ClassVar[list[dict[str, Any]]] = [
         entry(1, "F001", (2, "still_present")),
         entry(1, "F002", (2, "addressed")),
@@ -490,7 +491,7 @@ class DispositionTests(unittest.TestCase):
                 )
 
 
-class RepeatsTests(unittest.TestCase):
+class RepeatsTests(GitTestCase):
     spec: ClassVar[dict[str, Any]] = {"kind": "repeats", "path": "store.go", "lines": [44, 45], "entry": "v1:F001"}
     link: ClassVar[dict[str, Any]] = {"version": 1, "id": "F001"}
 
@@ -557,7 +558,7 @@ class RepeatsTests(unittest.TestCase):
                 check(self.spec, value)
 
 
-class RecordShapeTests(unittest.TestCase):
+class RecordShapeTests(GitTestCase):
     def test_malformed_records_raise(self) -> None:
         verdict = skill_evals.expectation({"kind": "verdict", "verdict": "APPROVED"}, "initial")
         clean = skill_evals.expectation({"kind": "no_finding_above", "severity": "SUGGESTION"}, "initial")
@@ -571,7 +572,7 @@ class RecordShapeTests(unittest.TestCase):
             ledger.check(record(ledger=[{"version": 1, "id": "F001"}]))
 
 
-class JudgeTests(unittest.TestCase):
+class JudgeTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -735,7 +736,7 @@ def constant(value: dict[str, Any]) -> skill_evals.RecordSource:
     return lambda _scenario, _model: value
 
 
-class ReviewPrsScenarioTests(unittest.TestCase):
+class ReviewPrsScenarioTests(GitTestCase):
     """The shipped scenarios load, point at lines that changed, and an ideal run of each passes."""
 
     def setUp(self) -> None:
@@ -896,7 +897,7 @@ def design_document(scenario: str) -> Path:
     return path.resolve()
 
 
-class ReviewDocumentScenarioTests(unittest.TestCase):
+class ReviewDocumentScenarioTests(GitTestCase):
     """The review-document scenarios review the review-prs design documents, which they name rather than copy, one
     edit of the clean one, and the gaps document written as a Word draft and as a PDF; an ideal run of each passes."""
 
@@ -1013,7 +1014,7 @@ class ReviewDocumentScenarioTests(unittest.TestCase):
                 self.assertEqual([], [outcome for outcome in outcomes if outcome.failure is not None])
 
 
-class DocumentStagingTests(unittest.TestCase):
+class DocumentStagingTests(GitTestCase):
     """A document scenario's document is written into the run's folder for the skill to find by its path."""
 
     def setUp(self) -> None:
@@ -1056,7 +1057,10 @@ class DocumentStagingTests(unittest.TestCase):
             hook = hooks / name
             hook.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '../hook-effects'\n", encoding="utf-8")
             hook.chmod(0o755)
-        config = self.root / "global.gitconfig"
+        # The global configuration GitTestCase gives the test, its empty hooks folder replaced by the hooks and signing
+        # a user may have.
+        config = self.git_home.config
+        self.git.output(["config", "--file", str(config), "--unset", "core.hooksPath"])
         self.git.output(
             ["config", "--file", str(config), setting, str(hooks if setting == "core.hooksPath" else template)]
         )
@@ -1065,36 +1069,33 @@ class DocumentStagingTests(unittest.TestCase):
         scenario = self.scenarios["committed-edit"]
         sources = (document_of(scenario), base_of(scenario), config, *hooks.iterdir())
         before = {path: path.read_bytes() for path in sources}
-        environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
-        environment.update({"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
-        with mock.patch.dict(os.environ, environment, clear=True):
-            control = self.root / "control"
-            control.mkdir()
-            self.git.output(["init", "--quiet"], directory=control)
-            self.git.output(
-                [*skill_evals.COMMIT, "commit", "--quiet", "--no-verify", "--allow-empty", "-m", "Control"],
-                directory=control,
-            )
-            effects = self.root / "hook-effects"
-            self.assertEqual(["prepare-commit-msg", "post-commit"], effects.read_text(encoding="utf-8").splitlines())
-            effects.unlink()
+        control = self.root / "control"
+        control.mkdir()
+        self.git.output(["init", "--quiet"], directory=control)
+        self.git.output(
+            [*skill_evals.COMMIT, "commit", "--quiet", "--no-verify", "--allow-empty", "-m", "Control"],
+            directory=control,
+        )
+        effects = self.root / "hook-effects"
+        self.assertEqual(["prepare-commit-msg", "post-commit"], effects.read_text(encoding="utf-8").splitlines())
+        effects.unlink()
 
-            staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
-            self.assertFalse(effects.exists(), "the evaluation base commit ran a user hook")
-            self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
-            self.assertEqual(
-                base_of(scenario).read_bytes(),
-                self.git.run(["show", f"HEAD:{staged.name}"], directory=staged.parent).output_bytes(),
-            )
-            self.assertEqual("1", self.git.output(["rev-list", "--count", "HEAD"], directory=staged.parent).strip())
-            self.assertEqual(
-                "skill-evals <skill-evals@example.invalid>",
-                self.git.output(["log", "-1", "--format=%an <%ae>"], directory=staged.parent).strip(),
-            )
-            self.assertNotIn("gpgsig", self.git.output(["cat-file", "commit", "HEAD"], directory=staged.parent))
-            self.assertEqual(
-                f" M {staged.name}", self.git.output(["status", "--porcelain"], directory=staged.parent).rstrip()
-            )
+        staged = skill_evals.stage_document(scenario, self.root / "document", self.git)
+        self.assertFalse(effects.exists(), "the evaluation base commit ran a user hook")
+        self.assertEqual(document_of(scenario).read_bytes(), staged.read_bytes())
+        self.assertEqual(
+            base_of(scenario).read_bytes(),
+            self.git.run(["show", f"HEAD:{staged.name}"], directory=staged.parent).output_bytes(),
+        )
+        self.assertEqual("1", self.git.output(["rev-list", "--count", "HEAD"], directory=staged.parent).strip())
+        self.assertEqual(
+            "skill-evals <skill-evals@example.invalid>",
+            self.git.output(["log", "-1", "--format=%an <%ae>"], directory=staged.parent).strip(),
+        )
+        self.assertNotIn("gpgsig", self.git.output(["cat-file", "commit", "HEAD"], directory=staged.parent))
+        self.assertEqual(
+            f" M {staged.name}", self.git.output(["status", "--porcelain"], directory=staged.parent).rstrip()
+        )
         self.assertEqual(before, {path: path.read_bytes() for path in sources})
 
     def test_the_skill_starts_on_the_staged_document_and_a_fixture_scenario_on_its_fixture(self) -> None:
@@ -1219,7 +1220,7 @@ def temporary_root(test: unittest.TestCase) -> Path:
     return root
 
 
-class FixtureCanaryRunTests(unittest.TestCase):
+class FixtureCanaryRunTests(GitTestCase):
     """Each shipped scenario runs through prepare_arguments' fixture canary, under the configuration a run writes, a
     stub reviewer, check, and finalize with no gh call, and the record finalize writes is judged by the same code a
     model's run is."""
@@ -1330,7 +1331,7 @@ def scenario_of(mode: str) -> Scenario:
     return next(item for item in skill_evals.load_scenarios("review-prs") if item.mode == mode)
 
 
-class RunPieceTests(unittest.TestCase):
+class RunPieceTests(GitTestCase):
     def setUp(self) -> None:
         self.root = temporary_root(self)
         self.initial, self.re_review = scenario_of("initial"), scenario_of("re-review")
@@ -1592,7 +1593,7 @@ RESULTS_TEXT = "\n".join(
 )
 
 
-class ResultsTests(unittest.TestCase):
+class ResultsTests(GitTestCase):
     def test_rows_name_the_models_and_a_model_that_never_ran(self) -> None:
         scenarios = [Scenario("review-prs", name, Path(name), "initial", None, ()) for name in ("a", "b")]
         run = skill_evals.Run
@@ -1720,7 +1721,7 @@ def forward(path: Path) -> str:
     return skill_evals.quote(str(path).replace(os.sep, "/"))
 
 
-class EvaluateTests(unittest.TestCase):
+class EvaluateTests(GitTestCase):
     """The run step with a stub Claude Code: no model is called."""
 
     def setUp(self) -> None:

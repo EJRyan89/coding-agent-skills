@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import FAILS_PARTWAY, REPOSITORY_ROOT, TAKES_THE_LOCK, DeployerTestCase, forward
 
 from deployer import errors, fsops, platform_support
@@ -476,7 +480,7 @@ class LockRemedyTests(RemedyTestCase):
         self.assert_lines(result.output, "Retry the deployment.", SEE_LOCK)
 
 
-class RecoveryGuideTests(unittest.TestCase):
+class RecoveryGuideTests(GitTestCase):
     def test_every_section_a_refusal_names_is_a_heading_of_the_guide(self) -> None:
         self.assertEqual("docs/recovery.md", errors.RECOVERY_GUIDE)
         self.assertEqual(

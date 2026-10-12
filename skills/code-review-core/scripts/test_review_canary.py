@@ -22,6 +22,7 @@ import git_client
 import review_canary
 import review_fixture
 from git_client import subprocess_runner
+from git_test_base import GitTestCase
 from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
 from typed_fields import FieldError
@@ -77,7 +78,7 @@ def write_fixture(directory: Path, base: dict[str, bytes], head: dict[str, bytes
     return directory
 
 
-class PullTests(unittest.TestCase):
+class PullTests(GitTestCase):
     def test_a_valid_pull_is_normalized_as_a_configured_repository_is(self) -> None:
         pull = validate_fixture_pull(copy.deepcopy(PULL))
         self.assertEqual("example/inventory", pull["repository"])
@@ -227,7 +228,7 @@ class PullTests(unittest.TestCase):
         self.assertTrue(issubclass(FixtureFieldError, FieldError) and issubclass(FixtureFieldError, FixtureError))
 
 
-class FixtureChangeTests(unittest.TestCase):
+class FixtureChangeTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -489,7 +490,7 @@ class FixtureChangeTests(unittest.TestCase):
         self.assertEqual([], list(self.temporary.iterdir()))
 
 
-class PriorRecordTests(unittest.TestCase):
+class PriorRecordTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

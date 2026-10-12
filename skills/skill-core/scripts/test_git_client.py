@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bounded_process
 import git_client
 from git_client import GitClient, GitError, GitResult, classify_failure
+from git_test_base import GitTestCase
 
 NOT_A_REPOSITORY = "fatal: not a git repository (or any of the parent directories): .git\n"
 
@@ -36,7 +37,7 @@ def scripted(
     return run, calls
 
 
-class ClientTests(unittest.TestCase):
+class ClientTests(GitTestCase):
     def test_run_builds_the_command_and_returns_any_exit_status(self) -> None:
         runner, calls = scripted(GitResult(0, "abc\n", ""), GitResult(1, "", ""))
         client = GitClient(runner)
@@ -162,7 +163,7 @@ class ClientTests(unittest.TestCase):
             result.stdout = "changed"  # type: ignore[misc]  # the assignment is what the test proves fails
 
 
-class SubprocessRunnerTests(unittest.TestCase):
+class SubprocessRunnerTests(GitTestCase):
     def test_the_runner_goes_through_the_bounded_layer(self) -> None:
         finished = bounded_process.Finished(2, b"out \xff", b"bad \xff")
         with mock.patch.object(git_client, "run_bounded", return_value=finished) as run:
@@ -256,7 +257,7 @@ class SubprocessRunnerTests(unittest.TestCase):
                 self.assertEqual("not_repository", context.exception.kind)
 
 
-class StreamTests(unittest.TestCase):
+class StreamTests(GitTestCase):
     def test_cat_file_batch_answers_with_the_exact_bytes(self) -> None:
         content = b"caf\xe9\r\nno newline at the end"
         with tempfile.TemporaryDirectory() as temporary:

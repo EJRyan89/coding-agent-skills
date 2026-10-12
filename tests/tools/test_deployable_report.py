@@ -17,6 +17,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from deployer import discovery, manifest
 from deployer.paths import Paths
@@ -62,7 +65,7 @@ class FakeRuntimes:
         return [json.dumps(skills)]
 
 
-class DeployableReportTests(unittest.TestCase):
+class DeployableReportTests(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="deployable-report-test.")
         root = Path(self._temporary.name).resolve()

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from typing import Any
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import DeployerTestCase
 
 from deployer import platform_support
@@ -94,12 +98,12 @@ class FindPwshTests(DeployerTestCase):
                 self.assertIsNone(platform_support.find_pwsh(search_path))
 
 
-class HiddenWindowTests(unittest.TestCase):
+class HiddenWindowTests(GitTestCase):
     def test_console_programs_start_without_a_window(self) -> None:
         self.assertEqual({"creationflags": subprocess.CREATE_NO_WINDOW}, platform_support.hidden_window())
 
 
-class ShellPathTests(unittest.TestCase):
+class ShellPathTests(GitTestCase):
     def test_git_bash_drive_paths_become_drive_letter_paths(self) -> None:
         for value, expected in (
             ("/c/Work Trees (dev)/repo", "C:/Work Trees (dev)/repo"),
@@ -130,12 +134,12 @@ class ShellPathTests(unittest.TestCase):
         self.assertEqual(native, platform_support.from_shell_path(platform_support.to_shell_path(native)))
 
 
-class StandardCommandTests(unittest.TestCase):
+class StandardCommandTests(GitTestCase):
     def test_windows_adds_python_windows_powershell_and_cygpath(self) -> None:
         self.assertEqual(frozenset({"python", "powershell", "cygpath"}), platform_support.STANDARD_COMMANDS)
 
 
-class HomeDirectoryTests(unittest.TestCase):
+class HomeDirectoryTests(GitTestCase):
     PROFILE = r"D:\Profiles\Some One"
 
     def test_the_profile_folder_is_the_home_whatever_home_says(self) -> None:
@@ -170,7 +174,7 @@ class HomeDirectoryTests(unittest.TestCase):
         self.assertIsNone(platform_support.ignored_home_variable(Path("C:/Temp/canary"), environment))
 
 
-class NameKeyTests(unittest.TestCase):
+class NameKeyTests(GitTestCase):
     def test_windows_compares_item_names_without_regard_to_case(self) -> None:
         self.assertEqual(platform_support.name_key("Guide.md"), platform_support.name_key("guide.md"))
         self.assertEqual(platform_support.name_key("ALPHA"), platform_support.name_key("alpha"))

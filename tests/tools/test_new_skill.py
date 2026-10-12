@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter as fm
+from git_test_base import GitTestCase
 
 from tools import new_skill, skill_reference, skill_shims
 
@@ -31,7 +32,7 @@ FULL = {"claude-code": "full", "codex": "full", "copilot-cli": "full"}
 DESCRIPTION = 'Report "widgets" in a repository with spaces — use it when asked about them.'
 
 
-class FixtureRepositoryTestCase(unittest.TestCase):
+class FixtureRepositoryTestCase(GitTestCase):
     """A fixture source with two shipped skills, one in a bundle, and a current skill reference."""
 
     def setUp(self) -> None:

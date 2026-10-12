@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -10,13 +11,16 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
 
 from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
 
 
-class RefValidationTests(unittest.TestCase):
+class RefValidationTests(GitTestCase):
     def test_a_ref_is_a_git_revision_that_cannot_be_read_as_an_option(self) -> None:
         for ref in ("v0.5.0", "main", "origin/main", "HEAD~2", "v1.0.0^{commit}", "@{u}", "a1b2c3d", "release_1+x"):
             with self.subTest(ref=ref):

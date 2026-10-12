@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import unittest
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +19,9 @@ from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from deployer import cli, configure, fsops, pipeline, platform_support
 from deployer.paths import Paths
@@ -65,24 +67,9 @@ def tree_state(root: Path) -> dict[str, str]:
 
 
 def git(directory: Path, *arguments: str) -> str:
-    """Run git in a fixture repository with no user hooks, signing, or identity from the developer's configuration."""
+    """Run git in a fixture repository; DeployerTestCase gives it the fixture identity and no user hooks or signing."""
     completed = subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "tag.gpgsign=false",
-            "-c",
-            f"core.hooksPath={directory / '.no-hooks'}",
-            "-C",
-            str(directory),
-            *arguments,
-        ],
+        ["git", "-C", str(directory), *arguments],
         capture_output=True,
         text=True,
         check=True,
@@ -96,7 +83,7 @@ class Result:
     output: str
 
 
-class DeployerTestCase(unittest.TestCase):
+class DeployerTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="deploy-test.")
         # Expand 8.3 short names such as RUNNER~1, which configured paths reject.

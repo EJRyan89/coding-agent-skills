@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 from harness import REPOSITORY_ROOT
 
 from deployer import kinds
@@ -21,7 +26,7 @@ PIPELINE_MODULES = (
 PIPELINE_MAX_LINES = 600
 
 
-class PipelineLayoutTests(unittest.TestCase):
+class PipelineLayoutTests(GitTestCase):
     def test_claude_md_names_every_pipeline_module(self) -> None:
         lines = (REPOSITORY_ROOT / "CLAUDE.md").read_text(encoding="utf-8").splitlines()
         bullets = [line for line in lines if line.startswith(PIPELINE_BULLET)]

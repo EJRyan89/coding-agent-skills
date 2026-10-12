@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_config
 import review_pipeline
 from console import use_utf8_output
+from git_test_base import GitTestCase
 from review_flags import FlagError, FlagFieldError, add_flag, load_store, upgrade_store
 from review_io import atomic_write_json
 from review_records import RecordError, validate_record
@@ -26,7 +27,7 @@ from test_review_record_validation import _record
 from typed_fields import FieldError
 
 
-class VersionBoundaryTests(unittest.TestCase):
+class VersionBoundaryTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

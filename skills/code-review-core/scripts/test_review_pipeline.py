@@ -28,6 +28,7 @@ import review_pipeline as rp
 import review_source
 import review_state
 from git_client import GitError, GitResult
+from git_test_base import GitTestCase
 from github_client import CommandResult, subprocess_runner
 from review_archive import latest_record, list_versions, pull_directory
 from review_config import (
@@ -281,7 +282,7 @@ def write_files(checkout: Path, files: dict[str, str]) -> None:
     for relative, content in files.items():
         target = checkout / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        target.write_bytes(content.encode("utf-8"))
 
 
 def build_checkout(checkout: Path) -> tuple[str, str]:
@@ -321,7 +322,7 @@ def copy_checkout(destination: Path) -> tuple[str, str]:
     return _TEMPLATE
 
 
-class CommandScriptTests(unittest.TestCase):
+class CommandScriptTests(GitTestCase):
     """A role's prompt spells the pipeline's scripts as the session started it, and falls back to the resolved path."""
 
     scripts = Path(rp.__file__).resolve().parent
@@ -349,7 +350,7 @@ class CommandScriptTests(unittest.TestCase):
                 self.assertEqual(resolved, self.spelled(started))
 
 
-class FixtureTemplateTests(unittest.TestCase):
+class FixtureTemplateTests(GitTestCase):
     def test_a_copied_checkout_matches_a_freshly_built_one(self) -> None:
         def shape(checkout: Path, base: str, head: str) -> dict[str, object]:
             return {
@@ -374,7 +375,7 @@ class FixtureTemplateTests(unittest.TestCase):
             self.assertEqual("", git(copied, "status", "--porcelain"), "copies must not share a working tree")
 
 
-class PipelineFixture(unittest.TestCase):
+class PipelineFixture(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -407,7 +408,7 @@ class PipelineFixture(unittest.TestCase):
         for relative, content in files.items():
             target = self.checkout / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_bytes(content.encode("utf-8"))
 
     def commit(self, files: dict[str, str]) -> str:
         self.write(files)
@@ -4642,7 +4643,7 @@ class SnapshotSizeTests(PipelineFixture):
     def test_a_lazy_snapshot_over_the_size_limit_by_its_changed_files_fails_naming_the_largest_directories(
         self,
     ) -> None:
-        # It writes the changed files and the analyzer settings, which the fixture keeps under review/.
+        # It writes only the changed files, all under app/: the fixture holds no analyzer settings to write beside them.
         large, _ = self.large_tree()
         self.github.pulls[12] = rest_pull(12, large, self.head)
         code, out, err = self.validate_size(12)
@@ -4650,7 +4651,7 @@ class SnapshotSizeTests(PipelineFixture):
         self.assertRegex(
             out,
             r"^FAILED The checkout-lazy source snapshot of [0-9a-f]{12} cannot be prepared: it would hold "
-            r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB, review 0\.0 MiB\n$",
+            r"3\.0 MiB, over the 2 MiB limit; largest top-level directories: app 3\.0 MiB\n$",
         )
 
     def test_a_whole_snapshot_over_the_size_limit_fails_naming_the_largest_directories(self) -> None:
@@ -4722,7 +4723,7 @@ class SnapshotSizeTests(PipelineFixture):
             )
 
 
-class LocalCommitTests(unittest.TestCase):
+class LocalCommitTests(GitTestCase):
     def test_fetches_only_when_the_commit_is_missing(self) -> None:
         calls: list[list[str]] = []
         present = {"have"}
@@ -5152,7 +5153,7 @@ class BatchTests(PipelineFixture):
             self.assertEqual(2, raised.exception.code)
 
 
-class GitHubReadTests(unittest.TestCase):
+class GitHubReadTests(GitTestCase):
     def test_diff_is_requested_as_a_diff_and_threads_by_typed_number(self) -> None:
         calls: list[list[str]] = []
 
@@ -5201,7 +5202,7 @@ class GitHubReadTests(unittest.TestCase):
         self.assertEqual("review threads[0].isResolved must be a boolean, found null", str(raised.exception))
 
 
-class RunAndBatchFieldTests(unittest.TestCase):
+class RunAndBatchFieldTests(GitTestCase):
     """The run file and the batch file are each refused, field by field, in the one shape a wrong kind takes, before
     anything else is read; a schema version of the right kind but another value keeps its own refusal."""
 
@@ -5252,7 +5253,7 @@ class RunAndBatchFieldTests(unittest.TestCase):
         self.assertEqual(f"{batch} is not a review batch file", str(raised.exception))
 
 
-class StatsLineTests(unittest.TestCase):
+class StatsLineTests(GitTestCase):
     def test_the_snapshot_line_names_exclusions_by_reason_none_or_nothing_for_an_older_record(self) -> None:
         snapshot = {
             "source": "tarball",

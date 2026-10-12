@@ -10,7 +10,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from workflows import (
     WorkflowSyntaxError,
     leg_problems,
@@ -21,7 +23,7 @@ from workflows import (
 )
 
 
-class WorkflowsFixtures(unittest.TestCase):
+class WorkflowsFixtures(GitTestCase):
     def test_workflow_guard_reports_each_drift(self) -> None:
         clean = (
             "name: Example\n\non:\n  pull_request:\n  # A comment is not a trigger.\n  push:\n    branches: [main]\n\n"
@@ -118,7 +120,7 @@ LEGS = (
 )
 
 
-class LegFixtures(unittest.TestCase):
+class LegFixtures(GitTestCase):
     def test_each_leg_runs_its_own_shard_and_the_aggregate_needs_every_leg(self) -> None:
         self.assertEqual([], leg_problems(LEGS, 2))
         for drifted, problem in (
@@ -165,7 +167,7 @@ VERIFY_LOGS = (
 )
 
 
-class VerifyLogFixtures(unittest.TestCase):
+class VerifyLogFixtures(GitTestCase):
     def test_each_report_reads_the_log_its_own_verify_command_saved(self) -> None:
         self.assertEqual([], verify_log_problems(VERIFY_LOGS))
         self.assertEqual([], verify_log_problems(VERIFY_LOGS.replace("'", '"')))
@@ -222,7 +224,7 @@ class VerifyLogFixtures(unittest.TestCase):
         self.assertTrue(verify_log_problems("\n".join(lines)))
 
 
-class WorkflowReaderFixtures(unittest.TestCase):
+class WorkflowReaderFixtures(GitTestCase):
     def test_the_subset_reads_as_dictionaries_lists_and_strings(self) -> None:
         text = (
             "# A comment.\n"

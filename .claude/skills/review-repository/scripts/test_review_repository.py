@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "code-review-core" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from review_runtime import declared_reviewer_files, glob_matcher, validate_adapter_manifest
 from review_specialists import INPUTS, route, uncovered
 
@@ -31,7 +33,7 @@ def tracked_files() -> list[str]:
     return [path for path in listed.stdout.split("\0") if path]
 
 
-class ManifestTests(unittest.TestCase):
+class ManifestTests(GitTestCase):
     def test_every_file_the_manifest_declares_is_in_the_repository(self) -> None:
         files = set(tracked_files())
         self.assertEqual([], [path for path in declared_reviewer_files(MANIFEST) if path not in files])
@@ -158,7 +160,7 @@ class ManifestTests(unittest.TestCase):
                 self.assertIn(place, profile)
 
 
-class RecommendedConfigurationTests(unittest.TestCase):
+class RecommendedConfigurationTests(GitTestCase):
     def entry(self) -> dict[str, Any]:
         """The one repository entry SKILL.md's JSON fence shows, read as the configuration would hold it."""
         text = (REPOSITORY / SKILL / "SKILL.md").read_text(encoding="utf-8")

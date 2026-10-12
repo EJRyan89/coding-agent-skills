@@ -12,12 +12,14 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from fsops_platform import _platform_names, filesystem_write_problems, platform_code_problems
+from git_test_base import GitTestCase
 from validation_support import write_fixture_tree
 
 
-class FsopsPlatformFixtures(unittest.TestCase):
+class FsopsPlatformFixtures(GitTestCase):
     def test_filesystem_write_policy_resolves_assigned_callables_in_their_own_scopes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -556,7 +558,7 @@ class FsopsPlatformFixtures(unittest.TestCase):
             "\n"  # 37
             "class MoreTests(TestCase):\n"  # 38
             "    value = os.name\n"  # 39
-            "\n"  # 40
+            "class GitTests(GitTestCase): value = os.name\n"  # 40
             "\n"  # 41
             "class Generic(Base[int]):\n"  # 42
             '    value = "cygpath"\n'  # 43

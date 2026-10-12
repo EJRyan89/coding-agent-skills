@@ -12,7 +12,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from skill_layout import (
     MAXIMUM_INLINE_EXECUTABLE_LINES,
     WORKING_FILES_DOC,
@@ -35,7 +37,7 @@ from skill_layout import (
 from validation_support import REPOSITORY_SKILLS, SKILL_GUIDE, write_fixture_tree
 
 
-class SkillTreeFixtures(unittest.TestCase):
+class SkillTreeFixtures(GitTestCase):
     def test_an_executable_outside_a_skills_scripts_fails_in_every_kind_of_skill(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -97,7 +99,7 @@ class SkillTreeFixtures(unittest.TestCase):
             )
 
 
-class SkillLayoutFixtures(unittest.TestCase):
+class SkillLayoutFixtures(GitTestCase):
     def test_shared_guidance_policy_finds_a_skill_naming_a_shared_markdown_asset(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

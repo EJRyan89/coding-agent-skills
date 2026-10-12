@@ -65,9 +65,13 @@ def _platform_names(tree: ast.Module, skipped_tables: set[str]) -> list[tuple[in
     return found
 
 
+# The bases a test case derives from directly: unittest's, and skill-core's git test base.
+TEST_CASE_NAMES = frozenset({"TestCase", "GitTestCase"})
+
+
 def _is_test_case(node: ast.AST) -> bool:
     return isinstance(node, ast.ClassDef) and any(
-        (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) == "TestCase"
+        (base.attr if isinstance(base, ast.Attribute) else getattr(base, "id", None)) in TEST_CASE_NAMES
         for base in node.bases
     )
 

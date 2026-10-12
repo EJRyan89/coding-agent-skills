@@ -11,11 +11,14 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from deployer import fsops, platform_support
 
 
-class FilesystemOperationTests(unittest.TestCase):
+class FilesystemOperationTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="deploy-fsops.")
         self.addCleanup(temporary.cleanup)

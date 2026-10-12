@@ -5,16 +5,16 @@ Each policy fails on a violating input and passes on a conforming one.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+from git_test_base import GitTestCase
 from job_pool import UNSPLIT_SUITE_WEIGHT, Job
 from job_selection import (
     JOB_SECONDS,
@@ -39,7 +39,7 @@ def fixture_job(label: str, weight: float) -> Job:
 MEASURED = {"skills/a/scripts/test_a.sh": 40.0, "tests/test_big.py": 6.0, "tests/test_one.py": 3.5}
 
 
-class LegFixtures(unittest.TestCase):
+class LegFixtures(GitTestCase):
     JOBS = (
         fixture_job("static shell checks", UNSPLIT_SUITE_WEIGHT),
         fixture_job("skills/a/scripts/test_a.sh", UNSPLIT_SUITE_WEIGHT),
@@ -138,7 +138,7 @@ class LegFixtures(unittest.TestCase):
         self.assertEqual([], list(leg_policies(policies, 5, 6)))
 
 
-class JobSecondsFixtures(unittest.TestCase):
+class JobSecondsFixtures(GitTestCase):
     def write_table(self, text: str) -> Path:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -175,7 +175,7 @@ class JobSecondsFixtures(unittest.TestCase):
         self.assertEqual([], stale_job_seconds_problems({"tests/test_kept.py": 3.0}, {"tests/test_kept.py"}))
 
 
-class JobSelectionFixtures(unittest.TestCase):
+class JobSelectionFixtures(GitTestCase):
     def test_suites_that_name_a_changed_document_still_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -192,19 +192,9 @@ class JobSelectionFixtures(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repository with spaces"
             root.mkdir()
-            environment = {
-                **os.environ,
-                "GIT_CONFIG_GLOBAL": str(Path(temporary) / "empty"),
-                "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_AUTHOR_NAME": "Test",
-                "GIT_AUTHOR_EMAIL": "test@example.invalid",
-                "GIT_COMMITTER_NAME": "Test",
-                "GIT_COMMITTER_EMAIL": "test@example.invalid",
-            }
-            (Path(temporary) / "empty").write_text("", encoding="utf-8")
 
             def git(*arguments: str) -> None:
-                subprocess.run(["git", "-C", str(root), *arguments], env=environment, check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
 
             for name in ("skills/a/tool.py", "docs/kept.md", "docs/edited.md"):
                 (root / name).parent.mkdir(parents=True, exist_ok=True)
@@ -217,12 +207,11 @@ class JobSelectionFixtures(unittest.TestCase):
             git("commit", "-q", "-m", "move")
             (root / "docs" / "edited.md").write_text("changed\n", encoding="utf-8")
             (root / "docs" / "new.md").write_text("new\n", encoding="utf-8")
-            with mock.patch.dict(os.environ, environment):
-                self.assertEqual(
-                    ["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"], changed_paths(root, "main")
-                )
-                self.assertIsNone(changed_paths(root, "no-such-base"))
-                self.assertIsNone(changed_paths(Path(temporary), "main"))
+            self.assertEqual(
+                ["docs/edited.md", "docs/new.md", "docs/tool.md", "skills/a/tool.py"], changed_paths(root, "main")
+            )
+            self.assertIsNone(changed_paths(root, "no-such-base"))
+            self.assertIsNone(changed_paths(Path(temporary), "main"))
 
     @staticmethod
     def documentation_failures(files: dict[str, str], changed: list[str]) -> dict[str, str]:

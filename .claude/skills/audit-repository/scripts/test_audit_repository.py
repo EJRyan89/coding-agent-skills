@@ -10,18 +10,22 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Mapping
 from datetime import date
 from pathlib import Path
+from types import MappingProxyType
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
 
 import audit_repository as audit
 from git_client import GitClient, GitError, GitResult
+from git_test_base import GitTestCase
 
 SCRIPT = Path(__file__).resolve().parent / "audit_repository.py"
 REPOSITORY = Path(__file__).resolve().parents[4]
 RECORD = ".claude/skills/audit-repository/references/rotation.json"
+GIT_CONFIG: Mapping[str, str] = MappingProxyType({"init.defaultBranch": "main"})
 # One file in each area, and the files whose area depends on the classification order.
 FIRST_RELEASE = {
     "deploy.py": "deploy\n",
@@ -38,29 +42,10 @@ FIRST_RELEASE = {
 }
 
 
-def setUpModule() -> None:
-    """Isolate Git from the user's configuration for this process and every Git it starts."""
-    directory = Path(tempfile.mkdtemp(prefix="audit-repository-config-"))
-    config = directory / "gitconfig"
-    config.write_text(
-        "[user]\n\tname = Fixture\n\temail = fixture@example.invalid\n"
-        "[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n"
-        "[core]\n\tautocrlf = false\n",
-        encoding="utf-8",
-    )
-    patch = {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
-    saved = {name: os.environ.get(name) for name in patch}
-    os.environ.update(patch)
+class AuditTestCase(GitTestCase):
+    """A test whose fixture repositories start on main."""
 
-    def restore() -> None:
-        for name, value in saved.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-        remove_tree(directory)
-
-    unittest.addModuleCleanup(restore)
+    git_config = GIT_CONFIG
 
 
 def remove_tree(path: Path) -> None:
@@ -92,7 +77,7 @@ def record_text(audits: list[dict[str, str]]) -> str:
     return json.dumps({"audits": audits}, indent=2) + "\n"
 
 
-class Fixture(unittest.TestCase):
+class Fixture(AuditTestCase):
     """A repository with a space in its path, tagged v0.1.0 (lightweight) and v0.2.0 (annotated), with one commit
     after v0.2.0."""
 
@@ -144,7 +129,7 @@ class Fixture(unittest.TestCase):
         return found
 
 
-class ClassificationTests(unittest.TestCase):
+class ClassificationTests(AuditTestCase):
     def test_each_path_belongs_to_the_area_the_issue_names(self) -> None:
         expected = {
             "deploy.py": "deployer",
@@ -189,7 +174,7 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual([], missing)
 
 
-class RecordTests(unittest.TestCase):
+class RecordTests(AuditTestCase):
     def entries(self, *areas: str) -> list[audit.Entry]:
         return [audit.Entry("2026-01-01", f"v0.{index}.0", area) for index, area in enumerate(areas)]
 

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from tools import release_notes
 
@@ -38,7 +39,7 @@ BODY = (
 )
 
 
-class BodyEntriesTests(unittest.TestCase):
+class BodyEntriesTests(GitTestCase):
     def test_entries_come_only_from_the_upgrade_note_section_and_not_from_its_comments(self) -> None:
         entries = release_notes.body_entries(BODY)
         self.assertEqual(["A skill is added"], [entry.heading for entry in entries])
@@ -94,25 +95,12 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual([], release_notes.body_entries(body.replace("## Upgrade note \t", " ## Upgrade note")))
 
 
-class FixtureRepository(unittest.TestCase):
+class FixtureRepository(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        home = Path(temporary.name)
-        self.root = home / "repository with spaces"
+        self.root = Path(temporary.name) / "repository with spaces"
         self.root.mkdir()
-        (home / "empty").write_text("", encoding="utf-8")
-        environment = {
-            "GIT_CONFIG_GLOBAL": str(home / "empty"),
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_AUTHOR_NAME": "Test",
-            "GIT_AUTHOR_EMAIL": "test@example.invalid",
-            "GIT_COMMITTER_NAME": "Test",
-            "GIT_COMMITTER_EMAIL": "test@example.invalid",
-        }
-        patcher = mock.patch.dict(os.environ, environment)
-        patcher.start()
-        self.addCleanup(patcher.stop)
         self.git("init", "-q", "-b", "main")
         (self.root / "docs").mkdir()
         (self.root / "docs" / "releasing.md").write_text(RELEASING, encoding="utf-8")
@@ -293,12 +281,12 @@ class MainTests(FixtureRepository):
         self.assertEqual(2, raised.exception.code)
 
 
-class InsertSectionTests(unittest.TestCase):
+class InsertSectionTests(GitTestCase):
     def test_a_file_with_no_version_gets_the_section_at_its_end(self) -> None:
         self.assertEqual(f"{INTRO}\n## v0.1.0\n", release_notes.insert_section(INTRO, "v0.1.0", "## v0.1.0\n"))
 
 
-class ReleaseProcedureTests(unittest.TestCase):
+class ReleaseProcedureTests(GitTestCase):
     def test_the_release_procedure_writes_the_section_before_tagging(self) -> None:
         root = Path(__file__).resolve().parents[2]
         text = (root / "docs" / "releasing.md").read_text(encoding="utf-8")

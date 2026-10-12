@@ -15,8 +15,10 @@ from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import review_pipeline as rp
+from git_test_base import GitTestCase
 from review_archive import ArchiveError
 from review_canary import FixtureError
 from review_config import ConfigurationError
@@ -111,7 +113,7 @@ def by_first_argument(outcomes: dict[Any, Any]) -> Callable[..., Any]:
     return effect
 
 
-class MainCase(unittest.TestCase):
+class MainCase(GitTestCase):
     def setUp(self) -> None:
         for name in STUBBED:
             self.stub(name, effect=raising(AssertionError(f"main called {name} unexpectedly")))

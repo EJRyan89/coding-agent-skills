@@ -24,6 +24,7 @@ import review_document
 import review_pipeline as rp
 from flat_text import flat_text
 from git_client import subprocess_runner
+from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
 from review_config import write_config
@@ -66,7 +67,7 @@ def added(diff: str) -> list[str]:
     return [line[1:].lstrip() for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
 
 
-class DocumentTestCase(unittest.TestCase):
+class DocumentTestCase(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="review-document-test-", ignore_cleanup_errors=True)
         self.addCleanup(temporary.cleanup)

@@ -44,6 +44,7 @@ import review_process
 import review_runtime
 import review_source
 from git_client import GitResult, subprocess_runner
+from git_test_base import GitTestCase
 from github_client import CommandResult, replace_undecodable
 from review_archive import latest_record, list_versions, pull_directory
 from review_config import ConfigurationError, write_config
@@ -162,7 +163,7 @@ class ScratchGitHub(GitHubClient):
         return self.threads
 
 
-class AdversarialFixture(unittest.TestCase):
+class AdversarialFixture(GitTestCase):
     """A configured repository with a generic reviewer, its checkout, archive, and temporary directory all under one
     temporary folder this test owns."""
 
@@ -1476,7 +1477,7 @@ class BranchNameTests(AdversarialFixture):
         )
 
 
-class ReviewerBoundaryTests(unittest.TestCase):
+class ReviewerBoundaryTests(GitTestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

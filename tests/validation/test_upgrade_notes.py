@@ -19,8 +19,10 @@ from typing import ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import upgrade_notes
+from git_test_base import GitTestCase
 from upgrade_notes import contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
 
@@ -28,7 +30,7 @@ from tests import run_validation
 from tools import release_notes
 
 
-class UpgradeNotesPolicy(unittest.TestCase):
+class UpgradeNotesPolicy(GitTestCase):
     RELEASING = (
         "# Releasing\n\n## Versioning\n\n**Contracts**:\n\n1. **Durable user data.** Records.\n\n"
         "**Levels**, from `1.0.0` on:\n\n- **Patch.** Nothing to do.\n- **Minor.** Something optional.\n"
@@ -482,7 +484,7 @@ class UpgradeNotesPolicy(unittest.TestCase):
         )
 
 
-class ContractListPolicy(unittest.TestCase):
+class ContractListPolicy(GitTestCase):
     """Each file the upgrade-notes check reads is named in a contract list, so the list and the check agree."""
 
     NAMED = (

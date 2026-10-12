@@ -13,9 +13,11 @@ from typing import ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import shell_targets
 import toolchain
+from git_test_base import GitTestCase
 from shell_targets import (
     PowerShellTarget,
     markdown_shell_check,
@@ -31,7 +33,7 @@ from validation_support import REPOSITORY_ROOT, write_fixture_tree
 from deployer import platform_support
 
 
-class SkillScriptTargetFixtures(unittest.TestCase):
+class SkillScriptTargetFixtures(GitTestCase):
     FILES: ClassVar[dict[str, str]] = {
         "skills/alpha/SKILL.md": "",
         "skills/alpha/scripts/run.sh": "",
@@ -66,7 +68,7 @@ class SkillScriptTargetFixtures(unittest.TestCase):
         self.assertEqual([".claude/skills/local/scripts/local.ps1"], [target.name for target in targets])
 
 
-class ShellTargetsFixtures(unittest.TestCase):
+class ShellTargetsFixtures(GitTestCase):
     def test_markdown_bash_fences_outside_skills_and_tests_are_shellcheck_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

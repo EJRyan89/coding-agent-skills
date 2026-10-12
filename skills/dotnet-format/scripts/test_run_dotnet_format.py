@@ -15,8 +15,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 import run_dotnet_format as formatter
+from git_test_base import GitTestCase
 
 INSTALL_HINT = "dotnet-format is not installed; install it with: dotnet tool install -g dotnet-format"
 
@@ -85,7 +87,7 @@ class ScriptedRunner:
         return self.results[len(self.calls) - 1]
 
 
-class CommandTests(unittest.TestCase):
+class CommandTests(GitTestCase):
     def test_check_adds_check_and_keeps_each_file_one_argument(self) -> None:
         self.assertEqual(
             [
@@ -127,7 +129,7 @@ class CommandTests(unittest.TestCase):
         )
 
 
-class BatchTests(unittest.TestCase):
+class BatchTests(GitTestCase):
     def test_a_list_that_fits_is_one_run(self) -> None:
         self.assertEqual([["A.cs", "My Folder/B.cs"]], formatter.batches(["dotnet-format"], ["A.cs", "My Folder/B.cs"]))
 
@@ -145,7 +147,7 @@ class BatchTests(unittest.TestCase):
             formatter.batches(["dotnet-format", "App.sln", "--include"], ["A.cs", "Long Name.cs"], limit=40)
 
 
-class ParseTests(unittest.TestCase):
+class ParseTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -180,7 +182,7 @@ class ParseTests(unittest.TestCase):
         self.assertEqual([], formatter.parse_diagnostics("", self.root))
 
 
-class SubprocessRunnerTests(unittest.TestCase):
+class SubprocessRunnerTests(GitTestCase):
     def test_merges_standard_error_into_the_output_and_keeps_the_exit_code(self) -> None:
         script = "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True); sys.exit(3)"
         result = formatter.subprocess_runner([sys.executable, "-c", script], Path.cwd(), 60)
@@ -226,7 +228,7 @@ class SubprocessRunnerTests(unittest.TestCase):
         self.assertIn(b"loading", result.output)
 
 
-class MainTests(unittest.TestCase):
+class MainTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -580,7 +582,7 @@ class MainTests(unittest.TestCase):
                 self.assertEqual([], runner.calls)
 
 
-class ConsoleTests(unittest.TestCase):
+class ConsoleTests(GitTestCase):
     def test_output_a_cp1252_console_cannot_encode_is_written_as_utf_8(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             # A stub the tool lookup finds, so the run reaches the file list, whose path it then prints.

@@ -10,12 +10,14 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import pull_request_title
+from git_test_base import GitTestCase
 from pull_request_title import title_problems, title_types_problems
 
 
-class PullRequestTitlePolicy(unittest.TestCase):
+class PullRequestTitlePolicy(GitTestCase):
     def test_the_types_are_the_agreed_ones(self) -> None:
         self.assertEqual(
             ("feat", "fix", "docs", "test", "refactor", "chore", "ci", "build"), pull_request_title.TITLE_TYPES

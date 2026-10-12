@@ -20,6 +20,9 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from git_test_base import GitTestCase
 
 from deployer import discovery, platform_support, runtime_support
 from tools import runtime_canary
@@ -108,7 +111,7 @@ def run_bash(*arguments: str) -> Callable[[list[str], Path, dict[str, str]], Com
     return action
 
 
-class RuntimeCanaryTestCase(unittest.TestCase):
+class RuntimeCanaryTestCase(GitTestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory(prefix="runtime-canary-test.")
         self.root = Path(self._temporary.name).resolve()
@@ -252,7 +255,7 @@ class DeploymentTests(RuntimeCanaryTestCase):
         self.assertIn("unknown skill: no-such-skill", output.getvalue())
 
 
-class RemoveHomeTests(unittest.TestCase):
+class RemoveHomeTests(GitTestCase):
     # The skill deletes the home through the script, which its allowed-tools already grant, rather than through a
     # prefix grant on rm that would approve deleting any directory.
     def remove(self, *arguments: str) -> tuple[int, str]:

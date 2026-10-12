@@ -12,8 +12,10 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import toolchain
+from git_test_base import GitTestCase
 from toolchain import (
     PREREQUISITES,
     find_psscriptanalyzer,
@@ -27,7 +29,7 @@ from toolchain import (
 from deployer import platform_support
 
 
-class ToolchainFixtures(unittest.TestCase):
+class ToolchainFixtures(GitTestCase):
     def test_prerequisite_check_reports_every_missing_tool(self) -> None:
         def raises() -> str:
             raise AssertionError("not found")
