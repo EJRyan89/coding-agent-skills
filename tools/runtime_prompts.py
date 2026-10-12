@@ -120,10 +120,12 @@ def copilot_entrypoint(directory: Path) -> str:
     run = directory / "run"
     prompts: list[str] = []
 
-    def runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str]) -> review_hosts.ProcessResult:
+    def runner(
+        arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str
+    ) -> review_hosts.ProcessResult:
         if "--version" in arguments:
             return review_hosts.ProcessResult(0, "GitHub Copilot CLI 1.0.88", "")
-        prompts.append(arguments[arguments.index("--prompt") + 1])
+        prompts.append(stdin)
         review_hosts.staging_path(run, 1).write_text('{"status": "complete"}', encoding="utf-8")
         return review_hosts.ProcessResult(0, "", "")
 
