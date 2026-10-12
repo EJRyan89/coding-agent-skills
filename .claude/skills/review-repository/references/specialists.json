@@ -94,6 +94,16 @@
       "shares_files": true
     },
     {
+      "id": "untested-changes",
+      "category": "Test coverage",
+      "profile": ".claude/skills/review-repository/references/untested-changes.md",
+      "include": ["\\.(?:py|ps1|sh)$"],
+      "exclude": [],
+      "resources": [],
+      "when": "untested-functions",
+      "shares_files": true
+    },
+    {
       "id": "upgrade-notes",
       "category": "Upgrade notes",
       "profile": ".claude/skills/review-repository/references/upgrade-notes.md",
@@ -120,6 +130,26 @@
         "CLAUDE.md",
         "skills/**/SKILL.md",
         ".claude/skills/*/SKILL.md"
+      ]
+    },
+    "untested-functions": {
+      "script": ".claude/skills/review-repository/scripts/untested_functions.py",
+      "reads": [
+        "tests/**/test_*",
+        "tests/**/test-*",
+        "tests/**/*_test.*",
+        "tests/**/*-test.*",
+        "tests/**/*.test.*",
+        "skills/**/scripts/**/test_*",
+        "skills/**/scripts/**/test-*",
+        "skills/**/scripts/**/*_test.*",
+        "skills/**/scripts/**/*-test.*",
+        "skills/**/scripts/**/*.test.*",
+        ".claude/skills/*/scripts/**/test_*",
+        ".claude/skills/*/scripts/**/test-*",
+        ".claude/skills/*/scripts/**/*_test.*",
+        ".claude/skills/*/scripts/**/*-test.*",
+        ".claude/skills/*/scripts/**/*.test.*"
       ]
     }
   }

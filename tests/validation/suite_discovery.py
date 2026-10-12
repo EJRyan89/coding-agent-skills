@@ -152,11 +152,21 @@ def run_test_script(path: Path) -> None:
         raise AssertionError(f"Unsupported skill test type '{path.suffix}': {target}")
 
 
+# Review and canary inputs: each tree there is another repository, whose suites are what a reviewer reads, not tests of
+# this one.
+FIXTURE_ROOT = Path("tests") / "fixtures"
+
+
 def regression_suites(root: Path = REPOSITORY_ROOT) -> list[Path]:
-    """Every regression suite: the test scripts under tests/ and under each shipped or repository skill's scripts/."""
+    """Every regression suite: the test scripts under tests/, outside tests/fixtures/, and under each shipped or
+    repository skill's scripts/."""
     roots = [root / "tests", *skill_script_directories(root)]
     found = (
-        path for top in roots if top.is_dir() for path in top.rglob("*") if path.is_file() and is_test_script(path)
+        path
+        for top in roots
+        if top.is_dir()
+        for path in top.rglob("*")
+        if path.is_file() and is_test_script(path) and not path.is_relative_to(root / FIXTURE_ROOT)
     )
     return sorted(found, key=lambda path: path.relative_to(root).as_posix().casefold())
 

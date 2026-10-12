@@ -1,0 +1,286 @@
+from __future__ import annotations
+
+import difflib
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+import untested_functions
+
+SCRIPT = Path(__file__).resolve().parent / "untested_functions.py"
+
+
+def diff_of(before: dict[str, str], after: dict[str, str]) -> str:
+    """A git-style unified diff from one set of files to the other, three lines of context."""
+    text = ""
+    for path in sorted({*before, *after}):
+        old, new = before.get(path), after.get(path)
+        if old == new:
+            continue
+        hunks = difflib.unified_diff(
+            (old or "").splitlines(),
+            (new or "").splitlines(),
+            "/dev/null" if old is None else f"a/{path}",
+            "/dev/null" if new is None else f"b/{path}",
+            lineterm="",
+        )
+        text += f"diff --git a/{path} b/{path}\n" + "".join(f"{line}\n" for line in hunks)
+    return text
+
+
+SERVICE = """\
+import subprocess
+
+
+def total(values):
+    return sum(values)
+
+
+def run(command):
+    return subprocess.run(command, check=False)
+"""
+
+
+class SuiteRuleTests(unittest.TestCase):
+    def test_a_suite_is_named_as_validation_names_one_ignoring_case(self) -> None:
+        for path in (
+            "tests/test_a.py",
+            "tests/deployer/test-b.sh",
+            "skills/x/scripts/c_test.ps1",
+            "skills/x/scripts/d-test.py",
+            "skills/x/scripts/e.test.sh",
+            "tests/TEST_F.PY",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(untested_functions.is_suite(path))
+        for path in ("tests/harness.py", "tests/test_a.txt", "tests/contest.py", "tests/a.tests.py", "test_a.js"):
+            with self.subTest(path=path):
+                self.assertFalse(untested_functions.is_suite(path))
+
+
+class ConditionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name) / "source root"
+        self.root.mkdir()
+        self.diff = Path(temporary.name) / "diff.patch"
+        self.output = Path(temporary.name) / "untested.txt"
+
+    def head(self, files: dict[str, str]) -> None:
+        for path, text in files.items():
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(text.encode("utf-8"))
+
+    def run_condition(
+        self, before: dict[str, str], after: dict[str, str], environment: dict[str, str] | None = None
+    ) -> tuple[int, str, str]:
+        """The condition's exit status, its stdout, and the file it wrote, or "", run as a review runs it on a head
+        holding `after` with the diff from `before`."""
+        shutil.rmtree(self.root)
+        self.output.unlink(missing_ok=True)
+        self.head(after)
+        self.diff.write_bytes(diff_of(before, after).encode("utf-8"))
+        given = (
+            {"CODE_REVIEW_DIFF_FILE": str(self.diff), "CODE_REVIEW_CONDITION_OUTPUT": str(self.output)}
+            if environment is None
+            else environment
+        )
+        clean = {key: value for key, value in os.environ.items() if not key.startswith("CODE_REVIEW_")}
+        finished = subprocess.run(
+            [sys.executable, "-B", str(SCRIPT), "--source-root", str(self.root)],
+            env={**clean, **given},
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        written = self.output.read_bytes().decode("utf-8") if self.output.exists() else ""
+        return finished.returncode, finished.stdout.decode("utf-8"), written
+
+    def test_a_changed_function_no_test_names_is_listed_with_its_added_lines_and_hunk(self) -> None:
+        after = {"app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0")}
+        code, out, written = self.run_condition({"app/service.py": SERVICE}, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertEqual(
+            "UNTESTED app/service.py:4 function total, added lines 5, hunk @@ -2,7 +2,7 @@, tests of its file none\n"
+            "@@ -2,7 +2,7 @@\n \n \n def total(values):\n-    return sum(values)\n+    return sum(values) or 0\n"
+            " \n \n def run(command):\n",
+            written,
+        )
+
+    def test_a_changed_function_a_test_names_through_its_module_closes_the_route(self) -> None:
+        after = {
+            "app/service.py": SERVICE.replace("sum(values)", "sum(values) or 0"),
+            "tests/test_service.py": "import service\n\nassert service.total([]) == 0\n",
+        }
+        before = {"app/service.py": SERVICE, "tests/test_service.py": after["tests/test_service.py"]}
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, after))
+        # An import of the name counts as naming it.
+        after["tests/test_service.py"] = "from app.service import total\n\nassert total([]) == 0\n"
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, after))
+
+    def test_a_test_only_change_closes_the_route(self) -> None:
+        test = "import service\n\nassert service.total([1]) == 1\n"
+        after = {"app/service.py": SERVICE, "tests/test_service.py": test + "assert service.total([]) == 0\n"}
+        before = {"app/service.py": SERVICE, "tests/test_service.py": test}
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, after))
+
+    def test_a_removed_function_needs_no_test_and_lines_removed_inside_one_change_it(self) -> None:
+        before = {"app/service.py": SERVICE}
+        removed = SERVICE.replace("\n\ndef run(command):\n    return subprocess.run(command, check=False)\n", "\n")
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition(before, {"app/service.py": removed}))
+        body = "def total(values):\n    values = list(values)\n    return sum(values)\n"
+        trimmed = "def total(values):\n    return sum(values)\n"
+        for name, old, new in (("inside", body, trimmed), ("at the end", trimmed, "def total(values):\n    pass\n")):
+            with self.subTest(name=name):
+                code, out, written = self.run_condition({"app/total.py": old}, {"app/total.py": new})
+                self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+                if name == "inside":
+                    self.assertTrue(
+                        written.startswith(
+                            "UNTESTED app/total.py:1 function total, added lines none (it only removes lines), "
+                        ),
+                        written,
+                    )
+
+    def test_a_renamed_function_is_the_new_name_and_a_test_of_the_old_name_does_not_cover_it(self) -> None:
+        test = "import service\n\nassert service.total([]) == 0\n"
+        before = {"app/service.py": SERVICE, "tests/test_service.py": test}
+        after = {"app/service.py": SERVICE.replace("def total(", "def summed("), "tests/test_service.py": test}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED app/service.py:4 function summed, added lines 4, "), written)
+        self.assertIn(", tests of its file tests/test_service.py\n", written)
+
+    def test_a_common_name_counts_only_as_its_own_module_s_and_never_in_a_string_or_comment(self) -> None:
+        before = {"app/service.py": SERVICE}
+        after = {"app/service.py": SERVICE.replace("check=False", "check=True")}
+        tests = {
+            # Another module's run, and this module's run named only in a string and a comment.
+            "tests/test_other.py": "import subprocess\nimport other\n\nsubprocess.run(['x'])\nother.run()\n",
+            "tests/test_service.py": (
+                "import subprocess\n\nimport service  # service.run is covered elsewhere\n\n"
+                "subprocess.run(['x'])\nassert service.total([]) == 0, 'service.run'\n"
+            ),
+        }
+        code, out, written = self.run_condition({**before, **tests}, {**after, **tests})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED app/service.py:8 function run, added lines 9, "), written)
+        tests["tests/test_service.py"] += "service.run(['y'])\n"
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition({**before, **tests}, {**after, **tests}))
+
+    def test_a_function_named_only_by_a_test_the_pull_request_deletes_is_listed(self) -> None:
+        test = "import service\n\nservice.run(['x'])\n"
+        before = {"app/service.py": SERVICE, "tests/test_service.py": test}
+        after = {"app/service.py": SERVICE.replace("check=False", "check=True")}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertIn("function run, added lines 9, hunk @@ -6,4 +6,4 @@, tests of its file none\n", written)
+
+    def test_a_change_inside_a_method_is_the_method_s_and_a_test_of_its_class_names_it(self) -> None:
+        source = (
+            "from dataclasses import dataclass\n\n\n@dataclass\nclass Point:\n    x: int\n\n\n"
+            "class Shape:\n    sides = 3\n\n    def __init__(self):\n        self.n = 1\n\n"
+            "    def area(self):\n        return 1\n"
+        )
+        changed = source.replace("x: int", "x: int = 0").replace("self.n = 1", "self.n = 2")
+        changed = changed.replace("return 1", "return 2")
+        code, out, written = self.run_condition({"app/shape.py": source}, {"app/shape.py": changed})
+        # A class that only declares fields has nothing of its own to test.
+        self.assertEqual((0, "UNTESTED 2 given=2\n"), (code, out))
+        self.assertIn("UNTESTED app/shape.py:12 method Shape.__init__, added lines 13, ", written)
+        self.assertIn("UNTESTED app/shape.py:15 method Shape.area, added lines 16, ", written)
+        test = {"tests/test_shape.py": "from shape import Shape\n\nassert Shape().area() == 2\n"}
+        self.assertEqual(
+            (1, "UNTESTED 0 given=0\n", ""),
+            self.run_condition({"app/shape.py": source, **test}, {"app/shape.py": changed, **test}),
+        )
+
+    def test_a_script_s_main_is_named_by_a_test_that_runs_the_script(self) -> None:
+        source = "def main():\n    return 0\n"
+        before, after = {"tools/tool.py": source}, {"tools/tool.py": source.replace("0", "1")}
+        # A comment, or another script whose name ends the same, does not run it.
+        others = {"tests/tools/test_tool.py": "# tools/tool.py\nSCRIPT = 'tools/mytool.py'\n"}
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), self.run_condition({**before, **others}, {**after, **others})[:2])
+        test = {"tests/tools/test_tool.py": "SCRIPT = 'tools/tool.py'  # run as a program\n"}
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition({**before, **test}, {**after, **test}))
+
+    def test_shell_functions_are_named_by_their_file_and_a_whole_word_a_powershell_one_ignoring_case(self) -> None:
+        bash = "#!/usr/bin/env bash\ndays_old() {\n  echo 1\n}\n"
+        powershell = "function Get-ReportAge {\n    param($Path)\n    1\n}\n"
+        before = {"tools/report.sh": bash, "tools/Report.ps1": powershell}
+        after = {"tools/report.sh": bash.replace("echo 1", "echo 2"), "tools/Report.ps1": powershell.replace("1", "2")}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 2 given=2\n"), (code, out))
+        self.assertIn("UNTESTED tools/Report.ps1:1 function Get-ReportAge, added lines 3, ", written)
+        self.assertIn("UNTESTED tools/report.sh:2 function days_old, added lines 3, ", written)
+        tests = {
+            # A comment names neither; a Python test calls a Bash function from a string.
+            "tests/test_report.py": "# days_old\nRUN = ['bash', '-c', 'source tools/report.sh; days_old x']\n",
+            "tests/test-report.ps1": "# Get-ReportAge\n. ./tools/report.ps1\nget-reportage -Path x\n",
+        }
+        self.assertEqual((1, "UNTESTED 0 given=0\n", ""), self.run_condition({**before, **tests}, {**after, **tests}))
+        tests["tests/test_report.py"] = "# days_old, from report.sh\nRUN = ['bash', 'tools/report.sh']\n"
+        code, out, written = self.run_condition({**before, **tests}, {**after, **tests})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertIn(
+            "function days_old, added lines 3, hunk @@ -1,4 +1,4 @@, tests of its file tests/test_report.py\n", written
+        )
+
+    def test_fixtures_are_neither_code_to_test_nor_tests(self) -> None:
+        fixture = "tests/fixtures/skill-evals/x/head"
+        before = {f"{fixture}/app/service.py": SERVICE, "app/service.py": SERVICE}
+        after = {
+            f"{fixture}/app/service.py": SERVICE.replace("check=False", "check=True"),
+            "app/service.py": SERVICE.replace("check=False", "check=True"),
+            f"{fixture}/tests/test_service.py": "import service\n\nservice.run(['x'])\n",
+        }
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNTESTED app/service.py:8 function run, "), written)
+        self.assertIn(", tests of its file none\n", written)
+
+    def test_a_python_file_ast_cannot_read_is_listed_as_unparsed(self) -> None:
+        code, out, written = self.run_condition({"app/broken.py": "x = 1\n"}, {"app/broken.py": "def x(:\n"})
+        self.assertEqual((0, "UNTESTED 1 given=1\n"), (code, out))
+        self.assertTrue(written.startswith("UNPARSED app/broken.py: SyntaxError: "), written)
+
+    def test_the_entries_are_bounded_and_the_rest_named(self) -> None:
+        # Twenty entries at most, each hunk cut to 900 characters, so the file stays under the 32 KiB a review gives a
+        # specialist even when every entry's header and hunk are long.
+        name = "a_function_with_a_long_name_" + "x" * 40
+        body = "".join(f"    value_{line} = {'y' * 60}\n" for line in range(30))
+        before = {f"app/module_{n:02}.py": f"def {name}():\n{body}" for n in range(25)}
+        after = {path: text.replace("value_", "changed_") for path, text in before.items()}
+        code, out, written = self.run_condition(before, after)
+        self.assertEqual((0, "UNTESTED 25 given=20\n"), (code, out))
+        self.assertEqual(20, written.count("\nUNTESTED ") + written.startswith("UNTESTED "))
+        self.assertTrue(written.endswith("\nOMITTED 5 more entries past the first 20\n"), written[-200:])
+        self.assertLess(len(written.encode("utf-8")), 32 * 1024)
+        self.assertIn("y…\n", written)
+
+    def test_a_condition_run_without_its_inputs_fails_the_review(self) -> None:
+        self.assertEqual(
+            (
+                2,
+                "FAILED CODE_REVIEW_DIFF_FILE and CODE_REVIEW_CONDITION_OUTPUT not set; a review sets them for a "
+                "condition\n",
+                "",
+            ),
+            self.run_condition({}, {}, environment={}),
+        )
+
+    def test_an_unexpected_failure_fails_the_review_rather_than_closing_the_route(self) -> None:
+        missing = {"CODE_REVIEW_DIFF_FILE": str(self.root / "absent.patch"), "CODE_REVIEW_CONDITION_OUTPUT": "x"}
+        code, out, _ = self.run_condition({}, {}, environment=missing)
+        self.assertEqual(2, code)
+        self.assertTrue(out.startswith("FAILED FileNotFoundError: "), out)
+
+
+if __name__ == "__main__":
+    unittest.main()

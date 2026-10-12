@@ -1,0 +1,7 @@
+{
+  "skill": "review-repository",
+  "mode": "initial",
+  "expectations": [
+    {"kind": "finding", "path": "tools/report_age.sh", "lines": [7, 8, 9, 10], "severity": "SHOULD_FIX", "category": "Test coverage"}
+  ]
+}
