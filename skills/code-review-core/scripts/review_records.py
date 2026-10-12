@@ -58,6 +58,13 @@ MAX_LOCATION_CHARACTERS = 200
 # the version and finding ID where it first appeared. A repeat is linked to the finding it repeats, never counted
 # twice, so a repeat needs a target at least as severe. A disposition of a prior finding judges its entry.
 SEVERITY_RANK = {"SUGGESTION": 1, "SHOULD_FIX": 2, "MUST_FIX": 3}
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "FINDING_ID": (
+        "skills/code-review-core/scripts/review_flags.py holds the same finding ID pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 FINDING_ID = re.compile(r"F[0-9]{3,}")
 LEDGER_ID = re.compile(r"v([1-9][0-9]*):(F[0-9]{3,})")
 LEDGER_FIELDS = frozenset({"version", "id", "severity", "category", "state", "judged_in", "dispositions", "repeats"})

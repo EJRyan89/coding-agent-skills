@@ -76,6 +76,17 @@ RESERVED_DEVICE_NAMES = frozenset(
 MAX_SEGMENT_UNITS = 255  # NTFS, ReFS, exFAT, and FAT32 all stop a name at 255 UTF-16 code units
 MAX_PATH = 260  # a Windows path without long-path support, its terminating NUL included
 LONG_PATH_UNITS = 32_767  # an NT path with long-path support, counted with the volume's device name for the drive
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "GIT_OBJECT_ID": (
+        "skills/code-review-core/scripts/review_github.py holds the same Git object ID pattern; code-review-core's "
+        "validators are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+    "SLUG": (
+        "skills/code-review-core/scripts/review_guard.py holds the same slug pattern; code-review-core's validators "
+        "are being consolidated in a change of their own, which imports one copy and removes this entry"
+    ),
+}
 GIT_OBJECT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 RUNTIME_CAPABILITIES = {
     "claude-code": {"agent-delegation", "read-diff", "write-result"},

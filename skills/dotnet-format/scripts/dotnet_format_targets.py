@@ -61,6 +61,14 @@ SOLUTION_PROJECT = re.compile(r'^\s*Project\("[^"]*"\)\s*=\s*"[^"]*"\s*,\s*"([^"
 IGNORED_DIRECTORIES = frozenset({".git", "bin", "obj", "node_modules"})
 REMOTE_REFS = "refs/remotes/origin/"
 SOLUTION_SUFFIXES = (".sln", ".slnx")
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "XML_DECLARATION": (
+        "skills/code-review-core/scripts/review_analyzers.py holds the same XML declaration pattern; dotnet-format "
+        "does not depend on code-review-core, and the guarded XML reading both scripts do belongs in skill-core, "
+        "where a change of its own moves it and removes this entry"
+    ),
+}
 XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 
 

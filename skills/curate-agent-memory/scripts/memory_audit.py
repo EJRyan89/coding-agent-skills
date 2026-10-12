@@ -69,6 +69,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from console import use_utf8_output
 from flat_text import flat_text
 from git_client import GitClient
+from markdown_sections import CODE_SPAN
 from skill_roots import skills_directory_holding
 
 INDEX_NAME = "MEMORY.md"
@@ -86,7 +87,6 @@ FRONTMATTER_KEY = re.compile(r"^\s*(?P<key>[A-Za-z_][\w-]*)\s*:\s*(?P<value>.*)$
 # A literal or folded block scalar header: chomping and an indentation digit in either order, then a comment.
 BLOCK_SCALAR = re.compile(r"^(?P<style>[|>])(?:[+-]?(?P<indent>[1-9])?|(?P<first>[1-9])[+-])\s*(?:#.*)?$")
 WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
-BACKTICKED = re.compile(r"`([^`\n]+)`")
 PATH_LIKE = re.compile(r"^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])?[\w.@()\- ]+(?:[\\/][\w.@()\- ]+)+[\\/]?$")
 ANCHORED_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/])|[\\/]$|\.[A-Za-z0-9]{1,8}$")
 WORD = re.compile(r"[a-z][a-z0-9_]{2,}")
@@ -318,7 +318,7 @@ def words(text: str) -> set[str]:
 def cited_paths(body: str, bases: list[Path]) -> list[CitedPath]:
     cited: list[CitedPath] = []
     seen: set[str] = set()
-    for match in BACKTICKED.finditer(body):
+    for match in CODE_SPAN.finditer(body):
         candidate = match.group(1).strip()
         candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
         if (
