@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import subprocess
 import sys
@@ -98,12 +99,12 @@ class SignalledTree(JobTree):
 
 class FailingKernel:
     """kernel32 as job_tree calls it, with each call named in `failing` failing as a kernel call does: it returns no
-    result and leaves ACCESS_DENIED as the thread's last error. The arguments of each call's last failure are kept."""
+    result and leaves ACCESS_DENIED as the thread's last error. The arguments of each failed call are kept in order."""
 
     def __init__(self, *failing: str) -> None:
         self.real = job_tree._kernel32()
         self.failing = set(failing)
-        self.failed: dict[str, tuple[Any, ...]] = {}
+        self.failed: dict[str, list[tuple[Any, ...]]] = {}
 
     def __getattr__(self, name: str) -> Callable[..., Any]:
         call: Callable[..., Any] = getattr(self.real, name)
@@ -111,7 +112,7 @@ class FailingKernel:
             return call
 
         def fail(*arguments: Any) -> int:
-            self.failed[name] = arguments
+            self.failed.setdefault(name, []).append(arguments)
             job_tree.ctypes.set_last_error(ACCESS_DENIED)  # type: ignore[attr-defined]  # Windows only
             return 0
 
@@ -206,7 +207,48 @@ class JobTreeTests(unittest.TestCase):
             run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
         with self.assertRaises(PermissionError, msg="the error is true: the program still holds its file"):
             self.held.unlink()
-        self.assertTrue(job_tree._kernel32().CloseHandle(kernel.failed["CloseHandle"][0]))
+        self.assertTrue(job_tree._kernel32().CloseHandle(kernel.failed["TerminateJobObject"][0][0]))
+        self.assert_released()
+
+    def test_leaving_the_tree_returns_only_once_every_program_has_let_go_of_its_files(self) -> None:
+        # Ending a job is asynchronous: without the wait, a folder the programs ran in can still be in use here.
+        for how, extra, room in (
+            ("finished", [], 64),
+            ("killed at its limit", ["hang"], 64),
+            ("listed in parts", [], 1),
+        ):
+            with self.subTest(how=how), mock.patch.object(job_tree, "LISTED_PROCESSES", room):
+                command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held), *extra]
+                with contextlib.suppress(subprocess.TimeoutExpired):  # the hanging command is killed at its limit
+                    run_bounded(command, 1 if extra else STARTUP_SECONDS, tree=SignalledTree(self.ready))
+                self.assertTrue(self.ready.exists(), "the started program came up")
+                self.held.unlink()  # no retry: nothing holds it any more
+                self.ready.unlink()
+
+    def test_a_job_it_cannot_list_is_ended_and_says_its_processes_may_still_run(self) -> None:
+        command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+        with (
+            mock.patch.object(job_tree, "_kernel32", return_value=FailingKernel("QueryInformationJobObject")),
+            self.assertRaisesRegex(
+                OSError,
+                r"^The job's processes may still run: QueryInformationJobObject failed: .+ \(Windows error 5\)$",
+            ),
+        ):
+            run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
+        self.assert_released()
+
+    def test_processes_that_have_not_ended_in_time_are_reported(self) -> None:
+        timeout = 258  # WAIT_TIMEOUT
+        kernel = FailingKernel()
+        command = [sys.executable, "-c", LAUNCHER_PROGRAM, str(self.held)]
+        with (
+            mock.patch.object(job_tree, "_kernel32", return_value=kernel),
+            mock.patch.object(kernel, "WaitForSingleObject", return_value=timeout, create=True),
+            self.assertRaisesRegex(
+                OSError, r"^The job's processes may still run: process \d+ had not ended 10 seconds on$"
+            ),
+        ):
+            run_bounded(command, STARTUP_SECONDS, tree=SignalledTree(self.ready))
         self.assert_released()
 
     def test_a_process_has_ended_only_once_windows_has_let_go_of_it(self) -> None:
