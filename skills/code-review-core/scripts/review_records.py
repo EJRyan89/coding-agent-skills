@@ -1287,7 +1287,7 @@ DISPOSITION_PHRASES = {
 
 def _code(text: str) -> str:
     """Inline code span that survives backticks and line breaks in the text."""
-    text = " ".join(text.split())
+    text = flat_text(text)
     fence = "`" * (max((len(run) for run in re.findall(r"`+", text)), default=0) + 1)
     padding = " " if text.startswith("`") or text.endswith("`") else ""
     return f"{fence}{padding}{text}{padding}{fence}"
@@ -1295,7 +1295,7 @@ def _code(text: str) -> str:
 
 def _cell(text: str) -> str:
     """Single-line Markdown table cell content."""
-    return " ".join(text.split()).replace("|", "\\|")
+    return flat_text(text).replace("|", "\\|")
 
 
 # Entities are text in both Markdown and HTML summaries. Encoding punctuation also prevents bare URL, email,
@@ -1602,7 +1602,7 @@ def render_markdown(
         for disposition in record["comment_dispositions"]:
             comment = comments[disposition["comment_id"]]
             location = comment["path"] + (f":{comment['line']}" if comment["line"] else "")
-            excerpt = " ".join(comment["body"].split())
+            excerpt = flat_text(comment["body"])
             excerpt = excerpt if len(excerpt) <= 120 else excerpt[:117].rstrip() + "..."
             outdated = " (outdated)" if comment["outdated"] else ""
             lines.append(

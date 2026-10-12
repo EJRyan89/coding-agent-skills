@@ -39,6 +39,7 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import streaming
+from flat_text import flat_text
 from pdf_tool import PdfToolRefused, probe_pdftotext
 
 DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
@@ -487,7 +488,7 @@ class _Body:
 
 def _line(text: str) -> str:
     """One line: no character that breaks or reshapes it, and no run of spaces."""
-    return " ".join(LINE_UNSAFE.sub(" ", text).split())
+    return flat_text(LINE_UNSAFE.sub(" ", text))
 
 
 def _flat(text: str) -> str:
@@ -497,7 +498,7 @@ def _flat(text: str) -> str:
     while previous != text:
         previous = text
         text = text.replace("{++}", "").replace("[--]", "").replace("{+ +}", " ").replace("[- -]", " ")
-    return " ".join(text.split())
+    return flat_text(text)
 
 
 def split_label(line: str) -> tuple[str, str]:

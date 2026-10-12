@@ -301,6 +301,46 @@ class LiteralReportTests(GitTestCase):
                 self.assertEqual(f"| **Branch** | <code>{encoded}</code> → `main` |", row)
                 self.assertEqual(3, row.count("|"))
 
+    def test_a_review_comment_excerpt_is_one_literal_line_cut_at_the_limit(self) -> None:
+        comment = {
+            "id": "C1",
+            "author": "dev",
+            "path": "src/file.cs",
+            "line": 7,
+            "outdated": False,
+            "body": "Why\u00a0is\t\tthis\r\n\n  here? ![i](https://example.invalid/a) | <b>",
+            "url": "https://example.invalid/1",
+        }
+        long = {**comment, "id": "C2", "body": "word " * 40}
+        result = {
+            **validated_result(),
+            "comment_dispositions": [
+                {"comment_id": "C1", "disposition": "still_present", "rationale": "Unchanged."},
+                {"comment_id": "C2", "disposition": "addressed", "rationale": "Done."},
+            ],
+        }
+        request = {**valid_request(), "github_comments": [comment, long]}
+        record = records.build_record(request, result, version=1, policy={})
+        records.validate_record(record)
+        report = records.render_markdown(record, record_payload_hash="0" * 64)
+        rows = [line for line in report.splitlines() if line.startswith("| [C")]
+        self.assertEqual(
+            "| [C1](https://example.invalid/1) | &#64;dev on `src/file.cs:7`: Why is this here&#63; "
+            "&#33;&#91;i&#93;&#40;https&#58;&#47;&#47;example&#46;invalid&#47;a&#41; &#124; &lt;b&gt; "
+            "| STILL PRESENT | Unchanged&#46; |",
+            rows[0],
+        )
+        excerpt = rows[1].split(": ", 1)[1].rsplit(" | ", 2)[0]
+        self.assertEqual(" ".join(["word"] * 23) + " wo&#46;&#46;&#46;", excerpt, "117 characters, then three dots")
+
+    def test_an_evidence_line_is_one_code_span_with_its_whitespace_folded(self) -> None:
+        result = validated_result()
+        result["findings"][0]["evidence"] = "x\t=\u00a0 1\u2003 \n `tick` \n``\x1f\x1f``"
+        record = records.build_record(valid_request(), result, version=1, policy={})
+        records.validate_record(record)
+        report = records.render_markdown(record, record_payload_hash="0" * 64)
+        self.assertIn("> **Evidence:** `x = 1`<br>`` `tick` ``<br>``` `` `` ```", report)
+
 
 if __name__ == "__main__":
     unittest.main()
