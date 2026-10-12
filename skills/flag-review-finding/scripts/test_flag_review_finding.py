@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
@@ -16,8 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 import review_fixture
 import review_flags
 from flag_review_finding import flag_line, main
+from review_archive import ArchiveError, ArchiveFieldError, pull_directory
 from review_config import write_config
 from review_io import PersistenceError, ResourceLock
+from typed_fields import FieldError
 
 SCRIPT = Path(__file__).with_name("flag_review_finding.py")
 
@@ -47,6 +50,33 @@ class FlagLineTests(unittest.TestCase):
         body = cut.split(" F1 ", 1)[1]
         self.assertEqual(160, len(body))
         self.assertTrue(body.endswith("word…"))
+
+
+class ArchivePullTests(unittest.TestCase):
+    """The archive folder a flag's pull request is looked up in, named by its pull number."""
+
+    def test_a_pull_number_of_the_wrong_kind_is_refused_in_one_shape(self) -> None:
+        self.assertTrue(issubclass(ArchiveFieldError, FieldError) and issubclass(ArchiveFieldError, ArchiveError))
+        root = Path("C:/archive")
+        self.assertEqual(root / "example" / "one" / "pulls" / "12", pull_directory(root, "example/one", 12))
+        kind = "pull number must be an integer of at least 1, found"
+        cases: list[tuple[Any, str]] = [
+            (0, "integer 0"),
+            (-1, "integer -1"),
+            (True, "boolean true"),
+            (12.0, "number 12.0"),
+            ("12", 'string "12"'),
+            (None, "null"),
+            ([12], "an array"),
+            ({"number": 12}, "an object"),
+        ]
+        for value, found in cases:
+            with self.subTest(value=value):
+                with self.assertRaises(ArchiveError) as caught:
+                    pull_directory(root, "example/one", value)
+                self.assertEqual(
+                    (ArchiveFieldError, f"{kind} {found}"), (type(caught.exception), str(caught.exception))
+                )
 
 
 class FlagCliTests(unittest.TestCase):
@@ -382,7 +412,11 @@ class FlagCliTests(unittest.TestCase):
         Path(self.store).write_text(json.dumps(store), encoding="utf-8")
         for arguments in (["list"], ["resolve", "RF-000001", "Done"], ["add", "guideline", "Body"]):
             with self.subTest(arguments=arguments):
-                self.assert_result(self.store_cli(*arguments), 1, "FAILED Flag finding ID is invalid\n")
+                self.assert_result(
+                    self.store_cli(*arguments),
+                    1,
+                    "FAILED flag-store.flags[0].finding_id must be a string or null, found an array\n",
+                )
 
     def test_usage_errors_exit_2(self) -> None:
         for arguments in (

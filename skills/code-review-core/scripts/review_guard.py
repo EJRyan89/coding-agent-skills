@@ -47,6 +47,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from typed_fields import FieldError, FieldReader
 
 EXIT_CONTRACT_EXEMPT = "Claude Code PreToolUse hook protocol: prints a JSON decision and always exits 0"
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -78,13 +79,6 @@ SHELL_DRIVE = re.compile(r"^/([A-Za-z])(/|$)")
 AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 CLAIMS = Path(tempfile.gettempdir()) / "code-review-reviewer-claims"
 FIRST = "read the prompt file your task names first"
-# Constants that tests/run_validation.py allows another file to hold too, with the reason.
-DUPLICATION_ALLOWED = {
-    "ROLE_ID": (
-        "skills/code-review-core/scripts/review_runtime.py holds the same slug pattern; code-review-core's validators "
-        "are being consolidated in a change of their own, which imports one copy and removes this entry"
-    ),
-}
 ROLE_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 Claim = tuple[Path, dict[str, str]]
@@ -92,6 +86,13 @@ Claim = tuple[Path, dict[str, str]]
 
 class Denied(Exception):
     pass
+
+
+class DeniedField(FieldError, Denied):
+    """A hook event, run, or claim field of the wrong kind; the call is denied."""
+
+
+READ = FieldReader(DeniedField)
 
 
 def read_log(run: Path, role: str) -> Path:
@@ -121,8 +122,10 @@ def _log_read(tool: str, path: Path, claim: Claim) -> None:
 
 
 def _path(value: Any, cwd: Path) -> Path:
-    if not isinstance(value, str) or not value.strip():
-        raise Denied("give an absolute path inside the review run")
+    try:
+        value = READ.string(value, "the path")
+    except FieldError as exc:
+        raise Denied("give an absolute path inside the review run") from exc
     match = SHELL_DRIVE.match(value)
     text = f"{match.group(1)}:/{value[match.end() :]}" if match else value
     path = Path(text)
@@ -154,14 +157,18 @@ def _roles(run: Path) -> list[dict[str, str]]:
         state = json.loads((run / RUN_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise Denied(f"the review run {run} could not be read") from exc
-    roles = state.get("roles") if isinstance(state, dict) else None
-    fields = ("id", "prompt_file", "result_file")
-    if not isinstance(roles, list) or not all(
-        isinstance(role, dict) and all(isinstance(role.get(field), str) and role[field] for field in fields)
-        for role in roles
-    ):
-        raise Denied(f"the review run {run} could not be read")
-    return roles
+    try:
+        return READ.array(READ.json_object(state, "run").get("roles"), "run.roles", _role)
+    except FieldError as exc:
+        raise Denied(f"the review run {run} could not be read") from exc
+
+
+def _role(value: Any, path: str) -> dict[str, str]:
+    """One role of a run: its ID, prompt file, and result file, each a non-empty string."""
+    role = READ.json_object(value, path)
+    for field in ("id", "prompt_file", "result_file"):
+        READ.string(role.get(field), f"{path}.{field}")
+    return role
 
 
 def _load_claim(agent: str) -> Claim | None:
@@ -172,8 +179,11 @@ def _load_claim(agent: str) -> Claim | None:
         return None
     except (OSError, ValueError) as exc:
         raise Denied("this reviewer's claim could not be read") from exc
-    if not isinstance(claim, dict) or not all(isinstance(claim.get(key), str) for key in ("run", "role")):
-        raise Denied("this reviewer's claim could not be read")
+    try:
+        for key in ("run", "role"):
+            READ.string(READ.json_object(claim, "claim").get(key), f"claim.{key}", empty=True)
+    except FieldError as exc:
+        raise Denied("this reviewer's claim could not be read") from exc
     run = Path(claim["run"])
     role = next((role for role in _roles(run) if role["id"] == claim["role"]), None)
     if role is None:
@@ -184,9 +194,13 @@ def _load_claim(agent: str) -> Claim | None:
 def _prune_claims() -> None:
     """Remove each claim whose run is gone: finalize removes a run's folder, run.json with it."""
     for path in CLAIMS.glob("*.json"):
-        with contextlib.suppress(OSError, ValueError, AttributeError):
-            run = json.loads(path.read_text(encoding="utf-8")).get("run")
-            if not isinstance(run, str) or not (Path(run) / RUN_FILE).is_file():
+        with contextlib.suppress(OSError, ValueError):
+            claim = json.loads(path.read_text(encoding="utf-8"))
+            try:
+                run: str | None = READ.string(READ.json_object(claim, "claim").get("run"), "claim.run", empty=True)
+            except FieldError:
+                run = None
+            if run is None or not (Path(run) / RUN_FILE).is_file():
                 path.unlink()
 
 
@@ -222,13 +236,11 @@ def _check_read(tool: str, tool_input: dict[str, Any], cwd: Path, claim: Claim |
     key = "file_path" if tool == "Read" else "path"
     path = _path(tool_input.get(key), cwd)
     if tool == "Glob":
-        pattern = tool_input.get("pattern")
-        if (
-            not isinstance(pattern, str)
-            or ".." in pattern
-            or PureWindowsPath(pattern).anchor
-            or pattern.startswith("/")
-        ):
+        try:
+            pattern = READ.string(tool_input.get("pattern"), "tool_input.pattern", empty=True)
+        except FieldError as exc:
+            raise Denied("Glob patterns must be relative to the run folder path, without '..'") from exc
+        if ".." in pattern or PureWindowsPath(pattern).anchor or pattern.startswith("/"):
             raise Denied("Glob patterns must be relative to the run folder path, without '..'")
     if claim is None:
         raise Denied(f"{FIRST}; {path} is not a reviewer prompt")
@@ -244,8 +256,10 @@ def _check_write(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
 
 
 def _check_bash(tool_input: dict[str, Any], cwd: Path, claim: Claim) -> None:
-    command = tool_input.get("command")
-    text = command.strip() if isinstance(command, str) else ""
+    try:
+        text = READ.string(tool_input.get("command"), "tool_input.command", empty=True).strip()
+    except FieldError:
+        text = ""  # no command, which no allowed form matches
     match = SELF_CHECK.match(text)
     if match is not None and _same(_path(match.group("script"), cwd), PIPELINE):
         _check_own_run(match, cwd, claim, "self-check")
@@ -287,17 +301,22 @@ def _check(tool: str, tool_input: dict[str, Any], cwd: Path, agent: str) -> None
 
 def decide(event: dict[str, Any]) -> str | None:
     """The reason to deny this tool call, or None to allow it."""
-    tool = event.get("tool_name", "")
-    tool_input = event.get("tool_input")
+    tool = READ.string(event.get("tool_name", ""), "hook event.tool_name", empty=True)
     if tool not in READ_TOOLS | WRITE_TOOLS | {"Bash"}:
         return None
     try:
-        if not isinstance(tool_input, dict):
-            raise Denied("the tool input could not be read")
-        agent = event.get("agent_id")
-        if not isinstance(agent, str) or not AGENT_ID.fullmatch(agent):
+        try:
+            tool_input = READ.json_object(event.get("tool_input"), "hook event.tool_input")
+        except FieldError as exc:
+            raise Denied("the tool input could not be read") from exc
+        try:
+            agent = READ.string(event.get("agent_id"), "hook event.agent_id")
+        except FieldError:
+            agent = ""
+        if not AGENT_ID.fullmatch(agent):
             raise Denied("the hook event carries no agent ID, so the guard cannot tell which reviewer is calling")
-        _check(tool, tool_input, Path(event.get("cwd") or Path.cwd()), agent)
+        cwd = READ.optional(READ.string, event.get("cwd"), "hook event.cwd", empty=True)
+        _check(tool, tool_input, Path(cwd or Path.cwd()), agent)
     except Denied as exc:
         return f"Code-review reviewer boundary: {exc}."
     return None
@@ -305,8 +324,11 @@ def decide(event: dict[str, Any]) -> str | None:
 
 def main(stream: str) -> int:
     try:
-        event = json.loads(stream)
-        reason = decide(event) if isinstance(event, dict) else "the hook event could not be read"
+        try:
+            event = READ.json_object(json.loads(stream), "hook event")
+        except FieldError:
+            event = None
+        reason = "the hook event could not be read" if event is None else decide(event)
     except Exception as exc:  # fail closed: an unevaluated call could read the wrong code
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:

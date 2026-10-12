@@ -25,13 +25,69 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_runtime
 from review_config import ConfigurationError
-from review_runtime import RuntimeContractError, validate_adapter_manifest, verify_source_snapshot
+from review_runtime import (
+    RuntimeContractError,
+    RuntimeContractFieldError,
+    validate_adapter_manifest,
+    verify_source_snapshot,
+)
 
 HEAD = "a" * 40
 APP = b"print('app')\n"
 README = b"# Readme\n"
 # A message is literal, or built from the snapshot root for the errors that name a path under it.
 Message = str | Callable[[Path], str]
+# A field of the wrong kind, refused in the typed-field reader's one shape.
+F = RuntimeContractFieldError
+SNAPSHOT = "source-snapshot.json"
+# What a field error names as found, for each wrong value the cases below use, written out independently of the reader.
+FOUND: dict[str, str] = {
+    "None": "null",
+    "True": "boolean true",
+    "False": "boolean false",
+    "1.0": "number 1.0",
+    "2.0": "number 2.0",
+    "[]": "an array",
+    "{}": "an object",
+}
+# The kinds a source snapshot manifest's fields are read as, written out independently of the reader.
+HEX64 = "a lowercase hexadecimal digest of 64 characters"
+COMMIT_KIND = "a lowercase hexadecimal digest of 40 or 64 characters"
+NOT_HEX = "a string with a character that is not a lowercase hexadecimal digit"
+REASON_KIND = (
+    'one of "agent-instruction", "binary", "configured", "file-size-limit", "non-regular", "symbolic-link", '
+    '"unextractable", "unsafe-path"'
+)
+
+
+def _found(value: Any, *, text: bool = False) -> str:
+    """What a field error names as found: a listed literal, an integer, a quoted short string, or an array or object;
+    where a string is expected (`text`), an empty or blank string is named as such."""
+    if text and isinstance(value, str) and not value.strip():
+        return "a blank string" if value else "an empty string"
+    if repr(value) in FOUND:
+        return FOUND[repr(value)]
+    if isinstance(value, int):
+        return f"integer {value}"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return f"string {json.dumps(value)}"
+
+
+def _wrong(path: str, expected: str, value: Any) -> str:
+    """The one shape a field of the wrong kind is refused with, written out independently of the reader."""
+    return f"{path} must be {expected}, found {_found(value, text='string' in expected)}"
+
+
+def _unknown(path: str, field: str) -> str:
+    return f'{path} must be an object of known fields, found unknown field "{field}"'
+
+
+def _missing(path: str, *fields: str) -> str:
+    noun, pronoun = ("fields", "them") if len(fields) > 1 else ("field", "it")
+    return f"{path} must be an object with {noun} {', '.join(fields)}, found an object without {pronoun}"
 
 
 def _sha(content: bytes) -> str:
@@ -187,8 +243,6 @@ ROOT_RULE = "Source snapshot root must be an existing absolute non-reparse direc
 NOT_JSON = (
     "Source snapshot metadata is invalid: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
 )
-FIELDS = "Source snapshot metadata fields do not match the contract"
-MAPS = "Source snapshot hashes and exclusions must be objects"
 
 
 # Snapshots verify_source_snapshot accepts, from the base snapshot.
@@ -243,8 +297,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
         (
             f"schema version {value!r}",
             _meta("schema_version", value),
-            RuntimeContractError,
-            "Source snapshot schema version is unsupported",
+            F,
+            _wrong(f"{SNAPSHOT}.schema_version", "an integer", value),
         )
         for value in (True, 1.0)
     ),
@@ -279,14 +333,13 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
         RuntimeContractError,
         "Source snapshot metadata is invalid: Expecting value: line 1 column 1 (char 0)",
     ),
-    ("metadata that is a list", _attribute("metadata", []), RuntimeContractError, FIELDS),
-    ("metadata that is a string", _attribute("metadata", "x"), RuntimeContractError, FIELDS),
-    ("metadata without schema_version", _without("schema_version"), RuntimeContractError, FIELDS),
-    ("metadata without repository", _without("repository"), RuntimeContractError, FIELDS),
-    ("metadata without source_commit", _without("source_commit"), RuntimeContractError, FIELDS),
-    ("metadata without source_hashes", _without("source_hashes"), RuntimeContractError, FIELDS),
-    ("metadata without excluded_paths", _without("excluded_paths"), RuntimeContractError, FIELDS),
-    ("metadata with an extra field", _meta("extra", None), RuntimeContractError, FIELDS),
+    ("metadata that is a list", _attribute("metadata", []), F, _wrong(SNAPSHOT, "an object", [])),
+    ("metadata that is a string", _attribute("metadata", "x"), F, _wrong(SNAPSHOT, "an object", "x")),
+    *(
+        (f"metadata without {field}", _without(field), F, _missing(SNAPSHOT, field))
+        for field in ("schema_version", "repository", "source_commit", "source_hashes", "excluded_paths")
+    ),
+    ("metadata with an extra field", _meta("extra", None), F, _unknown(SNAPSHOT, "extra")),
     (
         "schema version 2",
         _meta("schema_version", 2),
@@ -296,8 +349,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "schema version as a string",
         _meta("schema_version", "1"),
-        RuntimeContractError,
-        "Source snapshot schema version is unsupported",
+        F,
+        _wrong(f"{SNAPSHOT}.schema_version", "an integer", "1"),
     ),
     (
         "an invalid repository",
@@ -308,8 +361,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "a repository that is not a string",
         _meta("repository", 5),
-        ConfigurationError,
-        "Invalid repository identity: 5",
+        F,
+        "source-snapshot.json.repository must be a non-empty string, found integer 5",
     ),
     (
         "an invalid expected repository",
@@ -332,23 +385,28 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "a commit that is not a hash",
         _chain(_meta("source_commit", "main"), _attribute("commit", "main")),
-        RuntimeContractError,
-        "Source snapshot commit does not match the request head",
+        F,
+        f"{SNAPSHOT}.source_commit must be {COMMIT_KIND}, found a string of 4 characters",
     ),
     (
         "an uppercase commit",
         _chain(_meta("source_commit", "A" * 40), _attribute("commit", "A" * 40)),
-        RuntimeContractError,
-        "Source snapshot commit does not match the request head",
+        F,
+        f"{SNAPSHOT}.source_commit must be {COMMIT_KIND}, found {NOT_HEX}",
     ),
     (
         "a commit that is not a string",
         _meta("source_commit", 5),
-        RuntimeContractError,
-        "Source snapshot commit does not match the request head",
+        F,
+        _wrong(f"{SNAPSHOT}.source_commit", COMMIT_KIND, 5),
     ),
-    ("hashes that are a list", _meta("source_hashes", []), RuntimeContractError, MAPS),
-    ("exclusions that are a list", _meta("excluded_paths", []), RuntimeContractError, MAPS),
+    ("hashes that are a list", _meta("source_hashes", []), F, _wrong(f"{SNAPSHOT}.source_hashes", "an object", [])),
+    (
+        "exclusions that are a list",
+        _meta("excluded_paths", []),
+        F,
+        _wrong(f"{SNAPSHOT}.excluded_paths", "an object", []),
+    ),
     (
         "more files than the limit",
         _limit("MAX_SOURCE_SNAPSHOT_FILES", 1),
@@ -358,32 +416,32 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "an empty path",
         _rename_first("source_hashes", ""),
-        RuntimeContractError,
-        "source_hashes path must be a non-empty POSIX relative path",
+        F,
+        "a key of source-snapshot.json.source_hashes must be a non-empty string, found an empty string",
     ),
     (
         "a backslash path",
         _rename_first("source_hashes", "src\\app.py"),
         RuntimeContractError,
-        "source_hashes path must be a non-empty POSIX relative path",
+        "a key of source-snapshot.json.source_hashes must be a non-empty POSIX relative path",
     ),
     (
         "a path that escapes",
         _rename_first("source_hashes", "../app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '../app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '../app.py'",
     ),
     (
         "an absolute path",
         _rename_first("source_hashes", "/src/app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '/src/app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '/src/app.py'",
     ),
     (
         "a path with a Windows-unsafe character",
         _rename_first("source_hashes", "src/a:pp.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: 'src/a:pp.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: 'src/a:pp.py'",
     ),
     (
         "a path with a doubled slash",
@@ -436,20 +494,20 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "a hash that is not a string",
         _set_first("source_hashes", 5),
-        RuntimeContractError,
-        "Source snapshot hash is invalid: src/app.py",
+        F,
+        _wrong(f"{SNAPSHOT}.source_hashes.src/app.py", HEX64, 5),
     ),
     (
         "an uppercase hash",
         _set_first("source_hashes", "A" * 64),
-        RuntimeContractError,
-        "Source snapshot hash is invalid: src/app.py",
+        F,
+        f"{SNAPSHOT}.source_hashes.src/app.py must be {HEX64}, found {NOT_HEX}",
     ),
     (
         "a short hash",
         _set_first("source_hashes", "a" * 40),
-        RuntimeContractError,
-        "Source snapshot hash is invalid: src/app.py",
+        F,
+        f"{SNAPSHOT}.source_hashes.src/app.py must be {HEX64}, found a string of 40 characters",
     ),
     (
         "a file that is a reparse point",
@@ -506,8 +564,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "contents=False still checks a hash's format",
         _chain(_attribute("contents", False), _set_first("source_hashes", "x")),
-        RuntimeContractError,
-        "Source snapshot hash is invalid: src/app.py",
+        F,
+        f"{SNAPSHOT}.source_hashes.src/app.py must be {HEX64}, found a string of 1 character",
     ),
     (
         "contents=False still checks sizes",
@@ -530,14 +588,14 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "an empty exclusion",
         _entry("excluded_paths", "", "binary"),
-        RuntimeContractError,
-        "excluded_paths path must be a non-empty POSIX relative path",
+        F,
+        "a key of source-snapshot.json.excluded_paths must be a non-empty string, found an empty string",
     ),
     (
         "an exclusion that escapes",
         _entry("excluded_paths", "../x.bin", "binary"),
         RuntimeContractError,
-        "excluded_paths path is unsafe: '../x.bin'",
+        "a key of source-snapshot.json.excluded_paths is unsafe: '../x.bin'",
     ),
     (
         "an exclusion with a doubled slash",
@@ -560,20 +618,20 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "an exclusion reason that is not a string",
         _entry("excluded_paths", "x.bin", 5),
-        RuntimeContractError,
-        "Source snapshot exclusion is invalid: 'x.bin'",
+        F,
+        _wrong(f"{SNAPSHOT}.excluded_paths.x.bin", REASON_KIND, 5),
     ),
     (
         "an unknown exclusion reason",
         _entry("excluded_paths", "x.bin", "too-big"),
-        RuntimeContractError,
-        "Source snapshot exclusion is invalid: 'x.bin'",
+        F,
+        _wrong(f"{SNAPSHOT}.excluded_paths.x.bin", REASON_KIND, "too-big"),
     ),
     (
         "an exclusion reason in another case",
         _entry("excluded_paths", "x.bin", "Binary"),
-        RuntimeContractError,
-        "Source snapshot exclusion is invalid: 'x.bin'",
+        F,
+        _wrong(f"{SNAPSHOT}.excluded_paths.x.bin", REASON_KIND, "Binary"),
     ),
     (
         "a directory on disk that is a reparse point",
@@ -612,7 +670,7 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
 STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
     ("root", _attribute("root", "relative"), RuntimeContractError, ROOT_RULE),
     ("metadata read", _attribute("manifest", b"{"), RuntimeContractError, NOT_JSON),
-    ("metadata fields", _meta("extra", None), RuntimeContractError, FIELDS),
+    ("metadata fields", _meta("extra", None), F, _unknown(SNAPSHOT, "extra")),
     (
         "schema version",
         _meta("schema_version", 2),
@@ -638,7 +696,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         RuntimeContractError,
         "Source snapshot commit does not match the request head",
     ),
-    ("maps", _meta("excluded_paths", []), RuntimeContractError, MAPS),
+    ("maps", _meta("excluded_paths", []), F, _wrong(f"{SNAPSHOT}.excluded_paths", "an object", [])),
     (
         "file count",
         _limit("MAX_SOURCE_SNAPSHOT_FILES", 1),
@@ -649,7 +707,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         "safe path",
         _rename_first("source_hashes", "../app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '../app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '../app.py'",
     ),
     (
         "normalized path",
@@ -666,8 +724,8 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "hash format",
         _set_first("source_hashes", "x"),
-        RuntimeContractError,
-        "Source snapshot hash is invalid: src/app.py",
+        F,
+        f"{SNAPSHOT}.source_hashes.src/app.py must be {HEX64}, found a string of 1 character",
     ),
     (
         "reparse point",
@@ -704,13 +762,13 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         "exclusion path",
         _rename_first("excluded_paths", "../x.bin"),
         RuntimeContractError,
-        "excluded_paths path is unsafe: '../x.bin'",
+        "a key of source-snapshot.json.excluded_paths is unsafe: '../x.bin'",
     ),
     (
         "exclusion reason",
         _set_first("excluded_paths", "too-big"),
-        RuntimeContractError,
-        "Source snapshot exclusion is invalid: 'assets/logo.png'",
+        F,
+        _wrong(f"{SNAPSHOT}.excluded_paths.assets/logo.png", REASON_KIND, "too-big"),
     ),
     (
         "walk",
@@ -723,6 +781,41 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         _file("extra.txt", b"x"),
         RuntimeContractError,
         "Source snapshot file set mismatch; missing=[], extra=['extra.txt']",
+    ),
+]
+
+# A wrong-typed value for each kind of field verify_source_snapshot reads, in the reader's one shape: an object, an
+# integer, a string, a hash, an enumerated value, and each optional map.
+SNAPSHOT_KINDS: list[tuple[str, Mutation, str]] = [
+    ("manifest", _attribute("metadata", None), _wrong(SNAPSHOT, "an object", None)),
+    ("schema_version", _meta("schema_version", [1]), _wrong(f"{SNAPSHOT}.schema_version", "an integer", [])),
+    ("repository", _meta("repository", ""), _wrong(f"{SNAPSHOT}.repository", "a non-empty string", "")),
+    ("repository null", _meta("repository", None), _wrong(f"{SNAPSHOT}.repository", "a non-empty string", None)),
+    ("source_commit", _meta("source_commit", {}), _wrong(f"{SNAPSHOT}.source_commit", COMMIT_KIND, {})),
+    ("source_hashes", _meta("source_hashes", "x"), _wrong(f"{SNAPSHOT}.source_hashes", "an object", "x")),
+    ("a source hash", _set_first("source_hashes", None), _wrong(f"{SNAPSHOT}.source_hashes.src/app.py", HEX64, None)),
+    ("excluded_paths", _meta("excluded_paths", 1), _wrong(f"{SNAPSHOT}.excluded_paths", "an object", 1)),
+    (
+        "an exclusion reason",
+        _set_first("excluded_paths", ["binary"]),
+        _wrong(f"{SNAPSHOT}.excluded_paths.assets/logo.png", REASON_KIND, ["binary"]),
+    ),
+    ("fetchable", _meta("fetchable", []), _wrong(f"{SNAPSHOT}.fetchable", "an object", [])),
+    (
+        "a fetchable blob",
+        _meta("fetchable", {"src/other.py": 5}),
+        _wrong(f"{SNAPSHOT}.fetchable.src/other.py", "a lowercase hexadecimal digest of 40 characters", 5),
+    ),
+    (
+        "a fetchable path",
+        _meta("fetchable", {"": "b" * 40}),
+        "a key of source-snapshot.json.fetchable must be a non-empty string, found an empty string",
+    ),
+    ("extracted", _meta("extracted", []), _wrong(f"{SNAPSHOT}.extracted", "an object", [])),
+    (
+        "an extracted form",
+        _meta("extracted", {"doc.docx": True}),
+        _wrong(f"{SNAPSHOT}.extracted.doc.docx", 'one of "docx", "pdf"', True),
     ),
 ]
 
@@ -813,6 +906,11 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
             with self.subTest(name):
                 self.assert_refused(mutation(_snapshot()), error, message)
 
+    def test_each_kind_of_field_refuses_a_wrong_type(self) -> None:
+        for name, mutation, message in SNAPSHOT_KINDS:
+            with self.subTest(name):
+                self.assert_refused(mutation(_snapshot()), F, message)
+
     def test_faults_are_detected_in_order(self) -> None:
         # With the fault of every check from k on present at once, check k's fault is the one reported.
         for index, (name, _mutation, error, message) in enumerate(STAGES):
@@ -831,7 +929,7 @@ class SourceSnapshotVerificationTests(unittest.TestCase):
         self.assert_refused(stale(_snapshot()), RuntimeContractError, "Source snapshot hash mismatch: src/app.py")
         excluded = _chain(_entry("excluded_paths", "first.bin", "too-big"), _entry("excluded_paths", "../second", "x"))
         self.assert_refused(
-            excluded(_snapshot()), RuntimeContractError, "Source snapshot exclusion is invalid: 'first.bin'"
+            excluded(_snapshot()), F, _wrong(f"{SNAPSHOT}.excluded_paths.first.bin", REASON_KIND, "too-big")
         )
 
 
@@ -1078,7 +1176,17 @@ class SnapshotStampTests(unittest.TestCase):
 # (schema 2). The specialists' own fields belong to _validate_specialists; one of its errors shows where it runs.
 ManifestMutation = Callable[[Any], Any]
 Key = str | int
-MANIFEST_FIELDS = "Adapter manifest fields do not match the protocol"
+ENTRYPOINT = "entrypoint-manifest"
+SPECIALISTS = "specialists-manifest"
+SPECIALIST = f"{SPECIALISTS}.specialists[0]"
+MODES_KIND = 'one of "initial", "re-review"'
+MODEL_KIND = 'one of "fable", "haiku", "inherit", "opus", "sonnet" or null'
+EFFORT_KIND = 'one of "high", "low", "max", "medium", "xhigh" or null'
+CATEGORY_KIND = "a non-empty trimmed string of at most 60 characters"
+READS_KIND = "a non-empty string of at most 200 characters"
+GLOB_RULE = (
+    "a repository-relative glob pattern without a backslash, a control character, or an empty, '.', or '..' segment"
+)
 UNSUPPORTED = "Adapter manifest protocol version is unsupported"
 BAD_ID = "Adapter manifest id is invalid"
 BAD_SUPPORTS = "Adapter supports must contain unique supported modes"
@@ -1360,57 +1468,51 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
             f"{build.__name__} {field} {value!r}",
             build,
             _put((field,), value),
-            RuntimeContractError,
-            UNSUPPORTED,
+            F,
+            _wrong("manifest.schema_version" if field == "schema_version" else f"{root}.{field}", "an integer", value),
         )
-        for build in (_entrypoint_manifest, _specialists_manifest)
+        for build, root in ((_entrypoint_manifest, ENTRYPOINT), (_specialists_manifest, SPECIALISTS))
         for field, values in (
             ("schema_version", (True, 1.0) if build is _entrypoint_manifest else (True, 2.0)),
             ("protocol_version", (True, 1.0)),
         )
         for value in values
     ),
-    ("a list", _entrypoint_manifest, _whole([]), RuntimeContractError, MANIFEST_FIELDS),
-    ("null", _entrypoint_manifest, _whole(None), RuntimeContractError, MANIFEST_FIELDS),
-    ("entrypoint without an id", _entrypoint_manifest, _drop("id"), RuntimeContractError, MANIFEST_FIELDS),
-    (
-        "entrypoint with an extra field",
-        _entrypoint_manifest,
-        _put(("extra",), 1),
-        RuntimeContractError,
-        MANIFEST_FIELDS,
-    ),
+    ("a list", _entrypoint_manifest, _whole([]), F, _wrong("manifest", "an object", [])),
+    ("null", _entrypoint_manifest, _whole(None), F, _wrong("manifest", "an object", None)),
+    ("entrypoint without an id", _entrypoint_manifest, _drop("id"), F, _missing(ENTRYPOINT, "id")),
+    ("entrypoint with an extra field", _entrypoint_manifest, _put(("extra",), 1), F, _unknown(ENTRYPOINT, "extra")),
     (
         "entrypoint with uncovered",
         _entrypoint_manifest,
         _put(("uncovered",), "review"),
-        RuntimeContractError,
-        MANIFEST_FIELDS,
+        F,
+        _unknown(ENTRYPOINT, "uncovered"),
     ),
-    (
-        "entrypoint with a kind",
-        _entrypoint_manifest,
-        _put(("kind",), "entrypoint"),
-        RuntimeContractError,
-        MANIFEST_FIELDS,
-    ),
-    ("specialists without a kind", _specialists_manifest, _drop("kind"), RuntimeContractError, MANIFEST_FIELDS),
+    ("entrypoint with a kind", _entrypoint_manifest, _put(("kind",), "entrypoint"), F, _unknown(ENTRYPOINT, "kind")),
+    ("specialists without a kind", _specialists_manifest, _drop("kind"), F, _missing(SPECIALISTS, "kind")),
     (
         "specialists with an entrypoint",
         _specialists_manifest,
         _put(("entrypoint",), "SKILL.md"),
-        RuntimeContractError,
-        MANIFEST_FIELDS,
+        F,
+        _unknown(SPECIALISTS, "entrypoint"),
     ),
     (
         "specialists fields under schema 1",
         _specialists_manifest,
         _put(("schema_version",), 1),
-        RuntimeContractError,
-        MANIFEST_FIELDS,
+        F,
+        _missing(ENTRYPOINT, "agent_profiles", "entrypoint"),
     ),
     ("schema 3", _entrypoint_manifest, _put(("schema_version",), 3), RuntimeContractError, UNSUPPORTED),
-    ("schema as a string", _entrypoint_manifest, _put(("schema_version",), "1"), RuntimeContractError, UNSUPPORTED),
+    (
+        "schema as a string",
+        _entrypoint_manifest,
+        _put(("schema_version",), "1"),
+        F,
+        _wrong("manifest.schema_version", "an integer", "1"),
+    ),
     ("protocol 2", _entrypoint_manifest, _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
     (
         "specialists protocol 2",
@@ -1419,8 +1521,14 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         RuntimeContractError,
         UNSUPPORTED,
     ),
-    ("an id that is not a string", _entrypoint_manifest, _put(("id",), 5), RuntimeContractError, BAD_ID),
-    ("an empty id", _entrypoint_manifest, _put(("id",), ""), RuntimeContractError, BAD_ID),
+    (
+        "an id that is not a string",
+        _entrypoint_manifest,
+        _put(("id",), 5),
+        F,
+        _wrong(f"{ENTRYPOINT}.id", "a non-empty string", 5),
+    ),
+    ("an empty id", _entrypoint_manifest, _put(("id",), ""), F, _wrong(f"{ENTRYPOINT}.id", "a non-empty string", "")),
     ("an uppercase id", _entrypoint_manifest, _put(("id",), "Team"), RuntimeContractError, BAD_ID),
     ("an id starting with a dash", _entrypoint_manifest, _put(("id",), "-team"), RuntimeContractError, BAD_ID),
     ("an id of 65 characters", _entrypoint_manifest, _put(("id",), "a" * 65), RuntimeContractError, BAD_ID),
@@ -1428,23 +1536,29 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "supports that is a string",
         _entrypoint_manifest,
         _put(("supports",), "initial"),
-        RuntimeContractError,
-        BAD_SUPPORTS,
+        F,
+        _wrong(f"{ENTRYPOINT}.supports", "a non-empty array", "initial"),
     ),
-    ("empty supports", _entrypoint_manifest, _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
+    (
+        "empty supports",
+        _entrypoint_manifest,
+        _put(("supports",), []),
+        F,
+        f"{ENTRYPOINT}.supports must be a non-empty array, found an empty array",
+    ),
     (
         "an unknown mode",
         _entrypoint_manifest,
         _put(("supports",), ["initial", "full"]),
-        RuntimeContractError,
-        BAD_SUPPORTS,
+        F,
+        _wrong(f"{ENTRYPOINT}.supports[1]", MODES_KIND, "full"),
     ),
     (
         "a mode that is not a string",
         _entrypoint_manifest,
         _put(("supports",), [[]]),
-        RuntimeContractError,
-        BAD_SUPPORTS,
+        F,
+        _wrong(f"{ENTRYPOINT}.supports[0]", MODES_KIND, []),
     ),
     (
         "a mode listed twice",
@@ -1457,8 +1571,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "capabilities that are a string",
         _entrypoint_manifest,
         _put(("required_capabilities",), "read-diff"),
-        RuntimeContractError,
-        BAD_CAPABILITIES,
+        F,
+        _wrong(f"{ENTRYPOINT}.required_capabilities", "an array", "read-diff"),
     ),
     (
         "a capability listed twice",
@@ -1471,57 +1585,57 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "a capability that is not a string",
         _entrypoint_manifest,
         _put(("required_capabilities",), [5]),
-        RuntimeContractError,
-        BAD_CAPABILITIES,
+        F,
+        _wrong(f"{ENTRYPOINT}.required_capabilities[0]", "a non-empty string", 5),
     ),
     (
         "an empty capability",
         _entrypoint_manifest,
         _put(("required_capabilities",), [""]),
-        RuntimeContractError,
-        BAD_CAPABILITIES,
+        F,
+        _wrong(f"{ENTRYPOINT}.required_capabilities[0]", "a non-empty string", ""),
     ),
     (
         "an entrypoint that is not a string",
         _entrypoint_manifest,
         _put(("entrypoint",), None),
-        RuntimeContractError,
-        "entrypoint must be a non-empty POSIX relative path",
+        F,
+        _wrong(f"{ENTRYPOINT}.entrypoint", "a non-empty string", None),
     ),
     (
         "an entrypoint that escapes",
         _entrypoint_manifest,
         _put(("entrypoint",), "../SKILL.md"),
         RuntimeContractError,
-        "entrypoint is unsafe: '../SKILL.md'",
+        "entrypoint-manifest.entrypoint is unsafe: '../SKILL.md'",
     ),
     (
         "resources that are not an array",
         _entrypoint_manifest,
         _put(("resources",), "references/guide.md"),
-        RuntimeContractError,
-        "Adapter resources and agent_profiles must be arrays",
+        F,
+        _wrong(f"{ENTRYPOINT}.resources", "an array", "references/guide.md"),
     ),
     (
         "profiles that are not an array",
         _entrypoint_manifest,
         _put(("agent_profiles",), {}),
-        RuntimeContractError,
-        "Adapter resources and agent_profiles must be arrays",
+        F,
+        _wrong(f"{ENTRYPOINT}.agent_profiles", "an array", {}),
     ),
     (
         "an unsafe resource",
         _entrypoint_manifest,
         _put(("resources", 1), "C:/x.md"),
         RuntimeContractError,
-        "resources[1] is unsafe: 'C:/x.md'",
+        "entrypoint-manifest.resources[1] is unsafe: 'C:/x.md'",
     ),
     (
         "a backslash profile",
         _entrypoint_manifest,
         _put(("agent_profiles", 0), "agents\\checker.md"),
         RuntimeContractError,
-        "agent_profiles[0] must be a non-empty POSIX relative path",
+        "entrypoint-manifest.agent_profiles[0] must be a non-empty POSIX relative path",
     ),
     (
         "a resource that is the entrypoint",
@@ -1576,22 +1690,22 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "another kind",
         _specialists_manifest,
         _put(("kind",), "entrypoint"),
-        RuntimeContractError,
-        "Adapter manifest kind is unsupported",
+        F,
+        _wrong(f"{SPECIALISTS}.kind", 'one of "specialists"', "entrypoint"),
     ),
     (
         "an unknown uncovered policy",
         _specialists_manifest,
         _put(("uncovered",), "skip"),
-        RuntimeContractError,
-        "Adapter uncovered must be review or ignore",
+        F,
+        _wrong(f"{SPECIALISTS}.uncovered", 'one of "review", "ignore"', "skip"),
     ),
     (
         "a null uncovered policy",
         _specialists_manifest,
         _put(("uncovered",), None),
-        RuntimeContractError,
-        "Adapter uncovered must be review or ignore",
+        F,
+        _wrong(f"{SPECIALISTS}.uncovered", 'one of "review", "ignore"', None),
     ),
     *(
         (
@@ -1603,15 +1717,29 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
             "without backticks, quotes, or pipes",
         )
         for name, categories in (
-            ("empty", []),
-            ("not a list", "Style"),
             ("repeated without regard to case", ["Style", "style"]),
-            ("not text", ["Style", 3]),
-            ("blank", [" "]),
-            ("padded", [" Style"]),
             ("on two lines", ["Style\nRisk"]),
             ("quoted", ['Style "nits"']),
-            ("too long", ["x" * 61]),
+        )
+    ),
+    *(
+        (f"finding categories that are {name}", _specialists_manifest, _put(("finding_categories",), value), F, message)
+        for name, value, message in (
+            ("empty", [], f"{SPECIALISTS}.finding_categories must be a non-empty array, found an empty array"),
+            ("not a list", "Style", _wrong(f"{SPECIALISTS}.finding_categories", "a non-empty array", "Style")),
+            ("not text", ["Style", 3], _wrong(f"{SPECIALISTS}.finding_categories[1]", CATEGORY_KIND, 3)),
+            ("blank", [" "], _wrong(f"{SPECIALISTS}.finding_categories[0]", CATEGORY_KIND, " ")),
+            (
+                "padded",
+                [" Style"],
+                f"{SPECIALISTS}.finding_categories[0] must be {CATEGORY_KIND}, "
+                "found a string with whitespace around it",
+            ),
+            (
+                "too long",
+                ["x" * 61],
+                f"{SPECIALISTS}.finding_categories[0] must be {CATEGORY_KIND}, found a string of 61 characters",
+            ),
         )
     ),
     (
@@ -1632,22 +1760,22 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "specialists resources that are not an array",
         _specialists_manifest,
         _put(("resources",), "shared/guide.md"),
-        RuntimeContractError,
-        "resources must be an array",
+        F,
+        _wrong(f"{SPECIALISTS}.resources", "an array", "shared/guide.md"),
     ),
     (
         "an unsafe specialists resource",
         _specialists_manifest,
         _put(("resources", 0), "/shared/guide.md"),
         RuntimeContractError,
-        "resources[0] is unsafe: '/shared/guide.md'",
+        "specialists-manifest.resources[0] is unsafe: '/shared/guide.md'",
     ),
     (
         "conditions that are not an object",
         _specialists_manifest,
         _put(("conditions",), []),
-        RuntimeContractError,
-        "Adapter conditions must be an object",
+        F,
+        _wrong(f"{SPECIALISTS}.conditions", "an object", []),
     ),
     (
         "a resource listed twice",
@@ -1719,7 +1847,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "suite:security-review"),
         RuntimeContractError,
-        "specialists[0].profile names no suite profile: 'suite:security-review'; the suite ships suite:design-review",
+        "specialists-manifest.specialists[0].profile names no suite profile: 'suite:security-review'; "
+        "the suite ships suite:design-review",
     ),
     (
         # Only a catalogued name resolves, so a suite profile cannot reach another file of the suite or anything else.
@@ -1727,7 +1856,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "suite:../references/generic-reviewer.md"),
         RuntimeContractError,
-        "specialists[0].profile names no suite profile: 'suite:../references/generic-reviewer.md'; "
+        "specialists-manifest.specialists[0].profile names no suite profile: "
+        "'suite:../references/generic-reviewer.md'; "
         "the suite ships suite:design-review",
     ),
     (
@@ -1735,7 +1865,7 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "Suite:design-review"),
         RuntimeContractError,
-        "specialists[0].profile is unsafe: 'Suite:design-review'",
+        "specialists-manifest.specialists[0].profile is unsafe: 'Suite:design-review'",
     ),
     (
         "a reserved specialist resource",
@@ -1755,50 +1885,50 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         "condition reads that are not an array",
         _specialists_manifest,
         _put(("conditions", "window", "reads"), "global.json"),
-        RuntimeContractError,
-        "conditions.window.reads must be an array of glob patterns",
+        F,
+        _wrong(f"{SPECIALISTS}.conditions.window.reads", "an array of at most 100 items", "global.json"),
     ),
     (
         "condition reads of more than 100 patterns",
         _specialists_manifest,
         _put(("conditions", "window", "reads"), [f"p{index}.json" for index in range(101)]),
-        RuntimeContractError,
-        "conditions.window.reads holds more than 100 patterns",
+        F,
+        f"{SPECIALISTS}.conditions.window.reads must be an array of at most 100 items, found an array of 101 items",
     ),
     *[
         (
             f"a condition read {label}",
             _specialists_manifest,
             _put(("conditions", "window", "reads"), ["global.json", pattern]),
-            RuntimeContractError,
-            "conditions.window.reads[1] must be a repository-relative glob pattern of 1 to 200 characters, without a "
-            f"backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}",
+            F,
+            f"{SPECIALISTS}.conditions.window.reads[1] must be {kind}, found {found}",
         )
-        for label, pattern in (
-            ("that is not a string", 7),
-            ("that is empty", ""),
-            ("of 201 characters", "a" * 201),
-            ("with a backslash", "src\\global.json"),
-            ("with a control character", "src/\x01.json"),
-            ("with a leading slash", "/global.json"),
-            ("with an empty segment", "src//global.json"),
-            ("with a '.' segment", "./global.json"),
-            ("with a '..' segment", "../global.json"),
+        for label, pattern, kind, found in (
+            ("that is not a string", 7, READS_KIND, "integer 7"),
+            ("that is empty", "", READS_KIND, "an empty string"),
+            ("of 201 characters", "a" * 201, READS_KIND, "a string of 201 characters"),
+            ("with a backslash", "src\\global.json", GLOB_RULE, 'string "src\\\\global.json"'),
+            ("with a control character", "src/\x01.json", GLOB_RULE, 'string "src/\\u0001.json"'),
+            ("with a leading slash", "/global.json", GLOB_RULE, 'string "/global.json"'),
+            ("with an empty segment", "src//global.json", GLOB_RULE, 'string "src//global.json"'),
+            ("with a '.' segment", "./global.json", GLOB_RULE, 'string "./global.json"'),
+            ("with a '..' segment", "../global.json", GLOB_RULE, 'string "../global.json"'),
         )
     ],
     (
         "a condition read listed twice in another case",
         _specialists_manifest,
         _put(("conditions", "window", "reads"), ["Global.json", "global.JSON"]),
-        RuntimeContractError,
-        "conditions.window.reads lists 'global.JSON' twice (patterns match ignoring case)",
+        F,
+        f"{SPECIALISTS}.conditions.window.reads must be distinct glob patterns, ignoring case, "
+        'found "global.JSON" twice',
     ),
     (
         "a condition with a field other than script and reads",
         _specialists_manifest,
         _put(("conditions", "window", "writes"), []),
-        RuntimeContractError,
-        "Adapter condition window must declare a script and may declare reads",
+        F,
+        _unknown(f"{SPECIALISTS}.conditions.window", "writes"),
     ),
     (
         "a reserved resource in another case",
@@ -1819,43 +1949,69 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
 ManifestStage = tuple[str, ManifestMutation, type[Exception], str]
 # One fault per check of each kind of manifest, in the order validate_adapter_manifest detects them.
 ENTRYPOINT_STAGES: list[ManifestStage] = [
-    ("shape", _put(("extra",), 1), RuntimeContractError, MANIFEST_FIELDS),
+    ("shape", _put(("extra",), 1), F, _unknown(ENTRYPOINT, "extra")),
     ("protocol", _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
     ("id", _put(("id",), "Team"), RuntimeContractError, BAD_ID),
-    ("supports", _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
-    ("capabilities", _put(("required_capabilities",), [""]), RuntimeContractError, BAD_CAPABILITIES),
-    ("entrypoint", _put(("entrypoint",), "../SKILL.md"), RuntimeContractError, "entrypoint is unsafe: '../SKILL.md'"),
     (
-        "arrays",
-        _put(("agent_profiles",), {}),
-        RuntimeContractError,
-        "Adapter resources and agent_profiles must be arrays",
+        "supports",
+        _put(("supports",), []),
+        F,
+        f"{ENTRYPOINT}.supports must be a non-empty array, found an empty array",
     ),
-    ("resources", _put(("resources", 0), "../x.md"), RuntimeContractError, "resources[0] is unsafe: '../x.md'"),
+    (
+        "capabilities",
+        _put(("required_capabilities",), [""]),
+        F,
+        _wrong(f"{ENTRYPOINT}.required_capabilities[0]", "a non-empty string", ""),
+    ),
+    (
+        "entrypoint",
+        _put(("entrypoint",), "../SKILL.md"),
+        RuntimeContractError,
+        "entrypoint-manifest.entrypoint is unsafe: '../SKILL.md'",
+    ),
+    ("resources array", _put(("resources",), {}), F, _wrong(f"{ENTRYPOINT}.resources", "an array", {})),
+    (
+        "resources",
+        _put(("resources", 0), "../x.md"),
+        RuntimeContractError,
+        "entrypoint-manifest.resources[0] is unsafe: '../x.md'",
+    ),
+    ("profiles array", _put(("agent_profiles",), {}), F, _wrong(f"{ENTRYPOINT}.agent_profiles", "an array", {})),
     (
         "profiles",
         _put(("agent_profiles", 0), "../x.md"),
         RuntimeContractError,
-        "agent_profiles[0] is unsafe: '../x.md'",
+        "entrypoint-manifest.agent_profiles[0] is unsafe: '../x.md'",
     ),
     ("duplicates", _put(("agent_profiles", 0), "SKILL.md"), RuntimeContractError, TWICE),
     ("reserved", _put(("resources", 1), "materialization.json"), RuntimeContractError, RESERVED),
 ]
 SPECIALISTS_STAGES: list[ManifestStage] = [
-    ("shape", _put(("extra",), 1), RuntimeContractError, MANIFEST_FIELDS),
+    ("shape", _put(("extra",), 1), F, _unknown(SPECIALISTS, "extra")),
     ("protocol", _put(("protocol_version",), 2), RuntimeContractError, UNSUPPORTED),
     ("id", _put(("id",), "Team"), RuntimeContractError, BAD_ID),
-    ("supports", _put(("supports",), []), RuntimeContractError, BAD_SUPPORTS),
+    (
+        "supports",
+        _put(("supports",), []),
+        F,
+        f"{SPECIALISTS}.supports must be a non-empty array, found an empty array",
+    ),
     (
         "capabilities",
         _put(("required_capabilities",), ["read-diff", "read-diff"]),
         RuntimeContractError,
         BAD_CAPABILITIES,
     ),
-    ("kind", _put(("kind",), "entrypoint"), RuntimeContractError, "Adapter manifest kind is unsupported"),
-    ("uncovered", _put(("uncovered",), "skip"), RuntimeContractError, "Adapter uncovered must be review or ignore"),
-    ("resources", _put(("resources",), "x"), RuntimeContractError, "resources must be an array"),
-    ("specialists", _put(("conditions",), []), RuntimeContractError, "Adapter conditions must be an object"),
+    ("kind", _put(("kind",), "entrypoint"), F, _wrong(f"{SPECIALISTS}.kind", 'one of "specialists"', "entrypoint")),
+    (
+        "uncovered",
+        _put(("uncovered",), "skip"),
+        F,
+        _wrong(f"{SPECIALISTS}.uncovered", 'one of "review", "ignore"', "skip"),
+    ),
+    ("resources", _put(("resources",), "x"), F, _wrong(f"{SPECIALISTS}.resources", "an array", "x")),
+    ("specialists", _put(("conditions",), []), F, _wrong(f"{SPECIALISTS}.conditions", "an object", [])),
     ("duplicates", _put(("resources",), ["a.md", "a.md"]), RuntimeContractError, TWICE),
     ("reserved", _put(("specialists", 0, "profile"), "materialization.json"), RuntimeContractError, RESERVED),
 ]
@@ -1866,15 +2022,15 @@ MANIFEST_CONTAINERS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutat
         f"{build.__name__} {field} {value!r}",
         build,
         _put((field,), [value] if field in {"supports", "required_capabilities"} else value),
-        RuntimeContractError,
-        message,
+        F,
+        _wrong(path.format(root=root), kind, value),
     )
-    for build in (_entrypoint_manifest, _specialists_manifest)
-    for field, member, message in (
-        ("schema_version", 1, UNSUPPORTED),
-        ("protocol_version", 1, UNSUPPORTED),
-        ("supports", "initial", BAD_SUPPORTS),
-        ("required_capabilities", "read-diff", BAD_CAPABILITIES),
+    for build, root in ((_entrypoint_manifest, ENTRYPOINT), (_specialists_manifest, SPECIALISTS))
+    for field, member, path, kind in (
+        ("schema_version", 1, "manifest.schema_version", "an integer"),
+        ("protocol_version", 1, "{root}.protocol_version", "an integer"),
+        ("supports", "initial", "{root}.supports[0]", MODES_KIND),
+        ("required_capabilities", "read-diff", "{root}.required_capabilities[0]", "a non-empty string"),
     )
     for value in ([], {}, [member], {"value": member})
 ] + [
@@ -1882,15 +2038,179 @@ MANIFEST_CONTAINERS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutat
         f"specialist {field} {value!r}",
         _specialists_manifest,
         _put(("specialists", 0, field), value),
-        RuntimeContractError,
-        message,
+        F,
+        _wrong(f"{SPECIALIST}.{field}", kind, value),
     )
-    for field, member, message in (
-        ("when", "window", "specialists[0].when names an undeclared condition"),
-        ("model", "opus", "specialists[0].model must be null, inherit, or one of fable, haiku, opus, sonnet"),
-        ("effort", "high", "specialists[0].effort must be null or one of high, low, max, medium, xhigh"),
+    for field, member, kind in (
+        ("when", "window", "a non-empty string or null"),
+        ("model", "opus", MODEL_KIND),
+        ("effort", "high", EFFORT_KIND),
     )
     for value in ([], {}, [member], {"value": member})
+]
+
+# A wrong-typed value for each kind of field validate_adapter_manifest reads that the cases above leave out, in the
+# reader's one shape: strings, arrays, objects, missing and unknown fields, and enumerated values.
+MANIFEST_KINDS: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutation, str]] = [
+    (
+        "schema_version missing",
+        _entrypoint_manifest,
+        _drop("schema_version"),
+        _wrong("manifest.schema_version", "an integer", None),
+    ),
+    (
+        "entrypoint id",
+        _entrypoint_manifest,
+        _put(("id",), False),
+        _wrong(f"{ENTRYPOINT}.id", "a non-empty string", False),
+    ),
+    (
+        "entrypoint",
+        _entrypoint_manifest,
+        _put(("entrypoint",), 5),
+        _wrong(f"{ENTRYPOINT}.entrypoint", "a non-empty string", 5),
+    ),
+    (
+        "a resource",
+        _entrypoint_manifest,
+        _put(("resources", 0), None),
+        _wrong(f"{ENTRYPOINT}.resources[0]", "a non-empty string", None),
+    ),
+    (
+        "an agent profile",
+        _entrypoint_manifest,
+        _put(("agent_profiles", 0), " "),
+        _wrong(f"{ENTRYPOINT}.agent_profiles[0]", "a non-empty string", " "),
+    ),
+    ("specialists id", _specialists_manifest, _put(("id",), []), _wrong(f"{SPECIALISTS}.id", "a non-empty string", [])),
+    ("kind", _specialists_manifest, _put(("kind",), 2), _wrong(f"{SPECIALISTS}.kind", 'one of "specialists"', 2)),
+    (
+        "uncovered",
+        _specialists_manifest,
+        _put(("uncovered",), True),
+        _wrong(f"{SPECIALISTS}.uncovered", 'one of "review", "ignore"', True),
+    ),
+    (
+        "fallback_finding_category",
+        _specialists_manifest,
+        _put(("fallback_finding_category",), 5),
+        _wrong(f"{SPECIALISTS}.fallback_finding_category", "a non-empty string", 5),
+    ),
+    (
+        "a top-level resource",
+        _specialists_manifest,
+        _put(("resources", 0), {}),
+        _wrong(f"{SPECIALISTS}.resources[0]", "a non-empty string", {}),
+    ),
+    (
+        "specialists",
+        _specialists_manifest,
+        _put(("specialists",), {}),
+        _wrong(f"{SPECIALISTS}.specialists", "a non-empty array", {}),
+    ),
+    (
+        "no specialists",
+        _specialists_manifest,
+        _put(("specialists",), []),
+        f"{SPECIALISTS}.specialists must be a non-empty array, found an empty array",
+    ),
+    ("a specialist", _specialists_manifest, _put(("specialists", 0), "x"), _wrong(SPECIALIST, "an object", "x")),
+    (
+        "a specialist without its fields",
+        _specialists_manifest,
+        _put(("specialists", 0), {"id": "x"}),
+        _missing(SPECIALIST, "category", "exclude", "include", "profile", "resources", "when"),
+    ),
+    (
+        "a specialist's unknown field",
+        _specialists_manifest,
+        _put(("specialists", 0, "extra"), 1),
+        _unknown(SPECIALIST, "extra"),
+    ),
+    (
+        "a specialist id",
+        _specialists_manifest,
+        _put(("specialists", 0, "id"), 5),
+        _wrong(f"{SPECIALIST}.id", "a non-empty string", 5),
+    ),
+    (
+        "a specialist category",
+        _specialists_manifest,
+        _put(("specialists", 0, "category"), " "),
+        _wrong(f"{SPECIALIST}.category", "a non-empty string", " "),
+    ),
+    (
+        "a profile",
+        _specialists_manifest,
+        _put(("specialists", 0, "profile"), []),
+        _wrong(f"{SPECIALIST}.profile", "a non-empty string", []),
+    ),
+    (
+        "include",
+        _specialists_manifest,
+        _put(("specialists", 0, "include"), "x"),
+        _wrong(f"{SPECIALIST}.include", "a non-empty array", "x"),
+    ),
+    (
+        "an empty include",
+        _specialists_manifest,
+        _put(("specialists", 0, "include"), []),
+        f"{SPECIALIST}.include must be a non-empty array, found an empty array",
+    ),
+    (
+        "an include pattern",
+        _specialists_manifest,
+        _put(("specialists", 0, "include", 0), 5),
+        _wrong(f"{SPECIALIST}.include[0]", "a non-empty string", 5),
+    ),
+    (
+        "exclude",
+        _specialists_manifest,
+        _put(("specialists", 0, "exclude"), {}),
+        _wrong(f"{SPECIALIST}.exclude", "an array", {}),
+    ),
+    (
+        "a specialist resource",
+        _specialists_manifest,
+        _put(("specialists", 0, "resources"), [None]),
+        _wrong(f"{SPECIALIST}.resources[0]", "a non-empty string", None),
+    ),
+    (
+        "when",
+        _specialists_manifest,
+        _put(("specialists", 0, "when"), 5),
+        _wrong(f"{SPECIALIST}.when", "a non-empty string or null", 5),
+    ),
+    (
+        "model",
+        _specialists_manifest,
+        _put(("specialists", 0, "model"), "gpt"),
+        _wrong(f"{SPECIALIST}.model", MODEL_KIND, "gpt"),
+    ),
+    (
+        "effort",
+        _specialists_manifest,
+        _put(("specialists", 0, "effort"), True),
+        _wrong(f"{SPECIALIST}.effort", EFFORT_KIND, True),
+    ),
+    (
+        "a condition",
+        _specialists_manifest,
+        _put(("conditions", "window"), "x"),
+        _wrong(f"{SPECIALISTS}.conditions.window", "an object", "x"),
+    ),
+    (
+        "a condition without a script",
+        _specialists_manifest,
+        _put(("conditions", "window"), {}),
+        _missing(f"{SPECIALISTS}.conditions.window", "script"),
+    ),
+    (
+        "a condition script",
+        _specialists_manifest,
+        _put(("conditions", "window", "script"), 5),
+        _wrong(f"{SPECIALISTS}.conditions.window.script", "a non-empty string", 5),
+    ),
 ]
 
 
@@ -1916,6 +2236,11 @@ class AdapterManifestValidationTests(unittest.TestCase):
         for name, build, mutation, error, message in MANIFEST_REJECTED + MANIFEST_CONTAINERS:
             with self.subTest(name):
                 self.assert_refused(mutation(build()), error, message)
+
+    def test_each_kind_of_field_refuses_a_wrong_type(self) -> None:
+        for name, build, mutation, message in MANIFEST_KINDS:
+            with self.subTest(name):
+                self.assert_refused(mutation(build()), F, message)
 
     def test_each_stage_is_refused_alone(self) -> None:
         for build, stages in ((_entrypoint_manifest, ENTRYPOINT_STAGES), (_specialists_manifest, SPECIALISTS_STAGES)):
@@ -2039,6 +2364,106 @@ class ReservedPathMaterializationTests(unittest.TestCase):
                         review_runtime.materialize_reviewer(root / f"checkout-{index}", commit, manifest, destination)
                     self.assertEqual(RESERVED, str(caught.exception))
                     self.assertFalse(destination.exists())
+
+
+# build_adapter_request's arguments of the wrong kind: (name, the argument replaced, the message).
+REQUEST_KINDS: list[tuple[str, dict[str, Any], str]] = [
+    ("mode", {"mode": "full"}, _wrong("request.mode", MODES_KIND, "full")),
+    ("mode null", {"mode": None}, _wrong("request.mode", MODES_KIND, None)),
+    ("pull number", {"pull_number": True}, _wrong("request.pull_number", "an integer of at least 1", True)),
+    ("pull number float", {"pull_number": 1.0}, _wrong("request.pull_number", "an integer of at least 1", 1.0)),
+    ("pull number zero", {"pull_number": 0}, _wrong("request.pull_number", "an integer of at least 1", 0)),
+    ("base sha", {"base_sha": 5}, _wrong("request.pull_request.base_sha", COMMIT_KIND, 5)),
+    (
+        "head sha",
+        {"head_sha": "A" * 40},
+        f"request.pull_request.head_sha must be {COMMIT_KIND}, found {NOT_HEX}",
+    ),
+    (
+        "body characters",
+        {"body_characters": "10"},
+        _wrong("request.pull_request.body_characters", "an integer of at least 0 or null", "10"),
+    ),
+    (
+        "negative body characters",
+        {"body_characters": -1},
+        "request.pull_request.body_characters must be an integer of at least 0 or null, found integer -1",
+    ),
+]
+
+
+class AdapterRequestArgumentTests(unittest.TestCase):
+    def test_each_argument_of_the_wrong_kind_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            diff, body = root / "pull.diff", root / "body.md"
+            diff.write_text("", encoding="utf-8")
+            body.write_text("Body", encoding="utf-8")
+            arguments: dict[str, Any] = {
+                "mode": "initial",
+                "repository": "owner/repo",
+                "pull_number": 7,
+                "base_ref": "main",
+                "base_sha": "b" * 40,
+                "head_sha": HEAD,
+                "title": "Title",
+                "url": "https://github.com/owner/repo/pull/7",
+                "diff_path": diff,
+                "source_snapshot_root": root / "source",
+                "snapshot": _snapshot().metadata,
+                "body_file": body,
+                "body_characters": 4,
+            }
+            self.assertEqual(7, review_runtime.build_adapter_request(**arguments)["pull_number"])
+            for name, changes, message in REQUEST_KINDS:
+                with self.subTest(name), self.assertRaises(Exception) as caught:
+                    review_runtime.build_adapter_request(**{**arguments, **changes})
+                self.assertIs(F, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
+
+
+def _listing(**entry: Any) -> dict[str, Any]:
+    """A GitHub tree listing of one blob, with the given fields of the entry replaced."""
+    return {"truncated": False, "tree": [{"type": "blob", "path": "a.txt", "mode": "100644", "sha": HEAD, **entry}]}
+
+
+ENTRY = "tree listing.tree[0]"
+# A tree listing with a field of the wrong kind, as GitHub's trees API might answer: (name, listing, message).
+LISTING_KINDS: list[tuple[str, Any, str]] = [
+    ("listing", [], _wrong("tree listing", "an object", [])),
+    ("tree missing", {"truncated": False}, _wrong("tree listing.tree", "an array", None)),
+    ("tree", {"truncated": False, "tree": {}}, _wrong("tree listing.tree", "an array", {})),
+    ("entry", {"truncated": False, "tree": ["x"]}, _wrong(ENTRY, "an object", "x")),
+    ("type", _listing(type="file"), _wrong(f"{ENTRY}.type", 'one of "blob", "tree", "commit"', "file")),
+    ("path", _listing(path=5), _wrong(f"{ENTRY}.path", "a non-empty string", 5)),
+    ("empty path", _listing(path=""), _wrong(f"{ENTRY}.path", "a non-empty string", "")),
+    ("mode", _listing(mode=None), _wrong(f"{ENTRY}.mode", "a string", None)),
+    ("sha", _listing(sha=[]), _wrong(f"{ENTRY}.sha", COMMIT_KIND, [])),
+    ("uppercase sha", _listing(sha="A" * 40), f"{ENTRY}.sha must be {COMMIT_KIND}, found {NOT_HEX}"),
+]
+
+
+class TreeListingTests(unittest.TestCase):
+    def test_a_listing_reads_each_blob(self) -> None:
+        listing = _listing()
+        listing["tree"].append({"type": "tree", "path": "src", "mode": "040000", "sha": "c" * 40})
+        listing["tree"].append({"type": "blob", "path": "link", "mode": "120000", "sha": "d" * 40})
+        blobs = review_runtime._listed_blobs(listing)
+        self.assertEqual({("a.txt", "file", HEAD): 1, ("link", "symbolic-link", "d" * 40): 1}, dict(blobs))
+
+    def test_each_field_of_the_wrong_kind_is_refused(self) -> None:
+        for name, listing, message in LISTING_KINDS:
+            with self.subTest(name), self.assertRaises(Exception) as caught:
+                review_runtime._listed_blobs(listing)
+            self.assertIs(F, type(caught.exception))
+            self.assertEqual(message, str(caught.exception))
+
+    def test_a_truncated_listing_is_refused_as_a_value(self) -> None:
+        for truncated in (True, None, 0):
+            with self.subTest(truncated=truncated), self.assertRaises(Exception) as caught:
+                review_runtime._listed_blobs({**_listing(), "truncated": truncated})
+            self.assertIs(RuntimeContractError, type(caught.exception))
+            self.assertEqual("GitHub truncated the tree listing", str(caught.exception))
 
 
 if __name__ == "__main__":

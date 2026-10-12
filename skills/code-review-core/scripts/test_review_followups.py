@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -25,11 +26,12 @@ import review_runtime
 from github_client import CommandResult, GitHubError
 from review_config import (
     ConfigurationError,
+    ConfigurationFieldError,
     resolve_repositories,
     selected_repository_set,
     validate_config,
 )
-from review_runtime import RuntimeContractError
+from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
@@ -39,6 +41,12 @@ HEAD = "c" * 40
 A_TXT_BLOB = "78981922613b2afb6025042ff6bd878ac1994e85"
 # `printf 'bad\n' | git hash-object --stdin`
 BAD_BLOB = "67be85f1274474029aad8a75b823592324305aa4"
+NOT_HEX = "a string with a character that is not a lowercase hexadecimal digit"
+
+
+def field_pattern(path: str, expected: str, found: str) -> str:
+    """The whole message a field of the wrong kind raises, built from literal kinds rather than the reader's own."""
+    return f"^{re.escape(f'{path} must be {expected}, found {found}')}$"
 
 
 def tarball(members: dict[str, bytes], *, prefix: str = "owner-repo-ccc/") -> bytes:
@@ -364,14 +372,46 @@ class GitHubTarballVerificationTests(unittest.TestCase):
         head = self.commit({"a.txt": b"a\n"})
         cases: dict[str, tuple[Any, str]] = {
             "truncated": ({**self.tree(head), "truncated": True}, "truncated"),
-            "not an object": ([], "tree listing is malformed"),
-            "an entry without a sha": ({"truncated": False, "tree": [{"path": "a.txt", "type": "blob"}]}, "malformed"),
             "a file the tarball holds is missing": ({"truncated": False, "tree": []}, '"a.txt"'),
         }
         for case, (tree, message) in cases.items():
             github, _ = self.client(head, tree=tree)
             with self.subTest(case=case), self.assertRaisesRegex(RuntimeContractError, message):
                 review_runtime.github_tarball_fetcher("owner/repo", head, self.root / "source.tar.gz", github)
+
+    def test_a_listing_field_of_the_wrong_kind_fails_closed_naming_it(self) -> None:
+        head = self.commit({"a.txt": b"a\n"})
+        blob = {"path": "a.txt", "mode": "100644", "type": "blob", "sha": A_TXT_BLOB}
+
+        def listing(**fields: Any) -> dict[str, Any]:
+            return {"truncated": False, "tree": [{**blob, **fields}]}
+
+        object_id = "a lowercase hexadecimal digest of 40 or 64 characters"
+        entry = "tree listing.tree[0]"
+        cases: tuple[tuple[Any, str, str, str], ...] = (
+            ([], "tree listing", "an object", "an array"),
+            ({"truncated": False, "tree": {}}, "tree listing.tree", "an array", "an object"),
+            ({"truncated": False, "tree": ["a.txt"]}, entry, "an object", 'string "a.txt"'),
+            (listing(type="file"), f"{entry}.type", 'one of "blob", "tree", "commit"', 'string "file"'),
+            (listing(type=None), f"{entry}.type", 'one of "blob", "tree", "commit"', "null"),
+            (listing(path=7), f"{entry}.path", "a non-empty string", "integer 7"),
+            (listing(path=""), f"{entry}.path", "a non-empty string", "an empty string"),
+            (listing(mode=100644), f"{entry}.mode", "a string", "integer 100644"),
+            ({"truncated": False, "tree": [{"path": "a.txt", "type": "blob"}]}, f"{entry}.mode", "a string", "null"),
+            (listing(sha=None), f"{entry}.sha", object_id, "null"),
+            (listing(sha=A_TXT_BLOB.upper()), f"{entry}.sha", object_id, NOT_HEX),
+            (listing(sha=A_TXT_BLOB[:39]), f"{entry}.sha", object_id, "a string of 39 characters"),
+        )
+        for tree, path, expected, found in cases:
+            github, _ = self.client(head, tree=tree)
+            field = f"{path} must be {expected}, found {found}"
+            with (
+                self.subTest(path=path, found=found),
+                self.assertRaisesRegex(RuntimeContractError, re.escape(f" cannot be checked: {field}; ")) as context,
+            ):
+                review_runtime.github_tarball_fetcher("owner/repo", head, self.root / "source.tar.gz", github)
+            self.assertIsInstance(context.exception.__cause__, RuntimeContractFieldError)
+            self.assertEqual(field, str(context.exception.__cause__))
 
     def test_an_undecodable_name_matches_the_listing_that_replaces_its_bytes(self) -> None:
         # GitHub's listing cannot carry the bytes; one U+FFFD each is what the tarball's name is compared as.
@@ -413,7 +453,12 @@ class ConfigOperationSetTests(unittest.TestCase):
         self.assertEqual("tracked", selected_repository_set(config, repository_set="tracked", operation="review-prs"))
 
     def test_invalid_operation_sets_are_rejected(self) -> None:
-        with self.assertRaisesRegex(ConfigurationError, "unknown operation"):
+        with self.assertRaisesRegex(
+            ConfigurationFieldError,
+            field_pattern(
+                "config.operation_repository_sets", "an object of known fields", 'unknown field "review-everything"'
+            ),
+        ):
             self.config(operation_repository_sets={"review-everything": "tracked"})
         with self.assertRaisesRegex(ConfigurationError, "existing set"):
             self.config(operation_repository_sets={"review-prs": "missing"})
@@ -497,6 +542,40 @@ class ReviewedHeadTests(unittest.TestCase):
             with self.subTest(overrides=overrides):
                 self.write_legacy(**overrides)
                 self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
+
+    def test_a_legacy_index_field_of_the_wrong_kind_is_absent(self) -> None:
+        path = self.directory / "legacy-review.json"
+        for name, overrides in (
+            ("schema_version a string", {"schema_version": "1"}),
+            ("schema_version a boolean", {"schema_version": True}),
+            ("schema_version null", {"schema_version": None}),
+            ("kind an integer", {"kind": 1}),
+            ("kind an array", {"kind": ["legacy-review-index"]}),
+            ("kind another value", {"kind": "review-index"}),
+            ("repository an integer", {"repository": 5}),
+            ("repository empty", {"repository": ""}),
+            ("repository an object", {"repository": {"owner": "owner"}}),
+            ("pull_number a string", {"pull_number": "5"}),
+            ("pull_number a float", {"pull_number": 5.0}),
+            ("pull_number a boolean", {"pull_number": True}),
+            ("reviewed_head_sha an integer", {"reviewed_head_sha": 5}),
+            ("reviewed_head_sha uppercase", {"reviewed_head_sha": "A" * 40}),
+            ("reviewed_head_sha short", {"reviewed_head_sha": "a" * 39}),
+            ("verdict an array", {"verdict": ["APPROVED"]}),
+        ):
+            with self.subTest(name):
+                self.write_legacy(**overrides)
+                self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5))
+                self.assertIsNone(review_operation.reviewed_head(self.root, "owner/repo", 5))
+        for name, content in (("an array", "[]"), ("a string", '"legacy"'), ("null", "null"), ("an integer", "5")):
+            with self.subTest(name):
+                path.write_text(content, encoding="utf-8")
+                self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5))
+        self.write_legacy()
+        value = json.loads(path.read_text(encoding="utf-8"))
+        del value["reviewed_head_sha"]
+        path.write_text(json.dumps(value), encoding="utf-8")
+        self.assertIsNone(review_operation.legacy_index(self.root, "owner/repo", 5), "a missing field")
 
     def test_a_non_string_or_missing_legacy_verdict_is_absent(self) -> None:
         verdicts: tuple[object, ...] = (None, True, 7, 0.5, [], {})
@@ -950,7 +1029,7 @@ class CoverageTests(unittest.TestCase):
             validate_record(broken)
 
     def test_uncovered_files_a_manifest_ignores_are_listed_without_making_the_review_incomplete(self) -> None:
-        from review_records import RecordError, render_markdown, validate_record
+        from review_records import RecordError, RecordFieldError, render_markdown, validate_record
 
         request, _ = self.request()
         request["coverage"] = {"unavailable_sources": []}
@@ -981,18 +1060,37 @@ class CoverageTests(unittest.TestCase):
         self.assertIn("**Not reviewed in full:**", report)
         self.assertIn("**Not reviewed:**", report)
 
-        for malformed in ("README.md", ["README.md", "README.md"], [""], [3]):
+        broken = json.loads(json.dumps(record))
+        broken["review"]["coverage"]["uncovered_files"] = ["README.md", "README.md"]
+        with self.assertRaisesRegex(RecordError, "coverage is malformed"):
+            validate_record(broken)
+        uncovered = "record.review.coverage.uncovered_files"
+        for malformed, path, expected, found in (
+            ("README.md", uncovered, "an array", 'string "README.md"'),
+            ([""], f"{uncovered}[0]", "a non-empty string", "an empty string"),
+            ([3], f"{uncovered}[0]", "a non-empty string", "integer 3"),
+        ):
             broken = json.loads(json.dumps(record))
             broken["review"]["coverage"]["uncovered_files"] = malformed
-            with self.subTest(malformed=malformed), self.assertRaisesRegex(RecordError, "coverage is malformed"):
+            with (
+                self.subTest(malformed=malformed),
+                self.assertRaisesRegex(RecordFieldError, field_pattern(path, expected, found)),
+            ):
                 validate_record(broken)
-        for coverage in (
-            {"uncovered_files": ["README.md"]},
-            {"unavailable_sources": [], "uncovered_files": ["README.md"], "skipped": []},
+        for coverage, expected, found in (
+            ({"uncovered_files": ["README.md"]}, "an object with field unavailable_sources", "an object without it"),
+            (
+                {"unavailable_sources": [], "uncovered_files": ["README.md"], "skipped": []},
+                "an object of known fields",
+                'unknown field "skipped"',
+            ),
         ):
             broken = json.loads(json.dumps(record))
             broken["review"]["coverage"] = coverage
-            with self.subTest(coverage=coverage), self.assertRaisesRegex(RecordError, "coverage is malformed"):
+            with (
+                self.subTest(coverage=coverage),
+                self.assertRaisesRegex(RecordFieldError, field_pattern("record.review.coverage", expected, found)),
+            ):
                 validate_record(broken)
 
 

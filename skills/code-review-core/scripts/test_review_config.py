@@ -138,7 +138,7 @@ class ConfigCommandTests(unittest.TestCase):
         cases = (
             (
                 self.write_json("invalid.json", {**valid_config(), "runtime": "nowhere"}),
-                "Unknown runtime host: 'nowhere'",
+                'config.runtime must be one of "auto", "claude-code", "codex", "copilot-cli", found string "nowhere"',
             ),
             (broken, "Expecting property name enclosed in double quotes"),
             (undecodable, "can't decode byte 0xe9"),

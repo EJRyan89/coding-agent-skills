@@ -32,6 +32,8 @@ from review_config import (
 )
 from review_github import GitHubClient
 from review_io import atomic_write_text
+from review_records import SEVERITIES as SEVERITY_KEYS
+from typed_fields import FieldError, FieldReader
 
 START_MARKER = "<!-- code-review-pr-tracker:start -->"
 END_MARKER = "<!-- code-review-pr-tracker:end -->"
@@ -91,6 +93,13 @@ class ComparisonFailures(TrackerError):
         self.failures = failures
 
 
+class TrackerFieldError(FieldError, TrackerError):
+    """A tracker input or status override field of the wrong kind."""
+
+
+READ = FieldReader(TrackerFieldError)
+
+
 class Detector(Protocol):
     def detect(self, repository: str, number: int, base_ref: str, since_sha: str, head_sha: str) -> str:
         """CHANGED, UNCHANGED, or UNKNOWN; raises `ComparisonError` when a GitHub call the comparison needs failed."""
@@ -114,150 +123,124 @@ class Row:
         return f"{self.item['repository']}#{self.item['number']}"
 
 
-def _count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _valid_ledger(ledger: Any) -> bool:
+def _validate_ledger(ledger: Any, key: str, path: str) -> None:
     """The latest review's finding-ledger summary. A migrated legacy review's has no version and cannot say what was
     addressed, so both are None; it is None itself when the legacy report is unreadable."""
-    if ledger is None:
-        return True
-    if not isinstance(ledger, dict) or set(ledger) != {"open", "addressed", "since", "version"}:
-        return False
-    opened, since, version = ledger["open"], ledger["since"], ledger["version"]
-    if (
-        not isinstance(opened, dict)
-        or set(opened) != {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-        or not all(_count(value) for value in opened.values())
-    ):
-        return False
+    if READ.optional(READ.json_object, ledger, path, required={"open", "addressed", "since", "version"}) is None:
+        return
+    opened = READ.json_object(ledger["open"], f"{path}.open", required=SEVERITY_KEYS)
+    for severity in sorted(SEVERITY_KEYS):
+        READ.integer(opened[severity], f"{path}.open.{severity}", minimum=0)
+    version = READ.optional(READ.integer, ledger["version"], f"{path}.version", minimum=1)
+    addressed = READ.optional(READ.integer, ledger["addressed"], f"{path}.addressed", minimum=0)
+    since = READ.optional(READ.integer, ledger["since"], f"{path}.since", minimum=0)
     if version is None:
-        return ledger["addressed"] is None and since is None
-    if not _count(ledger["addressed"]) or not _count(version) or version < 1:
-        return False
-    if not any(opened.values()):
-        return since is None
-    return _count(since) and 1 <= since <= version
+        consistent = addressed is None and since is None
+    elif not any(opened.values()):
+        consistent = addressed is not None and since is None
+    else:
+        consistent = addressed is not None and since is not None and 1 <= since <= version
+    if not consistent:
+        raise TrackerError(f"Tracker item {key}.ai_review.ledger is invalid")
 
 
-def _valid_ledger_reading(review: dict[str, Any]) -> bool:
+def _validate_ledger_reading(review: dict[str, Any], key: str, path: str) -> None:
     """The open findings flags name and what moved since the user's last review, both read from a ledger: flagged
     counts open findings, and since_review is null when the user has not reviewed or the review commit could not be
     placed, else the baseline version (0 when every review came after it) with the entries new and addressed since."""
     if "flagged" not in review and "since_review" not in review:
-        return True
+        return
+    invalid = TrackerError(f"Tracker item {key}.ai_review.flagged or since_review is invalid")
     ledger = review.get("ledger")
     if ledger is None or ledger["version"] is None or "flagged" not in review or "since_review" not in review:
-        return False
-    if not _count(review["flagged"]) or review["flagged"] > sum(ledger["open"].values()):
-        return False
-    since = review["since_review"]
-    if since is None:
-        return True
-    return (
-        isinstance(since, dict)
-        and set(since) == {"version", "new", "addressed"}
-        and all(_count(value) for value in since.values())
-        and since["version"] <= ledger["version"]
+        raise invalid
+    if READ.integer(review["flagged"], f"{path}.flagged", minimum=0) > sum(ledger["open"].values()):
+        raise invalid
+    since = READ.optional(
+        READ.json_object, review["since_review"], f"{path}.since_review", required={"version", "new", "addressed"}
     )
-
-
-def _validate_presentation(item: dict[str, Any]) -> None:
-    key = f"{item.get('repository')}#{item.get('number')}"
-    name = item["author_name"]
-    if name is not None and (not isinstance(name, str) or not name.strip()):
-        raise TrackerError(f"Tracker item {key}.author_name must be null or a non-empty string")
-    if item["review_decision"] not in REVIEW_DECISIONS:
-        raise TrackerError(f"Tracker item {key}.review_decision is invalid")
-    review = item["ai_review"]
-    if review is None:
+    if since is None:
         return
+    for field in ("version", "new", "addressed"):
+        READ.integer(since[field], f"{path}.since_review.{field}", minimum=0)
+    if since["version"] > ledger["version"]:
+        raise invalid
+
+
+def _validate_presentation(item: dict[str, Any], path: str) -> None:
+    key = f"{item.get('repository')}#{item.get('number')}"
+    READ.optional(READ.string, item["author_name"], f"{path}.author_name")
+    READ.optional(READ.one_of, item["review_decision"], f"{path}.review_decision", REVIEW_DECISIONS - {None})
     # An input collected before reviews kept a finding ledger has no ledger key, and one collected before the tracker
     # read flags and the user's last review has no flagged or since_review keys.
-    if not isinstance(review, dict) or set(review) - LEDGER_KEYS != {"verdict", "counts", "report"}:
-        raise TrackerError(f"Tracker item {key}.ai_review must have verdict, counts, and report")
-    if not _valid_ledger(review.get("ledger")):
-        raise TrackerError(f"Tracker item {key}.ai_review.ledger is invalid")
-    if not _valid_ledger_reading(review):
-        raise TrackerError(f"Tracker item {key}.ai_review.flagged or since_review is invalid")
-    if review["verdict"] not in AI_VERDICTS:
-        raise TrackerError(f"Tracker item {key}.ai_review.verdict is invalid")
-    counts = review["counts"]
-    if counts is not None and (
-        not isinstance(counts, dict)
-        or set(counts) != {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-        or any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in counts.values())
-    ):
-        raise TrackerError(f"Tracker item {key}.ai_review.counts is invalid")
-    if review["report"] is not None and (not isinstance(review["report"], str) or not review["report"]):
-        raise TrackerError(f"Tracker item {key}.ai_review.report must be null or a path")
+    path = f"{path}.ai_review"
+    review = READ.optional(
+        READ.json_object, item["ai_review"], path, required={"verdict", "counts", "report"}, optional=LEDGER_KEYS
+    )
+    if review is None:
+        return
+    _validate_ledger(review.get("ledger"), key, f"{path}.ledger")
+    _validate_ledger_reading(review, key, path)
+    READ.one_of(review["verdict"], f"{path}.verdict", tuple(AI_VERDICTS))
+    counts = READ.optional(READ.json_object, review["counts"], f"{path}.counts", required=SEVERITY_KEYS)
+    if counts is not None:
+        for severity in sorted(SEVERITY_KEYS):
+            READ.integer(counts[severity], f"{path}.counts.{severity}", minimum=0)
+    READ.optional(READ.string, review["report"], f"{path}.report")
 
 
 def validate_items(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise TrackerError("Tracker input must be an array")
     seen: set[str] = set()
     normalized: list[dict[str, Any]] = []
-    for item in value:
-        item = _with_defaults(item)
-        _validate_presentation(item)
-        _validate_incomplete(item)
-        repository, key = _item_key(item, seen)
-        _validate_fields(item, key)
-        _validate_review_state(item, key)
+    for index, given in enumerate(READ.array(value, "tracker input")):
+        path = f"tracker input[{index}]"
+        item = _with_defaults(given, path)
+        _validate_presentation(item, path)
+        _validate_incomplete(item, path)
+        repository, key = _item_key(item, path, seen)
+        _validate_fields(item, key, path)
+        _validate_review_state(item, key, path)
         replacement = dict(item)
         replacement["repository"] = repository
         normalized.append(replacement)
     return normalized
 
 
-def _with_defaults(item: Any) -> dict[str, Any]:
+def _with_defaults(item: Any, path: str) -> dict[str, Any]:
     """The item with its optional fields defaulted ahead of its own, once its fields match the contract."""
-    if not isinstance(item, dict) or not REQUIRED_FIELDS <= set(item) <= REQUIRED_FIELDS | OPTIONAL_FIELDS:
-        raise TrackerError("Tracker item fields do not match the contract")
+    READ.json_object(item, path, required=REQUIRED_FIELDS, optional=OPTIONAL_FIELDS)
     return {"reviewed_incomplete": False, "author_name": None, "review_decision": None, "ai_review": None, **item}
 
 
-def _validate_incomplete(item: dict[str, Any]) -> None:
-    if not isinstance(item["reviewed_incomplete"], bool):
-        raise TrackerError("Tracker item reviewed_incomplete must be Boolean")
-    if item["reviewed_incomplete"] and item["reviewed_head_sha"] is None:
+def _validate_incomplete(item: dict[str, Any], path: str) -> None:
+    if READ.boolean(item["reviewed_incomplete"], f"{path}.reviewed_incomplete") and item["reviewed_head_sha"] is None:
         raise TrackerError("Tracker item reviewed_incomplete requires reviewed_head_sha")
 
 
-def _item_key(item: dict[str, Any], seen: set[str]) -> tuple[str, str]:
+def _item_key(item: dict[str, Any], path: str, seen: set[str]) -> tuple[str, str]:
     """The item's normalized repository and its owner/name#number key, which it adds to seen once it is new."""
-    repository = validate_repository_identity(item["repository"])
-    number = item["number"]
-    if not isinstance(number, int) or isinstance(number, bool) or number < 1:
-        raise TrackerError("Tracker pull number must be positive")
-    key = f"{repository}#{number}"
+    repository = validate_repository_identity(READ.string(item["repository"], f"{path}.repository"))
+    key = f"{repository}#{READ.integer(item['number'], f'{path}.number', minimum=1)}"
     if key in seen:
         raise TrackerError(f"Duplicate tracker item: {key}")
     seen.add(key)
     return repository, key
 
 
-def _validate_fields(item: dict[str, Any], key: str) -> None:
+def _validate_fields(item: dict[str, Any], key: str, path: str) -> None:
     for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at"):
-        if not isinstance(item[field], str) or not item[field]:
-            raise TrackerError(f"Tracker item {key}.{field} is required")
+        READ.string(item[field], f"{path}.{field}")
     for field in ("requested_reviewers", "participants"):
-        if not isinstance(item[field], list) or any(not isinstance(login, str) or not login for login in item[field]):
-            raise TrackerError(f"Tracker item {key}.{field} must be a string array")
-    if not isinstance(item["draft"], bool):
-        raise TrackerError(f"Tracker item {key}.draft must be Boolean")
+        READ.array(item[field], f"{path}.{field}", READ.string)
+    READ.boolean(item["draft"], f"{path}.draft")
     for field in ("reviewed_head_sha", "user_review_sha"):
-        sha = item[field]
-        if sha is not None and (not isinstance(sha, str) or not sha):
-            raise TrackerError(f"Tracker item {key}.{field} is invalid")
+        READ.optional(READ.string, item[field], f"{path}.{field}")
 
 
-def _validate_review_state(item: dict[str, Any], key: str) -> None:
-    review_state = item["user_review_state"]
-    if review_state not in USER_REVIEW_STATES:
-        raise TrackerError(f"Tracker item {key}.user_review_state is invalid")
+def _validate_review_state(item: dict[str, Any], key: str, path: str) -> None:
+    review_state = READ.optional(
+        READ.one_of, item["user_review_state"], f"{path}.user_review_state", USER_REVIEW_STATES - {None}
+    )
     if review_state is None and item["user_review_sha"] is not None:
         raise TrackerError(f"Tracker item {key}.user_review_sha requires a review state")
     if review_state in ACTIVE_REVIEW_STATES and item["user_review_sha"] is None:
@@ -271,9 +254,7 @@ def _escape(value: str) -> str:
 def normalize_pull_keys(values: set[str] | list[str], field: str) -> set[str]:
     normalized: set[str] = set()
     for value in values:
-        if not isinstance(value, str):
-            raise TrackerError(f"{field} entries must be pull-request identities")
-        match = PULL_KEY_PATTERN.fullmatch(value)
+        match = PULL_KEY_PATTERN.fullmatch(READ.string(value, f"a {field} pull-request identity"))
         if match is None:
             raise TrackerError(f"Invalid {field} pull-request identity: {value!r}")
         key = f"{validate_repository_identity(match.group(1))}#{int(match.group(2))}"
@@ -286,14 +267,10 @@ def normalize_pull_keys(values: set[str] | list[str], field: str) -> set[str]:
 def normalize_overrides(value: dict[str, str] | None) -> dict[str, str]:
     if value is None:
         return {}
-    if not isinstance(value, dict):
-        raise TrackerError("Status overrides must be a string-to-string object")
     normalized: dict[str, str] = {}
-    for raw_key, raw_status in value.items():
-        if not isinstance(raw_key, str) or not isinstance(raw_status, str):
-            raise TrackerError("Status overrides must be a string-to-string object")
-        key = next(iter(normalize_pull_keys([raw_key], "override")))
-        status = raw_status.strip()
+    for raw_key, raw_status in READ.json_object(value, "status overrides").items():
+        key = next(iter(normalize_pull_keys([READ.string(raw_key, "a key of status overrides")], "override")))
+        status = READ.string(raw_status, f"status overrides.{raw_key}", empty=True).strip()
         if not status:
             raise TrackerError(f"Status override {key} must be non-empty")
         if status.casefold() in COMPUTED_DASHBOARD_STATES:

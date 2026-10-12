@@ -9,7 +9,9 @@ import tempfile
 import threading
 import unittest
 from collections.abc import Callable, Iterable, Sequence
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -17,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from github_client import CommandResult
 from pr_change import CHANGED, UNCHANGED, UNKNOWN, ChangeDetector, ComparisonError
 from review_github import GitHubClient, GitHubError
+from typed_fields import FieldError
 from update_pr_tracker import (
     END_MARKER,
     SECTION_SUMMARIES,
@@ -25,8 +28,11 @@ from update_pr_tracker import (
     ComparisonFailures,
     ConfigurationError,
     TrackerError,
+    TrackerFieldError,
     _ai_review,
     evaluate,
+    normalize_overrides,
+    normalize_pull_keys,
     review_candidates,
     update_dashboard_rows,
     validate_items,
@@ -851,22 +857,47 @@ class DashboardWriteTests(unittest.TestCase):
                     self.assertEqual(owned.count(b"\n"), owned.count(b"\r\n"))
 
 
-def refusal(value: object) -> tuple[str, str]:
-    """The class and message validate_items refuses a value with."""
+def raised(call: Callable[[], object]) -> tuple[str, str]:
+    """The class and message a tracker validator refuses its input with."""
     try:
-        validate_items(value)
+        call()
     except (TrackerError, ConfigurationError) as exc:
         return type(exc).__name__, str(exc)
-    raise AssertionError(f"validate_items accepted {value!r}")
+    raise AssertionError("the validator accepted its input")
+
+
+def refusal(value: object) -> tuple[str, str]:
+    """The class and message validate_items refuses a value with."""
+    return raised(lambda: validate_items(value))
+
+
+def wrong(path: str, expected: str, found: str) -> tuple[str, str]:
+    """The class and message a field of the wrong kind is refused with, written out independently of the reader."""
+    return "TrackerFieldError", f"{path} must be {expected}, found {found}"
+
+
+TEXT = "a non-empty string"
+TEXT_OR_NULL = "a non-empty string or null"
+USER_REVIEW_STATES = 'one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED" or null'
+REVIEW_DECISIONS = 'one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null'
+VERDICTS = 'one of "APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"'
+SECOND = "tracker input[1]"
+REVIEW = "tracker input[0].ai_review"
 
 
 class ValidateItemsSequenceTests(unittest.TestCase):
     """validate_items called directly: what it returns, and each refusal's class and exact message, in check order."""
 
+    def test_a_field_error_is_a_tracker_error(self) -> None:
+        self.assertTrue(issubclass(TrackerFieldError, FieldError))
+        self.assertTrue(issubclass(TrackerFieldError, TrackerError))
+        with self.assertRaises(TrackerFieldError):
+            validate_items(None)
+
     def test_an_input_that_is_not_an_array_is_refused(self) -> None:
-        for value in ({"repository": "owner/repo"}, "[]", None):
+        for value, found in (({"repository": "owner/repo"}, "an object"), ("[]", 'string "[]"'), (None, "null")):
             with self.subTest(value=value):
-                self.assertEqual(("TrackerError", "Tracker input must be an array"), refusal(value))
+                self.assertEqual(wrong("tracker input", "an array", found), refusal(value))
 
     def test_an_empty_array_is_accepted(self) -> None:
         self.assertEqual([], validate_items([]))
@@ -874,11 +905,18 @@ class ValidateItemsSequenceTests(unittest.TestCase):
     def test_an_item_whose_fields_do_not_match_the_contract_is_refused(self) -> None:
         missing = item()
         del missing["user_review_sha"]
-        for value in ("owner/repo#1", ["owner/repo", 1], missing, item() | {"labels": []}):
+        both_missing = copy.deepcopy(missing)
+        del both_missing["draft"]
+        for value, expected, found in (
+            ("owner/repo#1", "an object", 'string "owner/repo#1"'),
+            (["owner/repo", 1], "an object", "an array"),
+            (missing, "an object with field user_review_sha", "an object without it"),
+            (both_missing, "an object with fields draft, user_review_sha", "an object without them"),
+            (item() | {"labels": []}, "an object of known fields", 'unknown field "labels"'),
+            (item() | {"labels": [], "body": ""}, "an object of known fields", 'unknown fields "body", "labels"'),
+        ):
             with self.subTest(value=value):
-                self.assertEqual(
-                    ("TrackerError", "Tracker item fields do not match the contract"), refusal([item(number=2), value])
-                )
+                self.assertEqual(wrong(SECOND, expected, found), refusal([item(number=2), value]))
 
     def test_an_accepted_item_gains_its_defaults_first_and_a_lowercase_repository(self) -> None:
         source = item("Owner/Repo", 7)
@@ -944,32 +982,50 @@ class ValidateItemsSequenceTests(unittest.TestCase):
     def test_each_field_refusal_has_its_exact_message(self) -> None:
         key = "Tracker item owner/repo#1"
         cases: list[tuple[str, object, tuple[str, str]]] = [
-            ("author_name", " ", ("TrackerError", f"{key}.author_name must be null or a non-empty string")),
-            ("reviewed_incomplete", 1, ("TrackerError", "Tracker item reviewed_incomplete must be Boolean")),
+            ("author_name", " ", wrong(f"{SECOND}.author_name", TEXT_OR_NULL, "a blank string")),
+            ("author_name", 5, wrong(f"{SECOND}.author_name", TEXT_OR_NULL, "integer 5")),
+            ("review_decision", "MERGED", wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, 'string "MERGED"')),
+            ("review_decision", True, wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, "boolean true")),
+            ("ai_review", [], wrong(f"{SECOND}.ai_review", "an object or null", "an array")),
+            ("reviewed_incomplete", 1, wrong(f"{SECOND}.reviewed_incomplete", "a boolean", "integer 1")),
             ("repository", "owner", ("ConfigurationError", "Invalid repository identity: 'owner'")),
-            ("repository", None, ("ConfigurationError", "Invalid repository identity: None")),
-            ("number", "1", ("TrackerError", "Tracker pull number must be positive")),
-            ("number", True, ("TrackerError", "Tracker pull number must be positive")),
-            ("number", 0, ("TrackerError", "Tracker pull number must be positive")),
-            ("number", 1.0, ("TrackerError", "Tracker pull number must be positive")),
+            ("repository", None, wrong(f"{SECOND}.repository", TEXT, "null")),
+            ("number", "1", wrong(f"{SECOND}.number", "an integer of at least 1", 'string "1"')),
+            ("number", True, wrong(f"{SECOND}.number", "an integer of at least 1", "boolean true")),
+            ("number", 0, wrong(f"{SECOND}.number", "an integer of at least 1", "integer 0")),
+            ("number", 1.0, wrong(f"{SECOND}.number", "an integer of at least 1", "number 1.0")),
             *(
-                (field, value, ("TrackerError", f"{key}.{field} is required"))
+                (field, value, wrong(f"{SECOND}.{field}", TEXT, found))
                 for field in ("url", "title", "author", "base_ref", "head_sha", "updated_at")
-                for value in ("", None, 5)
+                for value, found in (("", "an empty string"), (None, "null"), (5, "integer 5"))
             ),
             *(
-                (field, value, ("TrackerError", f"{key}.{field} must be a string array"))
+                (field, value, wrong(f"{SECOND}.{field}{index}", expected, found))
                 for field in ("requested_reviewers", "participants")
-                for value in ("reviewer", None, [""], ["reviewer", 5], ("reviewer",))
+                for value, index, expected, found in (
+                    ("reviewer", "", "an array", 'string "reviewer"'),
+                    (None, "", "an array", "null"),
+                    ([""], "[0]", TEXT, "an empty string"),
+                    (["reviewer", 5], "[1]", TEXT, "integer 5"),
+                    (("reviewer",), "", "an array", "a tuple, not a JSON value"),
+                )
             ),
-            ("draft", "false", ("TrackerError", f"{key}.draft must be Boolean")),
-            ("draft", 0, ("TrackerError", f"{key}.draft must be Boolean")),
-            ("reviewed_head_sha", "", ("TrackerError", f"{key}.reviewed_head_sha is invalid")),
-            ("reviewed_head_sha", 5, ("TrackerError", f"{key}.reviewed_head_sha is invalid")),
-            ("user_review_sha", "", ("TrackerError", f"{key}.user_review_sha is invalid")),
-            ("user_review_sha", 5, ("TrackerError", f"{key}.user_review_sha is invalid")),
-            ("user_review_state", "PENDING", ("TrackerError", f"{key}.user_review_state is invalid")),
-            ("user_review_state", "approved", ("TrackerError", f"{key}.user_review_state is invalid")),
+            ("draft", "false", wrong(f"{SECOND}.draft", "a boolean", 'string "false"')),
+            ("draft", 0, wrong(f"{SECOND}.draft", "a boolean", "integer 0")),
+            ("reviewed_head_sha", "", wrong(f"{SECOND}.reviewed_head_sha", TEXT_OR_NULL, "an empty string")),
+            ("reviewed_head_sha", 5, wrong(f"{SECOND}.reviewed_head_sha", TEXT_OR_NULL, "integer 5")),
+            ("user_review_sha", "", wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "an empty string")),
+            ("user_review_sha", 5, wrong(f"{SECOND}.user_review_sha", TEXT_OR_NULL, "integer 5")),
+            (
+                "user_review_state",
+                "PENDING",
+                wrong(f"{SECOND}.user_review_state", USER_REVIEW_STATES, 'string "PENDING"'),
+            ),
+            (
+                "user_review_state",
+                "approved",
+                wrong(f"{SECOND}.user_review_state", USER_REVIEW_STATES, 'string "approved"'),
+            ),
             ("user_review_sha", USER_REVIEWED, ("TrackerError", f"{key}.user_review_sha requires a review state")),
             *(
                 ("user_review_state", state, ("TrackerError", f"{key}.user_review_sha is required for {state}"))
@@ -1008,14 +1064,108 @@ class ValidateItemsSequenceTests(unittest.TestCase):
 
     def test_a_refused_item_is_refused_before_a_later_duplicate_is_seen(self) -> None:
         self.assertEqual(
-            ("TrackerError", "Tracker item owner/repo#5.title is required"),
+            wrong(f"{SECOND}.title", TEXT, "an empty string"),
             refusal([item(number=4), item(number=5) | {"title": ""}, item(number=4)]),
         )
+
+    def test_each_ai_review_field_of_the_wrong_kind_is_refused(self) -> None:
+        severities = {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}
+        ledger = {"open": severities, "addressed": 0, "since": None, "version": 1}
+        reading = {"flagged": 0, "since_review": {"version": 1, "new": 0, "addressed": 0}}
+        valid = ai("APPROVED")
+        cases: list[tuple[object, str, str, str]] = [
+            ([], "", "an object or null", "an array"),
+            ("Approved", "", "an object or null", 'string "Approved"'),
+            ({"verdict": "APPROVED"}, "", "an object with fields counts, report", "an object without them"),
+            (valid | {"extra": 1}, "", "an object of known fields", 'unknown field "extra"'),
+            (valid | {"ledger": "1M"}, ".ledger", "an object or null", 'string "1M"'),
+            (
+                valid | {"ledger": {"open": severities, "addressed": 0, "since": None}},
+                ".ledger",
+                "an object with field version",
+                "an object without it",
+            ),
+            (valid | {"ledger": ledger | {"open": []}}, ".ledger.open", "an object", "an array"),
+            (
+                valid | {"ledger": ledger | {"open": {"MUST_FIX": 0}}},
+                ".ledger.open",
+                "an object with fields SHOULD_FIX, SUGGESTION",
+                "an object without them",
+            ),
+            (
+                valid | {"ledger": ledger | {"open": severities | {"MUST_FIX": "1"}}},
+                ".ledger.open.MUST_FIX",
+                "an integer of at least 0",
+                'string "1"',
+            ),
+            (
+                valid | {"ledger": ledger | {"version": 0}},
+                ".ledger.version",
+                "an integer of at least 1 or null",
+                "integer 0",
+            ),
+            (
+                valid | {"ledger": ledger | {"version": 1.0}},
+                ".ledger.version",
+                "an integer of at least 1 or null",
+                "number 1.0",
+            ),
+            (
+                valid | {"ledger": ledger | {"addressed": True}},
+                ".ledger.addressed",
+                "an integer of at least 0 or null",
+                "boolean true",
+            ),
+            (
+                valid | {"ledger": ledger | {"since": "1"}},
+                ".ledger.since",
+                "an integer of at least 0 or null",
+                'string "1"',
+            ),
+            (valid | reading | {"flagged": True}, ".flagged", "an integer of at least 0", "boolean true"),
+            (valid | reading | {"flagged": -1}, ".flagged", "an integer of at least 0", "integer -1"),
+            (valid | reading | {"since_review": []}, ".since_review", "an object or null", "an array"),
+            (
+                valid | reading | {"since_review": {"version": 0, "new": 0}},
+                ".since_review",
+                "an object with field addressed",
+                "an object without it",
+            ),
+            (
+                valid | reading | {"since_review": {"version": 0, "new": 1.0, "addressed": 0}},
+                ".since_review.new",
+                "an integer of at least 0",
+                "number 1.0",
+            ),
+            (valid | {"verdict": "OK"}, ".verdict", VERDICTS, 'string "OK"'),
+            (valid | {"verdict": None}, ".verdict", VERDICTS, "null"),
+            (valid | {"counts": []}, ".counts", "an object or null", "an array"),
+            (
+                valid | {"counts": {"MUST_FIX": 0}},
+                ".counts",
+                "an object with fields SHOULD_FIX, SUGGESTION",
+                "an object without them",
+            ),
+            (
+                valid | {"counts": severities | {"SUGGESTION": -1}},
+                ".counts.SUGGESTION",
+                "an integer of at least 0",
+                "integer -1",
+            ),
+            (valid | {"report": ""}, ".report", TEXT_OR_NULL, "an empty string"),
+            (valid | {"report": 5}, ".report", TEXT_OR_NULL, "integer 5"),
+        ]
+        validate_items([item() | {"ai_review": valid | reading}])
+        for review, field, expected, found in cases:
+            with self.subTest(field=field, review=review):
+                self.assertEqual(wrong(f"{REVIEW}{field}", expected, found), refusal([item() | {"ai_review": review}]))
 
     def test_refusals_come_in_check_order(self) -> None:
         """An item wrong in every way is refused for one fault at a time, each repaired before the next is reported."""
         stages: list[tuple[str, object, object]] = [
             ("author_name", "", None),
+            ("review_decision", "MERGED", None),
+            ("ai_review", [], None),
             ("reviewed_incomplete", "yes", False),
             ("repository", "Owner", "Owner/Repo"),
             ("number", -1, 1),
@@ -1032,32 +1182,84 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("user_review_sha", "", None),
             ("user_review_state", "PENDING", None),
         ]
-        bad = item() | {field: wrong for field, wrong, _ in stages}
+        bad = item() | {field: value for field, value, _ in stages}
         seen: list[str] = []
         for field, _, repaired in stages:
             seen.append(refusal([bad])[1])
             bad[field] = repaired
         self.assertEqual(1, len(validate_items([bad])))
+        first = "tracker input[0]"
         self.assertEqual(
             [
-                "Tracker item Owner#-1.author_name must be null or a non-empty string",
-                "Tracker item reviewed_incomplete must be Boolean",
+                f"{first}.author_name must be a non-empty string or null, found an empty string",
+                f'{first}.review_decision must be one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null, '
+                'found string "MERGED"',
+                f"{first}.ai_review must be an object or null, found an array",
+                f'{first}.reviewed_incomplete must be a boolean, found string "yes"',
                 "Invalid repository identity: 'Owner'",
-                "Tracker pull number must be positive",
-                "Tracker item owner/repo#1.url is required",
-                "Tracker item owner/repo#1.title is required",
-                "Tracker item owner/repo#1.author is required",
-                "Tracker item owner/repo#1.base_ref is required",
-                "Tracker item owner/repo#1.head_sha is required",
-                "Tracker item owner/repo#1.updated_at is required",
-                "Tracker item owner/repo#1.requested_reviewers must be a string array",
-                "Tracker item owner/repo#1.participants must be a string array",
-                "Tracker item owner/repo#1.draft must be Boolean",
-                "Tracker item owner/repo#1.reviewed_head_sha is invalid",
-                "Tracker item owner/repo#1.user_review_sha is invalid",
-                "Tracker item owner/repo#1.user_review_state is invalid",
+                f"{first}.number must be an integer of at least 1, found integer -1",
+                f"{first}.url must be a non-empty string, found an empty string",
+                f"{first}.title must be a non-empty string, found null",
+                f"{first}.author must be a non-empty string, found integer 1",
+                f"{first}.base_ref must be a non-empty string, found an empty string",
+                f"{first}.head_sha must be a non-empty string, found an empty string",
+                f"{first}.updated_at must be a non-empty string, found an empty string",
+                f'{first}.requested_reviewers must be an array, found string "x"',
+                f"{first}.participants[0] must be a non-empty string, found integer 1",
+                f"{first}.draft must be a boolean, found null",
+                f"{first}.reviewed_head_sha must be a non-empty string or null, found an empty string",
+                f"{first}.user_review_sha must be a non-empty string or null, found an empty string",
+                f'{first}.user_review_state must be one of "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED" '
+                'or null, found string "PENDING"',
             ],
             seen,
+        )
+
+
+class OverrideAndPullKeyTests(unittest.TestCase):
+    """normalize_overrides and normalize_pull_keys: each kind they read refused in the one shape, and the value checks
+    after it in their own words."""
+
+    def test_each_status_override_of_the_wrong_kind_is_refused(self) -> None:
+        key = "a key of status overrides"
+        status = "status overrides.owner/repo#1"
+        cases: list[tuple[Any, tuple[str, str]]] = [
+            ([], wrong("status overrides", "an object", "an array")),
+            ("owner/repo#1=On hold", wrong("status overrides", "an object", 'string "owner/repo#1=On hold"')),
+            ({1: "On hold"}, wrong(key, TEXT, "integer 1")),
+            ({"": "On hold"}, wrong(key, TEXT, "an empty string")),
+            ({" ": "On hold"}, wrong(key, TEXT, "a blank string")),
+            ({"owner/repo#1": 5}, wrong(status, "a string", "integer 5")),
+            ({"owner/repo#1": None}, wrong(status, "a string", "null")),
+            ({"owner/repo#1": ["On hold"]}, wrong(status, "a string", "an array")),
+            ({"owner/repo#1": {"status": "On hold"}}, wrong(status, "a string", "an object")),
+            ({"owner/repo#1": "  "}, ("TrackerError", "Status override owner/repo#1 must be non-empty")),
+            ({"owner/repo": "On hold"}, ("TrackerError", "Invalid override pull-request identity: 'owner/repo'")),
+        ]
+        self.assertEqual({}, normalize_overrides(None))
+        self.assertEqual({"owner/repo#1": "On hold"}, normalize_overrides({"Owner/Repo#1": " On hold "}))
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(expected, raised(partial(normalize_overrides, value)))
+
+    def test_each_pull_key_of_the_wrong_kind_is_refused(self) -> None:
+        identity = "a removal pull-request identity"
+        cases: list[tuple[Any, tuple[str, str]]] = [
+            (1, wrong(identity, TEXT, "integer 1")),
+            (None, wrong(identity, TEXT, "null")),
+            (["owner/repo#1"], wrong(identity, TEXT, "an array")),
+            ("", wrong(identity, TEXT, "an empty string")),
+            (" ", wrong(identity, TEXT, "a blank string")),
+            ("owner/repo", ("TrackerError", "Invalid removal pull-request identity: 'owner/repo'")),
+            ("owner/repo#0", ("TrackerError", "Invalid removal pull-request identity: 'owner/repo#0'")),
+        ]
+        self.assertEqual({"owner/repo#1"}, normalize_pull_keys(["Owner/Repo#1"], "removal"))
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(expected, raised(partial(normalize_pull_keys, [value], "removal")))
+        self.assertEqual(
+            ("TrackerError", "Duplicate removal pull-request identity: owner/repo#1"),
+            raised(partial(normalize_pull_keys, ["owner/repo#1", "OWNER/repo#1"], "removal")),
         )
 
 

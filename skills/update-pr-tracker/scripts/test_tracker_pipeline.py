@@ -747,7 +747,15 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertIn("| 1M 1S open (1 flagged) · 1 addressed |", row)
         self.flags_path.write_text("{}", encoding="utf-8")
         code, out, err = self.run_main("collect", "--output", str(self.input))
-        self.assertEqual((1, "FAILED Flag store shape is invalid\n", ""), (code, out, err))
+        self.assertEqual(
+            (
+                1,
+                "FAILED flag-store must be an object with fields flags, next_id, schema_version, found an object "
+                "without them\n",
+                "",
+            ),
+            (code, out, err),
+        )
 
     def test_remove_drops_one_row_and_no_candidates_without_the_flag(self) -> None:
         self.collect()
@@ -815,6 +823,50 @@ class UpdateTests(TrackerPipelineFixture):
         self.assertEqual(
             [f"UPDATED {self.dashboard} rows=0", "GITHUB_CALLS 0"], result.stdout.decode("utf-8").splitlines()
         )
+
+
+class ActorFieldTests(unittest.TestCase):
+    """The logins and profile names a pull-request node gives: one of the wrong kind is skipped or None, never a
+    refusal, since GitHub gives a team or a deleted account no login and many accounts no name."""
+
+    # Each actor of the wrong kind, or whose login is of the wrong kind: none can name the configured user.
+    WRONG_ACTORS: tuple[Any, ...] = (
+        {},
+        {"login": None},
+        {"login": ""},
+        {"login": " "},
+        {"login": 5},
+        {"login": True},
+        {"login": ["ada"]},
+        {"login": {"login": "ada"}},
+        None,
+        "ada",
+        ["ada"],
+        7,
+    )
+
+    def test_a_login_of_the_wrong_kind_is_skipped(self) -> None:
+        for actor in self.WRONG_ACTORS:
+            with self.subTest(actor=actor):
+                requests = {
+                    "pageInfo": {"hasNextPage": False},
+                    "nodes": [
+                        {"requestedReviewer": {"login": "ada"}},
+                        {"requestedReviewer": actor},
+                        {"requestedReviewer": {"login": "grace"}},
+                    ],
+                }
+                self.assertEqual(
+                    ["ada", "grace"], tp._complete_logins(requests, "requestedReviewer", "review requests")
+                )
+                participants = {"pageInfo": {"hasNextPage": False}, "nodes": [{"login": "ada"}, actor]}
+                self.assertEqual(["ada"], tp._complete_logins(participants, None, "participants"))
+
+    def test_a_profile_name_of_the_wrong_kind_is_none(self) -> None:
+        self.assertEqual("Ada Lovelace", tp._profile_name("  Ada Lovelace "))
+        for value in (None, "", "  ", 5, True, 1.5, ["Ada"], {"name": "Ada"}):
+            with self.subTest(value=value):
+                self.assertIsNone(tp._profile_name(value))
 
 
 class OverrideTests(TrackerPipelineFixture):
@@ -922,7 +974,10 @@ class OverrideTests(TrackerPipelineFixture):
         ]
         cases += [
             (["--set", "example/one#3= INCOMPLETE "], "duplicates a computed tracker state"),
-            (["--set", "example/one#3=  "], "must be non-empty"),
+            (
+                ["--set", "example/one#3=  "],
+                "config.dashboard.status_overrides.example/one#3 must be a non-empty string, found an empty string",
+            ),
             (["--set", "example/one#3"], "must be owner/repo#number=status"),
             (["--set", "example/one=on hold"], "Invalid override pull-request identity"),
             (["--clear", "example/one#9"], "No status override for example/one#9"),

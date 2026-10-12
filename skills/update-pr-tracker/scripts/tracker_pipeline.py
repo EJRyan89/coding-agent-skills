@@ -36,10 +36,11 @@ from review_config import (
     validate_config,
 )
 from review_flags import FlagError, default_flags_path, load_store
-from review_github import GitHubClient, GitHubError
+from review_github import READ, GitHubClient, GitHubError
 from review_io import PersistenceError, atomic_write_json, map_in_order, read_json, working_path
 from review_operation import reviewed_head
 from review_records import RecordError, flagged_entries, ledger_history, ledger_id
+from typed_fields import FieldError
 from update_pr_tracker import (
     ComparisonFailures,
     Row,
@@ -116,9 +117,19 @@ def _complete_logins(connection: dict[str, Any], key: str | None, what: str) -> 
     for node in connection["nodes"]:
         actor = node[key] if key else node
         # A team review request has no login and can never name the configured user.
-        if isinstance(actor, dict) and isinstance(actor.get("login"), str) and actor["login"]:
-            logins.append(actor["login"])
+        try:
+            logins.append(READ.string(READ.json_object(actor, "actor").get("login"), "actor.login"))
+        except FieldError:
+            continue
     return logins
+
+
+def _profile_name(value: Any) -> str | None:
+    """An author's profile name, trimmed, or None when the author has none."""
+    try:
+        return READ.string(value, "author.name").strip()
+    except FieldError:
+        return None
 
 
 def tracker_item(
@@ -145,7 +156,7 @@ def tracker_item(
             "url": node["url"],
             "title": node["title"],
             "author": author["login"],
-            "author_name": name.strip() if isinstance(name, str) and name.strip() else None,
+            "author_name": _profile_name(name),
             "requested_reviewers": _complete_logins(node["reviewRequests"], "requestedReviewer", "review requests"),
             "participants": _complete_logins(node["participants"], None, "participants"),
             "draft": node["isDraft"],

@@ -28,6 +28,7 @@ from bounded_process import run_bounded
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_process import JobTree, ProcessStatus, path_programs, same_process, shell_script, winget_copilot
 from review_runtime import (
+    READ,
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
     _require_safe_snapshot_path,
@@ -281,33 +282,27 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"Copilot reviewer materialization metadata is invalid: {exc}") from exc
-    if not isinstance(metadata, dict) or set(metadata) != {
-        "schema_version",
-        "adapter_id",
-        "entrypoint",
-        "source_commit",
-        "source_hashes",
-    }:
-        raise RuntimeContractError("Copilot reviewer materialization metadata does not match the contract")
-    if type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1:
+    READ.json_object(
+        metadata,
+        "materialization",
+        required={"schema_version", "adapter_id", "entrypoint", "source_commit", "source_hashes"},
+    )
+    if READ.integer(metadata["schema_version"], "materialization.schema_version") != 1:
         raise RuntimeContractError("Copilot reviewer materialization schema version is unsupported")
-    source_commit = metadata["source_commit"]
-    if not isinstance(source_commit, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", source_commit):
-        raise RuntimeContractError("Copilot reviewer materialization source commit is invalid")
-    relative_value = metadata.get("entrypoint")
-    relative_value = _safe_relative_path(relative_value, "entrypoint")
+    READ.string(metadata["adapter_id"], "materialization.adapter_id")
+    READ.hex_digest(metadata["source_commit"], "materialization.source_commit", 40, 64)
+    relative_value = _safe_relative_path(metadata["entrypoint"], "materialization.entrypoint")
     relative = PurePosixPath(relative_value)
     materialized_resolved = materialized_root.resolve(strict=True)
-    source_hashes = metadata.get("source_hashes")
-    if not isinstance(source_hashes, dict) or relative_value not in source_hashes:
+    source_hashes = READ.json_object(metadata["source_hashes"], "materialization.source_hashes")
+    if relative_value not in source_hashes:
         raise RuntimeContractError("Copilot reviewer materialization source hashes are invalid")
     expected_files = {"materialization.json"}
     for declared_path, expected_hash in source_hashes.items():
-        normalized = _safe_relative_path(declared_path, "source_hashes path")
+        normalized = _safe_relative_path(declared_path, "a key of materialization.source_hashes")
         if normalized != declared_path or declared_path == "materialization.json":
             raise RuntimeContractError(f"Copilot reviewer materialization path is invalid: {declared_path!r}")
-        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-            raise RuntimeContractError(f"Copilot reviewer materialization hash is invalid: {declared_path}")
+        READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)
         target = materialized_root.joinpath(*PurePosixPath(declared_path).parts)
         _require_safe_snapshot_path(materialized_root, target)
         if not target.is_file() or not target.resolve(strict=True).is_relative_to(materialized_resolved):
@@ -560,5 +555,4 @@ def _require_copilot_result(result: ProcessResult, staging_path: Path, diagnosti
         parsed = json.loads(staging_path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"GitHub Copilot CLI result is not valid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeContractError("GitHub Copilot CLI result must be a JSON object")
+    READ.json_object(parsed, "adapter-result")

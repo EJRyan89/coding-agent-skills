@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from console import use_utf8_output
 from review_io import PersistenceError, atomic_write_json, read_json
+from typed_fields import FieldError, FieldReader, describe
 
 SCHEMA_VERSION = 1
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$")
@@ -93,6 +94,13 @@ class ConfigurationError(ValueError):
     """Raised when configuration is invalid or unsafe."""
 
 
+class ConfigurationFieldError(FieldError, ConfigurationError):
+    """A configuration field of the wrong kind."""
+
+
+READ = FieldReader(ConfigurationFieldError)
+
+
 def default_config_path() -> Path:
     override = os.environ.get("CODE_REVIEW_CONFIG")
     if override:
@@ -100,30 +108,19 @@ def default_config_path() -> Path:
     return Path.home() / ".coding-agent-skills" / "code-review" / "config.json"
 
 
-def _expect_object(value: Any, field: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ConfigurationError(f"{field} must be an object")
-    return value
-
-
-def _reject_unknown(value: dict[str, Any], allowed: set[str], field: str) -> None:
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise ConfigurationError(f"{field} contains unknown field(s): {', '.join(unknown)}")
-
-
-def validate_repository_identity(value: object) -> str:
-    if not isinstance(value, str) or not REPOSITORY_PATTERN.fullmatch(value):
+def validate_repository_identity(value: object, field: str = "repository") -> str:
+    identity = READ.string(value, field)
+    if not REPOSITORY_PATTERN.fullmatch(identity):
         raise ConfigurationError(f"Invalid repository identity: {value!r}")
-    return value.lower()
+    return identity.lower()
 
 
 def validate_windows_absolute_path(value: Any, field: str, *, nullable: bool = False) -> str | None:
-    if value is None and nullable:
+    reader_path = f"config.{field}"
+    path = READ.optional(READ.string, value, reader_path) if nullable else READ.string(value, reader_path)
+    if path is None:
         return None
-    if not isinstance(value, str) or not value:
-        raise ConfigurationError(f"{field} must be a non-empty absolute Windows path")
-    normalized = ntpath.normpath(value)
+    normalized = ntpath.normpath(path)
     drive, tail = ntpath.splitdrive(normalized)
     if not drive or not tail.startswith(("\\", "/")) or drive.startswith("\\"):
         raise ConfigurationError(f"{field} must be an absolute drive-letter path")
@@ -132,11 +129,10 @@ def validate_windows_absolute_path(value: Any, field: str, *, nullable: bool = F
     return normalized
 
 
-def safe_repository_path(value: Any) -> bool:
+def safe_repository_path(value: str) -> bool:
     """A non-empty repository-relative POSIX path that stays inside the repository."""
     return (
-        isinstance(value, str)
-        and bool(value)
+        bool(value)
         and "\\" not in value
         and not value.startswith("/")
         and not re.match(r"^[A-Za-z]:", value)
@@ -151,17 +147,14 @@ def default_manifest_path(config_path: Path, repository: str) -> Path:
 
 
 def validate_config(value: Any) -> dict[str, Any]:
-    config = _expect_object(value, "config")
-    _reject_unknown(config, TOP_LEVEL_KEYS, "config")
+    config = READ.json_object(value, "config", optional=TOP_LEVEL_KEYS)
     _validate_schema_version(config.get("schema_version"))
     normalized_sets = _validate_repository_sets(config.get("repository_sets"))
     _validate_default_set(config.get("default_repository_set"), normalized_sets)
     normalized_repositories = _validate_repositories(config.get("repositories", {}))
     _check_configured_repositories(normalized_sets, normalized_repositories)
-    runtime = config.get("runtime", "auto")
-    _validate_runtime(runtime)
-    effort = config.get("reviewer_effort")
-    _validate_reviewer_effort(effort)
+    runtime = READ.one_of(config.get("runtime", "auto"), "config.runtime", RUNTIME_HOSTS)
+    effort = READ.optional(READ.one_of, config.get("reviewer_effort"), "config.reviewer_effort", REVIEWER_EFFORTS)
     scope = _validate_re_review_scope(config.get("re_review_scope", {}))
     verdict_policy = _validate_verdict_policy(config.get("verdict_policy", {}))
     operation_sets = _validate_operation_sets(config.get("operation_repository_sets", {}), normalized_sets)
@@ -181,30 +174,32 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["summary_root"] = validate_windows_absolute_path(config.get("summary_root"), "summary_root")
     normalized["dashboard_file"] = validate_windows_absolute_path(config.get("dashboard_file"), "dashboard_file")
     normalized["verdict_policy"] = verdict_policy
-    _validate_github_login(config.get("github_login"))
+    READ.optional(READ.string, config.get("github_login"), "config.github_login")
     normalized["dashboard"] = _validate_dashboard(config.get("dashboard", {}))
     return normalized
 
 
-def _validate_schema_version(version: Any) -> None:
-    if type(version) is not int or version != SCHEMA_VERSION:
-        if isinstance(version, int) and version > SCHEMA_VERSION:
-            raise ConfigurationError(f"Unsupported future config schema version: {version}")
-        raise ConfigurationError(f"Unsupported config schema version: {version!r}")
+def _validate_schema_version(value: Any) -> None:
+    version = READ.integer(value, "config.schema_version")
+    if version > SCHEMA_VERSION:
+        raise ConfigurationError(f"Unsupported future config schema version: {version}")
+    if version != SCHEMA_VERSION:
+        raise ConfigurationError(f"Unsupported config schema version: {version}")
 
 
 def _validate_repository_sets(value: Any) -> dict[str, list[str]]:
     """Each named set's members as lowercase identities, in the order given."""
-    sets = _expect_object(value, "repository_sets")
+    sets = READ.json_object(value, "config.repository_sets")
     if not sets:
         raise ConfigurationError("repository_sets must not be empty")
     normalized_sets: dict[str, list[str]] = {}
-    for name, repositories in sets.items():
-        if not isinstance(name, str) or not name or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+    for key, repositories in sets.items():
+        name = READ.string(key, "a key of config.repository_sets")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
             raise ConfigurationError(f"Invalid repository-set name: {name!r}")
-        if not isinstance(repositories, list) or not repositories:
-            raise ConfigurationError(f"Repository set '{name}' must not be empty")
-        members = [validate_repository_identity(item) for item in repositories]
+        members = READ.array(
+            repositories, f"config.repository_sets.{name}", validate_repository_identity, nonempty=True
+        )
         if len(set(members)) != len(members):
             raise ConfigurationError(f"Repository set '{name}' contains duplicates")
         normalized_sets[name] = members
@@ -212,16 +207,16 @@ def _validate_repository_sets(value: Any) -> dict[str, list[str]]:
 
 
 def _validate_default_set(default_set: Any, normalized_sets: dict[str, list[str]]) -> None:
-    if not isinstance(default_set, str) or default_set not in normalized_sets:
+    if READ.string(default_set, "config.default_repository_set") not in normalized_sets:
         raise ConfigurationError("default_repository_set must name an existing set")
 
 
 def _validate_repositories(value: Any) -> dict[str, Any]:
     """Each repository's normalized entry keyed by its lowercase identity, checked one entry at a time."""
-    repository_config = _expect_object(value, "repositories")
+    repository_config = READ.json_object(value, "config.repositories")
     normalized_repositories: dict[str, Any] = {}
     for identity, entry_value in repository_config.items():
-        normalized_identity = validate_repository_identity(identity)
+        normalized_identity = validate_repository_identity(identity, "a key of config.repositories")
         if normalized_identity in normalized_repositories:
             raise ConfigurationError(f"Duplicate repository configuration after normalization: {normalized_identity}")
         normalized_repositories[normalized_identity] = _validate_repository(identity, entry_value)
@@ -229,17 +224,15 @@ def _validate_repositories(value: Any) -> dict[str, Any]:
 
 
 def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
-    entry = _expect_object(entry_value, f"repositories.{identity}")
-    _reject_unknown(entry, REPOSITORY_KEYS, f"repositories.{identity}")
+    field = f"repositories.{identity}"
+    entry = READ.json_object(entry_value, f"config.{field}", optional=REPOSITORY_KEYS)
     reviewer = _validate_reviewer(identity, entry.get("reviewer"))
-    checkout = validate_windows_absolute_path(
-        entry.get("checkout_path"), f"repositories.{identity}.checkout_path", nullable=True
-    )
+    checkout = validate_windows_absolute_path(entry.get("checkout_path"), f"{field}.checkout_path", nullable=True)
     if reviewer["scope"] == "repository" and checkout is None:
-        raise ConfigurationError(f"repositories.{identity}.checkout_path is required for a repository reviewer")
+        raise ConfigurationError(f"{field}.checkout_path is required for a repository reviewer")
     exclude = validate_glob_patterns(
         entry.get("snapshot_exclude", []),
-        f"repositories.{identity}.snapshot_exclude",
+        f"config.{field}.snapshot_exclude",
         maximum_patterns=MAX_SNAPSHOT_EXCLUDE_PATTERNS,
         maximum_length=MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH,
     )
@@ -252,54 +245,58 @@ def validate_glob_patterns(
     *,
     maximum_patterns: int,
     maximum_length: int,
-    error: type[ValueError] = ConfigurationError,
+    reader: FieldReader = READ,
 ) -> list[str]:
     """Distinct glob patterns, each a repository-relative POSIX path pattern that cannot name the snapshot's root or
     leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment. A repository's
-    `snapshot_exclude` and a condition's `reads` are both such patterns; `error` is the exception its reader raises."""
-    if not isinstance(value, list):
-        raise error(f"{field} must be an array of glob patterns")
-    if len(value) > maximum_patterns:
-        raise error(f"{field} holds more than {maximum_patterns} patterns")
+    `snapshot_exclude` and a condition's `reads` are both such patterns; `reader` is the reader of the format that
+    holds them, so a fault raises that format's error."""
+    patterns = reader.array(
+        value,
+        field,
+        lambda pattern, path: reader.string(pattern, path, maximum=maximum_length),
+        maximum=maximum_patterns,
+    )
     seen: set[str] = set()
-    for index, pattern in enumerate(value):
+    for index, pattern in enumerate(patterns):
         if (
-            not isinstance(pattern, str)
-            or not 0 < len(pattern) <= maximum_length
-            or not safe_repository_path(pattern)
+            not safe_repository_path(pattern)
             or re.search(r"[\x00-\x1f\x7f]", pattern)
             or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
         ):
-            raise error(
-                f"{field}[{index}] must be a repository-relative glob pattern of 1 to {maximum_length} characters, "
-                f"without a backslash, a control character, or an empty, '.', or '..' segment: {pattern!r}"
+            raise reader.fail(
+                f"{field}[{index}]",
+                "a repository-relative glob pattern without a backslash, a control character, or an empty, '.', or "
+                "'..' segment",
+                describe(pattern),
             )
         if pattern.casefold() in seen:
-            raise error(f"{field} lists {pattern!r} twice (patterns match ignoring case)")
+            raise reader.fail(field, "distinct glob patterns, ignoring case", f"{json.dumps(pattern)} twice")
         seen.add(pattern.casefold())
-    return list(value)
+    return patterns
 
 
 def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
-    reviewer = _expect_object(reviewer_value, f"repositories.{identity}.reviewer")
-    _reject_unknown(reviewer, REVIEWER_KEYS, f"repositories.{identity}.reviewer")
-    reviewer_id = reviewer.get("id")
-    if not isinstance(reviewer_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
-        raise ConfigurationError(f"repositories.{identity}.reviewer.id is invalid")
-    if type(reviewer.get("protocol_version")) is not int or reviewer["protocol_version"] != 1:
-        raise ConfigurationError(f"repositories.{identity}.reviewer protocol is unsupported")
-    trusted_ref = reviewer.get("trusted_ref")
-    if trusted_ref is not None and (not isinstance(trusted_ref, str) or not trusted_ref.strip()):
-        raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref is invalid")
-    if isinstance(trusted_ref, str) and trusted_ref.startswith("refs/pull/"):
-        raise ConfigurationError(f"repositories.{identity}.reviewer.trusted_ref cannot be a pull ref")
-    scope = reviewer.get("scope", "repository")
-    if not isinstance(scope, str) or scope not in {"generic", "repository"}:
-        raise ConfigurationError(f"repositories.{identity}.reviewer.scope is invalid")
-    manifest_path = reviewer.get("manifest_path")
-    skill = reviewer.get("skill")
-    manifest = reviewer.get("manifest")
     field = f"repositories.{identity}.reviewer"
+    path = f"config.{field}"
+    reviewer = READ.json_object(reviewer_value, path, optional=REVIEWER_KEYS)
+    reviewer_id = READ.string(reviewer.get("id"), f"{path}.id")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
+        raise ConfigurationError(f"{field}.id is invalid")
+    if READ.integer(reviewer.get("protocol_version"), f"{path}.protocol_version") != 1:
+        raise ConfigurationError(f"{field} protocol is unsupported")
+    trusted_ref = READ.optional(READ.string, reviewer.get("trusted_ref"), f"{path}.trusted_ref")
+    if trusted_ref is not None and trusted_ref.startswith("refs/pull/"):
+        raise ConfigurationError(f"{field}.trusted_ref cannot be a pull ref")
+    scope = READ.one_of(reviewer.get("scope", "repository"), f"{path}.scope", ("generic", "repository"))
+    manifest_path = READ.optional(READ.string, reviewer.get("manifest_path"), f"{path}.manifest_path")
+    skill = READ.optional(READ.string, reviewer.get("skill"), f"{path}.skill")
+    manifest = reviewer.get("manifest")
+    if manifest is not True:
+        try:
+            manifest = READ.optional(READ.string, manifest, f"{path}.manifest")
+        except FieldError as exc:
+            raise READ.fail(exc.path, "true, a non-empty string, or null", exc.found) from None
     if scope == "generic":
         if reviewer_id != "generic" or any(
             value is not None for value in (manifest_path, trusted_ref, skill, manifest)
@@ -342,87 +339,61 @@ def _check_configured_repositories(
         raise ConfigurationError("Missing per-repository configuration for: " + ", ".join(missing))
 
 
-def _validate_runtime(runtime: Any) -> None:
-    if not isinstance(runtime, str) or runtime not in RUNTIME_HOSTS:
-        raise ConfigurationError(f"Unknown runtime host: {runtime!r}")
-
-
-def _validate_reviewer_effort(effort: Any) -> None:
-    if effort is not None and (not isinstance(effort, str) or effort not in REVIEWER_EFFORTS):
-        raise ConfigurationError(
-            f"reviewer_effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}: {effort!r}"
-        )
-
-
 def _validate_re_review_scope(value: Any) -> dict[str, Any]:
     """The given thresholds over their defaults."""
-    scope = _expect_object(value, "re_review_scope")
-    _reject_unknown(scope, set(RE_REVIEW_SCOPE_DEFAULTS), "re_review_scope")
-    scope = {**RE_REVIEW_SCOPE_DEFAULTS, **scope}
-    share = scope["full_share"]
-    if not isinstance(share, (int, float)) or isinstance(share, bool) or not 0 < share <= 1:
+    given = READ.json_object(value, "config.re_review_scope", optional=set(RE_REVIEW_SCOPE_DEFAULTS))
+    scope = {**RE_REVIEW_SCOPE_DEFAULTS, **given}
+    share = READ.number(scope["full_share"], "config.re_review_scope.full_share")
+    if not 0 < share <= 1:
         raise ConfigurationError("re_review_scope.full_share must be a number above 0 and at most 1")
-    if not isinstance(scope["full_lines"], int) or isinstance(scope["full_lines"], bool) or scope["full_lines"] < 1:
-        raise ConfigurationError("re_review_scope.full_lines must be a positive integer")
+    READ.integer(scope["full_lines"], "config.re_review_scope.full_lines", minimum=1)
     return scope
 
 
 def _validate_verdict_policy(value: Any) -> dict[str, Any]:
     """Both policy fields, defaults filled; request_changes_for is the given list itself."""
-    policy = _expect_object(value, "verdict_policy")
-    _reject_unknown(policy, {"request_changes_for", "should_fix_threshold"}, "verdict_policy")
+    policy = READ.json_object(value, "config.verdict_policy", optional={"request_changes_for", "should_fix_threshold"})
     request_changes_for = policy.get("request_changes_for", ["MUST_FIX"])
-    if not isinstance(request_changes_for, list) or not request_changes_for:
-        raise ConfigurationError("verdict_policy.request_changes_for must be non-empty")
-    allowed_severities = {"MUST_FIX", "SHOULD_FIX", "SUGGESTION"}
-    if any(not isinstance(item, str) or item not in allowed_severities for item in request_changes_for):
-        raise ConfigurationError("verdict_policy.request_changes_for contains an invalid severity")
-    threshold = policy.get("should_fix_threshold", 3)
-    if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
-        raise ConfigurationError("verdict_policy.should_fix_threshold must be a positive integer")
+    READ.array(
+        request_changes_for,
+        "config.verdict_policy.request_changes_for",
+        lambda item, path: READ.one_of(item, path, ("MUST_FIX", "SHOULD_FIX", "SUGGESTION")),
+        nonempty=True,
+    )
+    threshold = READ.integer(
+        policy.get("should_fix_threshold", 3), "config.verdict_policy.should_fix_threshold", minimum=1
+    )
     return {
         "request_changes_for": request_changes_for,
         "should_fix_threshold": threshold,
     }
 
 
-def _validate_operation_sets(operation_sets: Any, normalized_sets: dict[str, list[str]]) -> dict[str, Any]:
-    if not isinstance(operation_sets, dict):
-        raise ConfigurationError("operation_repository_sets must be an object")
+def _validate_operation_sets(value: Any, normalized_sets: dict[str, list[str]]) -> dict[str, Any]:
+    operation_sets = READ.json_object(value, "config.operation_repository_sets", optional=OPERATIONS)
     for operation, set_name in operation_sets.items():
-        if operation not in OPERATIONS:
-            raise ConfigurationError(f"operation_repository_sets has an unknown operation: {operation!r}")
-        if not isinstance(set_name, str) or set_name not in normalized_sets:
+        if READ.string(set_name, f"config.operation_repository_sets.{operation}") not in normalized_sets:
             raise ConfigurationError(f"operation_repository_sets.{operation} must name an existing set")
     return operation_sets
 
 
-def _validate_github_login(login: Any) -> None:
-    if login is not None and (not isinstance(login, str) or not login.strip()):
-        raise ConfigurationError("github_login must be null or a non-empty string")
-
-
-def _validate_dashboard(dashboard: Any) -> dict[str, Any]:
+def _validate_dashboard(value: Any) -> dict[str, Any]:
     """The markers with their defaults, the status overrides as given, and the normalized author names."""
-    if not isinstance(dashboard, dict):
-        raise ConfigurationError("dashboard must be an object")
-    _reject_unknown(dashboard, DASHBOARD_KEYS, "dashboard")
-    start_marker = dashboard.get("start_marker", "<!-- code-review-pr-tracker:start -->")
-    end_marker = dashboard.get("end_marker", "<!-- code-review-pr-tracker:end -->")
-    if (
-        not isinstance(start_marker, str)
-        or not start_marker.strip()
-        or start_marker != start_marker.strip()
-        or "\n" in start_marker
-        or "\r" in start_marker
-        or not isinstance(end_marker, str)
-        or not end_marker.strip()
-        or end_marker != end_marker.strip()
-        or "\n" in end_marker
-        or "\r" in end_marker
-        or start_marker == end_marker
-    ):
-        raise ConfigurationError("dashboard markers must be distinct, trimmed, non-empty single-line strings")
+    dashboard = READ.json_object(value, "config.dashboard", optional=DASHBOARD_KEYS)
+    start_marker = READ.string(
+        dashboard.get("start_marker", "<!-- code-review-pr-tracker:start -->"),
+        "config.dashboard.start_marker",
+        single_line=True,
+        trimmed=True,
+    )
+    end_marker = READ.string(
+        dashboard.get("end_marker", "<!-- code-review-pr-tracker:end -->"),
+        "config.dashboard.end_marker",
+        single_line=True,
+        trimmed=True,
+    )
+    if start_marker == end_marker:
+        raise ConfigurationError("dashboard markers must be distinct")
     overrides = dashboard.get("status_overrides", {})
     _validate_status_overrides(overrides)
     return {
@@ -433,63 +404,47 @@ def _validate_dashboard(dashboard: Any) -> dict[str, Any]:
     }
 
 
-def _validate_status_overrides(overrides: Any) -> None:
-    if not isinstance(overrides, dict):
-        raise ConfigurationError("dashboard.status_overrides must be an object")
-    for key, value in overrides.items():
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key):
+def _validate_status_overrides(value: Any) -> None:
+    overrides = READ.json_object(value, "config.dashboard.status_overrides")
+    for raw_key, raw_status in overrides.items():
+        key = READ.string(raw_key, "a key of config.dashboard.status_overrides")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
-        if not isinstance(value, str) or not value.strip():
-            raise ConfigurationError(f"Dashboard status override {key} must be non-empty")
-        if value.strip().casefold() in COMPUTED_DASHBOARD_STATES:
+        status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
+        if status.strip().casefold() in COMPUTED_DASHBOARD_STATES:
             raise ConfigurationError(f"Dashboard status override {key} duplicates a computed tracker state")
-
-
-def _single_line(value: Any, maximum: int) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value.strip())
-        and "\n" not in value
-        and "\r" not in value
-        and len(value.strip()) <= maximum
-    )
 
 
 def normalize_model_names(value: Any) -> dict[str, str]:
     """Display names keyed by the model identifier a reviewer reports, such as an inference-profile ARN."""
-    if not isinstance(value, dict):
-        raise ConfigurationError("model_names must be an object")
+    names = READ.json_object(value, "config.model_names")
     normalized: dict[str, str] = {}
-    for identifier, name in value.items():
-        if not _single_line(identifier, MODEL_IDENTIFIER_MAXIMUM_LENGTH) or identifier != identifier.strip():
+    for key, name in names.items():
+        identifier = READ.string(
+            key, "a key of config.model_names", single_line=True, trimmed=True, maximum=MODEL_IDENTIFIER_MAXIMUM_LENGTH
+        )
+        label = READ.string(name, f"config.model_names.{identifier}", single_line=True).strip()
+        if len(label) > MODEL_NAME_MAXIMUM_LENGTH:
             raise ConfigurationError(
-                f"Invalid model_names key {identifier!r}: it must be a trimmed single line of "
-                f"at most {MODEL_IDENTIFIER_MAXIMUM_LENGTH} characters"
+                f"model_names.{identifier} must be a name of at most {MODEL_NAME_MAXIMUM_LENGTH} characters"
             )
-        if not _single_line(name, MODEL_NAME_MAXIMUM_LENGTH):
-            raise ConfigurationError(
-                f"model_names.{identifier} must be a non-empty single-line name of at most "
-                f"{MODEL_NAME_MAXIMUM_LENGTH} characters"
-            )
-        normalized[identifier] = name.strip()
+        normalized[identifier] = label
     return normalized
 
 
 def normalize_author_names(value: Any) -> dict[str, str]:
     """Display names keyed by GitHub login; logins are case-insensitive, so they must be unique ignoring case."""
-    if not isinstance(value, dict):
-        raise ConfigurationError("dashboard.author_names must be an object")
+    names = READ.json_object(value, "config.dashboard.author_names")
     normalized: dict[str, str] = {}
     seen: set[str] = set()
-    for login, name in value.items():
-        if not isinstance(login, str) or not GITHUB_LOGIN_PATTERN.fullmatch(login):
+    for key, name in names.items():
+        login = READ.string(key, "a key of config.dashboard.author_names")
+        if not GITHUB_LOGIN_PATTERN.fullmatch(login):
             raise ConfigurationError(f"Invalid dashboard author name login: {login!r}")
         if login.casefold() in seen:
             raise ConfigurationError(f"Duplicate dashboard author name login ignoring case: {login}")
         seen.add(login.casefold())
-        if not isinstance(name, str) or not name.strip() or "\n" in name or "\r" in name:
-            raise ConfigurationError(f"Dashboard author name for {login} must be a non-empty single-line string")
-        normalized[login] = name.strip()
+        normalized[login] = READ.string(name, f"config.dashboard.author_names.{login}", single_line=True).strip()
     return normalized
 
 

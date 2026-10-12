@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -12,6 +13,7 @@ import tempfile
 import unittest
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,6 +26,7 @@ from review_guard import read_log
 from review_runtime import (
     BlobReader,
     RuntimeContractError,
+    RuntimeContractFieldError,
     fetch_source_file,
     git_blob_reader,
     materialize_source_snapshot,
@@ -294,21 +297,42 @@ class LazySnapshotTests(LazySnapshotFixture):
         original = json.loads(path.read_text(encoding="utf-8"))
         unchanged = original["fetchable"]["src/unchanged.py"]
         for fetchable, message in (
-            ([], "fetchable paths must be an object"),
-            ({"../escape.py": unchanged}, "fetchable path is unsafe"),
+            ({"../escape.py": unchanged}, "a key of source-snapshot.json.fetchable is unsafe"),
             ({"CLAUDE.md": unchanged}, "fetchable path is invalid: 'CLAUDE.md'"),  # an exclusion
             ({"src/changed.py": unchanged}, "fetchable path is invalid: 'src/changed.py'"),  # already held
             ({".claude/settings.json": unchanged}, "fetchable path is invalid"),  # agent configuration
-            ({"src/other.py": unchanged[:40] + "0" * 24}, "fetchable path is invalid"),  # not the commit's hash
-            ({"src/other.py": "z" * 40}, "fetchable path is invalid"),
         ):
             with self.subTest(fetchable=fetchable):
                 path.write_text(json.dumps({**original, "fetchable": fetchable}), encoding="utf-8")
                 with self.assertRaisesRegex(RuntimeContractError, message):
                     self.verify()
-        path.write_text(json.dumps({**original, "extra": {}}), encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeContractError, "fields do not match the contract"):
-            self.verify()
+        # A field of the wrong kind is refused in the typed-field reader's one shape.
+        blob_kind = "a lowercase hexadecimal digest of 40 characters"
+        for manifest, message in (
+            (
+                {**original, "fetchable": []},
+                "source-snapshot.json.fetchable must be an object, found an array",
+            ),
+            (  # not the commit's hash
+                {**original, "fetchable": {"src/other.py": unchanged[:40] + "0" * 24}},
+                f"source-snapshot.json.fetchable.src/other.py must be {blob_kind}, found a string of 64 characters",
+            ),
+            (
+                {**original, "fetchable": {"src/other.py": "z" * 40}},
+                f"source-snapshot.json.fetchable.src/other.py must be {blob_kind}, "
+                "found a string with a character that is not a lowercase hexadecimal digit",
+            ),
+            (
+                {**original, "extra": {}},
+                'source-snapshot.json must be an object of known fields, found unknown field "extra"',
+            ),
+        ):
+            with self.subTest(manifest=message):
+                path.write_text(json.dumps(manifest), encoding="utf-8")
+                with self.assertRaises(RuntimeContractError) as caught:
+                    self.verify()
+                self.assertIs(RuntimeContractFieldError, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
 
     def test_a_reparse_point_in_the_snapshot_refuses_every_fetch(self) -> None:
         elsewhere = self.root / "elsewhere"
@@ -471,6 +495,55 @@ class CommandTests(LazySnapshotFixture):
             (1, ["FAILED this run's snapshot holds every file already; read it under SOURCE_ROOT"]),
             self.main("source-file", "--run", run, "--role", "generic-review", "--path=src/unchanged.py"),
         )
+
+    def test_a_run_with_a_field_of_the_wrong_kind_is_refused(self) -> None:
+        state, request = copy.deepcopy(self.state), {"repository": REPOSITORY, "pull_request": {"head_sha": self.head}}
+        # (the run's state or request as written, and the field error the run reader names)
+        cases: list[tuple[Any, Any, str]] = [
+            ([], request, "run must be an object, found an array"),
+            ({**state, "request_path": None}, request, "run.request_path must be a non-empty string, found null"),
+            ({**state, "request_path": 5}, request, "run.request_path must be a non-empty string, found integer 5"),
+            (state, "x", 'request must be an object, found string "x"'),
+            (
+                state,
+                {**request, "repository": [REPOSITORY]},
+                "request.repository must be a non-empty string, found an array",
+            ),
+            (state, {**request, "pull_request": []}, "request.pull_request must be an object, found an array"),
+            (
+                state,
+                {**request, "pull_request": {"head_sha": 5}},
+                "request.pull_request.head_sha must be a lowercase hexadecimal digest of 40 or 64 characters, "
+                "found integer 5",
+            ),
+            ({**state, "roles": {}}, request, "run.roles must be an array, found an object"),
+            (
+                {**state, "roles": ["generic-review"]},
+                request,
+                'run.roles[0] must be an object, found string "generic-review"',
+            ),
+            (
+                {**state, "source_repository": 5},
+                request,
+                "run.source_repository must be a non-empty string or null, found integer 5",
+            ),
+            (
+                {**state, "source_repository": ""},
+                request,
+                "run.source_repository must be a non-empty string or null, found an empty string",
+            ),
+        ]
+        for written_state, written_request, message in cases:
+            with self.subTest(message):
+                (self.run_directory / "run.json").write_text(json.dumps(written_state), encoding="utf-8")
+                (self.run_directory / "request.json").write_text(json.dumps(written_request), encoding="utf-8")
+                with self.assertRaises(review_source.SourceError) as caught:
+                    review_source._run(self.run_directory, "generic-review")
+                self.assertIs(review_source.SourceError, type(caught.exception))
+                self.assertIs(review_source.SourceFieldError, type(caught.exception.__cause__))
+                self.assertEqual(
+                    f"the review run {self.run_directory} could not be read: {message}", str(caught.exception)
+                )
 
     def test_the_commands_a_prompt_names_run_from_a_shell_with_spaces_in_every_path(self) -> None:
         self.assertIn(" ", str(self.run_directory))

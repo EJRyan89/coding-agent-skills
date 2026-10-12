@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from review_process import ProcessStatus, process_status, same_process
 from skill_roots import skills_directory_holding
+from typed_fields import FieldError, FieldReader
 
 # Concurrent GitHub and git network calls; small enough to stay clear of GitHub's secondary rate limits.
 NETWORK_WORKERS = 4
@@ -31,6 +32,13 @@ Value = TypeVar("Value")
 
 class PersistenceError(RuntimeError):
     """Raised when durable state cannot be read or committed safely."""
+
+
+class PersistenceFieldError(FieldError, PersistenceError):
+    """A lock owner record field of the wrong kind."""
+
+
+READ = FieldReader(PersistenceFieldError)
 
 
 def working_path(explicit: Path | None, prefix: str, name: str) -> Path:
@@ -304,11 +312,13 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
         except OSError:
             return None
         try:
-            owner = json.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None
-        except (UnicodeError, json.JSONDecodeError):
-            owner = None
-        token = owner.get("token") if isinstance(owner, dict) else None
-        if isinstance(owner, dict) and isinstance(token, str) and token:
+            owner = READ.json_object(
+                json.loads(content.decode("utf-8-sig")) if len(content) <= OWNER_MAXIMUM_BYTES else None, "lock owner"
+            )
+            token = READ.string(owner.get("token"), "lock owner.token", empty=True)
+        except (UnicodeError, ValueError):  # undecodable, not JSON, too large, or not an owner record
+            token = ""
+        if token:
             return LockIdentity(token=token), owner
         return LockIdentity(unowned=(status.st_dev, status.st_ino, status.st_mtime_ns), torn=True), {}
 
@@ -321,11 +331,13 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
             if identity.torn:
                 return f"its owner file has not been a valid owner record for {int(age)} seconds"
             return f"it has had no owner file for {int(age)} seconds"
-        pid = owner.get("pid")
-        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        try:
+            pid = READ.integer(owner.get("pid"), "lock owner.pid", minimum=1)
+        except FieldError:
             return None
-        recorded_start = owner.get("start_time")
-        if not isinstance(recorded_start, int) or isinstance(recorded_start, bool):
+        try:
+            recorded_start = READ.optional(READ.integer, owner.get("start_time"), "lock owner.start_time")
+        except FieldError:
             recorded_start = None
         status = self.probe(pid)
         if same_process(status, recorded_start) is not False:
@@ -370,8 +382,11 @@ class ResourceLock(AbstractContextManager["ResourceLock"]):
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         if not self._held:
             return
-        owner = read_json(self.owner_path, maximum_bytes=OWNER_MAXIMUM_BYTES)
-        if not isinstance(owner, dict) or owner.get("token") != self.token or owner.get("pid") != os.getpid():
+        try:
+            owner = READ.json_object(read_json(self.owner_path, maximum_bytes=OWNER_MAXIMUM_BYTES), "lock owner")
+        except FieldError as exc:
+            raise PersistenceError(f"Lock ownership changed before release: {self.directory}") from exc
+        if owner.get("token") != self.token or owner.get("pid") != os.getpid():
             raise PersistenceError(f"Lock ownership changed before release: {self.directory}")
         self._held = False
         try:

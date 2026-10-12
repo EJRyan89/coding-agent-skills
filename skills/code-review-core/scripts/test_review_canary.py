@@ -22,8 +22,9 @@ import git_client
 import review_canary
 import review_fixture
 from git_client import subprocess_runner
-from review_canary import FixtureError, fixture_change, validate_fixture_pull, validate_prior_record
+from review_canary import FixtureError, FixtureFieldError, fixture_change, validate_fixture_pull, validate_prior_record
 from review_operation import PULL_FIELDS, validate_canary_pull
+from typed_fields import FieldError
 
 PULL: dict[str, Any] = {
     "schema_version": 1,
@@ -99,35 +100,131 @@ class PullTests(unittest.TestCase):
         def changed(**fields: Any) -> dict[str, Any]:
             return {**copy.deepcopy(PULL), **fields}
 
+        def threaded(**fields: Any) -> dict[str, Any]:
+            return changed(threads=[{**PULL["threads"][0], **fields}])
+
         thread = PULL["threads"][0]
-        cases = {
-            "not an object": ([], "must have exactly"),
-            "a missing field": ({key: value for key, value in PULL.items() if key != "head_ref"}, "must have exactly"),
-            "an extra field": (changed(description="Text."), "must have exactly"),
-            "a body that is not text": (changed(body=None), "body must be a string"),
-            "a later schema": (changed(schema_version=2), "schema_version must be 1"),
-            "a boolean schema": (changed(schema_version=True), "schema_version must be 1"),
-            "a float schema": (changed(schema_version=1.0), "schema_version must be 1"),
-            "a short repository": (changed(repository="inventory"), "repository"),
-            "number zero": (changed(number=0), "number must be a positive integer"),
-            "a boolean number": (changed(number=True), "number must be a positive integer"),
-            "a blank title": (changed(title=" "), "title must be text"),
-            "a base ref that is not text": (changed(base_ref=1), "base_ref must be text"),
-            "threads that are not a list": (changed(threads={}), "threads must be a list"),
+        # A field of the wrong kind raises FixtureFieldError; a value of the right kind that breaks a rule raises
+        # FixtureError.
+        field, rule = FixtureFieldError, FixtureError
+        first = "fixture-pull.threads[0]"
+        line = f"{first}.line must be an integer of at least 1 or null, found"
+        cases: dict[str, tuple[Any, type[FixtureError], str]] = {
+            "not an object": ([], field, "fixture-pull must be an object, found an array"),
+            "null": (None, field, "fixture-pull must be an object, found null"),
+            "a missing field": (
+                {key: value for key, value in PULL.items() if key != "head_ref"},
+                field,
+                "fixture-pull must be an object with field head_ref, found an object without it",
+            ),
+            "an extra field": (
+                changed(description="Text."),
+                field,
+                'fixture-pull must be an object of known fields, found unknown field "description"',
+            ),
+            "a body that is not text": (changed(body=None), field, "fixture-pull.body must be a string, found null"),
+            "a later schema": (changed(schema_version=2), rule, "pull.json schema_version must be 1"),
+            "a boolean schema": (
+                changed(schema_version=True),
+                field,
+                "fixture-pull.schema_version must be an integer, found boolean true",
+            ),
+            "a float schema": (
+                changed(schema_version=1.0),
+                field,
+                "fixture-pull.schema_version must be an integer, found number 1.0",
+            ),
+            "a string schema": (
+                changed(schema_version="1"),
+                field,
+                'fixture-pull.schema_version must be an integer, found string "1"',
+            ),
+            "a short repository": (
+                changed(repository="inventory"),
+                rule,
+                "pull.json repository: Invalid repository identity: 'inventory'",
+            ),
+            "a repository that is not text": (
+                changed(repository=["Example/Inventory"]),
+                field,
+                "fixture-pull.repository must be a non-empty string, found an array",
+            ),
+            "number zero": (
+                changed(number=0),
+                field,
+                "fixture-pull.number must be an integer of at least 1, found integer 0",
+            ),
+            "a boolean number": (
+                changed(number=True),
+                field,
+                "fixture-pull.number must be an integer of at least 1, found boolean true",
+            ),
+            "a string number": (
+                changed(number="7"),
+                field,
+                'fixture-pull.number must be an integer of at least 1, found string "7"',
+            ),
+            "a blank title": (
+                changed(title=" "),
+                field,
+                "fixture-pull.title must be a non-empty string, found a blank string",
+            ),
+            "a base ref that is not text": (
+                changed(base_ref=1),
+                field,
+                "fixture-pull.base_ref must be a non-empty string, found integer 1",
+            ),
+            "a head ref that is an object": (
+                changed(head_ref={}),
+                field,
+                "fixture-pull.head_ref must be a non-empty string, found an object",
+            ),
+            "threads that are not a list": (
+                changed(threads={}),
+                field,
+                "fixture-pull.threads must be an array, found an object",
+            ),
+            "a thread that is not an object": (
+                changed(threads=["comment"]),
+                field,
+                f'{first} must be an object, found string "comment"',
+            ),
             "a thread without a url": (
                 changed(threads=[{key: value for key, value in thread.items() if key != "url"}]),
-                r"threads\[0\] must have exactly",
+                field,
+                f"{first} must be an object with field url, found an object without it",
             ),
-            "a thread at line zero": (changed(threads=[{**thread, "line": 0}]), r"threads\[0\].line"),
+            "a thread at line zero": (threaded(line=0), field, f"{line} integer 0"),
+            "a thread at line 1.0": (threaded(line=1.0), field, f"{line} number 1.0"),
             "a thread whose outdated is not a boolean": (
-                changed(threads=[{**thread, "outdated": "no"}]),
-                r"threads\[0\].outdated must be a boolean",
+                threaded(outdated="no"),
+                field,
+                f'{first}.outdated must be a boolean, found string "no"',
             ),
-            "a thread with a blank body": (changed(threads=[{**thread, "body": ""}]), r"threads\[0\].body"),
+            "a thread with a blank body": (
+                threaded(body=""),
+                field,
+                f"{first}.body must be a non-empty string, found an empty string",
+            ),
+            "a thread without an author": (
+                threaded(author=None),
+                field,
+                f"{first}.author must be a non-empty string, found null",
+            ),
+            "a manifest path that is not text": (
+                changed(manifest_path=5),
+                field,
+                "fixture-pull.manifest_path must be a non-empty string, found integer 5",
+            ),
         }
-        for name, (value, message) in cases.items():
-            with self.subTest(name), self.assertRaisesRegex(FixtureError, message):
-                validate_fixture_pull(value)
+        for name, (value, error, message) in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(FixtureError) as caught:
+                    validate_fixture_pull(value)
+                self.assertEqual((error, message), (type(caught.exception), str(caught.exception)))
+
+    def test_a_field_error_is_a_fixture_error(self) -> None:
+        self.assertTrue(issubclass(FixtureFieldError, FieldError) and issubclass(FixtureFieldError, FixtureError))
 
 
 class FixtureChangeTests(unittest.TestCase):
@@ -382,8 +479,13 @@ class FixtureChangeTests(unittest.TestCase):
 
     def test_an_invalid_pull_json_is_refused_before_any_repository_exists(self) -> None:
         directory = write_fixture(self.root / "fixture", {"a.txt": b"a\n"}, {"a.txt": b"b\n"}, pull={"number": 1})
-        with self.assertRaisesRegex(FixtureError, "must have exactly"), fixture_change(directory, subprocess_runner):
+        with self.assertRaises(FixtureFieldError) as caught, fixture_change(directory, subprocess_runner):
             pass
+        self.assertEqual(
+            "fixture-pull must be an object with fields base_ref, head_ref, repository, schema_version, threads, "
+            "title, found an object without them",
+            str(caught.exception),
+        )
         self.assertEqual([], list(self.temporary.iterdir()))
 
 
@@ -405,8 +507,10 @@ class PriorRecordTests(unittest.TestCase):
                 record["artifacts"][field] = "a" * 40
                 with self.assertRaises(FixtureError) as caught:
                     validate_prior_record(record, repository=self.repository, number=self.number)
+                self.assertIs(FixtureError, type(caught.exception))
                 self.assertEqual(
-                    f"The prior record is invalid: artifacts.{field} must be a lowercase SHA-256 hash",
+                    f"The prior record is invalid: record.artifacts.{field} must be a lowercase hexadecimal digest of "
+                    "64 characters, found a string of 40 characters",
                     str(caught.exception),
                 )
 

@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 import re
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 from review_config import validate_repository_identity
 from review_io import PersistenceError, ResourceLock
 from review_records import canonical_json, ledger_history, sha256_text, validate_record_pair, write_record_pair
+from typed_fields import FieldError, FieldReader
 
 
 class ArchiveError(RuntimeError):
     pass
+
+
+class ArchiveFieldError(FieldError, ArchiveError):
+    """An archive argument of the wrong kind."""
+
+
+READ = FieldReader(ArchiveFieldError)
 
 
 def pulls_directory(root: Path, repository: str) -> Path:
@@ -23,9 +34,7 @@ def pulls_directory(root: Path, repository: str) -> Path:
 
 def pull_directory(root: Path, repository: str, pull_number: int) -> Path:
     pulls = pulls_directory(root, repository)
-    if not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1:
-        raise ArchiveError("Pull number must be a positive integer")
-    return pulls / str(pull_number)
+    return pulls / str(READ.integer(pull_number, "pull number", minimum=1))
 
 
 def record_files(root: Path, repository: str) -> list[Path]:
