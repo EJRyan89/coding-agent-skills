@@ -113,7 +113,11 @@ def append_line(path: Path, line: str) -> None:
 
 
 def extract_archive(archive: Path, destination: Path) -> None:
-    """Extract a tar archive into destination, refusing, as tarfile's data filter does, any member that is a device,
-    an absolute path, or a path or link that leads outside destination."""
+    """Extract a tar archive into destination through tarfile's data filter.
+
+    The filter strips every leading slash or backslash from a member's name, so `/etc/passwd` lands at
+    `destination/etc/passwd` and a UNC name such as `//server/share/x` at `destination/server/share/x`. It refuses a
+    name still absolute after that, one with a drive such as `C:/Windows/x`, a device, and any member or link that
+    resolves outside destination."""
     with tarfile.open(archive) as handle:
         handle.extractall(destination, filter="data")
