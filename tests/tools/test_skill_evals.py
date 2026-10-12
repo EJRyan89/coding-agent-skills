@@ -1620,6 +1620,36 @@ class ResultsTests(unittest.TestCase):
             rows,
         )
 
+    def test_a_scenario_no_reviewer_ran_on_is_not_run_and_left_out_of_the_count(self) -> None:
+        scenarios = [Scenario("review-document", name, Path(name), "initial", None, ()) for name in ("a", "b", "c")]
+        run = skill_evals.Run
+        session = frozenset({"claude-opus-5-5"})
+        reviewer = frozenset({"claude-haiku-5-5"})
+        runs = {
+            ("a", "haiku"): run({}, None, reviewer, session),
+            # The session refused before any reviewer started, as an unsupported PDF parser makes it.
+            ("b", "haiku"): run(None, "the run recorded no review", frozenset(), session),
+            # A reviewer ran and the run still recorded nothing: that is the model's run, and it counts.
+            ("c", "haiku"): run(None, "the run recorded no review; timed out", reviewer, session),
+        }
+        outcomes = [
+            outcome("a", "haiku"),
+            outcome("a", "haiku", "x"),
+            outcome("b", "haiku", "the run recorded no review"),
+            outcome("b", "haiku", "the run recorded no review"),
+            outcome("c", "haiku", "the run recorded no review; timed out"),
+        ]
+        rows = skill_evals.result_rows(
+            "review-document", scenarios, ["haiku"], outcomes, runs, "2.1.291", datetime.date(2026, 10, 8)
+        )
+        self.assertEqual(
+            [
+                "| review-document | haiku | claude-haiku-5-5 | 1/3 | a 1/2, b not run, c 0/1 | claude-opus-5-5 "
+                "| 2.1.291 | 2026-10-08 |"
+            ],
+            rows,
+        )
+
     def test_the_skills_rows_are_replaced_and_every_other_kept(self) -> None:
         rows = ["| review-prs | haiku | h | 1/1 | a 1/1 | s | 2.1.291 | 2026-10-08 |"]
         original = RESULTS_TEXT.split("\n")

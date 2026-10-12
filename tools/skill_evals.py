@@ -1032,24 +1032,34 @@ def result_rows(
     today: datetime.date,
 ) -> list[str]:
     """One row per model: the model IDs its reviewers ran on, its expectations passed, and the run's versions; a
-    model none of whose reviewers ran is recorded as not run, with the first reason."""
+    model none of whose reviewers ran is recorded as not run, with the first reason. A scenario none of whose
+    reviewers ran on a model, such as one the session refused before starting any, holds no judgment of that model,
+    so its cell says `not run` and its expectations are left out of the model's count."""
     rows = []
     for model in models:
         mine = [runs[(scenario.name, model)] for scenario in scenarios if (scenario.name, model) in runs]
         reviewers = sorted({name for run in mine for name in run.reviewers})
         session = ", ".join(sorted({name for run in mine for name in run.session})) or "unknown"
         theirs = [outcome for outcome in outcomes if outcome.model == model]
-        passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         if reviewers:
+            unreviewed = {
+                scenario.name
+                for scenario in scenarios
+                if (scenario.name, model) in runs and not runs[(scenario.name, model)].reviewers
+            }
+            theirs = [outcome for outcome in theirs if outcome.scenario not in unreviewed]
             identifier = ", ".join(reviewers)
             detail = ", ".join(
-                f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
+                f"{scenario.name} not run"
+                if scenario.name in unreviewed
+                else f"{scenario.name} {sum(1 for o in theirs if o.scenario == scenario.name and o.failure is None)}"
                 f"/{sum(1 for o in theirs if o.scenario == scenario.name)}"
                 for scenario in scenarios
             )
         else:
             identifier = "not run"
             detail = next((outcome.failure for outcome in theirs if outcome.failure), "no run")
+        passed = f"{sum(1 for outcome in theirs if outcome.failure is None)}/{len(theirs)}"
         cells = [skill, model, identifier, passed, detail, session, version, today.isoformat()]
         rows.append(f"| {' | '.join(_cell(cell) for cell in cells)} |")
     return rows
