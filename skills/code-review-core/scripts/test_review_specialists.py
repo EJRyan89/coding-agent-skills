@@ -28,7 +28,8 @@ from review_runtime import (
     validate_adapter_manifest,
     write_adapter_request,
 )
-from test_review_process import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
+from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree
+from test_review_process import ended
 
 DIFF = (
     "diff --git a/db/Procs.sql b/db/Procs.sql\r\n"
@@ -2036,15 +2037,15 @@ class EndToEndTests(SpecialistFixture, GitTestCase):
             return process
 
         with (
-            mock.patch("review_process._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
+            mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
             mock.patch.object(rs.subprocess, "Popen", side_effect=start),
             self.assertRaises(rs.SpecialistError) as raised,
         ):
             self.plan()
         self.assertRegex(
             str(raised.exception),
-            r"^Condition script could not run: tools/window\.py: Cannot hold the command in a Windows job object, so "
-            r"it was ended: \[WinError 5\] AssignProcessToJobObject failed: ",
+            r"^Condition script could not run: tools/window\.py: it could not join a Windows job object: "
+            r"AssignProcessToJobObject failed: .+ \(Windows error 5\)$",
         )
         self.assertEqual(1, len(processes))
         self.assertIsNotNone(processes[0].returncode, "the condition was ended and reaped before the refusal")

@@ -27,7 +27,8 @@ from git_test_base import GitTestCase
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
-from test_review_process import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree, ended
+from test_job_tree import SHORT_LIMIT_SECONDS, FailingKernel, SignalledTree
+from test_review_process import ended
 
 HEAD = "b" * 40
 SOURCE = b"class Example {}\n"
@@ -1037,9 +1038,9 @@ class CopilotProcessTests(GitTestCase):
             return process
 
         with (
-            mock.patch("review_process._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
+            mock.patch("job_tree._kernel32", return_value=FailingKernel("AssignProcessToJobObject")),
             mock.patch("bounded_process.subprocess.Popen", side_effect=start),
-            self.assertRaises(OSError) as raised,
+            self.assertRaises(RuntimeContractError) as raised,
         ):
             review_hosts._run_bounded(
                 review_hosts.subprocess_runner,
@@ -1051,8 +1052,8 @@ class CopilotProcessTests(GitTestCase):
             )
         self.assertRegex(
             str(raised.exception),
-            r"^Cannot hold the command in a Windows job object, so it was ended: \[WinError 5\] "
-            r"AssignProcessToJobObject failed: ",
+            r"^GitHub Copilot CLI could not run: it could not join a Windows job object: "
+            r"AssignProcessToJobObject failed: .+ \(Windows error 5\)$",
         )
         self.assertEqual(1, len(processes))
         self.assertIsNotNone(processes[0].returncode, "Copilot was ended and reaped before the refusal")

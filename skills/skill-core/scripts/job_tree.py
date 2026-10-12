@@ -6,7 +6,8 @@ it has loaded enough to start a program of its own, and every process it then st
 implemented.
 
 A command still running that cannot join is killed and refused with `JobRefused`, never run without the job: its
-caller relies on ending everything it starts. One already gone when it would join has nothing left to hold.
+caller relies on ending everything it starts. One already gone when it would join has nothing left to hold. A job
+that can neither end its processes nor be closed leaves `hold` with an OSError saying they may still run.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ PROCESS_TERMINATE = 0x0001
 PROCESS_SET_QUOTA = 0x0100
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+CREATE_NO_WINDOW = 0x08000000
 # Seconds to wait for a refused command, once killed, to be reported gone.
 KILL_WAIT_SECONDS = 10.0
 
@@ -60,10 +62,16 @@ class _ExtendedLimitInformation(ctypes.Structure):
 
 
 class JobTree:
-    """The process tree of one command: see the module's description."""
+    """The process tree of one command: see the module's description. With `hidden_window`, a console command starts
+    without a window of its own."""
+
+    hidden_window = False
+
+    def __init__(self, *, hidden_window: bool = False) -> None:
+        self.hidden_window = hidden_window
 
     def start_options(self) -> dict[str, Any]:
-        return {}
+        return {"creationflags": CREATE_NO_WINDOW} if self.hidden_window else {}
 
     @contextmanager
     def hold(self, process: subprocess.Popen[Any]) -> Iterator[None]:
@@ -79,9 +87,7 @@ class JobTree:
             yield
         finally:
             if job is not None:
-                # Ends every process of the job still running, then closes it.
-                _kernel32().TerminateJobObject(job, 1)
-                _kernel32().CloseHandle(job)
+                _end_job(job)
 
 
 @functools.cache
@@ -104,6 +110,18 @@ def _failed(call: str) -> OSError:
     error = ctypes.get_last_error()  # type: ignore[attr-defined]  # Windows only
     reason = ctypes.FormatError(error).strip()  # type: ignore[attr-defined]  # Windows only
     return OSError(f"{call} failed: {reason} (Windows error {error})")
+
+
+def _end_job(job: int) -> None:
+    """End every process of the job still running, and close it. Either ends them, since the job kills its processes
+    when its last handle closes, so this raises only when both fail and they may still run."""
+    kernel32 = _kernel32()
+    if kernel32.TerminateJobObject(job, 1):
+        kernel32.CloseHandle(job)  # its processes are ended, so a failure leaks only the handle
+        return
+    error = _failed("TerminateJobObject")
+    if not kernel32.CloseHandle(job):
+        raise OSError(f"The job's processes may still run: {error}; {_failed('CloseHandle')}") from error
 
 
 def job_holding(pid: int) -> int:

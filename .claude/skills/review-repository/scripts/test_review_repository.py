@@ -81,6 +81,7 @@ class ManifestTests(GitTestCase):
             "skills/skill-core/scripts/bounded_process.py": {"trust-boundary"},
             "skills/skill-core/scripts/git_client.py": {"trust-boundary"},
             "skills/skill-core/scripts/github_client.py": {"trust-boundary"},
+            "skills/skill-core/scripts/job_tree.py": {"trust-boundary"},
             "skills/skill-core/scripts/pdf_tool.py": {"trust-boundary", "upgrade-notes"},
             "skills/skill-core/scripts/typed_fields.py": {"trust-boundary"},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
@@ -157,7 +158,7 @@ class ManifestTests(GitTestCase):
             )
         ] + [
             "skills/skill-core/scripts/" + name + ".py"
-            for name in ("bounded_process", "git_client", "github_client", "pdf_tool", "typed_fields")
+            for name in ("bounded_process", "git_client", "github_client", "job_tree", "pdf_tool", "typed_fields")
         ]
         trust = next(item for item in MANIFEST["specialists"] if item["id"] == "trust-boundary")
         patterns = [re.compile(pattern) for pattern in trust["include"]]

@@ -30,6 +30,7 @@ import review_state
 from git_client import GitError, GitResult
 from git_test_base import GitTestCase
 from github_client import CommandResult, subprocess_runner
+from job_tree import JobRefused
 from review_archive import latest_record, list_versions, pull_directory
 from review_config import (
     ConfigurationError,
@@ -46,14 +47,12 @@ from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
 from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
+from test_job_tree import SHORT_LIMIT_SECONDS, SignalledTree
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
-from test_review_process import SHORT_LIMIT_SECONDS, SignalledTree
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
-# How review_process.JobTree refuses a command no Windows job object can hold, after ending it.
-UNHELD = (
-    "Cannot hold the command in a Windows job object, so it was ended: [WinError 5] AssignProcessToJobObject failed"
-)
+# How skill-core's JobTree refuses a command no Windows job object can hold, after ending it.
+UNHELD = "it could not join a Windows job object: AssignProcessToJobObject failed: Access is denied. (Windows error 5)"
 
 
 def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
@@ -2809,7 +2808,7 @@ class CopilotHostTests(PipelineFixture):
         if self.review == "failed":
             return ProcessResult(1, "", "boom")
         if self.review == "unheld":
-            raise OSError(UNHELD)
+            raise JobRefused(UNHELD)
         if self.review == "partial":
             staging.write_text('{"protocol_version": 1, "findi', encoding="utf-8")
         else:
@@ -2922,7 +2921,7 @@ class CopilotHostTests(PipelineFixture):
         self.run_main("dispatch", "--run", self.run_path)
         self.assertEqual(0, self.run_host()[0])
         self.assertEqual(
-            (1, f"FAILED fixture-copilot: {UNHELD}\n", ""),
+            (1, f"FAILED fixture-copilot: GitHub Copilot CLI could not run: {UNHELD}\n", ""),
             self.run_main("wait", "--run", self.run_path, "--timeout", "90"),
         )
         self.assertFalse(self.result.exists())

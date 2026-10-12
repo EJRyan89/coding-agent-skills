@@ -25,8 +25,9 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import run_bounded
+from job_tree import JobRefused, JobTree
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import JobTree, ProcessStatus, path_programs, same_process, shell_script, winget_copilot
+from review_process import ProcessStatus, path_programs, same_process, shell_script, winget_copilot
 from review_runtime import (
     READ,
     SOURCE_SNAPSHOT_MANIFEST,
@@ -88,7 +89,8 @@ COMMANDS_ALLOWED = {
 def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
     """Run Copilot CLI with `stdin` as all it reads, without a window, keeping at most COPILOT_OUTPUT_BYTES of each
     output stream with the cut named; at COPILOT_TIMEOUT_SECONDS it is killed and subprocess.TimeoutExpired raised.
-    Every process it started is ended with it either way."""
+    Every process it started is ended with it either way, and one no Windows job object can hold is ended before it
+    runs and refused with JobRefused."""
     finished = run_bounded(
         arguments,
         COPILOT_TIMEOUT_SECONDS,
@@ -216,9 +218,12 @@ def _run_bounded(
     diagnostic_path: Path,
     stdin: str = "",
 ) -> ProcessResult:
-    """Run Copilot; a timeout keeps its partial output and becomes a contract error."""
+    """Run Copilot; a timeout keeps its partial output and becomes a contract error, and so does a Copilot that no
+    Windows job object could hold, which was ended before it ran."""
     try:
         return runner(arguments, cwd, environment, stdin)
+    except JobRefused as exc:
+        raise RuntimeContractError(f"GitHub Copilot CLI could not run: {exc}") from exc
     except subprocess.TimeoutExpired as exc:
         # The partial output is bytes or text depending on the platform, or absent.
         stdout, stderr = (

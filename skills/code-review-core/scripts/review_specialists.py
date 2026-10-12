@@ -22,11 +22,11 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import run_bounded
+from job_tree import JobTree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
 from review_documents import LINE_UNSAFE
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import JobTree
 from review_records import (
     SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
