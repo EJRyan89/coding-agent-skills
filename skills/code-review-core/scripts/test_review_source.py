@@ -294,6 +294,33 @@ class LazySnapshotTests(LazySnapshotFixture):
         with self.assertRaisesRegex(RuntimeContractError, r"extra=\['src/planted.py'\]"):
             self.fetch("src/deep/nested/store.py")
 
+    def test_a_held_file_that_changed_is_refused_by_name_before_the_checkout_is_asked(self) -> None:
+        fetched = Path(self.fetch("src/unchanged.py"))
+        changed = b"def helper(value):\n    return value * 3\n"
+        fetched.write_bytes(changed)
+        asked: list[str] = []
+
+        def reader(checkout: Path, blobs: Sequence[str]) -> list[bytes]:
+            asked.extend(blobs)
+            return [UNCHANGED.encode() for _ in blobs]
+
+        with self.assertRaises(RuntimeContractError) as raised:
+            self.fetch("src/unchanged.py", blob_reader=reader)
+        self.assertEqual("Source snapshot file does not match its blob: src/unchanged.py", str(raised.exception))
+        self.assertEqual([], asked)
+        self.assertEqual(changed, fetched.read_bytes())
+
+    def test_a_blob_the_checkout_answers_wrongly_is_named_with_its_id(self) -> None:
+        def wrong(checkout: Path, blobs: Sequence[str]) -> list[bytes]:
+            return [b"def helper(value):\n    return value * 3\n" for _ in blobs]
+
+        with self.assertRaises(RuntimeContractError) as raised:
+            self.fetch("src/unchanged.py", blob_reader=wrong)
+        self.assertEqual(
+            'The checkout did not return blob 2e003f7a6d1fae7c935efcf0adef7cfc4346fb66 of "src/unchanged.py"',
+            str(raised.exception),
+        )
+
     def test_a_manifest_whose_fetchable_paths_are_malformed_fails_verification(self) -> None:
         path = self.source / "source-snapshot.json"
         original = json.loads(path.read_text(encoding="utf-8"))
