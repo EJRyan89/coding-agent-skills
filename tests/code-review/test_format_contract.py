@@ -757,6 +757,7 @@ def manifest_fixtures() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                 "exclude": [],
                 "resources": [],
                 "when": None,
+                "shares_files": True,
             },
         ],
         "conditions": {
