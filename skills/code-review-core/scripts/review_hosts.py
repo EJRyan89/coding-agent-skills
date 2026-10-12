@@ -15,7 +15,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
@@ -27,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from bounded_process import run_bounded
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import JobTree, ProcessStatus, same_process, shell_script, winget_copilot
+from review_process import JobTree, ProcessStatus, path_programs, same_process, shell_script, winget_copilot
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
@@ -225,18 +224,20 @@ def _run_bounded(
 
 
 def find_copilot() -> str:
-    """Copilot CLI's own program: the one PATH names, else WinGet's. An npm install puts a `copilot.cmd` shim on PATH,
-    which Windows would start through cmd.exe, so a shell script is never returned."""
-    found = shutil.which("copilot")
-    if found and not shell_script(found):
-        return found
+    """Copilot CLI's own program: the first PATH names, else WinGet's. An npm install puts a `copilot.cmd` shim on
+    PATH, which Windows would start through cmd.exe, so the lookup passes over every shell script, wherever it stands
+    on PATH, and never returns one."""
+    found = path_programs("copilot")
+    program = next((path for path in found if not shell_script(path)), None)
+    if program is not None:
+        return program
     candidate = winget_copilot()
     if candidate is not None:
         return str(candidate)
     if found:
         raise RuntimeContractError(
-            f"GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: {found}; install "
-            "the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
+            "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+            f"{', '.join(found)}; install the program from WinGet (winget install GitHub.Copilot) or the GitHub release"
         )
     raise RuntimeContractError("GitHub Copilot CLI is not available")
 

@@ -1410,6 +1410,41 @@ class CopilotCommandLineTests(AdversarialFixture):
         with mock.patch.dict(os.environ, environment):
             self.assertEqual(str(winget), review_hosts.find_copilot(), "a WinGet program beats a shim on PATH")
 
+    def test_the_lookup_walks_path_past_every_shell_script_to_the_program(self) -> None:
+        npm = self.root / "npm folder"
+        release = self.root / "release folder"
+        empty = self.root / "empty folder"
+        for folder in (npm, release, empty):
+            folder.mkdir()
+        for shim in (npm / "copilot.cmd", npm / "copilot.ps1"):
+            shim.write_text('@"%~dp0node.exe" "%~dp0copilot.js" %*\n', encoding="utf-8")
+        program = release / "copilot.exe"
+        program.write_bytes(b"fixture")
+        # No WinGet program, so only PATH can answer.
+        environment = {"PATHEXT": ".COM;.EXE;.BAT;.CMD;.PS1", "LOCALAPPDATA": str(self.root / "local app data")}
+
+        def lookup(*folders: Path) -> str:
+            path = os.pathsep.join(str(folder) for folder in folders)
+            with mock.patch.dict(os.environ, {**environment, "PATH": path}):
+                return review_hosts.find_copilot()
+
+        self.assertEqual(
+            str(npm / "copilot.CMD"), shutil.which("copilot", path=os.pathsep.join((str(npm), str(release))))
+        )
+        self.assertEqual(str(release / "copilot.EXE"), lookup(npm, release), "the program later on PATH is found")
+        self.assertEqual(str(release / "copilot.EXE"), lookup(release, npm), "the program first on PATH is found")
+        with self.assertRaises(review_runtime.RuntimeContractError) as refused:
+            lookup(empty, npm)
+        self.assertEqual(
+            "GitHub Copilot CLI on PATH is a shell script, which Windows starts through a shell: "
+            f"{npm / 'copilot.CMD'}, {npm / 'copilot.PS1'}; install the program from WinGet "
+            "(winget install GitHub.Copilot) or the GitHub release",
+            str(refused.exception),
+        )
+        with self.assertRaises(review_runtime.RuntimeContractError) as missing:
+            lookup(empty)
+        self.assertEqual("GitHub Copilot CLI is not available", str(missing.exception))
+
 
 class BranchNameTests(AdversarialFixture):
     def test_a_branch_name_is_never_a_command_argument_or_prompt_text_and_the_report_shows_it_as_code(self) -> None:

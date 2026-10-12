@@ -519,6 +519,9 @@ class SkillScriptsFixtures(unittest.TestCase):
                 'GitHubClient().run(["api"])\n',
                 "skills/alpha/scripts/git.py": 'import git_client\n\ngit_client.GitClient().run(["status"])\n',
                 "skills/alpha/scripts/lookup.py": 'import shutil as sh\n\nPROGRAM = sh.which("copilot")\n',
+                # code-review-core's PATH walk looks a program up as shutil.which does.
+                "skills/alpha/scripts/walked.py": "from review_process import path_programs\n\n"
+                'PROGRAMS = path_programs("ruby")\n',
                 # Neither a string that reads like a call nor a list of other words is a command.
                 "skills/alpha/scripts/quiet.py": 'TEXT = "subprocess.run([\\"zsh\\"])"\nLABELS = ["zip", "unzip"]\n'
                 'print(["python", "-B"])\n',
@@ -532,7 +535,7 @@ class SkillScriptsFixtures(unittest.TestCase):
                     "skill alpha runs gh without declaring it in tools",
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {doc}"
-                        for name in ("jq", "node", "perl", "rg", "yq")
+                        for name in ("jq", "node", "perl", "rg", "ruby", "yq")
                     ),
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),
