@@ -122,6 +122,16 @@ def start_detached(arguments: Sequence[str], cwd: Path, log_path: Path) -> int:
     return pid
 
 
+# What Windows starts through a shell rather than as a program: cmd.exe runs a .bat or .cmd file and parses its whole
+# command line by its own rules, which Python's argument quoting does not hold against, and PowerShell runs a .ps1.
+SHELL_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".ps1"})
+
+
+def shell_script(path: str) -> bool:
+    """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program."""
+    return Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
+
+
 def winget_copilot() -> Path | None:
     """Copilot CLI in the folder WinGet links the commands it installs into, which PATH may not include; None when it
     is not there."""
