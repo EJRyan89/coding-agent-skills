@@ -659,18 +659,112 @@ def resolve_reviewer_commit(
     return commit.lower()
 
 
+# The path characters one `git ls-tree` call is given, well inside what a Windows command line holds.
+LS_TREE_PATH_UNITS = 8_000
+
+
+@dataclass(frozen=True)
+class TreeEntry:
+    """One entry of a commit's tree, as `git ls-tree` lists it."""
+
+    mode: str
+    kind: str
+    object_id: str
+
+
+def _ls_tree_calls(paths: Iterable[str]) -> list[list[str]]:
+    """The paths split into as few `git ls-tree` calls as hold them, each within LS_TREE_PATH_UNITS, and none holding
+    a path and a path under it: given both, ls-tree lists the folder's entries rather than the folder itself."""
+    calls: list[list[str]] = []
+    units: list[int] = []
+    for path in dict.fromkeys(paths):
+        size = _utf16_units(path) + 3  # its quotes and the space before it
+        for index, call in enumerate(calls):
+            nested = any(path.startswith(f"{other}/") or other.startswith(f"{path}/") for other in call)
+            if not nested and units[index] + size <= LS_TREE_PATH_UNITS:
+                call.append(path)
+                units[index] += size
+                break
+        else:
+            calls.append([path])
+            units.append(size)
+    return calls
+
+
+def _tree_entries(checkout: Path, commit: str, paths: Iterable[str], runner: Runner) -> dict[str, TreeEntry]:
+    """The entry the commit's tree holds at each path, from `git ls-tree`, which matches each path literally, with no
+    wildcard; a path it does not hold is left out. A call per batch of paths, not per path."""
+    entries: dict[str, TreeEntry] = {}
+    for call in _ls_tree_calls(paths):
+        # -z ends each entry with NUL and quotes no name, so stripping the listing's whitespace never touches a path.
+        listing = _run_git(checkout, runner, "ls-tree", "-z", commit, "--", *call)
+        for record in listing.split("\0"):
+            if not record:
+                continue
+            fields, separator, name = record.partition("\t")
+            parts = fields.split()
+            if not separator or len(parts) != 3 or not GIT_OBJECT_ID.fullmatch(parts[2]):
+                raise RuntimeContractError(f"git ls-tree printed an unexpected entry: {record!r}")
+            if name not in call or name in entries:
+                raise RuntimeContractError(f"git ls-tree listed a path it was not asked for: {name!r}")
+            entries[name] = TreeEntry(*parts)
+    return entries
+
+
+def _regular_blob(entry: TreeEntry | None, relative: str) -> str:
+    """The blob id of a declared reviewer file's tree entry, refusing a missing path, a symbolic link, a folder, and a
+    submodule."""
+    if entry is None:
+        raise RuntimeContractError(f"Declared reviewer file is missing: {relative}")
+    if entry.kind != "blob" or entry.mode == "120000":
+        raise RuntimeContractError(f"Declared reviewer file is not a regular file: {relative}")
+    return entry.object_id
+
+
+def _read_reviewer_blobs(checkout: Path, blobs: dict[str, str], blob_reader: BlobReader) -> dict[str, bytes]:
+    """Each declared reviewer file's exact bytes, read by the blob id its tree entry gave, never by its path again:
+    each id once, and each content must hash to its id. A caller that needs text decodes them inside its own
+    UnicodeError handler."""
+    ids = list(dict.fromkeys(blobs.values()))
+    if not ids:
+        return {}
+    paths = {blob: relative for relative, blob in reversed(blobs.items())}  # the first path naming each id
+    contents: dict[str, bytes] = {}
+    reader = iter(blob_reader(checkout, ids))
+    try:
+        for blob in ids:
+            try:
+                content = next(reader, None)
+            except RuntimeContractError as exc:
+                raise RuntimeContractError(f"Cannot read declared reviewer file: {paths[blob]}") from exc
+            if content is None or not blob_matches(blob, content):
+                raise RuntimeContractError(f"Cannot read declared reviewer file: {paths[blob]}")
+            contents[blob] = content
+    finally:
+        close = getattr(reader, "close", None)
+        if close is not None:  # a generator reader ends its git process
+            close()
+    return {relative: contents[blob] for relative, blob in blobs.items()}
+
+
+def _runner_blob_reader(runner: Runner) -> BlobReader:
+    """A reader of each blob by its id with `git cat-file blob` through `runner`, for a read of one file, where a
+    batch saves no git start."""
+
+    def read(checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
+        for blob in blobs:
+            result = git_in(checkout, runner, "cat-file", "blob", blob)
+            if result.returncode != 0:
+                raise RuntimeContractError(f"The checkout did not return blob {blob}")
+            yield result.output_bytes()
+
+    return read
+
+
 def _read_git_file(checkout: Path, commit: str, relative: str, runner: Runner) -> bytes:
     """The committed blob's exact bytes; a caller that needs text decodes them inside its own UnicodeError handler."""
-    mode_line = _run_git(checkout, runner, "ls-tree", commit, "--", relative)
-    if not mode_line:
-        raise RuntimeContractError(f"Declared reviewer file is missing: {relative}")
-    fields = mode_line.split(None, 3)
-    if len(fields) != 4 or fields[1] != "blob" or fields[0] == "120000":
-        raise RuntimeContractError(f"Declared reviewer file is not a regular file: {relative}")
-    result = git_in(checkout, runner, "show", f"{commit}:{relative}")
-    if result.returncode != 0:
-        raise RuntimeContractError(f"Cannot read declared reviewer file: {relative}")
-    return output_bytes(result.stdout)
+    blob = _regular_blob(_tree_entries(checkout, commit, [relative], runner).get(relative), relative)
+    return _read_reviewer_blobs(checkout, {relative: blob}, _runner_blob_reader(runner))[relative]
 
 
 def load_manifest_from_commit(
@@ -732,6 +826,45 @@ def specialist_guidelines(manifest: dict[str, Any]) -> set[str]:
     return {path for specialist in manifest["specialists"] for path in specialist["resources"]}
 
 
+def _reviewer_contents(
+    checkout: Path,
+    commit: str,
+    declared: list[str],
+    *,
+    runner: Runner,
+    guideline_commit: str | None,
+    guidelines: set[str],
+    local_root: Path | None,
+    local: set[str],
+    blob_reader: BlobReader,
+) -> tuple[dict[str, bytes], dict[str, str]]:
+    """Each declared reviewer file's exact bytes, and the commit each guideline came from.
+
+    local is empty without local_root, and guidelines without guideline_commit. A guideline the base holds in any form
+    is read from the base, and refused there if it is not a regular file; one it lacks, from the trusted commit. Every
+    refusal is raised in declared order before any blob is read.
+    """
+    committed = [relative for relative in declared if relative not in local]
+    at_base: dict[str, TreeEntry] = {}
+    sources: dict[str, str] = {}
+    if guideline_commit is not None:
+        at_base = _tree_entries(checkout, guideline_commit, [path for path in committed if path in guidelines], runner)
+        sources = {path: guideline_commit if path in at_base else commit for path in committed if path in guidelines}
+    trusted = _tree_entries(checkout, commit, [path for path in committed if path not in at_base], runner)
+    entries = {**trusted, **at_base}
+    contents: dict[str, bytes] = {}
+    blobs: dict[str, str] = {}
+    for relative in declared:
+        if local_root is not None and relative in local:
+            source_file = local_root.joinpath(*PurePosixPath(relative).parts)
+            _require_safe_snapshot_path(local_root, source_file)
+            contents[relative] = source_file.read_bytes()
+        else:
+            blobs[relative] = _regular_blob(entries.get(relative), relative)
+    contents.update(_read_reviewer_blobs(checkout, blobs, blob_reader))
+    return contents, sources
+
+
 def materialize_reviewer(
     checkout: Path,
     commit: str,
@@ -741,8 +874,13 @@ def materialize_reviewer(
     runner: Runner = subprocess_runner,
     guideline_commit: str | None = None,
     local_root: Path | None = None,
+    blob_reader: BlobReader | None = None,
 ) -> dict[str, str]:
     """Materialize declared reviewer files from the trusted commit.
+
+    Each commit's entries come from one `git ls-tree` for its files (see `_ls_tree_calls` for when it takes more),
+    and every file's bytes from one `git cat-file --batch` (`blob_reader`, by default `git_blob_reader`), by the blob
+    id its entry gave.
 
     For a specialist manifest, guideline_commit (the pull request's base commit) supplies each specialist
     guideline document it contains, so a pull request into a release branch is reviewed against that
@@ -767,21 +905,20 @@ def materialize_reviewer(
     destination.mkdir(parents=True, exist_ok=True)
     declared = declared_reviewer_files(normalized)
     hashes: dict[str, str] = {}
-    guideline_sources: dict[str, str] = {}
     try:
+        contents, guideline_sources = _reviewer_contents(
+            checkout,
+            commit,
+            declared,
+            runner=runner,
+            guideline_commit=guideline_commit,
+            guidelines=guidelines,
+            local_root=local_root,
+            local=local,
+            blob_reader=git_blob_reader if blob_reader is None else blob_reader,
+        )
         for relative in declared:
-            # local is empty without local_root, and guidelines without guideline_commit.
-            if local_root is not None and relative in local:
-                source_file = local_root.joinpath(*PurePosixPath(relative).parts)
-                _require_safe_snapshot_path(local_root, source_file)
-                content = source_file.read_bytes()
-            else:
-                source = commit
-                if guideline_commit is not None and relative in guidelines:
-                    if _run_git(checkout, runner, "ls-tree", guideline_commit, "--", relative):
-                        source = guideline_commit
-                    guideline_sources[relative] = source
-                content = _read_git_file(checkout, source, relative, runner)
+            content = contents[relative]
             target = destination.joinpath(*PurePosixPath(relative).parts)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
@@ -1642,14 +1779,26 @@ def blob_matches(blob: str, content: bytes) -> bool:
     return bool(GIT_OBJECT_ID.fullmatch(blob)) and _git_blob_id(_blob_algorithm(blob), len(content), [content]) == blob
 
 
-def read_blob(checkout: Path, abbreviation: str, runner: Runner = subprocess_runner) -> bytes:
+def read_blob(
+    checkout: Path, abbreviation: str, runner: Runner = subprocess_runner, *, maximum: int | None = None
+) -> bytes | None:
     """The exact bytes of the blob a diff's `index` line names by its abbreviated id, from the checkout's object store,
-    once the id resolves to exactly one blob and the bytes hash to it."""
+    once the id resolves to exactly one blob and the bytes hash to it.
+
+    With `maximum`, a blob over that many bytes is None: its size is read first, by the full id it resolved to, and its
+    content is never asked for. The size and the content are read by that one id, so they are of one object.
+    """
     if not ABBREVIATED_OBJECT_ID.fullmatch(abbreviation):
         raise RuntimeContractError(f"Not an abbreviated blob id: {abbreviation!r}")
     blob = _run_git(checkout, runner, "rev-parse", "--verify", f"{abbreviation}^{{blob}}").lower()
     if not blob.startswith(abbreviation) or not GIT_OBJECT_ID.fullmatch(blob):
         raise RuntimeContractError(f"Blob {abbreviation} did not resolve exactly")
+    if maximum is not None:
+        size = git_in(checkout, runner, "cat-file", "-s", blob)
+        if size.returncode != 0 or not re.fullmatch(r"[0-9]+", size.stdout.strip()):
+            raise RuntimeContractError(f"The checkout did not return the size of blob {blob}")
+        if int(size.stdout.strip()) > maximum:
+            return None
     result = git_in(checkout, runner, "cat-file", "blob", blob)
     content = result.output_bytes()
     if result.returncode != 0 or not blob_matches(blob, content):
