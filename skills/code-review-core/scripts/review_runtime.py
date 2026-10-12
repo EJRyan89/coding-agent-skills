@@ -122,7 +122,9 @@ SPECIALIST_KEYS = {"id", "category", "profile", "include", "exclude", "resources
 # `inherit` to use the session's model whatever the profile says. `effort` reaches reviewers the Workflow tool starts.
 # Either may be null, which validates to an absent key, so a maintainer can keep both keys in the manifest and set or
 # clear them without removing them; the configuration's own `reviewer_effort` takes null the same way.
-OPTIONAL_SPECIALIST_KEYS = {"model", "effort"}
+# `shares_files`, when true, has the specialist review its matched files beside whoever else reviews them: its matches
+# take no file from the generic reviewer, skip none when its condition is closed, and own no prior finding or comment.
+OPTIONAL_SPECIALIST_KEYS = {"model", "effort", "shares_files"}
 MODEL_ALIASES = frozenset({"sonnet", "opus", "haiku", "fable"})
 # The runtimes whose native delegation starts a subagent on one of MODEL_ALIASES. Codex's takes only its own model
 # identifiers, so there a reviewer starts on the session's model.
@@ -385,6 +387,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
         READ.json_object(specialist, path, required=SPECIALIST_KEYS, optional=OPTIONAL_SPECIALIST_KEYS)
         model = READ.optional(READ.one_of, specialist.get("model"), f"{path}.model", MODEL_ALIASES | {"inherit"})
         effort = READ.optional(READ.one_of, specialist.get("effort"), f"{path}.effort", REVIEWER_EFFORTS)
+        shares = READ.optional(READ.boolean, specialist.get("shares_files"), f"{path}.shares_files")
         identity = READ.string(specialist["id"], f"{path}.id")
         if not SLUG.fullmatch(identity) or identity in seen | {GENERIC_SPECIALIST}:
             raise RuntimeContractError(f"{path}.id is invalid or duplicated")
@@ -404,6 +407,7 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
                 "when": when,
                 **({"model": model} if model is not None else {}),
                 **({"effort": effort} if effort is not None else {}),
+                **({"shares_files": True} if shares else {}),
             }
         )
     return {

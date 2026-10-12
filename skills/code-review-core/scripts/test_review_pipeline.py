@@ -3450,6 +3450,27 @@ class ReviewerSourceTests(PipelineFixture):
         self.assertEqual((1, ""), (code, err))
         self.assertIn("FAILED Declared reviewer file is missing: .claude/agents/missing.md", out)
 
+    def test_a_condition_reads_the_diff_and_writes_its_file_where_validation_and_a_review_say(self) -> None:
+        # It opens only on the pull request's own diff, which its environment names, and writes a file there too.
+        reading = (
+            "import os, sys\nfrom pathlib import Path\n"
+            "diff = Path(os.environ['CODE_REVIEW_DIFF_FILE']).read_text(encoding='utf-8')\n"
+            "Path(os.environ['CODE_REVIEW_CONDITION_OUTPUT']).write_bytes(b'app/service.py is named\\n')\n"
+            "sys.exit(0 if 'diff --git a/app/service.py b/app/service.py' in diff else 1)\n"
+        )
+        manifest = self.local_manifest()
+        (manifest.parent / "window.py").write_text(reading, encoding="utf-8")
+        self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))
+        code, out, err = self.run_main("validate-reviewer", "--repository", REPOSITORY, "--pull", "12")
+        self.assertEqual(0, code, err)
+        self.assertIn("CONDITION window open", out.splitlines())
+        self.assertEqual([], list(self.temporary.iterdir()), "validation leaves no files behind")
+        ready = self.prepare()
+        role = next(role for role in ready["roles"] if role["id"] == "python-reviewer")
+        given = ready["run"] / "work" / "python-reviewer.condition.txt"
+        self.assertEqual(b"app/service.py is named\n", given.read_bytes())
+        self.assertIn(f"\nCONDITION_FILE={given}\n", Path(role["prompt_file"]).read_text(encoding="utf-8"))
+
     def test_a_closed_window_leaves_only_unmatched_files_to_the_generic_reviewer(self) -> None:
         manifest = self.local_manifest()
         self.configure(self.skill_reviewer(".claude/agents/team-review.md", manifest=str(manifest)))

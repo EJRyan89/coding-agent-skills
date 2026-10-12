@@ -1497,12 +1497,14 @@ def _route_condition(
     manifest: dict[str, Any],
     source: Path,
     work: Path,
+    diff_file: Path,
     results: dict[str, bool],
     services: Services,
     exclude: Sequence[str] = (),
 ) -> bool:
     """Evaluate one routing condition on the pull request's source snapshot, taken on first use as a review takes it,
-    and record it: lazy, holding the paths the conditions routing runs declare they read, when each declares them."""
+    and record it: lazy, holding the paths the conditions routing runs declare they read, when each declares them.
+    The script is given the pull request's diff, `diff_file`, and a file to write, as a review gives them."""
     if not source.exists():
         reads = condition_reads(manifest, changed)
         materialize_source_snapshot(
@@ -1516,7 +1518,9 @@ def _route_condition(
             exclude=exclude,
         )
     work.mkdir(exist_ok=True)
-    results[name] = evaluate_condition(reviewer_root, manifest["conditions"][name]["script"], source, work)
+    output = work / f"{name}.txt"
+    script = manifest["conditions"][name]["script"]
+    results[name] = evaluate_condition(reviewer_root, script, source, work, diff_file=diff_file, output=output)
     return results[name]
 
 
@@ -1551,8 +1555,11 @@ def validate_reviewer(
             pull = target.pull
             changed: list[str] = []
             pull_lines: list[str] = []
+            diff_file = scratch / f"diff-{index}.patch"
             if pull is not None:
-                changed = list(parse_unified_diff(services.github.get_pull_diff(repository, pull["number"])[0]))
+                diff_text = services.github.get_pull_diff(repository, pull["number"])[0]
+                changed = list(parse_unified_diff(diff_text))
+                atomic_write_text(diff_file, diff_text)
                 pull_lines = [
                     f"PULL {repository}#{pull['number']} base={pull['baseRefOid'][:12]} "
                     f"head={pull['headRefOid'][:12]} files={len(changed)} reviewer={target.source}",
@@ -1604,7 +1611,16 @@ def validate_reviewer(
                 lines.append(f"ENTRYPOINT {manifest['id']} files={len(changed)}")
                 continue
             routing = _Routing(
-                checkout, repository, pull["headRefOid"], root, scratch, index, services, exclude, default_effort
+                checkout,
+                repository,
+                pull["headRefOid"],
+                root,
+                scratch,
+                index,
+                diff_file,
+                services,
+                exclude,
+                default_effort,
             )
             lines.extend(_routing_lines(manifest, changed, routing))
     lines.append("VALID")
@@ -1625,6 +1641,7 @@ class _Routing(NamedTuple):
     reviewer_root: Path
     scratch: Path
     target: int  # the target's position, which names its scratch folders
+    diff_file: Path  # the pull request's diff, which a condition script is given
     services: Services
     exclude: Sequence[str]
     default_effort: str | None  # the configuration's reviewer_effort, which a specialist without its own effort gets
@@ -1644,6 +1661,7 @@ def _routing_lines(manifest: dict[str, Any], changed: list[str], routing: _Routi
         manifest=manifest,
         source=routing.scratch / f"source-{routing.target}",
         work=routing.scratch / f"conditions-{routing.target}",
+        diff_file=routing.diff_file,
         results=results,
         services=routing.services,
         exclude=routing.exclude,
