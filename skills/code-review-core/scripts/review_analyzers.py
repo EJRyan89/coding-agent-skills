@@ -20,7 +20,6 @@ import json
 import re
 import sys
 import tomllib
-import xml.etree.ElementTree as ElementTree
 from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -28,6 +27,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from flat_text import flat_text
+from xml_reader import XmlRefused, read_xml
 
 INVENTORY_SCHEMA_VERSION = 1
 MAX_SETTINGS = 400
@@ -63,15 +63,6 @@ MSBUILD_PROPERTIES = frozenset(
 MSBUILD_PROPERTY_PREFIXES = ("AnalysisLevel", "AnalysisMode")
 DIAGNOSTIC_KEY = re.compile(r"dotnet_(?:analyzer_)?diagnostic(?:\.[^\s=]+)?\.severity", re.IGNORECASE)
 GLOBAL_KEYS = frozenset({"is_global", "global_level"})
-# Constants that tests/run_validation.py allows another file to hold too, with the reason.
-DUPLICATION_ALLOWED = {
-    "XML_DECLARATION": (
-        "skills/dotnet-format/scripts/dotnet_format_targets.py holds the same XML declaration pattern; "
-        "code-review-core does not depend on dotnet-format, and the guarded XML reading both scripts do belongs in "
-        "skill-core, where a change of its own moves it and removes this entry"
-    ),
-}
-XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 TOP_SECTION = "\x00top"
 SECTION_HEADER = re.compile(r"\[(.+)\]")
 RULE_SELECTIONS = ("select", "extend-select", "ignore", "extend-ignore")
@@ -181,16 +172,9 @@ def _local(tag: Any) -> str:
 
 
 def _msbuild(found: _Inventory, path: str, text: str) -> None:
-    # Declarations can expand entities without bound; no project or props file needs them.
-    if "<!DOCTYPE" in text or "<!ENTITY" in text:
-        found.setting(path, UNREAD)
-        return
     try:
-        # The text is already decoded, so a declaration naming another encoding would only contradict it.
-        project = ElementTree.fromstring(  # noqa: S314 - DOCTYPE and ENTITY are refused above, so nothing expands
-            XML_DECLARATION.sub("", text, count=1)
-        )
-    except (ElementTree.ParseError, ValueError):
+        project = read_xml(text)
+    except XmlRefused:
         found.setting(path, UNREAD)
         return
     suffix = PurePosixPath(path).suffix.lower()
