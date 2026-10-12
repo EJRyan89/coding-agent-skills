@@ -63,7 +63,7 @@ Write the notes to a file and create the release from `main`:
 gh release create vX.Y.Z --target main --prerelease --title "vX.Y.Z" --notes-file '<file>'
 ```
 
-The notes open with the release's section of [upgrade-notes.md](upgrade-notes.md), which [Before tagging](#before-tagging) wrote: the level of the release, the largest any entry names, and the action, if any, each asks of the user, as [Versioning](#versioning) defines them. The notes then say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Carry the release milestone's description into them: its `Shipped:` list of issues and the pull requests that closed them, and any release-note obligation it records. Drop `--prerelease` at `1.0.0`.
+The notes open with the release's section of [upgrade-notes.md](upgrade-notes.md), which [Before tagging](#before-tagging) wrote. Just below the version heading, `Level: <level>.` states the largest leading level word any entry names, ordered by the **Levels** list in [Versioning](#versioning); an empty section instead says `Level: none (no upgrade-note entries).` The entries retain their explanations and the action, if any, each asks of the user, including when a minor carries a change that would be major after stability. The tool does not add summaries to published sections. The notes then say what the README says: what is included, the supported platform, the runtime versions tested and where, and what was deferred. Carry the release milestone's description into them: its `Shipped:` list of issues and the pull requests that closed them, and any release-note obligation it records. Drop `--prerelease` at `1.0.0`.
 
 ### Release notes
 

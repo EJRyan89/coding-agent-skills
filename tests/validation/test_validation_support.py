@@ -227,6 +227,15 @@ class SharedReaderFixtures(unittest.TestCase):
         self.assertEqual("second", markdown_section(text, "## Two"))
         self.assertIsNone(markdown_section(text, "## Three"))
 
+    def test_section_readers_share_trailing_whitespace_and_crlf_semantics(self) -> None:
+        from tools.release_notes import markdown_section as release_section
+
+        self.assertIs(markdown_section, release_section)
+        text = "# Title\r\n## One \t\r\nfirst  \r\n### Inner\r\nkept\t\r\n## Two \t\r\nsecond"
+        self.assertEqual("first  \n### Inner\nkept\t", markdown_section(text, "## One"))
+        self.assertEqual("second", markdown_section(text, "## Two"))
+        self.assertIsNone(markdown_section(text, "## On"))
+
     def test_a_fence_body_line_excludes_the_opener_and_the_closer(self) -> None:
         lines = ["text", "```bash", "echo hi", "```", "after"]
         holders = fence_holders(lines)

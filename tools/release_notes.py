@@ -14,8 +14,10 @@ and gains `- Pull request: #N` from the commit's squash title when it names none
 
 --from defaults to the last tag before --to, and --to to HEAD. It prints the `## VERSION` section, or with --write
 inserts it into docs/upgrade-notes.md above the newest version's section, refusing a version the file already has.
-It exits 0 on success, 1 when --write is refused, and 2 when git cannot read the range. The release procedure in
-docs/releasing.md runs it before tagging, and the upgrade-notes check in tests/validation reads the same entries.
+The section opens with the largest leading Level word of its entries, ordered by docs/releasing.md, or states that
+there are no upgrade-note entries. It exits 0 on success, 1 when --write is refused, and 2 when git cannot read the
+range or the documented levels or an entry's Level cannot be read. The release procedure in docs/releasing.md runs
+it before tagging, and the upgrade-notes check in tests/validation reads the same entries.
 """
 
 from __future__ import annotations
@@ -31,13 +33,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from markdown_sections import markdown_section
+from release_levels import RELEASING_DOC, VERSION, largest_level, versioning_levels
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 UPGRADE_NOTES = "docs/upgrade-notes.md"
 BODY_HEADING = "## Upgrade note"
 UNRELEASED_HEADING = "## Unreleased"
-VERSION = re.compile(r"v\d+\.\d+\.\d+")
-VERSION_HEADING = re.compile(r"^## v\d+\.\d+\.\d+[ \t]*$", re.MULTILINE)
+VERSION_HEADING = re.compile(rf"^## {VERSION.pattern}[ \t]*$", re.MULTILINE)
 NOTES_FIELD = re.compile(r"^- (Level|Contract|User action|Pull request):[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 NOTES_ENTRY_START = re.compile(r"^(?=#{1,3} )", re.MULTILINE)
 HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -86,17 +89,6 @@ class Commit:
     def pull_request(self) -> str | None:
         match = SQUASH_TITLE_NUMBER.search(self.subject)
         return f"#{match.group(1)}" if match else None
-
-
-def markdown_section(text: str, heading: str) -> str | None:
-    """The lines under a `## ` heading, up to the next `## ` heading, or None when the heading is absent."""
-    lines = text.split("\n")
-    starts = [index for index, line in enumerate(lines) if line.rstrip() == heading]
-    if not starts:
-        return None
-    start = starts[0] + 1
-    end = next((index for index in range(start, len(lines)) if lines[index].startswith("## ")), len(lines))
-    return "\n".join(lines[start:end])
 
 
 def unwrapped(block: str) -> list[str]:
@@ -200,8 +192,10 @@ def range_entries(root: Path, start: str, end: str) -> list[SourcedEntry]:
     return found
 
 
-def version_section(version: str, entries: list[SourcedEntry]) -> str:
-    return "\n\n".join([f"## {version}", *(item.rendered() for item in entries)]) + "\n"
+def version_section(version: str, entries: list[SourcedEntry], levels: list[str]) -> str:
+    level = largest_level((item.entry.fields.get("Level", "") for item in entries), levels)
+    summary = f"Level: {level}." if level is not None else "Level: none (no upgrade-note entries)."
+    return "\n\n".join([f"## {version}", summary, *(item.rendered() for item in entries)]) + "\n"
 
 
 def last_tag_before(root: Path, ref: str) -> str:
@@ -229,8 +223,9 @@ def main(argv: list[str] | None = None, root: Path = REPOSITORY_ROOT) -> int:
         parser.error(f"the version must look like v1.2.3, not {options.version!r}")
     try:
         start = options.start or last_tag_before(root, options.end)
-        section = version_section(options.version, range_entries(root, start, options.end))
-    except ValueError as error:
+        levels = versioning_levels((root / RELEASING_DOC).read_text(encoding="utf-8"))
+        section = version_section(options.version, range_entries(root, start, options.end), levels)
+    except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     if not options.write:

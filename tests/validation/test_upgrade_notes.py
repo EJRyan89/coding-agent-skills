@@ -25,6 +25,7 @@ from upgrade_notes import contract_list_problems, upgrade_notes_problems
 from validation_support import write_fixture_tree
 
 from tests import run_validation
+from tools import release_notes
 
 
 class UpgradeNotesPolicy(unittest.TestCase):
@@ -416,6 +417,39 @@ class UpgradeNotesPolicy(unittest.TestCase):
                     ],
                     self.problems({"docs/upgrade-notes.md": notes}, self.body()),
                 )
+
+    def test_generated_summaries_do_not_become_entries_and_the_policy_accepts_them(self) -> None:
+        self.release()
+        for value in ("patch", "minor", "major", None):
+            with self.subTest(value=value):
+                entries = (
+                    [] if value is None else release_notes.body_entries(self.body(self.entry("none", level=value)))
+                )
+                sourced = [release_notes.SourcedEntry(entry, "fixture", "#7", from_notes=False) for entry in entries]
+                section = release_notes.version_section(
+                    "v0.2.0", sourced, upgrade_notes.versioning_levels(self.RELEASING)
+                )
+                self.assertEqual(
+                    release_notes.notes_entries("\n\n".join(item.rendered() for item in sourced)),
+                    release_notes.notes_entries(section),
+                )
+                self.assertEqual(
+                    [],
+                    self.problems({"docs/upgrade-notes.md": f"# Upgrade notes\n\n{section}\n{self.NOTES}"}),
+                )
+
+    def test_the_policy_and_generator_import_one_version_and_level_reader(self) -> None:
+        self.assertIs(upgrade_notes.VERSION, release_notes.VERSION)
+        self.assertIs(upgrade_notes.versioning_levels, release_notes.versioning_levels)
+
+    def test_contract_and_level_sections_accept_trailing_whitespace_and_crlf(self) -> None:
+        self.release()
+        changed = self.RELEASING.replace("## Versioning\n", "## Versioning \t\n").replace("\n", "\r\n")
+        self.assertEqual(["patch", "minor", "major"], upgrade_notes.versioning_levels(changed))
+        self.assertEqual(
+            [],
+            self.problems({"docs/releasing.md": changed}, self.body(self.entry("none"))),
+        )
 
     def test_no_tag_reachable_from_origin_main_passes(self) -> None:
         self.release(tag=None)

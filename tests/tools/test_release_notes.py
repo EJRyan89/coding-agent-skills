@@ -18,6 +18,11 @@ from tools import release_notes
 
 NOTES = "docs/upgrade-notes.md"
 INTRO = "# Upgrade notes\n\nWhat each release asks of a user.\n"
+RELEASING = (
+    "# Releasing\n\n## Versioning\n\n**Levels**, from `1.0.0` on:\n\n"
+    "- **Patch.** Fixes.\n- **Minor.** Additions.\n- **Major.** The user must act.\n\n"
+    "**Before `1.0.0`**, minor carries changes that would be major later.\n\n## Before tagging\n"
+)
 RELEASED = (
     "## v0.1.0\n\n### The first release\n\n- Level: minor.\n- Contract: none\n- User action: none\n- Pull request: #1\n"
 )
@@ -82,6 +87,12 @@ class BodyEntriesTests(unittest.TestCase):
         self.assertEqual([], release_notes.body_entries("## Changes\n\n### A heading\n\n- Level: minor.\n"))
         self.assertEqual([], release_notes.body_entries(""))
 
+    def test_heading_whitespace_and_crlf_keep_the_same_section_boundaries(self) -> None:
+        body = BODY.replace("## Upgrade note\r\n", "## Upgrade note \t\r\n")
+        body = body.replace("## Validation\r\n", "## Validation \t\r\n")
+        self.assertEqual(release_notes.body_entries(BODY), release_notes.body_entries(body))
+        self.assertEqual([], release_notes.body_entries(body.replace("## Upgrade note \t", " ## Upgrade note")))
+
 
 class FixtureRepository(unittest.TestCase):
     def setUp(self) -> None:
@@ -103,6 +114,8 @@ class FixtureRepository(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.git("init", "-q", "-b", "main")
+        (self.root / "docs").mkdir()
+        (self.root / "docs" / "releasing.md").write_text(RELEASING, encoding="utf-8")
         self.commit("Release v0.1.0 (#1)", notes=f"{INTRO}\n## Unreleased\n\n{RELEASED}")
         self.git("tag", "v0.1.0")
 
@@ -137,7 +150,7 @@ class FixtureRepository(unittest.TestCase):
 
 
 EXPECTED_SECTION = (
-    "## v0.2.0\n\n"
+    "## v0.2.0\n\nLevel: minor.\n\n"
     "### An entry written by hand\n\n- Level: patch. A fix, worded again.\n- Contract: none\n- User action: none\n"
     "- Pull request: #2\n\n"
     "### A skill is added\n\n- Level: minor. Additive: a new skill.\n- Contract: `skills/beta`\n- User action: none\n"
@@ -170,6 +183,82 @@ class RangeEntriesTests(FixtureRepository):
 
 
 class MainTests(FixtureRepository):
+    def test_the_summary_names_the_largest_leading_level_before_the_entries(self) -> None:
+        for values, expected in (
+            (["Patch. A fix."], "patch"),
+            (["patch.", "MINOR: an addition.", "patch."], "minor"),
+            (["minor.", "Major. A migration.", "patch."], "major"),
+        ):
+            with self.subTest(values=values):
+                body = "## Upgrade note\n\n" + "\n\n".join(
+                    f"### Entry {index}\n\n- Level: {value}\n- Contract: none\n- User action: none"
+                    for index, value in enumerate(values)
+                )
+                self.commit(f"A {expected} update (#7)", body=body)
+                code, printed, error = self.run_main("v1.2.3", "--from", "HEAD^")
+                self.assertEqual((0, ""), (code, error))
+                self.assertTrue(printed.startswith(f"## v1.2.3\n\nLevel: {expected}.\n\n### Entry 0\n"), printed)
+                self.assertEqual(values, [entry.fields["Level"] for entry in release_notes.notes_entries(printed)])
+
+    def test_an_empty_range_states_that_it_has_no_upgrade_note_entries(self) -> None:
+        self.commit("Internal cleanup", body="## Upgrade note\n\nNone\n")
+        self.assertEqual((0, "## v0.2.0\n\nLevel: none (no upgrade-note entries).\n", ""), self.run_main("v0.2.0"))
+
+    def test_the_summary_uses_the_order_in_the_versioning_document(self) -> None:
+        self.history()
+        path = self.root / "docs" / "releasing.md"
+        path.write_text(RELEASING.replace("**Patch.**", "**Later.**"), encoding="utf-8")
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertIn("patch", error)
+        path.write_text(
+            RELEASING.replace(
+                "- **Patch.** Fixes.\n- **Minor.** Additions.",
+                "- **Minor.** Additions.\n- **Patch.** Fixes.",
+            ),
+            encoding="utf-8",
+        )
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((0, ""), (code, error))
+        self.assertTrue(printed.startswith("## v0.2.0\n\nLevel: patch.\n\n"), printed)
+
+    def test_pre_release_minor_keeps_the_breaking_explanation_and_action(self) -> None:
+        body = BODY.replace(
+            "minor. Additive: a new skill.", "minor: before `1.0.0`, this would be major later."
+        ).replace("- User action: none", "- User action: migrate the configuration")
+        self.commit("A breaking update (#7)", body=body)
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((0, ""), (code, error))
+        self.assertTrue(printed.startswith("## v0.2.0\n\nLevel: minor.\n\n"), printed)
+        self.assertIn("- Level: minor: before `1.0.0`, this would be major later.", printed)
+        self.assertIn("- User action: migrate the configuration", printed)
+
+    def test_malformed_or_missing_entry_levels_refuse_output_and_leave_the_file_alone(self) -> None:
+        before = (self.root / NOTES).read_bytes()
+        for value in ("", "breaking.", "0.5.0", "`minor`", "minor2.", "minor_update"):
+            with self.subTest(value=value):
+                body = BODY.replace("- Level: minor. Additive: a new skill.", f"- Level: {value}")
+                self.commit(f"An invalid update with {value!r} (#7)", body=body)
+                code, printed, error = self.run_main("v0.2.0", "--from", "HEAD^", "--write")
+                self.assertEqual((2, ""), (code, printed))
+                self.assertTrue(error.startswith("ERROR: "), error)
+                self.assertIn("Level", error)
+                self.assertEqual(before, (self.root / NOTES).read_bytes())
+        self.commit("A missing field (#7)", body=BODY.replace("- Level: minor. Additive: a new skill.\r\n", ""))
+        self.assertEqual(2, self.run_main("v0.2.0", "--from", "HEAD^")[0])
+
+    def test_a_missing_or_empty_level_list_is_an_explicit_error(self) -> None:
+        self.history()
+        path = self.root / "docs" / "releasing.md"
+        path.write_text("# Releasing\n\n## Versioning\n", encoding="utf-8")
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertIn("Levels", error)
+        path.unlink()
+        code, printed, error = self.run_main("v0.2.0")
+        self.assertEqual((2, ""), (code, printed))
+        self.assertIn("releasing.md", error)
+
     def test_it_prints_the_section_from_the_last_tag_by_default(self) -> None:
         self.history()
         self.assertEqual((0, EXPECTED_SECTION, ""), self.run_main("v0.2.0"))
