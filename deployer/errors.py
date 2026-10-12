@@ -20,6 +20,7 @@ RECOVERY_SECTIONS = (
     "Ownership held by another source",
     "Deploying from another checkout",
     "Deploying an earlier commit",
+    "A tool that does not finish",
 )
 
 
