@@ -172,7 +172,7 @@ def _program_name(command: str) -> str | None:
     that names no program."""
     words = command.split(None, 1)
     name = words[0] if words else ""
-    name = name[:-4] if name.casefold().endswith(".exe") else name
+    name = platform_support.program_name(name)
     return name if COMMAND_NAME.fullmatch(name) else None
 
 

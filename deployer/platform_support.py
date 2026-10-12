@@ -120,6 +120,18 @@ def name_key(name: str) -> str:
     return name.casefold()
 
 
+# The extension Windows finds a program by when its caller leaves it off, so git and git.exe start one program.
+PROGRAM_EXTENSION = ".exe"
+
+
+def program_name(name: str) -> str:
+    """The name a program is called by, without the extension Windows lets its caller add, in any case: git for
+    git.exe and for git.EXE. Any other name is returned unchanged."""
+    if name.casefold().endswith(PROGRAM_EXTENSION):
+        return name[: -len(PROGRAM_EXTENSION)]
+    return name
+
+
 def is_absolute(value: str) -> bool:
     return bool(WINDOWS_ABSOLUTE.match(value))
 
