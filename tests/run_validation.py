@@ -35,6 +35,7 @@ import io
 import os
 import re
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -59,7 +60,17 @@ import suite_discovery
 import toolchain
 import upgrade_notes
 import workflows
-from job_pool import OUTPUT_LOCK, Job, append_step_summary, run_beside, step_summary, worker_count
+from job_pool import (
+    OUTPUT_LOCK,
+    Failure,
+    Job,
+    PoolResult,
+    Retry,
+    append_step_summary,
+    run_beside,
+    step_summary,
+    worker_count,
+)
 from job_selection import (
     MARKDOWN_SHELL_JOB,
     POWERSHELL_JOB,
@@ -235,6 +246,48 @@ class ShardOption(unittest.TestCase):
         versions.assert_not_called()
 
 
+class TerminationReport(unittest.TestCase):
+    def test_a_retry_and_a_termination_reach_the_output_and_the_step_summary(self) -> None:
+        ended = "bash.exe was ended with status 0x80000004 before its first line of output: bash.exe -c 'x'"
+        retried, terminated = (Job(label, label, 1, lambda: None) for label in ("suite b.sh", "suite a.sh"))
+        pool = PoolResult(
+            [
+                Failure(
+                    terminated, f"Ended before its first line of output on each of 2 attempts:\n  {ended}", False, True
+                )
+            ],
+            [Retry(retried, ended, "passed")],
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "step summary.md"
+            with (
+                mock.patch.object(upgrade_notes, "pull_request_body", None),
+                mock.patch.object(pull_request_title, "pull_request_title", None),
+                mock.patch(f"{__name__}.tool_versions", return_value={}),
+                mock.patch(f"{__name__}.report_prerequisite_problems", return_value=False),
+                mock.patch(f"{__name__}.all_jobs", return_value=[retried, terminated]),
+                mock.patch(f"{__name__}.run_beside", return_value=(unittest.TestResult(), pool)),
+                mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(summary)}),
+                contextlib.redirect_stdout(io.StringIO()) as printed,
+            ):
+                self.assertEqual(1, main(["-k", "suite ?.sh"]))
+            text = summary.read_text(encoding="utf-8")
+        self.assertIn(f"\nRETRIED suite b.sh\n{'-' * 70}\n{ended}\nStarted once more, it passed.\n", printed.getvalue())
+        self.assertIn(
+            f"\nFAILED suite a.sh\n{'-' * 70}\n"
+            f"Ended before its first line of output on each of 2 attempts:\n  {ended}\n",
+            printed.getvalue(),
+        )
+        self.assertTrue(
+            text.endswith(
+                "**validation FAILED**\n- Failed: `suite a.sh`\n\n  ```text\n"
+                f"  Ended before its first line of output on each of 2 attempts:\n    {ended}\n  ```\n\n"
+                f"- Retried once: `suite b.sh`\n\n  ```text\n  {ended}\n  Started once more, it passed.\n  ```\n\n"
+            ),
+            text,
+        )
+
+
 def shard_option(text: str) -> tuple[int, int]:
     """--shard's `<index>/<count>`, the index counted from 1."""
     match = re.fullmatch(r"([1-9]\d*)/([1-9]\d*)", text)
@@ -352,9 +405,12 @@ def main(argv: list[str] | None = None) -> int:
         f"Running {policies.countTestCases()} policy checks beside {len(jobs)} suite jobs on {workers} workers.",
         flush=True,
     )
-    policy_result, failures = run_beside(
+    policy_result, (failures, retries) = run_beside(
         lambda: run_policies(policies, arguments.verbose), jobs, arguments.verbose, workers
     )
+    retried = {retry.job.label: f"{retry.ending}\nStarted once more, it {retry.result}." for retry in retries}
+    for label, note in retried.items():
+        print(f"\n{'=' * 70}\nRETRIED {label}\n{'-' * 70}\n{note}", flush=True)
     for failure in failures:
         print(f"\n{'=' * 70}\nFAILED {failure.job.label}\n{'-' * 70}\n{failure.report}", flush=True)
     passed = policy_result.wasSuccessful() and not failures
@@ -366,9 +422,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     failed = [f"policy {test.id().rsplit('.', 1)[-1]}" for test, _ in policy_result.failures + policy_result.errors]
     failed += [failure.job.label for failure in failures]
-    tracebacks = {failure.job.label: failure.report for failure in failures if failure.raised}
+    details = {failure.job.label: failure.report for failure in failures if failure.raised or failure.terminated}
     summary = step_summary(
-        tools.python_version(), versions, mode, policy_result.testsRun, len(jobs), seconds, failed, tracebacks, leg
+        tools.python_version(),
+        versions,
+        mode,
+        policy_result.testsRun,
+        len(jobs),
+        seconds,
+        failed,
+        details,
+        leg,
+        retried,
     )
     append_step_summary(os.environ, summary)
     return 0 if passed else 1

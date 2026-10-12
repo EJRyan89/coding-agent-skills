@@ -10,6 +10,7 @@ import unittest
 from collections.abc import Callable
 from pathlib import Path
 
+from job_pool import Terminated, refuse_termination
 from validation_support import REPOSITORY_ROOT
 
 from deployer import platform_support, tools
@@ -38,10 +39,13 @@ MODULE_VERSION = re.compile(r"^\s*ModuleVersion\s*=\s*['\"]([0-9.]+)['\"]", re.M
 
 
 def find_psscriptanalyzer() -> str | None:
-    """The manifest of the newest PSScriptAnalyzer pwsh can load, or None when pwsh lists none."""
-    result = platform_support.run_tool(
-        [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", NEWEST_SCRIPT_ANALYZER]
-    )
+    """The manifest of the newest PSScriptAnalyzer pwsh can load, or None when pwsh lists none.
+
+    Raises Terminated when pwsh was ended before it wrote anything, which says nothing about the module.
+    """
+    probe = [find_powershell(), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", NEWEST_SCRIPT_ANALYZER]
+    result = platform_support.run_tool(probe)
+    refuse_termination(probe, result.returncode, result.output)
     lines = [line.strip() for line in result.output.splitlines() if line.strip()]
     found = lines[-1] if result.returncode == 0 and lines else ""
     return found if found.casefold().endswith(".psd1") else None
@@ -100,6 +104,9 @@ def missing_prerequisites(
             found = finder()
         except AssertionError:
             found = None
+        except Terminated as exc:
+            missing.append(f"  - {label}: could not be looked for, because {exc}; run validation again")
+            continue
         if not found:
             missing.append(f"  - {label}: {platform_support.install_hint(hint_key)}")
     return missing
@@ -136,7 +143,7 @@ def tool_versions(
     for label, _, finder in prerequisites:
         try:
             found = finder()
-        except AssertionError:
+        except (AssertionError, Terminated):  # missing_prerequisites reports either
             found = None
         if found:
             versions[label] = read_version(found)
