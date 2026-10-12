@@ -48,6 +48,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult, classify_failure
 from github_client import GitHubClient, GitHubError, subprocess_runner
 from github_client import Runner as GhRunner
@@ -125,11 +126,6 @@ def git(services: Services, directory: Path, *arguments: str) -> GitResult:
         raise Failed(str(exc)) from exc
 
 
-def one_line(text: str) -> str:
-    """Text git printed, as one line for a tab-separated output line."""
-    return " ".join(text.split())
-
-
 def git_paths(services: Services, root: Path, *arguments: str) -> list[str]:
     result = git(services, root, arguments[0], "-z", *arguments[1:])
     if result.returncode != 0:
@@ -142,7 +138,7 @@ def repository_root(services: Services, cwd: Path) -> Path:
     if result.returncode != 0:
         if classify_failure(result.stderr) == "not_repository":
             raise Failed(f"{cwd} is not inside a Git repository")
-        raise Failed(one_line(result.stderr) or f"git rev-parse --show-toplevel exited with code {result.returncode}")
+        raise Failed(flat_text(result.stderr) or f"git rev-parse --show-toplevel exited with code {result.returncode}")
     return Path(result.stdout.strip()).resolve()
 
 
@@ -184,10 +180,10 @@ def fetch_failure(services: Services, root: Path) -> str | None:
     try:
         result = services.git.run(["fetch", "origin", "--quiet"], directory=root)
     except GitError as exc:
-        return one_line(str(exc))
+        return flat_text(str(exc))
     if result.returncode == 0:
         return None
-    return one_line(result.stderr) or f"git fetch origin exited with code {result.returncode}"
+    return flat_text(result.stderr) or f"git fetch origin exited with code {result.returncode}"
 
 
 def base_ref(services: Services, root: Path, emit: Callable[[str], None]) -> str:

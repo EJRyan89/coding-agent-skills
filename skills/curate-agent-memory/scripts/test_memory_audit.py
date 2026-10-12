@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import memory_audit
 import skill_roots
+from flat_text import flat_text
 
 
 def write(path: Path, text: str) -> Path:
@@ -658,6 +659,41 @@ class ReindexTests(unittest.TestCase):
             "- [folded](folded.md) — First line of the hook continues here.\n", self.index.read_text(encoding="utf-8")
         )
 
+    def test_derived_titles_escape_brackets_before_shared_flattening_without_truncation(self) -> None:
+        title = " \tUse [café]\u00a0[設計]\u2003" + "x" * 151
+        write(self.memory_dir / "bracket.md", f"---\nname: {title}\n---\nBody.\n")
+        write(self.memory_dir / "stem [title].md", "Body.\n")
+        before = self.snapshot()
+        with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
+            result = memory_audit.reindex(self.memory_dir)
+        self.assertEqual(
+            f"- [Use (café) (設計) {'x' * 151}](bracket.md) — Body.\n- [stem (title)](stem [title].md) — Body.\n",
+            result["content"],
+        )
+        flatten.assert_any_call(title.strip().replace("[", "(").replace("]", ")"))
+        flatten.assert_any_call("stem (title)")
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(b"", self.index.read_bytes())
+
+    def test_hooks_use_shared_flattening_before_exact_character_and_word_cutoffs(self) -> None:
+        for text, limit, expected in (
+            (" \talpha\r\n beta \v café\u00a0設計\u2003", 150, "alpha beta café 設計"),
+            (" \t\r\n\u00a0\u2003", 150, ""),
+            ("x" * 149, 150, "x" * 149),
+            ("x" * 150, 150, "x" * 150),
+            ("x" * 151, 150, "x" * 147 + "..."),
+            ("設" * 150, 150, "設" * 150),
+            ("設" * 151, 150, "設" * 147 + "..."),
+            ("alpha\tbeta\r\ngamma", 10, "alpha..."),
+            ("alpha,;:.\tbeta gamma", 12, "alpha..."),
+        ):
+            with (
+                self.subTest(text=text, limit=limit),
+                mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten,
+            ):
+                self.assertEqual(expected, memory_audit.one_line(text, limit))
+            flatten.assert_called_once_with(text)
+
     def test_long_descriptions_become_one_short_line(self) -> None:
         description = "word " * 60
         write(self.memory_dir / "long.md", f"---\nname: long\ndescription: {description}\n---\nBody.\n")
@@ -1023,6 +1059,46 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual(
             ["EXISTS no", f"CANDIDATE {other}"], [line for line in lines if line.startswith(("EXISTS", "CANDIDATE"))]
         )
+
+    def test_notes_use_shared_flattening_without_truncating_or_reordering_facts(self) -> None:
+        note = " \tRead\r\n café\u00a0設計\u2003notes.\v " + "x" * 151
+        result = {
+            "memory_dir": "memory dir",
+            "source": "settings",
+            "exists": False,
+            "candidates": ["first", "second"],
+            "notes": [note, " \r\n\t "],
+        }
+        with mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten:
+            lines = memory_audit.resolve_lines(self.repo, result)
+        self.assertEqual(
+            [
+                f"REPO {self.repo}",
+                "MEMORY_DIR memory dir",
+                "SOURCE settings",
+                "EXISTS no",
+                "CANDIDATE first",
+                "CANDIDATE second",
+                f"NOTE Read café 設計 notes. {'x' * 151}",
+                "NOTE ",
+            ],
+            lines,
+        )
+        self.assertEqual([mock.call(note), mock.call(" \r\n\t ")], flatten.call_args_list)
+
+    def test_error_reasons_use_shared_flattening_and_preserve_strerror_selection(self) -> None:
+        message = " \tCannot\r\n read  café\u00a0設計\u2003memory.\v "
+        for error, reason, description in (
+            (OSError(13, message, "one.md"), message, "Cannot read café 設計 memory.: one.md"),
+            (OSError(message), message, "Cannot read café 設計 memory."),
+        ):
+            with (
+                self.subTest(error=error),
+                mock.patch.object(memory_audit, "flat_text", wraps=flat_text) as flatten,
+                mock.patch.object(memory_audit, "run", side_effect=error),
+            ):
+                self.assertEqual((1, f"FAILED {description}\n", ""), run_main("resolve", "--repo", str(self.repo)))
+            flatten.assert_called_once_with(reason)
 
     def test_command_line_reports_no_directory_as_a_result(self) -> None:
         write(self.home / ".claude" / "settings.json", json.dumps({"autoMemoryDirectory": "relative/path"}))

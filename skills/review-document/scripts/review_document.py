@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from console import use_utf8_output
+from flat_text import flat_text
 from git_client import GitClient, GitError
 from review_documents import ExtractionRefused, document_format, extract, unlabeled
 from review_io import PersistenceError, working_path
@@ -308,7 +309,7 @@ def main(arguments: list[str] | None = None, git: GitClient | None = None) -> in
         else:
             lines = report(args.fixture, args.report)
     except (DocumentError, PersistenceError, GitError, OSError) as exc:
-        print(f"FAILED {' '.join(str(exc).split())}")
+        print(f"FAILED {flat_text(str(exc))}")
         return 1
     print("\n".join(lines))
     return 0
