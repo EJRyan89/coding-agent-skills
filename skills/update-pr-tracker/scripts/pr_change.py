@@ -84,7 +84,7 @@ def _changed_file(value: object, path: str) -> tuple[str, str, str, str]:
     filename = READ.string(entry.get("filename"), f"{path}.filename")
     status = READ.string(entry.get("status"), f"{path}.status")
     content = READ.string(entry.get("sha"), f"{path}.sha")
-    previous = READ.string(entry.get("previous_filename") or "", f"{path}.previous_filename", empty=True)
+    previous = READ.optional(READ.string, entry.get("previous_filename"), f"{path}.previous_filename") or ""
     return filename, status, previous, content
 
 

@@ -289,6 +289,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
     )
     if READ.integer(metadata["schema_version"], "materialization.schema_version") != 1:
         raise RuntimeContractError("Copilot reviewer materialization schema version is unsupported")
+    READ.string(metadata["adapter_id"], "materialization.adapter_id")
     READ.hex_digest(metadata["source_commit"], "materialization.source_commit", 40, 64)
     relative_value = _safe_relative_path(metadata["entrypoint"], "materialization.entrypoint")
     relative = PurePosixPath(relative_value)
@@ -298,7 +299,7 @@ def materialized_reviewer_entrypoint(materialized_root: Path) -> Path:
         raise RuntimeContractError("Copilot reviewer materialization source hashes are invalid")
     expected_files = {"materialization.json"}
     for declared_path, expected_hash in source_hashes.items():
-        normalized = _safe_relative_path(declared_path, "source_hashes path")
+        normalized = _safe_relative_path(declared_path, "a key of materialization.source_hashes")
         if normalized != declared_path or declared_path == "materialization.json":
             raise RuntimeContractError(f"Copilot reviewer materialization path is invalid: {declared_path!r}")
         READ.hex_digest(expected_hash, f"materialization.source_hashes.{declared_path}", 64)

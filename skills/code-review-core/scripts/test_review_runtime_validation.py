@@ -361,8 +361,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
     (
         "a repository that is not a string",
         _meta("repository", 5),
-        ConfigurationError,
-        "Invalid repository identity: 5",
+        F,
+        "source-snapshot.json.repository must be a non-empty string, found integer 5",
     ),
     (
         "an invalid expected repository",
@@ -417,31 +417,31 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
         "an empty path",
         _rename_first("source_hashes", ""),
         F,
-        "source_hashes path must be a non-empty string, found an empty string",
+        "a key of source-snapshot.json.source_hashes must be a non-empty string, found an empty string",
     ),
     (
         "a backslash path",
         _rename_first("source_hashes", "src\\app.py"),
         RuntimeContractError,
-        "source_hashes path must be a non-empty POSIX relative path",
+        "a key of source-snapshot.json.source_hashes must be a non-empty POSIX relative path",
     ),
     (
         "a path that escapes",
         _rename_first("source_hashes", "../app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '../app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '../app.py'",
     ),
     (
         "an absolute path",
         _rename_first("source_hashes", "/src/app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '/src/app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '/src/app.py'",
     ),
     (
         "a path with a Windows-unsafe character",
         _rename_first("source_hashes", "src/a:pp.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: 'src/a:pp.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: 'src/a:pp.py'",
     ),
     (
         "a path with a doubled slash",
@@ -589,13 +589,13 @@ REJECTED: list[tuple[str, Mutation, type[Exception], Message]] = [
         "an empty exclusion",
         _entry("excluded_paths", "", "binary"),
         F,
-        "excluded_paths path must be a non-empty string, found an empty string",
+        "a key of source-snapshot.json.excluded_paths must be a non-empty string, found an empty string",
     ),
     (
         "an exclusion that escapes",
         _entry("excluded_paths", "../x.bin", "binary"),
         RuntimeContractError,
-        "excluded_paths path is unsafe: '../x.bin'",
+        "a key of source-snapshot.json.excluded_paths is unsafe: '../x.bin'",
     ),
     (
         "an exclusion with a doubled slash",
@@ -707,7 +707,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         "safe path",
         _rename_first("source_hashes", "../app.py"),
         RuntimeContractError,
-        "source_hashes path is unsafe: '../app.py'",
+        "a key of source-snapshot.json.source_hashes is unsafe: '../app.py'",
     ),
     (
         "normalized path",
@@ -762,7 +762,7 @@ STAGES: list[tuple[str, Mutation, type[Exception], Message]] = [
         "exclusion path",
         _rename_first("excluded_paths", "../x.bin"),
         RuntimeContractError,
-        "excluded_paths path is unsafe: '../x.bin'",
+        "a key of source-snapshot.json.excluded_paths is unsafe: '../x.bin'",
     ),
     (
         "exclusion reason",
@@ -809,7 +809,7 @@ SNAPSHOT_KINDS: list[tuple[str, Mutation, str]] = [
     (
         "a fetchable path",
         _meta("fetchable", {"": "b" * 40}),
-        "fetchable path must be a non-empty string, found an empty string",
+        "a key of source-snapshot.json.fetchable must be a non-empty string, found an empty string",
     ),
     ("extracted", _meta("extracted", []), _wrong(f"{SNAPSHOT}.extracted", "an object", [])),
     (
@@ -1607,7 +1607,7 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _entrypoint_manifest,
         _put(("entrypoint",), "../SKILL.md"),
         RuntimeContractError,
-        "entrypoint is unsafe: '../SKILL.md'",
+        "entrypoint-manifest.entrypoint is unsafe: '../SKILL.md'",
     ),
     (
         "resources that are not an array",
@@ -1628,14 +1628,14 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _entrypoint_manifest,
         _put(("resources", 1), "C:/x.md"),
         RuntimeContractError,
-        "resources[1] is unsafe: 'C:/x.md'",
+        "entrypoint-manifest.resources[1] is unsafe: 'C:/x.md'",
     ),
     (
         "a backslash profile",
         _entrypoint_manifest,
         _put(("agent_profiles", 0), "agents\\checker.md"),
         RuntimeContractError,
-        "agent_profiles[0] must be a non-empty POSIX relative path",
+        "entrypoint-manifest.agent_profiles[0] must be a non-empty POSIX relative path",
     ),
     (
         "a resource that is the entrypoint",
@@ -1768,7 +1768,7 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("resources", 0), "/shared/guide.md"),
         RuntimeContractError,
-        "resources[0] is unsafe: '/shared/guide.md'",
+        "specialists-manifest.resources[0] is unsafe: '/shared/guide.md'",
     ),
     (
         "conditions that are not an object",
@@ -1847,7 +1847,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "suite:security-review"),
         RuntimeContractError,
-        "specialists[0].profile names no suite profile: 'suite:security-review'; the suite ships suite:design-review",
+        "specialists-manifest.specialists[0].profile names no suite profile: 'suite:security-review'; "
+        "the suite ships suite:design-review",
     ),
     (
         # Only a catalogued name resolves, so a suite profile cannot reach another file of the suite or anything else.
@@ -1855,7 +1856,8 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "suite:../references/generic-reviewer.md"),
         RuntimeContractError,
-        "specialists[0].profile names no suite profile: 'suite:../references/generic-reviewer.md'; "
+        "specialists-manifest.specialists[0].profile names no suite profile: "
+        "'suite:../references/generic-reviewer.md'; "
         "the suite ships suite:design-review",
     ),
     (
@@ -1863,7 +1865,7 @@ MANIFEST_REJECTED: list[tuple[str, Callable[[], dict[str, Any]], ManifestMutatio
         _specialists_manifest,
         _put(("specialists", 0, "profile"), "Suite:design-review"),
         RuntimeContractError,
-        "specialists[0].profile is unsafe: 'Suite:design-review'",
+        "specialists-manifest.specialists[0].profile is unsafe: 'Suite:design-review'",
     ),
     (
         "a reserved specialist resource",
@@ -1962,15 +1964,25 @@ ENTRYPOINT_STAGES: list[ManifestStage] = [
         F,
         _wrong(f"{ENTRYPOINT}.required_capabilities[0]", "a non-empty string", ""),
     ),
-    ("entrypoint", _put(("entrypoint",), "../SKILL.md"), RuntimeContractError, "entrypoint is unsafe: '../SKILL.md'"),
+    (
+        "entrypoint",
+        _put(("entrypoint",), "../SKILL.md"),
+        RuntimeContractError,
+        "entrypoint-manifest.entrypoint is unsafe: '../SKILL.md'",
+    ),
     ("resources array", _put(("resources",), {}), F, _wrong(f"{ENTRYPOINT}.resources", "an array", {})),
-    ("resources", _put(("resources", 0), "../x.md"), RuntimeContractError, "resources[0] is unsafe: '../x.md'"),
+    (
+        "resources",
+        _put(("resources", 0), "../x.md"),
+        RuntimeContractError,
+        "entrypoint-manifest.resources[0] is unsafe: '../x.md'",
+    ),
     ("profiles array", _put(("agent_profiles",), {}), F, _wrong(f"{ENTRYPOINT}.agent_profiles", "an array", {})),
     (
         "profiles",
         _put(("agent_profiles", 0), "../x.md"),
         RuntimeContractError,
-        "agent_profiles[0] is unsafe: '../x.md'",
+        "entrypoint-manifest.agent_profiles[0] is unsafe: '../x.md'",
     ),
     ("duplicates", _put(("agent_profiles", 0), "SKILL.md"), RuntimeContractError, TWICE),
     ("reserved", _put(("resources", 1), "materialization.json"), RuntimeContractError, RESERVED),

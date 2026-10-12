@@ -234,8 +234,8 @@ REJECTED: list[tuple[str, Mutation, type[Exception], str]] = [
     (
         "a repository that is not a string",
         _set(("flags", 0, "repository"), 5),
-        ConfigurationError,
-        "Invalid repository identity: 5",
+        FlagFieldError,
+        "flag-store.flags[0].repository must be a non-empty string or null, found integer 5",
     ),
     ("a pull number that is a string", _set(("flags", 0, "pull_number"), "7"), F, f'{PULL} string "7"'),
     ("a pull number that is true", _set(("flags", 0, "pull_number"), True), F, f"{PULL} boolean true"),
@@ -374,6 +374,12 @@ STAGES: list[tuple[str, Mutation, type[Exception], str]] = [
     ("ID format", _set(("flags", 0, "id"), "RF-1"), FlagError, ID_FORMAT),
     ("status", _set(("flags", 0, "status"), "closed"), F, f'{STATUS} string "closed"'),
     (
+        "repository kind",
+        _set(("flags", 0, "repository"), 5),
+        F,
+        f"{FIRST}.repository must be a non-empty string or null, found integer 5",
+    ),
+    (
         "repository",
         _set(("flags", 0, "repository"), "owner"),
         ConfigurationError,
@@ -500,9 +506,7 @@ class FlagStoreValidationTests(unittest.TestCase):
     def test_stages_cover_every_distinct_error(self) -> None:
         stage_checks = {_check_of(error, message) for _name, _mutation, error, message in STAGES}
         rejected_checks = {_check_of(error, message) for _name, _mutation, error, message in REJECTED}
-        # The same check as a stage, with a message that names another value.
-        variants = {(ConfigurationError, "Invalid repository identity: 5")}
-        self.assertEqual(set(), rejected_checks - stage_checks - variants)
+        self.assertEqual(set(), rejected_checks - stage_checks)
 
 
 class UpgradeStoreTests(unittest.TestCase):

@@ -381,19 +381,18 @@ def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
     normalized_specialists = []
     seen: set[str] = set()
     for index, specialist in enumerate(specialists):
-        field = f"specialists[{index}]"
-        path = f"{root}.{field}"
+        path = f"{root}.specialists[{index}]"
         READ.json_object(specialist, path, required=SPECIALIST_KEYS, optional=OPTIONAL_SPECIALIST_KEYS)
         model = READ.optional(READ.one_of, specialist.get("model"), f"{path}.model", MODEL_ALIASES | {"inherit"})
         effort = READ.optional(READ.one_of, specialist.get("effort"), f"{path}.effort", REVIEWER_EFFORTS)
         identity = READ.string(specialist["id"], f"{path}.id")
         if not SLUG.fullmatch(identity) or identity in seen | {GENERIC_SPECIALIST}:
-            raise RuntimeContractError(f"{field}.id is invalid or duplicated")
+            raise RuntimeContractError(f"{path}.id is invalid or duplicated")
         seen.add(identity)
         category = READ.string(specialist["category"], f"{path}.category")
         when = READ.optional(READ.string, specialist["when"], f"{path}.when")
         if when is not None and when not in normalized_conditions:
-            raise RuntimeContractError(f"{field}.when names an undeclared condition")
+            raise RuntimeContractError(f"{path}.when names an undeclared condition")
         normalized_specialists.append(
             {
                 "id": identity,
@@ -1149,7 +1148,7 @@ def _verify_fetched_files(
     hashes, excluded = metadata["source_hashes"], metadata["excluded_paths"]
     length = len(metadata["source_commit"])
     for relative, value in fetchable.items():
-        normalized = _safe_relative_path(relative, "fetchable path")
+        normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}")
         blob = READ.hex_digest(value, f"{SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}.{relative}", length)
         if (
             normalized != relative
@@ -1174,7 +1173,7 @@ def _verify_fetched_files(
 def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tuple[Path, int]:
     """A listed file's path and size, once its name, its hash's format, its place under the root, and its size check
     out."""
-    normalized = _safe_relative_path(relative, "source_hashes path")
+    normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.source_hashes")
     if normalized != relative or relative == SOURCE_SNAPSHOT_MANIFEST:
         raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
     if _is_agent_instruction_path(relative):
@@ -1196,7 +1195,7 @@ def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, A
         if READ.string(relative, f"a key of {path}", empty=True) in hashes or not relative:
             raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
         return
-    normalized = _safe_relative_path(relative, "excluded_paths path")
+    normalized = _safe_relative_path(relative, f"a key of {SOURCE_SNAPSHOT_MANIFEST}.excluded_paths")
     READ.one_of(reason, f"{path}.{relative}", SNAPSHOT_EXCLUSION_REASONS)
     if (
         normalized != relative

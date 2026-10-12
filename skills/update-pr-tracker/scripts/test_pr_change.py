@@ -173,7 +173,10 @@ class ChangeDetectorTests(unittest.TestCase):
                 comparison({key: value for key, value in good.items() if key != field})
                 for field in ("filename", "status", "sha")
             ),
-            *(comparison(good | {"previous_filename": value}) for value in (5, True, ["a.py"], {"name": "a.py"})),
+            *(
+                comparison(good | {"previous_filename": value})
+                for value in (5, True, False, 0, "", " ", [], {}, ["a.py"], {"name": "a.py"})
+            ),
         ]
         for value in cases:
             with self.subTest(value=value):

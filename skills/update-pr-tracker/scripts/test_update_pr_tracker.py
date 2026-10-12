@@ -986,7 +986,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ("author_name", 5, wrong(f"{SECOND}.author_name", TEXT_OR_NULL, "integer 5")),
             ("review_decision", "MERGED", wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, 'string "MERGED"')),
             ("review_decision", True, wrong(f"{SECOND}.review_decision", REVIEW_DECISIONS, "boolean true")),
-            ("ai_review", [], wrong(f"{SECOND}.ai_review", "an object", "an array")),
+            ("ai_review", [], wrong(f"{SECOND}.ai_review", "an object or null", "an array")),
             ("reviewed_incomplete", 1, wrong(f"{SECOND}.reviewed_incomplete", "a boolean", "integer 1")),
             ("repository", "owner", ("ConfigurationError", "Invalid repository identity: 'owner'")),
             ("repository", None, wrong(f"{SECOND}.repository", TEXT, "null")),
@@ -1074,11 +1074,11 @@ class ValidateItemsSequenceTests(unittest.TestCase):
         reading = {"flagged": 0, "since_review": {"version": 1, "new": 0, "addressed": 0}}
         valid = ai("APPROVED")
         cases: list[tuple[object, str, str, str]] = [
-            ([], "", "an object", "an array"),
-            ("Approved", "", "an object", 'string "Approved"'),
+            ([], "", "an object or null", "an array"),
+            ("Approved", "", "an object or null", 'string "Approved"'),
             ({"verdict": "APPROVED"}, "", "an object with fields counts, report", "an object without them"),
             (valid | {"extra": 1}, "", "an object of known fields", 'unknown field "extra"'),
-            (valid | {"ledger": "1M"}, ".ledger", "an object", 'string "1M"'),
+            (valid | {"ledger": "1M"}, ".ledger", "an object or null", 'string "1M"'),
             (
                 valid | {"ledger": {"open": severities, "addressed": 0, "since": None}},
                 ".ledger",
@@ -1124,7 +1124,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             ),
             (valid | reading | {"flagged": True}, ".flagged", "an integer of at least 0", "boolean true"),
             (valid | reading | {"flagged": -1}, ".flagged", "an integer of at least 0", "integer -1"),
-            (valid | reading | {"since_review": []}, ".since_review", "an object", "an array"),
+            (valid | reading | {"since_review": []}, ".since_review", "an object or null", "an array"),
             (
                 valid | reading | {"since_review": {"version": 0, "new": 0}},
                 ".since_review",
@@ -1143,7 +1143,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
             (
                 valid | {"counts": {"MUST_FIX": 0}},
                 ".counts",
-                "an object with fields SHOULD_FIX, SUGGESTION or null",
+                "an object with fields SHOULD_FIX, SUGGESTION",
                 "an object without them",
             ),
             (
@@ -1194,7 +1194,7 @@ class ValidateItemsSequenceTests(unittest.TestCase):
                 f"{first}.author_name must be a non-empty string or null, found an empty string",
                 f'{first}.review_decision must be one of "APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED" or null, '
                 'found string "MERGED"',
-                f"{first}.ai_review must be an object, found an array",
+                f"{first}.ai_review must be an object or null, found an array",
                 f'{first}.reviewed_incomplete must be a boolean, found string "yes"',
                 "Invalid repository identity: 'Owner'",
                 f"{first}.number must be an integer of at least 1, found integer -1",

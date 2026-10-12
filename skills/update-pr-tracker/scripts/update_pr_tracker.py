@@ -126,9 +126,8 @@ class Row:
 def _validate_ledger(ledger: Any, key: str, path: str) -> None:
     """The latest review's finding-ledger summary. A migrated legacy review's has no version and cannot say what was
     addressed, so both are None; it is None itself when the legacy report is unreadable."""
-    if ledger is None:
+    if READ.optional(READ.json_object, ledger, path, required={"open", "addressed", "since", "version"}) is None:
         return
-    READ.json_object(ledger, path, required={"open", "addressed", "since", "version"})
     opened = READ.json_object(ledger["open"], f"{path}.open", required=SEVERITY_KEYS)
     for severity in sorted(SEVERITY_KEYS):
         READ.integer(opened[severity], f"{path}.open.{severity}", minimum=0)
@@ -157,10 +156,11 @@ def _validate_ledger_reading(review: dict[str, Any], key: str, path: str) -> Non
         raise invalid
     if READ.integer(review["flagged"], f"{path}.flagged", minimum=0) > sum(ledger["open"].values()):
         raise invalid
-    since = review["since_review"]
+    since = READ.optional(
+        READ.json_object, review["since_review"], f"{path}.since_review", required={"version", "new", "addressed"}
+    )
     if since is None:
         return
-    READ.json_object(since, f"{path}.since_review", required={"version", "new", "addressed"})
     for field in ("version", "new", "addressed"):
         READ.integer(since[field], f"{path}.since_review.{field}", minimum=0)
     if since["version"] > ledger["version"]:
@@ -171,13 +171,14 @@ def _validate_presentation(item: dict[str, Any], path: str) -> None:
     key = f"{item.get('repository')}#{item.get('number')}"
     READ.optional(READ.string, item["author_name"], f"{path}.author_name")
     READ.optional(READ.one_of, item["review_decision"], f"{path}.review_decision", REVIEW_DECISIONS - {None})
-    review = item["ai_review"]
-    if review is None:
-        return
     # An input collected before reviews kept a finding ledger has no ledger key, and one collected before the tracker
     # read flags and the user's last review has no flagged or since_review keys.
     path = f"{path}.ai_review"
-    READ.json_object(review, path, required={"verdict", "counts", "report"}, optional=LEDGER_KEYS)
+    review = READ.optional(
+        READ.json_object, item["ai_review"], path, required={"verdict", "counts", "report"}, optional=LEDGER_KEYS
+    )
+    if review is None:
+        return
     _validate_ledger(review.get("ledger"), key, f"{path}.ledger")
     _validate_ledger_reading(review, key, path)
     READ.one_of(review["verdict"], f"{path}.verdict", tuple(AI_VERDICTS))

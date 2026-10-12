@@ -297,7 +297,7 @@ class LazySnapshotTests(LazySnapshotFixture):
         original = json.loads(path.read_text(encoding="utf-8"))
         unchanged = original["fetchable"]["src/unchanged.py"]
         for fetchable, message in (
-            ({"../escape.py": unchanged}, "fetchable path is unsafe"),
+            ({"../escape.py": unchanged}, "a key of source-snapshot.json.fetchable is unsafe"),
             ({"CLAUDE.md": unchanged}, "fetchable path is invalid: 'CLAUDE.md'"),  # an exclusion
             ({"src/changed.py": unchanged}, "fetchable path is invalid: 'src/changed.py'"),  # already held
             ({".claude/settings.json": unchanged}, "fetchable path is invalid"),  # agent configuration
@@ -513,7 +513,8 @@ class CommandTests(LazySnapshotFixture):
             (
                 state,
                 {**request, "pull_request": {"head_sha": 5}},
-                "request.pull_request.head_sha must be a non-empty string, found integer 5",
+                "request.pull_request.head_sha must be a lowercase hexadecimal digest of 40 or 64 characters, "
+                "found integer 5",
             ),
             ({**state, "roles": {}}, request, "run.roles must be an array, found an object"),
             (

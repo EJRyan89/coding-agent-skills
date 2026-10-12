@@ -315,7 +315,8 @@ def decide(event: dict[str, Any]) -> str | None:
             agent = ""
         if not AGENT_ID.fullmatch(agent):
             raise Denied("the hook event carries no agent ID, so the guard cannot tell which reviewer is calling")
-        _check(tool, tool_input, Path(event.get("cwd") or Path.cwd()), agent)
+        cwd = READ.optional(READ.string, event.get("cwd"), "hook event.cwd", empty=True)
+        _check(tool, tool_input, Path(cwd or Path.cwd()), agent)
     except Denied as exc:
         return f"Code-review reviewer boundary: {exc}."
     return None

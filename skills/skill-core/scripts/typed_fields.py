@@ -225,13 +225,14 @@ class FieldReader:
     def optional(
         self, read: Callable[Concatenate[Any, str, P], T], value: Any, path: str, *args: P.args, **kwargs: P.kwargs
     ) -> T | None:
-        """Null, or the value `read` reads; an error then expects the kind or null."""
+        """Null, or the value `read` reads; an error then expects the kind or null, except an object's missing or
+        unknown fields, which are faults of an object that is there."""
         if value is None:
             return None
         try:
             return read(value, path, *args, **kwargs)
         except FieldError as exc:
-            if exc.path != path:
+            if exc.path != path or exc.expected.startswith("an object "):
                 raise
             raise self.fail(path, f"{exc.expected} or null", exc.found) from None
 

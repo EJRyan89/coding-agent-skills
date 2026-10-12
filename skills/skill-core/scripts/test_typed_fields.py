@@ -231,6 +231,27 @@ class FieldReaderTests(unittest.TestCase):
             READ.string,
         )
 
+    def test_an_optional_object_names_its_fields_without_null(self) -> None:
+        self.refused(
+            "o must be an object or null, found an array", READ.optional, READ.json_object, [], "o", required={"a"}
+        )
+        self.refused(
+            "o must be an object with field a, found an object without it",
+            READ.optional,
+            READ.json_object,
+            {},
+            "o",
+            required={"a"},
+        )
+        self.refused(
+            'o must be an object of known fields, found unknown field "b"',
+            READ.optional,
+            READ.json_object,
+            {"b": 1},
+            "o",
+            optional={"a"},
+        )
+
     def test_either_reads_the_first_kind_that_accepts_the_value(self) -> None:
         self.assertEqual(2, READ.either(2, "r", READ.integer, READ.string))
         self.assertEqual("v1:F001", READ.either("v1:F001", "r", READ.integer, READ.string))

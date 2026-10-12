@@ -71,7 +71,7 @@ def _run(run: Path, role: str) -> tuple[Path, str, str, Path]:
         )
         name = READ.string(request.get("repository"), "request.repository")
         pull = READ.json_object(request.get("pull_request"), "request.pull_request")
-        head = READ.string(pull.get("head_sha"), "request.pull_request.head_sha")
+        head = READ.hex_digest(pull.get("head_sha"), "request.pull_request.head_sha", 40, 64)
         roles = READ.array(state.get("roles", []), "run.roles", READ.json_object)
         repository = READ.optional(READ.string, state.get("source_repository"), "run.source_repository")
     except (PersistenceError, FieldError) as exc:

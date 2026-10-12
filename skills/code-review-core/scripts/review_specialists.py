@@ -304,7 +304,8 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
         )
     except RuntimeContractError as exc:
         raise SpecialistError(str(exc)) from exc
-    if manifest.get("kind") != "specialists" or manifest["id"] != materialization.get("adapter_id"):
+    adapter_id = READ.string(materialization.get("adapter_id"), "materialization.adapter_id")
+    if manifest.get("kind") != "specialists" or manifest["id"] != adapter_id:
         raise SpecialistError("Reviewer materialization manifest does not match its metadata")
     hashes = READ.json_object(materialization.get("source_hashes"), "materialization.source_hashes")
     declared = declared_reviewer_files(manifest)
@@ -322,7 +323,7 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
     for profile, expected in suite.items():
         if hashlib.sha256(suite_profile_path(profile).read_bytes()).hexdigest() != expected:
             raise SpecialistError(f"Suite profile does not match its materialized hash: {profile}")
-    return manifest, materialization["source_commit"]
+    return manifest, READ.hex_digest(materialization.get("source_commit"), "materialization.source_commit", 40, 64)
 
 
 def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work: Path) -> bool:
