@@ -12,6 +12,12 @@ from .report import ReportLine, currently_chosen, print_report, warn_ignored_hom
 
 CHECK_ACTIONS = ("MISSING", "OUTDATED", "UNUSABLE", "FOUND", "OPTIONAL")
 NEEDED_TO_DEPLOY = "needed to deploy"
+# What check asks for when a tool needed to deploy is missing, outdated, or both, keyed by (missing, outdated).
+BLOCKED_LEADS = {
+    (True, False): "Install the missing tools",
+    (False, True): "Update the outdated tools",
+    (True, True): "Install the missing tools and update the outdated ones",
+}
 
 
 def _version_text(probe: tools.Probe) -> str:
@@ -22,7 +28,11 @@ def _version_text(probe: tools.Probe) -> str:
 def _deploy_lines() -> list[ReportLine]:
     python = tools.python_version()
     minimum = tools.format_version(tools.MINIMUM_PYTHON)
-    lines = [ReportLine(f"Python {tools.format_version(python)}", "FOUND", f"{NEEDED_TO_DEPLOY}; {minimum} or newer")]
+    label = f"Python {tools.format_version(python)}"
+    if python < tools.MINIMUM_PYTHON:
+        lines = [ReportLine(label, "OUTDATED", f"{NEEDED_TO_DEPLOY}; needs {minimum} or newer")]
+    else:
+        lines = [ReportLine(label, "FOUND", f"{NEEDED_TO_DEPLOY}; {minimum} or newer")]
     for tool in tools.DEPLOY_TOOLS:
         probe = tools.probe(tool)
         if probe.path is None:
@@ -107,8 +117,10 @@ def execute(namespace: argparse.Namespace, paths: Paths) -> int:
     print(f"Home: {platform_support.normalize(paths.home)}")
     warn_ignored_home(paths.home)
     print_report("CHECK", CHECK_ACTIONS, [*deploy_lines, *skill_lines])
-    if any(line.action == "MISSING" for line in deploy_lines):
-        print('Install the missing tools before deploying; see "Installing the tools" in')
+    actions = {line.action for line in deploy_lines}
+    lead = BLOCKED_LEADS.get(("MISSING" in actions, "OUTDATED" in actions))
+    if lead is not None:
+        print(f'{lead} before deploying; see "Installing the tools" in')
         print("docs/installation.md. Open a new terminal afterwards so the tools are on PATH.")
         print("")
         return 1

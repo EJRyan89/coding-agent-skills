@@ -366,6 +366,7 @@ def execute(
         return _execute(namespace, paths, None, probe, stdin, debug)
     try:
         platform_support.ensure_supported()
+        source_ref.require_extraction_filters()
         pin = source_ref.resolve(paths.source_dir, namespace.at)
         exported = source_ref.export(paths.source_dir, pin.commit)
     except (DeployError, OSError, KeyboardInterrupt) as exc:

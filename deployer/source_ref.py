@@ -15,7 +15,7 @@ from pathlib import Path
 
 from flat_text import flat_text
 
-from . import fsops, platform_support
+from . import fsops, platform_support, tools
 from .arguments import usage_error
 from .errors import DeployError, see_recovery
 from .source_commit import COMMIT_PATTERN
@@ -80,16 +80,13 @@ def resolve(source_dir: Path, ref: str) -> Pin:
 def export(source_dir: Path, commit: str) -> Path:
     """A fresh directory under the system temporary directory whose `tree` folder holds the commit's files.
 
-    git archive writes the files as a checkout of the commit would, line endings included, and the extraction refuses
-    any member that would land outside the folder.
+    git archive writes the files as a checkout of the commit would, line endings included. A tree holding a link or a
+    special file is refused before anything is extracted, and the extraction's data filter refuses any member that
+    would land outside the folder; either refusal names the member.
     """
     if not COMMIT_PATTERN.fullmatch(commit):
         raise ValueError(f"not a full commit name: {commit!r}")
-    if not hasattr(tarfile, "data_filter"):
-        raise DeployError(
-            "ERROR: --at needs a Python whose tarfile has extraction filters (3.11.4 or newer).",
-            "Update Python, then retry.",
-        )
+    require_extraction_filters()
     root = Path(tempfile.mkdtemp(prefix="deploy-at-"))
     try:
         archive = root / "tree.tar"
@@ -97,11 +94,45 @@ def export(source_dir: Path, commit: str) -> Path:
         if result.returncode != 0:
             raise DeployError(f"ERROR: git archive could not export {commit}: {flat_text(result.output)}")
         fsops.make_directory(root / "tree")
-        fsops.extract_archive(archive, root / "tree")
+        try:
+            _refuse_links(archive, commit)
+            fsops.extract_archive(archive, root / "tree")
+        except tarfile.TarError as exc:
+            # The data filter's refusal names the member and why; any other TarError is an archive tarfile cannot read.
+            reason = flat_text(str(exc))
+            raise DeployError(f"ERROR: The deployer refused to extract the tree of {commit}: {reason}.") from exc
     except BaseException:
         remove(root)
         raise
     return root
+
+
+def require_extraction_filters() -> None:
+    """Refuse a Python whose tarfile cannot extract with the data filter, before --at runs git or makes a directory."""
+    if tools.python_version() < tools.MINIMUM_PYTHON:
+        floor, current = tools.format_version(tools.MINIMUM_PYTHON), tools.format_version(tools.python_version())
+        raise DeployError(
+            f"ERROR: --at needs Python {floor} or newer, whose tarfile extracts with filters; "
+            f"this is Python {current}.",
+            'See "Installing the tools" in docs/installation.md.',
+        )
+
+
+def _refuse_links(archive: Path, commit: str) -> None:
+    """Refuse a tree holding anything but files and folders, as the deployer refuses a link in any source tree.
+
+    The data filter refuses a link that leads outside the tree, but links are how its known bypasses reach outside,
+    and a Python that has the filter need not have their fixes, so no link is extracted at all.
+    """
+    with tarfile.open(name=archive, mode="r:") as handle:
+        for member in handle:
+            if member.isfile() or member.isdir():
+                continue
+            kind = "a symbolic link" if member.issym() else "a hard link" if member.islnk() else "a special file"
+            raise DeployError(
+                f"ERROR: The tree of {commit} holds {member.name!r}, {kind}, which the deployer does not extract.",
+                "A deployable tree holds only files and folders; deploy a commit without links or special files.",
+            )
 
 
 def remove(root: Path) -> None:
