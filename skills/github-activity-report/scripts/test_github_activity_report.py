@@ -705,7 +705,7 @@ class MainTests(unittest.TestCase):
             f"sys.path.insert(0, {core!r})\n"
             "import bounded_process\n"
             "def fake(command, timeout, **options):\n"
-            "    stderr = 'gh: HTTP 502: proxy \\u2192 upstream \\u2713'.encode()\n"
+            "    stderr = 'gh: HTTP 500: proxy \\u2192 upstream \\u2713'.encode()\n"
             "    return bounded_process.Finished(1, b'', stderr)\n"
             "bounded_process.run_bounded = fake\n"
             f"sys.argv = [{script!r}, '--org', 'acme', '--user', 'octo', '--months', '1']\n"
@@ -718,7 +718,7 @@ class MainTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(1, result.returncode, result.stderr.decode("utf-8", "replace"))
-        self.assertEqual(["FAILED gh: HTTP 502: proxy → upstream ✓ [api]"], result.stdout.decode("utf-8").splitlines())
+        self.assertEqual(["FAILED gh: HTTP 500: proxy → upstream ✓ [api]"], result.stdout.decode("utf-8").splitlines())
 
 
 if __name__ == "__main__":

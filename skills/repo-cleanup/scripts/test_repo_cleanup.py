@@ -171,7 +171,7 @@ class FakeGitHub:
             return CommandResult(0, json.dumps([commits]), "")
         branch = arguments[arguments.index("--head") + 1]
         if branch in self.failing:
-            return CommandResult(1, "", "HTTP 502")
+            return CommandResult(1, "", "HTTP 500")
         return CommandResult(0, json.dumps(self.pulls.get(branch, [])), "")
 
     def pull(self, branch: str, state: str, sha: str, commits: str = "") -> None:
@@ -428,8 +428,8 @@ class DiscoverTests(Fixture):
                 [],
             ),
             (
-                CommandResult(1, "", "HTTP 502: Bad Gateway\n"),
-                r"^GitHub CLI access check failed \(api\) — HTTP 502",
+                CommandResult(1, "", "HTTP 500: Internal Server Error\n"),
+                r"^GitHub CLI access check failed \(api\) — HTTP 500",
                 [],
             ),
             (

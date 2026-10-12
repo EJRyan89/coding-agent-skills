@@ -228,7 +228,7 @@ class FakeGitHub:
             return CommandResult(0, json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page}}}}), "")
         if endpoint.startswith(f"repos/{REPOSITORY}/pulls?state="):
             if self.listing is None:
-                return CommandResult(1, "", "HTTP 502: Bad Gateway")
+                return CommandResult(1, "", "HTTP 500: Internal Server Error")
             state = endpoint.split("state=", 1)[1].split("&", 1)[0]
             listed = [pull for pull in self.listing if state in {"all", pull["state"]}]
             # Every listing fits one page: a paginated one arrives slurped, a closed walk's first page as it is.

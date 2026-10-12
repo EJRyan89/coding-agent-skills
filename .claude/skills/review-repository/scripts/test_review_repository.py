@@ -73,6 +73,16 @@ class ManifestTests(GitTestCase):
             "skills/code-review-core/scripts/review_pipeline.py": {"trust-boundary"},
             "skills/code-review-core/scripts/review_specialists.py": {"trust-boundary"},
             "skills/code-review-core/scripts/test_adversarial_inputs.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_analyzers.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_github.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_hosts.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_process.py": {"trust-boundary"},
+            "skills/code-review-core/scripts/review_records.py": {"trust-boundary"},
+            "skills/skill-core/scripts/bounded_process.py": {"trust-boundary"},
+            "skills/skill-core/scripts/git_client.py": {"trust-boundary"},
+            "skills/skill-core/scripts/github_client.py": {"trust-boundary"},
+            "skills/skill-core/scripts/pdf_tool.py": {"trust-boundary", "upgrade-notes"},
+            "skills/skill-core/scripts/typed_fields.py": {"trust-boundary"},
             "skills/code-review-core/references/review-adapter.schema.json": {"upgrade-notes"},
             "docs/upgrade-notes.md": {"documentation"},
             "docs/design.md": {"documentation"},
@@ -120,8 +130,41 @@ class ManifestTests(GitTestCase):
             ".github/workflows/validate.yml",
             f"{SKILL}/references/deployer.md",
             "tools/release_notes.py",
+            "skills/code-review-core/scripts/review_io.py",
+            "skills/code-review-core/scripts/test_review_hosts_copilot.py",
+            "skills/skill-core/scripts/git_test_base.py",
+            "skills/skill-core/scripts/test_pdf_tool.py",
         ]
         self.assertEqual(others, uncovered(MANIFEST, others))
+
+    def test_every_trust_boundary_script_the_route_names_is_in_the_repository(self) -> None:
+        # A rename would leave the route matching nothing, and the specialist would stop seeing the file.
+        files = set(tracked_files())
+        named = [
+            "skills/code-review-core/scripts/review_" + name + ".py"
+            for name in (
+                "analyzers",
+                "documents",
+                "github",
+                "guard",
+                "hosts",
+                "pipeline",
+                "process",
+                "records",
+                "runtime",
+                "source",
+                "specialists",
+            )
+        ] + [
+            "skills/skill-core/scripts/" + name + ".py"
+            for name in ("bounded_process", "git_client", "github_client", "pdf_tool", "typed_fields")
+        ]
+        trust = next(item for item in MANIFEST["specialists"] if item["id"] == "trust-boundary")
+        patterns = [re.compile(pattern) for pattern in trust["include"]]
+        for path in named:
+            with self.subTest(path=path):
+                self.assertIn(path, files)
+                self.assertTrue(any(pattern.search(path) for pattern in patterns))
 
     def test_each_profile_names_design_sections_that_exist(self) -> None:
         design = (REPOSITORY / "docs" / "design.md").read_text(encoding="utf-8")
