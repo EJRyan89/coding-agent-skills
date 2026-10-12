@@ -10,7 +10,10 @@ import sys
 import tempfile
 import time
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -46,6 +49,41 @@ LAUNCHER_PROGRAM = (
     "subprocess.Popen([sys.executable, '-c', waiter, sys.argv[1]])\n"
     "print('ready'); sys.stdout.flush()\n"
 )
+
+
+class RecordingTree:
+    """A process tree that records being held and left, and gives the command the start options it is made with."""
+
+    def __init__(self, options: dict[str, Any]) -> None:
+        self.options = options
+        self.events: list[str] = []
+
+    def start_options(self) -> dict[str, Any]:
+        return self.options
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+        self.events.append("held")
+        try:
+            yield
+        finally:
+            self.events.append("left with the command gone" if process.poll() is not None else "left running")
+
+
+class OnceWritten(RecordingTree):
+    """Holds the command only once it has created `written`, so its time limit starts after its output is out and how
+    long start-up takes never decides what a timeout carries."""
+
+    def __init__(self, written: Path) -> None:
+        super().__init__({})
+        self.written = written
+
+    @contextmanager
+    def hold(self, process: subprocess.Popen[bytes]) -> Iterator[None]:
+        deadline = time.monotonic() + STARTUP_SECONDS
+        while not self.written.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        yield
 
 
 class BoundedProcessTests(unittest.TestCase):
@@ -171,6 +209,58 @@ class BoundedProcessTests(unittest.TestCase):
     def test_a_missing_command_raises_file_not_found(self) -> None:
         with self.assertRaises(FileNotFoundError):
             run_bounded(["coding-agent-skills-no-such-command"], 60)
+
+    def test_output_past_the_limit_is_cut_from_each_stream_and_the_cut_named(self) -> None:
+        program = "import sys; sys.stdout.buffer.write(b'o' * 100); sys.stderr.buffer.write(b'e' * 7); sys.exit(3)"
+        finished = run_bounded([sys.executable, "-c", program], 60, output_limit=10)
+        self.assertEqual(
+            Finished(3, b"o" * 10 + b"\n[output cut: 90 bytes past the first 10 not kept]\n", b"e" * 7), finished
+        )
+
+    def test_output_within_the_limit_is_returned_whole_with_no_note(self) -> None:
+        program = "import sys; sys.stdout.buffer.write(b'x' * 10)"
+        self.assertEqual(Finished(0, b"x" * 10, b""), run_bounded([sys.executable, "-c", program], 60, output_limit=10))
+
+    def test_a_timeout_carries_the_output_written_so_far_cut_to_the_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            written = Path(temporary) / "written"
+            program = (
+                "import sys, time; sys.stdout.buffer.write(b'begun' * 4); sys.stdout.flush(); "
+                "sys.stderr.buffer.write(b'note'); sys.stderr.flush(); "
+                f"open({str(written)!r}, 'w').close(); time.sleep(60)"
+            )
+            command = [sys.executable, "-c", program]
+            with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                run_bounded(command, 0.5, output_limit=8, tree=OnceWritten(written))
+        self.assertEqual(command, raised.exception.cmd)
+        self.assertEqual(0.5, raised.exception.timeout)
+        self.assertEqual(b"begunbeg\n[output cut: 12 bytes past the first 8 not kept]\n", raised.exception.output)
+        self.assertEqual(b"note", raised.exception.stderr)
+
+    def test_a_given_environment_is_the_whole_environment_with_no_prompt_turned_off(self) -> None:
+        given = {**os.environ, "KEPT": "given"}
+        given.pop("GIT_TERMINAL_PROMPT", None)
+        finished = run_bounded([sys.executable, "-c", ENVIRONMENT_PROGRAM], 60, env=given)
+        variables = json.loads(finished.stdout)["variables"]
+        self.assertEqual(
+            {"GIT_TERMINAL_PROMPT": None, "GCM_INTERACTIVE": given.get("GCM_INTERACTIVE"), "KEPT": "given"},
+            {name: variables[name] for name in ("GIT_TERMINAL_PROMPT", "GCM_INTERACTIVE", "KEPT")},
+        )
+
+    def test_a_tree_starts_the_command_and_is_left_once_it_has_finished(self) -> None:
+        tree = RecordingTree({"close_fds": True})
+        popen = subprocess.Popen
+        with mock.patch.object(bounded_process.subprocess, "Popen", side_effect=popen) as started:
+            finished = run_bounded([sys.executable, "-c", "print('done')"], 60, tree=tree)
+        self.assertEqual(0, finished.returncode)
+        self.assertIs(True, started.call_args.kwargs["close_fds"])
+        self.assertEqual(["held", "left with the command gone"], tree.events)
+
+    def test_a_tree_is_left_after_a_timeout_kills_the_command(self) -> None:
+        tree = RecordingTree({})
+        with self.assertRaises(subprocess.TimeoutExpired):
+            run_bounded([sys.executable, "-c", "import time; time.sleep(60)"], 0.5, tree=tree)
+        self.assertEqual(["held", "left with the command gone"], tree.events)
 
     def test_the_prompt_switches(self) -> None:
         self.assertEqual(

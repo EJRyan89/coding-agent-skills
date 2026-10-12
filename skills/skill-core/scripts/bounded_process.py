@@ -7,7 +7,10 @@ waiting for an answer nobody gives.
 Output goes to temporary files, not pipes. A command that times out is killed, but a process it started, such as
 `git-remote-https` or a credential helper, can outlive it and hold a pipe open, and reading a pipe to its end would
 then wait for that process. A file needs no reader, so the call returns when the time is up. Given input is a file
-too: the command reads it to its end and then sees stdin closed, and one that reads none of it cannot block.
+too: the command reads it to its end and then sees stdin closed, and one that reads none of it cannot block. An output
+limit bounds what is read back from each file, and names what it cut. A caller whose command may start programs of its
+own gives a `ProcessTree`, which ends every one of them still running once the command is done or killed; ending them
+is operating-system-specific, so this module only calls it.
 
 `Streaming` runs a command that answers requests while it runs, such as `git cat-file --batch`, with the same
 environment unless its caller gives another; its stdin is the caller's pipe of requests, never the terminal.
@@ -22,10 +25,10 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import AbstractContextManager, contextmanager, nullcontext, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, Any, Protocol
 
 # Seconds to wait for a killed command to be reported gone.
 KILL_WAIT_SECONDS = 10.0
@@ -35,6 +38,8 @@ CHUNK_BYTES = 64 * 1024
 QUEUED_CHUNKS = 16  # how far a streaming command's reader runs ahead of its caller
 POLL_SECONDS = 0.1
 NON_INTERACTIVE = {"GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GH_PROMPT_DISABLED": "1"}
+# Ends a stream cut at an output limit, so whoever reads it learns that more was written than it holds.
+CUT_NOTE = "\n[output cut: {cut} bytes past the first {limit} not kept]\n"
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,18 @@ class Finished:
     returncode: int
     stdout: bytes
     stderr: bytes
+
+
+class ProcessTree(Protocol):
+    """A command and every process it starts, kept together so that ending the tree ends them all."""
+
+    def start_options(self) -> dict[str, Any]:
+        """Keyword arguments for subprocess.Popen that start the command as the tree needs."""
+        ...
+
+    def hold(self, process: subprocess.Popen[bytes]) -> AbstractContextManager[object]:
+        """Entered once the command has started; leaving it ends every process of the tree still running."""
+        ...
 
 
 def non_interactive_environment() -> dict[str, str]:
@@ -57,14 +74,22 @@ def run_bounded(
     stderr: IO[bytes] | None = None,
     cwd: Path | None = None,
     input_bytes: bytes | None = None,
+    env: Mapping[str, str] | None = None,
+    output_limit: int | None = None,
+    tree: ProcessTree | None = None,
 ) -> Finished:
     """Run `command` without a shell, and with no stdin but `input_bytes`, and return its exit status and output.
 
     With `stdout`, the command writes there and the result's stdout is empty, and `stderr` likewise; given the same
     file, the two streams arrive in it in the order the command wrote them. With `cwd`, it runs in that directory.
-    With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them.
+    With `input_bytes`, its stdin is exactly those bytes and then closed; the time limit covers reading them. With
+    `env`, that is the command's whole environment and no prompt is turned off for it; otherwise it is this process's
+    environment with every prompt turned off. With `output_limit`, at most that many bytes of each stream are read
+    back, and a stream that held more ends with CUT_NOTE. With `tree`, the command starts as the tree says, and every
+    process it started is ended once it has finished or been killed.
     Raises OSError when the command cannot start (FileNotFoundError when it does not exist), and
-    subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds.
+    subprocess.TimeoutExpired, after killing it, when it does not finish within `timeout` seconds; the exception
+    carries the output written by then, read back as a result's would be.
     """
     with tempfile.TemporaryFile() as errors, tempfile.TemporaryFile() as output, _stdin(input_bytes) as stdin:
         process = subprocess.Popen(
@@ -72,18 +97,32 @@ def run_bounded(
             stdin=stdin,
             stdout=output if stdout is None else stdout,
             stderr=errors if stderr is None else stderr,
-            env=non_interactive_environment(),
+            env=non_interactive_environment() if env is None else dict(env),
             cwd=cwd,
+            **({} if tree is None else tree.start_options()),
         )
-        try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=KILL_WAIT_SECONDS)
-            raise
-        output.seek(0)
-        errors.seek(0)
-        return Finished(returncode, output.read(), errors.read())
+        expired: subprocess.TimeoutExpired | None = None
+        with nullcontext() if tree is None else tree.hold(process):
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                process.wait(timeout=KILL_WAIT_SECONDS)
+                expired = exc
+        kept_output, kept_errors = _read_back(output, output_limit), _read_back(errors, output_limit)
+        if expired is not None:
+            raise subprocess.TimeoutExpired(list(command), timeout, kept_output, kept_errors) from expired
+        return Finished(returncode, kept_output, kept_errors)
+
+
+def _read_back(stream: IO[bytes], limit: int | None) -> bytes:
+    """A stream's file from its start, or its first `limit` bytes and CUT_NOTE when it holds more."""
+    stream.seek(0)
+    if limit is None:
+        return stream.read()
+    kept = stream.read(limit)
+    cut = stream.seek(0, os.SEEK_END) - len(kept)
+    return kept + CUT_NOTE.format(cut=cut, limit=limit).encode() if cut > 0 else kept
 
 
 @contextmanager
