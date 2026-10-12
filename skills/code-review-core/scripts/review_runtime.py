@@ -665,7 +665,8 @@ class PrepareGitRunner:
 
     def __call__(self, command: Sequence[str], timeout: float) -> GitResult:
         key = tuple(command)
-        arguments = key[3:] if key[:2] == ("git", "-C") else ()
+        named = len(key) >= 3 and key[0] == "git" and key[1] == "-C"  # git in a named checkout, as GitClient runs it
+        arguments = key[3:] if named else ()
         if not _read_only(arguments):
             self._answers.clear()
             try:
