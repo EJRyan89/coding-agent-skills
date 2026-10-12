@@ -198,6 +198,23 @@ def _replaced_pin(context: Context) -> str | None:
     return f"the deployment pinned with --at {ref} to {source_commit.describe(context.paths.source_dir, commit)}"
 
 
+def _refuse_unpinning(context: Context, replaced_pin: str | None) -> None:
+    """Refuse a run without --at that would replace a deployment made with --at, unless it passes --unpin.
+
+    The deployer always runs from the checkout's HEAD, so this keeps a pin whichever commit's update-coding-agent-skills
+    started the run: one deployed from a commit before that skill stopped at a pin itself runs `--all` alone. Another
+    --at names the commit it deploys, and the uninstall removes the pinned deployment as asked, so neither needs it.
+    """
+    if replaced_pin is None or context.pin is not None or context.options.unpin or context.selection.deselect_all:
+        return
+    raise DeployError(
+        f"ERROR: Refusing to replace {replaced_pin} without --unpin.",
+        "To move it to this checkout's HEAD, rerun with --unpin, as in 'python deploy.py --all --unpin'; to keep the "
+        "pin, change nothing, or deploy another commit with --at.",
+        see_recovery(source_ref.EARLIER_COMMIT),
+    )
+
+
 def _deploy(
     paths: Paths,
     options: Options,
@@ -216,6 +233,8 @@ def _deploy(
     if selection is None:
         return 0
     context.selection = selection
+    replaced_pin = _replaced_pin(context)
+    _refuse_unpinning(context, replaced_pin)
     selected = [] if selection.deselect_all else source.expand(src, selection.bundles, selection.skills)
     adapters = [name for name in selected if src.skills[name].selectable]
     shadowed = [name for name in adapters if os.path.lexists(paths.copilot_skills_dir / name)]
@@ -250,7 +269,6 @@ def _deploy(
         print("Rendered and validated.")
     # Planned last, after the slow validation, so the destinations it read are the ones the deployment changes.
     entries = plan.build(context, wanted, staged)
-    replaced_pin = _replaced_pin(context)
     if run_id is None:
         plan.dry_run(entries)
         if replaced_pin is not None:

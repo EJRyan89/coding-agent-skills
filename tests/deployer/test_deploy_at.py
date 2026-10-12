@@ -127,25 +127,85 @@ class DeployAtTests(DeployerTestCase):
         self.assert_exports_removed()
         self.assertIn(f"Deployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
 
-    def test_a_plain_deployment_replaces_the_pin_and_says_so(self) -> None:
+    def refusal(self) -> str:
+        """The lines a deployment without --at prints over the v1.0.0 pin, which only --unpin lets it replace."""
+        return (
+            f"ERROR: Refusing to replace the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}) without "
+            "--unpin.\n"
+            "To move it to this checkout's HEAD, rerun with --unpin, as in 'python deploy.py --all --unpin'; to keep "
+            "the pin, change nothing, or deploy another commit with --at.\n"
+            'See "Deploying an earlier commit" in docs/recovery.md.\n'
+        )
+
+    def assert_pinned_at_the_release(self) -> None:
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.release, "v1.0.0"), (entry["source_commit"], entry["source_ref"]))
+        self.assertIn("Alpha at the release", self.skill_text("alpha"))
+        self.assertFalse((self.skills_dir / "beta").exists())
+
+    def test_a_deployment_without_at_over_a_pin_is_refused_before_it_changes_anything(self) -> None:
+        # An update skill from a commit before its own PINNED stop runs exactly `deploy.py --all </dev/null` from the
+        # clone, so this refusal is what keeps a pin to such a commit; the harness holds the home unchanged.
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        for arguments in (
+            ("--all",),
+            ("--all", "--dry-run"),
+            ("--all", "--force"),
+            ("--all", "--force-item", "alpha"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = self.deploy_fails(*arguments, pattern=r"ERROR: Refusing to replace the deployment pinned")
+                self.assertEqual(1, result.code)
+                self.assertIn(self.refusal(), result.output)
+                self.assertNotIn("Rendered and validated", result.output)
+                self.assertNotIn("Traceback", result.output)
+                self.assert_pinned_at_the_release()
+        selected = self.deploy_fails(
+            stdin=f"{self.selection_number('alpha')}\n", pattern=r"ERROR: Refusing to replace the deployment pinned"
+        )
+        self.assertIn(self.refusal(), selected.output)
+        self.assert_pinned_at_the_release()
+
+    def test_unpin_replaces_the_pin_and_says_so(self) -> None:
         self.deploy_ok("--all", "--at", "v1.0.0")
         replaced = f"the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release})."
-        self.assertIn(f"\nWould replace {replaced}\n", self.deploy_ok("--all", "--dry-run").output)
-        self.assertIn(f"\nReplaced {replaced}\n", self.deploy_ok("--all").output)
+        self.assertIn(f"\nWould replace {replaced}\n", self.deploy_ok("--all", "--dry-run", "--unpin").output)
+        self.assert_pinned_at_the_release()
+        self.assertIn(f"\nReplaced {replaced}\n", self.deploy_ok("--all", "--unpin").output)
         entry = self.manifest()["sources"][SOURCE_ID]
         self.assertEqual(self.head, entry["source_commit"])
         self.assertNotIn("source_ref", entry)
         self.assertIn("Alpha on main", self.skill_text("alpha"))
         self.assertTrue((self.skills_dir / "beta" / "SKILL.md").is_file())
-        self.assertNotIn("Replaced the deployment pinned", self.deploy_ok("--all").output)
+        # Over a deployment that is not pinned, --unpin changes nothing about the run, so the update skill passes it on.
+        for arguments in (("--all",), ("--all", "--unpin")):
+            with self.subTest(arguments=arguments):
+                self.assertNotIn("Replaced the deployment pinned", self.deploy_ok(*arguments).output)
+
+    def test_another_ref_moves_the_pin_without_unpin(self) -> None:
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        output = self.deploy_ok("--all", "--at", "main").output
+        self.assertIn(f"\nReplaced the deployment pinned with --at v1.0.0 to v1.0.0 ({self.release}).\n", output)
+        entry = self.manifest()["sources"][SOURCE_ID]
+        self.assertEqual((self.head, "main"), (entry["source_commit"], entry["source_ref"]))
+
+    def test_the_uninstall_removes_a_pinned_deployment_without_unpin(self) -> None:
+        # Answering none is the explicit removal, so it needs no flag; the pin goes with the items it pinned.
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        self.deploy_ok(stdin="none\n")
+        self.assertFalse((self.skills_dir / "alpha").exists())
+        self.assertNotIn("source_ref", self.manifest()["sources"][SOURCE_ID])
+        self.assertNotIn("pinned with --at", self.check().output)
 
     def test_the_update_skill_reports_the_line_the_deployer_prints_over_a_pin(self) -> None:
-        # update-coding-agent-skills deploys main's tip and reports a replaced pin by quoting this line.
+        # update-coding-agent-skills started with --unpin deploys main's tip with --unpin and quotes this line.
         skill = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "SKILL.md"
         quoted = "If the deployer printed `Replaced the deployment pinned with --at <ref> ...`"
         self.assertIn(quoted, skill.read_text(encoding="utf-8"))
         self.deploy_ok("--all", "--at", "v1.0.0")
-        self.assertIn("\nReplaced the deployment pinned with --at v1.0.0 to ", self.deploy_ok("--all").output)
+        self.assertIn(
+            "\nReplaced the deployment pinned with --at v1.0.0 to ", self.deploy_ok("--all", "--unpin").output
+        )
 
     def test_the_update_skill_reads_the_pin_from_the_line_check_prints(self) -> None:
         # update-coding-agent-skills stops with PINNED <ref> <commit>, read from this line of check's output.
@@ -357,6 +417,12 @@ class DeployAtTests(DeployerTestCase):
             "--at", "v1.0.0", "--migrate-from", "old/skills", pattern=r"--at cannot be combined with --migrate-from"
         )
         self.assertEqual(2, result.code)
+
+    def test_unpin_cannot_be_combined_with_at_or_migrate_from(self) -> None:
+        for other in (("--at", "v1.0.0"), ("--migrate-from", "old/skills")):
+            with self.subTest(other=other):
+                result = self.deploy_fails("--unpin", *other, pattern=f"--unpin cannot be combined with {other[0]}")
+                self.assertEqual(2, result.code)
 
 
 if __name__ == "__main__":

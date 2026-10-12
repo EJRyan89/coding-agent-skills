@@ -105,7 +105,9 @@ python deploy.py --all --at '<tag-or-commit>'
 
 A ref that starts with `-`, that names no commit, or whose `source.json` carries another source ID is refused before anything changes; a change of source ID needs an explicit migration. So is a commit whose tree holds a symbolic link, a hard link, or a special file, or a file the extraction would place outside the throwaway directory; the refusal names the file. `--at` needs the Python floor in [Installation](installation.md#requirements).
 
-Report the regression with the commit range between the two deployments. `update-coding-agent-skills` leaves a pinned deployment in place: it stops before fetching with `PINNED <ref> <commit>`. To move back to `main`, start it again with `--unpin`, or run `python deploy.py --all` from the clone. Either deployment without `--at` replaces the pinned one and says so: the deployer's report ends with `Replaced the deployment pinned with --at <ref>`, and the skill reports that line.
+Report the regression with the commit range between the two deployments. The pin holds until you leave it: a deployment without `--at`, with `--force` or `--force-item` or from the selection prompt, refuses before it changes anything, naming the pinned ref and commit, unless you pass `--unpin`. Another `--at` moves the pin, and the uninstall removes it with the items. The deployer holds the pin whichever commit you pinned, because it always runs as it is at the clone's `HEAD`. `update-coding-agent-skills` stops earlier, before fetching, with `PINNED <ref> <commit>`; a copy of the skill deployed from a commit that predates that stop fetches and fast-forwards the clone instead, then ends with `DEPLOY_FAILED` and the deployer's refusal, leaving the pinned deployment in place.
+
+To move back to `main`, run `python deploy.py --all --unpin` from the clone, or, when the skill stopped with `PINNED`, start it again with `--unpin`. Either replaces the pinned deployment and says so: the deployer's report ends with `Replaced the deployment pinned with --at <ref>`, and the skill reports that line.
 
 ## Configuration that no longer reads
 
