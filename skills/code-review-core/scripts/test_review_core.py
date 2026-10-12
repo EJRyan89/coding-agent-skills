@@ -3268,6 +3268,288 @@ class RuntimeContractTests(GitTestCase):
                 verify_checkout_remote(checkout, "different/one")
 
 
+def git_blob_id(content: bytes) -> str:
+    """The SHA-1 git blob id of `content`, computed here rather than by the code under test."""
+    return hashlib.sha1(b"blob %d\0" % len(content) + content, usedforsecurity=False).hexdigest()
+
+
+def entrypoint_files(*resources: str) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "id": "fixture-review",
+        "protocol_version": 1,
+        "supports": ["initial"],
+        "required_capabilities": ["read-diff", "write-result"],
+        "entrypoint": "review/SKILL.md",
+        "resources": list(resources),
+        "agent_profiles": [],
+    }
+
+
+class CommittedReadTests(GitTestCase):
+    """Reviewer files come from a commit's tree in batches, one `git ls-tree` per commit for their entries and one
+    `git cat-file --batch` for their bytes by the blob ids those entries gave, with every refusal before any read; and a
+    diff's base blob is sized before its content is asked for."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.checkout = self.root / "checkout"
+        self.checkout.mkdir()
+        self.git("init", "-q", "-b", "main")
+        self.calls: list[list[str]] = []
+        self.batches: list[list[str]] = []
+
+    def git(self, *arguments: str, data: bytes | None = None, index: Path | None = None) -> str:
+        environment = None if index is None else {**os.environ, "GIT_INDEX_FILE": str(index)}
+        return (
+            subprocess.run(
+                ["git", "-C", str(self.checkout), *arguments],
+                input=data,
+                capture_output=True,
+                check=True,
+                env=environment,
+            )
+            .stdout.decode("ascii")
+            .strip()
+        )
+
+    def commit(self, entries: Mapping[str, bytes | tuple[str, str]], *parents: str) -> str:
+        """A commit whose tree holds exactly `entries`: a path's bytes as a regular file, or (mode, object id)."""
+        index = self.root / f"index-{len(list(self.root.glob('index-*')))}"
+        for path, entry in entries.items():
+            mode, object_id = entry if isinstance(entry, tuple) else ("100644", self.blob(entry))
+            self.git("update-index", "--add", "--cacheinfo", f"{mode},{object_id},{path}", index=index)
+        tree = self.git("write-tree", index=index)
+        return self.git("commit-tree", tree, *(part for parent in parents for part in ("-p", parent)), "-m", "fixture")
+
+    def blob(self, content: bytes) -> str:
+        return self.git("hash-object", "-w", "--stdin", data=content)
+
+    def runner(self, arguments: Sequence[str], timeout: float) -> GitResult:
+        self.calls.append(list(arguments[3:]))
+        return review_runtime.subprocess_runner(arguments, timeout)
+
+    def reader(self, checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
+        self.batches.append(list(blobs))
+        yield from review_runtime.git_blob_reader(checkout, blobs)
+
+    def materialize(self, commit: str, manifest: dict[str, Any], name: str = "reviewer", **options: Any) -> Path:
+        destination = self.root / name
+        self.hashes = materialize_reviewer(
+            self.checkout, commit, manifest, destination, runner=self.runner, blob_reader=self.reader, **options
+        )
+        return destination
+
+    def test_each_commit_s_entries_come_from_one_ls_tree_and_every_blob_from_one_batch(self) -> None:
+        crlf, latin1, same = b"Shared\r\nrules\r\n", b"caf\xe9\n", b"same text\n"
+        trusted_g1, base_g1, g2 = b"trusted guideline\n", b"base guideline\n", b"guideline two\n"
+        trusted = self.commit(
+            {
+                "docs/shared.md": crlf,
+                "docs/same.md": same,
+                "agents/p.md": latin1,
+                "docs/g1.md": trusted_g1,
+                "docs/g2.md": g2,
+                "docs/copy.md": same,
+            }
+        )
+        base = self.commit({"docs/g1.md": base_g1, "README.md": b"base\n"})
+        manifest = {
+            "schema_version": 2,
+            "id": "fixture",
+            "protocol_version": 1,
+            "kind": "specialists",
+            "supports": ["initial"],
+            "required_capabilities": ["agent-delegation"],
+            "resources": ["docs/shared.md", "docs/same.md"],
+            "specialists": [
+                {
+                    "id": "p-review",
+                    "category": "P",
+                    "profile": "agents/p.md",
+                    "include": [r"\.p$"],
+                    "exclude": [],
+                    "resources": ["docs/g1.md", "docs/g2.md", "docs/copy.md"],
+                    "when": None,
+                }
+            ],
+            "conditions": {},
+        }
+        destination = self.materialize(trusted, manifest, guideline_commit=base)
+
+        at_trusted = ["docs/shared.md", "docs/same.md", "agents/p.md", "docs/g2.md", "docs/copy.md"]
+        self.assertEqual(
+            [
+                ["rev-parse", "--verify", f"{base}^{{commit}}"],
+                ["ls-tree", "-z", base, "--", "docs/g1.md", "docs/g2.md", "docs/copy.md"],
+                ["ls-tree", "-z", trusted, "--", *at_trusted],
+            ],
+            self.calls,
+        )
+        # One batch, each blob once: docs/copy.md holds the bytes docs/same.md does.
+        self.assertEqual([[git_blob_id(blob) for blob in (crlf, same, latin1, base_g1, g2)]], self.batches)
+        expected = {
+            "docs/shared.md": crlf,
+            "docs/same.md": same,
+            "agents/p.md": latin1,
+            "docs/g1.md": base_g1,
+            "docs/g2.md": g2,
+            "docs/copy.md": same,
+        }
+        self.assertEqual(expected, {path: (destination / path).read_bytes() for path in expected})
+        self.assertEqual({path: hashlib.sha256(content).hexdigest() for path, content in expected.items()}, self.hashes)
+        self.assertEqual(
+            {"docs/g1.md": base, "docs/g2.md": trusted, "docs/copy.md": trusted},
+            json.loads((destination / "materialization.json").read_text(encoding="utf-8"))["guideline_sources"],
+        )
+
+    def test_a_refused_entry_anywhere_in_a_batch_fails_before_any_blob_is_read(self) -> None:
+        submodule = self.commit({"lib.txt": b"vendored\n"})
+        trusted = self.commit(
+            {
+                "review/SKILL.md": b"# Review\n",
+                "docs/a.md": b"first\n",
+                "docs/z.md": b"last\n",
+                "docs/link.md": ("120000", self.blob(b"a.md")),
+                "vendor/lib": ("160000", submodule),
+            }
+        )
+        cases = (
+            ("docs/link.md", "Declared reviewer file is not a regular file: docs/link.md", 1),
+            ("vendor/lib", "Declared reviewer file is not a regular file: vendor/lib", 1),
+            ("docs/gone.md", "Declared reviewer file is missing: docs/gone.md", 1),
+            # A folder beside a path under it takes a call of its own, or ls-tree would list the folder's entries.
+            ("docs", "Declared reviewer file is not a regular file: docs", 2),
+        )
+        for index, (refused, message, listings) in enumerate(cases):
+            with self.subTest(refused):
+                self.calls.clear()
+                self.batches.clear()
+                destination = self.root / f"refused-{index}"
+                with self.assertRaises(RuntimeContractError) as raised:
+                    self.materialize(trusted, entrypoint_files("docs/a.md", refused, "docs/z.md"), destination.name)
+                self.assertEqual(message, str(raised.exception))
+                self.assertEqual(listings, len(self.calls))
+                self.assertEqual([], self.batches)
+                self.assertFalse(destination.exists())
+
+    def test_a_guideline_the_base_holds_as_no_regular_file_is_refused_there(self) -> None:
+        trusted = self.commit({"docs/g.md": b"trusted\n"})
+        manifest = {
+            "schema_version": 2,
+            "id": "fixture",
+            "protocol_version": 1,
+            "kind": "specialists",
+            "supports": ["initial"],
+            "required_capabilities": ["agent-delegation"],
+            "resources": [],
+            "specialists": [
+                {
+                    "id": "g-review",
+                    "category": "G",
+                    "profile": "suite:design-review",
+                    "include": [r"\.g$"],
+                    "exclude": [],
+                    "resources": ["docs/g.md"],
+                    "when": None,
+                }
+            ],
+            "conditions": {},
+        }
+        base = self.commit({"docs/g.md": ("120000", self.blob(b"../secret"))})
+        with self.assertRaisesRegex(RuntimeContractError, "^Declared reviewer file is not a regular file: docs/g.md$"):
+            self.materialize(trusted, manifest, guideline_commit=base)
+        self.assertEqual([], self.batches)
+        self.assertEqual([base], [call[2] for call in self.calls if call[0] == "ls-tree"], "never the trusted copy")
+
+    def test_bytes_that_do_not_hash_to_the_listed_blob_are_refused(self) -> None:
+        trusted = self.commit({"review/SKILL.md": b"# Review\n", "docs/a.md": b"rules\n"})
+
+        def swapped(checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
+            yield b"# Review\n"
+            yield b"other rules\n"
+
+        def missing(checkout: Path, blobs: Sequence[str]) -> Iterator[bytes]:
+            yield b"# Review\n"
+            raise RuntimeContractError(f"Blob {blobs[1]} is missing from the checkout's object store")
+
+        for name, reader in (("swapped", swapped), ("missing", missing)):
+            with self.subTest(name), self.assertRaises(RuntimeContractError) as raised:
+                materialize_reviewer(
+                    self.checkout, trusted, entrypoint_files("docs/a.md"), self.root / name, blob_reader=reader
+                )
+            self.assertEqual("Cannot read declared reviewer file: docs/a.md", str(raised.exception))
+            self.assertFalse((self.root / name).exists())
+
+    def test_a_long_list_of_paths_is_split_across_listings_and_read_in_one_batch(self) -> None:
+        names = [f"docs/{index:02d}-{'x' * 30}.md" for index in range(6)]
+        trusted = self.commit({"review/SKILL.md": b"# Review\n", **{name: name.encode() for name in names}})
+        with mock.patch.object(review_runtime, "LS_TREE_PATH_UNITS", 100):
+            destination = self.materialize(trusted, entrypoint_files(*names))
+        listed = [call[4:] for call in self.calls]
+        self.assertEqual(["review/SKILL.md", *names], [path for call in listed for path in call])
+        self.assertTrue(all(sum(len(path) + 3 for path in call) <= 100 for call in listed), listed)
+        self.assertEqual(4, len(listed))
+        self.assertEqual(1, len(self.batches))
+        self.assertEqual([name.encode() for name in names], [(destination / name).read_bytes() for name in names])
+
+    def test_a_single_reviewer_file_is_read_by_its_listed_blob_through_the_runner(self) -> None:
+        content = b"{\r\n}\r\n"
+        trusted = self.commit({".review/manifest.json": content})
+        self.assertEqual(
+            content, review_runtime._read_git_file(self.checkout, trusted, ".review/manifest.json", self.runner)
+        )
+        self.assertEqual(
+            [
+                ["ls-tree", "-z", trusted, "--", ".review/manifest.json"],
+                ["cat-file", "blob", git_blob_id(content)],
+            ],
+            self.calls,
+        )
+
+    def test_the_changed_file_limit_is_sixteen_mebibytes(self) -> None:
+        self.assertEqual(16_777_216, review_runtime.MAX_CHANGED_FILE_BYTES)
+
+    def test_a_base_blob_over_the_limit_is_refused_by_its_size_without_its_content_being_asked_for(self) -> None:
+        at_limit, over = b"a" * 16_777_216, b"a" * 16_777_217
+        for content in (at_limit, over):
+            self.blob(content)
+        limit = review_runtime.MAX_CHANGED_FILE_BYTES
+        for content, expected in ((at_limit, at_limit), (over, None)):
+            blob = git_blob_id(content)
+            with self.subTest(size=len(content)):
+                self.calls.clear()
+                self.assertEqual(
+                    expected, review_runtime.read_blob(self.checkout, blob[:7], self.runner, maximum=limit)
+                )
+                read = [["cat-file", "blob", blob]] if expected is not None else []
+                self.assertEqual(
+                    [["rev-parse", "--verify", f"{blob[:7]}^{{blob}}"], ["cat-file", "-s", blob], *read], self.calls
+                )
+        self.calls.clear()
+        self.assertEqual(over, review_runtime.read_blob(self.checkout, git_blob_id(over)[:7], self.runner))
+        self.assertNotIn("-s", [call[1] for call in self.calls], "no limit asks for no size")
+
+    def test_a_base_blob_id_that_names_no_single_blob_is_refused(self) -> None:
+        commit = self.commit({"docs/a.md": b"rules\n"})
+        tree = self.git("rev-parse", f"{commit}^{{tree}}")
+        for abbreviation in ("not-an-id", "abc", tree[:12], "0123456789abcdef"):
+            with self.subTest(abbreviation), self.assertRaises(RuntimeContractError):
+                review_runtime.read_blob(self.checkout, abbreviation, self.runner, maximum=1024)
+
+        def unsized(arguments: Sequence[str], timeout: float) -> GitResult:
+            if list(arguments[3:5]) == ["cat-file", "-s"]:
+                return GitResult(0, "12 bytes\n", "")
+            return review_runtime.subprocess_runner(arguments, timeout)
+
+        blob = git_blob_id(b"rules\n")
+        with self.assertRaisesRegex(RuntimeContractError, f"^The checkout did not return the size of blob {blob}$"):
+            review_runtime.read_blob(self.checkout, blob[:7], unsized, maximum=1024)
+
+
 class ReviewOperationTests(GitTestCase):
     @staticmethod
     def _pull(number: int, state: str = "OPEN", merged_at: str | None = None) -> dict:

@@ -4072,9 +4072,18 @@ class DocumentBaseRefusalTests(PipelineFixture):
         base = buffer.getvalue()
         self.assertGreater(len(base), rp.MAX_CHANGED_FILE_BYTES)
         self.assertEqual(b"[P1] # Scope\n[P2] Keep one queue.\n", rp.extract("docx", base))
-        self.changed_document(base)
+        blob = self.changed_document(base)
+        original = self.services.git
+        reads: list[list[str]] = []
 
-        self.assert_base_refused("it is over the changed-file size limit")
+        def recorded(arguments: Sequence[str], timeout: float) -> GitResult:
+            if blob in arguments:
+                reads.append(list(arguments[3:]))
+            return original(arguments, timeout)
+
+        with mock.patch.object(self.services, "git", recorded):
+            self.assert_base_refused("it is over the changed-file size limit")
+        self.assertEqual([["cat-file", "-s", blob]], reads, "sized by its id, its content never asked for")
 
     def test_prepare_notes_an_unextractable_base_and_shows_every_head_line_as_added(self) -> None:
         self.changed_document(

@@ -609,8 +609,7 @@ def _base_reader(checkout: Path | None, repository: str, pull: dict[str, Any], s
     if checkout is not None:
 
         def from_checkout(_path: str, abbreviation: str) -> bytes | None:
-            content = read_blob(checkout, abbreviation, services.git)
-            return None if len(content) > MAX_CHANGED_FILE_BYTES else content
+            return read_blob(checkout, abbreviation, services.git, maximum=MAX_CHANGED_FILE_BYTES)
 
         return from_checkout
     merge_base = functools.cache(
