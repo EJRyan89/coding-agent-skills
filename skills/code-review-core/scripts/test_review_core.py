@@ -31,7 +31,7 @@ import review_io
 import review_runtime
 import review_state
 import skill_roots
-from git_client import GitResult
+from git_client import GitError, GitResult
 from git_test_base import GitTestCase
 from github_client import CommandResult
 from review_archive import (
@@ -101,6 +101,7 @@ from review_records import (
 )
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
+    PrepareGitRunner,
     RuntimeContractError,
     RuntimeContractFieldError,
     build_adapter_request,
@@ -3266,6 +3267,172 @@ class RuntimeContractTests(GitTestCase):
                 resolve_reviewer_commit(checkout, "HEAD", head_sha=head)
             with self.assertRaisesRegex(RuntimeContractError, "origin mismatch"):
                 verify_checkout_remote(checkout, "different/one")
+
+
+class AnsweringGit:
+    """A git runner that records each command and answers it from `answers`, one result or error per call in order,
+    else with success and the command's arguments as its output, so each answer says which call gave it."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.answers: dict[tuple[str, ...], list[GitResult | GitError]] = {}
+
+    def __call__(self, command: Sequence[str], timeout: float) -> GitResult:
+        key = tuple(command)
+        self.calls.append(key)
+        answers = self.answers.get(key[3:])
+        if answers:
+            answer = answers.pop(0)
+            if isinstance(answer, GitError):
+                raise answer
+            return answer
+        return GitResult(0, f"{' '.join(key[3:])} #{len(self.calls)}\n", "")
+
+
+FULL_COMMIT = "1" * 40
+FULL_SHA256_COMMIT = "2" * 64
+
+
+def in_checkout(*arguments: str, checkout: str = "C:/checkout") -> tuple[str, ...]:
+    return ("git", "-C", checkout, *arguments)
+
+
+class PrepareGitRunnerTests(GitTestCase):
+    """One prepare's git runner asks an identical query of origin or of a full object id once, until a command that
+    is not a read; a ref, an abbreviation, a failed answer, and another prepare's runner are asked again."""
+
+    ORIGIN = ("remote", "get-url", "origin")
+    COMMIT = ("rev-parse", "--verify", f"{FULL_COMMIT}^{{commit}}")
+    REUSED = (
+        ORIGIN,
+        COMMIT,
+        ("rev-parse", "--verify", f"{FULL_SHA256_COMMIT}^{{commit}}"),
+        ("rev-parse", "--verify", FULL_COMMIT),
+        ("cat-file", "-e", f"{FULL_COMMIT}^{{commit}}"),
+        ("ls-tree", "-z", FULL_COMMIT, "--", "review/rules.md", "review/python.md"),
+        ("ls-tree", "-r", "-z", "-l", "--full-tree", FULL_COMMIT),
+        ("ls-tree", "-r", "--name-only", "-z", FULL_SHA256_COMMIT),
+    )
+    # Reads whose answer a ref, an abbreviation, or the network can change, or that no prepare repeats.
+    ASKED_EACH_TIME = (
+        ("rev-parse", "--verify", "refs/heads/reviewers^{commit}"),
+        ("rev-parse", "--verify", "abc1234^{blob}"),
+        ("rev-parse", "--verify", f"{FULL_COMMIT[:39]}^{{commit}}"),
+        ("rev-parse", "--verify", f"{FULL_COMMIT}~1"),
+        ("cat-file", "-e", "main^{commit}"),
+        ("cat-file", "-s", FULL_COMMIT),
+        ("cat-file", "blob", FULL_COMMIT),
+        ("ls-tree", "-z", "HEAD", "--", FULL_COMMIT),
+        ("ls-remote", "--symref", "origin", "HEAD"),
+        ("remote", "get-url", "upstream"),
+    )
+    # Any command not known to be a read is taken as one that may write, even one that only reads.
+    NOT_READS = (
+        in_checkout("fetch", "--no-tags", "--quiet", "origin", "refs/pull/12/head"),
+        in_checkout("remote", "set-url", "origin", "https://github.com/other/repo.git"),
+        in_checkout("remote", "get-url", "--push", "origin"),
+        in_checkout("config", "remote.origin.url", "https://github.com/other/repo.git"),
+        in_checkout("update-ref", "refs/heads/reviewers", FULL_COMMIT),
+        ("git", "rev-parse", "--verify", f"{FULL_COMMIT}^{{commit}}"),  # in no named checkout
+    )
+
+    def test_an_identical_query_is_asked_once(self) -> None:
+        for arguments in self.REUSED:
+            with self.subTest(arguments=arguments):
+                git = AnsweringGit()
+                runner = PrepareGitRunner(git)
+                first = runner(in_checkout(*arguments), 30)
+                self.assertIs(first, runner(in_checkout(*arguments), 60), "the first answer, whatever the time limit")
+                self.assertEqual([in_checkout(*arguments)], git.calls)
+
+    def test_another_checkout_or_another_object_is_asked_again(self) -> None:
+        git = AnsweringGit()
+        runner = PrepareGitRunner(git)
+        commands = [
+            in_checkout(*self.ORIGIN),
+            in_checkout(*self.ORIGIN, checkout="C:/other"),
+            in_checkout(*self.COMMIT),
+            in_checkout("rev-parse", "--verify", f"{FULL_COMMIT}^{{tree}}"),
+            in_checkout("rev-parse", "--verify", f"{'3' * 40}^{{commit}}"),
+            in_checkout("ls-tree", "-z", FULL_COMMIT, "--", "review/rules.md"),
+            in_checkout("ls-tree", "-z", FULL_COMMIT, "--", "review/python.md"),
+        ]
+        for command in commands * 2:
+            runner(command, 30)
+        self.assertEqual(commands, git.calls)
+
+    def test_a_ref_an_abbreviation_and_any_other_read_are_asked_every_time(self) -> None:
+        for arguments in self.ASKED_EACH_TIME:
+            with self.subTest(arguments=arguments):
+                git = AnsweringGit()
+                runner = PrepareGitRunner(git)
+                runner(in_checkout(*arguments), 30)
+                runner(in_checkout(*arguments), 30)
+                self.assertEqual([in_checkout(*arguments)] * 2, git.calls)
+
+    def test_a_read_leaves_the_kept_answers(self) -> None:
+        git = AnsweringGit()
+        runner = PrepareGitRunner(git)
+        reads = [in_checkout(*arguments) for arguments in self.ASKED_EACH_TIME]
+        for command in (in_checkout(*self.ORIGIN), *reads, in_checkout(*self.ORIGIN)):
+            runner(command, 30)
+        self.assertEqual([in_checkout(*self.ORIGIN), *reads], git.calls)
+
+    def test_a_failed_answer_is_asked_again(self) -> None:
+        git = AnsweringGit()
+        present = ("cat-file", "-e", f"{FULL_COMMIT}^{{commit}}")
+        git.answers[present] = [GitResult(1, "", "fatal: missing")]
+        runner = PrepareGitRunner(git)
+        self.assertEqual(
+            [1, 0, 0], [runner(in_checkout(*present), 30).returncode for _ in range(3)], "asked twice, then kept"
+        )
+        self.assertEqual([in_checkout(*present)] * 2, git.calls)
+
+    def test_a_command_that_is_not_a_read_drops_every_kept_answer(self) -> None:
+        for write in self.NOT_READS:
+            with self.subTest(write=write):
+                git = AnsweringGit()
+                runner = PrepareGitRunner(git)
+                queries = [in_checkout(*self.ORIGIN), in_checkout(*self.COMMIT)]
+                for command in (*queries, *queries, write, *queries, *queries):
+                    runner(command, 30)
+                self.assertEqual([*queries, write, *queries], git.calls)
+
+    def test_a_write_that_fails_or_cannot_run_drops_them_too(self) -> None:
+        fetch = ("fetch", "--no-tags", "--quiet", "origin", "refs/heads/main")
+        for answer in (GitResult(1, "", "fatal: cannot fetch"), GitError("git timed out", kind="timeout")):
+            with self.subTest(answer=answer):
+                git = AnsweringGit()
+                git.answers[fetch] = [answer]
+                runner = PrepareGitRunner(git)
+                runner(in_checkout(*self.ORIGIN), 30)
+                with contextlib.suppress(GitError):
+                    runner(in_checkout(*fetch), 30)
+                runner(in_checkout(*self.ORIGIN), 30)
+                self.assertEqual([in_checkout(*self.ORIGIN), in_checkout(*fetch), in_checkout(*self.ORIGIN)], git.calls)
+
+    def test_another_runner_keeps_nothing_of_the_first(self) -> None:
+        git = AnsweringGit()
+        PrepareGitRunner(git)(in_checkout(*self.ORIGIN), 30)
+        PrepareGitRunner(git)(in_checkout(*self.ORIGIN), 30)
+        self.assertEqual([in_checkout(*self.ORIGIN)] * 2, git.calls)
+
+    def test_a_kept_answer_is_still_judged_on_every_check(self) -> None:
+        git = AnsweringGit()
+        git.answers[self.ORIGIN] = [GitResult(0, "https://github.com/example/one.git\n", "")]
+        git.answers[self.COMMIT] = [GitResult(0, f"{FULL_COMMIT}\n", "")]
+        runner = PrepareGitRunner(git)
+        checkout = Path("C:/checkout")
+        verify_checkout_remote(checkout, "example/one", runner)
+        with self.assertRaisesRegex(RuntimeContractError, "origin mismatch: expected other/repo, found example/one"):
+            verify_checkout_remote(checkout, "other/repo", runner)
+        self.assertEqual(FULL_COMMIT, resolve_reviewer_commit(checkout, FULL_COMMIT, head_sha="4" * 40, runner=runner))
+        with self.assertRaisesRegex(RuntimeContractError, "resolves to the pull-request head"):
+            resolve_reviewer_commit(checkout, FULL_COMMIT, head_sha=FULL_COMMIT, runner=runner)
+        self.assertEqual(
+            [in_checkout(*self.ORIGIN, checkout=str(checkout)), in_checkout(*self.COMMIT, checkout=str(checkout))],
+            git.calls,
+        )
 
 
 def git_blob_id(content: bytes) -> str:

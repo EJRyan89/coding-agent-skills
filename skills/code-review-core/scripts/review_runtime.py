@@ -619,6 +619,70 @@ def git_in(checkout: Path, runner: Runner, *arguments: str) -> GitResult:
         raise RuntimeContractError(f"git {arguments[0]} failed in {checkout}: {exc}") from exc
 
 
+# A full object id, alone or peeled to a kind: what it names cannot change while the object exists.
+FULL_OBJECT_NAME = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\^\{(?:commit|tree|blob)\})?")
+# The git subcommands that only read: run through a PrepareGitRunner, they leave its kept answers in place.
+READ_ONLY_GIT = frozenset({"cat-file", "ls-remote", "ls-tree", "rev-parse"})
+
+
+def _reused_query(arguments: Sequence[str]) -> bool:
+    """Whether one prepare may answer these git arguments from an earlier identical call: origin's URL, which only a
+    command that is not a read can change, or a query of an object by its full id, whose answer never changes."""
+    match list(arguments):
+        case ["remote", "get-url", "origin"]:
+            return True
+        case ["rev-parse", "--verify", name] | ["cat-file", "-e", name]:
+            return bool(FULL_OBJECT_NAME.fullmatch(name))
+        case ["ls-tree", *rest]:
+            treeish = next((argument for argument in rest if not argument.startswith("-")), "")
+            return bool(FULL_OBJECT_NAME.fullmatch(treeish))
+    return False
+
+
+def _read_only(arguments: Sequence[str]) -> bool:
+    """Whether git only reads with these arguments; one this cannot tell is taken as one that may write."""
+    match list(arguments):
+        case [command, *_] if command in READ_ONLY_GIT:
+            return True
+        case ["remote", "get-url", name]:
+            return not name.startswith("-")
+    return False
+
+
+class PrepareGitRunner:
+    """The git runner of one prepare, used by one thread: a query `_reused_query` accepts is answered from the first
+    successful answer to the identical command, `git -C <checkout>` and every argument, so the same checkout's origin
+    and the same full object id are asked once. A failed answer is never kept. Any command that is not a read, such
+    as a fetch or `remote set-url`, drops every kept answer before and after it runs, so nothing a ref or the remote
+    could have changed outlives it. Each prepare makes its own, so nothing outlives the prepare either.
+
+    It keeps git's answers, never a verdict: verify_checkout_remote still compares a kept URL with the repository it
+    is asked about, and a commit's resolution is still compared with the commit expected."""
+
+    def __init__(self, runner: Runner) -> None:
+        self.runner = runner
+        self._answers: dict[tuple[str, ...], GitResult] = {}
+
+    def __call__(self, command: Sequence[str], timeout: float) -> GitResult:
+        key = tuple(command)
+        arguments = key[3:] if key[:2] == ("git", "-C") else ()
+        if not _read_only(arguments):
+            self._answers.clear()
+            try:
+                return self.runner(command, timeout)
+            finally:
+                self._answers.clear()
+        if not _reused_query(arguments):
+            return self.runner(command, timeout)
+        kept = self._answers.get(key)
+        if kept is not None:
+            return kept
+        result = self.runner(command, timeout)
+        if result.returncode == 0:
+            self._answers[key] = result
+        return result
+
+
 def _run_git(checkout: Path, runner: Runner, *arguments: str) -> str:
     result = git_in(checkout, runner, *arguments)
     if result.returncode != 0:

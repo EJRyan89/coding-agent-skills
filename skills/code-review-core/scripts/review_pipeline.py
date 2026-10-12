@@ -43,7 +43,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -139,6 +139,7 @@ from review_runtime import (
     SNAPSHOT_EXTRACTED,
     SNAPSHOT_FETCHABLE,
     SOURCE_SNAPSHOT_MANIFEST,
+    PrepareGitRunner,
     RuntimeContractError,
     blob_matches,
     build_adapter_request,
@@ -1211,7 +1212,11 @@ def _prepare_run(
     services: Services,
     notes: list[str],
 ) -> dict[str, Any]:
-    """Write the run of a review: its diff, snapshot, reviewer, request, prompts, and run.json."""
+    """Write the run of a review: its diff, snapshot, reviewer, request, prompts, and run.json.
+
+    Its git runs through a PrepareGitRunner of its own, so an identical query it repeats is asked once until a command
+    that is not a read, and nothing it was told outlives it."""
+    services = replace(services, git=PrepareGitRunner(services.git))
     repository, number, pull, checkout = review.repository, review.number, review.pull, review.checkout
     if checkout is not None and _inside(Path.cwd(), checkout):
         notes.append(
