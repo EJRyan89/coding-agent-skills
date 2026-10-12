@@ -4898,6 +4898,50 @@ class BatchTests(PipelineFixture):
                 self.assertEqual((1, ""), (code, err))
                 self.assertIn("REPOSITORY_FAILED example/one Review record has no artifact hashes\n", out)
 
+    def test_advance_refuses_a_malformed_pending_merge_date_without_changing_state(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-10T10:00:00Z")]
+        batch_path = self.root / "batch.json"
+        code, _, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        batch["repositories"][REPOSITORY]["eligible"][0]["mergedAt"] = "not-a-date"
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        batch_before = batch_path.read_bytes()
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        state_before = self.state_path.read_bytes()
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((1, ""), (code, err))
+        self.assertEqual("FAILED Pull 12 has invalid mergedAt\n", out)
+        self.assertEqual(state_before, self.state_path.read_bytes())
+        self.assertEqual(batch_before, batch_path.read_bytes())
+
+    def test_advance_does_not_read_incomplete_enumeration_or_change_existing_state(self) -> None:
+        self.github.listing = [rest_pull(12, self.head, self.base, state="closed", merged_at="2026-03-10T10:00:00Z")]
+        batch_path = self.root / "batch.json"
+        code, _, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        entry = batch["repositories"][REPOSITORY]
+        entry["complete"] = False
+        entry["eligible"] = [{"number": 12}]
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        state_before = self.state_path.read_bytes()
+        with mock.patch.object(rp, "latest_reviewed_heads") as heads:
+            code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        heads.assert_not_called()
+        self.assertEqual((0, ""), (code, err))
+        self.assertEqual("WATERMARK example/one unchanged: enumeration failed\n", out)
+        self.assertEqual(state_before, self.state_path.read_bytes())
+
     def test_enumerate_writes_its_batch_under_a_new_temporary_directory_by_default(self) -> None:
         self.github.listing = [rest_pull(12, self.head, self.base)]
         code, out, err = self.run_main("enumerate")

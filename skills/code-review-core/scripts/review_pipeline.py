@@ -2533,7 +2533,6 @@ def advance_watermarks(
             today=today,
             eligible_merged=merged,
             completed_numbers=completed,
-            enumeration_complete=True,
         )
         changes[repository] = (previous.isoformat(), candidate.isoformat())
 
