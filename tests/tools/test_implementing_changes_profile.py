@@ -14,7 +14,16 @@ import frontmatter
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROFILE = REPOSITORY_ROOT / "docs" / "implementing-changes.md"
 SKILL = REPOSITORY_ROOT / ".claude" / "skills" / "implement-change" / "SKILL.md"
-REQUIRED_HEADINGS = ("Size gate", "Worktree", "Validation", "Contract files", "Documentation", "Model guidance")
+REQUIRED_HEADINGS = (
+    "Size gate",
+    "Worktree",
+    "Validation",
+    "Contract files",
+    "Documentation",
+    "Model guidance",
+    "Pull requests",
+)
+ISSUE_TEMPLATES = REPOSITORY_ROOT / ".github" / "ISSUE_TEMPLATE"
 
 
 def headings(text: str) -> dict[str, str]:
@@ -41,6 +50,16 @@ class ImplementingChangesProfileTest(unittest.TestCase):
         for name in REQUIRED_HEADINGS:
             with self.subTest(heading=name):
                 self.assertIn(f"*{name}*", text)
+
+    def test_skill_finds_the_bug_class_before_the_fix(self) -> None:
+        steps = re.findall(r"^## \d+\. (.+)$", SKILL.read_text(encoding="utf-8"), flags=re.MULTILINE)
+        self.assertIn("Bug class", steps)
+        self.assertLess(steps.index("Bug class"), steps.index("Implement"))
+
+    def test_bug_and_enhancement_templates_ask_for_known_siblings(self) -> None:
+        for name in ("bug.md", "enhancement.md"):
+            with self.subTest(template=name):
+                self.assertIn("known siblings", (ISSUE_TEMPLATES / name).read_text(encoding="utf-8"))
 
     def test_skill_body_names_no_repository_command(self) -> None:
         lines = SKILL.read_text(encoding="utf-8").splitlines()

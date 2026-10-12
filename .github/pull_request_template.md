@@ -1,4 +1,6 @@
-<!-- Closes #N, when the pull request comes from an issue. Delete this line otherwise. -->
+<!-- The title opens with its type, an optional scope, a colon, and a space, as in "fix(deployer): ...", with no "!";
+     "Pull requests" in docs/implementing-changes.md lists the types. Name each issue this pull request resolves in a
+     Closes #N line of its own, and delete the line when it resolves none. -->
 Closes #
 
 <!-- The problem and the chosen behavior, in a paragraph. Say why, not only what. -->
@@ -30,16 +32,9 @@ Closes #
 
 None
 
-## Models
-
-<!-- Which model planned, or "no plan" with the size-gate reason, and which model implemented. -->
-
-- Planned by:
-- Implemented by:
-
 ## Validation
 
-- [ ] `python -B tests/run_validation.py` passes in full, with no skipped prerequisites
+- [ ] The local checks "Validation" in `docs/implementing-changes.md` names for the touched files pass, with no skipped prerequisites; the `Validation` check runs the full suite
 - [ ] Regression coverage added or updated for every behavior change
 - [ ] For a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are below, with each runtime's version and any `SKIPPED` reason
 - [ ] For a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited below with its table, and `docs/skill-evaluations.md` holds its result
@@ -48,5 +43,5 @@ None
 - [ ] Documentation updated in this change
 - [ ] Diff reviewed for personal paths, organization names, credentials, and generated artifacts
 
-<!-- List anything that could not be run, and why. Run the command above for every change, documentation-only
-     included: the runner reads the changed files and decides for itself which checks and suites they need. -->
+<!-- List anything that could not be run, and why. Continuous integration runs the full suite on every push, the
+     merge of the base branch included, so bringing the branch current needs no local rerun. -->

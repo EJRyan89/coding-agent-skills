@@ -21,6 +21,9 @@ assignees: ''
 
 <!-- What happens instead, with the relevant output or error, trimmed to the part that shows the problem. -->
 
+<!-- Name any known siblings: the same defect elsewhere, such as another caller of the same code or its twin in the
+     other shell. -->
+
 ## Commit and environment
 
 <!-- The output of python deploy.py check, run in the clone the skills were deployed from: it names the deployed

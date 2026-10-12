@@ -14,20 +14,36 @@ A change skips the plan and is implemented directly only when all of these hold:
 - no design choice remains;
 - no contract file is touched.
 
-Anything else is planned first. The pull request states which way it went and why.
+Anything else is planned first.
 
 ## Worktree
 
-From the hub, run `python tools/worktrees.py new <kind> <name>` with `feat` or `fix` as the kind, then enter the
-printed path (in Claude Code, `EnterWorktree` with `path:`). [Parallel sessions](parallel-sessions.md) explains why
-and how a worktree is retired.
+From the hub, run `python tools/worktrees.py new <kind> <name>` with the change's title type as the kind, such as
+`feat` or `fix` (see [Pull requests](#pull-requests)), then enter the printed path (in Claude Code, `EnterWorktree`
+with `path:`). [Parallel sessions](parallel-sessions.md) explains why and how a worktree is retired.
 
 ## Validation
 
-Run `python -B tests/run_validation.py` in full. `-k <pattern>` narrows it while iterating only. A change to skill
-paths, `allowed-tools`, runtime adapters, or agents also runs the `runtime-canary` repository skill, and a change to a
-skill under `skills/` or `.claude/skills/` also runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation")
-holds the rules validation enforces.
+Validation is continuous integration's job: the `Validation` check runs `python -B tests/run_validation.py` in full,
+split across its legs, for every pull request and every push, and a pull request merges only when it passes. Locally,
+run what the change touches:
+
+- `python -m ruff format --check` and `python -m ruff check` on the changed Python paths;
+- `python -B tests/run_validation.py -k <pattern>` for the policies and suites that name the touched files, with
+  `--pr-body <file>` and `--pr-title <file>` once the body and the title are written;
+- for a change to a shipped skill's scripts, also the deployer's rendering tests, `-k rendering_locking`;
+- for a change to a tool floor, also the suites that read the floors, `-k toolchain -k upgrade_notes -k test_check`.
+
+Run the suite in full locally only when the change's reach warrants it, such as a validation policy, the runner, or a
+shared module whose callers `-k` does not capture. When a leg fails in continuous integration, reproduce that leg with
+`python -B tests/run_validation.py --shard <index>/4`. Bringing an open pull request current with its base needs no
+local rerun, since continuous integration runs on the result.
+
+The gates that call a model never run in continuous integration, so they stay with the author: a change to skill
+paths, `allowed-tools`, runtime adapters, or agents runs the `runtime-canary` repository skill, a change to a skill's
+prompt, model guidance, or reviewer instructions runs `evaluate-skill` when the skill has scenarios, and a change to a
+skill under `skills/` or `.claude/skills/` runs `analyze-skill-cost` on it. `CLAUDE.md` ("Required validation") holds
+the rules validation enforces.
 
 ## Contract files
 
@@ -47,6 +63,28 @@ pull request body (the Versioning section of [releasing.md](releasing.md) holds 
 The upgrade-notes check in `tests/validation/upgrade_notes.py` compares every item above at the last tag except the
 arguments and the status lines, which no file holds, and fails while this list or the Versioning section of
 [releasing.md](releasing.md) leaves out a file or directory it reads.
+
+## Pull requests
+
+A pull request's title becomes its squash commit's title, so `main`'s history reads by the titles. The title opens
+with a type, an optional scope in parentheses, a colon, and a space, as in `fix(deployer): ...`:
+
+- `feat` adds or extends a capability;
+- `fix` corrects a defect;
+- `docs` changes documentation only;
+- `test` adds or changes tests only;
+- `refactor` changes structure without changing behavior;
+- `chore` is upkeep that changes no behavior, such as a rename or a recorded table;
+- `ci` changes a workflow;
+- `build` changes the development dependencies or the deployment prerequisites.
+
+The type agrees with the worktree's branch kind when the kind is one of them. A title carries no `!` and the body no
+breaking-change footer: the Level under `## Upgrade note` is the one statement of a release level. Validation's title
+check, in `tests/validation/pull_request_title.py`, reads the title from `--pr-title <file>` locally and from the pull
+request in continuous integration.
+
+The body names every issue the change resolves, each in its own `Closes #<number>` line. The project board moves an
+issue by that line, and an issue a change resolved without one stays open.
 
 ## Documentation
 
