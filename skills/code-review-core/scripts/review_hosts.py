@@ -17,13 +17,17 @@ import re
 import secrets
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from bounded_process import run_bounded
 from review_io import ResourceLock, atomic_write_json, atomic_write_text, read_diff, read_json
-from review_process import ProcessStatus, hidden_window, same_process, shell_script, winget_copilot
+from review_process import JobTree, ProcessStatus, same_process, shell_script, winget_copilot
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
@@ -49,6 +53,8 @@ Promote = Callable[[Path, Path], bool]
 
 MINIMUM_COPILOT_CLI_VERSION = (1, 0, 88)
 COPILOT_TIMEOUT_SECONDS = 1800
+# Bytes of each of Copilot CLI's output streams kept for its diagnostic; the rest is cut and the cut named.
+COPILOT_OUTPUT_BYTES = 1024 * 1024
 HOST_CLAIM = "copilot-host.json"
 HOST_LOCK = "copilot-host.lock"
 # A claimed host that has not recorded its process this long after dispatch never started.
@@ -73,19 +79,24 @@ class HostState:
 
 
 def subprocess_runner(arguments: Sequence[str], cwd: Path, environment: Mapping[str, str], stdin: str) -> ProcessResult:
-    process = subprocess.run(
-        list(arguments),
+    """Run Copilot CLI with `stdin` as all it reads, without a window, keeping at most COPILOT_OUTPUT_BYTES of each
+    output stream with the cut named; at COPILOT_TIMEOUT_SECONDS it is killed and subprocess.TimeoutExpired raised.
+    Every process it started is ended with it either way."""
+    finished = run_bounded(
+        arguments,
+        COPILOT_TIMEOUT_SECONDS,
         cwd=cwd,
-        env=dict(environment),
-        input=stdin,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        check=False,
-        timeout=COPILOT_TIMEOUT_SECONDS,
-        **hidden_window(),
+        env=environment,
+        input_bytes=stdin.encode("utf-8"),
+        output_limit=COPILOT_OUTPUT_BYTES,
+        tree=JobTree(hidden_window=True),
     )
-    return ProcessResult(process.returncode, process.stdout, process.stderr)
+    return ProcessResult(finished.returncode, _text(finished.stdout), _text(finished.stderr))
+
+
+def _text(output: bytes) -> str:
+    """Copilot CLI's output as text, with Windows line endings read as newlines."""
+    return output.decode("utf-8", "replace").replace("\r\n", "\n")
 
 
 def staging_path(run: Path, attempt: int) -> Path:

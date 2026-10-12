@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_hosts
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
+from review_process import process_status
 from review_runtime import RuntimeContractError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
 
@@ -855,6 +857,69 @@ class CopilotHostTests(unittest.TestCase):
 
 def run_directory_files(paths: dict[str, Path]) -> list[str]:
     return sorted(path.name for path in paths["run"].iterdir() if path.is_file())
+
+
+class CopilotProcessTests(unittest.TestCase):
+    """The real runner, with a Python program standing in for Copilot CLI: what it reads, keeps, and leaves behind."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.folder = Path(temporary.name)
+        self.environment = {**os.environ, "COPILOT_FIXTURE": "isolated value"}
+
+    def run_copilot_program(self, program: str, stdin: str = "") -> ProcessResult:
+        return review_hosts.subprocess_runner([sys.executable, "-c", program], self.folder, self.environment, stdin)
+
+    def test_the_prompt_is_all_copilot_reads_and_its_environment_is_the_hosts(self) -> None:
+        program = (
+            "import os, sys; data = sys.stdin.buffer.read(); after = sys.stdin.buffer.read(); "
+            "sys.stdout.buffer.write(data + b'|' + str(len(after)).encode() + b'|' "
+            "+ os.environ['COPILOT_FIXTURE'].encode() + b'|' + os.getcwd().encode())"
+        )
+        result = self.run_copilot_program(program, "review this — «prompt»\n")
+        self.assertEqual(
+            ProcessResult(0, f"review this — «prompt»\n|0|isolated value|{self.folder}", ""),
+            result,
+            "the prompt arrives byte for byte and then stdin ends, in the given environment and folder",
+        )
+
+    def test_output_past_the_limit_is_cut_and_the_cut_named_in_the_diagnostic(self) -> None:
+        program = "import sys; sys.stdout.write('o' * 1000); sys.stderr.write('kept'); sys.exit(1)"
+        with mock.patch.object(review_hosts, "COPILOT_OUTPUT_BYTES", 16):
+            result = self.run_copilot_program(program)
+        self.assertEqual(
+            ProcessResult(1, "o" * 16 + "\n[output cut: 984 bytes past the first 16 not kept]\n", "kept"), result
+        )
+
+    def test_a_copilot_that_never_exits_is_killed_at_its_limit_with_the_program_it_started(self) -> None:
+        program = (
+            "import json, subprocess, sys, threading\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            "print(json.dumps({'child': child.pid}), flush=True)\n"
+            "threading.Event().wait()\n"
+        )
+        diagnostic = self.folder / "copilot-diagnostic.txt"
+        started = time.monotonic()
+        with (
+            mock.patch.object(review_hosts, "COPILOT_TIMEOUT_SECONDS", 5),
+            self.assertRaises(RuntimeContractError) as raised,
+        ):
+            review_hosts._run_bounded(
+                review_hosts.subprocess_runner,
+                [sys.executable, "-c", program],
+                self.folder,
+                self.environment,
+                diagnostic,
+                stdin="prompt",
+            )
+        self.assertLess(time.monotonic() - started, 60, "no wait on the program, which holds no pipe to wait on")
+        self.assertEqual(f"GitHub Copilot CLI timed out after 5s; see {diagnostic}", str(raised.exception))
+        child = json.loads(diagnostic.read_text(encoding="utf-8"))["child"]
+        deadline = time.monotonic() + 20
+        while process_status(child).alive and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(process_status(child).alive, "the program Copilot started is gone too")
 
 
 if __name__ == "__main__":

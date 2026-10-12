@@ -13,12 +13,23 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_process import ProcessStatus, process_status, same_process, start_detached, winget_copilot
+from review_process import JobTree, ProcessStatus, process_status, same_process, start_detached, winget_copilot
 
 # Prints a line, then sleeps until it is terminated, so its liveness can be probed from outside.
 SLEEPER = (
     "import sys, time; print('host started', flush=True); "
     "print('to stderr', file=sys.stderr, flush=True); time.sleep(120)"
+)
+
+# Starts a program that writes its PID to the file its first argument names and sleeps, then sleeps itself unless its
+# second argument is "exit", as a launcher that leaves its program running does.
+LAUNCHER = (
+    "import subprocess, sys, time\n"
+    'child = \'import os, sys, time; from pathlib import Path; part = Path(sys.argv[1] + ".part"); '
+    "part.write_text(str(os.getpid())); os.replace(part, sys.argv[1]); time.sleep(120)'\n"
+    "subprocess.Popen([sys.executable, '-c', child, sys.argv[1]], stdin=subprocess.DEVNULL)\n"
+    "if sys.argv[2] != 'exit':\n"
+    "    time.sleep(120)\n"
 )
 
 
@@ -157,6 +168,52 @@ class StartDetachedTests(unittest.TestCase):
             self.assertTrue(terminate_and_wait(pid), "the host exits")
             self.assertFalse(process_status(pid).alive)
             self.assertTrue(opens_exclusively(log), "nothing holds the log once the host has exited")
+
+
+class JobTreeTests(unittest.TestCase):
+    """Leaving a held tree ends the command and every process it started, however it ended."""
+
+    def launch(self, folder: Path, how: str) -> tuple[subprocess.Popen[bytes], Path]:
+        pid_file = folder / "child.pid"
+        command = [sys.executable, "-c", LAUNCHER, str(pid_file), how]
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        self.addCleanup(terminate, process.pid)
+        return process, pid_file
+
+    def started_child(self, pid_file: Path) -> int:
+        self.assertTrue(wait_until(pid_file.exists, 60), "the launcher started its program")
+        child = int(pid_file.read_text(encoding="utf-8"))
+        self.addCleanup(terminate, child)
+        self.assertTrue(process_status(child).alive)
+        return child
+
+    def test_leaving_ends_a_command_still_running_and_the_program_it_started(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            process, pid_file = self.launch(Path(temporary), "stay")
+            with JobTree().hold(process):
+                child = self.started_child(pid_file)
+                self.assertIsNone(process.poll())
+            self.assertNotEqual(0, process.wait(timeout=20), "the command was ended, not left to finish")
+            self.assertTrue(wait_until(lambda: not process_status(child).alive), "the program it started is gone")
+
+    def test_leaving_ends_a_program_left_running_by_a_command_that_exited(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            process, pid_file = self.launch(Path(temporary), "exit")
+            with JobTree().hold(process):
+                child = self.started_child(pid_file)
+                self.assertEqual(0, process.wait(timeout=60))
+                self.assertTrue(process_status(child).alive, "the program outlives the command until the tree ends")
+            self.assertTrue(wait_until(lambda: not process_status(child).alive), "the program it started is gone")
+
+    def test_a_command_that_cannot_join_a_job_is_held_without_one(self) -> None:
+        process = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+        process.wait(timeout=60)
+        with JobTree().hold(process):
+            pass  # its handle is closed and its PID free, so no job takes it; the caller still kills it on timeout
+
+    def test_the_hidden_window_is_a_start_option(self) -> None:
+        self.assertEqual({}, JobTree().start_options())
+        self.assertEqual({"creationflags": 0x08000000}, JobTree(hidden_window=True).start_options())
 
 
 if __name__ == "__main__":
