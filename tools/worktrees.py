@@ -258,7 +258,7 @@ def moved(directory: Path | None, target: Word) -> Path | None:
 
 def command_name(word: Word) -> str | None:
     """The lower-cased name a command is called by, without its directory or .exe; None when it is computed."""
-    return None if word is None else Path(word).name.lower().removesuffix(".exe")
+    return None if word is None else platform_support.program_name(Path(word).name).lower()
 
 
 def record_git_call(arguments: list[Word], directory: Path | None, reading: Reading) -> None:
