@@ -124,17 +124,12 @@ def safe_watermark(
     today: date,
     eligible_merged: Iterable[dict[str, Any]],
     completed_numbers: set[int],
-    enumeration_complete: bool,
 ) -> date:
-    if not enumeration_complete:
-        return previous
     pending_dates = []
     for raw in eligible_merged:
         pull = validate_pull(raw)
-        if pull["state"] != "MERGED":
-            continue
         if pull["number"] not in completed_numbers:
-            pending_dates.append(date.fromisoformat(pull["mergedAt"][:10]))
+            pending_dates.append(merged_date(pull))
     candidate = today if not pending_dates else min(pending_dates) - timedelta(days=1)
     return max(previous, candidate)
 
