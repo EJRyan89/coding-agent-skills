@@ -30,7 +30,7 @@ Validation reads both: the runner compares with `origin/main` to find a document
 
 Development and deployment are currently supported on Windows only. Contributors need:
 
-- Python 3.11 or newer;
+- Python 3.11.4 or newer;
 - Git for Windows, for Git Bash;
 - ShellCheck;
 - PowerShell 7 (`pwsh`);

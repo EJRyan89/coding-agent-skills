@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,7 +12,7 @@ from unittest import mock
 
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, git
 
-from deployer import fsops, platform_support, source_ref
+from deployer import fsops, platform_support, source_ref, tools
 from deployer.errors import DeployError
 
 
@@ -145,6 +147,15 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_ok("--all", "--at", "v1.0.0")
         self.assertIn("\nReplaced the deployment pinned with --at v1.0.0 to ", self.deploy_ok("--all").output)
 
+    def test_the_update_skill_reads_the_pin_from_the_line_check_prints(self) -> None:
+        # update-coding-agent-skills stops with PINNED <ref> <commit>, read from this line of check's output.
+        script = REPOSITORY_ROOT / "skills" / "update-coding-agent-skills" / "scripts" / "update.sh"
+        text = script.read_text(encoding="utf-8")
+        self.assertIn('PIN_MARK=", pinned with --at "', text)
+        self.assertIn('grep -m 1 -e "^Deployed commit: .*$PIN_MARK"', text)
+        self.deploy_ok("--all", "--at", "v1.0.0")
+        self.assertIn(f"\nDeployed commit: v1.0.0 ({self.release}), pinned with --at v1.0.0\n", self.check().output)
+
     def test_deploying_the_pinned_commit_again_keeps_the_pin_without_a_notice(self) -> None:
         self.deploy_ok("--all", "--at", "v1.0.0")
         output = self.deploy_ok("--all", "--at", self.release).output
@@ -198,6 +209,25 @@ class DeployAtTests(DeployerTestCase):
         self.deploy_fails("--all", "--at", "main", source=plain, pattern=r"--at needs a Git checkout")
 
     def test_an_export_git_refuses_leaves_no_directory_behind(self) -> None:
+        patch, made = self.record_temporary_directories()
+        with patch, self.assertRaisesRegex(DeployError, "git archive could not export 0{40}"):
+            source_ref.export(self.source, "0" * 40)
+        self.assertEqual(1, len(made))
+        self.assertFalse(made[0].exists())
+
+    def commit_link(self, branch: str, name: str, target: str) -> None:
+        """Commit a symbolic link to target on a new branch through the index alone, as a checkout on Windows may not
+        be able to make one, then return to main."""
+        blob_file = self.root / "link-target"
+        blob_file.write_bytes(target.encode("utf-8"))
+        blob = git(self.source, "hash-object", "-w", str(blob_file))
+        git(self.source, "switch", "-q", "-c", branch)
+        git(self.source, "update-index", "--add", "--cacheinfo", f"120000,{blob},{name}")
+        git(self.source, "commit", "-q", "-m", "A link")
+        git(self.source, "switch", "-q", "--discard-changes", "main")
+
+    def record_temporary_directories(self) -> tuple[Any, list[Path]]:
+        """A patch of the export's mkdtemp that records each directory it makes, and the list it records them in."""
         made: list[Path] = []
         real = tempfile.mkdtemp
 
@@ -205,13 +235,111 @@ class DeployAtTests(DeployerTestCase):
             made.append(Path(real(*positional, **keywords)))
             return str(made[-1])
 
+        return mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp), made
+
+    def test_a_link_in_the_tree_is_refused_by_name_before_anything_is_extracted_or_deployed(self) -> None:
+        patch, made = self.record_temporary_directories()
+        for index, target in enumerate(("../../outside", "/etc/passwd", "C:/Windows")):
+            with self.subTest(target=target):
+                branch = f"link-{index}"
+                self.commit_link(branch, "skills/alpha/escape", target)
+                with patch:
+                    result = self.deploy_fails(
+                        "--all", "--at", branch, pattern=r"ERROR: The tree of [0-9a-f]{40} holds 'skills/alpha/escape'"
+                    )
+                self.assertEqual(1, result.code)
+                self.assertIn(
+                    "holds 'skills/alpha/escape', a symbolic link, which the deployer does not extract.\n"
+                    "A deployable tree holds only files and folders; deploy a commit without links or special files.",
+                    result.output,
+                )
+                self.assertNotIn("Traceback", result.output)
+                self.assertFalse(self.manifest_file.exists())
+                self.assertFalse((self.skills_dir / "alpha").exists())
+                self.assert_head_unmoved()
+        self.assertEqual(3, len(made))
+        for directory in made:
+            self.assertFalse(directory.exists(), directory)
+
+    def export_archive(self, members: list[tuple[tarfile.TarInfo, bytes]]) -> tuple[DeployError, list[Path]]:
+        """Export a commit whose git archive holds exactly these members, returning the refusal and each directory the
+        export made."""
+        patch, made = self.record_temporary_directories()
+
+        def archive(source_dir: Path, *arguments: str) -> platform_support.ToolResult:
+            output = next(argument for argument in arguments if argument.startswith("--output="))
+            with tarfile.open(output.removeprefix("--output="), "w") as handle:
+                for info, content in members:
+                    info.size = len(content)
+                    handle.addfile(info, io.BytesIO(content) if info.isfile() else None)
+            return platform_support.ToolResult(0, "")
+
         with (
-            mock.patch.object(source_ref.tempfile, "mkdtemp", mkdtemp),
-            self.assertRaisesRegex(DeployError, "git archive could not export 0{40}"),
+            patch,
+            mock.patch.object(source_ref, "_git", archive),
+            self.assertRaises(DeployError) as raised,
         ):
-            source_ref.export(self.source, "0" * 40)
-        self.assertEqual(1, len(made))
-        self.assertFalse(made[0].exists())
+            source_ref.export(self.source, self.release)
+        return raised.exception, made
+
+    @staticmethod
+    def member(name: str, kind: bytes = tarfile.REGTYPE, linkname: str = "") -> tarfile.TarInfo:
+        info = tarfile.TarInfo(name)
+        info.type = kind
+        info.linkname = linkname
+        return info
+
+    def test_a_member_tarfile_data_filter_refuses_is_named_with_the_filters_reason(self) -> None:
+        # git archive writes no such member, so the filter stands behind the deployer's own check of each member.
+        for name in ("../escape.txt", "skills/../../escape.txt"):
+            with self.subTest(name=name):
+                refusal, made = self.export_archive([(self.member("README.md"), b"kept\n"), (self.member(name), b"x")])
+                self.assertEqual(1, refusal.exit_code)
+                self.assertEqual(1, len(refusal.lines), refusal.lines)
+                prefix = (
+                    f"ERROR: The deployer refused to extract the tree of {self.release}: {name!r} would be extracted"
+                )
+                self.assertTrue(refusal.lines[0].startswith(prefix), refusal.lines)
+                self.assertTrue(refusal.lines[0].endswith(", which is outside the destination."), refusal.lines)
+                self.assertEqual(1, len(made))
+                self.assertFalse(made[0].exists())
+
+    def test_a_hard_link_or_special_file_is_refused_by_name(self) -> None:
+        for info, kind in (
+            (self.member("skills/alpha/copy", tarfile.LNKTYPE, "skills/alpha/SKILL.md"), "a hard link"),
+            (self.member("skills/alpha/pipe", tarfile.FIFOTYPE), "a special file"),
+            (self.member("skills/alpha/tty", tarfile.CHRTYPE), "a special file"),
+        ):
+            with self.subTest(name=info.name):
+                refusal, made = self.export_archive([(self.member("skills/alpha/SKILL.md"), b"x\n"), (info, b"")])
+                self.assertEqual(
+                    (
+                        f"ERROR: The tree of {self.release} holds {info.name!r}, {kind}, which the deployer does not "
+                        "extract.",
+                        "A deployable tree holds only files and folders; deploy a commit without links or special "
+                        "files.",
+                    ),
+                    refusal.lines,
+                )
+                self.assertFalse(made[0].exists())
+
+    def test_a_python_without_tarfile_extraction_filters_is_refused_before_git_or_anything_runs(self) -> None:
+        # 3.11.4 is the first 3.11 release whose tarfile has extraction filters.
+        with (
+            mock.patch.object(tools, "python_version", return_value=(3, 11, 3)),
+            mock.patch.object(platform_support, "run_tool") as run_tool,
+            mock.patch.object(source_ref.tempfile, "mkdtemp") as mkdtemp,
+        ):
+            result = self.deploy_fails("--all", "--at", "v1.0.0", pattern=r"--at needs Python 3\.11\.4 or newer")
+        self.assertEqual(1, result.code)
+        self.assertIn(
+            "ERROR: --at needs Python 3.11.4 or newer, whose tarfile extracts with filters; this is Python 3.11.3.\n"
+            'See "Installing the tools" in docs/installation.md.',
+            result.output,
+        )
+        run_tool.assert_not_called()
+        mkdtemp.assert_not_called()
+        self.assertFalse(self.manifest_file.exists())
 
     def test_a_recorded_ref_is_validated_when_the_manifest_is_read(self) -> None:
         self.deploy_ok("--all", "--at", "v1.0.0")

@@ -49,10 +49,12 @@ class Machine:
         versions: dict[str, str] | None = None,
         powershell: str = "7.6.6",
         describe: str | None = None,
+        python: tuple[int, ...] = (3, 12, 1),
     ) -> None:
         # describe is what git describe prints for the deployed commit; None makes it fail, as for an unknown commit.
         self.git = None if "git" in missing else GIT
         self.describe = describe
+        self.python = python
         self.git_calls: list[list[str]] = []
         self.installed = {name: entry for name, entry in INSTALLED.items() if name not in missing}
         self.versions = {path: output for path, output in self.installed.values()}
@@ -78,7 +80,7 @@ class Machine:
                 side_effect=lambda arguments, environment=None: self.run_tool(arguments),
             )
         )
-        stack.enter_context(mock.patch("deployer.tools.python_version", return_value=(3, 12, 1)))
+        stack.enter_context(mock.patch("deployer.tools.python_version", return_value=self.python))
         stack.enter_context(
             mock.patch(
                 "deployer.tools.probe_pdftotext",
@@ -132,7 +134,7 @@ class CheckCommandTests(DeployerTestCase):
             "  Git 2.54.0 (used by every skill)\n"
             "  Git Bash (needed to deploy; C:/Program Files/Git/bin/bash.exe)\n"
             "  PowerShell 7.6.6 (needed to deploy)\n"
-            "  Python 3.12.1 (needed to deploy; 3.11 or newer)\n"
+            "  Python 3.12.1 (needed to deploy; 3.11.4 or newer)\n"
             "  ShellCheck 0.11.0 (needed to deploy)\n"
             "  dotnet-format 5.1.250801 (used by formatter)\n"
             "  gh 2.97.0 (used by operations, reporter)\n"
@@ -159,6 +161,24 @@ class CheckCommandTests(DeployerTestCase):
             ),
             result.output,
         )
+
+    def test_a_python_before_3_11_4_is_outdated_because_at_extracts_with_the_tarfile_data_filter(self) -> None:
+        # Python 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts with.
+        result = self.check(Machine(python=(3, 11, 3)))
+        self.assertEqual(1, result.code, result.output)
+        groups = self.report_groups(result.output, "CHECK")
+        self.assertEqual(["Python 3.11.3 (needed to deploy; needs 3.11.4 or newer)"], groups["OUTDATED"])
+        self.assertTrue(
+            result.output.endswith(
+                'Update the outdated tools before deploying; see "Installing the tools" in\n'
+                "docs/installation.md. Open a new terminal afterwards so the tools are on PATH.\n\n"
+            ),
+            result.output,
+        )
+        result = self.check(Machine(python=(3, 11, 4)))
+        self.assertEqual(0, result.code, result.output)
+        found = self.report_groups(result.output, "CHECK")["FOUND"]
+        self.assertIn("Python 3.11.4 (needed to deploy; 3.11.4 or newer)", found)
 
     def test_missing_skill_tool_still_allows_deploying(self) -> None:
         result = self.check(Machine(missing=("gh",)))
@@ -524,24 +544,30 @@ class VersionTests(unittest.TestCase):
             with self.subTest(output=output):
                 self.assertEqual(expected, tools.parse_version(output))
 
-    def test_minimum_python_is_3_11_in_both_places(self) -> None:
+    def test_minimum_python_is_3_11_4_in_both_places(self) -> None:
+        # 3.11.4 is the first 3.11 release whose tarfile has extraction filters, which --at extracts with.
         specification = importlib.util.spec_from_file_location("deploy_entry", REPOSITORY_ROOT / "deploy.py")
         if specification is None or specification.loader is None:
             self.fail("deploy.py loads as a module")
         entry = importlib.util.module_from_spec(specification)
         specification.loader.exec_module(entry)
-        self.assertEqual((3, 11), entry.MINIMUM_PYTHON)
-        self.assertEqual((3, 11), tools.MINIMUM_PYTHON)
-        captured = io.StringIO()
-        with contextlib.redirect_stderr(captured), self.assertRaises(SystemExit) as raised:
-            entry.require_supported_python((3, 10, 9))
-        self.assertEqual(1, raised.exception.code)
-        self.assertEqual(
-            "\nERROR: Python 3.11 or newer is required; this is Python 3.10.\n"
-            'See "Installing the tools" in docs/installation.md.\n\n',
-            captured.getvalue(),
-        )
-        entry.require_supported_python((3, 11, 0))
+        self.assertEqual((3, 11, 4), entry.MINIMUM_PYTHON)
+        self.assertEqual((3, 11, 4), tools.MINIMUM_PYTHON)
+        for version, shown in (((3, 10, 9), "3.10.9"), ((3, 11, 3), "3.11.3")):
+            captured = io.StringIO()
+            with (
+                self.subTest(version=version),
+                contextlib.redirect_stderr(captured),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                entry.require_supported_python(version)
+            self.assertEqual(1, raised.exception.code)
+            self.assertEqual(
+                f"\nERROR: Python 3.11.4 or newer is required; this is Python {shown}.\n"
+                'See "Installing the tools" in docs/installation.md.\n\n',
+                captured.getvalue(),
+            )
+        entry.require_supported_python((3, 11, 4))
         entry.require_supported_python(sys.version_info)
 
     def test_deploy_py_and_its_console_setup_parse_as_python_3_7(self) -> None:
