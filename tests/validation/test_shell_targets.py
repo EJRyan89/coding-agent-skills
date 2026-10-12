@@ -256,9 +256,9 @@ class ShellTargetsFixtures(unittest.TestCase):
         self.assertIn(f"PSScriptAnalyzer was not found: {install}", str(raised.exception))
         self.assertEqual(
             [f"  - PSScriptAnalyzer 1.24.0 is older than the floor 1.25.0 in docs/dependency-updates.md: {install}"],
-            outdated_prerequisites({"PSScriptAnalyzer": (1, 24, 0)}, (3, 11, 0)),
+            outdated_prerequisites({"PSScriptAnalyzer": (1, 24, 0)}, (3, 11, 4)),
         )
-        self.assertEqual([], outdated_prerequisites({"PSScriptAnalyzer": (1, 25, 0)}, (3, 11, 0)))
+        self.assertEqual([], outdated_prerequisites({"PSScriptAnalyzer": (1, 25, 0)}, (3, 11, 4)))
 
     def test_suppression_scan_finds_directives_attributes_and_configuration_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
