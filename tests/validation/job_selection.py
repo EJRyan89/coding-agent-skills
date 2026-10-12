@@ -23,8 +23,9 @@ from tests.run_shard import deal, flatten
 POWERSHELL_JOB = "static PowerShell checks (PSScriptAnalyzer on .ps1 files and PowerShell fences)"
 MARKDOWN_SHELL_JOB = "static Markdown shell checks (ShellCheck on Bash fences outside skills/ and tests/)"
 # What each job took on CI's runners, by job name (a suite's path, summed over its shards, or a static check's label),
-# from one completed validate run's logs. tools/record_job_seconds.py writes it, and the release procedure refreshes it,
-# so the legs are dealt by measured seconds that change only when the file does, never by a run's live timings.
+# the median across several completed validate runs' logs. tools/record_job_seconds.py writes it, and the release
+# procedure refreshes it, so the legs are dealt by measured seconds that change only when the file does, never by a
+# run's live timings.
 JOB_SECONDS = Path(__file__).with_name("job_seconds.json")
 # A job the table does not name yet, such as a new suite, is dealt by its count instead: its typical tests, or for an
 # unsplit job UNSPLIT_JOB_COST of them, at TYPICAL_TEST_SECONDS each. An unsplit job's weight only starts it before
@@ -97,13 +98,29 @@ def name_patterns(patterns: list[str]) -> list[str]:
 
 
 def job_seconds(path: Path = JOB_SECONDS) -> dict[str, float]:
-    """The measured seconds by job name: a JSON object of the run they came from and the seconds, each above zero."""
+    """The measured seconds by job name: a JSON object of the runs they came from and the seconds, each above zero.
+
+    A table from before the runs were several, which records one run under "run", is refused rather than read: the
+    release step that writes it rewrites it whole, so a reader of both would only keep the old shape alive.
+    """
     try:
         table = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"{path.name} cannot be read as JSON: {error}") from error
-    if not (isinstance(table, dict) and set(table) == {"run", "seconds"} and isinstance(table["seconds"], dict)):
-        raise ValueError(f'{path.name} must be an object of "run" and "seconds", the seconds an object by job name')
+    if isinstance(table, dict) and "run" in table and "runs" not in table:
+        raise ValueError(
+            f'{path.name} records one run under "run"; rerun tools/record_job_seconds.py to record the "runs"'
+        )
+    if not (isinstance(table, dict) and set(table) == {"runs", "seconds"} and isinstance(table["seconds"], dict)):
+        raise ValueError(f'{path.name} must be an object of "runs" and "seconds", the seconds an object by job name')
+    runs = table["runs"]
+    if not (
+        isinstance(runs, list)
+        and runs
+        and len(set(runs)) == len(runs)
+        and all(isinstance(run, int) and not isinstance(run, bool) and run > 0 for run in runs)
+    ):
+        raise ValueError(f'{path.name} records "runs" as {runs!r}; they are a list of distinct run IDs, at least one')
     seconds = table["seconds"]
     for name, value in seconds.items():
         if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
