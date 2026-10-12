@@ -534,17 +534,27 @@ class CrossSkillContractTests(unittest.TestCase):
             guard = profile / ".claude/skills/code-review-core/scripts/review_guard.py"
             guard.parent.mkdir(parents=True)
             guard.write_bytes((REPOSITORY_ROOT / "skills/code-review-core/scripts/review_guard.py").read_bytes())
-            # The guard imports skill-core's console setup and its typed-field reader from the sibling skill the
-            # deployer installs beside it.
+            # The guard imports skill-core's runner, the flattener the runner imports, and its typed-field reader from
+            # the sibling skill the deployer installs beside it.
             core = profile / ".claude/skills/skill-core/scripts"
             core.mkdir(parents=True)
-            for module in ("console.py", "typed_fields.py"):
+            for module in ("console.py", "flat_text.py", "typed_fields.py"):
                 (core / module).write_bytes((REPOSITORY_ROOT / "skills/skill-core/scripts" / module).read_bytes())
             # A session's working directory is untrusted: its modules must never shadow the standard library or the
             # core.
             cwd = root / "session"
             cwd.mkdir()
-            for module in ("json", "runpy", "pathlib", "re", "tempfile", "contextlib", "console", "typed_fields"):
+            for module in (
+                "json",
+                "runpy",
+                "pathlib",
+                "re",
+                "tempfile",
+                "contextlib",
+                "console",
+                "flat_text",
+                "typed_fields",
+            ):
                 (cwd / f"{module}.py").write_text("print('HIJACKED')\nraise SystemExit(0)\n", encoding="utf-8")
             other = root / "other home"
             environment = {

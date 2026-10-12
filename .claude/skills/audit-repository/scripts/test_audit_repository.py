@@ -483,7 +483,9 @@ class CommandLineTests(Fixture):
                 self.assertEqual(sorted(expected), sorted(path.name for path in directory.iterdir()))
                 self.assertEqual("", git(self.root, "status", "--porcelain"))
 
-    def test_programmer_errors_are_not_reported_as_expected_failures(self) -> None:
+    def test_programmer_errors_end_with_the_runners_failed_line_not_an_expected_failure(self) -> None:
+        # main reports only an AuditError as its own FAILED line; anything else reaches skill-core's runner, whose
+        # line names the exception's type.
         for target in ("tempfile.mkdtemp", "pathlib.Path.write_text"):
             with self.subTest(target=target):
                 directory = self.temporary / target
@@ -497,9 +499,8 @@ class CommandLineTests(Fixture):
                     f"patch({target!r}, side_effect=RuntimeError('programmer error')).start()",
                 )
                 self.assertEqual(1, result.returncode)
-                self.assertEqual(b"", result.stdout)
-                self.assertIn(b"Traceback", result.stderr)
-                self.assertIn(b"RuntimeError: programmer error", result.stderr)
+                self.assertEqual(b"FAILED RuntimeError: programmer error\n", result.stdout)
+                self.assertEqual(b"", result.stderr)
 
     def test_output_is_utf8_whatever_the_console_code_page(self) -> None:
         outside = Path(tempfile.mkdtemp(prefix="audit-repository-outside-")) / "not a repo π"

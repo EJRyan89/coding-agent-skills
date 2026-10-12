@@ -329,7 +329,7 @@ def main(stream: str) -> int:
         except FieldError:
             event = None
         reason = "the hook event could not be read" if event is None else decide(event)
-    except Exception as exc:  # fail closed: an unevaluated call could read the wrong code
+    except (Exception, KeyboardInterrupt) as exc:  # fail closed: an unevaluated call could read the wrong code
         reason = f"Code-review reviewer boundary: the guard could not evaluate this call ({type(exc).__name__})."
     if reason:
         print(
@@ -346,5 +346,16 @@ def main(stream: str) -> int:
     return 0
 
 
+def hook() -> int:
+    """Answer the hook event on stdin. A stream that cannot be read, such as bytes the console's code page cannot
+    decode, is an unreadable event, and is denied like one, never left to the runner's FAILED line, which Claude Code
+    would read as a hook error and let the call through."""
+    try:
+        stream = sys.stdin.read()
+    except (OSError, ValueError):
+        stream = ""
+    return main(stream)
+
+
 if __name__ == "__main__":
-    run_main(lambda: main(sys.stdin.read()))
+    run_main(hook)
