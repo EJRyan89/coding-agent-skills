@@ -147,7 +147,7 @@ class JobSecondsFixtures(GitTestCase):
         return path
 
     def test_the_table_reads_seconds_by_job_name(self) -> None:
-        path = self.write_table('{"run": 7, "seconds": {"static lint check": 2.5, "tests/test_a.py": 12}}\n')
+        path = self.write_table('{"runs": [7, 9], "seconds": {"static lint check": 2.5, "tests/test_a.py": 12}}\n')
         self.assertEqual({"static lint check": 2.5, "tests/test_a.py": 12.0}, job_seconds(path))
         self.assertTrue(JOB_SECONDS.is_file())
         self.assertTrue(job_seconds(JOB_SECONDS))
@@ -156,15 +156,27 @@ class JobSecondsFixtures(GitTestCase):
         for text in (
             "not json",
             "[]",
-            '{"run": 7}',
-            '{"run": 7, "seconds": []}',
-            '{"run": 7, "seconds": {"tests/test_a.py": "12"}}',
-            '{"run": 7, "seconds": {"tests/test_a.py": 0}}',
-            '{"run": 7, "seconds": {"tests/test_a.py": true}}',
-            '{"run": 7, "seconds": {}, "extra": 1}',
+            '{"runs": [7]}',
+            '{"runs": [7], "seconds": []}',
+            '{"runs": [7], "seconds": {"tests/test_a.py": "12"}}',
+            '{"runs": [7], "seconds": {"tests/test_a.py": 0}}',
+            '{"runs": [7], "seconds": {"tests/test_a.py": true}}',
+            '{"runs": [7], "seconds": {}, "extra": 1}',
+            '{"seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": 7, "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [7, 7], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": ["7"], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [true], "seconds": {"tests/test_a.py": 1}}',
+            '{"runs": [0], "seconds": {"tests/test_a.py": 1}}',
         ):
             with self.subTest(text=text), self.assertRaisesRegex(ValueError, "job_seconds.json"):
                 job_seconds(self.write_table(text))
+
+    def test_a_table_from_one_run_is_refused_with_the_step_that_rewrites_it(self) -> None:
+        path = self.write_table('{"run": 7, "seconds": {"tests/test_a.py": 1}}\n')
+        with self.assertRaisesRegex(ValueError, r'one run under "run"; rerun tools/record_job_seconds\.py'):
+            job_seconds(path)
 
     def test_an_entry_for_a_job_that_no_longer_runs_is_stale(self) -> None:
         seconds = {"tests/test_kept.py": 3.0, "tests/test_gone.py": 4.0, "static lint check": 1.0}

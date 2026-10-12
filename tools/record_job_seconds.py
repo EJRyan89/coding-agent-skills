@@ -1,17 +1,22 @@
-"""Record what each validation job took on CI's runners, from a completed validate run's logs.
+"""Record what each validation job took on CI's runners, from several completed validate runs' logs.
 
 Usage:
-  python tools/record_job_seconds.py [RUN_ID]
+  python tools/record_job_seconds.py [--count N] [RUN_ID ...]
 
 tests/run_validation.py deals its jobs across the validate workflow's legs by tests/validation/job_seconds.json, so
-each leg gets about the same seconds of work. This script rewrites that table from one run: it reads the logs of
-every leg through `gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed, and sums a suite's
-shards under the suite's path. A job a run reports more than once, as a weekly run's second interpreter and second
-validation step do, counts at its mean. RUN_ID defaults to the latest successful push run of validate.yml on main, and
-a run that is not a completed, successful run of the Validation workflow is refused, since a failed or cancelled run
-leaves jobs out. The release procedure in docs/releasing.md runs it before tagging, so the legs are rebalanced once a
-release and never by a pull request's live timings. It exits 0 when it wrote the table and 2 when it could not read
-the run.
+each leg gets about the same seconds of work. One run's job times differ a lot from the next run's, so this script
+rewrites that table from several runs and takes each job's median: it reads the logs of every leg of each run through
+`gh run view --log`, takes each `ok <seconds>s <job>` line the runner printed, and sums a suite's shards under the
+suite's path. A job a run reports more than once, as a weekly run's second interpreter and second validation step do,
+counts at its mean within that run. RUN_ID names the runs to read; without any, the latest successful push runs of
+validate.yml on main are read, DEFAULT_RUN_COUNT of them or --count. The newest run decides which jobs the table names:
+a job it does not report, such as a suite since renamed or removed, is left out, and a job it reports that older runs
+lack takes the median of the runs that have it. A run that is not a completed, successful run of the Validation
+workflow is refused, since a failed or cancelled run leaves jobs out; so is a successful run whose log lacks a leg, as
+a rerun of one failed leg can leave, and a run whose log gh cannot read, such as one past the retention period. One
+refused run refuses the record and the table is left alone. The release procedure in docs/releasing.md runs it before
+tagging, so the legs are rebalanced once a release and never by a pull request's live timings. It exits 0 when it wrote
+the table and 2 when it could not read the runs.
 """
 
 from __future__ import annotations
@@ -20,9 +25,10 @@ import argparse
 import functools
 import json
 import re
+import statistics
 import sys
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -35,9 +41,15 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 TABLE = REPOSITORY_ROOT / "tests" / "validation" / "job_seconds.json"
 WORKFLOW_FILE = "validate.yml"
 WORKFLOW_NAME = "Validation"
+# The runs the table is taken from when none are named: five, so the median ignores the two slowest and the two fastest
+# readings of a job (a contended runner, a cold cache) while the runs stay recent enough that their logs are still held
+# and their jobs are the ones the next release runs.
+DEFAULT_RUN_COUNT = 5
 # What job_pool.py prints for each job that passed, after the timestamp gh puts before every log line.
 OK_LINE = re.compile(r"^\S+ ok +(\d+(?:\.\d+)?)s (.+?)\s*$")
 SHARD_SUFFIX = re.compile(r" \[shard \d+/\d+\]$")
+# A leg's name in the log, from the workflow's matrix job name `Shard <shard> on Python <version>`.
+LEG_NAME = re.compile(r"^Shard (\d+)/(\d+) on ")
 
 
 def job_seconds_from_log(log: str) -> dict[str, float]:
@@ -54,12 +66,36 @@ def job_seconds_from_log(log: str) -> dict[str, float]:
     return {name: round(seconds, 1) for name, seconds in totals.items() if round(seconds, 1) > 0}
 
 
-def render_table(run: int, seconds: Mapping[str, float]) -> str:
-    """The table's text: the run it came from and the seconds by job name, in name order."""
-    return json.dumps({"run": run, "seconds": dict(sorted(seconds.items()))}, indent=2) + "\n"
+def leg_problem(log: str) -> str:
+    """What a log lacks of the matrix's legs, or an empty string when it reports every leg."""
+    seen: set[tuple[int, int]] = set()
+    for line in log.splitlines():
+        found = LEG_NAME.match(line.split("	", 1)[0])
+        if found:
+            seen.add((int(found.group(1)), int(found.group(2))))
+    counts = {count for _, count in seen}
+    if len(counts) != 1:
+        return "names no one set of legs"
+    (count,) = counts
+    missing = [f"{index}/{count}" for index in range(1, count + 1) if (index, count) not in seen]
+    return f"lacks leg {', '.join(missing)}" if missing else ""
 
 
-def latest_run(client: GitHubClient) -> int:
+def combine(per_run: Mapping[int, Mapping[str, float]]) -> dict[str, float]:
+    """Each job's median seconds across the runs that report it, for the jobs the newest run (highest ID) reports."""
+    newest = per_run[max(per_run)]
+    return {
+        name: round(statistics.median(seconds[name] for seconds in per_run.values() if name in seconds), 1)
+        for name in newest
+    }
+
+
+def render_table(runs: Sequence[int], seconds: Mapping[str, float]) -> str:
+    """The table's text: the runs it came from, oldest first, and the seconds by job name, in name order."""
+    return json.dumps({"runs": sorted(runs), "seconds": dict(sorted(seconds.items()))}, indent=2) + "\n"
+
+
+def latest_runs(client: GitHubClient, count: int) -> list[int]:
     runs = client.json(
         [
             "run",
@@ -73,48 +109,69 @@ def latest_run(client: GitHubClient) -> int:
             "--status",
             "success",
             "--limit",
-            "1",
+            str(count),
             "--json",
             "databaseId",
         ]
     )
     if not runs:
         raise GitHubError(f"no successful push run of {WORKFLOW_FILE} on main was found", kind="not_found")
-    return int(runs[0]["databaseId"])
+    return [int(run["databaseId"]) for run in runs]
 
 
-def run_log(client: GitHubClient, run: int) -> str:
-    """The run's logs, once it is known to be a completed, successful run of the Validation workflow."""
+def run_seconds(client: GitHubClient, run: int) -> dict[str, float]:
+    """The run's job seconds, once it is known to be a completed, successful run of the Validation workflow whose log
+    reports every leg."""
     state = client.json(["run", "view", str(run), "--json", "workflowName,status,conclusion"])
     found = (state.get("workflowName"), state.get("status"), state.get("conclusion"))
     if found != (WORKFLOW_NAME, "completed", "success"):
         raise GitHubError(
-            f"run {run} is {found[0]!r}, {found[1]}, {found[2] or 'no conclusion'}; record from a completed, "
-            f"successful {WORKFLOW_NAME} run",
+            f"run {run} is {found[0]!r}, {found[1]}, {found[2] or 'no conclusion'}; record from completed, "
+            f"successful {WORKFLOW_NAME} runs",
             kind="refused",
         )
-    return client.run(["run", "view", str(run), "--log"]).stdout
+    log = client.run(["run", "view", str(run), "--log"]).stdout
+    seconds = job_seconds_from_log(log)
+    if not seconds:
+        raise GitHubError(
+            f"run {run} reported no passing jobs; run validation with -v, as the validate workflow does", kind="refused"
+        )
+    problem = leg_problem(log)
+    if problem:
+        raise GitHubError(
+            f"run {run}'s log {problem}, as a rerun of a failed leg leaves; record from runs whose every leg ran in "
+            "one attempt",
+            kind="refused",
+        )
+    return seconds
 
 
 def main(arguments: list[str] | None = None, client: GitHubClient | None = None, table: Path = TABLE) -> int:
-    parser = argparse.ArgumentParser(description="Record each validation job's seconds from a validate run's logs.")
-    parser.add_argument("run", nargs="?", type=int, help="the run's ID; the latest successful main push run if omitted")
+    parser = argparse.ArgumentParser(description="Record each validation job's median seconds from validate runs.")
+    parser.add_argument("runs", nargs="*", type=int, help="the runs' IDs; the latest successful main push runs if none")
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=DEFAULT_RUN_COUNT,
+        help=f"how many of the latest runs to read when none are named (default {DEFAULT_RUN_COUNT})",
+    )
     options = parser.parse_args(arguments)
+    if options.count < 1:
+        parser.error("--count must be at least 1")
     client = client or GitHubClient(runner=functools.partial(subprocess_runner, cwd=REPOSITORY_ROOT))
     try:
-        run = options.run if options.run is not None else latest_run(client)
-        seconds = job_seconds_from_log(run_log(client, run))
+        runs = sorted(set(options.runs)) if options.runs else latest_runs(client, options.count)
+        per_run = {run: run_seconds(client, run) for run in runs}
     except GitHubError as error:
-        print(f"Cannot read the validate run: {error}", file=sys.stderr)
+        print(f"Cannot read the validate runs: {error}", file=sys.stderr)
         return 2
-    if not seconds:
-        print(
-            f"Run {run} reported no passing jobs; run validation with -v, as the validate workflow does",
-            file=sys.stderr,
-        )
-        return 2
-    table.write_text(render_table(run, seconds), encoding="utf-8", newline="\n")
-    print(f"Recorded {len(seconds)} jobs, {sum(seconds.values()):.1f} job-seconds, from run {run} in {table.name}.")
+    seconds = combine(per_run)
+    table.write_text(render_table(runs, seconds), encoding="utf-8", newline="\n")
+    named = ", ".join(str(run) for run in sorted(runs))
+    print(
+        f"Recorded {len(seconds)} jobs, {sum(seconds.values()):.1f} job-seconds, as the median of "
+        f"{len(runs)} run{'s' if len(runs) != 1 else ''} ({named}) in {table.name}."
+    )
     return 0
 
 
