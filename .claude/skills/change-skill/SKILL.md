@@ -67,10 +67,10 @@ python tools/skill_reference.py --write
 
 ## 5. Verify
 
-Run validation in full and get it green. Never skip, weaken, or suppress a check to get there.
+Run the local checks "Validation" in `docs/implementing-changes.md` names for the files the change touches, the deployer's rendering tests among them for a shipped skill's scripts, and get them green; continuous integration runs the full suite. Never skip, weaken, or suppress a check to get there.
 
 ```bash
-python -B tests/run_validation.py
+python -B tests/run_validation.py -k '<pattern>'
 ```
 
 Then read the whole diff once more for personal paths, organization names, and generated artifacts, and leave no scratch file in the worktree and no background command running.
@@ -85,4 +85,4 @@ Validation checks the contract; `analyze-skill-cost` judges what the change cost
 
 ## 7. Open the pull request
 
-Follow `implement-change` for the rebase, the body from the template (with both model lines), and `gh pr create --body-file <file>`, naming `Closes #<number>` when the work came from an issue. Put the `runtime-canary` result and any SUGGESTION left from the audit in the body.
+Follow `implement-change` for the rebase, the typed title, the body from the template, and `gh pr create`, naming each issue the change resolves in its own `Closes #<number>` line. Put the `runtime-canary` result and any SUGGESTION left from the audit in the body.

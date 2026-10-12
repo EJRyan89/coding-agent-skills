@@ -11,7 +11,8 @@ assignees: ''
 ## What and why
 
 <!-- What is missing or wrong today and why it matters. Name the skills, files, and symbols involved.
-     Summarize relevant investigation and link related issues and pull requests. -->
+     Summarize relevant investigation and link related issues and pull requests. Name any known siblings: the
+     same gap elsewhere, such as another skill or shell that lacks it too. -->
 
 ## Proposal
 

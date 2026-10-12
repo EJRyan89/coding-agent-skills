@@ -451,8 +451,9 @@ class WorkflowsPolicies(unittest.TestCase):
                 ("23 6 * * 1",),
             ),
         )
-        # The upgrade-notes check reads the pull request body, so an edit to the body reruns validation, and the body
-        # reaches the runner as a file written from the event payload, which the guard above keeps out of expressions.
+        # The upgrade-notes check reads the pull request body and the title check its title, so an edit to either
+        # reruns validation, and each reaches the runner as a file written from the event payload, which the guard
+        # above keeps out of expressions.
         tree = read_workflow(workflow)
         triggers = tree.get("on") if isinstance(tree, dict) else None
         self.assertEqual(
@@ -464,6 +465,8 @@ class WorkflowsPolicies(unittest.TestCase):
         )
         self.assertIn("[System.IO.File]::WriteAllText($bodyFile, [string]$payload.pull_request.body)", workflow)
         self.assertIn("$arguments += @('--pr-body', $bodyFile)", workflow)
+        self.assertIn("[System.IO.File]::WriteAllText($titleFile, [string]$payload.pull_request.title)", workflow)
+        self.assertIn("$arguments += @('--pr-title', $titleFile)", workflow)
 
     def test_validate_workflow_runs_four_legs_and_restores_the_pinned_tools_from_caches(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/validate.yml").read_text(encoding="utf-8")
