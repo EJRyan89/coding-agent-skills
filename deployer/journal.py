@@ -521,6 +521,24 @@ def pending_runs(paths: Paths) -> list[tuple[str, bool]]:
     return pending
 
 
+def journaled_runs(paths: Paths) -> list[tuple[str, bool]] | None:
+    """Each run whose journal is still on disk, with whether the manifest records it as committed.
+
+    Changes nothing, for the report after recovery stops; recovery decides the same way, by the manifest's last run ID.
+    None when the manifest or the staging runs cannot be read, so the report then says nothing about what is installed.
+    """
+    committed = _committed_run_id(paths)
+    if committed is None:
+        return None
+    try:
+        if not paths.staging_root.is_dir():
+            return []
+        run_dirs = sorted(path for path in paths.staging_root.iterdir() if (path / "journal.jsonl").is_file())
+    except OSError:
+        return None
+    return [(run_dir.name, run_dir.name == committed) for run_dir in run_dirs]
+
+
 def recover_incomplete(paths: Paths) -> bool:
     """Reconcile every interrupted run; return False when any run needs manual inspection.
 

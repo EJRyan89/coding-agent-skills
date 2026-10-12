@@ -92,7 +92,11 @@ class CancellationTests(DeployerTestCase):
             real_move(source, destination)
 
         with mock.patch("deployer.fsops.move", side_effect=interrupted_restore):
-            self.assert_cancelled(self.run_cli("--all", changes_home=RECOVERS), RECOVERY_CANCELLED)
+            self.assert_cancelled(
+                self.run_cli("--all", changes_home=RECOVERS),
+                f"{RECOVERY_CANCELLED}\nRun 20260101-000000-kill was not committed to the manifest, so the manifest "
+                "does not hold its changes; the next deployment rolls them back.",
+            )
         self.assertFalse(self.lock_dir.exists())
         self.assertTrue((run / "journal.jsonl").is_file())
         result = self.run_cli("--all")
