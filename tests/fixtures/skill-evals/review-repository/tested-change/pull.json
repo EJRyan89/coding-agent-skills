@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "repository": "example/report-exports",
+  "number": 9,
+  "title": "Refuse a report that is no longer there",
+  "base_ref": "main",
+  "head_ref": "missing-report",
+  "threads": [],
+  "manifest_path": ".claude/skills/review-repository/references/specialists.json"
+}

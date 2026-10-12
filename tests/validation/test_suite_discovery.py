@@ -302,6 +302,8 @@ class SkillSuiteFixtures(GitTestCase):
         ".claude/skills/local/scripts/local.test.ps1": "",
         # A folder without SKILL.md is no skill, so nothing in it is found.
         "skills/loose/scripts/test_loose.py": "",
+        # A fixture tree is another repository a review reads, so its suites are not this one's.
+        "tests/fixtures/skill-evals/demo/scenario/head/tests/test_report.sh": "",
     }
 
     def test_suites_are_found_under_tests_and_every_shipped_and_repository_skill(self) -> None:
