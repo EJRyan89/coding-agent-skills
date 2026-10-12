@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import dotnet_format_targets as targets
 import git_client
+from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from github_client import CommandResult
 from github_client import Runner as GhRunner
@@ -497,6 +498,38 @@ class ResolveTests(unittest.TestCase):
         self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
         # Without stderr the exit code is the reason; the fixture's fetch exits 128 and says nothing.
         self.assertEqual([["git fetch origin exited with code 128"]], self.values(self.resolve(), "FETCH_FAILED"))
+
+    def test_fetch_errors_use_the_shared_flattener_and_keep_output_field_order(self) -> None:
+        message = " \tCannot\r\n fetch  café\u00a0設計\u2003branch.\v "
+        services = Services()
+        real = services.git.runner
+        for failure in (GitResult(128, "", message), GitError(message, kind="timeout")):
+
+            def run(command: Sequence[str], timeout: float, failure: GitResult | GitError = failure) -> GitResult:
+                if command[3] == "fetch":
+                    if isinstance(failure, GitError):
+                        raise failure
+                    return failure
+                return real(command, timeout)
+
+            services.git = GitClient(run)
+            with (
+                self.subTest(failure=failure),
+                mock.patch.object(targets, "flat_text", wraps=flat_text) as flatten,
+            ):
+                lines = self.resolve(services=services)
+            self.assertEqual(["REPO_ROOT", "FETCH_FAILED", "BASE", "STOP"], [fields[0] for fields in lines])
+            self.assertEqual([["Cannot fetch café 設計 branch."]], self.values(lines, "FETCH_FAILED"))
+            self.assertEqual([["origin/main"]], self.values(lines, "BASE"))
+            flatten.assert_called_once_with(message)
+
+    def test_repository_errors_use_the_shared_flattener_without_splitting_output_fields(self) -> None:
+        message = " \tCannot\r\n read  café\u00a0設計\u2003repository.\v "
+        services = Services()
+        services.git = GitClient(lambda command, timeout: GitResult(128, "", message))
+        with mock.patch.object(targets, "flat_text", wraps=flat_text) as flatten:
+            self.assertEqual("Cannot read café 設計 repository.", self.failed(services=services))
+        flatten.assert_called_once_with(message)
 
     def test_a_fetch_that_succeeds_reports_nothing(self) -> None:
         services = Services()

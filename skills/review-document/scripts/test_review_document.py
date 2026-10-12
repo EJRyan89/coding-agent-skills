@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 import review_document
 import review_pipeline as rp
+from flat_text import flat_text
 from git_client import subprocess_runner
 from github_client import CommandResult
 from review_canary import fixture_change, validate_fixture_pull
@@ -511,6 +512,27 @@ class ExtractedDocumentTests(DocumentTestCase):
 
 
 class OutputTests(DocumentTestCase):
+    def test_failures_use_the_shared_flattener_after_converting_the_exception_to_text(self) -> None:
+        message = " \tCannot\r\n read  café\u00a0設計\u2003draft.\v "
+        for error in (review_document.DocumentError(message), OSError(13, message, "draft.md")):
+            for command, arguments in (
+                ("build", ["build", "draft.md"]),
+                ("report", ["report", "--fixture", "fixture", "--report", "report.md"]),
+            ):
+                with (
+                    self.subTest(error=error, command=command),
+                    mock.patch.object(review_document, command, side_effect=error),
+                    mock.patch.object(review_document, "flat_text", wraps=flat_text) as flatten,
+                ):
+                    code, lines = run_main(*arguments)
+                expected = (
+                    "Cannot read café 設計 draft."
+                    if isinstance(error, review_document.DocumentError)
+                    else "[Errno 13] Cannot read café 設計 draft. : 'draft.md'"
+                )
+                self.assertEqual((1, [f"FAILED {expected}"]), (code, lines))
+                flatten.assert_called_once_with(str(error))
+
     def test_an_output_inside_a_skills_directory_is_refused_before_anything_is_read(self) -> None:
         home = self.root / "home"
         targets = [
