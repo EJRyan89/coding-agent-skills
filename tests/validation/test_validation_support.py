@@ -221,6 +221,74 @@ class CallableResolverFixtures(GitTestCase):
         resolver = CallableResolver(ast.parse("callback = library().callback\ncallback()\n"))
         self.assertEqual([], resolver.problems("fixture.py"))
 
+    def test_every_binding_to_a_name_or_attribute_is_followed_as_an_assignment_is(self) -> None:
+        for source in (
+            '(writer := open)\nwriter("x", "w")\n',
+            'if (writer := open):\n    writer("x", "w")\n',
+            'writer, other = open, print\nwriter("x", "w")\n',
+            '[other, (writer, _)] = [print, (open, 0)]\nwriter("x", "w")\n',
+            'first, *rest, writer = print, 0, 1, open\nwriter("x", "w")\n',
+            'for writer in (open,):\n    writer("x", "w")\n',
+            'for name, writer in [("x", open)]:\n    writer(name, "w")\n',
+            'items = [writer("x", "w") for writer in [open]]\n',
+            'def example(writer=open):\n    writer("x", "w")\n',
+            'def example(*, writer=open):\n    writer("x", "w")\n',
+            'example = lambda writer=open: writer("x", "w")\n',
+            'match open:\n    case writer:\n        writer("x", "w")\n',
+            'match open:\n    case object() as writer:\n        writer("x", "w")\n',
+        ):
+            with self.subTest(source=source):
+                tree = ast.parse(source)
+                resolver = CallableResolver(tree)
+                call = next(
+                    node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node)
+                )
+                self.assertEqual("open", resolver.name(call.func))
+                self.assertEqual([], resolver.problems("fixture.py"))
+
+    def test_a_name_bound_to_several_callables_or_to_an_unknown_one_is_reported_at_the_call(self) -> None:
+        for source in (
+            '(writer := missing)\nwriter("x", "w")\n',
+            'for writer in (open, print):\n    writer("x", "w")\n',
+            'items = [writer("x", "w") for writer in {open, print}]\n',
+            'def example(writer=missing):\n    writer("x", "w")\n',
+            'def example(writer=open):\n    writer = print\n    writer("x", "w")\n',
+            'example = lambda writer=open: [(writer := print), writer("x", "w")]\n',
+            'import os, shutil\nfor writer in (os, shutil):\n    writer.remove("x")\n',
+        ):
+            function = "writer.remove" if "remove" in source else "writer"
+            with self.subTest(source=source):
+                self.assertEqual(
+                    [
+                        f"fixture.py:{len(source.splitlines())} cannot resolve callable alias {function}; "
+                        "use a single binding to a known callable"
+                    ],
+                    CallableResolver(ast.parse(source)).problems("fixture.py"),
+                )
+
+    def test_a_value_built_any_other_way_stays_a_local_value(self) -> None:
+        # A call's result, an item of anything but a literal, a starred list, a with target, a caught exception, a part
+        # of a case's subject, and a parameter whose default is no name all hold values the module built.
+        for source in (
+            "writer, other = callbacks\nwriter()\n",
+            "writer, other = open, print, input\nwriter()\n",
+            "first, *writer = open, print\nwriter()\n",
+            "for writer in callbacks:\n    writer()\n",
+            "with factory() as writer:\n    writer()\n",
+            "try:\n    pass\nexcept Exception as writer:\n    writer()\n",
+            "match open:\n    case [writer]:\n        writer()\n",
+            "def example(writer=None):\n    writer()\n",
+            "def example(writer=factory()):\n    writer()\n",
+        ):
+            with self.subTest(source=source):
+                tree = ast.parse(source)
+                resolver = CallableResolver(tree)
+                call = next(
+                    node for node in ast.walk(tree) if isinstance(node, ast.Call) and "writer" in ast.dump(node)
+                )
+                self.assertEqual("<local>.writer", resolver.name(call.func))
+                self.assertEqual([], resolver.problems("fixture.py"))
+
 
 class SharedReaderFixtures(GitTestCase):
     def test_a_section_runs_from_its_heading_to_the_next_second_level_heading(self) -> None:

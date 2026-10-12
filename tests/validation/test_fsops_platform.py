@@ -95,6 +95,38 @@ class FsopsPlatformFixtures(GitTestCase):
                         filesystem_write_problems(root),
                     )
 
+    def test_filesystem_write_policy_reads_writes_through_assignment_expressions_unpacking_and_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/bound.py": "import os, shutil\n"  # 1
+                    "if (writer := open):\n"  # 2
+                    '    writer("x", "w")\n'  # 3
+                    "remove, other = shutil.rmtree, print\n"  # 4
+                    'remove("x")\n'  # 5
+                    "def copy(source, copier=shutil.copyfile):\n"  # 6
+                    '    copier(source, "y")\n'  # 7
+                    "for unlink in (os.unlink,):\n"  # 8
+                    '    unlink("x")\n'  # 9
+                    "for either in (open, print):\n"  # 10
+                    '    either("x", "w")\n',  # 11
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            self.assertEqual(
+                [
+                    f"deployer/bound.py:3 writes with open{route}",
+                    f"deployer/bound.py:5 writes with shutil.rmtree{route}",
+                    f"deployer/bound.py:7 writes with shutil.copyfile{route}",
+                    f"deployer/bound.py:9 writes with os.unlink{route}",
+                    "deployer/bound.py:11 cannot resolve callable alias either; "
+                    "use a single binding to a known callable",
+                ],
+                filesystem_write_problems(root),
+            )
+
     def test_assigned_path_open_preserves_read_only_modes_on_constructed_and_loop_receivers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

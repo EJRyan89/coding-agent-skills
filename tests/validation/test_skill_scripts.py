@@ -575,6 +575,26 @@ class SkillScriptsFixtures(GitTestCase):
                 client_command_problems(root),
             )
 
+    def test_command_reader_follows_runners_bound_by_assignment_expressions_unpacking_and_defaults(self) -> None:
+        for source in (
+            'import subprocess\nif (runner := subprocess.run):\n    runner(["git", "status"])\n',
+            'import subprocess\nrunner, other = subprocess.run, print\nrunner(["git", "status"])\n',
+            'import subprocess\ndef status(runner=subprocess.run):\n    runner(["git", "status"])\n',
+            'import subprocess\nstatus = lambda runner=subprocess.run: runner(["git", "status"])\n',
+        ):
+            with self.subTest(source=source):
+                reader = CommandReader(ast.parse(source))
+                self.assertTrue(reader.starts_process())
+                self.assertEqual({"git"}, reader.commands(set()))
+                self.assertEqual([], reader.problems("tool.py"))
+        reader = CommandReader(
+            ast.parse('import os, subprocess\nfor runner in (subprocess.run, os.system):\n    runner("git status")\n')
+        )
+        self.assertEqual(
+            ["tool.py:3 cannot resolve callable alias runner; use a single binding to a known callable"],
+            reader.problems("tool.py"),
+        )
+
     def test_command_policies_report_ambiguous_assigned_runners(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
