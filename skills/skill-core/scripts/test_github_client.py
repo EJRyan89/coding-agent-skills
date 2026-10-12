@@ -217,6 +217,216 @@ class BackoffTests(unittest.TestCase):
         self.assertEqual(4, context.exception.returncode)
 
 
+BAD_GATEWAY = "gh: Bad Gateway (HTTP 502)"
+UNKNOWN_OUTCOME = "GitHub may have applied it, so check before repeating it"
+
+
+class TransientTests(unittest.TestCase):
+    def test_transient_failures_from_literal_gh_stderr_and_status(self) -> None:
+        cases = {
+            BAD_GATEWAY: True,
+            "HTTP 503: Service Unavailable (https://api.github.com/graphql)": True,
+            "gh: Gateway Timeout (HTTP 504)": True,
+            "read tcp 10.0.0.2:51000->140.82.112.6:443: wsarecv: connection reset by peer": True,
+            "dial tcp 140.82.112.6:443: i/o timeout": True,
+            'Post "https://api.github.com/graphql": net/http: TLS handshake timeout': True,
+            'Get "https://api.github.com/user": unexpected EOF': True,
+            "http2: server sent GOAWAY and closed the connection; LastStreamID=1999": True,
+            "gh: Server Error (HTTP 500)": False,
+            "gh: Validation Failed (HTTP 422)": False,
+            "gh: Not Found (HTTP 404)": False,
+            "gh: Bad credentials (HTTP 401)": False,
+            SECONDARY_LIMIT: False,
+            "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com": False,
+            "dial tcp 140.82.112.6:443: connect: connection refused": False,
+            "": False,
+        }
+        for stderr, transient in cases.items():
+            with self.subTest(stderr=stderr):
+                client, _ = client_for(scripted(failed(stderr))[0])
+                with self.assertRaises(GitHubError) as context:
+                    client.run(["api", "user"], retry=False)
+                self.assertEqual(transient, context.exception.transient)
+        for status, transient in ((502, True), (503, True), (504, True), (500, False), (404, False)):
+            with self.subTest(status=status):
+                head = f"HTTP/2.0 {status} Status\r\n\r\n{{}}"
+                client, _ = client_for(scripted(failed("gh: request failed", head))[0])
+                with self.assertRaises(GitHubError) as context:
+                    client.run(["api", "user"], retry=False, headers=True)
+                self.assertEqual(transient, context.exception.transient)
+
+    def test_a_transient_read_is_retried_then_succeeds(self) -> None:
+        run, calls = scripted(failed(BAD_GATEWAY), ok('{"login": "octo"}'))
+        client, sleeper = client_for(run)
+        self.assertEqual('{"login": "octo"}', client.run(["api", "user"]).stdout)
+        self.assertEqual([2.0], sleeper.waits)
+        self.assertEqual([["gh", "api", "user"]] * 2, calls)
+
+    def test_a_transient_read_fails_after_its_retries_in_the_existing_shape(self) -> None:
+        run, calls = scripted(*[failed(BAD_GATEWAY)] * 3)
+        client, sleeper = client_for(run)
+        with self.assertRaises(GitHubError) as context:
+            client.json(["pr", "view", "7", "--json", "title"])
+        self.assertEqual(f"{BAD_GATEWAY} (gave up after 2 retries)", str(context.exception))
+        self.assertEqual(("api", True), (context.exception.kind, context.exception.transient))
+        self.assertEqual([2.0, 4.0], sleeper.waits)
+        self.assertEqual(3, len(calls))
+
+    def test_a_dropped_connection_on_a_download_is_retried(self) -> None:
+        answers = [failed("connection reset by peer"), ok("")]
+
+        def downloader(arguments: Sequence[str], target: Path) -> CommandResult:
+            return answers.pop(0)
+
+        sleeper = Recorder()
+        client = GitHubClient(sleeper=sleeper, clock=sleeper.clock, downloader=downloader)
+        with tempfile.TemporaryDirectory() as temporary:
+            client.download(["api", "repos/o/r/tarball/abc"], Path(temporary) / "source.tar.gz")
+        self.assertEqual(([2.0], []), (sleeper.waits, answers))
+
+    def test_a_permanent_read_failure_is_not_retried(self) -> None:
+        for stderr, kind in (
+            ("gh: Server Error (HTTP 500)", "api"),
+            ("gh: Not Found (HTTP 404)", "not_found"),
+            ("gh: Bad credentials (HTTP 401)", "authentication"),
+            ("dial tcp 140.82.112.6:443: connect: connection refused", "network"),
+        ):
+            run, calls = scripted(failed(stderr))
+            client, sleeper = client_for(run)
+            with self.subTest(stderr=stderr), self.assertRaises(GitHubError) as context:
+                client.run(["api", "repos/o/r"])
+            self.assertEqual((kind, stderr), (context.exception.kind, str(context.exception)))
+            self.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+    def test_without_retry_a_transient_read_fails_at_once_unchanged(self) -> None:
+        run, calls = scripted(failed(BAD_GATEWAY))
+        client, sleeper = client_for(run)
+        with self.assertRaises(GitHubError) as context:
+            client.run(["api", "user"], retry=False)
+        self.assertEqual(("api", BAD_GATEWAY), (context.exception.kind, str(context.exception)))
+        self.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+    def test_a_transient_failure_on_a_change_is_an_unknown_outcome_never_retried(self) -> None:
+        changes = (
+            (["api", "-X", "PATCH", "repos/o/r/issues/1", "-f", "state=closed"], "PATCH"),
+            (["api", "repos/o/r/issues/1/comments", "-f", "body=hello"], "POST"),
+            (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
+            (["pr", "comment", "7", "--body", "hello"], "gh pr comment"),
+        )
+        for arguments, change in changes:
+            for retry in (True, False):
+                run, calls = scripted(failed(BAD_GATEWAY))
+                client, sleeper = client_for(run)
+                with self.subTest(arguments=arguments, retry=retry), self.assertRaises(GitHubError) as context:
+                    client.run(arguments, retry=retry)
+                self.assertEqual("unknown_outcome", context.exception.kind)
+                self.assertEqual(
+                    f"{BAD_GATEWAY} (the outcome of this {change} request is unknown: {UNKNOWN_OUTCOME})",
+                    str(context.exception),
+                )
+                self.assertEqual((False, True), (context.exception.retryable, context.exception.transient))
+                self.assertEqual(([], 1), (sleeper.waits, len(calls)))
+
+    def test_a_change_that_ran_out_its_time_limit_is_an_unknown_outcome_and_a_read_stays_a_timeout(self) -> None:
+        stalled = "GitHub CLI did not finish within 1 seconds"
+
+        def stall(arguments: Sequence[str]) -> CommandResult:
+            raise GitHubError(stalled, kind="timeout")
+
+        client, sleeper = client_for(stall)
+        with self.assertRaises(GitHubError) as context:
+            client.run(["pr", "merge", "7", "--squash"])
+        self.assertEqual("unknown_outcome", context.exception.kind)
+        self.assertEqual(
+            f"{stalled} (the outcome of this gh pr merge request is unknown: {UNKNOWN_OUTCOME})",
+            str(context.exception),
+        )
+        with self.assertRaises(GitHubError) as context:
+            client.run(["pr", "view", "7"])
+        self.assertEqual(("timeout", stalled), (context.exception.kind, str(context.exception)))
+        self.assertEqual([], sleeper.waits)
+
+    def test_a_change_still_fails_permanently_and_waits_out_a_rate_limit(self) -> None:
+        arguments = ["api", "-X", "DELETE", "repos/o/r/git/refs/heads/topic"]
+        client, sleeper = client_for(scripted(failed("gh: Not Found (HTTP 404)"))[0])
+        with self.assertRaises(GitHubError) as context:
+            client.run(arguments)
+        self.assertEqual(("not_found", []), (context.exception.kind, sleeper.waits))
+        run, calls = scripted(failed(SECONDARY_LIMIT), ok())
+        client, sleeper = client_for(run)
+        client.run(arguments)
+        self.assertEqual(([5.0], 2), (sleeper.waits, len(calls)))
+
+    def test_rate_limits_and_transient_failures_keep_separate_bounded_counts(self) -> None:
+        run, calls = scripted(
+            failed(SECONDARY_LIMIT), failed(BAD_GATEWAY), failed(SECONDARY_LIMIT), failed(BAD_GATEWAY), ok()
+        )
+        client, sleeper = client_for(run)
+        client.run(["api", "user"])
+        self.assertEqual([5.0, 2.0, 10.0, 4.0], sleeper.waits)
+        self.assertEqual(5, len(calls))
+
+    def test_the_worst_case_is_a_finite_number_of_bounded_attempts(self) -> None:
+        # Every rate-limit retry and every transient retry spent on one read, each attempt failing.
+        answers = [failed(SECONDARY_LIMIT)] * 5 + [failed(BAD_GATEWAY)] * 2 + [failed(SECONDARY_LIMIT)]
+        run, calls = scripted(*answers)
+        client, sleeper = client_for(run)
+        with self.assertRaises(GitHubError) as context:
+            client.run(["api", "user"])
+        self.assertEqual(f"{SECONDARY_LIMIT} (gave up after 5 retries)", str(context.exception))
+        self.assertEqual(8, len(calls))
+        self.assertEqual(161.0, sum(sleeper.waits))
+
+    def test_the_transient_policy_values(self) -> None:
+        policy = Backoff()
+        self.assertEqual((2.0, 2), (policy.transient_base, policy.transient_retries))
+        self.assertEqual([2.0, 4.0], [policy.transient_wait(attempt) for attempt in range(2)])
+        self.assertEqual(frozenset({502, 503, 504}), github_client.TRANSIENT_STATUSES)
+
+
+class ChangeTests(unittest.TestCase):
+    def test_reads_are_recognized_and_everything_else_is_a_change(self) -> None:
+        cases: tuple[tuple[list[str], str | None], ...] = (
+            (["api", "user"], None),
+            (["api", "--paginate", "--slurp", "repos/o/r/pulls?state=open"], None),
+            (["api", "-H", "Accept: application/vnd.github.diff", "repos/o/r/pulls/7"], None),
+            (["api", "--hostname", "github.com", "rate_limit"], None),
+            (["api", "-X", "GET", "search/issues", "-f", "q=is:pr"], None),
+            (["api", "--method=get", "search/issues", "-F", "per_page=100"], None),
+            (["api", "-XHEAD", "repos/o/r"], None),
+            (["api", "graphql", "-f", "query=query($after: String) { viewer { login } }", "-F", "n=5"], None),
+            (["api", "graphql", "-F", "query={ viewer { login } }"], None),
+            (["pr", "view", "7", "--json", "title"], None),
+            (["pr", "list", "--repo", "o/r", "--json", "number"], None),
+            (["run", "view", "42", "--log"], None),
+            (["pr", "diff", "7"], None),
+            (["pr", "checks", "7"], None),
+            (["auth", "status"], None),
+            (["search", "prs", "--author", "octo"], None),
+            (["api", "repos/o/r/issues", "-f", "title=x"], "POST"),
+            (["api", "repos/o/r/issues", "--raw-field=title=x"], "POST"),
+            (["api", "repos/o/r/issues", "--input", "body.json"], "POST"),
+            (["api", "-X", "PUT", "repos/o/r/topics"], "PUT"),
+            (["api", "--method", "delete", "repos/o/r"], "DELETE"),
+            (["api", "graphql", "-f", "query=mutation { addStar(input: {}) { clientMutationId } }"], "POST"),
+            (["api", "graphql", "-f", "query=# a note\nmutation Close { closeIssue }"], "POST"),
+            (["api", "graphql", "-F", "query=@query.graphql"], "POST"),
+            (["api", "graphql", "--input", "query.json"], "POST"),
+            (["api", "graphql"], None),  # gh sends a request with no fields as a GET
+            (["api", "-H", "-X", "repos/o/r"], None),
+            (["pr", "comment", "7", "--body", "x"], "gh pr comment"),
+            (["pr", "merge", "7", "--squash"], "gh pr merge"),
+            (["issue", "create", "--title", "x"], "gh issue create"),
+            (["pr", "edit", "7", "--add-label", "view"], "gh pr edit"),
+            (["workflow", "run", "validate.yml"], "gh workflow run"),
+            (["browse"], "gh browse"),
+            ([], "gh"),
+        )
+        for arguments, change in cases:
+            with self.subTest(arguments=arguments):
+                self.assertEqual(change, github_client.change_of(arguments))
+
+
 class RequestTests(unittest.TestCase):
     def test_parse_may_ask_for_a_retry_or_fail(self) -> None:
         answers = iter([GitHubError("timed out", kind="incomplete", retryable=True), None])
