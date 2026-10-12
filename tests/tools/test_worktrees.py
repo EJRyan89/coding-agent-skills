@@ -324,6 +324,21 @@ class BranchOptionTests(GitTestCase):
                 self.assertTrue(worktrees.renames_a_branch(arguments))
 
 
+class CommandNameTests(GitTestCase):
+    def test_a_command_is_named_lower_cased_without_its_directory_or_exe(self) -> None:
+        cases = {
+            "git": "git",
+            "GIT.EXE": "git",
+            "C:\\Program Files\\Git\\cmd\\git.exe": "git",
+            "/c/Program Files/Git/cmd/Git.Exe": "git",
+            "codex.cmd": "codex.cmd",
+        }
+        for word, expected in cases.items():
+            with self.subTest(word=word):
+                self.assertEqual(expected, worktrees.command_name(word))
+        self.assertIsNone(worktrees.command_name(None))
+
+
 class CommandGuardTests(WorktreesTestCase):
     def test_upstream_values_and_real_rename_options_reach_both_shell_guard_decisions(self) -> None:
         for shell in (self.bash, self.powershell):

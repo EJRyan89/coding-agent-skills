@@ -182,5 +182,23 @@ class NameKeyTests(GitTestCase):
         self.assertNotEqual(platform_support.name_key("guide.md"), platform_support.name_key("guide-md"))
 
 
+class ProgramNameTests(GitTestCase):
+    def test_a_program_is_named_without_the_extension_windows_lets_its_caller_add(self) -> None:
+        cases = {
+            "git.exe": "git",
+            "GIT.EXE": "GIT",
+            "Pwsh.Exe": "Pwsh",
+            "git": "git",
+            # Only the extension Windows finds a program by is dropped, and only at the end.
+            "codex.cmd": "codex.cmd",
+            "git.exe.bak": "git.exe.bak",
+            "notexe": "notexe",
+            ".exe": "",
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(expected, platform_support.program_name(name))
+
+
 if __name__ == "__main__":
     unittest.main()
