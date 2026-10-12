@@ -30,6 +30,7 @@ from skill_layout import (
     script_language_problems,
     script_layout_problems,
     shared_guidance_problems,
+    sibling_path_problems,
     skill_path_problems,
     skill_tree_problems,
     unsupported_script_problems,
@@ -549,17 +550,63 @@ class SkillLayoutFixtures(GitTestCase):
                 return f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{skill}" / "scripts"))\n'
 
             scripts = root / "skills" / "user" / "scripts"
-            (scripts / "user.py").write_text(insert("core") + insert("other"), encoding="utf-8")
+            looked_up = 'sys.path.insert(0, str(sibling_scripts("looked-up")))\n'
+            (scripts / "user.py").write_text(insert("core") + insert("other") + looked_up, encoding="utf-8")
             # A regression suite runs from the source tree, where every skill is present.
             (scripts / "test_user.py").write_text(insert("suite-only"), encoding="utf-8")
             # A skill naming its own scripts directory needs no declaration.
             (root / "skills" / "core" / "scripts" / "core.py").write_text(insert("core"), encoding="utf-8")
             self.assertEqual(
                 [
+                    "skills/user/scripts/user.py puts looked-up's scripts on sys.path without declaring looked-up "
+                    'in skill_deps; see "Paths to a skill\'s own files" in docs/adding-a-skill.md',
                     "skills/user/scripts/user.py puts other's scripts on sys.path without declaring other in "
-                    'skill_deps; see "Paths to a skill\'s own files" in docs/adding-a-skill.md'
+                    'skill_deps; see "Paths to a skill\'s own files" in docs/adding-a-skill.md',
                 ],
                 script_dependency_problems(root),
+            )
+
+    def test_sibling_path_policy_holds_every_module_to_the_lookup(self) -> None:
+        bootstrap = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))\n'
+        lookup = 'from skill_roots import sibling_scripts\nsys.path.insert(0, str(sibling_scripts("dep")))\n'
+        hand_written = 'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dep" / "scripts"))\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "skills/user/scripts/user.py": bootstrap + lookup,
+                    "skills/user/scripts/test_user.py": bootstrap + lookup + hand_written,
+                    # A skill may name its own scripts directory; only a sibling's goes through the lookup.
+                    "skills/dep/scripts/dep.py": bootstrap + hand_written,
+                    f"{REPOSITORY_SKILLS}/local/scripts/local.py": (
+                        'sys.path.insert(0, str(ROOT / "skills" / "skill-core" / "scripts"))\n'
+                        'sys.path.append(str(ROOT / "skills" / "dep" / "scripts"))\n'
+                    ),
+                    "tools/tool.py": "sys.path.insert(0, str(sibling_scripts(NAME)))\n",
+                    "tests/suite/test_suite.py": (
+                        f'sys.path.insert(0, str(skill_roots.sibling_scripts("skill-core")))\nTEXT = {hand_written!r}\n'
+                    ),
+                    "deploy.py": 'sys.path.insert(0, str(sibling_scripts(name="dep")))\n',
+                    # A fixture tree is another repository, read and never run from here.
+                    "tests/fixtures/repo/skills/x/scripts/x.py": hand_written,
+                },
+            )
+            doc = 'see "Validation" in docs/adding-a-skill.md'
+            self.assertEqual(
+                [
+                    f"{REPOSITORY_SKILLS}/local/scripts/local.py:2 puts dep's scripts on sys.path by a hand-written "
+                    f'path; put sibling_scripts("dep") from skill_roots there instead; {doc}',
+                    "deploy.py:1 passes sibling_scripts a name it cannot read; pass the skill's name as one string "
+                    f"literal; {doc}",
+                    "skills/user/scripts/test_user.py:4 puts dep's scripts on sys.path by a hand-written path; put "
+                    f'sibling_scripts("dep") from skill_roots there instead; {doc}',
+                    "tests/suite/test_suite.py:1 looks up skill-core through sibling_scripts; the line that puts it "
+                    f"on sys.path already does; {doc}",
+                    "tools/tool.py:1 passes sibling_scripts a name it cannot read; pass the skill's name as one "
+                    f"string literal; {doc}",
+                ],
+                sibling_path_problems(root),
             )
 
 

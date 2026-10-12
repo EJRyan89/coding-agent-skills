@@ -500,19 +500,39 @@ def repository_files(root: Path) -> list[Path]:
     return [root / name for name in listed.split("\0") if name and (root / name).is_file()]
 
 
-def scripts_put_on_path(source: str) -> list[str]:
-    """The skill names in each `sys.path.insert(..., ... / "<skill>" / "scripts")` call in the source."""
-    names: list[str] = []
+# skill-core's lookup of a sibling skill's scripts directory, which a script puts on sys.path after the line that puts
+# skill-core there.
+SIBLING_LOOKUP = "sibling_scripts"
+
+
+@dataclass(frozen=True)
+class ScriptsEntry:
+    """A skill's scripts directory a module reaches: by name, or None when a lookup's argument is not one literal."""
+
+    line: int
+    name: str | None
+    # Whether the module names the directory by a hand-written path rather than through SIBLING_LOOKUP.
+    hand_written: bool
+
+
+def scripts_entries(source: str) -> list[ScriptsEntry]:
+    """Each skill scripts directory a `sys.path.insert` or `append` call in the source names: through a
+    `sibling_scripts("<skill>")` call, or by a hand-written `... / "<skill>" / "scripts"` path."""
+    entries: list[ScriptsEntry] = []
     for node in ast.walk(ast.parse(source)):
         if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "insert"
+            and node.func.attr in {"insert", "append"}
             and ast.unparse(node.func.value) == "sys.path"
         ):
             continue
         for part in ast.walk(node):
-            if (
+            if isinstance(part, ast.Call) and ast.unparse(part.func).split(".")[-1] == SIBLING_LOOKUP:
+                argument = part.args[0] if len(part.args) == 1 and not part.keywords else None
+                name = argument.value if isinstance(argument, ast.Constant) else None
+                entries.append(ScriptsEntry(node.lineno, name if isinstance(name, str) else None, False))
+            elif (
                 isinstance(part, ast.BinOp)
                 and isinstance(part.op, ast.Div)
                 and isinstance(part.right, ast.Constant)
@@ -521,8 +541,13 @@ def scripts_put_on_path(source: str) -> list[str]:
                 and isinstance(part.left.right, ast.Constant)
                 and isinstance(part.left.right.value, str)
             ):
-                names.append(part.left.right.value)
-    return names
+                entries.append(ScriptsEntry(node.lineno, part.left.right.value, True))
+    return sorted(entries, key=lambda entry: entry.line)
+
+
+def scripts_put_on_path(source: str) -> list[str]:
+    """The skill names whose scripts directory the source reaches, as `scripts_entries` reads them."""
+    return [entry.name for entry in scripts_entries(source) if entry.name is not None]
 
 
 def is_executable_script(path: Path) -> bool:

@@ -11,15 +11,16 @@ import unittest
 from pathlib import Path
 
 from skill_layout import embedded_program_problems, output_placeholder_problems
+from skill_roots import sibling_scripts
 from skill_scripts import command_reader
-from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, SKILLS_ROOT, skills_by_name
+from validation_support import REPOSITORY_ROOT, REPOSITORY_SKILLS, skills_by_name
 
 from deployer import render
 
 # The analyze-skill-cost inventory owns the grant rules, so the audit and this policy cannot disagree. It stays in that
 # skill rather than skill-core because it is the audit program the deployed skill runs, and the rules are its subject;
 # the path is set once here, at import, so no policy changes sys.path while another policy module is importing.
-sys.path.insert(0, str(SKILLS_ROOT / "analyze-skill-cost" / "scripts"))
+sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 import skill_inventory
 
 GRANTS_DOC = '"Granting tools" in docs/adding-a-skill.md'

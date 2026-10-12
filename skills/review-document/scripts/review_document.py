@@ -31,8 +31,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 from console import run_main
 from flat_text import flat_text

@@ -13,8 +13,10 @@ from pathlib import Path
 from validation_support import (
     EXECUTABLE_SCRIPT_EXTENSIONS,
     REPOSITORY_ROOT,
+    REPOSITORY_SKILLS,
     SCRIPT_INTERPRETERS,
     SHELL_FENCES,
+    SIBLING_LOOKUP,
     SKILL_GUIDE,
     TEMPLATE_TOKEN,
     UNSUPPORTED_SCRIPT_EXTENSIONS,
@@ -23,6 +25,7 @@ from validation_support import (
     fence_holders,
     is_executable_script,
     is_test_script,
+    scripts_entries,
     scripts_put_on_path,
     skill_directories,
     skills_by_name,
@@ -374,6 +377,52 @@ def script_dependency_problems(root: Path) -> list[str]:
     return problems
 
 
+# The skill whose scripts every module reaches by its own fixed sys.path line, which skill_roots needs to be found.
+BOOTSTRAP_SKILL = "skill-core"
+SIBLING_PATH_ROOTS = ("skills", REPOSITORY_SKILLS, "tools", "tests", "deployer")
+SIBLING_LOOKUP_DOC = '"Validation" in docs/adding-a-skill.md'
+
+
+def _sibling_path_files(root: Path) -> list[Path]:
+    """The Python under the roots a sibling lookup applies to, outside tests/fixtures, which are other trees."""
+    files = [root / "deploy.py"] if (root / "deploy.py").is_file() else []
+    for top in SIBLING_PATH_ROOTS:
+        files += [path for path in (root / top).rglob("*.py") if not path.is_relative_to(root / "tests" / "fixtures")]
+    return sorted(files)
+
+
+def sibling_path_problems(root: Path) -> list[str]:
+    """Report a sys.path entry that reaches a sibling skill's scripts other than through skill-core's lookup.
+
+    skill_roots.sibling_scripts knows where a sibling lives, in the checkout, a categorized checkout, and the deployed
+    home alike, so a hand-written path is a copy of that layout that breaks when it changes. The line that puts
+    skill-core on sys.path is the one hand-written entry, since it finds the lookup, and a lookup's name is a literal
+    so the skill_deps check can read it.
+    """
+    problems: list[str] = []
+    for path in _sibling_path_files(root):
+        name = path.relative_to(root).as_posix()
+        own = path.parent.parent.name if path.parent.name == "scripts" else None
+        for entry in scripts_entries(path.read_text(encoding="utf-8")):
+            where = f"{name}:{entry.line}"
+            if entry.name is None:
+                problems.append(
+                    f"{where} passes {SIBLING_LOOKUP} a name it cannot read; pass the skill's name as one string "
+                    f"literal; see {SIBLING_LOOKUP_DOC}"
+                )
+            elif entry.hand_written and entry.name not in {BOOTSTRAP_SKILL, own}:
+                problems.append(
+                    f"{where} puts {entry.name}'s scripts on sys.path by a hand-written path; put {SIBLING_LOOKUP}(\""
+                    f'{entry.name}") from skill_roots there instead; see {SIBLING_LOOKUP_DOC}'
+                )
+            elif not entry.hand_written and entry.name == BOOTSTRAP_SKILL:
+                problems.append(
+                    f"{where} looks up {BOOTSTRAP_SKILL} through {SIBLING_LOOKUP}; the line that puts it on sys.path "
+                    f"already does; see {SIBLING_LOOKUP_DOC}"
+                )
+    return problems
+
+
 def fixture_source_problems(root: Path) -> list[str]:
     """Report a fixture source under tests/fixtures that could ship, collide with what ships, or break the contract.
 
@@ -567,3 +616,6 @@ class SkillLayoutPolicies(unittest.TestCase):
 
     def test_skill_scripts_declare_each_sibling_they_put_on_sys_path(self) -> None:
         self.assertEqual([], script_dependency_problems(REPOSITORY_ROOT))
+
+    def test_modules_reach_sibling_scripts_through_skill_core(self) -> None:
+        self.assertEqual([], sibling_path_problems(REPOSITORY_ROOT))

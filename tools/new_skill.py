@@ -2,7 +2,7 @@
 
 Usage:
   python tools/new_skill.py <name> --description TEXT [--argument-hint TEXT] [--user-only] [--opt-in]
-                                   [--tool NAME ...] [--allowed-tools ENTRY,ENTRY]
+                                   [--tool NAME ...] [--skill-dep NAME ...] [--allowed-tools ENTRY,ENTRY]
   python tools/new_skill.py <name> --repository --description TEXT [--argument-hint TEXT] [--user-only]
                                    [--allowed-tools ENTRY,ENTRY]
 
@@ -14,7 +14,7 @@ It writes skills/<name>/SKILL.md (frontmatter and a title only), deploy-meta/<na
 part of the skill's docs/skills.md section, then prints one REMAINING line for each thing validation still needs
 from a person, such as the reference's hand-written explanation and the README entry. It refuses, changing
 nothing, when the name is invalid or already used, when the name or description breaks the Agent Skills
-frontmatter rules, or when a tool is not in deployer/tools.py.
+frontmatter rules, when a tool is not in deployer/tools.py, or when a --skill-dep names no skill in the source.
 
 With --repository it scaffolds one of this repository's own skills instead: .claude/skills/<name>/SKILL.md, with
 no allowed-tools unless given, since a repository skill runs the repository's tools rather than scripts of its own,
@@ -23,7 +23,9 @@ section, so it takes no --tool or --opt-in, and its name must not be a shipped s
 audit's lookup by name ambiguous.
 
 It writes no scripts: validation requires a regression suite for any script under scripts/, so a stub would be
-a placeholder that lands untested.
+a placeholder that lands untested. Given --skill-dep, it records the skill, with skill-core, in skill_deps and prints
+one SCRIPT_HEADER line for each line a script of the skill starts with: the line that puts skill-core on sys.path,
+then a sibling_scripts call for each other dependency.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "skill-core" / "scripts"))
 
 from console import run_main
+from skill_roots import sibling_scripts
 
 from deployer import runtime_support
 from deployer import source as deploy_source
@@ -45,12 +48,15 @@ from tools import skill_reference, skill_shims
 
 # The analyze-skill-cost inventory owns the shell-grant rules. A deployed skill cannot import from this
 # repository, so this imports the skill's script rather than keeping a second copy here.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "analyze-skill-cost" / "scripts"))
+sys.path.insert(0, str(sibling_scripts("analyze-skill-cost")))
 import skill_inventory
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 OWN_SCRIPTS = 'python -B "${CLAUDE_SKILL_DIR}/scripts/*'
 DEFAULT_ALLOWED_TOOLS = [f"Bash({OWN_SCRIPTS})", f"PowerShell({OWN_SCRIPTS})", "Read"]
+# A script finds skill-core by this one fixed line, and every other sibling through skill-core's lookup.
+SKILL_CORE = "skill-core"
+SKILL_CORE_LINE = f'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "{SKILL_CORE}" / "scripts"))'
 
 
 class ScaffoldError(Exception):
@@ -100,8 +106,30 @@ def metadata_text(document: dict[str, object]) -> str:
     return "{\n" + ",\n".join(lines) + "\n}\n"
 
 
-def metadata(tools: list[str], opt_in: bool, user_only: bool = False, allowed: list[str] | None = None) -> str:
+def declared_dependencies(skill_deps: list[str]) -> list[str]:
+    """The skill_deps a skill whose scripts import these skills declares: them and skill-core, sorted."""
+    return sorted(set(skill_deps) | ({SKILL_CORE} if skill_deps else set()))
+
+
+def script_header(skill_deps: list[str]) -> list[str]:
+    """The lines a script of a skill with these skill_deps starts with, after its imports; none without any."""
+    if not skill_deps:
+        return []
+    siblings = [name for name in skill_deps if name != SKILL_CORE]
+    lookups = [f'sys.path.insert(0, str(sibling_scripts("{name}")))' for name in siblings]
+    return [SKILL_CORE_LINE, *(["from skill_roots import sibling_scripts", *lookups] if siblings else [])]
+
+
+def metadata(
+    tools: list[str],
+    opt_in: bool,
+    user_only: bool = False,
+    allowed: list[str] | None = None,
+    skill_deps: list[str] | None = None,
+) -> str:
     document: dict[str, object] = {"required_vars": [], "shared_deps": ["runtime-compatibility.md"]}
+    if skill_deps:
+        document["skill_deps"] = skill_deps
     if tools:
         document["tools"] = tools
     if opt_in:
@@ -159,8 +187,12 @@ def scaffold(
     opt_in: bool = False,
     tools: list[str] | None = None,
     allowed_tools: list[str] | None = None,
+    skill_deps: list[str] | None = None,
 ) -> list[str]:
-    """Write the new skill's files and return the reference problems a person still has to resolve."""
+    """Write the new skill's files and return the reference problems a person still has to resolve.
+
+    A skill given skill_deps also depends on skill-core, whose line finds every other sibling.
+    """
     description, argument_hint, allowed = _frontmatter_values(
         name, description, argument_hint, user_only, DEFAULT_ALLOWED_TOOLS if allowed_tools is None else allowed_tools
     )
@@ -169,6 +201,10 @@ def scaffold(
     if unknown:
         raise ScaffoldError(f"unknown tool {unknown[0]}; add it to SKILL_TOOLS in deployer/tools.py first")
     existing = skill_reference.load_source(root)
+    dependencies = declared_dependencies(skill_deps or [])
+    absent = [dependency for dependency in dependencies if dependency not in existing.skills]
+    if absent:
+        raise ScaffoldError(f"--skill-dep {absent[0]} names no skill in the source")
     skill_md = root / "skills" / name / "SKILL.md"
     meta = root / "deploy-meta" / f"{name}.json"
     if name in existing.skills or name in existing.bundles or skill_md.parent.exists() or meta.exists():
@@ -182,7 +218,7 @@ def scaffold(
         encoding="utf-8",
         newline="\n",
     )
-    meta.write_text(metadata(tools, opt_in, user_only, allowed), encoding="utf-8", newline="\n")
+    meta.write_text(metadata(tools, opt_in, user_only, allowed, dependencies), encoding="utf-8", newline="\n")
     skill_reference.write(root)
     return skill_reference.problems(root)
 
@@ -227,6 +263,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--tool", action="append", default=[], help="an external tool it runs, from deployer/tools.py")
     parser.add_argument(
+        "--skill-dep", action="append", default=[], help="a skill in the source whose scripts its scripts import"
+    )
+    parser.add_argument(
         "--allowed-tools",
         help="comma-separated allowed-tools entries (default: Bash and PowerShell for the skill's own scripts, and "
         "Read; none for a repository skill)",
@@ -246,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments.opt_in,
             arguments.tool,
             allowed,
+            arguments.skill_dep,
         )
     except (OSError, ScaffoldError, skill_reference.ReferenceError) as exc:
         print(f"FAILED {exc}", file=sys.stderr)
@@ -253,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"CREATED skills/{arguments.name}/SKILL.md")
     print(f"CREATED deploy-meta/{arguments.name}.json")
     print(f"UPDATED {skill_reference.REFERENCE.as_posix()}")
+    for line in script_header(declared_dependencies(arguments.skill_dep)):
+        print(f"SCRIPT_HEADER {line}")
     for problem in remaining:
         print(f"REMAINING {problem}")
     return 0
@@ -260,8 +302,10 @@ def main(argv: list[str] | None = None) -> int:
 
 def _main_repository(arguments: argparse.Namespace, allowed: list[str] | None) -> int:
     try:
-        if arguments.tool or arguments.opt_in:
-            raise ScaffoldError("a repository skill has no deploy metadata, so it takes no --tool or --opt-in")
+        if arguments.tool or arguments.opt_in or arguments.skill_dep:
+            raise ScaffoldError(
+                "a repository skill has no deploy metadata, so it takes no --tool, --opt-in, or --skill-dep"
+            )
         written = scaffold_repository(
             arguments.root, arguments.name, arguments.description, arguments.argument_hint, arguments.user_only, allowed
         )

@@ -22,9 +22,12 @@ from typing import Any, ClassVar
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "review-document" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
+sys.path.insert(0, str(sibling_scripts("review-document")))
 
 import review_document
 import review_guard

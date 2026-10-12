@@ -15,6 +15,8 @@ from deployer import fsops, hashing
 from deployer.errors import DeployError
 from deployer.paths import validate_managed_roots
 
+SKILL_ROOTS = Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts" / "skill_roots.py"
+
 
 def make_junction(link, target) -> None:
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(target)], check=True, capture_output=True)
@@ -164,6 +166,9 @@ class RemovalTests(DeployerTestCase):
         self.make_shared_asset("shared.md", "Shared")
         self.make_agent("reviewer")
         self.write(core / "scripts" / "support.py", 'VALUE = "dependency ready"\n')
+        # core plays skill-core: it holds the real sibling lookup, which run.py reaches middle through once deployed,
+        # where the manifest's recorded skill_deps keep middle installed beside a skipped or preserved public.
+        self.write(core / "scripts" / "skill_roots.py", SKILL_ROOTS.read_text(encoding="utf-8"))
         self.write(
             middle / "scripts" / "bridge.py",
             "import sys\nfrom pathlib import Path\n"
@@ -173,7 +178,9 @@ class RemovalTests(DeployerTestCase):
         self.write(
             public / "scripts" / "run.py",
             "import sys\nfrom pathlib import Path\n"
-            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "middle" / "scripts"))\n'
+            'sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "scripts"))\n'
+            "from skill_roots import sibling_scripts\n"
+            'sys.path.insert(0, str(sibling_scripts("middle")))\n'
             "from bridge import VALUE\nprint(VALUE)\n",
         )
         self.make_config()

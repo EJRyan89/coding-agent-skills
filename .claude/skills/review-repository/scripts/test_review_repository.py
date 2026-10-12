@@ -13,8 +13,11 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "skills" / "skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import untested_functions
 from git_test_base import GitTestCase

@@ -54,8 +54,11 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "code-review-core" / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
+from skill_roots import sibling_scripts
+
+sys.path.insert(0, str(sibling_scripts("code-review-core")))
 
 import review_synthesis as synthesis_stage
 from console import run_main

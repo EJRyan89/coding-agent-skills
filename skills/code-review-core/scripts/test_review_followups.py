@@ -34,6 +34,7 @@ from review_config import (
 )
 from review_runtime import RuntimeContractError, RuntimeContractFieldError
 from review_state import StateError
+from skill_roots import sibling_scripts
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 
@@ -1097,7 +1098,7 @@ class CoverageTests(GitTestCase):
 
 class TrackerIncompleteTests(GitTestCase):
     def test_incomplete_review_is_shown_but_not_reoffered_until_head_changes(self) -> None:
-        sys.path.insert(0, str(SCRIPT_DIRECTORY.parents[1] / "update-pr-tracker" / "scripts"))
+        sys.path.insert(0, str(sibling_scripts("update-pr-tracker")))
         import update_pr_tracker as tracker
         from pr_change import CHANGED, UNCHANGED
 
