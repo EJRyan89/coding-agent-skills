@@ -388,6 +388,11 @@ class RecordTests(SynthesisFixture):
                 {"themes": [{"theme": "Time", "count": 1, "examples": [], "areas": []}]},
                 "must be a list of 1 to 3 finding references",
             ),
+            # A boolean or an integral float compares equal to the version; only the integer itself is it.
+            **{
+                f"a schema version of {json.dumps(version)}": ({"schema_version": version}, "schema_version must be 1")
+                for version in (True, 1.0, "1", [1], {"version": 1}, None, 2)
+            },
         }
         before = json_path.read_text(encoding="utf-8")
         for name, (changes, message) in cases.items():

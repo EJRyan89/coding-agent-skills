@@ -546,7 +546,11 @@ def load_plan(path: str | Path) -> dict[str, Any]:
         plan = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise CleanupError(f"cannot read plan {path}: {exc}") from exc
-    if not isinstance(plan, dict) or plan.get("schema_version") != PLAN_SCHEMA_VERSION:
+    if (
+        not isinstance(plan, dict)
+        or type(plan.get("schema_version")) is not int
+        or plan["schema_version"] != PLAN_SCHEMA_VERSION
+    ):
         raise CleanupError(f"{path} is not a repo-cleanup plan")
     return plan
 

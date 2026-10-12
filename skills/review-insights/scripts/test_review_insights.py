@@ -1431,6 +1431,22 @@ class RecordingTests(InsightFixture):
                     "next_recommendation_number must be a number after every recommendation ID",
                 )
 
+    def test_a_schema_version_that_is_not_a_supported_integer_is_refused_unchanged(self) -> None:
+        # A boolean or an integral float compares equal to a supported version, and a list cannot be hashed.
+        self.commit("owner/repo", 7, ["Correctness"])
+        json_path, _ = self.report()
+        report = json.loads(json_path.read_text(encoding="utf-8"))
+        for version in (True, False, 8.0, 7.0, 1.0, "8", [8], {"version": 8}, None, 0, 9):
+            with self.subTest(version=version):
+                json_path.write_text(json.dumps({**report, "schema_version": version}), encoding="utf-8")
+                before = json_path.read_text(encoding="utf-8")
+                with self.assertRaisesRegex(ri.InsightError, "is not a supported insights report"):
+                    ri.load_report(json_path)
+                self.assertFailed(
+                    self.decide(json_path, "REC-001", "Correctness", "none"), "is not a supported insights report"
+                )
+                self.assertEqual(before, json_path.read_text(encoding="utf-8"))
+
     def test_a_report_is_written_only_when_it_could_be_read_back(self) -> None:
         # Analyzer recommendations keep every finding they cover as evidence, so a report can grow large; the cap it
         # is written under is the cap it is read with.
