@@ -29,6 +29,7 @@ import github_client
 import review_github
 import review_io
 import review_runtime
+import review_state
 import skill_roots
 from git_client import GitResult
 from github_client import CommandResult
@@ -63,6 +64,7 @@ from review_operation import (
     archive_base,
     commit_adapter_result,
     latest_reviewed_heads,
+    merged_date,
     parse_pull_selector,
     safe_watermark,
     select_eligible_pulls,
@@ -102,6 +104,11 @@ from review_runtime import (
 from review_state import StateError, empty_state, load_state, update_state, validate_state
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+
+
+def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
+    """The clock `utc_today` reads, stopped at `seconds` since the epoch."""
+    return mock.patch.object(review_state, "time", mock.Mock(time=mock.Mock(return_value=seconds)))
 
 
 def answering(result: CommandResult) -> Callable[[Sequence[str]], CommandResult]:
@@ -1764,6 +1771,18 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(["page=1", "page=2", "page=1"], [call[-1].rsplit("&", 1)[1] for call in calls])
         self.assertEqual(102, len(listing.pulls))
 
+    def test_closed_walk_reads_update_times_as_utc_dates(self) -> None:
+        # The first page ends just before the watermark's UTC day, though its local date east of UTC is already that
+        # day, so the walk stops; one that ends just after it, on the previous local day west of UTC, reads on.
+        for updated, reads in (("2026-03-01T01:00:00+02:00", 1), ("2026-02-28T20:00:00-05:00", 3)):
+            with self.subTest(updated=updated):
+                pages = {
+                    1: self._closed_page(range(200, 100, -1), updated),
+                    2: self._closed_page(range(100, 98, -1), "2026-02-20T10:00:00Z"),
+                }
+                _, calls = self._walk(pages, date(2026, 3, 1))
+                self.assertEqual(reads, len(calls))
+
     def test_closed_walk_finds_a_pull_updated_onto_a_page_it_already_read(self) -> None:
         # Pull 50 is merged while page 1 is being read, so it moves from page 2 to the top of page 1, and page 1's last
         # pull shifts onto page 2: the second page repeats it, and the reread of page 1 finds pull 50.
@@ -3056,6 +3075,24 @@ class ReviewOperationTests(unittest.TestCase):
                 eligible_merged=[pull],
                 completed_numbers={2},
             )
+
+    def test_today_is_the_utc_date_on_either_side_of_utc_midnight(self) -> None:
+        # Seconds since the epoch, written out so the expected dates do not come from the code under test. East of
+        # UTC the first is already the next local day; west of UTC the second is still the previous one.
+        for seconds, expected in ((1773187199, date(2026, 3, 10)), (1773187200, date(2026, 3, 11))):
+            with self.subTest(seconds=seconds), frozen_clock(seconds):
+                self.assertEqual(expected, review_state.utc_today())
+
+    def test_merge_dates_are_utc_dates_whatever_offset_the_time_carries(self) -> None:
+        for merged_at, expected in (
+            ("2026-03-10T23:59:59Z", date(2026, 3, 10)),
+            ("2026-03-11T00:00:00Z", date(2026, 3, 11)),
+            ("2026-03-11T01:30:00+02:00", date(2026, 3, 10)),  # the next local day east of UTC
+            ("2026-03-10T20:30:00-05:00", date(2026, 3, 11)),  # the previous local day west of UTC
+            ("2026-03-10T23:30:00", date(2026, 3, 10)),  # no offset is read as UTC
+        ):
+            with self.subTest(merged_at=merged_at):
+                self.assertEqual(expected, merged_date(self._pull(2, "MERGED", merged_at)))
 
     def test_generic_and_specialized_results_share_record_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

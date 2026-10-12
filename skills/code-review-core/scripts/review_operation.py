@@ -21,7 +21,7 @@ from review_archive import (
 from review_config import validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
-from review_state import watermark_date
+from review_state import utc_date, watermark_date
 
 
 class ReviewOperationError(ValueError):
@@ -113,7 +113,7 @@ def select_eligible_pulls(
 
 def merged_date(pull: dict[str, Any]) -> date:
     try:
-        return date.fromisoformat(pull["mergedAt"][:10])
+        return utc_date(pull["mergedAt"])
     except (TypeError, ValueError) as exc:
         raise ReviewOperationError(f"Pull {pull['number']} has invalid mergedAt") from exc
 

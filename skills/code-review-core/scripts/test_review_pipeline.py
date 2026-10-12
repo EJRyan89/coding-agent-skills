@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_guard as guard
 import review_pipeline as rp
 import review_source
+import review_state
 from git_client import GitError, GitResult
 from github_client import CommandResult, subprocess_runner
 from review_archive import latest_record, list_versions, pull_directory
@@ -41,6 +42,12 @@ from review_state import load_state
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+
+
+def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
+    """The clock `utc_today` reads, stopped at `seconds` since the epoch."""
+    return mock.patch.object(review_state, "time", mock.Mock(time=mock.Mock(return_value=seconds)))
+
 
 REPOSITORY = "example/one"
 SELECTOR = "example/one#12"
@@ -4885,6 +4892,32 @@ class BatchTests(PipelineFixture):
         rp.finalize(ready["run"])
         self.run_main("advance", "--batch", str(batch_path))
         self.assertEqual("2026-03-10", load_state(self.state_path)["repositories"][REPOSITORY]["merged_since"])
+
+    def test_a_pull_merged_later_on_the_utc_day_of_an_empty_batch_stays_eligible(self) -> None:
+        # The batch runs at 23:30 UTC on 10 March, when the local date east of UTC is already 11 March, finds nothing
+        # pending, and advances; a pull request merged at 23:45 UTC that day must still be listed by the next run.
+        self.services = rp.Services(github=self.services.github, resolve_runtime=self.services.resolve_runtime)
+        self.state_path.parent.mkdir(parents=True)
+        self.state_path.write_text(
+            json.dumps({"schema_version": 1, "repositories": {REPOSITORY: {"merged_since": "2026-03-01"}}}),
+            encoding="utf-8",
+        )
+        self.github.listing = []
+        batch_path = self.root / "batch.json"
+        with frozen_clock(1773185400):  # 2026-03-10T23:30:00Z
+            code, _, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        code, out, err = self.run_main("advance", "--batch", str(batch_path))
+        self.assertEqual((0, "WATERMARK example/one 2026-03-01 -> 2026-03-10\n", ""), (code, out, err))
+        self.assertEqual(
+            {"merged_since": "2026-03-10", "updated_at": "2026-03-10"},
+            load_state(self.state_path)["repositories"][REPOSITORY],
+        )
+        self.github.listing = [rest_pull(14, "2" * 40, self.base, state="closed", merged_at="2026-03-10T23:45:00Z")]
+        with frozen_clock(1773187200):  # 2026-03-11T00:00:00Z
+            code, out, err = self.run_main("enumerate", "--output", str(batch_path))
+        self.assertEqual((0, ""), (code, err))
+        self.assertIn("PULL example/one#14\n", out)
 
     def test_enumerate_reports_a_record_without_artifact_hashes(self) -> None:
         ready = self.prepare()
