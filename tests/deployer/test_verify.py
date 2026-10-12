@@ -14,6 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
+import job_tree
 from git_test_base import GitTestCase
 from harness import DeployerTestCase, Result, forward
 
@@ -245,6 +246,40 @@ class ConverseTests(DeployerTestCase):
         with self.assertRaisesRegex(ListingError, r"^no answer within 1 seconds$"):
             self.talk(arguments, ['{"id": 0}'], answered=discovery.codex_answered, timeout=1)
         self.assertLess(time.monotonic() - started, discovery.CLOSE_GRACE)
+
+    def test_a_program_killed_after_its_answer_ends_the_program_it_started(self) -> None:
+        # Like a launcher script that runs the runtime: killing the launcher alone would leave the runtime running.
+        pids = self.root / "pids.txt"
+        arguments = self.program(
+            """
+            import os, subprocess, sys, time
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+            with open(sys.argv[1] + ".tmp", "w", encoding="utf-8") as handle:
+                handle.write(f"{os.getpid()} {child.pid}")
+            os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+            print("done", flush=True)
+            time.sleep(120)
+            """
+        )
+        with mock.patch.object(discovery, "CLOSE_GRACE", 0.5):
+            lines = self.talk([*arguments, str(pids)], ["ask"], answered=lambda line: line == "done\n")
+        self.assertEqual(["done"], lines)
+        started = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
+        deadline = time.monotonic() + 10
+        while any(platform_support.process_status(pid).alive for pid in started) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual([False, False], [platform_support.process_status(pid).alive for pid in started])
+
+    def test_a_program_that_cannot_be_held_with_what_it_starts_is_ended_and_a_listing_error(self) -> None:
+        refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")
+        with (
+            mock.patch.object(job_tree, "job_holding", side_effect=refusal),
+            self.assertRaisesRegex(
+                ListingError,
+                r"^cannot end what it starts: it could not join a Windows job object: AssignProcessToJobObject",
+            ),
+        ):
+            self.talk(self.program("import time\ntime.sleep(120)\n"), ['{"id": 0}'], answered=discovery.codex_answered)
 
     def test_a_program_that_cannot_start_is_a_listing_error(self) -> None:
         with self.assertRaisesRegex(ListingError, "^cannot start it: "):
