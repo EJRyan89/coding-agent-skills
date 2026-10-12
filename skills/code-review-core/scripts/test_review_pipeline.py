@@ -14,7 +14,7 @@ import threading
 import time
 import unittest
 import zipfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -30,14 +30,20 @@ import review_state
 from git_client import GitError, GitResult
 from github_client import CommandResult, subprocess_runner
 from review_archive import latest_record, list_versions, pull_directory
-from review_config import ConfigurationError, default_manifest_path, validate_config, write_config
-from review_flags import FlagError, add_flag
-from review_github import GitHubClient
+from review_config import (
+    ConfigurationError,
+    ConfigurationFieldError,
+    default_manifest_path,
+    validate_config,
+    write_config,
+)
+from review_flags import FlagError, FlagFieldError, add_flag
+from review_github import GitHubClient, GitHubFieldError
 from review_hosts import ProcessResult
 from review_io import PersistenceError
 from review_operation import ReviewOperationError
 from review_process import ProcessStatus, process_status
-from review_runtime import validate_adapter_manifest
+from review_runtime import RuntimeContractError, RuntimeContractFieldError, validate_adapter_manifest
 from review_state import load_state
 from test_review_documents import StubPdftotext, paragraph, pdf_document, table, without_pdftotext, word_document
 
@@ -888,18 +894,22 @@ class GenericReviewTests(PipelineFixture):
 
     def test_a_result_must_name_its_model(self) -> None:
         ready = self.prepare()
-        for model, reason in (
-            (None, "model must be a single non-blank line"),
-            ("", "model must be"),
-            ("two\nlines", "model must be"),
-            ("x" * 201, "model must be"),
+        for model, found in (
+            (None, "null"),
+            ("", "an empty string"),
+            (" padded", "a string with whitespace around it"),
+            ("two\nlines", "a string of more than one line"),
+            ("x" * 201, "a string of 201 characters"),
         ):
             with self.subTest(model=model):
                 self.write_role_result(ready["roles"][0], findings=[self.finding()], model=model)
                 code, out, _ = self.run_main("validate-result", "--run", str(ready["run"]), "--role", "generic-review")
                 self.assertEqual(1, code)
-                self.assertIn(reason, out)
-                self.assertIn("write the model ID your system prompt names", out)
+                self.assertEqual(
+                    "INVALID generic-review: specialist-result.model must be a non-empty trimmed single-line string "
+                    f"of at most 200 characters, found {found}; write the model ID your system prompt names\n",
+                    out,
+                )
         self.write_role_result(ready["roles"][0], findings=[self.finding()], model="unknown")
         self.assertEqual(
             "VALID\n", self.run_main("validate-result", "--run", str(ready["run"]), "--role", "generic-review")[1]
@@ -1203,12 +1213,16 @@ class WorkflowTests(PipelineFixture):
         self.assertEqual(0, code, err)
         _, _, roles = workflow_output(out)
         self.assertEqual(["medium"], [role["effort"] for role in roles])
-        for bad in ("fast", "", 3, True):
-            with (
-                self.subTest(bad=bad),
-                self.assertRaisesRegex(ConfigurationError, "reviewer_effort must be null or one of"),
-            ):
-                validate_config({**config, "reviewer_effort": bad})
+        for bad, found in (("fast", 'string "fast"'), ("", 'string ""'), (3, "integer 3"), (True, "boolean true")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ConfigurationError) as raised:
+                    validate_config({**config, "reviewer_effort": bad})
+                self.assertIs(ConfigurationFieldError, type(raised.exception))
+                self.assertEqual(
+                    'config.reviewer_effort must be one of "high", "low", "max", "medium", "xhigh" or null, '
+                    f"found {found}",
+                    str(raised.exception),
+                )
 
     def test_one_script_starts_every_role_of_several_runs(self) -> None:
         self.github.pulls[13] = rest_pull(13, self.head, self.base)
@@ -1671,8 +1685,13 @@ class ReReviewTests(PipelineFixture):
             dispositions=[{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Still an int."}],
         )
         self.flags_path.write_text("{}", encoding="utf-8")
-        with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
+        with self.assertRaises(FlagError) as raised:
             rp.finalize(ready["run"])
+        self.assertIs(FlagFieldError, type(raised.exception))
+        self.assertEqual(
+            "flag-store must be an object with fields flags, next_id, schema_version, found an object without them",
+            str(raised.exception),
+        )
         self.assertEqual(1, archived_record(self.archive, 12)["review"]["version"], "nothing archived")
         self.flags_path.unlink()
         add_flag(
@@ -1755,8 +1774,13 @@ class ReReviewTests(PipelineFixture):
         self.push({"app/service.py": "def total(items):\n    return sum(items or [])  # unchanged\n"})
         self.flags_path.parent.mkdir(parents=True, exist_ok=True)
         self.flags_path.write_text("{}", encoding="utf-8")
-        with self.assertRaisesRegex(FlagError, "Flag store shape is invalid"):
+        with self.assertRaises(FlagError) as raised:
             self.prepare(re_review=True, scope="full")
+        self.assertIs(FlagFieldError, type(raised.exception))
+        self.assertEqual(
+            "flag-store must be an object with fields flags, next_id, schema_version, found an object without them",
+            str(raised.exception),
+        )
 
     @staticmethod
     def planned(run: Path | str) -> list[tuple[str, list[str], bool]]:
@@ -2092,19 +2116,19 @@ class MalformedManifestTests(PipelineFixture):
     @staticmethod
     def cases() -> list[tuple[dict[str, Any], str]]:
         cases = []
-        containers: tuple[object, ...] = ([], {})
+        containers: tuple[tuple[object, str], ...] = (([], "an array"), ({}, "an object"))
         for field, reason in (
-            ("schema_version", "Adapter manifest protocol version is unsupported"),
-            ("required_capabilities", "Adapter required_capabilities is invalid"),
-            ("when", "specialists[0].when names an undeclared condition"),
+            ("schema_version", "manifest.schema_version must be an integer"),
+            ("required_capabilities", "specialists-manifest.required_capabilities[0] must be a non-empty string"),
+            ("when", "specialists-manifest.specialists[0].when must be a non-empty string or null"),
         ):
-            for value in containers:
+            for value, found in containers:
                 manifest = json.loads(json.dumps(SPECIALIST_MANIFEST))
                 if field == "when":
                     manifest["specialists"][0]["when"] = value
                 else:
                     manifest[field] = [value] if field == "required_capabilities" else value
-                cases.append((manifest, reason))
+                cases.append((manifest, f"{reason}, found {found}"))
         return cases
 
     def test_malformed_local_manifests_print_field_errors_without_leaving_runs(self) -> None:
@@ -2147,7 +2171,10 @@ class MalformedManifestTests(PipelineFixture):
         )
         self.assertEqual((1, ""), (code, err))
         self.assertEqual(
-            ["FAILED example/one#13 Adapter required_capabilities is invalid"],
+            [
+                "FAILED example/one#13 specialists-manifest.required_capabilities[0] must be a non-empty string, "
+                "found an array"
+            ],
             [line for line in out.splitlines() if line.startswith("FAILED ")],
         )
         runs = [line.split(" ", 2) for line in out.splitlines() if line.startswith("RUN ")]
@@ -3120,18 +3147,25 @@ class ProfileModelTests(PipelineFixture):
 
     def test_invalid_manifest_model_or_effort_is_rejected(self) -> None:
         specialist = SPECIALIST_MANIFEST["specialists"][0]
+        field = "specialists-manifest.specialists[0]"
+        model = f'{field}.model must be one of "fable", "haiku", "inherit", "opus", "sonnet" or null, found'
+        effort = f'{field}.effort must be one of "high", "low", "max", "medium", "xhigh" or null, found'
         for settings, message in (
-            ({"model": "claude-sonnet-5"}, "model must be null, inherit, or one of fable, haiku, opus, sonnet"),
-            ({"model": ["opus"]}, "model must be null, inherit, or one of"),
-            ({"model": 1}, "model must be null, inherit, or one of"),
-            ({"effort": "fast"}, "effort must be null or one of high, low, max, medium, xhigh"),
-            ({"effort": ["high"]}, "effort must be null or one of"),
-            ({"effort": {"level": "high"}}, "effort must be null or one of"),
-            ({"effort": ""}, "effort must be null or one of"),
-            ({"temperature": 0}, "fields do not match the protocol"),
+            ({"model": "claude-sonnet-5"}, f'{model} string "claude-sonnet-5"'),
+            ({"model": ["opus"]}, f"{model} an array"),
+            ({"model": 1}, f"{model} integer 1"),
+            ({"model": True}, f"{model} boolean true"),
+            ({"effort": "fast"}, f'{effort} string "fast"'),
+            ({"effort": ["high"]}, f"{effort} an array"),
+            ({"effort": {"level": "high"}}, f"{effort} an object"),
+            ({"effort": ""}, f'{effort} string ""'),
+            ({"temperature": 0}, f'{field} must be an object of known fields, found unknown field "temperature"'),
         ):
-            with self.subTest(settings=settings), self.assertRaisesRegex(Exception, message):
-                validate_adapter_manifest({**SPECIALIST_MANIFEST, "specialists": [{**specialist, **settings}]})
+            with self.subTest(settings=settings):
+                with self.assertRaises(RuntimeContractError) as raised:
+                    validate_adapter_manifest({**SPECIALIST_MANIFEST, "specialists": [{**specialist, **settings}]})
+                self.assertIs(RuntimeContractFieldError, type(raised.exception))
+                self.assertEqual(message, str(raised.exception))
         validated = validate_adapter_manifest(
             {**SPECIALIST_MANIFEST, "specialists": [{**specialist, "model": "opus", "effort": "max"}]}
         )
@@ -5161,8 +5195,61 @@ class GitHubReadTests(unittest.TestCase):
         page = {"pageInfo": {"hasNextPage": False}, "nodes": [{"path": "a.py"}]}
         response = json.dumps({"data": {"repository": {"pullRequest": {"reviewThreads": page}}}})
         client = GitHubClient(runner=lambda arguments: CommandResult(0, response, ""))
-        with self.assertRaisesRegex(Exception, "unexpected shape"):
+        with self.assertRaises(GitHubFieldError) as raised:
             client.list_open_review_threads("example/one", 3)
+        self.assertIs(GitHubFieldError, type(raised.exception))
+        self.assertEqual("review threads[0].isResolved must be a boolean, found null", str(raised.exception))
+
+
+class RunAndBatchFieldTests(unittest.TestCase):
+    """The run file and the batch file are each refused, field by field, in the one shape a wrong kind takes, before
+    anything else is read; a schema version of the right kind but another value keeps its own refusal."""
+
+    # Each wrong-kind case: the file's content, the field it names, what it expects there, and what it found.
+    CASES: tuple[tuple[Any, str, str, str], ...] = (
+        ([], "", "an object", "an array"),
+        ("run", "", "an object", 'string "run"'),
+        ({}, ".schema_version", "an integer", "null"),
+        ({"schema_version": "1"}, ".schema_version", "an integer", 'string "1"'),
+        ({"schema_version": True}, ".schema_version", "an integer", "boolean true"),
+        ({"schema_version": 1.0}, ".schema_version", "an integer", "number 1.0"),
+        ({"schema_version": [1]}, ".schema_version", "an integer", "an array"),
+        ({"schema_version": {"value": 1}}, ".schema_version", "an integer", "an object"),
+    )
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def assert_each_wrong_kind_is_refused(self, name: str, path: Path, load: Callable[[], object]) -> None:
+        for content, field, expected, found in self.CASES:
+            with self.subTest(content=content):
+                path.write_text(json.dumps(content), encoding="utf-8")
+                with self.assertRaises(rp.PipelineError) as raised:
+                    load()
+                self.assertIs(rp.PipelineFieldError, type(raised.exception))
+                self.assertEqual(f"{name}{field} must be {expected}, found {found}", str(raised.exception))
+
+    def test_a_run_file_of_the_wrong_kind_is_refused_by_field(self) -> None:
+        self.assert_each_wrong_kind_is_refused("run", self.root / rp.RUN_FILE, lambda: rp.load_run(self.root))
+        (self.root / rp.RUN_FILE).write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+        with self.assertRaises(rp.PipelineError) as raised:
+            rp.load_run(self.root)
+        self.assertIs(rp.PipelineError, type(raised.exception))
+        self.assertEqual(f"{self.root} is not a prepared review run", str(raised.exception))
+
+    def test_a_batch_file_of_the_wrong_kind_is_refused_by_field_before_the_configuration_is_read(self) -> None:
+        batch = self.root / "batch.json"
+        missing = self.root / "no-config.json"
+        self.assert_each_wrong_kind_is_refused(
+            "batch", batch, lambda: rp.advance_watermarks(batch, config_path=missing)
+        )
+        batch.write_text(json.dumps({"schema_version": 2}), encoding="utf-8")
+        with self.assertRaises(rp.PipelineError) as raised:
+            rp.advance_watermarks(batch, config_path=missing)
+        self.assertIs(rp.PipelineError, type(raised.exception))
+        self.assertEqual(f"{batch} is not a review batch file", str(raised.exception))
 
 
 class StatsLineTests(unittest.TestCase):

@@ -127,8 +127,11 @@ class ManifestTests(unittest.TestCase):
             "non-empty": manifest(specialists=[{**manifest()["specialists"][0], "include": []}]),
             "duplicated": manifest(specialists=[manifest()["specialists"][0]] * 2),
             "unsafe": manifest(resources=["../outside.md"]),
-            "uncovered must be review or ignore": manifest(uncovered="skip"),
-            "uncovered must be review or ignore$": manifest(uncovered=None),
+            re.escape('specialists-manifest.uncovered must be one of "review", "ignore", found string "skip"')
+            + "$": manifest(uncovered="skip"),
+            re.escape('specialists-manifest.uncovered must be one of "review", "ignore", found null') + "$": manifest(
+                uncovered=None
+            ),
         }
         for expected, value in cases.items():
             with self.subTest(expected=expected), self.assertRaisesRegex(RuntimeContractError, expected):
@@ -1019,17 +1022,23 @@ class FindingCategoryTests(unittest.TestCase):
         added = {"Sources/Q.cs": {"134": "x"}}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name, finding in (
-                ("no category", self.finding()),
-                ("an undeclared category", self.finding(category="Security")),
-                ("a category that is not text", self.finding(category=3)),
+            outside = "csharp-review: finding 0 category must be one of: Correctness, Style"
+            for name, finding, error, message in (
+                ("no category", self.finding(), rs.SpecialistError, outside),
+                ("an undeclared category", self.finding(category="Security"), rs.SpecialistError, outside),
+                (
+                    "a category that is not text",
+                    self.finding(category=3),
+                    rs.SpecialistFieldError,
+                    "csharp-review: specialist-result.findings[0].category must be a string, found integer 3",
+                ),
             ):
                 with self.subTest(name):
                     role = self.role(root, "csharp-review", [finding], finding_categories=self.CATEGORIES)
-                    with self.assertRaisesRegex(
-                        rs.SpecialistError, "csharp-review: finding 0 category must be one of: Correctness, Style"
-                    ):
+                    with self.assertRaises(rs.SpecialistError) as raised:
                         rs.load_role_result(role, added)
+                    self.assertIs(error, type(raised.exception))
+                    self.assertEqual(message, str(raised.exception))
             accepted = self.role(
                 root, "csharp-review", [self.finding(category=" style ")], finding_categories=self.CATEGORIES
             )
@@ -1322,6 +1331,114 @@ class RepeatLinkTests(unittest.TestCase):
             prior={},
         )
         self.assertEqual([None, "csharp-review-1"], [finding.get("repeats") for finding in result["findings"]])
+
+
+# A specialist result of the kinds its output contract states, which each wrong-kind case below changes in one field.
+FINDING: dict[str, Any] = {
+    "path": "Sources/Q.cs",
+    "line": 134,
+    "severity": "SHOULD_FIX",
+    "title": "Headline",
+    "body": "Fix it.",
+}
+RESULT: dict[str, Any] = {
+    "model": "m",
+    "summary": "s",
+    "findings": [FINDING],
+    "prior_dispositions": [{"finding_id": "v1:F001", "disposition": "still_present", "rationale": "Unchanged."}],
+}
+MODEL_KIND = "a non-empty trimmed single-line string of at most 200 characters"
+MODEL_ADVICE_TEXT = "; write the model ID your system prompt names"
+SEVERITIES = '"MUST_FIX", "MUST FIX", "SHOULD_FIX", "SHOULD FIX", "SUGGESTION"'
+REPEATS_KIND = "an integer or a non-empty string"
+
+
+def _result(**fields: Any) -> dict[str, Any]:
+    return {**RESULT, **fields}
+
+
+def _finding(**fields: Any) -> dict[str, Any]:
+    return _result(findings=[{**FINDING, **fields}])
+
+
+class ResultFieldKindTests(unittest.TestCase):
+    """Each field load_role_result, its finding check, and its repeat check read, given a value of another kind, is
+    refused in the one shape a wrong kind takes, at the field's path under the role's specialist result."""
+
+    # The result, the path under `<role>: specialist-result`, what is expected there, and what was found.
+    CASES: ClassVar[list[tuple[Any, str, str, str]]] = [
+        # The result itself (load_role_result).
+        ([], "", "an object", "an array"),
+        ("done", "", "an object", 'string "done"'),
+        (_result(summary=7), ".summary", "a non-empty string", "integer 7"),
+        (_result(summary=" "), ".summary", "a non-empty string", "a blank string"),
+        (_result(model=None), ".model", MODEL_KIND, f"null{MODEL_ADVICE_TEXT}"),
+        (_result(model=True), ".model", MODEL_KIND, f"boolean true{MODEL_ADVICE_TEXT}"),
+        (_result(model={"id": "m"}), ".model", MODEL_KIND, f"an object{MODEL_ADVICE_TEXT}"),
+        (_result(findings={"0": FINDING}), ".findings", "an array", "an object"),
+        (_result(findings="none"), ".findings", "an array", 'string "none"'),
+        (_result(prior_dispositions={}), ".prior_dispositions", "an array", "an object"),
+        (_result(comment_dispositions="none"), ".comment_dispositions", "an array", 'string "none"'),
+        # A finding (_check_finding).
+        (_result(findings=["Fix it."]), ".findings[0]", "an object", 'string "Fix it."'),
+        (_finding(severity=1), ".findings[0].severity", f"one of {SEVERITIES}", "integer 1"),
+        (_finding(severity="must_fix"), ".findings[0].severity", f"one of {SEVERITIES}", 'string "must_fix"'),
+        (_finding(path=5), ".findings[0].path", "a non-empty string", "integer 5"),
+        (_finding(path=""), ".findings[0].path", "a non-empty string", "an empty string"),
+        (_finding(line="134"), ".findings[0].line", "an integer", 'string "134"'),
+        (_finding(line=134.0), ".findings[0].line", "an integer", "number 134.0"),
+        (_finding(line=True), ".findings[0].line", "an integer", "boolean true"),
+        (_finding(body=None), ".findings[0].body", "a non-empty string", "null"),
+        (
+            _finding(title=["Headline"]),
+            ".findings[0].title",
+            "a non-empty trimmed single-line string of at most 120 characters",
+            "an array",
+        ),
+        (_finding(category={}), ".findings[0].category", "a string", "an object"),
+        (_finding(analyzer=[]), ".findings[0].analyzer", "an object", "an array"),
+        (
+            _finding(analyzer={"coverage": 1, "tool": "Roslyn", "rule": "x"}),
+            ".findings[0].analyzer.coverage",
+            'one of "available", "known", "custom-candidate"',
+            "integer 1",
+        ),
+        # A finding's link to the one it repeats (_check_repeats).
+        (_finding(repeats=None), ".findings[0].repeats", REPEATS_KIND, "null"),
+        (_finding(repeats=True), ".findings[0].repeats", REPEATS_KIND, "boolean true"),
+        (_finding(repeats=0.0), ".findings[0].repeats", REPEATS_KIND, "number 0.0"),
+        (_finding(repeats=""), ".findings[0].repeats", REPEATS_KIND, 'string ""'),
+        (_finding(repeats=["v1:F001"]), ".findings[0].repeats", REPEATS_KIND, "an array"),
+        (_finding(repeats={"id": "v1:F001"}), ".findings[0].repeats", REPEATS_KIND, "an object"),
+    ]
+
+    def load(self, result: Any) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as temporary:
+            result_file = Path(temporary) / "csharp-review.json"
+            result_file.write_text(json.dumps(result), encoding="utf-8")
+            role = {
+                "id": "csharp-review",
+                "category": "C#",
+                "files": ["Sources/Q.cs"],
+                "result_file": str(result_file),
+                "prior_ids": ["v1:F001"],
+                "prior_severities": {"v1:F001": "SHOULD_FIX"},
+                "dispositions_only": False,
+            }
+            return rs.load_role_result(role, {"Sources/Q.cs": {"134": "x", "135": "x"}})
+
+    def test_the_result_every_case_changes_is_accepted(self) -> None:
+        self.assertEqual("m", self.load(RESULT)["model"])
+
+    def test_each_field_of_the_wrong_kind_is_refused_at_its_path(self) -> None:
+        for result, path, expected, found in self.CASES:
+            with self.subTest(path=path, found=found):
+                with self.assertRaises(rs.SpecialistError) as raised:
+                    self.load(result)
+                self.assertIs(rs.SpecialistFieldError, type(raised.exception))
+                self.assertEqual(
+                    f"csharp-review: specialist-result{path} must be {expected}, found {found}", str(raised.exception)
+                )
 
 
 class SpecialistFixture:
@@ -1646,7 +1763,11 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         plan = self.plan()
         self.write_valid_results(plan)
         self.write(plan, "db-review", [{"path": "db/Procs.sql", "line": 2, "severity": ["MUST_FIX"], "body": "x"}])
-        self.assertIn("invalid severity", rs.check(plan)["db-review"])
+        self.assertEqual(
+            'db-review: specialist-result.findings[0].severity must be one of "MUST_FIX", "MUST FIX", "SHOULD_FIX", '
+            '"SHOULD FIX", "SUGGESTION", found an array',
+            rs.check(plan)["db-review"],
+        )
 
     def test_a_result_holds_only_the_fields_its_output_contract_lists(self) -> None:
         plan = self.plan()
@@ -1656,7 +1777,9 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         for key in ("comments", "issues"):
             with self.subTest(key=key):
                 self.write(plan, "db-review", [finding], key=key)
-                self.assertEqual("db-review: result needs a findings array", rs.check(plan)["db-review"])
+                self.assertEqual(
+                    "db-review: specialist-result.findings must be an array, found null", rs.check(plan)["db-review"]
+                )
         self.write(plan, "db-review", [finding])
         self.assertEqual({}, rs.check(plan))
         result_file = Path(plan["roles"][0]["result_file"])
@@ -1676,7 +1799,7 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
             ),
             (
                 {**valid, "findings": [{**valid["findings"][0], "category": 7}]},
-                "db-review: finding 0 category must be a string",
+                "db-review: specialist-result.findings[0].category must be a string, found integer 7",
             ),
         ):
             with self.subTest(error=error):
@@ -1693,7 +1816,14 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
     def test_a_finding_title_must_be_one_line_of_at_most_120_characters(self) -> None:
         plan = self.plan()
         self.write_valid_results(plan)
-        for title in (None, "", " padded", "two\nlines", "x" * 121):
+        for title, found in (
+            (None, "null"),
+            ("", "an empty string"),
+            (" padded", "a string with whitespace around it"),
+            ("two\nlines", "a string of more than one line"),
+            ("two\u2028lines", "a string of more than one line"),
+            ("x" * 121, "a string of 121 characters"),
+        ):
             finding = {"path": "db/Procs.sql", "line": 2, "severity": "MUST_FIX", "body": "x", "title": title}
             if title is None:
                 del finding["title"]
@@ -1705,8 +1835,9 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
                 )
             else:
                 self.write(plan, "db-review", [finding])
-            self.assertIn(
-                "title must be a single non-blank line of at most 120 characters",
+            self.assertEqual(
+                "db-review: specialist-result.findings[0].title must be a non-empty trimmed single-line string of at "
+                f"most 120 characters, found {found}",
                 rs.check(plan)["db-review"],
                 repr(title),
             )
@@ -1733,40 +1864,58 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         self.assertIn("- `available`: a rule in an analyzer ANALYZERS_FILE lists", prompt)
         self.write(plan, "db-review", [])
         comment = {"path": "src/A.cs", "line": 2, "severity": "SUGGESTION", "body": "Remove // Arrange comment"}
+        field = "csharp-review: specialist-result.findings[0].analyzer"
+        coverage = 'one of "available", "known", "custom-candidate"'
+        name = "a name of at most 100 characters without whitespace, backticks, pipes, or angle brackets"
+        pattern = "a lowercase kebab-case pattern name of at most 60 characters"
         for analyzer, error in (
             (
                 {"coverage": "available", "tool": "Roslynator.Analyzers", "rule": "RCS1018"},
-                "names Roslynator.Analyzers, which ANALYZERS_FILE does not list; an available tool is one it lists "
-                "(Microsoft.CodeAnalysis.CSharp.CodeStyle, Microsoft.CodeAnalysis.NetAnalyzers, StyleCop.Analyzers)",
+                "csharp-review: finding 0 analyzer names Roslynator.Analyzers, which ANALYZERS_FILE does not list; an "
+                "available tool is one it lists (Microsoft.CodeAnalysis.CSharp.CodeStyle, "
+                "Microsoft.CodeAnalysis.NetAnalyzers, StyleCop.Analyzers), otherwise use known",
             ),
             (
                 {"coverage": "known", "tool": "stylecop.analyzers", "rule": "SA1515"},
-                "names stylecop.analyzers, which ANALYZERS_FILE lists as StyleCop.Analyzers; use available",
+                "csharp-review: finding 0 analyzer names stylecop.analyzers, which ANALYZERS_FILE lists as "
+                "StyleCop.Analyzers; use available",
             ),
             (
                 {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "Arrange Comment"},
-                "must be an object with exactly coverage",
+                f'{field}.rule must be {name}, found string "Arrange Comment"',
             ),
             (
                 {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "x" * 61},
-                "must be an object with exactly coverage",
+                f"{field}.rule must be {pattern}, found a string of 61 characters",
+            ),
+            (
+                {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "Arrange-Comment"},
+                f'{field}.rule must be {pattern}, found string "Arrange-Comment"',
             ),
             (
                 {"coverage": "available", "tool": "StyleCop.Analyzers", "rule": "SA1515", "note": "x"},
-                "must be an object with exactly coverage",
+                f'{field} must be an object of known fields, found unknown field "note"',
+            ),
+            (
+                {"coverage": "available", "tool": "StyleCop.Analyzers"},
+                f"{field} must be an object with field rule, found an object without it",
             ),
             (
                 {"coverage": "maybe", "tool": "StyleCop.Analyzers", "rule": "SA1515"},
-                "must be an object with exactly coverage",
+                f'{field}.coverage must be {coverage}, found string "maybe"',
             ),
             (
                 {"coverage": ["available"], "tool": "StyleCop.Analyzers", "rule": "SA1515"},
-                "must be an object with exactly coverage",
+                f"{field}.coverage must be {coverage}, found an array",
             ),
-            ("SA1515", "must be an object with exactly coverage"),
+            (
+                {"coverage": "available", "tool": 7, "rule": "SA1515"},
+                f"{field}.tool must be a non-empty string, found integer 7",
+            ),
+            ("SA1515", f'{field} must be an object, found string "SA1515"'),
         ):
             self.write(plan, "csharp-review", [{**comment, "analyzer": analyzer}])
-            self.assertIn(f"finding 0 analyzer {error}", rs.check(plan)["csharp-review"], analyzer)
+            self.assertEqual(error, rs.check(plan)["csharp-review"], analyzer)
         # The tool is matched without regard to case, and the result keeps the reviewer's own spelling.
         accepted = {"coverage": "available", "tool": "stylecop.analyzers", "rule": "SA1515"}
         self.write(
@@ -1962,13 +2111,18 @@ class EndToEndTests(SpecialistFixture, unittest.TestCase):
         plan = self.plan([{"id": "F001", "path": "src/A.cs", "line": 2}])
         role = next(r for r in plan["roles"] if r["id"] == "csharp-review")
         given = {"finding_id": "F001", "disposition": "still_present", "rationale": "Line 2."}
+        field = "specialist-result.prior_dispositions"
         for dispositions, message in (
-            (None, "prior_dispositions must be an array"),
-            ([{**given, "extra": 1}], "Prior disposition fields do not match the protocol"),
-            ([{**given, "finding_id": ["F001"]}], "Prior disposition IDs must be unique strings"),
+            (None, f"{field} must be an array, found null"),
+            ([{**given, "extra": 1}], f'{field}[0] must be an object of known fields, found unknown field "extra"'),
+            ([{**given, "finding_id": ["F001"]}], f"{field}[0].finding_id must be a non-empty string, found an array"),
             ([given, given], "Prior disposition IDs must be unique strings"),
-            ([{**given, "disposition": "fixed"}], "Invalid disposition for prior finding F001"),
-            ([{**given, "rationale": " "}], "Prior finding F001 requires a rationale"),
+            (
+                [{**given, "disposition": "fixed"}],
+                f'{field}[0].disposition must be one of "addressed", "partially_addressed", "still_present", '
+                '"superseded", "unable_to_verify", found string "fixed"',
+            ),
+            ([{**given, "rationale": " "}], f"{field}[0].rationale must be a non-empty string, found a blank string"),
             ([{**given, "finding_id": "F009"}], "Prior dispositions mismatch; missing=['F001'], unknown=['F009']"),
         ):
             with self.subTest(message):

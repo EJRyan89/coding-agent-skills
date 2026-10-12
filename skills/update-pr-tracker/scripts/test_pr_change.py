@@ -145,6 +145,70 @@ class ChangeDetectorTests(unittest.TestCase):
             with self.subTest(malformed=malformed):
                 self.assertEqual(UNKNOWN, detect(malformed, comparison(changed("a.py", "b"))))
 
+    def test_a_comparison_of_the_wrong_kind_anywhere_is_none(self) -> None:
+        good = changed("a.py", "blob1")
+        self.assertEqual((("a.py", "modified", "", "blob1"),), changed_files(comparison(good)))
+        self.assertEqual(
+            (("b.py", "renamed", "a.py", "blob1"),),
+            changed_files(comparison(changed("b.py", "blob1", "renamed", previous_filename="a.py"))),
+        )
+        cases: list[Any] = [
+            # The comparison, its files, and each file.
+            None,
+            [],
+            "ahead",
+            {"files": None},
+            {"files": {"a.py": good}},
+            {"files": "a.py"},
+            comparison(None),
+            comparison(["a.py"]),
+            comparison("a.py"),
+            # Each string a file names: its path, status, and blob ID, each non-blank, and its previous path.
+            *(
+                comparison(good | {field: value})
+                for field in ("filename", "status", "sha")
+                for value in (None, "", " ", 5, True, ["a.py"], {"name": "a.py"})
+            ),
+            *(
+                comparison({key: value for key, value in good.items() if key != field})
+                for field in ("filename", "status", "sha")
+            ),
+            *(comparison(good | {"previous_filename": value}) for value in (5, True, ["a.py"], {"name": "a.py"})),
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertIsNone(changed_files(value))
+
+    def test_a_tree_of_the_wrong_kind_anywhere_is_none(self) -> None:
+        good = {"path": "a.py", "mode": "100644", "type": "blob"}
+        self.assertEqual({"a.py": "100644"}, tree_modes({"truncated": False, "tree": [good]}))
+        incomplete: tuple[Any, ...] = (True, None, 0, "false", [], {})
+        cases: list[Any] = [
+            # The tree, its listing, and each entry.
+            None,
+            [],
+            "tree",
+            {"truncated": False},
+            {"truncated": False, "tree": None},
+            {"truncated": False, "tree": {"a.py": good}},
+            {"truncated": False, "tree": [None]},
+            {"truncated": False, "tree": ["a.py"]},
+            # Each entry's path and mode.
+            *(
+                {"truncated": False, "tree": [good | {field: value}]}
+                for field in ("path", "mode")
+                for value in (None, 5, True, ["a.py"], {"name": "a.py"})
+            ),
+            {"truncated": False, "tree": [{"path": "a.py"}]},
+            {"truncated": False, "tree": [{"mode": "100644"}]},
+            # Whether it is complete: only the boolean false says so.
+            *({"truncated": value, "tree": [good]} for value in incomplete),
+            {"tree": [good]},
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertIsNone(tree_modes(value))
+
     def test_empty_contributions_on_both_sides_are_unknown(self) -> None:
         self.assertEqual(UNKNOWN, detect(comparison(), comparison()))
         self.assertEqual(CHANGED, detect(comparison(changed("a.py", "b")), comparison()))
@@ -391,6 +455,17 @@ class AncestryTests(unittest.TestCase):
             with self.subTest(answer=answer):
                 self.assertIs(expected, at_or_before(client, "owner/repo", REVIEWED, HEAD))
                 self.assertEqual([f"repos/owner/repo/compare/{REVIEWED}...{HEAD}?per_page=1"], client.calls)
+
+    def test_an_answer_of_the_wrong_kind_is_none(self) -> None:
+        for answer in (
+            None,
+            "ahead",
+            ["ahead"],
+            {},
+            *({"status": value} for value in (None, "", " ", 1, True, ["ahead"], {"status": "ahead"})),
+        ):
+            with self.subTest(answer=answer):
+                self.assertIsNone(at_or_before(self.Client(answer), "owner/repo", REVIEWED, HEAD))
 
     def test_any_failure_but_a_missing_commit_is_raised(self) -> None:
         for kind in (*RUN_LEVEL_KINDS, *CALL_LEVEL_KINDS):

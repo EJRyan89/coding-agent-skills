@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,7 @@ from review_archive import archive_head, commit_record, current_ledger, pull_dir
 from review_operation import archive_base, commit_adapter_result, reviewed_head
 from review_records import (
     RecordError,
+    RecordFieldError,
     build_record,
     calculate_verdict,
     carried_findings,
@@ -34,6 +36,11 @@ SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 POLICY = {"request_changes_for": ["MUST_FIX"], "should_fix_threshold": 3}
 ADAPTER: dict[str, Any] = {"name": "generic", "scope": "generic", "source_commit": None, "source_hashes": {}}
 NO_OPEN = {"MUST_FIX": 0, "SHOULD_FIX": 0, "SUGGESTION": 0}
+
+
+def field_pattern(path: str, expected: str, found: str) -> str:
+    """The whole message a field of the wrong kind raises, built from literal kinds rather than the reader's own."""
+    return f"^{re.escape(f'{path} must be {expected}, found {found}')}$"
 
 
 def finding(key: str, severity: str = "SHOULD_FIX", line: int = 10, **extra: object) -> dict:
@@ -400,7 +407,11 @@ class RepeatTests(unittest.TestCase):
                 "still_present or partially_addressed",
             ),
             ([finding("v1:F001"), finding("b", repeats="v1:F001")], still, "ambiguous"),
-            ([finding("a", repeats=["a"])], still, "repeats must be"),
+            (
+                [finding("a", repeats=["a"])],
+                still,
+                field_pattern("adapter-result.findings[0].repeats", "a non-empty string", "an array"),
+            ),
         ):
             with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
                 validate(adapter_result(findings, dispositions), prior)
@@ -428,7 +439,10 @@ class RepeatTests(unittest.TestCase):
             (lambda r: r["findings"][2].update(repeats={"version": 2, "id": "F009"}), "repeats an unknown finding"),
             (lambda r: r["findings"][2].update(repeats={"version": 2, "id": "F003"}), "cannot repeat itself"),
             (lambda r: r["findings"][2].update(repeats={"version": 3, "id": "F001"}), "repeats is malformed"),
-            (lambda r: r["findings"][2].update(repeats="F002"), "repeats is malformed"),
+            (
+                lambda r: r["findings"][2].update(repeats="F002"),
+                field_pattern("record.findings[2].repeats", "an object", 'string "F002"'),
+            ),
             (
                 lambda r: (
                     r["findings"][1].update(severity="SUGGESTION")
@@ -465,6 +479,87 @@ class RepeatTests(unittest.TestCase):
             broken = copy.deepcopy(record)
             mutate(broken)
             with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
+                validate_record(broken)
+
+    def test_repeats_and_ledger_fields_of_the_wrong_kind_are_field_errors(self) -> None:
+        prior_ledger = [entry(1, "F001", "SHOULD_FIX", "open", 1)]
+        result = validate(
+            adapter_result(
+                [
+                    finding("again", repeats="v1:F001"),
+                    finding("a", line=20),
+                    finding("b", "SUGGESTION", 30, repeats="a"),
+                ],
+                [disposition("v1:F001", "still_present")],
+            ),
+            [{"id": "v1:F001", "severity": "SHOULD_FIX"}],
+        )
+        record = build_record(record_request("re-review"), result, version=2, policy=POLICY, prior_ledger=prior_ledger)
+        severities = 'one of "MUST_FIX", "SHOULD_FIX", "SUGGESTION"'
+        dispositions = 'one of "addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"'
+        for mutate, path, expected, found in (
+            (
+                lambda r: r["findings"][2].update(repeats=["F002"]),
+                "record.findings[2].repeats",
+                "an object",
+                "an array",
+            ),
+            (
+                lambda r: r["findings"][2].update(repeats={"version": "2", "id": "F002"}),
+                "record.findings[2].repeats.version",
+                "an integer",
+                'string "2"',
+            ),
+            (
+                lambda r: r["findings"][2].update(repeats={"version": 2, "id": 5}),
+                "record.findings[2].repeats.id",
+                "a non-empty string",
+                "integer 5",
+            ),
+            (
+                lambda r: r["findings"][2].update(repeats={"version": 2}),
+                "record.findings[2].repeats",
+                "an object with field id",
+                "an object without it",
+            ),
+            (lambda r: r.update(ledger={}), "record.ledger", "an array", "an object"),
+            (lambda r: r["ledger"].__setitem__(0, "F001"), "record.ledger[0]", "an object", 'string "F001"'),
+            (
+                lambda r: r["ledger"][0].update(extra=1),
+                "record.ledger[0]",
+                "an object of known fields",
+                'unknown field "extra"',
+            ),
+            (lambda r: r["ledger"][0].update(version=True), "record.ledger[0].version", "an integer", "boolean true"),
+            (lambda r: r["ledger"][0].update(id=1), "record.ledger[0].id", "a non-empty string", "integer 1"),
+            (lambda r: r["ledger"][0].update(severity=[]), "record.ledger[0].severity", severities, "an array"),
+            (
+                lambda r: r["ledger"][0].update(state=5),
+                "record.ledger[0].state",
+                'one of "open", "closed", "unverified"',
+                "integer 5",
+            ),
+            (lambda r: r["ledger"][0].update(judged_in="1"), "record.ledger[0].judged_in", "an integer", 'string "1"'),
+            (
+                lambda r: r["ledger"][0].update(dispositions="x"),
+                "record.ledger[0].dispositions",
+                "an array",
+                'string "x"',
+            ),
+            (
+                lambda r: r["ledger"][0]["dispositions"].__setitem__(0, {"version": 2, "disposition": 1}),
+                "record.ledger[0].dispositions[0].disposition",
+                dispositions,
+                "integer 1",
+            ),
+            (lambda r: r["ledger"][0].update(repeats="F001"), "record.ledger[0].repeats", "an array", 'string "F001"'),
+        ):
+            broken = copy.deepcopy(record)
+            mutate(broken)
+            with (
+                self.subTest(path=path, found=found),
+                self.assertRaisesRegex(RecordFieldError, field_pattern(path, expected, found)),
+            ):
                 validate_record(broken)
 
     def test_the_adapter_schema_publishes_the_repeats_link(self) -> None:

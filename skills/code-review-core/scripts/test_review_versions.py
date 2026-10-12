@@ -17,12 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import review_config
 import review_pipeline
 from console import use_utf8_output
-from review_flags import FlagError, add_flag, load_store, upgrade_store
+from review_flags import FlagError, FlagFieldError, add_flag, load_store, upgrade_store
 from review_io import atomic_write_json
 from review_records import RecordError, validate_record
-from review_state import StateError, empty_state, load_state, update_state, validate_state
+from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
 from test_review_canary import PULL, write_fixture
 from test_review_record_validation import _record
+from typed_fields import FieldError
 
 
 class VersionBoundaryTests(unittest.TestCase):
@@ -38,28 +39,87 @@ class VersionBoundaryTests(unittest.TestCase):
         original_bytes = path.read_bytes()
         self.assertEqual(original, validate_state(original))
         self.assertIs(int, type(load_state(path)["schema_version"]))
-        for version in (True, 1.0, False, "1", None, 2):
+        kind = "state.schema_version must be an integer, found"
+        cases: list[tuple[Any, type[StateError], str]] = [
+            (True, StateFieldError, f"{kind} boolean true"),
+            (1.0, StateFieldError, f"{kind} number 1.0"),
+            (False, StateFieldError, f"{kind} boolean false"),
+            ("1", StateFieldError, f'{kind} string "1"'),
+            (None, StateFieldError, f"{kind} null"),
+            (2, StateError, "Unsupported state schema version: 2"),
+        ]
+        for version, error, message in cases:
             malformed = {**original, "schema_version": version}
-            message = f"Unsupported state schema version: {version!r}"
             with self.subTest(version=version):
                 with self.assertRaises(StateError) as caught:
                     validate_state(malformed)
-                self.assertEqual(message, str(caught.exception))
+                self.assertEqual((error, message), (type(caught.exception), str(caught.exception)))
                 with self.assertRaises(StateError) as caught:
                     update_state(path, mock.Mock(return_value=malformed))
-                self.assertEqual(message, str(caught.exception))
+                self.assertEqual((error, message), (type(caught.exception), str(caught.exception)))
                 self.assertEqual(original_bytes, path.read_bytes())
                 path.write_text(json.dumps(malformed), encoding="utf-8")
                 malformed_bytes = path.read_bytes()
                 with self.assertRaises(StateError) as caught:
                     load_state(path)
-                self.assertEqual(message, str(caught.exception))
+                self.assertEqual((error, message), (type(caught.exception), str(caught.exception)))
                 self.assertEqual(malformed_bytes, path.read_bytes())
                 path.write_bytes(original_bytes)
 
+    def test_state_fields_of_the_wrong_kind_are_refused_in_one_shape(self) -> None:
+        self.assertTrue(issubclass(StateFieldError, FieldError) and issubclass(StateFieldError, StateError))
+        entry = "state.repositories.owner/repo"
+
+        def repository(value: Any) -> dict[str, Any]:
+            return {"schema_version": 1, "repositories": {"owner/repo": value}}
+
+        cases: list[tuple[str, Any, str]] = [
+            ("a state that is an array", [], "state must be an object, found an array"),
+            ("a state that is a string", "state", 'state must be an object, found string "state"'),
+            (
+                "an unknown state field",
+                {"schema_version": 1, "repositories": {}, "extra": 1},
+                'state must be an object of known fields, found unknown field "extra"',
+            ),
+            ("no schema version", {"repositories": {}}, "state.schema_version must be an integer, found null"),
+            (
+                "repositories that are an array",
+                {"schema_version": 1, "repositories": []},
+                "state.repositories must be an object, found an array",
+            ),
+            ("no repositories", {"schema_version": 1}, "state.repositories must be an object, found null"),
+            ("an entry that is a string", repository("x"), f'{entry} must be an object, found string "x"'),
+            (
+                "an unknown entry field",
+                repository({"extra": 1}),
+                f'{entry} must be an object of known fields, found unknown field "extra"',
+            ),
+            (
+                "a merged_since that is an integer",
+                repository({"merged_since": 5}),
+                f"{entry}.merged_since must be a string, found integer 5",
+            ),
+            (
+                "a merged_since that is an array",
+                repository({"merged_since": ["2026-10-11"]}),
+                f"{entry}.merged_since must be a string, found an array",
+            ),
+            (
+                "an updated_at that is null",
+                repository({"updated_at": None}),
+                f"{entry}.updated_at must be a string, found null",
+            ),
+        ]
+        for name, value, message in cases:
+            with self.subTest(name):
+                with self.assertRaises(StateError) as caught:
+                    validate_state(value)
+                self.assertEqual((StateFieldError, message), (type(caught.exception), str(caught.exception)))
+
     def test_flag_migration_recognizes_only_the_integer_legacy_version(self) -> None:
         path = self.root / "flags.json"
-        for version in (True, 1.0, 2.0):
+        kind = "flag-store.schema_version must be an integer, found"
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0"), (2.0, "number 2.0")):
             malformed: dict[str, Any] = {"schema_version": version, "next_id": 1, "flags": []}
             with self.subTest(version=version):
                 self.assertEqual(malformed, upgrade_store(malformed))
@@ -68,31 +128,35 @@ class VersionBoundaryTests(unittest.TestCase):
                 for action in (lambda: load_store(path), lambda: add_flag(path, category="Noise", body="Reason.")):
                     with self.assertRaises(FlagError) as caught:
                         action()
-                    self.assertEqual("Flag store schema version is unsupported", str(caught.exception))
+                    self.assertIs(FlagFieldError, type(caught.exception))
+                    self.assertEqual(f"{kind} {found}", str(caught.exception))
                     self.assertEqual(before, path.read_bytes())
         path.write_text(json.dumps({"schema_version": 1, "next_id": 1, "flags": []}), encoding="utf-8")
         self.assertEqual(2, load_store(path)["schema_version"])
 
     def test_prepared_run_version_is_checked_before_any_run_field_is_read(self) -> None:
         path = self.root / review_pipeline.RUN_FILE
-        for version in (True, 1.0):
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
+            message = f"run.schema_version must be an integer, found {found}"
             path.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
-            with self.subTest(version=version), self.assertRaises(review_pipeline.PipelineError) as caught:
-                review_pipeline.load_run(self.root)
-            self.assertEqual(f"{self.root} is not a prepared review run", str(caught.exception))
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                result = review_pipeline.main(["check", "--run", str(self.root)])
-            self.assertEqual(1, result)
-            self.assertEqual(f"FAILED {self.root} {self.root} is not a prepared review run\n", stdout.getvalue())
-            self.assertEqual("", stderr.getvalue())
+            with self.subTest(version=version):
+                with self.assertRaises(review_pipeline.PipelineError) as caught:
+                    review_pipeline.load_run(self.root)
+                self.assertIs(review_pipeline.PipelineFieldError, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = review_pipeline.main(["check", "--run", str(self.root)])
+                self.assertEqual(1, result)
+                self.assertEqual(f"FAILED {self.root} {message}\n", stdout.getvalue())
+                self.assertEqual("", stderr.getvalue())
         value = {"schema_version": review_pipeline.RUN_SCHEMA_VERSION}
         path.write_text(json.dumps(value), encoding="utf-8")
         self.assertEqual(value, review_pipeline.load_run(self.root))
 
     def test_batch_version_is_checked_before_configuration_or_watermarks(self) -> None:
         path = self.root / "batch.json"
-        for version in (True, 1.0):
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             path.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
             before = path.read_bytes()
             stdout, stderr = io.StringIO(), io.StringIO()
@@ -104,7 +168,7 @@ class VersionBoundaryTests(unittest.TestCase):
                 result = review_pipeline.main(["advance", "--batch", str(path)])
             with self.subTest(version=version):
                 self.assertEqual(1, result)
-                self.assertEqual(f"FAILED {path} is not a review batch file\n", stdout.getvalue())
+                self.assertEqual(f"FAILED batch.schema_version must be an integer, found {found}\n", stdout.getvalue())
                 self.assertEqual("", stderr.getvalue())
                 self.assertEqual(before, path.read_bytes())
                 load_config.assert_not_called()
@@ -115,7 +179,7 @@ class VersionBoundaryTests(unittest.TestCase):
 
     def test_configuration_cli_reports_invalid_versions_without_writing(self) -> None:
         path = self.root / "config.json"
-        for version in (True, 1.0):
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             path.write_text(json.dumps({"schema_version": version}), encoding="utf-8")
             before = path.read_bytes()
             stdout, stderr = io.StringIO(), io.StringIO()
@@ -123,7 +187,7 @@ class VersionBoundaryTests(unittest.TestCase):
                 result = review_config._main(["validate", str(path)])
             with self.subTest(version=version):
                 self.assertEqual(1, result)
-                self.assertEqual(f"FAILED Unsupported config schema version: {version!r}\n", stdout.getvalue())
+                self.assertEqual(f"FAILED config.schema_version must be an integer, found {found}\n", stdout.getvalue())
                 self.assertEqual("", stderr.getvalue())
                 self.assertEqual(before, path.read_bytes())
 
@@ -142,7 +206,7 @@ class VersionBoundaryTests(unittest.TestCase):
     def test_fixture_cli_refuses_non_integer_versions_before_git_or_run_writes(self) -> None:
         fixture = write_fixture(self.root / "fixture", {"a.py": b"before\n"}, {"a.py": b"after\n"})
         pull_path = fixture / "pull.json"
-        for version in (True, 1.0):
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             pull_path.write_text(json.dumps({**PULL, "schema_version": version}), encoding="utf-8")
             stdout, stderr = io.StringIO(), io.StringIO()
             git = mock.Mock(side_effect=AssertionError("An invalid fixture must not run git"))
@@ -157,7 +221,10 @@ class VersionBoundaryTests(unittest.TestCase):
                 )
             with self.subTest(version=version):
                 self.assertEqual(1, result)
-                self.assertEqual(f"FAILED {fixture} pull.json schema_version must be 1\n", stdout.getvalue())
+                self.assertEqual(
+                    f"FAILED {fixture} fixture-pull.schema_version must be an integer, found {found}\n",
+                    stdout.getvalue(),
+                )
                 self.assertEqual("", stderr.getvalue())
                 git.assert_not_called()
                 self.assertEqual(["fixture"], [path.name for path in self.root.iterdir()])

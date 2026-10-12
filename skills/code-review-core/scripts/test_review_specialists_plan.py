@@ -738,27 +738,54 @@ class RefusalTests(PlanFixture):
 
     def test_a_request_that_is_not_protocol_1_is_refused_first(self) -> None:
         self.request_path.write_text("[]", encoding="utf-8")
-        self.assertEqual((rs.SpecialistError, "Adapter request protocol version is unsupported"), self.refused(None))
+        self.assertEqual((rs.SpecialistFieldError, "request must be an object, found an array"), self.refused(None))
         self.request(protocol_version=2, mode="full")
         self.assertEqual(
             (rs.SpecialistError, "Adapter request protocol version is unsupported"), self.refused(self.reviewer())
         )
         self.assertEqual(([], []), (self.effects, self.work_files()))
         self.assertFalse(self.work.exists())
-        for version in (True, 1.0):
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0")):
             with self.subTest(version=version):
                 self.request(protocol_version=version, mode="full")
                 self.assertEqual(
-                    (rs.SpecialistError, "Adapter request protocol version is unsupported"), self.refused(None)
+                    (rs.SpecialistFieldError, f"request.protocol_version must be an integer, found {found}"),
+                    self.refused(None),
                 )
                 self.assertEqual(([], []), (self.effects, self.work_files()))
                 self.assertFalse(self.work.exists())
 
     def test_a_request_mode_other_than_initial_or_re_review_is_refused(self) -> None:
         self.request("full")
-        self.assertEqual((rs.SpecialistError, "Adapter request mode is invalid"), self.refused(self.reviewer()))
+        self.assertEqual(
+            (rs.SpecialistFieldError, 'request.mode must be one of "initial", "re-review", found string "full"'),
+            self.refused(self.reviewer()),
+        )
         self.assertEqual([], self.effects)
         self.assertFalse(self.work.exists())
+
+    def test_each_request_field_of_the_wrong_kind_is_refused_before_anything_runs(self) -> None:
+        mode = 'one of "initial", "re-review"'
+        for content, path, expected, found in (
+            ("request", "request", "an object", 'string "request"'),
+            (None, "request", "an object", "null"),
+            ({"mode": "initial"}, "request.protocol_version", "an integer", "null"),
+            ({"protocol_version": "1", "mode": "initial"}, "request.protocol_version", "an integer", 'string "1"'),
+            ({"protocol_version": [1], "mode": "initial"}, "request.protocol_version", "an integer", "an array"),
+            ({"protocol_version": 1}, "request.mode", mode, "null"),
+            ({"protocol_version": 1, "mode": 1}, "request.mode", mode, "integer 1"),
+            ({"protocol_version": 1, "mode": ["initial"]}, "request.mode", mode, "an array"),
+            ({"protocol_version": 1, "mode": {"name": "initial"}}, "request.mode", mode, "an object"),
+            ({"protocol_version": 1, "mode": "Initial"}, "request.mode", mode, 'string "Initial"'),
+        ):
+            with self.subTest(content=content):
+                self.request_path.write_text(json.dumps(content), encoding="utf-8")
+                self.assertEqual(
+                    (rs.SpecialistFieldError, f"{path} must be {expected}, found {found}"),
+                    self.refused(self.reviewer()),
+                )
+                self.assertEqual([], self.effects)
+                self.assertFalse(self.work.exists())
 
     def test_a_reviewer_that_does_not_support_the_mode_is_refused_before_the_snapshot(self) -> None:
         self.request("re-review", pull_request={"head_sha": "d" * 40})
@@ -778,6 +805,33 @@ class RefusalTests(PlanFixture):
             (rs.SpecialistError, "Reviewer materialization is not a specialist reviewer"), self.refused(reviewer)
         )
         self.assertEqual([("manifest",)], self.effects)
+
+    def test_each_materialization_field_of_the_wrong_kind_is_refused_before_the_snapshot(self) -> None:
+        metadata = json.loads((self.reviewer() / "materialization.json").read_text(encoding="utf-8"))
+        for content, path, expected, found in (
+            ([metadata], "materialization", "an object", "an array"),
+            ("materialized", "materialization", "an object", 'string "materialized"'),
+            (
+                {**metadata, "manifest": "manifest.json"},
+                "materialization.manifest",
+                "an object",
+                'string "manifest.json"',
+            ),
+            ({**metadata, "manifest": None}, "materialization.manifest", "an object", "null"),
+            ({**metadata, "source_hashes": None}, "materialization.source_hashes", "an object", "null"),
+            ({**metadata, "source_hashes": ["a" * 64]}, "materialization.source_hashes", "an object", "an array"),
+            ({**metadata, "suite_profiles": []}, "materialization.suite_profiles", "an object", "an array"),
+            ({**metadata, "suite_profiles": 1}, "materialization.suite_profiles", "an object", "integer 1"),
+        ):
+            with self.subTest(content=content):
+                reviewer = self.reviewer()
+                (reviewer / "materialization.json").write_text(json.dumps(content), encoding="utf-8")
+                self.effects.clear()
+                self.assertEqual(
+                    (rs.SpecialistFieldError, f"{path} must be {expected}, found {found}"), self.refused(reviewer)
+                )
+                self.assertEqual([("manifest",)], self.effects)
+                self.assertFalse(self.work.exists())
 
     def test_a_snapshot_that_fails_verification_is_refused_as_a_specialist_error(self) -> None:
         self.snapshot(commit="d" * 40)

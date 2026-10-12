@@ -43,13 +43,14 @@ from review_archive import (
 )
 from review_config import (
     ConfigurationError,
+    ConfigurationFieldError,
     default_manifest_path,
     resolve_repositories,
     validate_config,
     write_config,
 )
 from review_flags import FlagAlreadyResolved, FlagError, add_flag, load_store, resolve_flag
-from review_github import GitHubClient, GitHubError
+from review_github import GitHubClient, GitHubError, GitHubFieldError, GitHubInputError
 from review_hosts import (
     HostSuperseded,
     ProcessResult,
@@ -58,9 +59,18 @@ from review_hosts import (
     parse_copilot_version,
     run_copilot,
 )
-from review_io import PersistenceError, ResourceLock, atomic_write_json, map_in_order, read_json, working_path
+from review_io import (
+    PersistenceError,
+    PersistenceFieldError,
+    ResourceLock,
+    atomic_write_json,
+    map_in_order,
+    read_json,
+    working_path,
+)
 from review_operation import (
     ReviewOperationError,
+    ReviewOperationFieldError,
     archive_base,
     commit_adapter_result,
     latest_reviewed_heads,
@@ -73,14 +83,16 @@ from review_operation import (
 )
 from review_process import ProcessStatus
 from review_records import (
+    READ,
     TITLE_MAXIMUM_LENGTH,
     RecordError,
+    RecordFieldError,
     build_record,
     calculate_verdict,
+    read_title,
     record_artifacts,
     render_markdown,
     valid_analyzer,
-    valid_title,
     validate_adapter_result,
     validate_record,
     validate_record_pair,
@@ -89,6 +101,7 @@ from review_records import (
 from review_runtime import (
     SOURCE_SNAPSHOT_MANIFEST,
     RuntimeContractError,
+    RuntimeContractFieldError,
     build_adapter_request,
     choose_dispatch,
     load_manifest_from_commit,
@@ -101,9 +114,44 @@ from review_runtime import (
     verify_checkout_remote,
     verify_source_snapshot,
 )
-from review_state import StateError, empty_state, load_state, update_state, validate_state
+from review_state import StateError, StateFieldError, empty_state, load_state, update_state, validate_state
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
+
+# What a typed-field reader expects of a git object id, and what it finds in one with a character outside 0-9a-f.
+OBJECT_ID = "a lowercase hexadecimal digest of 40 or 64 characters"
+NOT_HEX = "a string with a character that is not a lowercase hexadecimal digit"
+INVALID_COMMITS = (
+    ("main", "a string of 4 characters"),
+    ("", "a string of 0 characters"),
+    ("a" * 39, "a string of 39 characters"),
+    ("a" * 41, "a string of 41 characters"),
+    ("a" * 63, "a string of 63 characters"),
+    ("a" * 65, "a string of 65 characters"),
+    ("A" * 40, NOT_HEX),
+    ("g" * 64, NOT_HEX),
+    ("a" * 40 + "\n", "a string of 41 characters"),
+)
+
+
+MODEL_NAME_KEY = (
+    "a key of config.model_names must be a non-empty trimmed single-line string of at most 200 characters, found"
+)
+
+
+REVIEWER_MODEL = "a non-empty trimmed single-line string of at most 200 characters"
+SEVERITIES = 'one of "MUST_FIX", "SHOULD_FIX", "SUGGESTION"'
+DISPOSITIONS = 'one of "addressed", "partially_addressed", "still_present", "superseded", "unable_to_verify"'
+
+
+def field_message(path: str, expected: str, found: str) -> str:
+    """The one message a field of the wrong kind raises, built from literal kinds rather than the reader's own."""
+    return f"{path} must be {expected}, found {found}"
+
+
+def field_pattern(path: str, expected: str, found: str) -> str:
+    """`field_message` as a regular expression that matches the whole message."""
+    return f"^{re.escape(field_message(path, expected, found))}$"
 
 
 def frozen_clock(seconds: int) -> contextlib.AbstractContextManager[Any]:
@@ -205,9 +253,9 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual({arn: "Opus 5.5"}, config["model_names"])
         for value, message in (
             ([], "model_names must be an object"),
-            ({"": "Opus"}, "model_names key"),
-            ({"a\nb": "Opus"}, "model_names key"),
-            ({"m" * 201: "Opus"}, "model_names key"),
+            ({"": "Opus"}, f"{MODEL_NAME_KEY} an empty string"),
+            ({"a\nb": "Opus"}, f"{MODEL_NAME_KEY} a string of more than one line"),
+            ({"m" * 201: "Opus"}, f"{MODEL_NAME_KEY} a string of 201 characters"),
             ({arn: ""}, f"model_names.{arn}"),
             ({arn: "Opus\n5"}, f"model_names.{arn}"),
             ({arn: "O" * 101}, f"model_names.{arn}"),
@@ -235,7 +283,10 @@ class ConfigurationTests(unittest.TestCase):
     def test_unknown_runtime_and_future_schema_fail(self) -> None:
         config = valid_config()
         config["runtime"] = "mystery"
-        with self.assertRaisesRegex(ConfigurationError, "Unknown runtime"):
+        with self.assertRaisesRegex(
+            ConfigurationFieldError,
+            '^config.runtime must be one of "auto", "claude-code", "codex", "copilot-cli", found string "mystery"$',
+        ):
             validate_config(config)
 
     def test_repository_reviewer_requires_checkout_and_safe_manifest(self) -> None:
@@ -283,7 +334,14 @@ class ConfigurationTests(unittest.TestCase):
             ({"manifest_path": ".review/adapter.json", "skill": "review.md"}, "cannot also set skill or manifest"),
             ({"skill": "../outside.md"}, "skill is unsafe"),
             ({"skill": "review.md", "manifest": "relative/manifest.json"}, "absolute drive-letter path"),
-            ({"skill": "review.md", "manifest": False}, "absolute Windows path"),
+            (
+                {"skill": "review.md", "manifest": False},
+                field_pattern(
+                    "config.repositories.example/one.reviewer.manifest",
+                    "true, a non-empty string, or null",
+                    "boolean false",
+                ),
+            ),
         ):
             with self.subTest(fields=invalid), self.assertRaisesRegex(ConfigurationError, message):
                 validate_config(reviewer_config(**invalid))
@@ -304,14 +362,17 @@ class ConfigurationTests(unittest.TestCase):
         for value, message in (
             ({"full_share": 0}, "full_share must be a number above 0 and at most 1"),
             ({"full_share": 1.5}, "full_share must be a number above 0 and at most 1"),
-            ({"full_share": True}, "full_share must be a number above 0 and at most 1"),
-            ({"full_lines": 0}, "full_lines must be a positive integer"),
-            ({"full_lines": 2.5}, "full_lines must be a positive integer"),
+            ({"full_share": True}, "config.re_review_scope.full_share must be a finite number, found boolean true"),
+            ({"full_lines": 0}, "config.re_review_scope.full_lines must be an integer of at least 1, found integer 0"),
+            (
+                {"full_lines": 2.5},
+                "config.re_review_scope.full_lines must be an integer of at least 1, found number 2.5",
+            ),
             ({"full_files": 3}, "unknown field"),
             ([], "re_review_scope must be an object"),
         ):
             config["re_review_scope"] = value
-            with self.subTest(value=value), self.assertRaisesRegex(ConfigurationError, message):
+            with self.subTest(value=value), self.assertRaisesRegex(ConfigurationError, re.escape(message)):
                 validate_config(config)
 
     def test_write_failure_preserves_previous_config(self) -> None:
@@ -330,23 +391,31 @@ class ConfigurationTests(unittest.TestCase):
         config = valid_config()
         config["verdict_policy"]["should_fix_threshold"] = 1
         self.assertEqual(1, validate_config(config)["verdict_policy"]["should_fix_threshold"])
-        for invalid in (0, True):
+        threshold = "config.verdict_policy.should_fix_threshold"
+        for invalid, found in ((0, "integer 0"), (True, "boolean true")):
             with self.subTest(threshold=invalid):
                 config = valid_config()
                 config["verdict_policy"]["should_fix_threshold"] = invalid
-                with self.assertRaisesRegex(ConfigurationError, "positive integer"):
+                with self.assertRaisesRegex(
+                    ConfigurationFieldError, field_pattern(threshold, "an integer of at least 1", found)
+                ):
                     validate_config(config)
-        for start, end in (
-            ("", "end"),
-            ("   ", "end"),
-            ("same", "same"),
-            ("start\nsecond-line", "end"),
-            (" start", "end"),
-        ):
+        marker = "a non-empty trimmed single-line string"
+        markers: tuple[tuple[str, str, str | None], ...] = (
+            ("", "end", "an empty string"),
+            ("   ", "end", "a blank string"),
+            ("same", "same", None),
+            ("start\nsecond-line", "end", "a string of more than one line"),
+            (" start", "end", "a string with whitespace around it"),
+        )
+        for start, end, start_found in markers:
             with self.subTest(start=start, end=end):
                 config = valid_config()
                 config["dashboard"] = {"start_marker": start, "end_marker": end}
-                with self.assertRaisesRegex(ConfigurationError, "dashboard markers"):
+                pattern = "^dashboard markers must be distinct$"
+                if start_found is not None:
+                    pattern = field_pattern("config.dashboard.start_marker", marker, start_found)
+                with self.assertRaisesRegex(ConfigurationError, pattern):
                     validate_config(config)
 
     def test_dashboard_overrides_cannot_duplicate_computed_states(self) -> None:
@@ -500,7 +569,9 @@ class StateAndLockTests(unittest.TestCase):
             updated = update_state(path, advance)
             self.assertEqual(updated, load_state(path))
             self.assertNotEqual(initial, updated)
-            with self.assertRaisesRegex(StateError, "only schema_version and repositories"):
+            with self.assertRaisesRegex(
+                StateFieldError, '^state must be an object of known fields, found unknown field "extra"$'
+            ):
                 update_state(path, lambda state: {**state, "extra": True})
             self.assertEqual(updated, load_state(path), "a refused replacement leaves the state as it was")
 
@@ -560,12 +631,18 @@ class StateAndLockTests(unittest.TestCase):
             self.assertEqual([os.getpid()], probed)
 
     def test_old_lock_of_live_owner_is_not_reclaimed(self) -> None:
-        cases = {
+        cases: dict[str, tuple[dict[str, Any], ProcessStatus]] = {
             "same process": ({"pid": 4242, "start_time": 1234}, ProcessStatus(True, 1234)),
             "no recorded start time": ({"pid": 4242}, ProcessStatus(True, 1234)),
             "recorded start time not an integer": ({"pid": 4242, "start_time": True}, ProcessStatus(True, 1)),
+            "recorded start time a string": ({"pid": 4242, "start_time": "1234"}, ProcessStatus(True, 1)),
+            "recorded start time a float": ({"pid": 4242, "start_time": 1234.0}, ProcessStatus(True, 1)),
             "start time unreadable": ({"pid": 4242, "start_time": 1234}, ProcessStatus(True, None)),
             "pid not positive": ({"pid": 0, "start_time": 1234}, ProcessStatus(False, None)),
+            "pid a string": ({"pid": "4242", "start_time": 1234}, ProcessStatus(False, None)),
+            "pid a boolean": ({"pid": True, "start_time": 1234}, ProcessStatus(False, None)),
+            "pid a float": ({"pid": 4242.0, "start_time": 1234}, ProcessStatus(False, None)),
+            "pid an object": ({"pid": {}, "start_time": 1234}, ProcessStatus(False, None)),
         }
         for name, (owner, status) in cases.items():
             with self.subTest(name), tempfile.TemporaryDirectory() as temporary:
@@ -740,6 +817,21 @@ class StateAndLockTests(unittest.TestCase):
                 lock.__exit__(None, None, None)
             self.assertEqual("b" * 32, read_json(path / "owner.json")["token"])
 
+    def test_release_refuses_an_owner_record_of_the_wrong_kind(self) -> None:
+        for content, found in (([], "an array"), ("owner", 'string "owner"'), (None, "null"), (7, "integer 7")):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "resource.lock"
+                lock = ResourceLock(path)
+                lock.__enter__()
+                atomic_write_json(path / "owner.json", content)
+                with self.assertRaisesRegex(
+                    PersistenceError, f"^Lock ownership changed before release: {re.escape(str(path))}$"
+                ) as context:
+                    lock.__exit__(None, None, None)
+                self.assertIsInstance(context.exception.__cause__, PersistenceFieldError)
+                self.assertEqual(f"lock owner must be an object, found {found}", str(context.exception.__cause__))
+                self.assertEqual(content, read_json(path / "owner.json"), "a refused release leaves the lock")
+
     def test_waiter_takes_a_lock_whose_owner_file_vanishes_while_it_reads(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "resource.lock"
@@ -772,6 +864,13 @@ class StateAndLockTests(unittest.TestCase):
             "not an object": b'["a"]',
             "no token": b'{"pid": 4242}',
             "empty token": b'{"pid": 4242, "token": ""}',
+            "token an integer": b'{"pid": 4242, "token": 7}',
+            "token an array": b'{"pid": 4242, "token": ["a"]}',
+            "token an object": b'{"pid": 4242, "token": {}}',
+            "token null": b'{"pid": 4242, "token": null}',
+            "a string": b'"owner"',
+            "null": b"null",
+            "an integer": b"4242",
             "not UTF-8": b'{"token": "\xff"}',
             "oversized": b'{"token": "' + b"a" * (64 * 1024) + b'"}',
         }
@@ -929,9 +1028,22 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(120, TITLE_MAXIMUM_LENGTH)
         for value, accepted in (("Headline", True), ("a b", True), (" padded", False), ("two\nlines", False)):
             self.assertEqual(accepted, re.fullmatch(title["pattern"], value) is not None, value)
-            self.assertEqual(accepted, valid_title(value), value)
-        self.assertFalse(valid_title("x" * 121))
-        self.assertFalse(valid_title(None))
+            if accepted:
+                self.assertEqual(value, read_title(READ, value, "record.findings[0].title"))
+        expected = "a non-empty trimmed single-line string of at most 120 characters"
+        refused: tuple[tuple[Any, str], ...] = (
+            (" padded", "a string with whitespace around it"),
+            ("two\nlines", "a string of more than one line"),
+            ("x" * 121, "a string of 121 characters"),
+            (None, "null"),
+            (7, "integer 7"),
+            ("", "an empty string"),
+        )
+        for value, found in refused:
+            with self.subTest(value=value):
+                with self.assertRaises(RecordFieldError) as raised:
+                    read_title(READ, value, "record.findings[0].title")
+                self.assertEqual(f"record.findings[0].title must be {expected}, found {found}", str(raised.exception))
 
     def test_finding_title_is_optional_but_validated_in_results_and_records(self) -> None:
         def validate(result: dict) -> dict:
@@ -945,14 +1057,22 @@ class RecordTests(unittest.TestCase):
         titled["findings"][0]["title"] = "Zero is not handled"
         record = build_record(valid_request(), validate(titled), version=1, policy={})
         self.assertEqual("Zero is not handled", validate_record(record)["findings"][0]["title"])
-        for bad in ("", "x" * 121, "two\nlines", 7):
+        title = "a non-empty trimmed single-line string of at most 120 characters"
+        for bad, found in (
+            ("", "an empty string"),
+            ("x" * 121, "a string of 121 characters"),
+            ("two\nlines", "a string of more than one line"),
+            (7, "integer 7"),
+        ):
             result = valid_adapter_result()
             result["findings"][0]["title"] = bad
-            with self.assertRaisesRegex(RecordError, "title must be a single non-blank line"):
+            with self.assertRaisesRegex(
+                RecordFieldError, field_pattern("adapter-result.findings[0].title", title, found)
+            ):
                 validate(result)
             tampered = json.loads(json.dumps(record))
             tampered["findings"][0]["title"] = bad
-            with self.assertRaisesRegex(RecordError, "F001.title must be a single non-blank line"):
+            with self.assertRaisesRegex(RecordFieldError, field_pattern("record.findings[0].title", title, found)):
                 validate_record(tampered)
 
     def test_a_finding_location_comes_from_the_suite_never_a_reviewer_and_is_validated_in_records(self) -> None:
@@ -963,16 +1083,28 @@ class RecordTests(unittest.TestCase):
 
         given = valid_adapter_result()
         given["findings"][0]["location"] = "paragraph 2"
-        with self.assertRaisesRegex(RecordError, "Adapter finding fields do not match the protocol"):
+        with self.assertRaisesRegex(
+            RecordFieldError,
+            field_pattern("adapter-result.findings[0]", "an object of known fields", 'unknown field "location"'),
+        ):
             validate(given)
         result = validate(valid_adapter_result())
         result["findings"][0]["location"] = 'paragraph 2, under the heading "Scope"'
         record = build_record(valid_request(), result, version=1, policy={})
         self.assertEqual('paragraph 2, under the heading "Scope"', validate_record(record)["findings"][0]["location"])
-        for bad in ("", "x" * 201, "two\nlines", " padded", 7):
+        location = "a non-empty trimmed single-line string of at most 200 characters"
+        for bad, found in (
+            ("", "an empty string"),
+            ("x" * 201, "a string of 201 characters"),
+            ("two\nlines", "a string of more than one line"),
+            (" padded", "a string with whitespace around it"),
+            (7, "integer 7"),
+        ):
             tampered = json.loads(json.dumps(record))
             tampered["findings"][0]["location"] = bad
-            with self.assertRaisesRegex(RecordError, "F001.location must be one trimmed line of at most 200"):
+            with self.assertRaisesRegex(
+                RecordFieldError, field_pattern("record.findings[0].location", location, found)
+            ):
                 validate_record(tampered)
 
     def test_finding_analyzer_is_optional_but_validated_in_results_records_and_schema(self) -> None:
@@ -1037,21 +1169,29 @@ class RecordTests(unittest.TestCase):
             "already has, would catch this if enforced.\n",
             markdown,
         )
-        for bad in (
-            {"coverage": "known", "tool": "x"},
-            {"coverage": "custom-candidate", "tool": "Roslyn", "rule": "A B"},
+        name = "a name of at most 100 characters without whitespace, backticks, pipes, or angle brackets"
+        for bad, field, expected, found in (
+            ({"coverage": "known", "tool": "x"}, "", "an object with field rule", "an object without it"),
+            ({"coverage": "custom-candidate", "tool": "Roslyn", "rule": "A B"}, ".rule", name, 'string "A B"'),
         ):
             result = valid_adapter_result()
             result["findings"][0]["analyzer"] = bad
-            with self.assertRaisesRegex(RecordError, "analyzer must be an object with exactly coverage"):
+            with self.assertRaisesRegex(
+                RecordFieldError, field_pattern(f"adapter-result.findings[0].analyzer{field}", expected, found)
+            ):
                 validate(result)
             tampered = json.loads(json.dumps(record))
             tampered["findings"][0]["analyzer"] = bad
-            with self.assertRaisesRegex(RecordError, "F001.analyzer must be an object with exactly coverage"):
+            with self.assertRaisesRegex(
+                RecordFieldError, field_pattern(f"record.findings[0].analyzer{field}", expected, found)
+            ):
                 validate_record(tampered)
         unknown = valid_adapter_result()
         unknown["findings"][0]["note"] = "x"
-        with self.assertRaisesRegex(RecordError, "Adapter finding fields do not match the protocol"):
+        with self.assertRaisesRegex(
+            RecordFieldError,
+            field_pattern("adapter-result.findings[0]", "an object of known fields", 'unknown field "note"'),
+        ):
             validate(unknown)
 
     def test_published_adapter_fixture_satisfies_protocol(self) -> None:
@@ -1123,22 +1263,47 @@ class RecordTests(unittest.TestCase):
         for mutate, message in (
             (lambda r: r["review"].update(patches={}), "patches must be a non-empty object"),
             (lambda r: r["review"].update(patches={"../x.cs": patches["src/file.cs"]}), "patch path is unsafe"),
-            (lambda r: r["review"]["patches"]["src/file.cs"].update(sha256="C" * 64), "patch for src/file.cs"),
-            (lambda r: r["review"]["patches"]["src/file.cs"].update(lines=-1), "patch for src/file.cs"),
+            (
+                lambda r: r["review"]["patches"]["src/file.cs"].update(sha256="C" * 64),
+                field_pattern(
+                    "record.review.patches.src/file.cs.sha256",
+                    "a lowercase hexadecimal digest of 64 characters",
+                    NOT_HEX,
+                ),
+            ),
+            (
+                lambda r: r["review"]["patches"]["src/file.cs"].update(lines=-1),
+                field_pattern("record.review.patches.src/file.cs.lines", "an integer of at least 0", "integer -1"),
+            ),
             (lambda r: r["review"].update(mode="initial"), "Only a re-review has a scope"),
-            (lambda r: r["review"]["scope"].update(requested="most"), "scope is invalid"),
-            (lambda r: r["review"]["scope"].update(used="auto"), "scope is invalid"),
-            (lambda r: r["review"]["scope"].update(reason=" "), "needs a reason"),
+            (
+                lambda r: r["review"]["scope"].update(requested="most"),
+                field_pattern("record.review.scope.requested", 'one of "auto", "full", "incremental"', 'string "most"'),
+            ),
+            (
+                lambda r: r["review"]["scope"].update(used="auto"),
+                field_pattern("record.review.scope.used", 'one of "full", "incremental"', 'string "auto"'),
+            ),
+            (
+                lambda r: r["review"]["scope"].update(reason=" "),
+                field_pattern("record.review.scope.reason", "a non-empty string", "a blank string"),
+            ),
             (lambda r: r["review"]["scope"].update(since_version=2), "since_version must be an earlier version"),
             (lambda r: r["review"]["scope"].update(since_version=0), "since_version must be an earlier version"),
-            (lambda r: r["review"]["scope"].update(files_total=-1), "totals must be non-negative"),
+            (
+                lambda r: r["review"]["scope"].update(files_total=-1),
+                field_pattern("record.review.scope.files_total", "an integer of at least 0", "integer -1"),
+            ),
             (lambda r: r["review"]["scope"].update(files_changed=2), "within their totals"),
             (lambda r: r["review"]["scope"].update(lines_changed=None), "both be null"),
             (
                 lambda r: r["review"]["scope"].update(files_changed=None, lines_changed=None),
                 "incremental re-review must have compared",
             ),
-            (lambda r: r["review"]["scope"].pop("reason"), "scope fields are malformed"),
+            (
+                lambda r: r["review"]["scope"].pop("reason"),
+                field_pattern("record.review.scope", "an object with field reason", "an object without it"),
+            ),
         ):
             broken = copy.deepcopy(record)
             mutate(broken)
@@ -1179,20 +1344,50 @@ class RecordTests(unittest.TestCase):
         record = build_record(request, result, version=1, policy={"request_changes_for": ["MUST_FIX"]})
         validate_record(record)
         for mutate, message in (
-            (lambda r: r.pop("comment_dispositions"), "comment_dispositions must be an array"),
+            (
+                lambda r: r.pop("comment_dispositions"),
+                field_pattern("record.comment_dispositions", "an array", "null"),
+            ),
             (lambda r: r.pop("github_comments"), "need the comments"),
             (lambda r: r["comment_dispositions"].clear(), r"missing=\['C1'\]"),
             (lambda r: r["github_comments"][0].update(id="X1"), "C<n>"),
-            (lambda r: r["review"]["reviewers"][0].update(retries=-1), "non-negative"),
+            (
+                lambda r: r["review"]["reviewers"][0].update(retries=-1),
+                field_pattern("record.review.reviewers[0].retries", "an integer of at least 0", "integer -1"),
+            ),
             (lambda r: r["review"]["reviewers"].append(dict(r["review"]["reviewers"][0])), "unique"),
-            (lambda r: r["review"].update(reviewers=[]), "non-empty"),
-            (lambda r: r["review"]["reviewers"][0].update(seconds=-1), "seconds must be a non-negative integer"),
-            (lambda r: r["review"]["reviewers"][0].update(seconds=1.5), "seconds must be a non-negative integer"),
-            (lambda r: r["review"]["reviewers"][0].update(seconds=True), "seconds must be a non-negative integer"),
-            (lambda r: r["review"]["reviewers"][0].update(minutes=1), "fields are malformed"),
-            (lambda r: r["review"]["reviewers"][0].update(model=""), "model must be a single non-blank line"),
-            (lambda r: r["review"]["reviewers"][0].update(model="a\nb"), "model must be a single non-blank line"),
-            (lambda r: r["review"]["reviewers"][0].update(model=5), "model must be a single non-blank line"),
+            (
+                lambda r: r["review"].update(reviewers=[]),
+                field_pattern("record.review.reviewers", "a non-empty array", "an empty array"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(seconds=-1),
+                field_pattern("record.review.reviewers[0].seconds", "an integer of at least 0", "integer -1"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(seconds=1.5),
+                field_pattern("record.review.reviewers[0].seconds", "an integer of at least 0", "number 1.5"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(seconds=True),
+                field_pattern("record.review.reviewers[0].seconds", "an integer of at least 0", "boolean true"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(minutes=1),
+                field_pattern("record.review.reviewers[0]", "an object of known fields", 'unknown field "minutes"'),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(model=""),
+                field_pattern("record.review.reviewers[0].model", REVIEWER_MODEL, "an empty string"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(model="a\nb"),
+                field_pattern("record.review.reviewers[0].model", REVIEWER_MODEL, "a string of more than one line"),
+            ),
+            (
+                lambda r: r["review"]["reviewers"][0].update(model=5),
+                field_pattern("record.review.reviewers[0].model", REVIEWER_MODEL, "integer 5"),
+            ),
         ):
             broken = copy.deepcopy(record)
             mutate(broken)
@@ -1232,35 +1427,49 @@ class RecordTests(unittest.TestCase):
             "expected_head_sha": "b" * 40,
         }
         for mutate, message in (
-            (lambda r: r.update(status=["complete"]), "status is invalid"),
-            (lambda r: r["findings"][0].update(severity=["MUST_FIX"]), "Invalid finding severity"),
+            (
+                lambda r: r.update(status=["complete"]),
+                field_pattern("adapter-result.status", 'one of "complete", "partial", "failed"', "an array"),
+            ),
+            (
+                lambda r: r["findings"][0].update(severity=["MUST_FIX"]),
+                field_pattern("adapter-result.findings[0].severity", SEVERITIES, "an array"),
+            ),
             (
                 lambda r: r.update(
                     prior_dispositions=[{"finding_id": "F001", "disposition": ["addressed"], "rationale": "x"}]
                 ),
-                "Invalid disposition",
+                field_pattern("adapter-result.prior_dispositions[0].disposition", DISPOSITIONS, "an array"),
             ),
             (
                 lambda r: r.update(
                     comment_dispositions=[{"comment_id": ["C1"], "disposition": "addressed", "rationale": "x"}]
                 ),
-                "unique strings",
+                field_pattern("adapter-result.comment_dispositions[0].comment_id", "a non-empty string", "an array"),
             ),
         ):
             result = valid_adapter_result()
             result["prior_dispositions"] = [{"finding_id": "F001", "disposition": "addressed", "rationale": "x"}]
             mutate(result)
-            with self.subTest(message=message), self.assertRaisesRegex(RecordError, message):
+            with self.subTest(message=message), self.assertRaisesRegex(RecordFieldError, message):
                 validate_adapter_result(result, prior_ids=["F001"], comment_ids=["C1"], **arguments)
         record = build_record(valid_request(), valid_adapter_result(), version=1, policy={})
-        for field, value in (("verdict", ["APPROVED"]), ("mode", {"initial": 1})):
+        for field, value, expected, found in (
+            ("verdict", ["APPROVED"], 'one of "APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"', "an array"),
+            ("mode", {"initial": 1}, 'one of "initial", "re-review"', "an object"),
+        ):
             broken = copy.deepcopy(record)
             broken["review"][field] = value
-            with self.subTest(field=field), self.assertRaises(RecordError):
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(RecordFieldError, field_pattern(f"record.review.{field}", expected, found)),
+            ):
                 validate_record(broken)
         broken = copy.deepcopy(record)
         broken["prior_dispositions"] = [{"finding_id": "F001", "disposition": ["addressed"], "rationale": "x"}]
-        with self.assertRaisesRegex(RecordError, "prior disposition is invalid"):
+        with self.assertRaisesRegex(
+            RecordFieldError, field_pattern("record.prior_dispositions[0].disposition", DISPOSITIONS, "an array")
+        ):
             validate_record(broken)
 
     def test_adapter_result_rejects_unsafe_paths_and_mismatched_sha(self) -> None:
@@ -1443,7 +1652,9 @@ class RecordTests(unittest.TestCase):
         self.assertNotIn("**Evidence:**", markdown)
         broken = copy.deepcopy(record)
         broken["pull_request"]["head_ref"] = " "
-        with self.assertRaisesRegex(RecordError, "head_ref is invalid"):
+        with self.assertRaisesRegex(
+            RecordFieldError, field_pattern("record.pull_request.head_ref", "a non-empty string", "a blank string")
+        ):
             validate_record(broken)
 
     def test_the_record_keeps_how_much_of_the_description_reviewers_were_given_and_the_report_says_so(self) -> None:
@@ -1884,7 +2095,7 @@ class GitHubTests(unittest.TestCase):
             (
                 CommandResult(0, json.dumps({"data": {"repository": {"pullRequests": {"nodes": []}}}}), ""),
                 "malformed",
-                "unexpected shape",
+                field_pattern("graphql response.data.repository.pullRequests.pageInfo", "an object", "null"),
             ),
             (CommandResult(0, self._graphql_page([1], "same"), ""), "malformed", "did not advance"),
             (CommandResult(1, "", "HTTP 401: Bad credentials"), "authentication", "Bad credentials"),
@@ -1904,7 +2115,7 @@ class GitHubTests(unittest.TestCase):
             "octo",
             GitHubClient(lambda arguments: CommandResult(0, json.dumps({"login": "octo"}), "")).authenticated_login(),
         )
-        with self.assertRaisesRegex(GitHubError, "unexpected shape"):
+        with self.assertRaisesRegex(GitHubFieldError, field_pattern("user.login", "a non-empty string", "null")):
             GitHubClient(lambda arguments: CommandResult(0, json.dumps({}), "")).authenticated_login()
 
     def test_single_pull_fetch_is_explicit_and_shape_checked(self) -> None:
@@ -1918,11 +2129,15 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(42, pull["number"])
         self.assertEqual("repos/example/one/pulls/42", calls[0][-1])
         self.assertNotIn("--paginate", calls[0])
-        with self.assertRaisesRegex(GitHubError, "positive"):
+        with self.assertRaisesRegex(
+            GitHubInputError, field_pattern("pull number", "an integer of at least 1", "integer 0")
+        ) as refused:
             GitHubClient(runner).get_pull("example/one", 0)
+        self.assertEqual("input", refused.exception.kind)
         malformed = GitHubClient(lambda arguments: CommandResult(0, json.dumps([]), ""))
-        with self.assertRaisesRegex(GitHubError, "unexpected shape"):
+        with self.assertRaisesRegex(GitHubFieldError, field_pattern("pull", "an object", "an array")) as context:
             malformed.get_pull("example/one", 42)
+        self.assertEqual("malformed", context.exception.kind)
 
     def test_the_pull_a_review_reads_carries_its_description_and_a_null_one_is_empty(self) -> None:
         for body, expected in (("## Upgrade note\n\nNone\n", "## Upgrade note\n\nNone\n"), (None, ""), ("", "")):
@@ -1938,10 +2153,110 @@ class GitHubTests(unittest.TestCase):
                 self.assertEqual(expected, pull["body"])
                 self.assertEqual(pull, validate_pull(pull))
         value = {**self._api_pull(42), "body": ["not", "text"]}
-        with self.assertRaisesRegex(GitHubError, "unexpected shape"):
+        with self.assertRaisesRegex(GitHubFieldError, field_pattern("pull.body", "a string or null", "an array")):
             GitHubClient(lambda arguments: CommandResult(0, json.dumps(value), "")).get_pull("example/one", 42)
-        with self.assertRaisesRegex(ReviewOperationError, "body must be text"):
+        with self.assertRaisesRegex(ReviewOperationFieldError, field_pattern("pull.body", "a string", "null")):
             validate_pull({**pull, "body": None})
+
+    def test_a_response_field_of_the_wrong_kind_is_a_malformed_response(self) -> None:
+        pull = self._api_pull(42)
+        page = json.loads(self._graphql_page([1], "c1"))
+        connection = "graphql response.data.repository.pullRequests"
+
+        def with_page(**fields: Any) -> dict:
+            changed = copy.deepcopy(page)
+            changed["data"]["repository"]["pullRequests"].update(fields)
+            return changed
+
+        cases: tuple[tuple[str, Any, str, str, str], ...] = (
+            ("pull", [], "pull", "an object", "an array"),
+            ("pull", {**pull, "state": 1}, "pull.state", 'one of "open", "closed"', "integer 1"),
+            ("pull", {**pull, "state": "OPEN"}, "pull.state", 'one of "open", "closed"', 'string "OPEN"'),
+            ("pull", {**pull, "merged_at": 5}, "pull.merged_at", "a non-empty string or null", "integer 5"),
+            ("pull", {**pull, "merged_at": ""}, "pull.merged_at", "a non-empty string or null", "an empty string"),
+            ("pull", {**pull, "base": "main"}, "pull.base", "an object", 'string "main"'),
+            ("pull", {**pull, "head": []}, "pull.head", "an object", "an array"),
+            ("pull", {**pull, "body": 7}, "pull.body", "a string or null", "integer 7"),
+            ("pull", {**pull, "body": {}}, "pull.body", "a string or null", "an object"),
+            ("user", [], "user", "an object", "an array"),
+            ("user", {"login": 5}, "user.login", "a non-empty string", "integer 5"),
+            ("user", {"login": ""}, "user.login", "a non-empty string", "an empty string"),
+            ("graphql", [], "graphql response", "an object", "an array"),
+            ("graphql", {"data": []}, "graphql response.data", "an object", "an array"),
+            ("graphql", {"data": {"repository": []}}, "graphql response.data.repository", "an object", "an array"),
+            (
+                "graphql",
+                {"data": {"repository": {"pullRequests": "x"}}},
+                connection,
+                "an object",
+                'string "x"',
+            ),
+            ("graphql", with_page(nodes="x"), f"{connection}.nodes", "an array", 'string "x"'),
+            ("graphql", with_page(nodes=[1]), f"{connection}.nodes[0]", "an object", "integer 1"),
+            ("graphql", with_page(pageInfo=[]), f"{connection}.pageInfo", "an object", "an array"),
+            (
+                "graphql",
+                with_page(pageInfo={"hasNextPage": "yes", "endCursor": None}),
+                f"{connection}.pageInfo.hasNextPage",
+                "a boolean",
+                'string "yes"',
+            ),
+            (
+                "graphql",
+                with_page(pageInfo={"hasNextPage": True, "endCursor": 5}),
+                f"{connection}.pageInfo.endCursor",
+                "a non-empty string",
+                "integer 5",
+            ),
+        )
+        for read, value, path, expected, found in cases:
+            with self.subTest(read=read, path=path, found=found):
+                client = GitHubClient(answering(CommandResult(0, json.dumps(value), "")))
+                with self.assertRaises(GitHubFieldError) as context:
+                    if read == "pull":
+                        client.get_pull("example/one", 42)
+                    elif read == "user":
+                        client.authenticated_login()
+                    else:
+                        client.graphql_nodes("query", {}, ("repository", "pullRequests"))
+                self.assertNotIsInstance(context.exception, GitHubInputError)
+                self.assertEqual(field_message(path, expected, found), str(context.exception))
+                self.assertEqual("malformed", context.exception.kind)
+                self.assertFalse(context.exception.retryable)
+
+    def test_an_argument_of_the_wrong_kind_fails_before_github_is_asked(self) -> None:
+        number = "an integer of at least 1"
+        # Each read, the arguments it is given, and the argument of the wrong kind it names.
+        cases: tuple[tuple[str, tuple[Any, ...], dict[str, Any], str, str, str], ...] = (
+            ("get_pull", ("example/one", "42"), {}, "pull number", number, 'string "42"'),
+            ("get_pull", ("example/one", True), {}, "pull number", number, "boolean true"),
+            ("get_pull", ("example/one", 42.0), {}, "pull number", number, "number 42.0"),
+            ("get_pull_diff", ("example/one", -1), {}, "pull number", number, "integer -1"),
+            ("list_open_review_threads", ("example/one", 0), {}, "pull number", number, "integer 0"),
+            (
+                "list_pulls",
+                ("example/one",),
+                {"state": "merged"},
+                "pull state",
+                'one of "open", "closed", "all"',
+                'string "merged"',
+            ),
+            ("get_merge_base", ("example/one", 1, "b" * 40), {}, "base commit", OBJECT_ID, "integer 1"),
+            ("get_file_blob", ("example/one", None, "a.txt"), {"maximum": 1}, "commit", OBJECT_ID, "null"),
+        )
+        for name, arguments, options, path, expected, found in cases:
+            with self.subTest(read=name, path=path, found=found):
+                calls: list[list[str]] = []
+
+                def runner(arguments: Sequence[str], calls: list[list[str]] = calls) -> CommandResult:
+                    calls.append(list(arguments))
+                    return CommandResult(0, "{}", "")
+
+                with self.assertRaises(GitHubInputError) as context:
+                    getattr(GitHubClient(runner), name)(*arguments, **options)
+                self.assertEqual(field_message(path, expected, found), str(context.exception))
+                self.assertEqual("input", context.exception.kind)
+                self.assertEqual([], calls)
 
     def test_closed_unmerged_pulls_are_ineligible(self) -> None:
         closed = self._api_pull(42, state="closed")
@@ -2077,49 +2392,58 @@ class GitHubDocumentTests(unittest.TestCase):
                 self.assertEqual(1, client.call_count)
 
     def test_merge_base_rejects_invalid_commit_ids_before_running_gh(self) -> None:
-        for invalid in ("main", "", "a" * 39, "a" * 41, "a" * 63, "a" * 65, "A" * 40, "g" * 64, "a" * 40 + "\n"):
-            for base, head in ((invalid, "b" * 40), ("a" * 40, invalid)):
+        for invalid, found in INVALID_COMMITS:
+            for base, head, which in ((invalid, "b" * 40, "base"), ("a" * 40, invalid, "head")):
                 with self.subTest(base=base, head=head):
                     client, calls = self._client()
-                    with self.assertRaisesRegex(
-                        GitHubError, "^A merge base is asked for between two commit SHAs$"
-                    ) as context:
+                    with self.assertRaises(GitHubInputError) as context:
                         client.get_merge_base("example/one", base, head)
+                    self.assertEqual(field_message(f"{which} commit", OBJECT_ID, found), str(context.exception))
                     self.assertEqual("input", context.exception.kind)
                     self.assertEqual([], calls)
                     self.assertEqual(0, client.call_count)
 
     def test_merge_base_rejects_malformed_compare_responses(self) -> None:
-        values: tuple[Any, ...] = (
-            [],
-            {},
-            {"merge_base_commit": []},
-            {"merge_base_commit": {}},
-            {"merge_base_commit": {"sha": 1}},
-            {"merge_base_commit": {"sha": "a" * 39}},
-            {"merge_base_commit": {"sha": "g" * 40}},
+        sha = "compare.merge_base_commit.sha"
+        values: tuple[tuple[Any, str], ...] = (
+            ([], "compare must be an object, found an array"),
+            ({}, "compare.merge_base_commit must be an object, found null"),
+            ({"merge_base_commit": []}, "compare.merge_base_commit must be an object, found an array"),
+            ({"merge_base_commit": {}}, field_message(sha, OBJECT_ID, "null")),
+            ({"merge_base_commit": {"sha": 1}}, field_message(sha, OBJECT_ID, "integer 1")),
+            ({"merge_base_commit": {"sha": "a" * 39}}, field_message(sha, OBJECT_ID, "a string of 39 characters")),
+            ({"merge_base_commit": {"sha": "g" * 40}}, field_message(sha, OBJECT_ID, NOT_HEX)),
         )
-        for value in values:
+        for value, message in values:
             with self.subTest(value=value):
                 client, calls = self._client(value)
-                with self.assertRaisesRegex(GitHubError, "^Compare response has an unexpected shape$") as context:
+                with self.assertRaises(GitHubFieldError) as context:
                     client.get_merge_base("example/one", "a" * 40, "b" * 40)
+                self.assertNotIsInstance(context.exception, GitHubInputError)
+                self.assertEqual(message, str(context.exception))
                 self.assertEqual("malformed", context.exception.kind)
                 self.assertFalse(context.exception.retryable)
                 self.assertEqual(1, len(calls))
 
     def test_file_blob_rejects_invalid_commit_ids_before_running_gh(self) -> None:
-        for commit in ("main", "", "a" * 39, "a" * 41, "a" * 63, "a" * 65, "A" * 40, "g" * 64, "a" * 40 + "\n"):
+        for commit, found in INVALID_COMMITS:
             with self.subTest(commit=commit):
                 client, calls = self._client()
-                with self.assertRaisesRegex(GitHubError, "^A file is read at a commit SHA$") as context:
+                with self.assertRaises(GitHubInputError) as context:
                     client.get_file_blob("example/one", commit, "docs/design.docx", maximum=1)
+                self.assertEqual(field_message("commit", OBJECT_ID, found), str(context.exception))
                 self.assertEqual("input", context.exception.kind)
                 self.assertEqual([], calls)
                 self.assertEqual(0, client.call_count)
 
     def test_file_blob_rejects_contents_that_are_not_one_file(self) -> None:
-        values: tuple[Any, ...] = ([], {}, {"type": "dir"}, {"type": "symlink"})
+        with self.subTest(value=[]):
+            client, calls = self._client([])
+            with self.assertRaisesRegex(GitHubFieldError, "^contents must be an object, found an array$") as field:
+                client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+            self.assertEqual("malformed", field.exception.kind)
+            self.assertEqual(1, len(calls))
+        values: tuple[Any, ...] = ({}, {"type": "dir"}, {"type": "symlink"})
         for value in values:
             with self.subTest(value=value):
                 client, calls = self._client(value)
@@ -2129,20 +2453,37 @@ class GitHubDocumentTests(unittest.TestCase):
                 self.assertEqual(1, len(calls))
 
     def test_file_blob_rejects_contents_with_invalid_blob_ids(self) -> None:
-        for fields in ({}, {"sha": 1}, {"sha": "b" * 39}, {"sha": "g" * 40}, {"sha": "B" * 64}):
+        for fields, found in (
+            ({}, "null"),
+            ({"sha": 1}, "integer 1"),
+            ({"sha": "b" * 39}, "a string of 39 characters"),
+            ({"sha": "g" * 40}, NOT_HEX),
+            ({"sha": "B" * 64}, NOT_HEX),
+        ):
             with self.subTest(fields=fields):
                 client, calls = self._client({"type": "file", "size": 0, **fields})
-                with self.assertRaisesRegex(GitHubError, "^Contents response has an unexpected shape$") as context:
+                with self.assertRaises(GitHubFieldError) as context:
                     client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual(field_message("contents.sha", OBJECT_ID, found), str(context.exception))
                 self.assertEqual("malformed", context.exception.kind)
                 self.assertEqual(1, len(calls))
 
     def test_file_blob_rejects_contents_without_a_nonnegative_integer_size(self) -> None:
-        for fields in ({}, {"size": None}, {"size": "1"}, {"size": 1.5}, {"size": True}, {"size": -1}):
+        for fields, found in (
+            ({}, "null"),
+            ({"size": None}, "null"),
+            ({"size": "1"}, 'string "1"'),
+            ({"size": 1.5}, "number 1.5"),
+            ({"size": True}, "boolean true"),
+            ({"size": -1}, "integer -1"),
+        ):
             with self.subTest(fields=fields):
                 client, calls = self._client({"type": "file", "sha": "b" * 40, **fields})
-                with self.assertRaisesRegex(GitHubError, "^Contents response has an unexpected shape$") as context:
+                with self.assertRaises(GitHubFieldError) as context:
                     client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual(
+                    field_message("contents.size", "an integer of at least 0", found), str(context.exception)
+                )
                 self.assertEqual("malformed", context.exception.kind)
                 self.assertEqual(1, len(calls))
 
@@ -2181,18 +2522,20 @@ class GitHubDocumentTests(unittest.TestCase):
         self.assertEqual(1, client.call_count)
 
     def test_file_blob_rejects_malformed_blob_responses(self) -> None:
-        values: tuple[Any, ...] = (
-            [],
-            {},
-            {"encoding": "utf-8", "content": "text"},
-            {"encoding": "base64"},
-            {"encoding": "base64", "content": 1},
+        values: tuple[tuple[Any, str], ...] = (
+            ([], "blob must be an object, found an array"),
+            ({}, "Blob response has an unexpected shape"),
+            ({"encoding": "utf-8", "content": "text"}, "Blob response has an unexpected shape"),
+            ({"encoding": "base64"}, "blob.content must be a string, found null"),
+            ({"encoding": "base64", "content": 1}, "blob.content must be a string, found integer 1"),
         )
-        for value in values:
+        for value, message in values:
             with self.subTest(value=value):
                 client, calls = self._client({"type": "file", "sha": "b" * 40, "size": 1}, value)
-                with self.assertRaisesRegex(GitHubError, "^Blob response has an unexpected shape$") as context:
+                with self.assertRaises(GitHubError) as context:
                     client.get_file_blob("example/one", "a" * 40, "docs/design.docx", maximum=1)
+                self.assertEqual(message, str(context.exception))
+                self.assertEqual(" must be " in message, isinstance(context.exception, GitHubFieldError))
                 self.assertEqual("malformed", context.exception.kind)
                 self.assertEqual(2, len(calls))
 
@@ -2305,7 +2648,10 @@ class RuntimeContractTests(unittest.TestCase):
     def test_manifest_with_unhashable_supports_is_rejected_not_a_crash(self) -> None:
         manifest = self._manifest()
         manifest["supports"] = [["initial"]]
-        with self.assertRaisesRegex(RuntimeContractError, "supported modes"):
+        with self.assertRaisesRegex(
+            RuntimeContractFieldError,
+            field_pattern("entrypoint-manifest.supports[0]", 'one of "initial", "re-review"', "an array"),
+        ):
             validate_adapter_manifest(manifest)
 
     def test_manifest_rejects_unsafe_or_duplicate_files(self) -> None:
@@ -2946,6 +3292,52 @@ class ReviewOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ReviewOperationError, "does not match"):
             validate_canary_pull(self._pull(41), repository="example/one", number=42)
 
+    def test_pull_metadata_and_selectors_of_the_wrong_kind_are_field_errors(self) -> None:
+        def changed(**fields: Any) -> dict:
+            return {**self._pull(42), **fields}
+
+        merged = self._pull(42, "MERGED", "2026-01-05T00:00:00Z")
+        cases: tuple[tuple[Any, str, str, str], ...] = (
+            ([], "pull", "an object", "an array"),
+            (changed(extra=1), "pull", "an object of known fields", 'unknown field "extra"'),
+            (
+                {key: value for key, value in self._pull(42).items() if key != "title"},
+                "pull",
+                "an object with field title",
+                "an object without it",
+            ),
+            (changed(number="42"), "pull.number", "an integer of at least 1", 'string "42"'),
+            (changed(number=True), "pull.number", "an integer of at least 1", "boolean true"),
+            (changed(number=42.0), "pull.number", "an integer of at least 1", "number 42.0"),
+            (changed(number=0), "pull.number", "an integer of at least 1", "integer 0"),
+            (changed(state="open"), "pull.state", 'one of "OPEN", "MERGED"', 'string "open"'),
+            (changed(state=["OPEN"]), "pull.state", 'one of "OPEN", "MERGED"', "an array"),
+            (changed(isDraft="false"), "pull.isDraft", "a boolean", 'string "false"'),
+            (changed(isDraft=0), "pull.isDraft", "a boolean", "integer 0"),
+            (changed(title=7), "pull.title", "a non-empty string", "integer 7"),
+            (changed(url=""), "pull.url", "a non-empty string", "an empty string"),
+            (changed(headRefOid={}), "pull.headRefOid", "a non-empty string", "an object"),
+            (changed(baseRefName=None), "pull.baseRefName", "a non-empty string", "null"),
+            (changed(body=["text"]), "pull.body", "a string", "an array"),
+            ({**merged, "mergedAt": None}, "pull.mergedAt", "a non-empty string", "null"),
+            ({**merged, "mergedAt": 20260105}, "pull.mergedAt", "a non-empty string", "integer 20260105"),
+        )
+        for value, path, expected, found in cases:
+            with self.subTest(path=path, found=found):
+                with self.assertRaises(ReviewOperationFieldError) as context:
+                    validate_pull(value)
+                self.assertEqual(field_message(path, expected, found), str(context.exception))
+        selectors: tuple[tuple[Any, str], ...] = (
+            (42, "integer 42"),
+            (None, "null"),
+            ("", "an empty string"),
+            (["a/b#1"], "an array"),
+        )
+        for selector, found in selectors:
+            with self.subTest(selector=selector), self.assertRaises(ReviewOperationFieldError) as context:
+                parse_pull_selector(selector)
+            self.assertEqual(field_message("pull selector", "a non-empty string", found), str(context.exception))
+
     def test_selection_skips_current_heads_and_old_merges(self) -> None:
         pulls = [
             self._pull(1),
@@ -3068,7 +3460,9 @@ class ReviewOperationTests(unittest.TestCase):
     def test_watermark_validates_completed_merge_metadata(self) -> None:
         pull = self._pull(2, "MERGED", "2026-01-05T00:00:00Z")
         del pull["headRefOid"]
-        with self.assertRaisesRegex(ReviewOperationError, "Pull metadata fields"):
+        with self.assertRaisesRegex(
+            ReviewOperationFieldError, field_pattern("pull", "an object with field headRefOid", "an object without it")
+        ):
             safe_watermark(
                 previous=date(2026, 1, 1),
                 today=date(2026, 1, 10),

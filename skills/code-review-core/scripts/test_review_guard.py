@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -463,6 +465,121 @@ class ClaimTests(GuardFixture):
         live.write_text(json.dumps({"run": str(self.other_run), "role": "csharp-review"}), encoding="utf-8")
         self.claim()
         self.assertEqual(sorted([f"{AGENT}.json", live.name]), sorted(path.name for path in self.claims.iterdir()))
+
+
+class FieldKindTests(GuardFixture):
+    """A hook event, run, or claim field of the wrong kind denies the call with the guidance its own check gives."""
+
+    def write_claim(self, claim: Any) -> None:
+        self.claims.mkdir(exist_ok=True)
+        (self.claims / f"{AGENT}.json").write_text(json.dumps(claim), encoding="utf-8")
+
+    def test_hook_event_fields_of_the_wrong_kind_deny_with_their_guidance(self) -> None:
+        tool_input = "Code-review reviewer boundary: the tool input could not be read."
+        agent = (
+            "Code-review reviewer boundary: the hook event carries no agent ID, so the guard cannot tell which "
+            "reviewer is calling."
+        )
+        path = "Code-review reviewer boundary: give an absolute path inside the review run."
+        base: dict[str, Any] = {"tool_name": "Read", "cwd": str(self.outside_cwd), "agent_id": AGENT}
+        cases: list[tuple[dict[str, Any], str]] = [
+            ({**base, "tool_input": "file_path"}, tool_input),
+            ({**base, "tool_input": [self.prompt()]}, tool_input),
+            ({**base, "tool_input": None}, tool_input),
+            ({**base, "tool_input": {"file_path": self.prompt()}, "agent_id": 7}, agent),
+            ({**base, "tool_input": {"file_path": self.prompt()}, "agent_id": [AGENT]}, agent),
+            ({**base, "tool_input": {"file_path": self.prompt()}, "agent_id": {"id": AGENT}}, agent),
+            ({**base, "tool_input": {"file_path": self.prompt()}, "agent_id": True}, agent),
+            ({**base, "tool_input": {"file_path": 3}}, path),
+            ({**base, "tool_input": {"file_path": None}}, path),
+            ({**base, "tool_input": {"file_path": [self.prompt()]}}, path),
+            ({**base, "tool_input": {"file_path": ""}}, path),
+        ]
+        for event, reason in cases:
+            with self.subTest(event=event):
+                self.assertEqual(reason, guard.decide(event))
+        self.assertFalse(self.claims.exists(), "a denied call claims nothing")
+
+    def test_tool_input_fields_of_the_wrong_kind_deny_a_claimed_reviewer(self) -> None:
+        self.claim()
+        glob = "Code-review reviewer boundary: Glob patterns must be relative to the run folder path, without '..'."
+        command = (
+            "Code-review reviewer boundary: run no command except the self-check and source commands the prompt "
+            "gives, exactly as written."
+        )
+        path = "Code-review reviewer boundary: give an absolute path inside the review run."
+        source = str(self.run_directory / "source")
+        cases: list[tuple[str, dict[str, Any], str]] = [
+            ("Glob", {"pattern": 5, "path": source}, glob),
+            ("Glob", {"pattern": ["*.cs"], "path": source}, glob),
+            ("Grep", {"pattern": "x", "path": 5}, path),
+            ("Bash", {"command": 5}, command),
+            ("Bash", {"command": None}, command),
+            ("Bash", {"command": [rp.self_check_command(self.run_directory, "csharp-review")]}, command),
+            ("Write", {"file_path": {"path": self.result()}}, path),
+        ]
+        for tool, tool_input, reason in cases:
+            with self.subTest(tool=tool, input=tool_input):
+                self.assertEqual(reason, self.decide(tool, **tool_input))
+
+    def test_run_fields_of_the_wrong_kind_deny_with_the_unreadable_run(self) -> None:
+        reason = f"Code-review reviewer boundary: the review run {self.run_directory} could not be read."
+        role = {
+            "id": "csharp-review",
+            "prompt_file": self.prompt(),
+            "result_file": self.result(),
+        }
+        runs: list[Any] = [
+            [],
+            {},
+            {"roles": {}},
+            {"roles": "csharp-review"},
+            {"roles": ["csharp-review"]},
+            {"roles": [{**role, "id": 5}]},
+            {"roles": [{**role, "prompt_file": None}]},
+            {"roles": [{**role, "prompt_file": ""}]},
+            {"roles": [{key: value for key, value in role.items() if key != "result_file"}]},
+        ]
+        for run in runs:
+            with self.subTest(run=run):
+                (self.run_directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
+                self.assertEqual(reason, self.decide("Read", file_path=self.prompt()))
+        self.assertFalse(self.claims.exists(), "a denied first read claims nothing")
+
+    def test_claim_fields_of_the_wrong_kind_deny_with_the_unreadable_claim(self) -> None:
+        reason = "Code-review reviewer boundary: this reviewer's claim could not be read."
+        run = str(self.run_directory)
+        claims: list[Any] = [
+            [],
+            "claim",
+            {"run": 5, "role": "csharp-review"},
+            {"run": [run], "role": "csharp-review"},
+            {"run": run, "role": None},
+            {"run": run},
+        ]
+        for claim in claims:
+            with self.subTest(claim=claim):
+                self.write_claim(claim)
+                self.assertEqual(reason, self.decide("Write", file_path=self.result()))
+                self.assertEqual(reason, self.decide("Read", file_path=self.prompt()))
+
+    def test_a_tool_name_of_the_wrong_kind_denies_through_the_fail_closed_path(self) -> None:
+        reason = "Code-review reviewer boundary: the guard could not evaluate this call (DeniedField)."
+        for tool, found in ((7, "integer 7"), (["Read"], "an array"), (None, "null"), ({}, "an object")):
+            event = {"tool_name": tool, "tool_input": {"file_path": self.prompt()}, "agent_id": AGENT}
+            with self.subTest(tool=tool):
+                with self.assertRaises(guard.Denied) as caught:
+                    guard.decide(event)
+                self.assertIs(guard.DeniedField, type(caught.exception))
+                self.assertEqual(f"hook event.tool_name must be a string, found {found}", str(caught.exception))
+                stdout = io.StringIO()
+                with contextlib.redirect_stdout(stdout):
+                    self.assertEqual(0, guard.main(json.dumps(event)))
+                decision = json.loads(stdout.getvalue())["hookSpecificOutput"]
+                self.assertEqual(
+                    ("deny", reason), (decision["permissionDecision"], decision["permissionDecisionReason"])
+                )
+        self.assertFalse(self.claims.exists())
 
 
 class HookTests(GuardFixture):

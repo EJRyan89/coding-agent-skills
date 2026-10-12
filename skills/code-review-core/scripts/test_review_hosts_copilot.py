@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import review_hosts
 from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_process import process_status
-from review_runtime import RuntimeContractError, stamp_source_snapshot
+from review_runtime import RuntimeContractError, RuntimeContractFieldError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
 
 HEAD = "b" * 40
@@ -206,9 +206,9 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
         (
             f"a materialization schema of {version!r}",
             _change("materialization_schema", version),
-            (RuntimeContractError, "Copilot reviewer materialization schema version is unsupported", 0, None),
+            (RuntimeContractFieldError, f"materialization.schema_version must be an integer, found {found}", 0, None),
         )
-        for version in (True, 1.0)
+        for version, found in ((True, "boolean true"), (1.0, "number 1.0"))
     ),
     (
         "a relative result path",
@@ -419,7 +419,7 @@ REFUSED: list[tuple[str, Mutation, Outcome]] = [
     (
         "a result that is not an object",
         _change("writes", b"[]"),
-        (RuntimeContractError, "GitHub Copilot CLI result must be a JSON object", 2, REVIEW_LOG),
+        (RuntimeContractFieldError, "adapter-result must be an object, found an array", 2, REVIEW_LOG),
     ),
     (
         "a promotion that is refused",
@@ -853,6 +853,103 @@ class CopilotHostTests(unittest.TestCase):
                 for later in reversed(STAGE_NAMES[index:]):
                     copilot = stages[later][0](copilot)
                 self.assert_refused(copilot, stages[name][1])
+
+
+def _materialization(**changes: Any) -> dict[str, Any]:
+    """The materialization record of the trusted reviewer the host tests write, with the given fields replaced."""
+    return {
+        "schema_version": 1,
+        "adapter_id": "fixture",
+        "entrypoint": "SKILL.md",
+        "source_commit": "a" * 40,
+        "source_hashes": {"SKILL.md": _sha(SKILL)},
+        **changes,
+    }
+
+
+COMMIT_KIND = "a lowercase hexadecimal digest of 40 or 64 characters"
+HASH_KIND = "a lowercase hexadecimal digest of 64 characters"
+NOT_HEX = "a string with a character that is not a lowercase hexadecimal digit"
+# A materialization record with a field of the wrong kind, and the message the Copilot host refuses it with.
+MATERIALIZATION_KINDS: list[tuple[str, Any, str]] = [
+    ("a record that is not an object", [], "materialization must be an object, found an array"),
+    (
+        "a record without its adapter id",
+        {key: value for key, value in _materialization().items() if key != "adapter_id"},
+        "materialization must be an object with field adapter_id, found an object without it",
+    ),
+    (
+        "a record with an unknown field",
+        _materialization(extra=1),
+        'materialization must be an object of known fields, found unknown field "extra"',
+    ),
+    (
+        "a schema version that is a string",
+        _materialization(schema_version="1"),
+        'materialization.schema_version must be an integer, found string "1"',
+    ),
+    (
+        "a source commit that is a number",
+        _materialization(source_commit=5),
+        f"materialization.source_commit must be {COMMIT_KIND}, found integer 5",
+    ),
+    (
+        "a source commit in upper case",
+        _materialization(source_commit="A" * 40),
+        f"materialization.source_commit must be {COMMIT_KIND}, found {NOT_HEX}",
+    ),
+    (
+        "an entrypoint that is null",
+        _materialization(entrypoint=None),
+        "materialization.entrypoint must be a non-empty string, found null",
+    ),
+    (
+        "an empty entrypoint",
+        _materialization(entrypoint=""),
+        "materialization.entrypoint must be a non-empty string, found an empty string",
+    ),
+    (
+        "source hashes that are an array",
+        _materialization(source_hashes=[]),
+        "materialization.source_hashes must be an object, found an array",
+    ),
+    (
+        "a source hash that is a number",
+        _materialization(source_hashes={"SKILL.md": 5}),
+        f"materialization.source_hashes.SKILL.md must be {HASH_KIND}, found integer 5",
+    ),
+    (
+        "a source hash of a SHA-1's length",
+        _materialization(source_hashes={"SKILL.md": "a" * 40}),
+        f"materialization.source_hashes.SKILL.md must be {HASH_KIND}, found a string of 40 characters",
+    ),
+]
+
+
+class MaterializationRecordTests(unittest.TestCase):
+    """materialized_reviewer_entrypoint, the Copilot host's reader of the trusted reviewer's materialization record."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="copilot-materialization-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / "SKILL.md").write_bytes(SKILL)
+
+    def write(self, record: Any) -> None:
+        (self.root / "materialization.json").write_text(json.dumps(record), encoding="utf-8")
+
+    def test_a_valid_record_names_its_entrypoint(self) -> None:
+        self.write(_materialization())
+        self.assertEqual(self.root / "SKILL.md", review_hosts.materialized_reviewer_entrypoint(self.root))
+
+    def test_each_field_of_the_wrong_kind_is_refused(self) -> None:
+        for name, record, message in MATERIALIZATION_KINDS:
+            with self.subTest(name):
+                self.write(record)
+                with self.assertRaises(Exception) as caught:
+                    review_hosts.materialized_reviewer_entrypoint(self.root)
+                self.assertIs(RuntimeContractFieldError, type(caught.exception))
+                self.assertEqual(message, str(caught.exception))
 
 
 def run_directory_files(paths: dict[str, Path]) -> list[str]:
