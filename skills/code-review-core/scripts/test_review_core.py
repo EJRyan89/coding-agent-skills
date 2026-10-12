@@ -2897,7 +2897,7 @@ class ReviewOperationTests(unittest.TestCase):
             with self.subTest(pulls=pulls), self.assertRaises(ReviewOperationError):
                 select_eligible_pulls(pulls, merged_since=date(2026, 1, 1), reviewed_heads=heads)
 
-    def test_watermark_retains_unreviewed_and_incomplete_work(self) -> None:
+    def test_watermark_retains_unreviewed_merges(self) -> None:
         merged = [
             self._pull(2, "MERGED", "2026-01-05T00:00:00Z"),
             self._pull(3, "MERGED", "2026-01-08T00:00:00Z"),
@@ -2910,19 +2910,75 @@ class ReviewOperationTests(unittest.TestCase):
                 today=date(2026, 1, 10),
                 eligible_merged=merged,
                 completed_numbers={2},
-                enumeration_complete=True,
             ),
         )
+
+    def test_watermark_uses_the_earliest_pending_merge_date(self) -> None:
         self.assertEqual(
-            previous,
+            date(2026, 1, 4),
             safe_watermark(
-                previous=previous,
+                previous=date(2026, 1, 1),
                 today=date(2026, 1, 10),
-                eligible_merged=merged,
-                completed_numbers={2, 3},
-                enumeration_complete=False,
+                eligible_merged=[
+                    self._pull(3, "MERGED", "2026-01-08T00:00:00Z"),
+                    self._pull(2, "MERGED", "2026-01-05T23:59:59Z"),
+                ],
+                completed_numbers=set(),
             ),
         )
+
+    def test_watermark_advances_to_today_without_pending_merges(self) -> None:
+        for merged in ([], [self._pull(2, "MERGED", "2026-01-05T00:00:00Z")]):
+            with self.subTest(merged=merged):
+                self.assertEqual(
+                    date(2026, 1, 10),
+                    safe_watermark(
+                        previous=date(2026, 1, 1),
+                        today=date(2026, 1, 10),
+                        eligible_merged=merged,
+                        completed_numbers={2},
+                    ),
+                )
+
+    def test_watermark_never_moves_backwards(self) -> None:
+        for previous, merged in (
+            (date(2026, 1, 11), []),
+            (date(2026, 1, 1), [self._pull(2, "MERGED", "2026-01-01T00:00:00Z")]),
+        ):
+            with self.subTest(previous=previous, merged=merged):
+                self.assertEqual(
+                    previous,
+                    safe_watermark(
+                        previous=previous,
+                        today=date(2026, 1, 10),
+                        eligible_merged=merged,
+                        completed_numbers=set(),
+                    ),
+                )
+
+    def test_watermark_refuses_malformed_pending_merge_dates(self) -> None:
+        for merged_at in ("not-a-date", "2026-02-30T00:00:00Z", "", None):
+            with (
+                self.subTest(merged_at=merged_at),
+                self.assertRaises(ReviewOperationError),
+            ):
+                safe_watermark(
+                    previous=date(2026, 1, 1),
+                    today=date(2026, 1, 10),
+                    eligible_merged=[self._pull(2, "MERGED", merged_at)],
+                    completed_numbers=set(),
+                )
+
+    def test_watermark_validates_completed_merge_metadata(self) -> None:
+        pull = self._pull(2, "MERGED", "2026-01-05T00:00:00Z")
+        del pull["headRefOid"]
+        with self.assertRaisesRegex(ReviewOperationError, "Pull metadata fields"):
+            safe_watermark(
+                previous=date(2026, 1, 1),
+                today=date(2026, 1, 10),
+                eligible_merged=[pull],
+                completed_numbers={2},
+            )
 
     def test_generic_and_specialized_results_share_record_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
