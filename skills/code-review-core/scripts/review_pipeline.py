@@ -183,6 +183,7 @@ from review_specialists import (
     uncovered,
 )
 from review_state import StateError, default_state_path, load_state, update_state, utc_today
+from typed_fields import FieldError, FieldReader
 
 RUN_SCHEMA_VERSION = 1
 BATCH_SCHEMA_VERSION = 1
@@ -235,6 +236,13 @@ def self_check_command(run: Path, role: str) -> str:
 
 class PipelineError(ValueError):
     pass
+
+
+class PipelineFieldError(FieldError, PipelineError):
+    """A run or batch file field of the wrong kind."""
+
+
+READ = FieldReader(PipelineFieldError)
 
 
 EXPECTED_ERRORS = (
@@ -1722,12 +1730,8 @@ def _validation_targets(
 
 
 def load_run(run: Path) -> dict[str, Any]:
-    state = read_json(run / RUN_FILE)
-    if (
-        not isinstance(state, dict)
-        or type(state.get("schema_version")) is not int
-        or state["schema_version"] != RUN_SCHEMA_VERSION
-    ):
+    state = READ.json_object(read_json(run / RUN_FILE), "run")
+    if READ.integer(state.get("schema_version"), "run.schema_version") != RUN_SCHEMA_VERSION:
         raise PipelineError(f"{run} is not a prepared review run")
     return state
 
@@ -2508,12 +2512,8 @@ def advance_watermarks(
     A repository whose enumeration failed keeps its watermark (None in the result), so no work is skipped; its
     previous watermark is None when that watermark could not be read.
     """
-    batch = read_json(batch_path)
-    if (
-        not isinstance(batch, dict)
-        or type(batch.get("schema_version")) is not int
-        or batch["schema_version"] != BATCH_SCHEMA_VERSION
-    ):
+    batch = READ.json_object(read_json(batch_path), "batch")
+    if READ.integer(batch.get("schema_version"), "batch.schema_version") != BATCH_SCHEMA_VERSION:
         raise PipelineError(f"{batch_path} is not a review batch file")
     config = load_config(config_path)
     archive_root = Path(config["archive_root"])

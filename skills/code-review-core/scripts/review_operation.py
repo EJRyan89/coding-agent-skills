@@ -22,10 +22,18 @@ from review_config import validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import build_record, ledger_history, ledger_summary, payload_hash, validate_adapter_result
 from review_state import utc_date, watermark_date
+from typed_fields import FieldError, FieldReader
 
 
 class ReviewOperationError(ValueError):
     pass
+
+
+class ReviewOperationFieldError(FieldError, ReviewOperationError):
+    """A pull request, request, run, or legacy index field of the wrong kind."""
+
+
+READ = FieldReader(ReviewOperationFieldError)
 
 
 PULL_FIELDS = {
@@ -43,9 +51,7 @@ PULL_FIELDS = {
 
 
 def parse_pull_selector(value: str) -> tuple[str, int]:
-    if not isinstance(value, str):
-        raise ReviewOperationError("Pull selector must be owner/repository#number")
-    match = re.fullmatch(r"([^#]+)#([1-9][0-9]*)", value)
+    match = re.fullmatch(r"([^#]+)#([1-9][0-9]*)", READ.string(value, "pull selector"))
     if match is None:
         raise ReviewOperationError("Pull selector must be owner/repository#number")
     repository = validate_repository_identity(match.group(1))
@@ -62,20 +68,16 @@ def validate_canary_pull(value: Any, *, repository: str, number: int) -> dict[st
 
 def validate_pull(value: Any) -> dict[str, Any]:
     """A pull request's metadata; the one pull request a review reads also carries its description, `body`."""
-    if not isinstance(value, dict) or set(value) not in (PULL_FIELDS, PULL_FIELDS | {"body"}):
-        raise ReviewOperationError("Pull metadata fields do not match the contract")
-    if not isinstance(value.get("body", ""), str):
-        raise ReviewOperationError("Pull body must be text")
-    if not isinstance(value["number"], int) or isinstance(value["number"], bool) or value["number"] < 1:
-        raise ReviewOperationError("Pull number must be positive")
-    if value["state"] not in {"OPEN", "MERGED"} or not isinstance(value["isDraft"], bool):
-        raise ReviewOperationError("Pull state or draft flag is invalid")
+    pull = READ.json_object(value, "pull", required=PULL_FIELDS, optional={"body"})
+    READ.string(pull.get("body", ""), "pull.body", empty=True)
+    READ.integer(pull["number"], "pull.number", minimum=1)
+    state = READ.one_of(pull["state"], "pull.state", ("OPEN", "MERGED"))
+    READ.boolean(pull["isDraft"], "pull.isDraft")
     for field in ("title", "url", "baseRefName", "baseRefOid", "headRefOid", "headRefName"):
-        if not isinstance(value[field], str) or not value[field]:
-            raise ReviewOperationError(f"Pull {field} is required")
-    if value["state"] == "MERGED" and not isinstance(value["mergedAt"], str):
-        raise ReviewOperationError("Merged pull requires mergedAt")
-    return value
+        READ.string(pull[field], f"pull.{field}")
+    if state == "MERGED":
+        READ.string(pull["mergedAt"], "pull.mergedAt")
+    return pull
 
 
 def select_eligible_pulls(
@@ -145,9 +147,7 @@ def request_to_record_input(
     dispatch: str | None = None,
     snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    pull = request.get("pull_request")
-    if not isinstance(pull, dict):
-        raise ReviewOperationError("Adapter request pull_request is invalid")
+    pull = READ.json_object(request.get("pull_request"), "request.pull_request")
     return {
         "reviewers": reviewers or [],
         "patches": patches,
@@ -177,20 +177,22 @@ def prior_severities(request: dict[str, Any]) -> dict[str, str]:
 
     A finding without a string severity is left out, which its readers treat alike: as an unknown severity.
     """
-    return {
-        item["id"]: item["severity"]
-        for item in request.get("prior_findings") or []
-        if isinstance(item, dict) and isinstance(item.get("id"), str) and isinstance(item.get("severity"), str)
-    }
+    severities: dict[str, str] = {}
+    for item in request.get("prior_findings") or []:
+        try:
+            finding = READ.json_object(item, "request.prior_findings[]")
+            identifier = READ.string(finding.get("id"), "request.prior_findings[].id")
+            severities[identifier] = READ.string(finding.get("severity"), "request.prior_findings[].severity")
+        except FieldError:
+            continue
+    return severities
 
 
-def _ids(items: Any, what: str) -> list[str]:
-    if not isinstance(items, list):
-        raise ReviewOperationError(f"Adapter request {what}s are invalid")
-    ids = [item["id"] for item in items if isinstance(item, dict) and isinstance(item.get("id"), str)]
-    if len(ids) != len(items):
-        raise ReviewOperationError(f"Every {what} requires an ID")
-    return ids
+def _ids(items: Any, path: str) -> list[str]:
+    """The ID of each item of the request's array at `path`."""
+    return READ.array(
+        items, path, lambda item, item_path: READ.string(READ.json_object(item, item_path).get("id"), f"{item_path}.id")
+    )
 
 
 def archive_base(current: int | None, ledger: list[dict[str, Any]]) -> dict[str, Any]:
@@ -210,17 +212,20 @@ def check_archive_base(base: Any, current: int | None, ledger: list[dict[str, An
     could reopen entries it closed or record an older head as the latest review. commit_record then holds the same
     version under the pull request's lock while it writes.
     """
-    if not isinstance(base, dict) or set(base) != {"version", "ledger_sha256"}:
+    try:
+        READ.json_object(base, "run.base", required={"version", "ledger_sha256"})
+    except FieldError as exc:
         raise ReviewOperationError(
             "The run does not record the archive version it was prepared against; nothing was recorded. "
             "Prepare the review again"
-        )
-    if base["version"] != current:
+        ) from exc
+    version = READ.optional(READ.integer, base["version"], "run.base.version", minimum=1)
+    if version != current:
         raise ReviewOperationError(
-            f"The archive moved since prepare: the review was judged against {_version_name(base['version'])}, "
+            f"The archive moved since prepare: the review was judged against {_version_name(version)}, "
             f"and the archive now holds {_version_name(current)}; nothing was recorded. Prepare the review again"
         )
-    if base["ledger_sha256"] != ledger_digest(ledger):
+    if READ.hex_digest(base["ledger_sha256"], "run.base.ledger_sha256", 64) != ledger_digest(ledger):
         raise ReviewOperationError(
             f"The ledger of {_version_name(current)} changed since prepare; nothing was recorded. "
             "Prepare the review again"
@@ -252,14 +257,14 @@ def commit_adapter_result(
     that line records as its `location`."""
     request = read_json(request_path)
     result_value = read_json(result_path)
-    prior_ids = _ids(request.get("prior_findings", []), "prior finding")
+    prior_ids = _ids(request.get("prior_findings", []), "request.prior_findings")
     result = validate_adapter_result(
         result_value,
         expected_repository=request["repository"],
         expected_number=request["pull_number"],
         expected_head_sha=request["pull_request"]["head_sha"],
         prior_ids=prior_ids,
-        comment_ids=_ids(request.get("github_comments", []), "review comment"),
+        comment_ids=_ids(request.get("github_comments", []), "request.github_comments"),
         require_comment_dispositions=require_comment_dispositions,
         prior_severities=prior_severities(request),
     )
@@ -354,24 +359,18 @@ def legacy_index(archive_root: Path, repository: str, number: int) -> dict[str, 
     if not path.is_file():
         return None
     try:
-        value = read_json(path)
-    except PersistenceError:
+        index = READ.json_object(read_json(path), "legacy-index", required=LEGACY_INDEX_KEYS)
+        version = READ.integer(index["schema_version"], "legacy-index.schema_version")
+        READ.one_of(index["kind"], "legacy-index.kind", ("legacy-review-index",))
+        indexed = READ.string(index["repository"], "legacy-index.repository")
+        pull_number = READ.integer(index["pull_number"], "legacy-index.pull_number")
+        READ.hex_digest(index["reviewed_head_sha"], "legacy-index.reviewed_head_sha", 40, 64)
+        READ.string(index["verdict"], "legacy-index.verdict", empty=True)
+    except (PersistenceError, FieldError):
         return None
-    if (
-        not isinstance(value, dict)
-        or set(value) != LEGACY_INDEX_KEYS
-        or type(value["schema_version"]) is not int
-        or value["schema_version"] != 1
-        or value["kind"] != "legacy-review-index"
-        or not isinstance(value["repository"], str)
-        or value["repository"].lower() != repository
-        or value["pull_number"] != number
-        or not isinstance(value["reviewed_head_sha"], str)
-        or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value["reviewed_head_sha"])
-        or not isinstance(value["verdict"], str)
-    ):
+    if version != 1 or indexed.lower() != repository or pull_number != number:
         return None
-    return value
+    return index
 
 
 LEGACY_COUNT = re.compile(r"<summary><strong>(MUST FIX|SHOULD FIX|SUGGESTIONS) \((\d+)\)</strong></summary>")
@@ -455,4 +454,4 @@ def recorded_watermark(state: dict[str, Any], repository: str) -> date | None:
     """A repository's recorded merged-pull watermark, or None before its first batch run advances one."""
     identity = validate_repository_identity(repository)
     value = state.get("repositories", {}).get(identity, {}).get("merged_since")
-    return watermark_date(identity, value) if isinstance(value, str) else None
+    return None if value is None else watermark_date(identity, value)

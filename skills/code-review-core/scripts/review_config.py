@@ -98,7 +98,7 @@ class ConfigurationFieldError(FieldError, ConfigurationError):
     """A configuration field of the wrong kind."""
 
 
-FIELDS = FieldReader(ConfigurationFieldError)
+READ = FieldReader(ConfigurationFieldError)
 
 
 def default_config_path() -> Path:
@@ -109,14 +109,15 @@ def default_config_path() -> Path:
 
 
 def validate_repository_identity(value: object, field: str = "repository") -> str:
-    identity = FIELDS.string(value, field)
+    identity = READ.string(value, field)
     if not REPOSITORY_PATTERN.fullmatch(identity):
         raise ConfigurationError(f"Invalid repository identity: {value!r}")
     return identity.lower()
 
 
 def validate_windows_absolute_path(value: Any, field: str, *, nullable: bool = False) -> str | None:
-    path = FIELDS.optional(FIELDS.string, value, field) if nullable else FIELDS.string(value, field)
+    reader_path = f"config.{field}"
+    path = READ.optional(READ.string, value, reader_path) if nullable else READ.string(value, reader_path)
     if path is None:
         return None
     normalized = ntpath.normpath(path)
@@ -146,14 +147,14 @@ def default_manifest_path(config_path: Path, repository: str) -> Path:
 
 
 def validate_config(value: Any) -> dict[str, Any]:
-    config = FIELDS.json_object(value, "config", optional=TOP_LEVEL_KEYS)
+    config = READ.json_object(value, "config", optional=TOP_LEVEL_KEYS)
     _validate_schema_version(config.get("schema_version"))
     normalized_sets = _validate_repository_sets(config.get("repository_sets"))
     _validate_default_set(config.get("default_repository_set"), normalized_sets)
     normalized_repositories = _validate_repositories(config.get("repositories", {}))
     _check_configured_repositories(normalized_sets, normalized_repositories)
-    runtime = FIELDS.one_of(config.get("runtime", "auto"), "runtime", RUNTIME_HOSTS)
-    effort = FIELDS.optional(FIELDS.one_of, config.get("reviewer_effort"), "reviewer_effort", REVIEWER_EFFORTS)
+    runtime = READ.one_of(config.get("runtime", "auto"), "config.runtime", RUNTIME_HOSTS)
+    effort = READ.optional(READ.one_of, config.get("reviewer_effort"), "config.reviewer_effort", REVIEWER_EFFORTS)
     scope = _validate_re_review_scope(config.get("re_review_scope", {}))
     verdict_policy = _validate_verdict_policy(config.get("verdict_policy", {}))
     operation_sets = _validate_operation_sets(config.get("operation_repository_sets", {}), normalized_sets)
@@ -173,13 +174,13 @@ def validate_config(value: Any) -> dict[str, Any]:
     normalized["summary_root"] = validate_windows_absolute_path(config.get("summary_root"), "summary_root")
     normalized["dashboard_file"] = validate_windows_absolute_path(config.get("dashboard_file"), "dashboard_file")
     normalized["verdict_policy"] = verdict_policy
-    FIELDS.optional(FIELDS.string, config.get("github_login"), "github_login")
+    READ.optional(READ.string, config.get("github_login"), "config.github_login")
     normalized["dashboard"] = _validate_dashboard(config.get("dashboard", {}))
     return normalized
 
 
 def _validate_schema_version(value: Any) -> None:
-    version = FIELDS.integer(value, "schema_version")
+    version = READ.integer(value, "config.schema_version")
     if version > SCHEMA_VERSION:
         raise ConfigurationError(f"Unsupported future config schema version: {version}")
     if version != SCHEMA_VERSION:
@@ -188,15 +189,17 @@ def _validate_schema_version(value: Any) -> None:
 
 def _validate_repository_sets(value: Any) -> dict[str, list[str]]:
     """Each named set's members as lowercase identities, in the order given."""
-    sets = FIELDS.json_object(value, "repository_sets")
+    sets = READ.json_object(value, "config.repository_sets")
     if not sets:
         raise ConfigurationError("repository_sets must not be empty")
     normalized_sets: dict[str, list[str]] = {}
     for key, repositories in sets.items():
-        name = FIELDS.string(key, "a key of repository_sets")
+        name = READ.string(key, "a key of config.repository_sets")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
             raise ConfigurationError(f"Invalid repository-set name: {name!r}")
-        members = FIELDS.array(repositories, f"repository_sets.{name}", validate_repository_identity, nonempty=True)
+        members = READ.array(
+            repositories, f"config.repository_sets.{name}", validate_repository_identity, nonempty=True
+        )
         if len(set(members)) != len(members):
             raise ConfigurationError(f"Repository set '{name}' contains duplicates")
         normalized_sets[name] = members
@@ -204,16 +207,16 @@ def _validate_repository_sets(value: Any) -> dict[str, list[str]]:
 
 
 def _validate_default_set(default_set: Any, normalized_sets: dict[str, list[str]]) -> None:
-    if FIELDS.string(default_set, "default_repository_set") not in normalized_sets:
+    if READ.string(default_set, "config.default_repository_set") not in normalized_sets:
         raise ConfigurationError("default_repository_set must name an existing set")
 
 
 def _validate_repositories(value: Any) -> dict[str, Any]:
     """Each repository's normalized entry keyed by its lowercase identity, checked one entry at a time."""
-    repository_config = FIELDS.json_object(value, "repositories")
+    repository_config = READ.json_object(value, "config.repositories")
     normalized_repositories: dict[str, Any] = {}
     for identity, entry_value in repository_config.items():
-        normalized_identity = validate_repository_identity(identity, "a key of repositories")
+        normalized_identity = validate_repository_identity(identity, "a key of config.repositories")
         if normalized_identity in normalized_repositories:
             raise ConfigurationError(f"Duplicate repository configuration after normalization: {normalized_identity}")
         normalized_repositories[normalized_identity] = _validate_repository(identity, entry_value)
@@ -222,14 +225,14 @@ def _validate_repositories(value: Any) -> dict[str, Any]:
 
 def _validate_repository(identity: str, entry_value: Any) -> dict[str, Any]:
     field = f"repositories.{identity}"
-    entry = FIELDS.json_object(entry_value, field, optional=REPOSITORY_KEYS)
+    entry = READ.json_object(entry_value, f"config.{field}", optional=REPOSITORY_KEYS)
     reviewer = _validate_reviewer(identity, entry.get("reviewer"))
     checkout = validate_windows_absolute_path(entry.get("checkout_path"), f"{field}.checkout_path", nullable=True)
     if reviewer["scope"] == "repository" and checkout is None:
         raise ConfigurationError(f"{field}.checkout_path is required for a repository reviewer")
     exclude = validate_glob_patterns(
         entry.get("snapshot_exclude", []),
-        f"{field}.snapshot_exclude",
+        f"config.{field}.snapshot_exclude",
         maximum_patterns=MAX_SNAPSHOT_EXCLUDE_PATTERNS,
         maximum_length=MAX_SNAPSHOT_EXCLUDE_PATTERN_LENGTH,
     )
@@ -242,16 +245,16 @@ def validate_glob_patterns(
     *,
     maximum_patterns: int,
     maximum_length: int,
-    fields: FieldReader = FIELDS,
+    reader: FieldReader = READ,
 ) -> list[str]:
     """Distinct glob patterns, each a repository-relative POSIX path pattern that cannot name the snapshot's root or
     leave it: no backslash, leading slash, control character, or empty, `.`, or `..` segment. A repository's
-    `snapshot_exclude` and a condition's `reads` are both such patterns; `fields` is the reader of the format that
+    `snapshot_exclude` and a condition's `reads` are both such patterns; `reader` is the reader of the format that
     holds them, so a fault raises that format's error."""
-    patterns = fields.array(
+    patterns = reader.array(
         value,
         field,
-        lambda pattern, path: fields.string(pattern, path, maximum=maximum_length),
+        lambda pattern, path: reader.string(pattern, path, maximum=maximum_length),
         maximum=maximum_patterns,
     )
     seen: set[str] = set()
@@ -261,38 +264,39 @@ def validate_glob_patterns(
             or re.search(r"[\x00-\x1f\x7f]", pattern)
             or any(segment in {"", ".", ".."} for segment in pattern.split("/"))
         ):
-            raise fields.fail(
+            raise reader.fail(
                 f"{field}[{index}]",
                 "a repository-relative glob pattern without a backslash, a control character, or an empty, '.', or "
                 "'..' segment",
                 describe(pattern),
             )
         if pattern.casefold() in seen:
-            raise fields.fail(field, "distinct glob patterns, ignoring case", f"{json.dumps(pattern)} twice")
+            raise reader.fail(field, "distinct glob patterns, ignoring case", f"{json.dumps(pattern)} twice")
         seen.add(pattern.casefold())
     return patterns
 
 
 def _validate_reviewer(identity: str, reviewer_value: Any) -> dict[str, Any]:
     field = f"repositories.{identity}.reviewer"
-    reviewer = FIELDS.json_object(reviewer_value, field, optional=REVIEWER_KEYS)
-    reviewer_id = FIELDS.string(reviewer.get("id"), f"{field}.id")
+    path = f"config.{field}"
+    reviewer = READ.json_object(reviewer_value, path, optional=REVIEWER_KEYS)
+    reviewer_id = READ.string(reviewer.get("id"), f"{path}.id")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", reviewer_id):
         raise ConfigurationError(f"{field}.id is invalid")
-    if FIELDS.integer(reviewer.get("protocol_version"), f"{field}.protocol_version") != 1:
+    if READ.integer(reviewer.get("protocol_version"), f"{path}.protocol_version") != 1:
         raise ConfigurationError(f"{field} protocol is unsupported")
-    trusted_ref = FIELDS.optional(FIELDS.string, reviewer.get("trusted_ref"), f"{field}.trusted_ref")
+    trusted_ref = READ.optional(READ.string, reviewer.get("trusted_ref"), f"{path}.trusted_ref")
     if trusted_ref is not None and trusted_ref.startswith("refs/pull/"):
         raise ConfigurationError(f"{field}.trusted_ref cannot be a pull ref")
-    scope = FIELDS.one_of(reviewer.get("scope", "repository"), f"{field}.scope", ("generic", "repository"))
-    manifest_path = FIELDS.optional(FIELDS.string, reviewer.get("manifest_path"), f"{field}.manifest_path")
-    skill = FIELDS.optional(FIELDS.string, reviewer.get("skill"), f"{field}.skill")
+    scope = READ.one_of(reviewer.get("scope", "repository"), f"{path}.scope", ("generic", "repository"))
+    manifest_path = READ.optional(READ.string, reviewer.get("manifest_path"), f"{path}.manifest_path")
+    skill = READ.optional(READ.string, reviewer.get("skill"), f"{path}.skill")
     manifest = reviewer.get("manifest")
     if manifest is not True:
         try:
-            manifest = FIELDS.optional(FIELDS.string, manifest, f"{field}.manifest")
+            manifest = READ.optional(READ.string, manifest, f"{path}.manifest")
         except FieldError as exc:
-            raise FIELDS.fail(exc.path, "true, a non-empty string, or null", exc.found) from None
+            raise READ.fail(exc.path, "true, a non-empty string, or null", exc.found) from None
     if scope == "generic":
         if reviewer_id != "generic" or any(
             value is not None for value in (manifest_path, trusted_ref, skill, manifest)
@@ -337,26 +341,28 @@ def _check_configured_repositories(
 
 def _validate_re_review_scope(value: Any) -> dict[str, Any]:
     """The given thresholds over their defaults."""
-    given = FIELDS.json_object(value, "re_review_scope", optional=set(RE_REVIEW_SCOPE_DEFAULTS))
+    given = READ.json_object(value, "config.re_review_scope", optional=set(RE_REVIEW_SCOPE_DEFAULTS))
     scope = {**RE_REVIEW_SCOPE_DEFAULTS, **given}
-    share = FIELDS.number(scope["full_share"], "re_review_scope.full_share")
+    share = READ.number(scope["full_share"], "config.re_review_scope.full_share")
     if not 0 < share <= 1:
         raise ConfigurationError("re_review_scope.full_share must be a number above 0 and at most 1")
-    FIELDS.integer(scope["full_lines"], "re_review_scope.full_lines", minimum=1)
+    READ.integer(scope["full_lines"], "config.re_review_scope.full_lines", minimum=1)
     return scope
 
 
 def _validate_verdict_policy(value: Any) -> dict[str, Any]:
     """Both policy fields, defaults filled; request_changes_for is the given list itself."""
-    policy = FIELDS.json_object(value, "verdict_policy", optional={"request_changes_for", "should_fix_threshold"})
+    policy = READ.json_object(value, "config.verdict_policy", optional={"request_changes_for", "should_fix_threshold"})
     request_changes_for = policy.get("request_changes_for", ["MUST_FIX"])
-    FIELDS.array(
+    READ.array(
         request_changes_for,
-        "verdict_policy.request_changes_for",
-        lambda item, path: FIELDS.one_of(item, path, ("MUST_FIX", "SHOULD_FIX", "SUGGESTION")),
+        "config.verdict_policy.request_changes_for",
+        lambda item, path: READ.one_of(item, path, ("MUST_FIX", "SHOULD_FIX", "SUGGESTION")),
         nonempty=True,
     )
-    threshold = FIELDS.integer(policy.get("should_fix_threshold", 3), "verdict_policy.should_fix_threshold", minimum=1)
+    threshold = READ.integer(
+        policy.get("should_fix_threshold", 3), "config.verdict_policy.should_fix_threshold", minimum=1
+    )
     return {
         "request_changes_for": request_changes_for,
         "should_fix_threshold": threshold,
@@ -364,25 +370,25 @@ def _validate_verdict_policy(value: Any) -> dict[str, Any]:
 
 
 def _validate_operation_sets(value: Any, normalized_sets: dict[str, list[str]]) -> dict[str, Any]:
-    operation_sets = FIELDS.json_object(value, "operation_repository_sets", optional=OPERATIONS)
+    operation_sets = READ.json_object(value, "config.operation_repository_sets", optional=OPERATIONS)
     for operation, set_name in operation_sets.items():
-        if FIELDS.string(set_name, f"operation_repository_sets.{operation}") not in normalized_sets:
+        if READ.string(set_name, f"config.operation_repository_sets.{operation}") not in normalized_sets:
             raise ConfigurationError(f"operation_repository_sets.{operation} must name an existing set")
     return operation_sets
 
 
 def _validate_dashboard(value: Any) -> dict[str, Any]:
     """The markers with their defaults, the status overrides as given, and the normalized author names."""
-    dashboard = FIELDS.json_object(value, "dashboard", optional=DASHBOARD_KEYS)
-    start_marker = FIELDS.string(
+    dashboard = READ.json_object(value, "config.dashboard", optional=DASHBOARD_KEYS)
+    start_marker = READ.string(
         dashboard.get("start_marker", "<!-- code-review-pr-tracker:start -->"),
-        "dashboard.start_marker",
+        "config.dashboard.start_marker",
         single_line=True,
         trimmed=True,
     )
-    end_marker = FIELDS.string(
+    end_marker = READ.string(
         dashboard.get("end_marker", "<!-- code-review-pr-tracker:end -->"),
-        "dashboard.end_marker",
+        "config.dashboard.end_marker",
         single_line=True,
         trimmed=True,
     )
@@ -399,25 +405,25 @@ def _validate_dashboard(value: Any) -> dict[str, Any]:
 
 
 def _validate_status_overrides(value: Any) -> None:
-    overrides = FIELDS.json_object(value, "dashboard.status_overrides")
+    overrides = READ.json_object(value, "config.dashboard.status_overrides")
     for raw_key, raw_status in overrides.items():
-        key = FIELDS.string(raw_key, "a key of dashboard.status_overrides")
+        key = READ.string(raw_key, "a key of config.dashboard.status_overrides")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[1-9][0-9]*", key):
             raise ConfigurationError(f"Invalid dashboard status override key: {key!r}")
-        status = FIELDS.string(raw_status, f"dashboard.status_overrides.{key}")
+        status = READ.string(raw_status, f"config.dashboard.status_overrides.{key}")
         if status.strip().casefold() in COMPUTED_DASHBOARD_STATES:
             raise ConfigurationError(f"Dashboard status override {key} duplicates a computed tracker state")
 
 
 def normalize_model_names(value: Any) -> dict[str, str]:
     """Display names keyed by the model identifier a reviewer reports, such as an inference-profile ARN."""
-    names = FIELDS.json_object(value, "model_names")
+    names = READ.json_object(value, "config.model_names")
     normalized: dict[str, str] = {}
     for key, name in names.items():
-        identifier = FIELDS.string(
-            key, "a key of model_names", single_line=True, trimmed=True, maximum=MODEL_IDENTIFIER_MAXIMUM_LENGTH
+        identifier = READ.string(
+            key, "a key of config.model_names", single_line=True, trimmed=True, maximum=MODEL_IDENTIFIER_MAXIMUM_LENGTH
         )
-        label = FIELDS.string(name, f"model_names.{identifier}", single_line=True).strip()
+        label = READ.string(name, f"config.model_names.{identifier}", single_line=True).strip()
         if len(label) > MODEL_NAME_MAXIMUM_LENGTH:
             raise ConfigurationError(
                 f"model_names.{identifier} must be a name of at most {MODEL_NAME_MAXIMUM_LENGTH} characters"
@@ -428,17 +434,17 @@ def normalize_model_names(value: Any) -> dict[str, str]:
 
 def normalize_author_names(value: Any) -> dict[str, str]:
     """Display names keyed by GitHub login; logins are case-insensitive, so they must be unique ignoring case."""
-    names = FIELDS.json_object(value, "dashboard.author_names")
+    names = READ.json_object(value, "config.dashboard.author_names")
     normalized: dict[str, str] = {}
     seen: set[str] = set()
     for key, name in names.items():
-        login = FIELDS.string(key, "a key of dashboard.author_names")
+        login = READ.string(key, "a key of config.dashboard.author_names")
         if not GITHUB_LOGIN_PATTERN.fullmatch(login):
             raise ConfigurationError(f"Invalid dashboard author name login: {login!r}")
         if login.casefold() in seen:
             raise ConfigurationError(f"Duplicate dashboard author name login ignoring case: {login}")
         seen.add(login.casefold())
-        normalized[login] = FIELDS.string(name, f"dashboard.author_names.{login}", single_line=True).strip()
+        normalized[login] = READ.string(name, f"config.dashboard.author_names.{login}", single_line=True).strip()
     return normalized
 
 

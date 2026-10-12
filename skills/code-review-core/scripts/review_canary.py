@@ -36,6 +36,7 @@ from review_config import ConfigurationError, validate_repository_identity
 from review_io import PersistenceError, read_json
 from review_records import RecordError, validate_record
 from review_runtime import RuntimeContractError, _is_reparse_point, _safe_relative_path
+from typed_fields import FieldError, FieldReader
 
 FIXTURE_SCHEMA_VERSION = 1
 PULL_FILE = "pull.json"
@@ -52,6 +53,13 @@ class FixtureError(ValueError):
     pass
 
 
+class FixtureFieldError(FieldError, FixtureError):
+    """A fixture pull request field of the wrong kind."""
+
+
+READ = FieldReader(FixtureFieldError)
+
+
 @dataclass(frozen=True)
 class FixtureChange:
     """A fixture's pull request as `prepare` reads one from GitHub, and the repository its commits are in."""
@@ -65,56 +73,33 @@ class FixtureChange:
     manifest_path: str | None = None  # the reviewer manifest in the base tree, or None for the generic reviewer
 
 
-def _text(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise FixtureError(f"{PULL_FILE} {field} must be text")
-    return value
-
-
-def _positive(value: Any, field: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise FixtureError(f"{PULL_FILE} {field} must be a positive integer")
-    return value
-
-
-def _thread(value: Any, index: int) -> dict[str, Any]:
-    field = f"threads[{index}]"
-    if not isinstance(value, dict) or set(value) != THREAD_FIELDS:
-        raise FixtureError(f"{PULL_FILE} {field} must have exactly {', '.join(sorted(THREAD_FIELDS))}")
+def _thread(value: Any, path: str) -> dict[str, Any]:
+    thread = READ.json_object(value, path, required=THREAD_FIELDS)
     for name in ("author", "path", "body", "url"):
-        _text(value[name], f"{field}.{name}")
-    if value["line"] is not None:
-        _positive(value["line"], f"{field}.line")
-    if not isinstance(value["outdated"], bool):
-        raise FixtureError(f"{PULL_FILE} {field}.outdated must be a boolean")
-    return value
+        READ.string(thread[name], f"{path}.{name}")
+    READ.optional(READ.integer, thread["line"], f"{path}.line", minimum=1)
+    READ.boolean(thread["outdated"], f"{path}.outdated")
+    return thread
 
 
 def validate_fixture_pull(value: Any) -> dict[str, Any]:
     """A fixture's pull.json, its repository normalized as a configured one is."""
-    if not isinstance(value, dict) or not PULL_FIELDS <= set(value) <= PULL_FIELDS | OPTIONAL_PULL_FIELDS:
-        raise FixtureError(
-            f"{PULL_FILE} must have exactly {', '.join(sorted(PULL_FIELDS))}, and may have "
-            f"{', '.join(sorted(OPTIONAL_PULL_FIELDS))}"
-        )
-    if type(value["schema_version"]) is not int or value["schema_version"] != FIXTURE_SCHEMA_VERSION:
+    given = READ.json_object(value, "fixture-pull", required=PULL_FIELDS, optional=OPTIONAL_PULL_FIELDS)
+    if READ.integer(given["schema_version"], "fixture-pull.schema_version") != FIXTURE_SCHEMA_VERSION:
         raise FixtureError(f"{PULL_FILE} schema_version must be {FIXTURE_SCHEMA_VERSION}")
     try:
-        repository = validate_repository_identity(value["repository"])
+        repository = validate_repository_identity(READ.string(given["repository"], "fixture-pull.repository"))
     except ConfigurationError as exc:
         raise FixtureError(f"{PULL_FILE} repository: {exc}") from exc
-    _positive(value["number"], "number")
+    READ.integer(given["number"], "fixture-pull.number", minimum=1)
     for name in ("title", "base_ref", "head_ref"):
-        _text(value[name], name)
-    if not isinstance(value["threads"], list):
-        raise FixtureError(f"{PULL_FILE} threads must be a list")
-    threads = [_thread(thread, index) for index, thread in enumerate(value["threads"])]
-    if not isinstance(value.get("body", ""), str):
-        raise FixtureError(f"{PULL_FILE} body must be a string")
-    pull = {**value, "repository": repository, "threads": threads}
-    if "manifest_path" in value:
+        READ.string(given[name], f"fixture-pull.{name}")
+    threads = READ.array(given["threads"], "fixture-pull.threads", _thread)
+    READ.string(given.get("body", ""), "fixture-pull.body", empty=True)
+    pull = {**given, "repository": repository, "threads": threads}
+    if "manifest_path" in given:
         try:
-            pull["manifest_path"] = _safe_relative_path(value["manifest_path"], f"{PULL_FILE} manifest_path")
+            pull["manifest_path"] = _safe_relative_path(given["manifest_path"], "fixture-pull.manifest_path", READ)
         except RuntimeContractError as exc:
             raise FixtureError(str(exc)) from exc
     return pull

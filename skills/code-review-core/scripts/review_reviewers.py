@@ -208,11 +208,10 @@ def entrypoint_manifest(reviewer_id: str, inspection: Inspection) -> dict[str, A
 
 def manifest_location(reviewer: dict[str, Any], config_path: Path, repository: str) -> Path | None:
     """The local manifest a reviewer names: an absolute path, or `true` for the default beside the config."""
-    if reviewer.get("manifest") is True:
+    manifest = reviewer.get("manifest")
+    if manifest is True:
         return default_manifest_path(config_path, repository)
-    if isinstance(reviewer.get("manifest"), str):
-        return Path(reviewer["manifest"])
-    return None
+    return None if manifest is None else Path(manifest)
 
 
 def resolve_reviewer(

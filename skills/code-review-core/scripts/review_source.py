@@ -31,6 +31,7 @@ from console import use_utf8_output
 from review_guard import ROLE_ID, RUN_FILE, RUN_PREFIX, read_log
 from review_io import PersistenceError, read_json
 from review_runtime import RuntimeContractError, fetch_source_file, search_source
+from typed_fields import FieldError, FieldReader
 
 SCRIPT = Path(__file__).resolve()
 FILE_COMMAND = 'python -B "{script}" source-file --run "{run}" --role "{role}" --path="<path>"'
@@ -39,6 +40,13 @@ SEARCH_COMMAND = 'python -B "{script}" source-search --run "{run}" --role "{role
 
 class SourceError(ValueError):
     pass
+
+
+class SourceFieldError(FieldError, SourceError):
+    """A run or request field of the wrong kind."""
+
+
+READ = FieldReader(SourceFieldError)
 
 
 def source_commands(run: Path, role: str, *, script: Path | str = SCRIPT) -> tuple[str, str]:
@@ -57,15 +65,20 @@ def _run(run: Path, role: str) -> tuple[Path, str, str, Path]:
     if not run.name.startswith(RUN_PREFIX) or not (run / RUN_FILE).is_file():
         raise SourceError(f"{run} is not a review run")
     try:
-        state = read_json(run / RUN_FILE)
-        request = read_json(Path(state["request_path"]))
-        name, head = str(request["repository"]), str(request["pull_request"]["head_sha"])
-    except (PersistenceError, KeyError, TypeError) as exc:
+        state = READ.json_object(read_json(run / RUN_FILE), "run")
+        request = READ.json_object(
+            read_json(Path(READ.string(state.get("request_path"), "run.request_path"))), "request"
+        )
+        name = READ.string(request.get("repository"), "request.repository")
+        pull = READ.json_object(request.get("pull_request"), "request.pull_request")
+        head = READ.string(pull.get("head_sha"), "request.pull_request.head_sha")
+        roles = READ.array(state.get("roles", []), "run.roles", READ.json_object)
+        repository = READ.optional(READ.string, state.get("source_repository"), "run.source_repository")
+    except (PersistenceError, FieldError) as exc:
         raise SourceError(f"the review run {run} could not be read: {exc}") from exc
-    if not ROLE_ID.fullmatch(role) or role not in {item.get("id") for item in state.get("roles", [])}:
+    if not ROLE_ID.fullmatch(role) or role not in {item.get("id") for item in roles}:
         raise SourceError(f"the review run has no role {role}")
-    repository = state.get("source_repository")
-    if not isinstance(repository, str) or not Path(repository).is_dir():
+    if repository is None or not Path(repository).is_dir():
         raise SourceError("this run's snapshot holds every file already; read it under SOURCE_ROOT")
     return Path(repository), name, head, read_log(run, role)
 

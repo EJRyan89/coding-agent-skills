@@ -5,9 +5,10 @@ A validator reads each field through a `FieldReader`, which checks the field's k
 `<path> must be <expected>, found <found>`. The validator then checks only the value, such as a pattern, a range, or
 a reference to another field; it never checks a field's type itself.
 
-The kinds are `string`, `integer`, `number`, `boolean`, `hex_digest`, `one_of`, `array`, and `json_object`, and
-`optional` allows null in place of any of them. A string is non-empty, meaning not blank, unless `empty` allows it;
-an integer is never a boolean or a float; a number is finite and never a boolean; a hex digest is lowercase.
+The kinds are `string`, `integer`, `number`, `boolean`, `hex_digest`, `one_of`, `array`, and `json_object`;
+`optional` allows null in place of any of them, and `either` takes the first of several kinds that accepts a value.
+A string is non-empty, meaning not blank, unless `empty` allows it; an integer is never a boolean or a float; a
+number is finite and never a boolean; a hex digest is lowercase.
 
 A skill's own error type stays what its callers catch: the skill declares one class deriving from both `FieldError`
 and its error, and builds its reader with that class, so a field error is both.
@@ -219,9 +220,7 @@ class FieldReader:
     def _known(self, value: dict[str, Any], path: str, known: set[str]) -> None:
         unknown = sorted(str(field) for field in set(value) - known)
         if unknown:
-            raise self.fail(
-                path, "an object of known fields", f"{_plural(unknown, 'unknown field')} {_names(unknown)}"
-            )
+            raise self.fail(path, "an object of known fields", f"{_plural(unknown, 'unknown field')} {_names(unknown)}")
 
     def optional(
         self, read: Callable[Concatenate[Any, str, P], T], value: Any, path: str, *args: P.args, **kwargs: P.kwargs
@@ -235,6 +234,19 @@ class FieldReader:
             if exc.path != path:
                 raise
             raise self.fail(path, f"{exc.expected} or null", exc.found) from None
+
+    def either(self, value: Any, path: str, *reads: Callable[[Any, str], Any]) -> Any:
+        """The value the first of `reads` that accepts it reads; an error expects any of their kinds and names what
+        the value is."""
+        expected = []
+        for read in reads:
+            try:
+                return read(value, path)
+            except FieldError as exc:
+                if exc.path != path:
+                    raise
+                expected.append(exc.expected)
+        raise self.fail(path, " or ".join(expected), describe(value))
 
 
 def _plural(names: list[str], noun: str) -> str:

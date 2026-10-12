@@ -30,6 +30,7 @@ from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRe
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
+from typed_fields import FieldError, FieldReader
 
 ADAPTER_PROTOCOL_VERSION = 1
 SOURCE_SNAPSHOT_SCHEMA_VERSION = 1
@@ -141,6 +142,17 @@ class RuntimeContractError(ValueError):
     """Raised when a runtime or repository reviewer violates the trust contract."""
 
 
+class RuntimeContractFieldError(FieldError, RuntimeContractError):
+    """A reviewer manifest, source snapshot manifest, or review request field of the wrong kind."""
+
+
+READ = FieldReader(RuntimeContractFieldError)
+
+
+# The schema version each reviewer manifest format has, by the name the contract's tables give it.
+MANIFEST_FORMATS = {1: "entrypoint-manifest", 2: "specialists-manifest"}
+
+
 # Reads blobs by id from a checkout's object store, yielding each one's exact bytes in the order asked.
 BlobReader = Callable[[Path, Sequence[str]], Iterable[bytes]]
 # A snapshot path with its content bytes when the snapshot keeps it, or the reason it leaves the path out.
@@ -157,12 +169,14 @@ def has_undecodable(text: str) -> bool:
     return any("\udc80" <= character <= "\udcff" for character in text)
 
 
-def _safe_relative_path(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
+def _safe_relative_path(value: Any, field: str, reader: FieldReader = READ) -> str:
+    """A repository-relative POSIX path that stays inside the repository; `reader` reads it as the format holding it."""
+    text = reader.string(value, field)
+    if "\\" in text:
         raise RuntimeContractError(f"{field} must be a non-empty POSIX relative path")
-    path = PurePosixPath(value)
+    path = PurePosixPath(text)
     if path.is_absolute() or any(part in {"", ".", ".."} or WINDOWS_UNSAFE.search(part) for part in path.parts):
-        raise RuntimeContractError(f"{field} is unsafe: {value!r}")
+        raise RuntimeContractError(f"{field} is unsafe: {text!r}")
     return path.as_posix()
 
 
@@ -320,88 +334,74 @@ def suite_profiles(manifest: dict[str, Any]) -> list[str]:
 
 def _profile(value: Any, field: str) -> str:
     """A specialist's profile: a repository path, or `suite:<name>` for one the suite ships."""
-    if isinstance(value, str) and value.startswith(SUITE_PROFILE_PREFIX):
-        if value.removeprefix(SUITE_PROFILE_PREFIX) not in SUITE_PROFILES:
+    profile = READ.string(value, field)
+    if profile.startswith(SUITE_PROFILE_PREFIX):
+        if profile.removeprefix(SUITE_PROFILE_PREFIX) not in SUITE_PROFILES:
             shipped = ", ".join(f"{SUITE_PROFILE_PREFIX}{name}" for name in sorted(SUITE_PROFILES))
-            raise RuntimeContractError(f"{field} names no suite profile: {value!r}; the suite ships {shipped}")
-        return value
-    return _safe_relative_path(value, field)
+            raise RuntimeContractError(f"{field} names no suite profile: {profile!r}; the suite ships {shipped}")
+        return profile
+    return _safe_relative_path(profile, field)
 
 
 def _path_list(value: Any, field: str) -> list[str]:
-    if not isinstance(value, list):
-        raise RuntimeContractError(f"{field} must be an array")
-    return [_safe_relative_path(item, f"{field}[{index}]") for index, item in enumerate(value)]
+    return READ.array(value, field, _safe_relative_path)
 
 
 def _regex_list(value: Any, field: str, *, required: bool) -> list[str]:
-    if not isinstance(value, list) or (required and not value):
-        raise RuntimeContractError(f"{field} must be a{' non-empty' if required else 'n'} array")
-    for index, pattern in enumerate(value):
-        if not isinstance(pattern, str) or not pattern:
-            raise RuntimeContractError(f"{field}[{index}] must be a non-empty regular expression")
+    patterns = READ.array(value, field, READ.string, nonempty=required)
+    for index, pattern in enumerate(patterns):
         try:
             re.compile(pattern)
         except re.error as exc:
             raise RuntimeContractError(f"{field}[{index}] is not a valid regular expression: {exc}") from exc
-    return list(value)
+    return patterns
 
 
 def _validate_specialists(value: dict[str, Any]) -> dict[str, Any]:
-    conditions = value["conditions"]
-    if not isinstance(conditions, dict):
-        raise RuntimeContractError("Adapter conditions must be an object")
+    root = MANIFEST_FORMATS[2]
+    conditions = READ.json_object(value["conditions"], f"{root}.conditions")
     normalized_conditions: dict[str, dict[str, Any]] = {}
-    for name, condition in conditions.items():
-        if not isinstance(name, str) or not SLUG.fullmatch(name):
+    for key, condition in conditions.items():
+        name = READ.string(key, f"a key of {root}.conditions")
+        if not SLUG.fullmatch(name):
             raise RuntimeContractError(f"Adapter condition name is invalid: {name!r}")
-        if not isinstance(condition, dict) or not {"script"} <= set(condition) <= {"script", "reads"}:
-            raise RuntimeContractError(f"Adapter condition {name} must declare a script and may declare reads")
-        normalized_conditions[name] = {"script": _safe_relative_path(condition["script"], f"conditions.{name}.script")}
+        path = f"{root}.conditions.{name}"
+        READ.json_object(condition, path, required={"script"}, optional={"reads"})
+        normalized_conditions[name] = {"script": _safe_relative_path(condition["script"], f"{path}.script")}
         if "reads" in condition:
             # Matched as snapshot_exclude globs are (`glob_matcher`), so validated as they are.
             normalized_conditions[name]["reads"] = validate_glob_patterns(
                 condition["reads"],
-                f"conditions.{name}.reads",
+                f"{path}.reads",
                 maximum_patterns=MAX_CONDITION_READS,
                 maximum_length=MAX_READ_PATTERN_LENGTH,
-                error=RuntimeContractError,
+                reader=READ,
             )
-    specialists = value["specialists"]
-    if not isinstance(specialists, list) or not specialists:
-        raise RuntimeContractError("Adapter specialists must be a non-empty array")
+    specialists = READ.array(value["specialists"], f"{root}.specialists", nonempty=True)
     normalized_specialists = []
     seen: set[str] = set()
     for index, specialist in enumerate(specialists):
         field = f"specialists[{index}]"
-        if not isinstance(specialist, dict) or not SPECIALIST_KEYS <= set(specialist) <= (
-            SPECIALIST_KEYS | OPTIONAL_SPECIALIST_KEYS
-        ):
-            raise RuntimeContractError(f"{field} fields do not match the protocol")
-        model, effort = specialist.get("model"), specialist.get("effort")
-        if model is not None and (not isinstance(model, str) or model not in MODEL_ALIASES | {"inherit"}):
-            raise RuntimeContractError(
-                f"{field}.model must be null, inherit, or one of {', '.join(sorted(MODEL_ALIASES))}"
-            )
-        if effort is not None and (not isinstance(effort, str) or effort not in REVIEWER_EFFORTS):
-            raise RuntimeContractError(f"{field}.effort must be null or one of {', '.join(sorted(REVIEWER_EFFORTS))}")
-        identity = specialist["id"]
-        if not isinstance(identity, str) or not SLUG.fullmatch(identity) or identity in seen | {GENERIC_SPECIALIST}:
+        path = f"{root}.{field}"
+        READ.json_object(specialist, path, required=SPECIALIST_KEYS, optional=OPTIONAL_SPECIALIST_KEYS)
+        model = READ.optional(READ.one_of, specialist.get("model"), f"{path}.model", MODEL_ALIASES | {"inherit"})
+        effort = READ.optional(READ.one_of, specialist.get("effort"), f"{path}.effort", REVIEWER_EFFORTS)
+        identity = READ.string(specialist["id"], f"{path}.id")
+        if not SLUG.fullmatch(identity) or identity in seen | {GENERIC_SPECIALIST}:
             raise RuntimeContractError(f"{field}.id is invalid or duplicated")
         seen.add(identity)
-        if not isinstance(specialist["category"], str) or not specialist["category"].strip():
-            raise RuntimeContractError(f"{field}.category is required")
-        when = specialist["when"]
-        if when is not None and (not isinstance(when, str) or when not in normalized_conditions):
+        category = READ.string(specialist["category"], f"{path}.category")
+        when = READ.optional(READ.string, specialist["when"], f"{path}.when")
+        if when is not None and when not in normalized_conditions:
             raise RuntimeContractError(f"{field}.when names an undeclared condition")
         normalized_specialists.append(
             {
                 "id": identity,
-                "category": specialist["category"].strip(),
-                "profile": _profile(specialist["profile"], f"{field}.profile"),
-                "include": _regex_list(specialist["include"], f"{field}.include", required=True),
-                "exclude": _regex_list(specialist["exclude"], f"{field}.exclude", required=False),
-                "resources": _path_list(specialist["resources"], f"{field}.resources"),
+                "category": category.strip(),
+                "profile": _profile(specialist["profile"], f"{path}.profile"),
+                "include": _regex_list(specialist["include"], f"{path}.include", required=True),
+                "exclude": _regex_list(specialist["exclude"], f"{path}.exclude", required=False),
+                "resources": _path_list(specialist["resources"], f"{path}.resources"),
                 "when": when,
                 **({"model": model} if model is not None else {}),
                 **({"effort": effort} if effort is not None else {}),
@@ -441,51 +441,46 @@ def _specialists_manifest_roles(manifest: dict[str, Any]) -> list[list[str]]:
 
 def validate_adapter_manifest(value: Any) -> dict[str, Any]:
     version = _manifest_version(value)
-    _validate_supports(value["supports"])
-    _validate_capabilities(value["required_capabilities"])
+    root = MANIFEST_FORMATS[version]
+    _validate_supports(value["supports"], root)
+    _validate_capabilities(value["required_capabilities"], root)
     if version == 2:
         return _normalized_specialists_manifest(value)
     return _normalized_entrypoint_manifest(value)
 
 
-def _manifest_version(value: Any) -> Any:
+def _manifest_version(value: Any) -> int:
     """The schema version of a manifest whose fields match it and whose protocol version and id are valid."""
-    if not isinstance(value, dict):
-        raise RuntimeContractError("Adapter manifest fields do not match the protocol")
-    version = value.get("schema_version")
-    if type(version) is not int:
-        raise RuntimeContractError("Adapter manifest protocol version is unsupported")
+    manifest = READ.json_object(value, "manifest")
+    version = READ.integer(manifest.get("schema_version"), "manifest.schema_version")
+    root = MANIFEST_FORMATS.get(version, MANIFEST_FORMATS[1])
     expected_keys = SPECIALIST_MANIFEST_KEYS if version == 2 else MANIFEST_KEYS
     optional_keys = OPTIONAL_SPECIALIST_MANIFEST_KEYS if version == 2 else set()
-    if not expected_keys <= set(value) <= expected_keys | optional_keys:
-        raise RuntimeContractError("Adapter manifest fields do not match the protocol")
+    READ.json_object(manifest, root, required=expected_keys, optional=optional_keys)
     if (
-        version not in {1, 2}
-        or type(value["protocol_version"]) is not int
-        or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION
+        version not in MANIFEST_FORMATS
+        or READ.integer(manifest["protocol_version"], f"{root}.protocol_version") != ADAPTER_PROTOCOL_VERSION
     ):
         raise RuntimeContractError("Adapter manifest protocol version is unsupported")
-    if not isinstance(value["id"], str) or not SLUG.fullmatch(value["id"]):
+    if not SLUG.fullmatch(READ.string(manifest["id"], f"{root}.id")):
         raise RuntimeContractError("Adapter manifest id is invalid")
     return version
 
 
-def _validate_supports(supports: Any) -> None:
-    if (
-        not isinstance(supports, list)
-        or not supports
-        or any(not isinstance(item, str) or item not in {"initial", "re-review"} for item in supports)
-        or len(set(supports)) != len(supports)
-    ):
+def _validate_supports(supports: Any, root: str) -> None:
+    modes = READ.array(
+        supports,
+        f"{root}.supports",
+        lambda item, path: READ.one_of(item, path, ("initial", "re-review")),
+        nonempty=True,
+    )
+    if len(set(modes)) != len(modes):
         raise RuntimeContractError("Adapter supports must contain unique supported modes")
 
 
-def _validate_capabilities(capabilities: Any) -> None:
-    if (
-        not isinstance(capabilities, list)
-        or any(not isinstance(item, str) or not item for item in capabilities)
-        or len(set(capabilities)) != len(capabilities)
-    ):
+def _validate_capabilities(capabilities: Any, root: str) -> None:
+    names = READ.array(capabilities, f"{root}.required_capabilities", READ.string)
+    if len(set(names)) != len(names):
         raise RuntimeContractError("Adapter required_capabilities is invalid")
 
 
@@ -493,18 +488,18 @@ def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
     """A specialists manifest (schema 2) with its paths normalized, once its kind, uncovered policy, specialists, and
     declared files are valid. Whether it lists agent-delegation is negotiated when a review starts: listing it keeps
     its specialists off an inline review."""
-    if value["kind"] != "specialists":
-        raise RuntimeContractError("Adapter manifest kind is unsupported")
-    if "uncovered" in value and value["uncovered"] not in UNCOVERED_POLICIES:
-        raise RuntimeContractError("Adapter uncovered must be review or ignore")
+    root = MANIFEST_FORMATS[2]
+    READ.one_of(value["kind"], f"{root}.kind", ("specialists",))
+    if "uncovered" in value:
+        READ.one_of(value["uncovered"], f"{root}.uncovered", UNCOVERED_POLICIES)
     if "finding_categories" in value:
         _validate_finding_categories(value["finding_categories"])
-    if "fallback_finding_category" in value and value["fallback_finding_category"] not in value.get(
-        "finding_categories", []
-    ):
+    if "fallback_finding_category" in value and READ.string(
+        value["fallback_finding_category"], f"{root}.fallback_finding_category"
+    ) not in value.get("finding_categories", []):
         raise RuntimeContractError("Adapter fallback_finding_category must be one of its finding_categories")
     normalized = dict(value)
-    normalized["resources"] = _path_list(value["resources"], "resources")
+    normalized["resources"] = _path_list(value["resources"], f"{root}.resources")
     normalized.update(_validate_specialists(value))
     # A file has one role, so one purpose and one source: a guideline that is also a shared resource would be read
     # from the base for one and the trusted ref for the other. A list that names a file twice is a mistake.
@@ -518,19 +513,13 @@ def _normalized_specialists_manifest(value: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_finding_categories(categories: Any) -> None:
     """A non-empty list of distinct category names, each one line of plain text a prompt can list."""
-    if (
-        not isinstance(categories, list)
-        or not categories
-        or any(
-            not isinstance(item, str)
-            or item != item.strip()
-            or not item
-            or len(item) > FINDING_CATEGORY_MAXIMUM_LENGTH
-            or re.search(r'[\r\n`"|]', item)
-            for item in categories
-        )
-        or len({item.casefold() for item in categories if isinstance(item, str)}) != len(categories)
-    ):
+    names = READ.array(
+        categories,
+        f"{MANIFEST_FORMATS[2]}.finding_categories",
+        lambda item, path: READ.string(item, path, trimmed=True, maximum=FINDING_CATEGORY_MAXIMUM_LENGTH),
+        nonempty=True,
+    )
+    if any(re.search(r'[\r\n`"|]', name) for name in names) or len({name.casefold() for name in names}) != len(names):
         raise RuntimeContractError(
             "Adapter finding_categories must be a non-empty list of distinct one-line names of at most "
             f"{FINDING_CATEGORY_MAXIMUM_LENGTH} characters, without backticks, quotes, or pipes"
@@ -547,13 +536,10 @@ def _refuse_reserved_paths(declared: list[str]) -> None:
 def _normalized_entrypoint_manifest(value: dict[str, Any]) -> dict[str, Any]:
     """An entrypoint manifest (schema 1) with its paths normalized, once each is safe, none is declared twice, and
     none is the reserved materialization record."""
-    entrypoint = _safe_relative_path(value["entrypoint"], "entrypoint")
-    resources = value["resources"]
-    agents = value["agent_profiles"]
-    if not isinstance(resources, list) or not isinstance(agents, list):
-        raise RuntimeContractError("Adapter resources and agent_profiles must be arrays")
-    normalized_resources = [_safe_relative_path(item, f"resources[{index}]") for index, item in enumerate(resources)]
-    normalized_agents = [_safe_relative_path(item, f"agent_profiles[{index}]") for index, item in enumerate(agents)]
+    root = MANIFEST_FORMATS[1]
+    entrypoint = _safe_relative_path(value["entrypoint"], f"{root}.entrypoint")
+    normalized_resources = _path_list(value["resources"], f"{root}.resources")
+    normalized_agents = _path_list(value["agent_profiles"], f"{root}.agent_profiles")
     declared = [entrypoint, *normalized_resources, *normalized_agents]
     if len(set(declared)) != len(declared):
         raise RuntimeContractError("Adapter declares a file more than once")
@@ -1101,33 +1087,33 @@ def _read_snapshot_metadata(root: Path) -> tuple[Any, str]:
         metadata = json.loads(content.decode("utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise RuntimeContractError(f"Source snapshot metadata is invalid: {exc}") from exc
-    if not isinstance(metadata, dict) or set(metadata) - SNAPSHOT_OPTIONAL_FIELDS != SOURCE_SNAPSHOT_FIELDS:
-        raise RuntimeContractError("Source snapshot metadata fields do not match the contract")
-    if type(metadata["schema_version"]) is not int or metadata["schema_version"] != SOURCE_SNAPSHOT_SCHEMA_VERSION:
+    READ.json_object(
+        metadata, SOURCE_SNAPSHOT_MANIFEST, required=SOURCE_SNAPSHOT_FIELDS, optional=SNAPSHOT_OPTIONAL_FIELDS
+    )
+    version = READ.integer(metadata["schema_version"], f"{SOURCE_SNAPSHOT_MANIFEST}.schema_version")
+    if version != SOURCE_SNAPSHOT_SCHEMA_VERSION:
         raise RuntimeContractError("Source snapshot schema version is unsupported")
     return metadata, hashlib.sha256(content).hexdigest()
 
 
 def require_snapshot_source(metadata: dict[str, Any], expected_repository: str, expected_commit: str) -> None:
     """The snapshot is of the requested repository at the requested head."""
-    repository = validate_repository_identity(metadata["repository"])
-    if repository != validate_repository_identity(expected_repository):
+    repository = READ.string(metadata["repository"], f"{SOURCE_SNAPSHOT_MANIFEST}.repository")
+    if validate_repository_identity(repository) != validate_repository_identity(expected_repository):
         raise RuntimeContractError("Source snapshot repository does not match the request")
-    commit = metadata["source_commit"]
-    if commit != expected_commit or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit):
+    commit = READ.hex_digest(metadata["source_commit"], f"{SOURCE_SNAPSHOT_MANIFEST}.source_commit", 40, 64)
+    if commit != expected_commit:
         raise RuntimeContractError("Source snapshot commit does not match the request head")
 
 
 def _snapshot_maps(metadata: dict[str, Any]) -> tuple[Any, Any, Any]:
     """The source hashes, the exclusions, and a lazy snapshot's fetchable paths (empty for a full snapshot), once each
     is an object and the files it can hold are within the file-count limit."""
-    hashes = metadata["source_hashes"]
-    excluded = metadata["excluded_paths"]
-    fetchable = metadata.get(SNAPSHOT_FETCHABLE, {})
-    if not isinstance(hashes, dict) or not isinstance(excluded, dict):
-        raise RuntimeContractError("Source snapshot hashes and exclusions must be objects")
-    if not isinstance(fetchable, dict):
-        raise RuntimeContractError("Source snapshot fetchable paths must be an object")
+    hashes = READ.json_object(metadata["source_hashes"], f"{SOURCE_SNAPSHOT_MANIFEST}.source_hashes")
+    excluded = READ.json_object(metadata["excluded_paths"], f"{SOURCE_SNAPSHOT_MANIFEST}.excluded_paths")
+    fetchable = READ.json_object(
+        metadata.get(SNAPSHOT_FETCHABLE, {}), f"{SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}"
+    )
     if len(hashes) + len(fetchable) > MAX_SOURCE_SNAPSHOT_FILES:
         raise RuntimeContractError("Source snapshot exceeds the file-count limit")
     return hashes, excluded, fetchable
@@ -1162,8 +1148,9 @@ def _verify_fetched_files(
     one fetched is within the per-file and total limits. `contents` also compares each fetched file's blob id."""
     hashes, excluded = metadata["source_hashes"], metadata["excluded_paths"]
     length = len(metadata["source_commit"])
-    for relative, blob in fetchable.items():
+    for relative, value in fetchable.items():
         normalized = _safe_relative_path(relative, "fetchable path")
+        blob = READ.hex_digest(value, f"{SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_FETCHABLE}.{relative}", length)
         if (
             normalized != relative
             or relative == SOURCE_SNAPSHOT_MANIFEST
@@ -1171,9 +1158,6 @@ def _verify_fetched_files(
             or relative in hashes
             or relative in excluded
             or _is_agent_instruction_path(relative)
-            or not isinstance(blob, str)
-            or len(blob) != length
-            or not GIT_OBJECT_ID.fullmatch(blob)
         ):
             raise RuntimeContractError(f"Source snapshot fetchable path is invalid: {relative!r}")
         size = tree.files.get(relative)
@@ -1195,8 +1179,7 @@ def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tu
         raise RuntimeContractError(f"Source snapshot path is invalid: {relative!r}")
     if _is_agent_instruction_path(relative):
         raise RuntimeContractError(f"Source snapshot includes an agent-instruction path: {relative}")
-    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-        raise RuntimeContractError(f"Source snapshot hash is invalid: {relative}")
+    READ.hex_digest(expected_hash, f"{SOURCE_SNAPSHOT_MANIFEST}.source_hashes.{relative}", 64)
     target = tree.root.joinpath(*PurePosixPath(relative).parts)
     size = tree.size(relative)
     if size > MAX_CHANGED_FILE_BYTES:
@@ -1207,19 +1190,19 @@ def _snapshot_file(tree: _SnapshotTree, relative: str, expected_hash: Any) -> tu
 def _validate_snapshot_exclusion(relative: Any, reason: Any, hashes: dict[str, Any]) -> None:
     """One exclusion: an unsafe name the snapshot does not also hold, or a safe path it does not hold, excluded for a
     known reason."""
+    path = f"{SOURCE_SNAPSHOT_MANIFEST}.excluded_paths"
     if reason == "unsafe-path":
         # Recorded, never written: the name itself is what could not be represented safely.
-        if not isinstance(relative, str) or not relative or relative in hashes:
+        if READ.string(relative, f"a key of {path}", empty=True) in hashes or not relative:
             raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
         return
     normalized = _safe_relative_path(relative, "excluded_paths path")
+    READ.one_of(reason, f"{path}.{relative}", SNAPSHOT_EXCLUSION_REASONS)
     if (
         normalized != relative
         or relative in hashes
         or relative == SOURCE_SNAPSHOT_MANIFEST
         or _in_held_text_folder(relative)
-        or not isinstance(reason, str)
-        or reason not in SNAPSHOT_EXCLUSION_REASONS
     ):
         raise RuntimeContractError(f"Source snapshot exclusion is invalid: {relative!r}")
 
@@ -1228,11 +1211,13 @@ def _validate_extracted(extracted: Any, hashes: dict[str, Any]) -> None:
     """The documents held as extracted text: each one in a format the snapshot extracts, with its text held where
     that format's text is, and, for a format held beside it, nothing held at its own path. Every file in
     HELD_TEXT_FOLDER is one of theirs."""
-    if not isinstance(extracted, dict):
-        raise RuntimeContractError("Source snapshot extracted documents must be an object")
+    path = f"{SOURCE_SNAPSHOT_MANIFEST}.{SNAPSHOT_EXTRACTED}"
+    documents = READ.json_object(extracted, path)
     beside: set[str] = set()
-    for relative, form in extracted.items():
-        if form not in DOCUMENT_FORMATS.values() or not isinstance(relative, str) or _in_held_text_folder(relative):
+    for key, value in documents.items():
+        relative = READ.string(key, f"a key of {path}")
+        form = READ.one_of(value, f"{path}.{relative}", tuple(DOCUMENT_FORMATS.values()))
+        if _in_held_text_folder(relative):
             raise RuntimeContractError(f"Source snapshot extracted document is invalid: {relative!r}")
         held = held_path(relative, form)
         if held not in hashes or (held != relative and relative in hashes):
@@ -1915,22 +1900,20 @@ def _chunks(stream: IO[bytes]) -> Iterator[bytes]:
 
 def _listed_blobs(tree: Any) -> Counter[tuple[str, str, str]]:
     """Each blob GitHub's trees API lists, as (path, kind, id); folders and submodules have none."""
-    if not isinstance(tree, dict) or not isinstance(tree.get("tree"), list):
-        raise RuntimeContractError("the tree listing is malformed")
-    if tree.get("truncated") is not False:
+    listing = READ.json_object(tree, "tree listing")
+    entries = READ.array(listing.get("tree"), "tree listing.tree")
+    if listing.get("truncated") is not False:
         raise RuntimeContractError("GitHub truncated the tree listing")
     blobs: Counter[tuple[str, str, str]] = Counter()
-    for entry in tree["tree"]:
-        if not isinstance(entry, dict) or entry.get("type") not in {"blob", "tree", "commit"}:
-            raise RuntimeContractError("the tree listing is malformed")
-        if entry["type"] != "blob":
+    for index, value in enumerate(entries):
+        path = f"tree listing.tree[{index}]"
+        entry = READ.json_object(value, path)
+        if READ.one_of(entry.get("type"), f"{path}.type", ("blob", "tree", "commit")) != "blob":
             continue
-        path, mode, blob = entry.get("path"), entry.get("mode"), entry.get("sha")
-        if not isinstance(path, str) or not path or not isinstance(mode, str) or not isinstance(blob, str):
-            raise RuntimeContractError("the tree listing is malformed")
-        if not GIT_OBJECT_ID.fullmatch(blob):
-            raise RuntimeContractError("the tree listing is malformed")
-        blobs[(path, "symbolic-link" if mode == "120000" else "file", blob)] += 1
+        name = READ.string(entry.get("path"), f"{path}.path")
+        mode = READ.string(entry.get("mode"), f"{path}.mode", empty=True)
+        blob = READ.hex_digest(entry.get("sha"), f"{path}.sha", 40, 64)
+        blobs[(name, "symbolic-link" if mode == "120000" else "file", blob)] += 1
     return blobs
 
 
@@ -2070,22 +2053,18 @@ def build_adapter_request(
     materialization verified, which is only checked to name this request's repository and head. Without it the
     snapshot is verified here, contents included. `body_file` and `body_characters`, given together, name the file
     holding the description reviewers are given and the description's full length."""
-    if mode not in {"initial", "re-review"}:
-        raise RuntimeContractError("Review request mode is invalid")
+    READ.one_of(mode, "request.mode", ("initial", "re-review"))
     repository = validate_repository_identity(repository)
-    if not isinstance(pull_number, int) or isinstance(pull_number, bool) or pull_number < 1:
-        raise RuntimeContractError("Pull number must be positive")
+    READ.integer(pull_number, "request.pull_number", minimum=1)
     for value, name in ((base_sha, "base_sha"), (head_sha, "head_sha")):
-        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
-            raise RuntimeContractError(f"{name} is invalid")
+        READ.hex_digest(value, f"request.pull_request.{name}", 40, 64)
     if not diff_path.is_absolute() or not diff_path.is_file():
         raise RuntimeContractError("diff_path must name an existing absolute file")
     if (body_file is None) != (body_characters is None):
         raise RuntimeContractError("body_file and body_characters are given together")
     if body_file is not None and not (body_file.is_absolute() and body_file.is_file()):
         raise RuntimeContractError("body_file must name an existing absolute file")
-    if body_characters is not None and (isinstance(body_characters, bool) or body_characters < 0):
-        raise RuntimeContractError("body_characters must be a count")
+    READ.optional(READ.integer, body_characters, "request.pull_request.body_characters", minimum=0)
     if snapshot is None:
         snapshot = verify_source_snapshot(
             source_snapshot_root, expected_repository=repository, expected_commit=head_sha, contents=True

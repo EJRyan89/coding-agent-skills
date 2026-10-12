@@ -40,7 +40,7 @@ SEVERITY_KIND = 'one of "MUST_FIX", "SHOULD_FIX", "SUGGESTION"'
 POSITIVE = "an integer of at least 1"
 LINES_FIELD = "re_review_scope.full_lines"
 THRESHOLD_FIELD = "verdict_policy.should_fix_threshold"
-MODEL_KEY = "a key of model_names"
+MODEL_KEY = "a key of config.model_names"
 MODEL_KEY_KIND = "a non-empty trimmed single-line string of at most 200 characters"
 # The tracker's own states, which a status override may not repeat; an independent copy of the module's list.
 COMPUTED_STATES = [
@@ -372,8 +372,8 @@ NOT_ARRAYS: list[tuple[str, Any]] = [("null", None), ("a string", "*.resx"), ("a
 NOT_PATTERNS: list[tuple[str, Any]] = [("null", None), ("a number", 1), ("a list", ["*.resx"])]
 TOO_MANY_PATTERNS = [f"generated/{index}/**" for index in range(101)]
 PATTERN_MESSAGE = (
-    f"{FIELD}.snapshot_exclude[0] must be a repository-relative glob pattern without a backslash, a control character, "
-    "or an empty, '.', or '..' segment, found "
+    f"config.{FIELD}.snapshot_exclude[0] must be a repository-relative glob pattern without a backslash, a control "
+    "character, or an empty, '.', or '..' segment, found "
 )
 
 
@@ -595,6 +595,8 @@ ACCEPTED: list[tuple[str, Mutation, Mutation]] = [
 
 C = ConfigurationError
 F = ConfigurationFieldError
+# Severity lists whose last item is not a severity.
+SEVERITY_LISTS: list[list[Any]] = [["BLOCKER"], ["MUST_FIX", "must_fix"], [1], [None], ["MUST_FIX "]]
 # Null and an empty list, typed so the mixed value lists built from them below type-check.
 NULL_OR_EMPTY_LIST: list[Any] = [None, []]
 # What a field error names as found, for each wrong value the cases below use, written out independently of the reader.
@@ -633,12 +635,13 @@ def _found(value: Any, *, text: bool = False) -> str:
 
 def _wrong(path: str, expected: str, value: Any) -> str:
     """The one shape a field of the wrong kind is refused with, written out independently of the reader."""
-    return f"{path} must be {expected}, found {_found(value, text='string' in expected)}"
+    return f"config.{path} must be {expected}, found {_found(value, text='string' in expected)}"
 
 
 def _unknown(path: str, *fields: str) -> str:
     names = ", ".join(f'"{field}"' for field in fields)
-    return f"{path} must be an object of known fields, found unknown field{'s' if len(fields) > 1 else ''} {names}"
+    where = f"config.{path}" if path else "config"
+    return f"{where} must be an object of known fields, found unknown field{'s' if len(fields) > 1 else ''} {names}"
 
 
 def _path_faults(field: str, path: tuple[str, ...], *, nullable: bool = False) -> list[Case]:
@@ -677,25 +680,25 @@ def _marker_faults(key: str) -> list[Case]:
             f"{key} untrimmed",
             _set(path, " <a>"),
             F,
-            f"{field} must be {kind}, found a string with whitespace around it",
+            f"config.{field} must be {kind}, found a string with whitespace around it",
         ),
         (
             f"{key} untrimmed newline",
             _set(path, "<a>\n"),
             F,
-            f"{field} must be {kind}, found a string of more than one line",
+            f"config.{field} must be {kind}, found a string of more than one line",
         ),
         (
             f"{key} inner newline",
             _set(path, "<a\nb>"),
             F,
-            f"{field} must be {kind}, found a string of more than one line",
+            f"config.{field} must be {kind}, found a string of more than one line",
         ),
         (
             f"{key} inner carriage return",
             _set(path, "<a\rb>"),
             F,
-            f"{field} must be {kind}, found a string of more than one line",
+            f"config.{field} must be {kind}, found a string of more than one line",
         ),
     ]
 
@@ -756,12 +759,12 @@ REJECTED: list[Case] = [
     ),
     ("config a list", _replace([]), F, "config must be an object, found an array"),
     ("config null", _replace(None), F, "config must be an object, found null"),
-    ("unknown top-level field", _set(("extra",), 1), F, _unknown("config", "extra")),
+    ("unknown top-level field", _set(("extra",), 1), F, _unknown("", "extra")),
     (
         "unknown top-level fields sorted",
         _chain(_set(("zeta",), 1), _set(("alpha",), 1)),
         F,
-        _unknown("config", "alpha", "zeta"),
+        _unknown("", "alpha", "zeta"),
     ),
     ("schema_version missing", _delete(("schema_version",)), F, _wrong("schema_version", "an integer", None)),
     ("schema_version 0", _set(("schema_version",), 0), C, "Unsupported config schema version: 0"),
@@ -776,12 +779,17 @@ REJECTED: list[Case] = [
     ],
     ("schema_version 2", _set(("schema_version",), 2), C, "Unsupported future config schema version: 2"),
     # repository_sets
-    ("repository_sets missing", _delete(("repository_sets",)), F, "repository_sets must be an object, found null"),
+    (
+        "repository_sets missing",
+        _delete(("repository_sets",)),
+        F,
+        "config.repository_sets must be an object, found null",
+    ),
     (
         "repository_sets a list",
         _set(("repository_sets",), ["owner/repo"]),
         F,
-        "repository_sets must be an object, found an array",
+        "config.repository_sets must be an object, found an array",
     ),
     ("repository_sets empty", _set(("repository_sets",), {}), C, "repository_sets must not be empty"),
     *[
@@ -797,13 +805,13 @@ REJECTED: list[Case] = [
         "set name ''",
         _prepend(("repository_sets",), "", ["owner/repo"]),
         F,
-        "a key of repository_sets must be a non-empty string, found an empty string",
+        "a key of config.repository_sets must be a non-empty string, found an empty string",
     ),
     (
         "set name not a string",
         _prepend(("repository_sets",), 1, ["owner/repo"]),
         F,
-        "a key of repository_sets must be a non-empty string, found integer 1",
+        "a key of config.repository_sets must be a non-empty string, found integer 1",
     ),
     *[
         (
@@ -818,7 +826,7 @@ REJECTED: list[Case] = [
         "set members empty",
         _set(("repository_sets", "main"), []),
         F,
-        "repository_sets.main must be a non-empty array, found an empty array",
+        "config.repository_sets.main must be a non-empty array, found an empty array",
     ),
     *[
         (
@@ -876,11 +884,11 @@ REJECTED: list[Case] = [
         "default set missing",
         _delete(("default_repository_set",)),
         F,
-        "default_repository_set must be a non-empty string, found null",
+        "config.default_repository_set must be a non-empty string, found null",
     ),
     # repositories
-    ("repositories null", _set(("repositories",), None), F, "repositories must be an object, found null"),
-    ("repositories a list", _set(("repositories",), []), F, "repositories must be an object, found an array"),
+    ("repositories null", _set(("repositories",), None), F, "config.repositories must be an object, found null"),
+    ("repositories a list", _set(("repositories",), []), F, "config.repositories must be an object, found an array"),
     ("repositories missing", _delete(("repositories",)), C, "Missing per-repository configuration for: owner/repo"),
     ("repositories empty", _set(("repositories",), {}), C, "Missing per-repository configuration for: owner/repo"),
     (
@@ -895,23 +903,28 @@ REJECTED: list[Case] = [
         C,
         "Duplicate repository configuration after normalization: owner/repo",
     ),
-    ("entry null", _set(REPO, None), F, f"{FIELD} must be an object, found null"),
-    ("entry a list", _set(REPO, []), F, f"{FIELD} must be an object, found an array"),
+    ("entry null", _set(REPO, None), F, f"config.{FIELD} must be an object, found null"),
+    ("entry a list", _set(REPO, []), F, f"config.{FIELD} must be an object, found an array"),
     (
         "entry named as written",
         _chain(_delete(REPO), _set(("repositories", "Owner/Repo"), None)),
         F,
-        "repositories.Owner/Repo must be an object, found null",
+        "config.repositories.Owner/Repo must be an object, found null",
     ),
     ("entry unknown field", _set((*REPO, "extra"), 1), F, _unknown(FIELD, "extra")),
-    ("reviewer missing", _delete(REVIEWER), F, f"{FIELD}.reviewer must be an object, found null"),
-    ("reviewer a string", _set(REVIEWER, "generic"), F, f'{FIELD}.reviewer must be an object, found string "generic"'),
+    ("reviewer missing", _delete(REVIEWER), F, f"config.{FIELD}.reviewer must be an object, found null"),
+    (
+        "reviewer a string",
+        _set(REVIEWER, "generic"),
+        F,
+        f'config.{FIELD}.reviewer must be an object, found string "generic"',
+    ),
     ("reviewer unknown field", _set((*REVIEWER, "model"), "x"), F, _unknown(f"{FIELD}.reviewer", "model")),
     (
         "reviewer id missing",
         _delete((*REVIEWER, "id")),
         F,
-        f"{FIELD}.reviewer.id must be a non-empty string, found null",
+        f"config.{FIELD}.reviewer.id must be a non-empty string, found null",
     ),
     *[
         (f"reviewer id {value!r}", _set((*REVIEWER, "id"), value), C, f"{FIELD}.reviewer.id is invalid")
@@ -930,7 +943,7 @@ REJECTED: list[Case] = [
         "protocol missing",
         _delete((*REVIEWER, "protocol_version")),
         F,
-        f"{FIELD}.reviewer.protocol_version must be an integer, found null",
+        f"config.{FIELD}.reviewer.protocol_version must be an integer, found null",
     ),
     *[
         (
@@ -995,7 +1008,7 @@ REJECTED: list[Case] = [
         "generic scope with manifest False",
         _set((*REVIEWER, "manifest"), False),
         F,
-        f"{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found boolean false",
+        f"config.{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found boolean false",
     ),
     (
         "manifest_path with a skill",
@@ -1016,7 +1029,7 @@ REJECTED: list[Case] = [
         "manifest_path with manifest False",
         _chain(MANIFEST_PATH_REVIEWER, _set((*REVIEWER, "manifest"), False)),
         F,
-        f"{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found boolean false",
+        f"config.{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found boolean false",
     ),
     *_unsafe_paths("manifest_path", MANIFEST_PATH_REVIEWER, f"{FIELD}.reviewer.manifest_path is unsafe"),
     (
@@ -1081,7 +1094,7 @@ REJECTED: list[Case] = [
         "snapshot_exclude of 101 patterns",
         _set((*REPO, "snapshot_exclude"), TOO_MANY_PATTERNS),
         F,
-        f"{FIELD}.snapshot_exclude must be an array of at most 100 items, found an array of 101 items",
+        f"config.{FIELD}.snapshot_exclude must be an array of at most 100 items, found an array of 101 items",
     ),
     *[
         (
@@ -1110,7 +1123,7 @@ REJECTED: list[Case] = [
             f"snapshot_exclude pattern {name}",
             _set((*REPO, "snapshot_exclude"), [value]),
             F,
-            f"{FIELD}.snapshot_exclude[0] must be a non-empty string of at most 200 characters, found {found}",
+            f"config.{FIELD}.snapshot_exclude[0] must be a non-empty string of at most 200 characters, found {found}",
         )
         for name, value, found in [
             *((name, value, _found(value)) for name, value in NOT_PATTERNS),
@@ -1122,7 +1135,7 @@ REJECTED: list[Case] = [
         "snapshot_exclude listing a pattern twice ignoring case",
         _set((*REPO, "snapshot_exclude"), ["**/*.resx", "Reports/**", "**/*.RESX"]),
         F,
-        f'{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "**/*.RESX" twice',
+        f'config.{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "**/*.RESX" twice',
     ),
     *[
         (f"repository {name}", _chain(REPOSITORY_REVIEWER, mutation), error, message)
@@ -1160,8 +1173,18 @@ REJECTED: list[Case] = [
         for value in ["extreme", "High", "", 1, False]
     ],
     # re_review_scope
-    ("re_review_scope null", _set(("re_review_scope",), None), F, "re_review_scope must be an object, found null"),
-    ("re_review_scope a list", _set(("re_review_scope",), []), F, "re_review_scope must be an object, found an array"),
+    (
+        "re_review_scope null",
+        _set(("re_review_scope",), None),
+        F,
+        "config.re_review_scope must be an object, found null",
+    ),
+    (
+        "re_review_scope a list",
+        _set(("re_review_scope",), []),
+        F,
+        "config.re_review_scope must be an object, found an array",
+    ),
     (
         "re_review_scope unknown field",
         _set(("re_review_scope", "full_files"), 1),
@@ -1191,8 +1214,13 @@ REJECTED: list[Case] = [
         for value in [0, -1, True, 1.0, 10.5, "10", None]
     ],
     # verdict_policy
-    ("verdict_policy null", _set(("verdict_policy",), None), F, "verdict_policy must be an object, found null"),
-    ("verdict_policy a list", _set(("verdict_policy",), []), F, "verdict_policy must be an object, found an array"),
+    ("verdict_policy null", _set(("verdict_policy",), None), F, "config.verdict_policy must be an object, found null"),
+    (
+        "verdict_policy a list",
+        _set(("verdict_policy",), []),
+        F,
+        "config.verdict_policy must be an object, found an array",
+    ),
     (
         "verdict_policy unknown field",
         _set(("verdict_policy", "block_on"), []),
@@ -1212,7 +1240,7 @@ REJECTED: list[Case] = [
         "request_changes_for []",
         _set(("verdict_policy", "request_changes_for"), []),
         F,
-        "verdict_policy.request_changes_for must be a non-empty array, found an empty array",
+        "config.verdict_policy.request_changes_for must be a non-empty array, found an empty array",
     ),
     *[
         (
@@ -1221,7 +1249,7 @@ REJECTED: list[Case] = [
             F,
             _wrong(f"verdict_policy.request_changes_for[{len(value) - 1}]", SEVERITY_KIND, value[-1]),
         )
-        for value in [["BLOCKER"], ["MUST_FIX", "must_fix"], [1], [None], ["MUST_FIX "]]
+        for value in SEVERITY_LISTS
     ],
     *[
         (
@@ -1282,7 +1310,7 @@ REJECTED: list[Case] = [
         for value in [None, 1]
     ],
     # model_names, reached through normalize_model_names
-    ("model_names null", _set(("model_names",), None), F, "model_names must be an object, found null"),
+    ("model_names null", _set(("model_names",), None), F, "config.model_names must be an object, found null"),
     (
         "model_names key untrimmed",
         _set(("model_names",), {" m": "M"}),
@@ -1299,7 +1327,7 @@ REJECTED: list[Case] = [
         "model_names name blank",
         _set(("model_names",), {"m": " "}),
         F,
-        "model_names.m must be a non-empty single-line string, found a blank string",
+        "config.model_names.m must be a non-empty single-line string, found a blank string",
     ),
     (
         "model_names name too long",
@@ -1309,16 +1337,26 @@ REJECTED: list[Case] = [
     ),
     # the four paths
     *_path_faults("archive_root", ("archive_root",)),
-    ("archive_root missing", _delete(("archive_root",)), F, "archive_root must be a non-empty string, found null"),
+    (
+        "archive_root missing",
+        _delete(("archive_root",)),
+        F,
+        "config.archive_root must be a non-empty string, found null",
+    ),
     *_path_faults("local_mirror_root", ("local_mirror_root",), nullable=True),
     *_path_faults("summary_root", ("summary_root",)),
-    ("summary_root missing", _delete(("summary_root",)), F, "summary_root must be a non-empty string, found null"),
+    (
+        "summary_root missing",
+        _delete(("summary_root",)),
+        F,
+        "config.summary_root must be a non-empty string, found null",
+    ),
     *_path_faults("dashboard_file", ("dashboard_file",)),
     (
         "dashboard_file missing",
         _delete(("dashboard_file",)),
         F,
-        "dashboard_file must be a non-empty string, found null",
+        "config.dashboard_file must be a non-empty string, found null",
     ),
     # github_login
     *[
@@ -1331,8 +1369,8 @@ REJECTED: list[Case] = [
         for value in ["", "  ", "\n", 1, False, ["octo"]]
     ],
     # dashboard
-    ("dashboard null", _set(("dashboard",), None), F, "dashboard must be an object, found null"),
-    ("dashboard a list", _set(("dashboard",), []), F, "dashboard must be an object, found an array"),
+    ("dashboard null", _set(("dashboard",), None), F, "config.dashboard must be an object, found null"),
+    ("dashboard a list", _set(("dashboard",), []), F, "config.dashboard must be an object, found an array"),
     ("dashboard unknown field", _set(("dashboard", "title"), "x"), F, _unknown("dashboard", "title")),
     *_marker_faults("start_marker"),
     *_marker_faults("end_marker"),
@@ -1379,7 +1417,7 @@ REJECTED: list[Case] = [
         "status override key not a string",
         _prepend(("dashboard", "status_overrides"), 1, "Waiting"),
         F,
-        "a key of dashboard.status_overrides must be a non-empty string, found integer 1",
+        "a key of config.dashboard.status_overrides must be a non-empty string, found integer 1",
     ),
     *[
         (
@@ -1411,7 +1449,7 @@ REJECTED: list[Case] = [
         "author_names null",
         _set(("dashboard", "author_names"), None),
         F,
-        "dashboard.author_names must be an object, found null",
+        "config.dashboard.author_names must be an object, found null",
     ),
     (
         "author_names login invalid",
@@ -1429,7 +1467,7 @@ REJECTED: list[Case] = [
         "author_names name blank",
         _set(("dashboard", "author_names"), {"octo": " "}),
         F,
-        "dashboard.author_names.octo must be a non-empty single-line string, found a blank string",
+        "config.dashboard.author_names.octo must be a non-empty single-line string, found a blank string",
     ),
 ]
 
@@ -1463,12 +1501,12 @@ REJECTED.extend(CONTAINER_CASES)
 # k on is applied at once, and check k's error must be the one raised.
 STAGES: list[Case] = [
     ("config not an object", _replace([]), F, "config must be an object, found an array"),
-    ("unknown top-level field", _set(("zzz",), 1), F, _unknown("config", "zzz")),
+    ("unknown top-level field", _set(("zzz",), 1), F, _unknown("", "zzz")),
     (
         "schema_version a string",
         _set(("schema_version",), "1"),
         F,
-        'schema_version must be an integer, found string "1"',
+        'config.schema_version must be an integer, found string "1"',
     ),
     ("future schema_version", _set(("schema_version",), 2), C, "Unsupported future config schema version: 2"),
     ("schema_version", _set(("schema_version",), 0), C, "Unsupported config schema version: 0"),
@@ -1476,27 +1514,27 @@ STAGES: list[Case] = [
         "repository_sets not an object",
         _set(("repository_sets",), []),
         F,
-        "repository_sets must be an object, found an array",
+        "config.repository_sets must be an object, found an array",
     ),
     ("repository_sets empty", _set(("repository_sets",), {}), C, "repository_sets must not be empty"),
     (
         "set name not a string",
         _prepend(("repository_sets",), 1, []),
         F,
-        "a key of repository_sets must be a non-empty string, found integer 1",
+        "a key of config.repository_sets must be a non-empty string, found integer 1",
     ),
     ("set name", _prepend(("repository_sets",), "-bad", []), C, "Invalid repository-set name: '-bad'"),
     (
         "set members empty",
         _set(("repository_sets", "main"), []),
         F,
-        "repository_sets.main must be a non-empty array, found an empty array",
+        "config.repository_sets.main must be a non-empty array, found an empty array",
     ),
     (
         "set member not a string",
         _set(("repository_sets", "main"), [1, "bad"]),
         F,
-        "repository_sets.main[0] must be a non-empty string, found integer 1",
+        "config.repository_sets.main[0] must be a non-empty string, found integer 1",
     ),
     ("set member", _set(("repository_sets", "main"), ["bad", "bad"]), C, "Invalid repository identity: 'bad'"),
     (
@@ -1515,9 +1553,14 @@ STAGES: list[Case] = [
         "default set not a string",
         _set(("default_repository_set",), 1),
         F,
-        "default_repository_set must be a non-empty string, found integer 1",
+        "config.default_repository_set must be a non-empty string, found integer 1",
     ),
-    ("repositories not an object", _set(("repositories",), []), F, "repositories must be an object, found an array"),
+    (
+        "repositories not an object",
+        _set(("repositories",), []),
+        F,
+        "config.repositories must be an object, found an array",
+    ),
     ("repository key", _prepend(("repositories",), "nope", None), C, "Invalid repository identity: 'nope'"),
     (
         "repository key duplicated",
@@ -1525,29 +1568,29 @@ STAGES: list[Case] = [
         C,
         "Duplicate repository configuration after normalization: owner/repo",
     ),
-    ("entry not an object", _set(REPO, []), F, f"{FIELD} must be an object, found an array"),
+    ("entry not an object", _set(REPO, []), F, f"config.{FIELD} must be an object, found an array"),
     ("entry unknown field", _set((*REPO, "zzz"), 1), F, _unknown(FIELD, "zzz")),
-    ("reviewer not an object", _set(REVIEWER, []), F, f"{FIELD}.reviewer must be an object, found an array"),
+    ("reviewer not an object", _set(REVIEWER, []), F, f"config.{FIELD}.reviewer must be an object, found an array"),
     ("reviewer unknown field", _set((*REVIEWER, "zzz"), 1), F, _unknown(f"{FIELD}.reviewer", "zzz")),
     (
         "reviewer id not a string",
         _set((*REVIEWER, "id"), 1),
         F,
-        f"{FIELD}.reviewer.id must be a non-empty string, found integer 1",
+        f"config.{FIELD}.reviewer.id must be a non-empty string, found integer 1",
     ),
     ("reviewer id", _set((*REVIEWER, "id"), "Bad"), C, f"{FIELD}.reviewer.id is invalid"),
     (
         "protocol not an integer",
         _set((*REVIEWER, "protocol_version"), "1"),
         F,
-        f'{FIELD}.reviewer.protocol_version must be an integer, found string "1"',
+        f'config.{FIELD}.reviewer.protocol_version must be an integer, found string "1"',
     ),
     ("protocol", _set((*REVIEWER, "protocol_version"), 2), C, f"{FIELD}.reviewer protocol is unsupported"),
     (
         "trusted_ref",
         _set((*REVIEWER, "trusted_ref"), " "),
         F,
-        f"{FIELD}.reviewer.trusted_ref must be a non-empty string or null, found a blank string",
+        f"config.{FIELD}.reviewer.trusted_ref must be a non-empty string or null, found a blank string",
     ),
     (
         "pull ref",
@@ -1559,32 +1602,32 @@ STAGES: list[Case] = [
         "scope",
         _set((*REVIEWER, "scope"), "other"),
         F,
-        f'{FIELD}.reviewer.scope must be one of "generic", "repository", found string "other"',
+        f'config.{FIELD}.reviewer.scope must be one of "generic", "repository", found string "other"',
     ),
     (
         "manifest_path not a string",
         _set((*REVIEWER, "manifest_path"), 1),
         F,
-        f"{FIELD}.reviewer.manifest_path must be a non-empty string or null, found integer 1",
+        f"config.{FIELD}.reviewer.manifest_path must be a non-empty string or null, found integer 1",
     ),
     (
         "skill not a string",
         _set((*REVIEWER, "skill"), 1),
         F,
-        f"{FIELD}.reviewer.skill must be a non-empty string or null, found integer 1",
+        f"config.{FIELD}.reviewer.skill must be a non-empty string or null, found integer 1",
     ),
     (
         "manifest not a string",
         _set((*REVIEWER, "manifest"), 1),
         F,
-        f"{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found integer 1",
+        f"config.{FIELD}.reviewer.manifest must be true, a non-empty string, or null, found integer 1",
     ),
     ("generic scope", _set((*REVIEWER, "skill"), "skills/review"), C, GENERIC_MESSAGE),
     (
         "checkout not a string",
         _set((*REPO, "checkout_path"), 1),
         F,
-        f"{FIELD}.checkout_path must be a non-empty string or null, found integer 1",
+        f"config.{FIELD}.checkout_path must be a non-empty string or null, found integer 1",
     ),
     (
         "checkout",
@@ -1596,19 +1639,19 @@ STAGES: list[Case] = [
         "snapshot_exclude not an array",
         _set((*REPO, "snapshot_exclude"), "*.resx"),
         F,
-        f'{FIELD}.snapshot_exclude must be an array of at most 100 items, found string "*.resx"',
+        f'config.{FIELD}.snapshot_exclude must be an array of at most 100 items, found string "*.resx"',
     ),
     (
         "snapshot_exclude too long",
         _set((*REPO, "snapshot_exclude"), TOO_MANY_PATTERNS),
         F,
-        f"{FIELD}.snapshot_exclude must be an array of at most 100 items, found an array of 101 items",
+        f"config.{FIELD}.snapshot_exclude must be an array of at most 100 items, found an array of 101 items",
     ),
     (
         "snapshot_exclude pattern not a string",
         _set((*REPO, "snapshot_exclude"), ["*.resx", 1, "../*.resx"]),
         F,
-        f"{FIELD}.snapshot_exclude[1] must be a non-empty string of at most 200 characters, found integer 1",
+        f"config.{FIELD}.snapshot_exclude[1] must be a non-empty string of at most 200 characters, found integer 1",
     ),
     (
         "snapshot_exclude pattern",
@@ -1620,13 +1663,13 @@ STAGES: list[Case] = [
         "snapshot_exclude duplicate",
         _set((*REPO, "snapshot_exclude"), ["*.resx", "*.Resx"]),
         F,
-        f'{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "*.Resx" twice',
+        f'config.{FIELD}.snapshot_exclude must be distinct glob patterns, ignoring case, found "*.Resx" twice',
     ),
     (
         "second entry",
         _set(("repositories", "owner/later"), {"reviewer": None}),
         F,
-        "repositories.owner/later.reviewer must be an object, found null",
+        "config.repositories.owner/later.reviewer must be an object, found null",
     ),
     (
         "missing configuration",
@@ -1640,7 +1683,7 @@ STAGES: list[Case] = [
         "re_review_scope not an object",
         _set(("re_review_scope",), []),
         F,
-        "re_review_scope must be an object, found an array",
+        "config.re_review_scope must be an object, found an array",
     ),
     (
         "re_review_scope unknown field",
@@ -1652,7 +1695,7 @@ STAGES: list[Case] = [
         "full_share not a number",
         _set(("re_review_scope", "full_share"), "0.5"),
         F,
-        're_review_scope.full_share must be a finite number, found string "0.5"',
+        'config.re_review_scope.full_share must be a finite number, found string "0.5"',
     ),
     ("full_share", _set(("re_review_scope", "full_share"), 0), C, SHARE_MESSAGE),
     ("full_lines", _set(("re_review_scope", "full_lines"), 0), F, _wrong(LINES_FIELD, POSITIVE, 0)),
@@ -1660,7 +1703,7 @@ STAGES: list[Case] = [
         "verdict_policy not an object",
         _set(("verdict_policy",), []),
         F,
-        "verdict_policy must be an object, found an array",
+        "config.verdict_policy must be an object, found an array",
     ),
     (
         "verdict_policy unknown field",
@@ -1672,7 +1715,7 @@ STAGES: list[Case] = [
         "request_changes_for empty",
         _set(("verdict_policy", "request_changes_for"), []),
         F,
-        "verdict_policy.request_changes_for must be a non-empty array, found an empty array",
+        "config.verdict_policy.request_changes_for must be a non-empty array, found an empty array",
     ),
     (
         "severity",
@@ -1685,7 +1728,7 @@ STAGES: list[Case] = [
         "operation sets not an object",
         _set(("operation_repository_sets",), []),
         F,
-        "operation_repository_sets must be an object, found an array",
+        "config.operation_repository_sets must be an object, found an array",
     ),
     (
         "operation",
@@ -1697,7 +1740,7 @@ STAGES: list[Case] = [
         "operation set not a string",
         _set(("operation_repository_sets", "review-prs"), 1),
         F,
-        "operation_repository_sets.review-prs must be a non-empty string, found integer 1",
+        "config.operation_repository_sets.review-prs must be a non-empty string, found integer 1",
     ),
     (
         "operation set",
@@ -1705,7 +1748,7 @@ STAGES: list[Case] = [
         C,
         "operation_repository_sets.review-prs must name an existing set",
     ),
-    ("model_names", _set(("model_names",), None), F, "model_names must be an object, found null"),
+    ("model_names", _set(("model_names",), None), F, "config.model_names must be an object, found null"),
     (
         "model_names key",
         _set(("model_names",), {" m": "M"}),
@@ -1716,7 +1759,7 @@ STAGES: list[Case] = [
         "model_names name",
         _set(("model_names",), {"m": 1}),
         F,
-        "model_names.m must be a non-empty single-line string, found integer 1",
+        "config.model_names.m must be a non-empty single-line string, found integer 1",
     ),
     (
         "model_names name too long",
@@ -1728,14 +1771,14 @@ STAGES: list[Case] = [
         "archive_root not a string",
         _set(("archive_root",), 1),
         F,
-        "archive_root must be a non-empty string, found integer 1",
+        "config.archive_root must be a non-empty string, found integer 1",
     ),
     ("archive_root", _set(("archive_root",), "relative"), C, "archive_root must be an absolute drive-letter path"),
     (
         "local_mirror_root not a string",
         _set(("local_mirror_root",), 1),
         F,
-        "local_mirror_root must be a non-empty string or null, found integer 1",
+        "config.local_mirror_root must be a non-empty string or null, found integer 1",
     ),
     (
         "local_mirror_root",
@@ -1747,14 +1790,14 @@ STAGES: list[Case] = [
         "summary_root not a string",
         _set(("summary_root",), 1),
         F,
-        "summary_root must be a non-empty string, found integer 1",
+        "config.summary_root must be a non-empty string, found integer 1",
     ),
     ("summary_root", _set(("summary_root",), "relative"), C, "summary_root must be an absolute drive-letter path"),
     (
         "dashboard_file not a string",
         _set(("dashboard_file",), 1),
         F,
-        "dashboard_file must be a non-empty string, found integer 1",
+        "config.dashboard_file must be a non-empty string, found integer 1",
     ),
     (
         "dashboard_file",
@@ -1766,34 +1809,34 @@ STAGES: list[Case] = [
         "github_login",
         _set(("github_login",), ""),
         F,
-        "github_login must be a non-empty string or null, found an empty string",
+        "config.github_login must be a non-empty string or null, found an empty string",
     ),
-    ("dashboard not an object", _set(("dashboard",), []), F, "dashboard must be an object, found an array"),
+    ("dashboard not an object", _set(("dashboard",), []), F, "config.dashboard must be an object, found an array"),
     ("dashboard unknown field", _set(("dashboard", "zzz"), 1), F, _unknown("dashboard", "zzz")),
     (
         "start marker",
         _set(("dashboard", "start_marker"), ""),
         F,
-        "dashboard.start_marker must be a non-empty trimmed single-line string, found an empty string",
+        "config.dashboard.start_marker must be a non-empty trimmed single-line string, found an empty string",
     ),
     (
         "end marker",
         _set(("dashboard", "end_marker"), ""),
         F,
-        "dashboard.end_marker must be a non-empty trimmed single-line string, found an empty string",
+        "config.dashboard.end_marker must be a non-empty trimmed single-line string, found an empty string",
     ),
     ("markers", _set(("dashboard", "end_marker"), "<!-- code-review-pr-tracker:start -->"), C, MARKERS_MESSAGE),
     (
         "status_overrides not an object",
         _set(("dashboard", "status_overrides"), []),
         F,
-        "dashboard.status_overrides must be an object, found an array",
+        "config.dashboard.status_overrides must be an object, found an array",
     ),
     (
         "status override key not a string",
         _prepend(("dashboard", "status_overrides"), 1, ""),
         F,
-        "a key of dashboard.status_overrides must be a non-empty string, found integer 1",
+        "a key of config.dashboard.status_overrides must be a non-empty string, found integer 1",
     ),
     (
         "status override key",
@@ -1805,7 +1848,7 @@ STAGES: list[Case] = [
         "status override value",
         _set(("dashboard", "status_overrides", "owner/repo#1"), ""),
         F,
-        "dashboard.status_overrides.owner/repo#1 must be a non-empty string, found an empty string",
+        "config.dashboard.status_overrides.owner/repo#1 must be a non-empty string, found an empty string",
     ),
     (
         "status override computed",
@@ -1817,7 +1860,7 @@ STAGES: list[Case] = [
         "author_names",
         _set(("dashboard", "author_names"), None),
         F,
-        "dashboard.author_names must be an object, found null",
+        "config.dashboard.author_names must be an object, found null",
     ),
 ]
 
@@ -2009,7 +2052,7 @@ class ConfigValidationTests(unittest.TestCase):
         config = _config()
         config["repositories"] = {"owner/later": {"reviewer": None}, **config["repositories"]}
         config["repositories"]["owner/repo"]["checkout_path"] = "relative"
-        self.assert_refused(config, F, "repositories.owner/later.reviewer must be an object, found null")
+        self.assert_refused(config, F, "config.repositories.owner/later.reviewer must be an object, found null")
 
     def test_a_set_is_checked_before_the_next(self) -> None:
         config = _config()

@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from flat_text import flat_text
 from review_config import safe_repository_path, validate_repository_identity
 from review_io import atomic_write_json, atomic_write_text, read_json
+from typed_fields import FieldError, FieldReader, describe
 
 RECORD_SCHEMA_VERSION = 1
 # How a review's reviewer roles were worked, as its record's `review.dispatch` says: as native subagents (or by a Claude
@@ -87,9 +88,7 @@ OPTIONAL_SNAPSHOT_FIELDS = frozenset({"excluded"})
 EXCLUSION_REASON = re.compile(r"[a-z][a-z-]{0,39}")
 SNAPSHOT_PHASES = ("fetch", "materialize", "prompts")
 TITLE_MAXIMUM_LENGTH = 120
-TITLE_RULE = f"must be a single non-blank line of at most {TITLE_MAXIMUM_LENGTH} characters"
 MODEL_MAXIMUM_LENGTH = 200
-MODEL_RULE = f"must be a single non-blank line of at most {MODEL_MAXIMUM_LENGTH} characters"
 # How a diagnostic analyzer could catch a finding instead of a reviewer: a rule in an analyzer the repository already
 # has but does not enforce, a rule in an established analyzer it does not use, or a pattern no rule covers yet.
 ANALYZER_COVERAGES = ("available", "known", "custom-candidate")
@@ -97,11 +96,57 @@ ANALYZER_FIELDS = frozenset({"coverage", "tool", "rule"})
 ANALYZER_NAME = re.compile(r"[^\s`|<>]{1,100}")
 CUSTOM_RULE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 CUSTOM_RULE_MAXIMUM_LENGTH = 60
-ANALYZER_RULE = (
-    f"must be an object with exactly coverage ({', '.join(ANALYZER_COVERAGES)}), tool, and rule; tool and rule "
-    "are at most 100 characters with no whitespace, backticks, pipes, or angle brackets, and a custom-candidate "
-    f"rule is a lowercase kebab-case pattern name of at most {CUSTOM_RULE_MAXIMUM_LENGTH} characters"
-)
+
+
+class RecordError(ValueError):
+    pass
+
+
+class RecordFieldError(FieldError, RecordError):
+    """A record or adapter-result field of the wrong kind."""
+
+
+READ = FieldReader(RecordFieldError)
+
+
+ANALYZER_NAME_KIND = "a name of at most 100 characters without whitespace, backticks, pipes, or angle brackets"
+
+
+CUSTOM_RULE_KIND = f"a lowercase kebab-case pattern name of at most {CUSTOM_RULE_MAXIMUM_LENGTH} characters"
+
+
+def read_title(reader: FieldReader, value: Any, path: str) -> str:
+    """A finding headline: one trimmed, non-blank line short enough for a report summary row."""
+    return reader.string(value, path, single_line=True, trimmed=True, maximum=TITLE_MAXIMUM_LENGTH)
+
+
+def read_model(reader: FieldReader, value: Any, path: str) -> str:
+    """The model a reviewer reports it ran on: one trimmed, non-blank line."""
+    return reader.string(value, path, single_line=True, trimmed=True, maximum=MODEL_MAXIMUM_LENGTH)
+
+
+def read_location(reader: FieldReader, value: Any, path: str) -> str:
+    """A finding's place in a changed document: one trimmed, non-blank line within the limit."""
+    return reader.string(value, path, single_line=True, trimmed=True, maximum=MAX_LOCATION_CHARACTERS)
+
+
+def read_analyzer(reader: FieldReader, value: Any, path: str) -> dict[str, Any]:
+    """A finding's analyzer coverage. Tool and rule are single tokens, so a report line can name them unquoted, and a
+    custom candidate's rule is a pattern name."""
+    analyzer = reader.json_object(value, path, required=ANALYZER_FIELDS)
+    coverage = reader.one_of(analyzer["coverage"], f"{path}.coverage", ANALYZER_COVERAGES)
+    for field in ("tool", "rule"):
+        name = reader.string(analyzer[field], f"{path}.{field}")
+        if not ANALYZER_NAME.fullmatch(name):
+            raise reader.fail(f"{path}.{field}", ANALYZER_NAME_KIND, describe(name))
+    rule = analyzer["rule"]
+    if coverage == "custom-candidate" and not (
+        len(rule) <= CUSTOM_RULE_MAXIMUM_LENGTH and CUSTOM_RULE.fullmatch(rule) is not None
+    ):
+        raise reader.fail(f"{path}.rule", CUSTOM_RULE_KIND, describe(rule))
+    return analyzer
+
+
 # A re-review asks for one of these scopes and runs as `full` or `incremental`. Its record keeps what was asked,
 # what ran, why, and how much changed since the version it compared with (null when it could not compare).
 RE_REVIEW_SCOPES = ("auto", "full", "incremental")
@@ -111,35 +156,13 @@ SCOPE_FIELDS = frozenset(
 PATCH_FIELDS = frozenset({"sha256", "lines"})
 
 
-def _one_line(value: Any, maximum: int) -> bool:
-    return (
-        isinstance(value, str) and value == value.strip() and 0 < len(value) <= maximum and len(value.splitlines()) == 1
-    )
-
-
-def valid_title(value: Any) -> bool:
-    """A finding headline: one trimmed, non-blank line short enough for a report summary row."""
-    return _one_line(value, TITLE_MAXIMUM_LENGTH)
-
-
-def valid_model(value: Any) -> bool:
-    """The model a reviewer reports it ran on: one trimmed, non-blank line."""
-    return _one_line(value, MODEL_MAXIMUM_LENGTH)
-
-
 def valid_analyzer(value: Any) -> bool:
-    """A finding's analyzer coverage. Tool and rule are single tokens, so a report line can name them unquoted."""
-    if not isinstance(value, dict) or set(value) != ANALYZER_FIELDS or value["coverage"] not in ANALYZER_COVERAGES:
+    """Whether a value is analyzer coverage, for a reader that passes over coverage it cannot use."""
+    try:
+        read_analyzer(READ, value, "analyzer")
+    except FieldError:
         return False
-    if not all(isinstance(value[field], str) and ANALYZER_NAME.fullmatch(value[field]) for field in ("tool", "rule")):
-        return False
-    return value["coverage"] != "custom-candidate" or (
-        len(value["rule"]) <= CUSTOM_RULE_MAXIMUM_LENGTH and CUSTOM_RULE.fullmatch(value["rule"]) is not None
-    )
-
-
-class RecordError(ValueError):
-    pass
+    return True
 
 
 def canonical_json(value: Any) -> str:
@@ -150,41 +173,27 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _one_of(value: Any, allowed: set[str] | frozenset[str]) -> bool:
-    """A string in `allowed`. Checking the type first keeps an unhashable value from crashing set membership."""
-    return isinstance(value, str) and value in allowed
-
-
-def _validate_sha(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value):
-        raise RecordError(f"{field} must be a lowercase Git or SHA-256 hash")
-    return value
-
-
-def _valid_sha256(value: Any) -> bool:
-    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
-
-
-DISPOSITION_SUBJECTS = {"Prior": "prior finding", "Comment": "review comment"}
-
-
-def validate_dispositions(dispositions: Any, key: str, expected: set[str], label: str) -> None:
-    """Exactly one well-formed disposition for each expected ID (a prior finding or a review comment)."""
-    subject = DISPOSITION_SUBJECTS[label]
-    if not isinstance(dispositions, list):
-        raise RecordError(f"{label.lower()}_dispositions must be an array")
+def validate_dispositions(
+    dispositions: Any,
+    key: str,
+    expected: set[str],
+    label: str,
+    *,
+    path: str,
+    reader: FieldReader = READ,
+) -> None:
+    """Exactly one well-formed disposition for each expected ID (a prior finding or a review comment). `reader` reads
+    them as the format that holds them, at `path`."""
     actual: set[str] = set()
-    for disposition in dispositions:
-        if not isinstance(disposition, dict) or set(disposition) != {key, "disposition", "rationale"}:
-            raise RecordError(f"{label} disposition fields do not match the protocol")
-        identifier = disposition[key]
-        if not isinstance(identifier, str) or identifier in actual:
+    for index, disposition in enumerate(reader.array(dispositions, path)):
+        item = f"{path}[{index}]"
+        reader.json_object(disposition, item, required={key, "disposition", "rationale"})
+        identifier = reader.string(disposition[key], f"{item}.{key}")
+        if identifier in actual:
             raise RecordError(f"{label} disposition IDs must be unique strings")
         actual.add(identifier)
-        if not _one_of(disposition["disposition"], DISPOSITIONS):
-            raise RecordError(f"Invalid disposition for {subject} {identifier}")
-        if not isinstance(disposition["rationale"], str) or not disposition["rationale"].strip():
-            raise RecordError(f"{subject[0].upper()}{subject[1:]} {identifier} requires a rationale")
+        reader.one_of(disposition["disposition"], f"{item}.disposition", DISPOSITIONS)
+        reader.string(disposition["rationale"], f"{item}.rationale")
     if actual != expected:
         missing = sorted(expected - actual)
         unknown_ids = sorted(actual - expected)
@@ -233,20 +242,17 @@ def validate_adapter_result(
     findings = _validate_result_findings(value.get("findings"))
     _validate_result_dispositions(value, prior_ids, comment_ids, require_comment_dispositions)
     _validate_result_repeats(findings, value.get("prior_dispositions", []), prior_severities or {}, set(prior_ids))
-    usage = value.get("usage")
-    if usage is not None and not isinstance(usage, dict):
-        raise RecordError("usage must be an object or null")
+    READ.optional(READ.json_object, value.get("usage"), "adapter-result.usage")
     return value
 
 
 def _validate_result_envelope(value: Any) -> None:
     """An object of known fields, in the protocol version this module reads."""
-    if not isinstance(value, dict):
-        raise RecordError("Adapter result must be an object")
-    unknown = sorted(set(value) - ADAPTER_RESULT_FIELDS)
-    if unknown:
-        raise RecordError("Adapter result contains unknown fields: " + ", ".join(unknown))
-    if type(value.get("protocol_version")) is not int or value["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
+    result = READ.json_object(value, "adapter-result", optional=ADAPTER_RESULT_FIELDS)
+    if (
+        READ.integer(result.get("adapter-result.protocol_version"), "adapter-result.protocol_version")
+        != ADAPTER_PROTOCOL_VERSION
+    ):
         raise RecordError("Unsupported adapter protocol version")
 
 
@@ -254,67 +260,69 @@ def _validate_result_request(
     value: dict[str, Any], expected_repository: str, expected_number: int, expected_head_sha: str
 ) -> None:
     """The result answers the request: the same repository, pull request, and head."""
-    if validate_repository_identity(value.get("repository")) != expected_repository.lower():
+    repository = READ.string(value.get("adapter-result.repository"), "adapter-result.repository")
+    if validate_repository_identity(repository) != expected_repository.lower():
         raise RecordError("Adapter result repository does not match request")
-    if value.get("pull_number") != expected_number:
+    if READ.integer(value.get("adapter-result.pull_number"), "adapter-result.pull_number") != expected_number:
         raise RecordError("Adapter result pull number does not match request")
-    if value.get("head_sha") != expected_head_sha:
+    if READ.hex_digest(value.get("head_sha"), "adapter-result.head_sha", 40, 64) != expected_head_sha:
         raise RecordError("Adapter result head SHA does not match request")
 
 
 def _validate_result_metadata(value: dict[str, Any]) -> None:
-    if not isinstance(value.get("summary"), str) or not value["summary"].strip():
-        raise RecordError("Adapter result summary is required")
-    if not isinstance(value.get("reviewer"), str) or not value["reviewer"].strip():
-        raise RecordError("Adapter result reviewer is required")
-    if not _one_of(value.get("status"), {"complete", "partial", "failed"}):
-        raise RecordError("Adapter result status is invalid")
+    READ.string(value.get("adapter-result.summary"), "adapter-result.summary")
+    READ.string(value.get("adapter-result.reviewer"), "adapter-result.reviewer")
+    READ.one_of(value.get("status"), "adapter-result.status", ("complete", "partial", "failed"))
 
 
-def _validate_result_findings(findings: Any) -> list[dict[str, Any]]:
+def _validate_result_findings(value: Any) -> list[dict[str, Any]]:
     """The findings, each checked in order; the first fault found is the one raised."""
-    if not isinstance(findings, list):
-        raise RecordError("Adapter findings must be an array")
+    findings = READ.array(value, "adapter-result.findings")
     seen_keys: set[str] = set()
-    for finding in findings:
-        _validate_result_finding(finding, seen_keys)
+    for index, finding in enumerate(findings):
+        _validate_result_finding(finding, f"adapter-result.findings[{index}]", seen_keys)
     return findings
 
 
-def _validate_result_finding(finding: Any, seen_keys: set[str]) -> None:
-    """One finding, whose candidate key must not be in `seen_keys`; the key is added to it."""
-    if not isinstance(finding, dict):
-        raise RecordError("Every adapter finding must be an object")
-    if not FINDING_FIELDS <= set(finding) <= FINDING_FIELDS | OPTIONAL_FINDING_FIELDS:
-        raise RecordError("Adapter finding fields do not match the protocol")
-    key = finding["candidate_key"]
-    if not isinstance(key, str) or not key or key in seen_keys:
+def _validate_result_finding(finding: Any, path: str, seen_keys: set[str]) -> None:
+    """One finding, at `path`, whose candidate key must not be in `seen_keys`; the key is added to it."""
+    READ.json_object(finding, path, required=FINDING_FIELDS, optional=OPTIONAL_FINDING_FIELDS)
+    key = READ.string(finding["candidate_key"], f"{path}.candidate_key")
+    if key in seen_keys:
         raise RecordError("Adapter candidate keys must be unique non-empty strings")
     seen_keys.add(key)
-    if "title" in finding and not valid_title(finding["title"]):
-        raise RecordError(f"Finding {key}.title {TITLE_RULE}")
-    if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
-        raise RecordError(f"Finding {key}.analyzer {ANALYZER_RULE}")
-    if not _one_of(finding["severity"], SEVERITIES):
-        raise RecordError(f"Invalid finding severity for {key}")
+    if "title" in finding:
+        read_title(READ, finding["title"], f"{path}.title")
+    if "analyzer" in finding:
+        read_analyzer(READ, finding["analyzer"], f"{path}.analyzer")
+    READ.one_of(finding["severity"], f"{path}.severity", SEVERITIES)
     for field in ("category", "path", "body", "evidence", "source"):
-        if not isinstance(finding[field], str) or not finding[field].strip():
-            raise RecordError(f"Finding {key}.{field} must be non-empty")
+        READ.string(finding[field], f"{path}.{field}")
     if not safe_repository_path(finding["path"]):
         raise RecordError(f"Finding {key}.path must be a safe repository-relative path")
-    line = finding["line"]
-    if not isinstance(line, int) or isinstance(line, bool) or line < 1:
-        raise RecordError(f"Finding {key}.line must be a positive integer")
+    READ.integer(finding["line"], f"{path}.line", minimum=1)
 
 
 def _validate_result_dispositions(
     value: dict[str, Any], prior_ids: list[str], comment_ids: Iterable[str], require_comment_dispositions: bool
 ) -> None:
     """One disposition per prior finding, then the comment dispositions when given or required."""
-    validate_dispositions(value.get("prior_dispositions", []), "finding_id", set(prior_ids), "Prior")
+    validate_dispositions(
+        value.get("prior_dispositions", []),
+        "finding_id",
+        set(prior_ids),
+        "Prior",
+        path="adapter-result.prior_dispositions",
+    )
     expected_comments = set(comment_ids)
     if "comment_dispositions" in value or (expected_comments and require_comment_dispositions):
-        validate_dispositions(value.get("comment_dispositions", []), "comment_id", expected_comments, "Comment")
+        validate_dispositions(
+            value.get("comment_dispositions", []),
+            "comment_id",
+            expected_comments,
+            "Comment",
+            path="adapter-result.comment_dispositions",
+        )
 
 
 def _validate_result_repeats(
@@ -326,12 +334,11 @@ def _validate_result_repeats(
     """Each `repeats` names one finding by its candidate key or prior finding ID, as validate_repeat requires."""
     keys = {finding["candidate_key"]: finding for finding in findings}
     judged = {disposition["finding_id"]: disposition["disposition"] for disposition in dispositions}
-    for finding in findings:
+    for index, finding in enumerate(findings):
         if "repeats" not in finding:
             continue
-        key, target = finding["candidate_key"], finding["repeats"]
-        if not isinstance(target, str) or not target:
-            raise RecordError(f"Finding {key}.repeats must be a candidate key or prior finding ID")
+        key = finding["candidate_key"]
+        target = READ.string(finding["repeats"], f"adapter-result.findings[{index}].repeats")
         linked = keys.get(target)
         # A finding that names its own key is refused for repeating itself, ahead of the key being ambiguous.
         if linked is not None and linked is not finding and target in prior_ids:
@@ -600,7 +607,7 @@ def build_record(
         if "repeats" not in finding:
             continue
         target = finding["repeats"]
-        prior = LEDGER_ID.fullmatch(target) if isinstance(target, str) else None
+        prior = LEDGER_ID.fullmatch(target)
         if target in identifiers:
             finding["repeats"] = {"version": version, "id": identifiers[target]}
         elif prior is not None:
@@ -680,15 +687,6 @@ def build_record(
     return record
 
 
-def _count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _seconds(value: Any) -> bool:
-    """A non-negative, finite number of seconds, whole or not."""
-    return isinstance(value, int | float) and not isinstance(value, bool) and 0 <= value < float("inf")
-
-
 def _size(count: int) -> str:
     """A byte count as `512 B`, `3.4 KiB`, or `204.0 MiB`."""
     if count < 1024:
@@ -746,137 +744,119 @@ def _duration(seconds: int | None) -> str:
     return f"{minutes}m {remainder:02d}s" if minutes else f"{remainder}s"
 
 
-def _path_set(paths: Any) -> bool:
+def _read_path_set(value: Any, path: str) -> list[str]:
     """A list of distinct non-empty paths."""
-    return (
-        isinstance(paths, list)
-        and all(isinstance(path, str) and path for path in paths)
-        and len(set(paths)) == len(paths)
-    )
+    paths = READ.array(value, path, READ.string)
+    if len(set(paths)) != len(paths):
+        raise RecordError("Review coverage is malformed")
+    return paths
 
 
 def _validate_timestamp(value: Any) -> None:
     """An ISO 8601 timestamp string, as a review's reviewed_at must be."""
-    if not isinstance(value, str):
-        raise RecordError("Review timestamp is invalid")
     try:
-        datetime.fromisoformat(value)
+        datetime.fromisoformat(READ.string(value, "record.review.reviewed_at"))
+    except FieldError:
+        raise
     except ValueError as exc:
         raise RecordError("Review timestamp is invalid") from exc
 
 
-def _validate_reviewers(reviewers: Any) -> None:
+def _validate_reviewers(value: Any) -> None:
     """The reviewers that ran: which files each covered, what it found, how often it was retried, and how
     long it took."""
-    if not isinstance(reviewers, list) or not reviewers:
-        raise RecordError("Review reviewers must be a non-empty array")
     seen: set[str] = set()
-    for reviewer in reviewers:
-        if (
-            not isinstance(reviewer, dict)
-            or not REVIEWER_FIELDS <= set(reviewer) <= REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS
-        ):
-            raise RecordError("Review reviewer fields are malformed")
-        if not isinstance(reviewer["id"], str) or not reviewer["id"] or reviewer["id"] in seen:
+    for index, reviewer in enumerate(READ.array(value, "record.review.reviewers", nonempty=True)):
+        path = f"record.review.reviewers[{index}]"
+        READ.json_object(reviewer, path, required=REVIEWER_FIELDS, optional=OPTIONAL_REVIEWER_FIELDS)
+        identifier = READ.string(reviewer["id"], f"{path}.id")
+        if identifier in seen:
             raise RecordError("Review reviewer IDs must be unique non-empty strings")
-        seen.add(reviewer["id"])
-        if not isinstance(reviewer["category"], str) or not reviewer["category"].strip():
-            raise RecordError(f"Review reviewer {reviewer['id']} needs a category")
-        if not all(_count(reviewer[field]) for field in ("files", "findings", "retries")):
-            raise RecordError(f"Review reviewer {reviewer['id']} counts must be non-negative integers")
-        if not isinstance(reviewer["dispositions_only"], bool):
-            raise RecordError(f"Review reviewer {reviewer['id']}.dispositions_only must be a boolean")
-        if "seconds" in reviewer and not _count(reviewer["seconds"]):
-            raise RecordError(f"Review reviewer {reviewer['id']}.seconds must be a non-negative integer")
-        if "model" in reviewer and not valid_model(reviewer["model"]):
-            raise RecordError(f"Review reviewer {reviewer['id']}.model {MODEL_RULE}")
-        _validate_read_counts(reviewer)
+        seen.add(identifier)
+        READ.string(reviewer["category"], f"{path}.category")
+        for field in ("files", "findings", "retries"):
+            READ.integer(reviewer[field], f"{path}.{field}", minimum=0)
+        READ.boolean(reviewer["dispositions_only"], f"{path}.dispositions_only")
+        if "seconds" in reviewer:
+            READ.integer(reviewer["seconds"], f"{path}.seconds", minimum=0)
+        if "model" in reviewer:
+            read_model(READ, reviewer["model"], f"{path}.model")
+        _validate_read_counts(reviewer, path)
 
 
-def _validate_read_counts(reviewer: dict[str, Any]) -> None:
+def _validate_read_counts(reviewer: dict[str, Any], path: str) -> None:
     """A reviewer's read counts: both absent, both null (not counted), or both non-negative integers."""
     present = [field for field in READ_COUNT_FIELDS if field in reviewer]
     if not present:
         return
-    values = [reviewer.get(field) for field in READ_COUNT_FIELDS]
-    if len(present) != len(READ_COUNT_FIELDS) or not (
-        all(value is None for value in values) or all(_count(value) for value in values)
-    ):
+    if len(present) != len(READ_COUNT_FIELDS) or len({reviewer[field] is None for field in READ_COUNT_FIELDS}) > 1:
         raise RecordError(
             f"Review reviewer {reviewer['id']} files_read and bytes_read must both be non-negative integers "
             "or both null"
         )
+    for field in READ_COUNT_FIELDS:
+        READ.optional(READ.integer, reviewer[field], f"{path}.{field}", minimum=0)
 
 
-def _validate_snapshot(snapshot: Any) -> None:
+def _validate_snapshot(value: Any) -> None:
     """The source snapshot's origin, file count, byte total, exclusions by reason, and the seconds of each phase of
     prepare."""
-    if (
-        not isinstance(snapshot, dict)
-        or not SNAPSHOT_FIELDS <= set(snapshot) <= SNAPSHOT_FIELDS | OPTIONAL_SNAPSHOT_FIELDS
-    ):
-        raise RecordError("Review snapshot fields are malformed")
-    excluded = snapshot.get("excluded", {})
-    if not isinstance(excluded, dict) or not all(
-        isinstance(reason, str) and EXCLUSION_REASON.fullmatch(reason) and _count(count) and count > 0
-        for reason, count in excluded.items()
-    ):
-        raise RecordError("Review snapshot excluded must give a positive count for each exclusion reason")
-    if not _one_of(snapshot["source"], set(SNAPSHOT_SOURCES)):
-        raise RecordError("Review snapshot source is invalid")
-    if not _count(snapshot["files"]) or not _count(snapshot["bytes"]):
-        raise RecordError("Review snapshot files and bytes must be non-negative integers")
-    seconds = snapshot["seconds"]
-    if (
-        not isinstance(seconds, dict)
-        or set(seconds) != set(SNAPSHOT_PHASES)
-        or not all(_seconds(value) for value in seconds.values())
-    ):
-        raise RecordError(f"Review snapshot seconds must give {', '.join(SNAPSHOT_PHASES)} as non-negative numbers")
+    path = "record.review.snapshot"
+    snapshot = READ.json_object(value, path, required=SNAPSHOT_FIELDS, optional=OPTIONAL_SNAPSHOT_FIELDS)
+    excluded = READ.json_object(snapshot.get("excluded", {}), f"{path}.excluded")
+    for key, count in excluded.items():
+        reason = READ.string(key, f"a key of {path}.excluded")
+        if not EXCLUSION_REASON.fullmatch(reason):
+            raise RecordError("Review snapshot excluded must give a positive count for each exclusion reason")
+        READ.integer(count, f"{path}.excluded.{reason}", minimum=1)
+    READ.one_of(snapshot["source"], f"{path}.source", SNAPSHOT_SOURCES)
+    READ.integer(snapshot["files"], f"{path}.files", minimum=0)
+    READ.integer(snapshot["bytes"], f"{path}.bytes", minimum=0)
+    seconds = READ.json_object(snapshot["seconds"], f"{path}.seconds", required=SNAPSHOT_PHASES)
+    for phase in SNAPSHOT_PHASES:
+        if READ.number(seconds[phase], f"{path}.seconds.{phase}") < 0:
+            raise RecordError(f"Review snapshot seconds must give {', '.join(SNAPSHOT_PHASES)} as non-negative numbers")
 
 
-def _validate_patches(patches: Any) -> None:
+def _validate_patches(value: Any) -> None:
     """Each changed file's patch fingerprint, so the next re-review can tell which files changed since."""
-    if not isinstance(patches, dict) or not patches:
+    patches = READ.json_object(value, "record.review.patches")
+    if not patches:
         raise RecordError("Review patches must be a non-empty object")
-    for path, patch in patches.items():
+    for key, patch in patches.items():
+        path = READ.string(key, "a key of record.review.patches")
         if not safe_repository_path(path):
             raise RecordError("Review patch path is unsafe")
-        if (
-            not isinstance(patch, dict)
-            or set(patch) != PATCH_FIELDS
-            or not _valid_sha256(patch["sha256"])
-            or not _count(patch["lines"])
-        ):
-            raise RecordError(f"Review patch for {path} is malformed")
+        item = f"record.review.patches.{path}"
+        READ.json_object(patch, item, required=PATCH_FIELDS)
+        READ.hex_digest(patch["sha256"], f"{item}.sha256", 64)
+        READ.integer(patch["lines"], f"{item}.lines", minimum=0)
 
 
-def _validate_scope(scope: Any, review: dict[str, Any]) -> None:
+def _validate_scope(value: Any, review: dict[str, Any]) -> None:
     if review["mode"] != "re-review":
         raise RecordError("Only a re-review has a scope")
-    if not isinstance(scope, dict) or set(scope) != SCOPE_FIELDS:
-        raise RecordError("Review scope fields are malformed")
-    if scope["requested"] not in RE_REVIEW_SCOPES or scope["used"] not in ("full", "incremental"):
-        raise RecordError("Review scope is invalid")
-    if not isinstance(scope["reason"], str) or not scope["reason"].strip():
-        raise RecordError("Review scope needs a reason")
-    since = scope["since_version"]
-    if not _count(since) or not 1 <= since < review["version"]:
+    path = "record.review.scope"
+    scope = READ.json_object(value, path, required=SCOPE_FIELDS)
+    READ.one_of(scope["requested"], f"{path}.requested", RE_REVIEW_SCOPES)
+    used = READ.one_of(scope["used"], f"{path}.used", ("full", "incremental"))
+    READ.string(scope["reason"], f"{path}.reason")
+    since = READ.integer(scope["since_version"], f"{path}.since_version")
+    if not 1 <= since < review["version"]:
         raise RecordError("Review scope.since_version must be an earlier version")
-    if not _count(scope["files_total"]) or not _count(scope["lines_total"]):
-        raise RecordError("Review scope totals must be non-negative integers")
-    compared = scope["files_changed"] is not None
-    if compared != (scope["lines_changed"] is not None) or (
-        compared
-        and not (
-            _count(scope["files_changed"])
-            and scope["files_changed"] <= scope["files_total"]
-            and _count(scope["lines_changed"])
-            and scope["lines_changed"] <= scope["lines_total"]
-        )
-    ):
-        raise RecordError("Review scope changed counts must both be null or both be within their totals")
-    if scope["used"] == "incremental" and not compared:
+    files_total = READ.integer(scope["files_total"], f"{path}.files_total", minimum=0)
+    lines_total = READ.integer(scope["lines_total"], f"{path}.lines_total", minimum=0)
+    files_changed = READ.optional(READ.integer, scope["files_changed"], f"{path}.files_changed", minimum=0)
+    lines_changed = READ.optional(READ.integer, scope["lines_changed"], f"{path}.lines_changed", minimum=0)
+    if files_changed is None or lines_changed is None:
+        compared = False
+        if (files_changed is None) != (lines_changed is None):
+            raise RecordError("Review scope changed counts must both be null or both be within their totals")
+    else:
+        compared = True
+        if files_changed > files_total or lines_changed > lines_total:
+            raise RecordError("Review scope changed counts must both be null or both be within their totals")
+    if used == "incremental" and not compared:
         raise RecordError("An incremental re-review must have compared with an earlier version")
 
 
@@ -898,83 +878,65 @@ def _validate_comments(record: dict[str, Any]) -> None:
     dispositions = record.get("comment_dispositions")
     if comments is None and dispositions is None:
         return
-    if not isinstance(comments, list) or not comments:
+    if comments is None:
         raise RecordError("Review comment dispositions need the comments they answer")
     ids: set[str] = set()
-    for comment in comments:
-        if not isinstance(comment, dict) or set(comment) != set(COMMENT_FIELDS):
-            raise RecordError("Review comment fields are malformed")
-        if (
-            not isinstance(comment["id"], str)
-            or not re.fullmatch(r"C[1-9][0-9]*", comment["id"])
-            or comment["id"] in ids
-        ):
+    for index, comment in enumerate(READ.array(comments, "record.github_comments", nonempty=True)):
+        path = f"record.github_comments[{index}]"
+        READ.json_object(comment, path, required=COMMENT_FIELDS)
+        identifier = READ.string(comment["id"], f"{path}.id")
+        if not re.fullmatch(r"C[1-9][0-9]*", identifier) or identifier in ids:
             raise RecordError("Review comment IDs must be unique C<n> values")
-        ids.add(comment["id"])
+        ids.add(identifier)
         for field in ("author", "path", "body", "url"):
-            if not isinstance(comment[field], str):
-                raise RecordError(f"Review comment {comment['id']}.{field} must be a string")
-        if comment["line"] is not None and (not _count(comment["line"]) or comment["line"] < 1):
-            raise RecordError(f"Review comment {comment['id']}.line must be a positive integer or null")
-        if not isinstance(comment["outdated"], bool):
-            raise RecordError(f"Review comment {comment['id']}.outdated must be a boolean")
-    validate_dispositions(dispositions, "comment_id", ids, "Comment")
+            READ.string(comment[field], f"{path}.{field}", empty=True)
+        READ.optional(READ.integer, comment["line"], f"{path}.line", minimum=1)
+        READ.boolean(comment["outdated"], f"{path}.outdated")
+    validate_dispositions(dispositions, "comment_id", ids, "Comment", path="record.comment_dispositions")
 
 
-def _reference(value: Any, latest: int) -> bool:
-    """A `{version, id}` reference to a finding in this review or an earlier one."""
-    return (
-        isinstance(value, dict)
-        and set(value) == {"version", "id"}
-        and _count(value["version"])
-        and 1 <= value["version"] <= latest
-        and isinstance(value["id"], str)
-        and FINDING_ID.fullmatch(value["id"]) is not None
-    )
+def _read_reference(value: Any, path: str, latest: int, malformed: str) -> dict[str, Any]:
+    """A `{version, id}` reference to a finding in this review or an earlier one; `malformed` is the error for one
+    that names no such finding."""
+    reference = READ.json_object(value, path, required={"version", "id"})
+    version = READ.integer(reference["version"], f"{path}.version")
+    identifier = READ.string(reference["id"], f"{path}.id")
+    if not 1 <= version <= latest or not FINDING_ID.fullmatch(identifier):
+        raise RecordError(malformed)
+    return reference
 
 
-def _validate_ledger_entry(entry: Any, version: int) -> None:
-    if (
-        not isinstance(entry, dict)
-        or set(entry) != LEDGER_FIELDS
-        or not _count(entry["version"])
-        or entry["version"] < 1
-        or not isinstance(entry["id"], str)
-        or not FINDING_ID.fullmatch(entry["id"])
-    ):
+def _validate_ledger_entry(entry: Any, path: str, version: int) -> None:
+    READ.json_object(entry, path, required=LEDGER_FIELDS)
+    entry_version = READ.integer(entry["version"], f"{path}.version")
+    identifier = READ.string(entry["id"], f"{path}.id")
+    if entry_version < 1 or not FINDING_ID.fullmatch(identifier):
         raise RecordError("Review ledger entry fields are malformed")
-    label = ledger_id(entry["version"], entry["id"])
-    if entry["version"] > version:
+    label = ledger_id(entry_version, identifier)
+    if entry_version > version:
         raise RecordError(f"Review ledger entry {label} is after this review")
-    if (
-        not _one_of(entry["severity"], SEVERITIES)
-        or not isinstance(entry["category"], str)
-        or not entry["category"].strip()
-    ):
-        raise RecordError(f"Review ledger entry {label} severity or category is invalid")
-    dispositions = entry["dispositions"]
-    if not isinstance(dispositions, list) or any(
-        not isinstance(item, dict)
-        or set(item) != {"version", "disposition"}
-        or not _count(item["version"])
-        or not _one_of(item["disposition"], DISPOSITIONS)
-        for item in dispositions
-    ):
-        raise RecordError(f"Review ledger entry {label} dispositions are malformed")
+    READ.one_of(entry["severity"], f"{path}.severity", SEVERITIES)
+    READ.string(entry["category"], f"{path}.category")
+    dispositions = READ.array(entry["dispositions"], f"{path}.dispositions")
+    for index, item in enumerate(dispositions):
+        item_path = f"{path}.dispositions[{index}]"
+        READ.json_object(item, item_path, required={"version", "disposition"})
+        READ.integer(item["version"], f"{item_path}.version", minimum=0)
+        READ.one_of(item["disposition"], f"{item_path}.disposition", DISPOSITIONS)
     versions = [item["version"] for item in dispositions]
-    if versions != sorted(set(versions)) or any(not entry["version"] < item <= version for item in versions):
+    if versions != sorted(set(versions)) or any(not entry_version < item <= version for item in versions):
         raise RecordError(f"Review ledger entry {label} dispositions are malformed")
-    repeats = entry["repeats"]
-    if (
-        not isinstance(repeats, list)
-        or any(not _reference(item, version) or item["version"] < entry["version"] for item in repeats)
-        or len({(item["version"], item["id"]) for item in repeats}) != len(repeats)
-    ):
-        raise RecordError(f"Review ledger entry {label} repeats are malformed")
+    malformed = f"Review ledger entry {label} repeats are malformed"
+    repeats = READ.array(entry["repeats"], f"{path}.repeats")
+    for index, item in enumerate(repeats):
+        if _read_reference(item, f"{path}.repeats[{index}]", version, malformed)["version"] < entry_version:
+            raise RecordError(malformed)
+    if len({(item["version"], item["id"]) for item in repeats}) != len(repeats):
+        raise RecordError(malformed)
     state, judged_in = entry_state(entry)
-    if entry["state"] != state:
+    if READ.one_of(entry["state"], f"{path}.state", tuple(dict.fromkeys(LEDGER_STATES.values()))) != state:
         raise RecordError(f"Review ledger entry {label} state must be {state}")
-    if entry["judged_in"] != judged_in:
+    if READ.integer(entry["judged_in"], f"{path}.judged_in") != judged_in:
         raise RecordError(f"Review ledger entry {label} judged_in must be {judged_in}")
 
 
@@ -999,14 +961,13 @@ def _validate_ledger(record: dict[str, Any], version: int, mode: str) -> None:
     _validate_listed_repeats(ledger, linked, version)
 
 
-def _ledger_entries(ledger: Any, version: int, mode: str) -> dict[LedgerKey, dict[str, Any]]:
+def _ledger_entries(value: Any, version: int, mode: str) -> dict[LedgerKey, dict[str, Any]]:
     """The ledger's entries by key: each well formed and unique, in order, and all of this version in an initial
     review."""
-    if not isinstance(ledger, list):
-        raise RecordError("Review ledger must be an array")
+    ledger = READ.array(value, "record.ledger")
     entries: dict[LedgerKey, dict[str, Any]] = {}
-    for entry in ledger:
-        _validate_ledger_entry(entry, version)
+    for index, entry in enumerate(ledger):
+        _validate_ledger_entry(entry, f"record.ledger[{index}]", version)
         if (entry["version"], entry["id"]) in entries:
             raise RecordError("Review ledger entries must be unique")
         entries[(entry["version"], entry["id"])] = entry
@@ -1060,9 +1021,12 @@ def _validate_repeat_link(
 ) -> LedgerKey:
     """A finding's `repeats` names a finding at least as severe, whose ledger entry lists the repeat. Returns that
     entry's key."""
-    target = finding["repeats"]
-    if not _reference(target, version):
-        raise RecordError(f"Review finding {identifier}.repeats is malformed")
+    target = _read_reference(
+        finding["repeats"],
+        f"record.findings[{int(identifier[1:]) - 1}].repeats",
+        version,
+        f"Review finding {identifier}.repeats is malformed",
+    )
     key = (target["version"], target["id"])
     if target["version"] == version:
         severity = _same_review_target_severity(identifier, target["id"], findings)
@@ -1132,37 +1096,35 @@ RECORD_FIELDS = frozenset(
 
 def _validate_pull_request(pull: dict[str, Any]) -> None:
     pull_fields = {"number", "url", "title", "base_ref", "base_sha", "head_sha"}
-    body = {"body_characters", "body_given"}
-    if not pull_fields <= set(pull) or set(pull) - pull_fields not in ({"head_ref"} | body, body, {"head_ref"}, set()):
+    READ.json_object(
+        pull, "record.pull_request", required=pull_fields, optional={"head_ref", "body_characters", "body_given"}
+    )
+    if ("body_characters" in pull) != ("body_given" in pull):
         raise RecordError("Review pull-request fields are malformed")
-    if "head_ref" in pull and (not isinstance(pull["head_ref"], str) or not pull["head_ref"].strip()):
-        raise RecordError("Review pull_request.head_ref is invalid")
-    characters, given = pull.get("body_characters", 0), pull.get("body_given", 0)
-    if not all(isinstance(count, int) and not isinstance(count, bool) and count >= 0 for count in (characters, given)):
-        raise RecordError("Review pull_request.body_characters or body_given is invalid")
+    if "head_ref" in pull:
+        READ.string(pull["head_ref"], "record.pull_request.head_ref")
+    characters = READ.integer(pull.get("body_characters", 0), "record.pull_request.body_characters", minimum=0)
+    given = READ.integer(pull.get("body_given", 0), "record.pull_request.body_given", minimum=0)
     if given > characters:
         raise RecordError("Review pull_request.body_given is more than body_characters")
-    if not isinstance(pull.get("number"), int) or isinstance(pull["number"], bool) or pull["number"] < 1:
-        raise RecordError("Review pull number is invalid")
+    READ.integer(pull["number"], "record.pull_request.number", minimum=1)
     for field in ("url", "title", "base_ref"):
-        if not isinstance(pull[field], str) or not pull[field].strip():
-            raise RecordError(f"Review pull_request.{field} is invalid")
-    _validate_sha(pull.get("base_sha"), "pull_request.base_sha")
-    _validate_sha(pull.get("head_sha"), "pull_request.head_sha")
+        READ.string(pull[field], f"record.pull_request.{field}")
+    READ.hex_digest(pull["base_sha"], "record.pull_request.base_sha", 40, 64)
+    READ.hex_digest(pull["head_sha"], "record.pull_request.head_sha", 40, 64)
 
 
 def _validate_coverage(review: dict[str, Any]) -> None:
     """The sources a review could not reach and the files no reviewer covered; an INCOMPLETE review names a source."""
-    coverage = review.get("coverage", {"unavailable_sources": []})
-    unavailable = coverage.get("unavailable_sources") if isinstance(coverage, dict) else None
     # Records written before uncovered files were recorded omit them.
-    if (
-        not isinstance(coverage, dict)
-        or not {"unavailable_sources"} <= set(coverage) <= {"unavailable_sources", "uncovered_files"}
-        or not _path_set(unavailable)
-        or not _path_set(coverage.get("uncovered_files", []))
-    ):
-        raise RecordError("Review coverage is malformed")
+    coverage = READ.json_object(
+        review.get("coverage", {"unavailable_sources": []}),
+        "record.review.coverage",
+        required={"unavailable_sources"},
+        optional={"uncovered_files"},
+    )
+    unavailable = _read_path_set(coverage["unavailable_sources"], "record.review.coverage.unavailable_sources")
+    _read_path_set(coverage.get("uncovered_files", []), "record.review.coverage.uncovered_files")
     if review["verdict"] == "INCOMPLETE" and not unavailable:
         raise RecordError("An INCOMPLETE review must list its unavailable sources")
 
@@ -1172,28 +1134,23 @@ def _validate_review(review: dict[str, Any]) -> None:
     review_fields = {"version", "mode", "reviewed_at", "summary", "verdict", "counts", "adapter"}
     # Records written before patches, scopes, dispatch modes, or snapshots were recorded omit them.
     optional = {"coverage", "reviewers", "patches", "scope", "dispatch", "snapshot"}
-    if not review_fields <= set(review) <= review_fields | optional:
-        raise RecordError("Review metadata fields are malformed")
-    if "dispatch" in review and not _one_of(review["dispatch"], set(DISPATCH_MODES)):
-        raise RecordError("Review dispatch is invalid")
+    READ.json_object(review, "record.review", required=review_fields, optional=optional)
+    if "dispatch" in review:
+        READ.one_of(review["dispatch"], "record.review.dispatch", DISPATCH_MODES)
     if "snapshot" in review:
         _validate_snapshot(review["snapshot"])
     if "reviewers" in review:
         _validate_reviewers(review["reviewers"])
     if "patches" in review:
         _validate_patches(review["patches"])
-    if not _one_of(review.get("verdict"), {"APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"}):
-        raise RecordError("Review verdict is invalid")
+    READ.one_of(review["verdict"], "record.review.verdict", ("APPROVED", "CHANGES_REQUESTED", "INCOMPLETE"))
     _validate_coverage(review)
-    if not isinstance(review.get("version"), int) or isinstance(review["version"], bool) or review["version"] < 1:
-        raise RecordError("Review version is invalid")
-    if not _one_of(review.get("mode"), {"initial", "re-review"}):
-        raise RecordError("Review mode is invalid")
+    READ.integer(review["version"], "record.review.version", minimum=1)
+    READ.one_of(review["mode"], "record.review.mode", ("initial", "re-review"))
     if "scope" in review:
         _validate_scope(review["scope"], review)
-    _validate_timestamp(review.get("reviewed_at"))
-    if not isinstance(review.get("summary"), str) or not review["summary"].strip():
-        raise RecordError("Review summary is invalid")
+    _validate_timestamp(review["reviewed_at"])
+    READ.string(review["summary"], "record.review.summary")
 
 
 def is_suite_profile(profile: str) -> bool:
@@ -1202,90 +1159,70 @@ def is_suite_profile(profile: str) -> bool:
     return profile.startswith(SUITE_PROFILE_PREFIX)
 
 
-def _validate_source_hashes(source_hashes: Any) -> None:
+def _validate_source_hashes(value: Any) -> None:
     """The adapter's source files by safe relative path, each with its SHA-256 hash."""
-    if not isinstance(source_hashes, dict):
-        raise RecordError("Review adapter source_hashes is invalid")
-    for path, hash_value in source_hashes.items():
+    source_hashes = READ.json_object(value, "record.review.adapter.source_hashes")
+    for key, hash_value in source_hashes.items():
+        path = READ.string(key, "a key of record.review.adapter.source_hashes")
         if not safe_repository_path(path):
             raise RecordError("Review adapter source hash path is unsafe")
-        if not _valid_sha256(hash_value):
-            raise RecordError(f"Review adapter source hash is invalid: {path}")
+        READ.hex_digest(hash_value, f"record.review.adapter.source_hashes.{path}", 64)
 
 
-def _validate_adapter(adapter: Any) -> None:
+def _validate_adapter(value: Any) -> None:
     """Which adapter produced the review, at which source, and how it ended. Records written before the source was
     recorded have no `source`."""
+    path = "record.review.adapter"
     fields = {"name", "protocol_version", "scope", "source_commit", "source_hashes", "reviewer", "status", "usage"}
-    if not isinstance(adapter, dict) or not fields <= set(adapter) <= fields | {"source"}:
-        raise RecordError("Review adapter metadata is malformed")
-    if type(adapter["protocol_version"]) is not int or adapter["protocol_version"] != ADAPTER_PROTOCOL_VERSION:
+    adapter = READ.json_object(value, path, required=fields, optional={"source"})
+    if READ.integer(adapter["protocol_version"], f"{path}.protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Review adapter protocol is unsupported")
-    if not _one_of(adapter["scope"], {"generic", "repository"}):
-        raise RecordError("Review adapter scope is invalid")
+    scope = READ.one_of(adapter["scope"], f"{path}.scope", ("generic", "repository"))
     # A repository reviewer was read at a commit; the generic reviewer at none.
-    if "source" in adapter and (
-        not _one_of(adapter["source"], set(ADAPTER_SOURCES))
-        or ADAPTER_SOURCES[adapter["source"]] != adapter["scope"]
-        or (adapter["source_commit"] is None) != (adapter["scope"] == "generic")
-    ):
-        raise RecordError(f"Review adapter source is invalid for a {adapter['scope']} reviewer")
+    if "source" in adapter:
+        source = READ.one_of(adapter["source"], f"{path}.source", tuple(ADAPTER_SOURCES))
+        if ADAPTER_SOURCES[source] != scope or (adapter["source_commit"] is None) != (scope == "generic"):
+            raise RecordError(f"Review adapter source is invalid for a {scope} reviewer")
     for field in ("name", "reviewer"):
-        if not isinstance(adapter[field], str) or not adapter[field].strip():
-            raise RecordError(f"Review adapter {field} is invalid")
-    if not _one_of(adapter["status"], {"complete", "partial", "failed"}):
-        raise RecordError("Review adapter status is invalid")
-    if adapter["source_commit"] is not None:
-        _validate_sha(adapter["source_commit"], "review.adapter.source_commit")
+        READ.string(adapter[field], f"{path}.{field}")
+    READ.one_of(adapter["status"], f"{path}.status", ("complete", "partial", "failed"))
+    READ.optional(READ.hex_digest, adapter["source_commit"], f"{path}.source_commit", 40, 64)
     _validate_source_hashes(adapter["source_hashes"])
-    if adapter["usage"] is not None and not isinstance(adapter["usage"], dict):
-        raise RecordError("Review adapter usage is invalid")
+    READ.optional(READ.json_object, adapter["usage"], f"{path}.usage")
 
 
-def _validate_finding(finding: Any) -> None:
+def _validate_finding(finding: Any, path: str) -> None:
     # Records written before findings carried titles or analyzer coverage remain valid.
-    if not isinstance(finding, dict) or not (
-        FINDING_FIELDS | {"id"} <= set(finding) <= FINDING_FIELDS | {"id"} | RECORD_OPTIONAL_FINDING_FIELDS
-    ):
-        raise RecordError("Review finding fields are malformed")
-    if "location" in finding and not valid_location(finding["location"]):
-        raise RecordError(f"Review finding {finding['id']}.location {LOCATION_RULE}")
-    if not _one_of(finding["severity"], SEVERITIES):
-        raise RecordError(f"Review finding {finding['id']} severity is invalid")
-    if "title" in finding and not valid_title(finding["title"]):
-        raise RecordError(f"Review finding {finding['id']}.title {TITLE_RULE}")
-    if "analyzer" in finding and not valid_analyzer(finding["analyzer"]):
-        raise RecordError(f"Review finding {finding['id']}.analyzer {ANALYZER_RULE}")
+    READ.json_object(finding, path, required=FINDING_FIELDS | {"id"}, optional=RECORD_OPTIONAL_FINDING_FIELDS)
+    if "location" in finding:
+        read_location(READ, finding["location"], f"{path}.location")
+    READ.one_of(finding["severity"], f"{path}.severity", SEVERITIES)
+    if "title" in finding:
+        read_title(READ, finding["title"], f"{path}.title")
+    if "analyzer" in finding:
+        read_analyzer(READ, finding["analyzer"], f"{path}.analyzer")
     for field in ("candidate_key", "category", "path", "body", "evidence", "source"):
-        if not isinstance(finding[field], str) or not finding[field].strip():
-            raise RecordError(f"Review finding {finding['id']}.{field} is invalid")
+        READ.string(finding[field], f"{path}.{field}")
     if not safe_repository_path(finding["path"]):
         raise RecordError(f"Review finding {finding['id']}.path is unsafe")
-    if not isinstance(finding["line"], int) or isinstance(finding["line"], bool) or finding["line"] < 1:
-        raise RecordError(f"Review finding {finding['id']}.line is invalid")
+    READ.integer(finding["line"], f"{path}.line", minimum=1)
 
 
-LOCATION_RULE = f"must be one trimmed line of at most {MAX_LOCATION_CHARACTERS} characters"
-
-
-def valid_location(value: Any) -> bool:
-    """A finding's place in a changed document: one trimmed, non-blank line within the limit."""
-    return _one_line(value, MAX_LOCATION_CHARACTERS)
-
-
-def _validate_findings(findings: Any) -> list[dict[str, Any]]:
+def _validate_findings(value: Any) -> list[dict[str, Any]]:
     """The findings, numbered F001 on in order, each well formed."""
-    if not isinstance(findings, list):
-        raise RecordError("Review findings must be an array")
+    findings = READ.array(value, "record.findings", READ.json_object)
     expected_ids = [f"F{index:03d}" for index in range(1, len(findings) + 1)]
-    if [item.get("id") for item in findings if isinstance(item, dict)] != expected_ids:
+    if [item.get("id") for item in findings] != expected_ids:
         raise RecordError("Review finding IDs are not stable and contiguous")
-    for finding in findings:
-        _validate_finding(finding)
+    for index, finding in enumerate(findings):
+        _validate_finding(finding, f"record.findings[{index}]")
     return findings
 
 
-def _validate_counts(counts: Any, findings: list[dict[str, Any]]) -> None:
+def _validate_counts(value: Any, findings: list[dict[str, Any]]) -> None:
+    counts = READ.json_object(value, "record.review.counts", required=SEVERITIES)
+    for severity in sorted(SEVERITIES):
+        READ.integer(counts[severity], f"record.review.counts.{severity}", minimum=0)
     expected_counts = {
         severity: sum(item["severity"] == severity for item in findings) for severity in sorted(SEVERITIES)
     }
@@ -1295,61 +1232,45 @@ def _validate_counts(counts: Any, findings: list[dict[str, Any]]) -> None:
 
 def _validate_prior_dispositions(dispositions: Any) -> None:
     """At most one well-formed disposition per prior finding; the ledger checks which findings they judge."""
-    if not isinstance(dispositions, list):
-        raise RecordError("Review prior dispositions must be an array")
     disposition_ids: set[str] = set()
-    for disposition in dispositions:
-        if not isinstance(disposition, dict) or set(disposition) != {
-            "finding_id",
-            "disposition",
-            "rationale",
-        }:
-            raise RecordError("Review prior disposition fields are malformed")
-        finding_id = disposition["finding_id"]
-        if not isinstance(finding_id, str) or not finding_id or finding_id in disposition_ids:
+    for index, disposition in enumerate(READ.array(dispositions, "record.prior_dispositions")):
+        path = f"record.prior_dispositions[{index}]"
+        READ.json_object(disposition, path, required={"finding_id", "disposition", "rationale"})
+        finding_id = READ.string(disposition["finding_id"], f"{path}.finding_id")
+        if finding_id in disposition_ids:
             raise RecordError("Review prior disposition IDs must be unique")
         disposition_ids.add(finding_id)
-        if not _one_of(disposition["disposition"], DISPOSITIONS):
-            raise RecordError(f"Review prior disposition is invalid: {finding_id}")
-        if not isinstance(disposition["rationale"], str) or not disposition["rationale"].strip():
-            raise RecordError(f"Review prior disposition rationale is invalid: {finding_id}")
+        READ.one_of(disposition["disposition"], f"{path}.disposition", DISPOSITIONS)
+        READ.string(disposition["rationale"], f"{path}.rationale")
 
 
-def _validate_artifacts(artifacts: Any) -> None:
+def _validate_artifacts(value: Any) -> None:
     """The hashes of the record's payload and its Markdown report, when the pair has been written."""
-    if artifacts is None:
+    if value is None:
         return
-    if not isinstance(artifacts, dict) or set(artifacts) != {"payload_sha256", "markdown_sha256"}:
-        raise RecordError("Review artifact hashes are malformed")
+    artifacts = READ.json_object(value, "record.artifacts", required={"payload_sha256", "markdown_sha256"})
     for field in ("payload_sha256", "markdown_sha256"):
-        if not _valid_sha256(artifacts[field]):
-            raise RecordError(f"artifacts.{field} must be a lowercase SHA-256 hash")
+        READ.hex_digest(artifacts[field], f"record.artifacts.{field}", 64)
 
 
 def validate_record(value: Any) -> dict[str, Any]:
     """A review record, checked part by part in a fixed order; the first fault found is the one raised."""
-    if (
-        not isinstance(value, dict)
-        or set(value) - RECORD_FIELDS
-        or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != RECORD_SCHEMA_VERSION
-    ):
+    record = READ.json_object(value, "record", optional=RECORD_FIELDS)
+    if READ.integer(record.get("record.schema_version"), "record.schema_version") != RECORD_SCHEMA_VERSION:
         raise RecordError("Unsupported or malformed review record")
-    _validate_comments(value)
-    validate_repository_identity(value.get("repository"))
-    pull = value.get("pull_request")
-    review = value.get("review")
-    if not isinstance(pull, dict) or not isinstance(review, dict):
-        raise RecordError("Review record metadata is malformed")
+    _validate_comments(record)
+    validate_repository_identity(READ.string(record.get("repository"), "record.repository"))
+    pull = READ.json_object(record.get("record.pull_request"), "record.pull_request")
+    review = READ.json_object(record.get("review"), "record.review")
     _validate_pull_request(pull)
     _validate_review(review)
-    _validate_adapter(review.get("adapter"))
-    findings = _validate_findings(value.get("findings"))
-    _validate_counts(review.get("counts"), findings)
-    _validate_prior_dispositions(value.get("prior_dispositions"))
-    _validate_ledger(value, review["version"], review["mode"])
-    _validate_artifacts(value.get("artifacts"))
-    return value
+    _validate_adapter(review["adapter"])
+    findings = _validate_findings(record.get("findings"))
+    _validate_counts(review["counts"], findings)
+    _validate_prior_dispositions(record.get("prior_dispositions"))
+    _validate_ledger(record, review["version"], review["mode"])
+    _validate_artifacts(record.get("artifacts"))
+    return record
 
 
 def payload_hash(record: dict[str, Any]) -> str:

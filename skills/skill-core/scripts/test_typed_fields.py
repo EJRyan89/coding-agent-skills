@@ -196,14 +196,14 @@ class FieldReaderTests(unittest.TestCase):
             required={"c", "a"},
         )
         self.refused(
-            "o must be an object of known fields, found unknown fields \"x\", \"y\"",
+            'o must be an object of known fields, found unknown fields "x", "y"',
             READ.json_object,
             {"a": 1, "y": 2, "x": 3},
             "o",
             required={"a"},
         )
         self.refused(
-            "o must be an object of known fields, found unknown field \"x\"",
+            'o must be an object of known fields, found unknown field "x"',
             READ.json_object,
             {"x": 1},
             "o",
@@ -231,6 +231,34 @@ class FieldReaderTests(unittest.TestCase):
             READ.string,
         )
 
+    def test_either_reads_the_first_kind_that_accepts_the_value(self) -> None:
+        self.assertEqual(2, READ.either(2, "r", READ.integer, READ.string))
+        self.assertEqual("v1:F001", READ.either("v1:F001", "r", READ.integer, READ.string))
+        self.refused(
+            "r must be an integer or a non-empty string, found boolean true",
+            READ.either,
+            True,
+            "r",
+            READ.integer,
+            READ.string,
+        )
+        self.refused(
+            'r must be an integer or a non-empty string, found string ""',
+            READ.either,
+            "",
+            "r",
+            READ.integer,
+            READ.string,
+        )
+        self.refused(
+            "r[0] must be a non-empty string, found integer 1",
+            READ.either,
+            [1],
+            "r",
+            lambda value, path: READ.array(value, path, READ.string),
+            READ.integer,
+        )
+
     def test_a_reader_raises_the_error_class_it_was_built_with(self) -> None:
         reader = FieldReader(DomainFieldError)
         for read in (
@@ -244,6 +272,7 @@ class FieldReaderTests(unittest.TestCase):
             lambda: reader.json_object(1, "f"),
             lambda: reader.optional(reader.string, 1, "f"),
             lambda: reader.array([1], "f", reader.string),
+            lambda: reader.either(None, "f", reader.integer, reader.string),
         ):
             with self.subTest(read=read), self.assertRaises(DomainError) as caught:
                 read()

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
+from typed_fields import FieldError, FieldReader
 
 # Version 2 adds review_version, so a finding ID names one review; finding IDs restart at F001 in every review.
 SCHEMA_VERSION = 2
@@ -44,6 +48,13 @@ class FlagAlreadyResolved(FlagError):
         self.flag_id = flag_id
 
 
+class FlagFieldError(FieldError, FlagError):
+    """A flag store field of the wrong kind."""
+
+
+READ = FieldReader(FlagFieldError)
+
+
 def default_flags_path() -> Path:
     """CODE_REVIEW_FLAGS, else the standard flag store beside the code-review configuration."""
     override = os.environ.get("CODE_REVIEW_FLAGS")
@@ -57,109 +68,102 @@ def empty_store() -> dict[str, Any]:
 
 
 def validate_store(value: Any) -> dict[str, Any]:
-    _validate_store_envelope(value)
+    store = _validate_store_envelope(value)
     ids: set[str] = set()
-    for flag in value["flags"]:
-        _validate_flag_identity(flag, ids)
+    for index, flag in enumerate(store["flags"]):
+        path = f"flag-store.flags[{index}]"
+        _validate_flag_identity(flag, path, ids)
         ids.add(flag["id"])
-        _validate_flag_target(flag)
-        _validate_flag_text(flag)
-        _validate_flag_resolution(flag)
-    allocated = [int(item["id"].removeprefix("RF-")) for item in value["flags"]]
-    if allocated and value["next_id"] <= max(allocated):
+        _validate_flag_target(flag, path)
+        _validate_flag_text(flag, path)
+        _validate_flag_resolution(flag, path)
+    allocated = [int(item["id"].removeprefix("RF-")) for item in store["flags"]]
+    if allocated and store["next_id"] <= max(allocated):
         raise FlagError("Flag next_id must be greater than every allocated ID")
-    return value
+    return store
 
 
-def _validate_store_envelope(value: Any) -> None:
+def _validate_store_envelope(value: Any) -> dict[str, Any]:
     """The store's own fields: its shape, schema version, next ID, and flag list."""
-    if not isinstance(value, dict) or set(value) != {"schema_version", "next_id", "flags"}:
-        raise FlagError("Flag store shape is invalid")
-    if type(value["schema_version"]) is not int or value["schema_version"] != SCHEMA_VERSION:
+    store = READ.json_object(value, "flag-store", required={"schema_version", "next_id", "flags"})
+    if READ.integer(store["schema_version"], "flag-store.schema_version") != SCHEMA_VERSION:
         raise FlagError("Flag store schema version is unsupported")
-    if not isinstance(value["next_id"], int) or isinstance(value["next_id"], bool) or value["next_id"] < 1:
-        raise FlagError("Flag next_id is invalid")
-    if not isinstance(value["flags"], list):
-        raise FlagError("Flag list is invalid")
+    READ.integer(store["next_id"], "flag-store.next_id", minimum=1)
+    READ.array(store["flags"], "flag-store.flags")
+    return store
 
 
-def _validate_flag_identity(flag: Any, ids: set[str]) -> None:
+def _validate_flag_identity(flag: Any, path: str, ids: set[str]) -> None:
     """A flag's shape, and an ID no earlier flag has, in the RF-NNNNNN format."""
-    if not isinstance(flag, dict) or set(flag) != FIELDS:
-        raise FlagError("Flag record shape is invalid")
-    if not isinstance(flag["id"], str) or flag["id"] in ids:
+    READ.json_object(flag, path, required=FIELDS)
+    identifier = READ.string(flag["id"], f"{path}.id")
+    if identifier in ids:
         raise FlagError("Flag IDs must be unique strings")
-    if not re.fullmatch(r"RF-[0-9]{6}", flag["id"]):
+    if not re.fullmatch(r"RF-[0-9]{6}", identifier):
         raise FlagError("Flag ID format is invalid")
 
 
-def _validate_flag_target(flag: dict[str, Any]) -> None:
+def _validate_flag_target(flag: dict[str, Any], path: str) -> None:
     """A known status, and what the flag is about: an optional repository, pull request, and review version, the last
     only with a pull request, and an optional finding ID, which is a string."""
-    if flag["status"] not in {"open", "resolved"}:
-        raise FlagError("Flag status is invalid")
-    if flag["repository"] is not None:
-        validate_repository_identity(flag["repository"])
-    if flag["pull_number"] is not None and (
-        not isinstance(flag["pull_number"], int) or isinstance(flag["pull_number"], bool) or flag["pull_number"] < 1
-    ):
-        raise FlagError("Flag pull number is invalid")
-    if flag["review_version"] is not None and (not _positive(flag["review_version"]) or flag["pull_number"] is None):
+    READ.one_of(flag["status"], f"{path}.status", ("open", "resolved"))
+    repository = READ.optional(READ.string, flag["repository"], f"{path}.repository")
+    if repository is not None:
+        validate_repository_identity(repository)
+    pull_number = READ.optional(READ.integer, flag["pull_number"], f"{path}.pull_number", minimum=1)
+    review_version = READ.optional(READ.integer, flag["review_version"], f"{path}.review_version", minimum=1)
+    if review_version is not None and pull_number is None:
         raise FlagError("Flag review version is invalid")
     # A flag written before add checked the finding ID's form keeps whatever string it was given.
-    if flag["finding_id"] is not None and not isinstance(flag["finding_id"], str):
-        raise FlagError("Flag finding ID is invalid")
+    READ.optional(READ.string, flag["finding_id"], f"{path}.finding_id", empty=True)
 
 
-def _validate_flag_text(flag: dict[str, Any]) -> None:
+def _validate_flag_text(flag: dict[str, Any], path: str) -> None:
     for field in ("created_at", "category", "body"):
-        if not isinstance(flag[field], str) or not flag[field].strip():
-            raise FlagError(f"Flag {field} is invalid")
+        READ.string(flag[field], f"{path}.{field}")
     try:
         datetime.fromisoformat(flag["created_at"])
     except ValueError as exc:
         raise FlagError("Flag created_at is invalid") from exc
 
 
-def _validate_flag_resolution(flag: dict[str, Any]) -> None:
+def _validate_flag_resolution(flag: dict[str, Any], path: str) -> None:
     """An open flag has no resolution; a resolved one has a resolution and a time."""
     if flag["status"] == "open":
         if flag["resolved_at"] is not None or flag["resolution"] is not None:
             raise FlagError("Open flag cannot contain resolution metadata")
-    else:
-        if (
-            not isinstance(flag["resolved_at"], str)
-            or not isinstance(flag["resolution"], str)
-            or not flag["resolution"].strip()
-        ):
-            raise FlagError("Resolved flag requires resolution metadata")
-        try:
-            datetime.fromisoformat(flag["resolved_at"])
-        except ValueError as exc:
-            raise FlagError("Flag resolved_at is invalid") from exc
-
-
-def _positive(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+        return
+    if flag["resolved_at"] is None or flag["resolution"] is None:
+        raise FlagError("Resolved flag requires resolution metadata")
+    resolved_at = READ.string(flag["resolved_at"], f"{path}.resolved_at")
+    READ.string(flag["resolution"], f"{path}.resolution")
+    try:
+        datetime.fromisoformat(resolved_at)
+    except ValueError as exc:
+        raise FlagError("Flag resolved_at is invalid") from exc
 
 
 def upgrade_store(value: Any) -> Any:
-    """A version 1 store as version 2: its flags name no review version, so none of them can be linked to a finding."""
-    if (
-        isinstance(value, dict)
-        and type(value.get("schema_version")) is int
-        and value["schema_version"] == 1
-        and isinstance(value.get("flags"), list)
-    ):
-        value = {
-            **value,
-            "schema_version": SCHEMA_VERSION,
-            "flags": [
-                {**flag, "review_version": None} if isinstance(flag, dict) and "review_version" not in flag else flag
-                for flag in value["flags"]
-            ],
-        }
-    return value
+    """A version 1 store as version 2: its flags name no review version, so none of them can be linked to a finding.
+    Anything else is returned as it is, for validate_store to judge."""
+    try:
+        store = READ.json_object(value, "flag-store")
+        legacy = READ.integer(store.get("schema_version"), "flag-store.schema_version") == 1
+        flags = READ.array(store.get("flags"), "flag-store.flags")
+    except FieldError:
+        return value
+    if not legacy:
+        return value
+    return {**store, "schema_version": SCHEMA_VERSION, "flags": [_upgraded_flag(flag) for flag in flags]}
+
+
+def _upgraded_flag(flag: Any) -> Any:
+    """A version 1 flag with no review version; anything that is not a flag object is left for validate_store."""
+    try:
+        READ.json_object(flag, "flag-store.flags[]")
+    except FieldError:
+        return flag
+    return flag if "review_version" in flag else {**flag, "review_version": None}
 
 
 def load_store(path: Path) -> dict[str, Any]:
@@ -178,11 +182,11 @@ def validate_target(
         )
     if finding_id is not None and None in (repository, pull_number, review_version):
         raise FlagError("A flag that names a finding must name its repository, pull request, and review version")
-    if review_version is not None and (pull_number is None or not _positive(review_version)):
+    if review_version is not None and (pull_number is None or review_version < 1):
         raise FlagError("Review version must be positive and name a pull request")
     if repository is not None:
         repository = validate_repository_identity(repository)
-    if pull_number is not None and not _positive(pull_number):
+    if pull_number is not None and pull_number < 1:
         raise FlagError("Pull number must be positive")
     return repository
 

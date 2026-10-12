@@ -27,15 +27,12 @@ from review_config import safe_repository_path
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_process import JobTree
 from review_records import (
-    ANALYZER_RULE,
-    MODEL_RULE,
     SEVERITY_RANK,
     TITLE_MAXIMUM_LENGTH,
-    TITLE_RULE,
     RecordError,
-    valid_analyzer,
-    valid_model,
-    valid_title,
+    read_analyzer,
+    read_model,
+    read_title,
     validate_dispositions,
     validate_repeat,
 )
@@ -54,6 +51,7 @@ from review_runtime import (
     validate_adapter_manifest,
     verify_source_snapshot,
 )
+from typed_fields import FieldError, FieldReader
 
 PLAN_SCHEMA_VERSION = 1
 CONDITION_TIMEOUT_SECONDS = 120
@@ -76,6 +74,17 @@ DEFAULT_GENERIC_INSTRUCTIONS = Path(__file__).resolve().parents[1] / "references
 
 class SpecialistError(ValueError):
     pass
+
+
+class SpecialistFieldError(FieldError, SpecialistError):
+    """A specialist result, adapter request, or reviewer materialization field of the wrong kind."""
+
+
+READ = FieldReader(SpecialistFieldError)
+
+
+# What a reviewer that reports another model is told, after the model it reported.
+MODEL_ADVICE = "write the model ID your system prompt names"
 
 
 def _unquote(value: str) -> str:
@@ -290,17 +299,20 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
         metadata = read_json(reviewer_root / "materialization.json")
     except (OSError, ValueError, PersistenceError) as exc:
         raise SpecialistError(f"Reviewer materialization metadata is invalid: {exc}") from exc
-    if not isinstance(metadata, dict) or "manifest" not in metadata:
+    materialization = READ.json_object(metadata, "materialization")
+    if "manifest" not in materialization:
         raise SpecialistError("Reviewer materialization is not a specialist reviewer")
     try:
-        manifest = validate_adapter_manifest({key: value for key, value in metadata["manifest"].items()})
+        manifest = validate_adapter_manifest(
+            dict(READ.json_object(materialization["manifest"], "materialization.manifest"))
+        )
     except RuntimeContractError as exc:
         raise SpecialistError(str(exc)) from exc
-    if manifest.get("kind") != "specialists" or manifest["id"] != metadata.get("adapter_id"):
+    if manifest.get("kind") != "specialists" or manifest["id"] != materialization.get("adapter_id"):
         raise SpecialistError("Reviewer materialization manifest does not match its metadata")
-    hashes = metadata.get("source_hashes")
+    hashes = READ.json_object(materialization.get("source_hashes"), "materialization.source_hashes")
     declared = declared_reviewer_files(manifest)
-    if not isinstance(hashes, dict) or set(hashes) != set(declared):
+    if set(hashes) != set(declared):
         raise SpecialistError("Reviewer materialization hashes do not match the declared files")
     for relative in declared:
         target = reviewer_root.joinpath(*PurePosixPath(relative).parts)
@@ -308,13 +320,13 @@ def load_materialized_manifest(reviewer_root: Path) -> tuple[dict[str, Any], str
             raise SpecialistError(f"Reviewer file does not match its materialized hash: {relative}")
     # A suite profile is read where the suite keeps it, so it is checked against the hash taken when the reviewer was
     # materialized: a deployment that changed it since would otherwise hand later roles other instructions.
-    suite = metadata.get("suite_profiles", {})
-    if not isinstance(suite, dict) or set(suite) != set(suite_profiles(manifest)):
+    suite = READ.json_object(materialization.get("suite_profiles", {}), "materialization.suite_profiles")
+    if set(suite) != set(suite_profiles(manifest)):
         raise SpecialistError("Reviewer materialization suite profiles do not match the manifest")
     for profile, expected in suite.items():
         if hashlib.sha256(suite_profile_path(profile).read_bytes()).hexdigest() != expected:
             raise SpecialistError(f"Suite profile does not match its materialized hash: {profile}")
-    return manifest, metadata["source_commit"]
+    return manifest, materialization["source_commit"]
 
 
 def evaluate_condition(reviewer_root: Path, script: str, source_root: Path, work: Path) -> bool:
@@ -629,9 +641,9 @@ def _category_contract(categories: list[str] | None, fallback: str | None = None
     return rule, '\n      "category": "<one of the finding categories below>",'
 
 
-def canonical_category(value: Any, categories: list[str]) -> str | None:
+def canonical_category(value: str | None, categories: list[str]) -> str | None:
     """The manifest's spelling of a finding's category, matched without regard to case, or None when it names none."""
-    if not isinstance(value, str):
+    if value is None:
         return None
     return next((category for category in categories if category.casefold() == value.strip().casefold()), None)
 
@@ -1005,15 +1017,10 @@ def specialist_model(specialist: dict[str, Any], reviewer_root: Path) -> tuple[s
 
 def _load_request(request_path: Path) -> dict[str, Any]:
     """The adapter request, refused unless it is protocol 1 in a supported mode."""
-    request = read_json(request_path)
-    if (
-        not isinstance(request, dict)
-        or type(request.get("protocol_version")) is not int
-        or request["protocol_version"] != 1
-    ):
+    request = READ.json_object(read_json(request_path), "request")
+    if READ.integer(request.get("protocol_version"), "request.protocol_version") != 1:
         raise SpecialistError("Adapter request protocol version is unsupported")
-    if request.get("mode") not in {"initial", "re-review"}:
-        raise SpecialistError("Adapter request mode is invalid")
+    READ.one_of(request.get("mode"), "request.mode", ("initial", "re-review"))
     return request
 
 
@@ -1384,10 +1391,10 @@ def same_issue(first: dict[str, Any], second: dict[str, Any]) -> bool:
     return len(shared) >= SAME_ISSUE_MIN_SHARED and len(shared) / len(ids_a | ids_b) >= SAME_ISSUE_JACCARD
 
 
-def _analyzer_error(analyzer: Any, tools: dict[str, str]) -> str | None:
-    """Why a finding's analyzer coverage is invalid against the repository's inventory (casefolded name -> name)."""
-    if not valid_analyzer(analyzer):
-        return ANALYZER_RULE
+def _analyzer_error(analyzer: Any, tools: dict[str, str], path: str) -> str | None:
+    """Why a finding's analyzer coverage, at `path`, is invalid against the repository's inventory (casefolded name
+    -> name)."""
+    analyzer = read_analyzer(READ, analyzer, path)
     listed = tools.get(analyzer["tool"].casefold())
     if analyzer["coverage"] == "available" and listed is None:
         names = ", ".join(sorted(tools.values(), key=str.casefold)) or "none"
@@ -1406,33 +1413,26 @@ def _check_finding(
     """One finding of a role's result, on one of its own added lines and, when the manifest declares finding
     categories, naming one of them."""
     name = role["id"]
-    if (
-        not isinstance(finding, dict)
-        or not isinstance(finding.get("severity"), str)
-        or finding["severity"] not in SEVERITY
-    ):
-        raise SpecialistError(f"{name}: finding {index} has an invalid severity")
+    path = f"{name}: specialist-result.findings[{index}]"
+    READ.json_object(finding, path)
+    READ.one_of(finding.get("severity"), f"{path}.severity", tuple(SEVERITY))
     if unlisted := sorted(set(finding) - FINDING_FIELDS):
         raise SpecialistError(
             f"{name}: finding {index} has a field the output contract does not list: {', '.join(unlisted)}"
         )
-    line = finding.get("line")
-    if not isinstance(finding.get("path"), str) or not isinstance(line, int) or isinstance(line, bool):
-        raise SpecialistError(f"{name}: finding {index} needs a path and integer line")
-    if not isinstance(finding.get("body"), str) or not finding["body"].strip():
-        raise SpecialistError(f"{name}: finding {index} body is required")
-    if not valid_title(finding.get("title")):
-        raise SpecialistError(f"{name}: finding {index} title {TITLE_RULE}")
+    file = READ.string(finding.get("path"), f"{path}.path")
+    line = READ.integer(finding.get("line"), f"{path}.line")
+    READ.string(finding.get("body"), f"{path}.body")
+    read_title(READ, finding.get("title"), f"{path}.title")
+    category = READ.string(finding["category"], f"{path}.category", empty=True) if "category" in finding else None
     categories = role.get("finding_categories")
-    if categories and canonical_category(finding.get("category"), categories) is None:
+    if categories and canonical_category(category, categories) is None:
         raise SpecialistError(f"{name}: finding {index} category must be one of: {', '.join(categories)}")
-    if "category" in finding and not isinstance(finding["category"], str):
-        raise SpecialistError(f"{name}: finding {index} category must be a string")
-    if "analyzer" in finding and (error := _analyzer_error(finding["analyzer"], tools)):
+    if "analyzer" in finding and (error := _analyzer_error(finding["analyzer"], tools, f"{path}.analyzer")):
         raise SpecialistError(f"{name}: finding {index} analyzer {error}")
-    if finding["path"] not in role["files"] or str(line) not in added.get(finding["path"], {}):
+    if file not in role["files"] or str(line) not in added.get(file, {}):
         raise SpecialistError(
-            f"{name}: finding {index} at {finding['path']}:{line} is not an added line in its files; "
+            f"{name}: finding {index} at {file}:{line} is not an added line in its files; "
             "take the path from DIFF_FILE and the line from the number shown on one of its added (+) lines"
         )
 
@@ -1451,31 +1451,30 @@ def load_role_result(
         value = json.loads(path.read_text(encoding="utf-8-sig"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise SpecialistError(f"{name}: result file is not valid JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise SpecialistError(f"{name}: result must be a JSON object")
-    if not isinstance(value.get("summary"), str) or not value["summary"].strip():
-        raise SpecialistError(f"{name}: summary is required")
+    root = f"{name}: specialist-result"
+    result = READ.json_object(value, root)
+    summary = READ.string(result.get("summary"), f"{root}.summary")
     # Reported by the reviewer itself, so a run that silently landed on a different model shows in the record.
-    if not valid_model(value.get("model")):
-        raise SpecialistError(f"{name}: model {MODEL_RULE}; write the model ID your system prompt names")
-    if not isinstance(value.get("findings"), list):
-        raise SpecialistError(f"{name}: result needs a findings array")
-    if unlisted := sorted(set(value) - RESULT_FIELDS):
+    try:
+        model = read_model(READ, result.get("model"), f"{root}.model")
+    except FieldError as exc:
+        raise READ.fail(exc.path, exc.expected, f"{exc.found}; {MODEL_ADVICE}") from None
+    findings = READ.array(result.get("findings"), f"{root}.findings")
+    if unlisted := sorted(set(result) - RESULT_FIELDS):
         raise SpecialistError(f"{name}: result has a field its output contract does not list: {', '.join(unlisted)}")
-    findings = value["findings"]
     for index, finding in enumerate(findings):
         _check_finding(role, index, finding, added, tools)
-    dispositions = _role_dispositions(name, value.get("prior_dispositions"), "finding_id", role["prior_ids"], "Prior")
+    dispositions = _role_dispositions(name, result.get("prior_dispositions"), "finding_id", role["prior_ids"], "Prior")
     comment_ids = role.get("comment_ids", [])
     comment_dispositions = _role_dispositions(
-        name, value.get("comment_dispositions", [] if not comment_ids else None), "comment_id", comment_ids, "Comment"
+        name, result.get("comment_dispositions", [] if not comment_ids else None), "comment_id", comment_ids, "Comment"
     )
     if role["dispositions_only"] and findings:
         raise SpecialistError(f"{name}: disposition-only review returned findings")
     _check_repeats(name, findings, dispositions, role)
     return {
-        "model": value["model"],
-        "summary": value["summary"].strip(),
+        "model": model,
+        "summary": summary.strip(),
         "findings": findings,
         "prior_dispositions": dispositions,
         "comment_dispositions": comment_dispositions,
@@ -1493,19 +1492,16 @@ def _check_repeats(
     for index, finding in enumerate(normalized):
         if "repeats" not in finding:
             continue
-        target = finding["repeats"]
-        if isinstance(target, bool) or not isinstance(target, (int, str)):
-            raise SpecialistError(
-                f"{name}: finding {index} repeats must be the index of another finding in this "
-                "result or a prior finding ID"
-            )
-        if isinstance(target, int) and not 0 <= target < len(findings):
+        target = READ.either(
+            finding["repeats"], f"{name}: specialist-result.findings[{index}].repeats", READ.integer, READ.string
+        )
+        if type(target) is int and not 0 <= target < len(findings):
             raise SpecialistError(f"{name}: finding {index} repeats {target}, which is not a finding in this result")
-        if isinstance(target, str) and target not in role["prior_ids"]:
+        if type(target) is str and target not in role["prior_ids"]:
             raise SpecialistError(
                 f"{name}: finding {index} repeats {target}, which is not a prior finding listed for you"
             )
-        linked = normalized[target] if isinstance(target, int) else None
+        linked = normalized[target] if type(target) is int else None
         try:
             validate_repeat(index, finding, linked, judged, role.get("prior_severities", {}))
         except RecordError as exc:
@@ -1534,7 +1530,14 @@ def _resolve_repeats(merged: list[dict[str, Any]], prior_severities: dict[str, s
 def _role_dispositions(name: str, dispositions: Any, key: str, ids: list[str], label: str) -> list[dict[str, Any]]:
     """Exactly one disposition, with a rationale, for each prior finding or review comment the role was given."""
     try:
-        validate_dispositions(dispositions, key, set(ids), label)
+        validate_dispositions(
+            dispositions,
+            key,
+            set(ids),
+            label,
+            path=f"{name}: specialist-result.{label.lower()}_dispositions",
+            reader=READ,
+        )
     except RecordError as exc:
         raise SpecialistError(f"{name}: {exc}") from exc
     return dispositions

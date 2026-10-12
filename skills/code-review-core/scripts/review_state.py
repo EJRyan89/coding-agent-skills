@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
+
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
+from typed_fields import FieldError, FieldReader
 
 SCHEMA_VERSION = 1
 # A watermark's date as the contract states it. date.fromisoformat alone also takes a week date or the basic form.
@@ -20,6 +24,13 @@ WATERMARK_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 class StateError(ValueError):
     pass
+
+
+class StateFieldError(FieldError, StateError):
+    """A review state field of the wrong kind."""
+
+
+READ = FieldReader(StateFieldError)
 
 
 def default_state_path() -> Path:
@@ -57,24 +68,20 @@ def watermark_date(identity: str, value: str) -> date:
 
 
 def validate_state(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) - {"schema_version", "repositories"}:
-        raise StateError("State must contain only schema_version and repositories")
-    if type(value.get("schema_version")) is not int or value["schema_version"] != SCHEMA_VERSION:
-        raise StateError(f"Unsupported state schema version: {value.get('schema_version')!r}")
-    repositories = value.get("repositories")
-    if not isinstance(repositories, dict):
-        raise StateError("State repositories must be an object")
-    for identity, state in repositories.items():
-        validate_repository_identity(identity)
-        if not isinstance(state, dict):
-            raise StateError(f"State for {identity} must be an object")
-        if set(state) - {"merged_since", "updated_at"}:
-            raise StateError(f"State for {identity} contains unknown fields")
+    state = READ.json_object(value, "state", optional={"schema_version", "repositories"})
+    version = READ.integer(state.get("schema_version"), "state.schema_version")
+    if version != SCHEMA_VERSION:
+        raise StateError(f"Unsupported state schema version: {version!r}")
+    repositories = READ.json_object(state.get("repositories"), "state.repositories")
+    for identity, entry in repositories.items():
+        validate_repository_identity(READ.string(identity, "a key of state.repositories"))
+        path = f"state.repositories.{identity}"
+        READ.json_object(entry, path, optional={"merged_since", "updated_at"})
         for field in ("merged_since", "updated_at"):
-            if field in state and not isinstance(state[field], str):
-                raise StateError(f"State {identity}.{field} must be a string")
-        if "merged_since" in state:
-            watermark_date(identity, state["merged_since"])
+            if field in entry:
+                READ.string(entry[field], f"{path}.{field}", empty=True)
+        if "merged_since" in entry:
+            watermark_date(identity, entry["merged_since"])
     return value
 
 
