@@ -149,16 +149,19 @@ COMMAND_RUNNERS: dict[str, tuple[int, str]] = {
 # skill-core's clients: each runs its one command for every call a script makes through it.
 CLIENT_CLASSES = {"git_client.GitClient": "git", "github_client.GitHubClient": "gh"}
 # shutil.which finds the program a script then runs. A script that takes it as an injected service calls it by its
-# own name, such as services.which("dotnet"), so a call of any function named which counts too.
+# own name, such as services.which("dotnet"), so a call of any function named which counts too, and so does
+# code-review-core's path_programs, which lists every match on PATH where shutil.which returns the first.
 COMMAND_LOOKUP = "shutil.which"
+LOOKUP_NAMES = frozenset({"which", "path_programs"})
 
 
 def _is_lookup(call: ast.Call, aliases: dict[str, str]) -> bool:
-    """Whether a call looks a program up: shutil.which under any name its imports give it, or a function named which."""
+    """Whether a call looks a program up: shutil.which under any name its imports give it, or a function named in
+    LOOKUP_NAMES."""
     function = call.func
-    if isinstance(function, ast.Attribute) and function.attr == "which":
+    if isinstance(function, ast.Attribute) and function.attr in LOOKUP_NAMES:
         return True
-    return (isinstance(function, ast.Name) and function.id == "which") or (
+    return (isinstance(function, ast.Name) and function.id in LOOKUP_NAMES) or (
         qualified_name(function, aliases) == COMMAND_LOOKUP
     )
 
