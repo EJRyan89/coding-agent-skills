@@ -705,6 +705,291 @@ class FsopsPlatformFixtures(GitTestCase):
                 platform_code_problems(root),
             )
 
+    def test_platform_policy_finds_unix_modules_os_queries_signals_and_process_keywords_through_aliases(self) -> None:
+        source = (
+            "import fcntl\n"  # 1
+            "import pwd as passwords\n"  # 2
+            "import grp, termios, tty, pty, posix, nt\n"  # 3
+            "from resource import getrlimit\n"  # 4
+            "from platform import system as os_name\n"  # 5
+            "from os import uname\n"  # 6
+            "import platform as p\n"  # 7
+            "import os as o\n"  # 8
+            "import sys\n"  # 9
+            "import signal\n"  # 10
+            "import subprocess\n"  # 11
+            "from .resource import local\n"  # 12: a module of this repository, not the platform's
+            "from . import pwd\n"  # 13
+            "\n"  # 14
+            "\n"  # 15
+            "def describe(command, pid):\n"  # 16
+            "    p.system(), p.machine(), p.release(), p.python_version()\n"  # 17
+            "    o.uname(), sys.getwindowsversion(), o.getuid()\n"  # 18
+            "    o.kill(pid, signal.SIGKILL), o.kill(pid, signal.SIGTERM)\n"  # 19
+            "    subprocess.run(command, start_new_session=True, check=False)\n"  # 20
+            "    subprocess.run(command, preexec_fn=None, process_group=0, startupinfo=None)\n"  # 21
+            "    return o.open(command, o.O_RDONLY | o.O_BINARY)\n"  # 22
+        )
+        sanctioned = (
+            'PLATFORM_ALLOWED = {"platform.system": "reports the platform a run was made on"}\n'
+            "import platform\n"
+            "SYSTEM = platform.system()\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/strayed.py": source,
+                    "deployer/platform_support.py": source,
+                    "tools/sanctioned.py": sanctioned,
+                },
+            )
+            move = "; move it behind deployer/platform_support.py"
+            expected = [
+                (1, "fcntl"),
+                (2, "pwd"),
+                (3, "grp"),
+                (3, "nt"),
+                (3, "posix"),
+                (3, "pty"),
+                (3, "termios"),
+                (3, "tty"),
+                (4, "resource"),
+                (5, "platform.system"),
+                (6, "os.uname"),
+                (17, "platform.machine"),
+                (17, "platform.release"),
+                (17, "platform.system"),
+                (18, "os.getuid"),
+                (18, "os.uname"),
+                (18, "sys.getwindowsversion"),
+                (19, "signal.SIGKILL"),
+                (20, "start_new_session"),
+                (21, "preexec_fn"),
+                (21, "process_group"),
+                (21, "startupinfo"),
+                (22, "os.O_BINARY"),
+            ]
+            self.assertEqual(
+                [f"deployer/strayed.py:{line} names {token}{move}" for line, token in expected],
+                platform_code_problems(root),
+            )
+
+    def test_platform_policy_finds_executable_extensions_stripped_appended_or_compared(self) -> None:
+        assumed = (
+            "import os\n"  # 1
+            "from pathlib import Path\n"  # 2
+            "\n"  # 3
+            "\n"  # 4
+            "def program(name, path):\n"  # 5
+            '    name.removesuffix(".exe")\n'  # 6
+            '    name.lower().endswith((".cmd", ".BAT"))\n'  # 7
+            '    Path(name).with_suffix(".exe")\n'  # 8
+            '    path.suffix == ".exe"\n'  # 9
+            '    os.path.splitext(name)[1].casefold() in frozenset({".bat", ".py"})\n'  # 10
+            '    name + ".exe"\n'  # 11
+            '    f"{name}.cmd --version"\n'  # 12
+            '    name.replace(".exe", "")\n'  # 13
+            '    name.rstrip(".exe")\n'  # 14
+            '    path.name == "bash.exe"\n'  # 15
+        )
+        # Strings that only hold an extension, and scripts compared by type, assume no platform.
+        innocent = (
+            "from pathlib import Path\n"
+            'READER = Path(__file__).with_name("worktrees-powershell.ps1")\n'
+            'PATTERN = "*.exe"\n'
+            'HINT = "set GIT_BASH to its bash.exe"\n'
+            'CASES = "bash | bash.exe | sh | sh.exe"\n'
+            "\n"
+            "\n"
+            "def kind(path, name):\n"
+            '    path.suffix == ".ps1"\n'
+            '    name.endswith(".py")\n'
+            '    name + ".executable"\n'
+            '    f"{name}.exec"\n'
+            '    f"{name} is not bash.exe"\n'
+            '    "bash.exe" + name\n'
+        )
+        sanctioned = (
+            'PLATFORM_ALLOWED = {".exe": "names the program the Windows installer lays down"}\n'
+            'PROGRAM = "git" + ".exe"\n'
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "tools/assumed.py": assumed,
+                    "deployer/platform_support.py": assumed,
+                    "tools/innocent.py": innocent,
+                    "tools/sanctioned.py": sanctioned,
+                },
+            )
+            move = "; move it behind deployer/platform_support.py"
+            expected = [
+                (6, ".exe"),
+                (7, ".bat"),
+                (7, ".cmd"),
+                (8, ".exe"),
+                (9, ".exe"),
+                (10, ".bat"),
+                (11, ".exe"),
+                (12, ".cmd"),
+                (13, ".exe"),
+                (14, ".exe"),
+                (15, ".exe"),
+            ]
+            self.assertEqual(
+                [f"tools/assumed.py:{line} names {token}{move}" for line, token in expected],
+                platform_code_problems(root),
+            )
+
+    def test_filesystem_write_policy_counts_archive_extraction_creation_and_writable_archives(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_fixture_tree(
+                root,
+                {
+                    "deployer/archives.py": "import bz2\n"  # 1
+                    "import dbm\n"  # 2
+                    "import gzip\n"  # 3
+                    "import lzma\n"  # 4
+                    "import shelve\n"  # 5
+                    "import shutil\n"  # 6
+                    "import sqlite3\n"  # 7
+                    "import tarfile\n"  # 8
+                    "import zipfile as zf\n"  # 9
+                    "from shutil import unpack_archive as unpack\n"  # 10
+                    "from zipfile import ZipFile\n"  # 11
+                    "from . import fsops\n"  # 12
+                    "\n"  # 13
+                    "\n"  # 14
+                    "def run(archive, target, mode, options):\n"  # 15
+                    "    with tarfile.open(archive) as handle:\n"  # 16: reads
+                    '        handle.extractall(target, filter="data")\n'  # 17
+                    '        handle.extract("member", target)\n'  # 18
+                    '        handle.extractfile("member")\n'  # 19: reads
+                    "    shutil.unpack_archive(archive, target)\n"  # 20
+                    "    unpack(archive, extract_dir=target)\n"  # 21
+                    '    shutil.make_archive(target, "zip", archive)\n'  # 22
+                    '    ZipFile(archive, "w")\n'  # 23
+                    '    zf.ZipFile(archive, mode="a")\n'  # 24
+                    '    ZipFile(archive, "x")\n'  # 25
+                    "    ZipFile(archive, mode)\n"  # 26: a mode the policy cannot read
+                    "    ZipFile(archive, **options)\n"  # 27
+                    "    ZipFile(archive)\n"  # 28: reads
+                    '    zf.ZipFile(archive, mode="r").namelist()\n'  # 29: reads
+                    '    tarfile.open(archive, "w:gz")\n'  # 30
+                    '    tarfile.open(archive, "x|xz")\n'  # 31
+                    '    tarfile.open(archive, "r:xz")\n'  # 32: reads, though its compression says x
+                    '    tarfile.open(name=archive, mode="r|gz")\n'  # 33: reads
+                    '    gzip.open(archive, "wb")\n'  # 34
+                    "    gzip.open(archive)\n"  # 35: reads
+                    '    bz2.open(archive, "rt")\n'  # 36: reads
+                    '    lzma.LZMAFile(archive, mode="x")\n'  # 37
+                    "    shelve.open(archive)\n"  # 38: creates the database by default
+                    '    shelve.open(archive, "r")\n'  # 39: reads
+                    "    dbm.open(archive)\n"  # 40: reads by default
+                    '    dbm.open(archive, flag="c")\n'  # 41
+                    "    sqlite3.connect(archive)\n"  # 42
+                    "    fsops.extract_archive(archive, target)\n"  # 43: the sanctioned extraction
+                    "\n"  # 44
+                    "\n"  # 45
+                    "def aliased(handle, target):\n"  # 46
+                    "    extract = handle.extractall\n"  # 47
+                    "    extract(target)\n",  # 48
+                },
+            )
+            route = "; route it through deployer/fsops.py"
+            expected = [
+                (10, "shutil.unpack_archive"),
+                (17, "extractall"),
+                (18, "extract"),
+                (20, "shutil.unpack_archive"),
+                (21, "shutil.unpack_archive"),
+                (22, "shutil.make_archive"),
+                (23, "zipfile.ZipFile"),
+                (24, "zipfile.ZipFile"),
+                (25, "zipfile.ZipFile"),
+                (26, "zipfile.ZipFile"),
+                (27, "zipfile.ZipFile"),
+                (30, "tarfile.open"),
+                (31, "tarfile.open"),
+                (34, "gzip.open"),
+                (37, "lzma.LZMAFile"),
+                (38, "shelve.open"),
+                (41, "dbm.open"),
+                (42, "sqlite3.connect"),
+                (48, "extractall"),
+            ]
+            self.assertEqual(
+                [f"deployer/archives.py:{line} writes with {token}{route}" for line, token in expected],
+                filesystem_write_problems(root),
+            )
+
+    def test_an_allowed_archive_write_must_land_under_the_system_temporary_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            allowance = (
+                "FSOPS_ALLOWED = {\n"
+                '    "tempfile.mkdtemp": "a working directory under the system temporary directory",\n'
+                '    "extractall": "extracts only into the directory mkdtemp made",\n'
+                '    "extract": "extracts only into the directory mkdtemp made",\n'
+                '    "shutil.unpack_archive": "unpacks only into the directory mkdtemp made",\n'
+                '    "shutil.make_archive": "archives only into the directory mkdtemp made",\n'
+                '    "zipfile.ZipFile": "writes only an archive in the directory mkdtemp made",\n'
+                "}\n"
+                "import shutil\n"
+                "import tempfile\n"
+                "import zipfile\n"
+                "from pathlib import Path\n"
+                "\n"
+                "\n"
+            )
+            write_fixture_tree(
+                root,
+                {
+                    # The archive read, the format, and the directory archived name no destination.
+                    "deployer/kept.py": allowance + "def run(handle, archive):\n"
+                    "    work = Path(tempfile.mkdtemp())\n"
+                    '    handle.extractall(work, filter="data")\n'
+                    "    handle.extractall(path=work)\n"
+                    '    handle.extract("member", work)\n'
+                    "    shutil.unpack_archive(archive, work)\n"
+                    '    shutil.make_archive(work, "zip", archive)\n'
+                    '    zipfile.ZipFile(work, "w")\n',
+                    "deployer/strayed.py": allowance + "def run(handle, archive, elsewhere, options):\n"
+                    "    work = Path(tempfile.mkdtemp())\n"
+                    "    handle.extractall()\n"  # 17: the working directory
+                    "    handle.extractall(elsewhere)\n"  # 18
+                    "    handle.extractall(**options)\n"  # 19: an unpacking may hold any path
+                    '    handle.extract("member")\n'  # 20: the working directory
+                    '    handle.extract("member", path=elsewhere)\n'  # 21
+                    "    shutil.unpack_archive(work)\n"  # 22: the working directory
+                    "    shutil.unpack_archive(work, elsewhere)\n"  # 23
+                    '    shutil.make_archive(elsewhere, "zip", work)\n'  # 24
+                    '    zipfile.ZipFile(elsewhere, "w")\n',  # 25
+                },
+            )
+            message = (
+                "FSOPS_ALLOWED allows {} only under the system temporary directory, and this call may write elsewhere"
+            )
+            self.assertEqual(
+                [
+                    "deployer/strayed.py:17 " + message.format("extractall"),
+                    "deployer/strayed.py:18 " + message.format("extractall"),
+                    "deployer/strayed.py:19 " + message.format("extractall"),
+                    "deployer/strayed.py:20 " + message.format("extract"),
+                    "deployer/strayed.py:21 " + message.format("extract"),
+                    "deployer/strayed.py:22 " + message.format("shutil.unpack_archive"),
+                    "deployer/strayed.py:23 " + message.format("shutil.unpack_archive"),
+                    "deployer/strayed.py:24 " + message.format("shutil.make_archive"),
+                    "deployer/strayed.py:25 " + message.format("zipfile.ZipFile"),
+                ],
+                filesystem_write_problems(root),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

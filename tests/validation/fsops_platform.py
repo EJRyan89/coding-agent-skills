@@ -7,6 +7,9 @@ from __future__ import annotations
 import ast
 import re
 import unittest
+from collections.abc import Callable
+from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
 
 from validation_support import (
@@ -20,14 +23,78 @@ from validation_support import (
 
 # What only deployer/platform_support.py may name, so that supporting another operating system changes one module.
 PLATFORM_TOKENS: dict[str, tuple[str, ...]] = {
-    "qualified": ("sys.platform", "os.name", "os.startfile"),
+    "qualified": (
+        "sys.platform",
+        "sys.getwindowsversion",
+        "os.name",
+        "os.startfile",
+        "os.uname",
+        "os.fork",
+        "os.setsid",
+        "os.killpg",
+        "os.getuid",
+        "os.geteuid",
+        "os.getgid",
+        "os.getegid",
+        # The open flags only Windows defines.
+        "os.O_BINARY",
+        "os.O_TEXT",
+        "os.O_NOINHERIT",
+        # The signals one platform defines and the other lacks.
+        "signal.SIGKILL",
+        "signal.SIGBREAK",
+        "signal.CTRL_C_EVENT",
+        "signal.CTRL_BREAK_EVENT",
+        # What the platform module reports about the operating system and the machine; its python_* functions
+        # describe the interpreter and are portable.
+        "platform.system",
+        "platform.machine",
+        "platform.processor",
+        "platform.release",
+        "platform.version",
+        "platform.uname",
+        "platform.platform",
+        "platform.win32_ver",
+        "platform.win32_edition",
+        "platform.win32_is_iot",
+        "platform.mac_ver",
+        "platform.libc_ver",
+        "platform.freedesktop_os_release",
+        "platform.android_ver",
+        "platform.ios_ver",
+    ),
     "attribute": ("chmod", "fchmod", "lchmod", "st_file_attributes"),
-    "keyword": ("creationflags",),
-    "module": ("ctypes", "winreg", "msvcrt", "_winapi"),
+    # subprocess keywords that only one platform accepts.
+    "keyword": ("creationflags", "startupinfo", "start_new_session", "process_group", "preexec_fn"),
+    "module": (
+        "ctypes",
+        "winreg",
+        "msvcrt",
+        "_winapi",
+        "nt",
+        "posix",
+        "fcntl",
+        "pwd",
+        "grp",
+        "termios",
+        "tty",
+        "pty",
+        "resource",
+    ),
     # Windows environment names, which Windows compares ignoring case, so each is matched in any case.
     "variable": ("LOCALAPPDATA", "USERPROFILE", "ProgramFiles", "APPDATA", "GIT_BASH"),
     "command": ("cygpath",),
+    # The extensions Windows finds a program by, matched in any case. Code that strips, appends, or compares one on a
+    # program name assumes Windows. .ps1 is not one of them: it names a PowerShell script on every platform pwsh runs
+    # on, so comparing a file's suffix with it tells a script's type, not the platform.
+    "extension": (".exe", ".cmd", ".bat"),
 }
+# The string methods and the path method through which code strips, finds, or sets an extension.
+EXTENSION_METHODS = frozenset({"endswith", "removesuffix", "rstrip", "replace", "with_suffix"})
+# An extension at the start of the text joined after a program name, as in name + ".exe" or f"{name}.exe".
+APPENDED_EXTENSION = re.compile(
+    r"(" + "|".join(map(re.escape, PLATFORM_TOKENS["extension"])) + r")(?![A-Za-z0-9_])", re.IGNORECASE
+)
 # A module sanctions a use beside the code it excuses, as a module-level PLATFORM_ALLOWED = {token: reason}. An
 # allowance the module no longer needs is reported.
 PLATFORM_ALLOWANCE = "PLATFORM_ALLOWED"
@@ -99,7 +166,51 @@ def _platform_node_names(
         return [(node.lineno, node.arg)]
     if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docstrings:
         return _platform_string_names(node.lineno, node.value, command)
+    if isinstance(node, (ast.Call, ast.Compare, ast.BinOp, ast.JoinedStr)):
+        return [(node.lineno, extension) for extension in _assumed_extensions(node)]
     return []
+
+
+def _extension_literals(node: ast.expr) -> list[str]:
+    """The executable extensions that a string literal, or each literal of a tuple, list, or set or of a call's one
+    argument, such as frozenset({...}), ends with, in any case."""
+    if isinstance(node, ast.Call) and len(node.args) == 1 and not node.keywords:
+        return _extension_literals(node.args[0])
+    parts = node.elts if isinstance(node, (ast.Tuple, ast.List, ast.Set)) else [node]
+    return [
+        extension
+        for part in parts
+        if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        for extension in PLATFORM_TOKENS["extension"]
+        if part.value.casefold().endswith(extension)
+    ]
+
+
+def _appended_extension(node: ast.expr) -> list[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        match = APPENDED_EXTENSION.match(node.value)
+        return [match.group(1).casefold()] if match else []
+    return []
+
+
+def _assumed_extensions(node: ast.Call | ast.Compare | ast.BinOp | ast.JoinedStr) -> list[str]:
+    """The executable extensions node strips, finds, sets, compares, or appends: a literal argument of one of
+    EXTENSION_METHODS, a literal operand of a comparison, or one joined after a value by + or in an f-string. A string
+    that only holds an extension, such as a pattern or a path, assumes nothing."""
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr in EXTENSION_METHODS:
+            return [extension for argument in node.args for extension in _extension_literals(argument)]
+        return []
+    if isinstance(node, ast.Compare):
+        return [extension for operand in [node.left, *node.comparators] for extension in _extension_literals(operand)]
+    if isinstance(node, ast.BinOp):
+        return _appended_extension(node.right) if isinstance(node.op, ast.Add) else []
+    return [
+        extension
+        for previous, part in pairwise(node.values)
+        if isinstance(previous, ast.FormattedValue)
+        for extension in _appended_extension(part)
+    ]
 
 
 def _platform_module_name(line: int, module: str) -> list[tuple[int, str]]:
@@ -117,7 +228,10 @@ def _platform_attribute_names(node: ast.Attribute, aliases: dict[str, str]) -> l
 
 
 def _platform_import_from_names(node: ast.ImportFrom) -> list[tuple[int, str]]:
-    """The module's token, or else each imported name that is a token."""
+    """The module's token, or else each imported name that is a token. A relative import names a module of this
+    repository, never a platform's."""
+    if node.level:
+        return []
     module = node.module or ""
     found = _platform_module_name(node.lineno, module)
     if found:
@@ -185,6 +299,12 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "chmod",
             "symlink_to",
             "hardlink_to",
+            "lchmod",
+            "copy_into",
+            "move_into",
+            # An archive's members, extracted from a tarfile.TarFile or a zipfile.ZipFile.
+            "extractall",
+            "extract",
         }
     ),
     "qualified": frozenset(
@@ -205,6 +325,14 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "os.symlink",
             "os.truncate",
             "os.utime",
+            "os.renames",
+            "os.mkfifo",
+            "os.mknod",
+            "os.lchmod",
+            "os.chflags",
+            "os.lchflags",
+            "os.setxattr",
+            "os.removexattr",
             "shutil.rmtree",
             "shutil.move",
             "shutil.copy",
@@ -214,6 +342,9 @@ FILESYSTEM_WRITES: dict[str, frozenset[str]] = {
             "shutil.copystat",
             "shutil.copytree",
             "shutil.chown",
+            "shutil.unpack_archive",
+            "shutil.make_archive",
+            "sqlite3.connect",
             "tempfile.mkstemp",
             "tempfile.mkdtemp",
             "tempfile.TemporaryDirectory",
@@ -228,6 +359,53 @@ FSOPS_ALLOWANCE = "FSOPS_ALLOWED"
 WRITE_MODE_CHARACTERS = "wax+"
 # The functions that open a file by name with its mode second; a Path's open() takes the mode first.
 OPEN_FUNCTIONS = frozenset({"open", "builtins.open", "io.open", "codecs.open"})
+
+
+def _mode_writes(mode: str) -> bool:
+    return any(character in mode for character in WRITE_MODE_CHARACTERS)
+
+
+def _tar_mode_writes(mode: str) -> bool:
+    """A tarfile mode writes by what comes before its compression, so "r:xz" reads and "x:gz" writes."""
+    return _mode_writes(re.split(r"[:|]", mode, maxsplit=1)[0])
+
+
+def _flag_writes(flag: str) -> bool:
+    """A dbm or shelve flag other than "r" may create or write the database."""
+    return not flag.startswith("r")
+
+
+@dataclass(frozen=True)
+class ModeOpener:
+    """A function that opens an archive, a compressed file, or a database by name with a mode that may write: the
+    position and keyword of its mode, the keywords that name its file, whether it writes when given no mode, and which
+    modes write."""
+
+    position: int
+    keyword: str
+    files: frozenset[str]
+    writes_by_default: bool
+    writes: Callable[[str], bool]
+
+
+_ARCHIVE = ModeOpener(1, "mode", frozenset({"file"}), False, _mode_writes)
+_TAR = ModeOpener(1, "mode", frozenset({"name", "fileobj"}), False, _tar_mode_writes)
+_COMPRESSED = ModeOpener(1, "mode", frozenset({"filename", "fileobj"}), False, _mode_writes)
+MODE_OPENERS: dict[str, ModeOpener] = {
+    "zipfile.ZipFile": _ARCHIVE,
+    "zipfile.PyZipFile": _ARCHIVE,
+    "tarfile.open": _TAR,
+    "tarfile.TarFile": _TAR,
+    "tarfile.TarFile.open": _TAR,
+    "gzip.open": _COMPRESSED,
+    "gzip.GzipFile": _COMPRESSED,
+    "bz2.open": _COMPRESSED,
+    "bz2.BZ2File": _COMPRESSED,
+    "lzma.open": _COMPRESSED,
+    "lzma.LZMAFile": _COMPRESSED,
+    "shelve.open": ModeOpener(1, "flag", frozenset({"filename"}), True, _flag_writes),
+    "dbm.open": ModeOpener(1, "flag", frozenset({"file"}), False, _flag_writes),
+}
 # The os.open flags that only read. Any other flag, a nonzero number, or flags the policy cannot read count as a write.
 READ_FLAGS = frozenset({"os.O_RDONLY", "os.O_BINARY", "os.O_TEXT", "os.O_NOINHERIT", "os.O_CLOEXEC", "os.O_NOFOLLOW"})
 
@@ -262,19 +440,21 @@ def _string_bindings(tree: ast.Module) -> dict[str, set[str] | None]:
     return bindings
 
 
-def _mode_argument(call: ast.Call, position: int) -> ast.expr | None:
+def _mode_argument(call: ast.Call, position: int, name: str = "mode") -> ast.expr | None:
     """The argument that gives a call's mode, or None when it gives none. A `*` unpacking at or before the mode's
     position, or a `**` unpacking without a mode keyword, may hold the mode, so it is returned as the mode."""
     for index, argument in enumerate(call.args):
         if index == position or isinstance(argument, ast.Starred):
             return argument
-    named = next((keyword.value for keyword in call.keywords if keyword.arg == "mode"), None)
+    named = next((keyword.value for keyword in call.keywords if keyword.arg == name), None)
     if named is not None:
         return named
     return next((keyword.value for keyword in call.keywords if keyword.arg is None), None)
 
 
-def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None]) -> bool:
+def _writes_with_mode(
+    mode: ast.expr | None, bindings: dict[str, set[str] | None], writes: Callable[[str], bool] = _mode_writes
+) -> bool:
     """Whether a mode may write. No mode reads, and a mode the policy cannot read, such as a parameter, writes."""
     if mode is None:
         return False
@@ -283,7 +463,7 @@ def _writes_with_mode(mode: ast.expr | None, bindings: dict[str, set[str] | None
         values = {mode.value}
     elif isinstance(mode, ast.Name):
         values = bindings.get(mode.id)
-    return values is None or any(character in value for value in values for character in WRITE_MODE_CHARACTERS)
+    return values is None or any(writes(value) for value in values)
 
 
 def _os_open_writes(call: ast.Call, resolver: CallableResolver) -> bool:
@@ -326,6 +506,10 @@ def _call_writes(call: ast.Call, resolver: CallableResolver, bindings: dict[str,
         return target if _os_open_writes(call, resolver) else None
     if target in OPEN_FUNCTIONS:
         return "open" if _writes_with_mode(_mode_argument(call, 1), bindings) else None
+    if opener := MODE_OPENERS.get(target):
+        mode = _mode_argument(call, opener.position, opener.keyword)
+        writes = opener.writes_by_default if mode is None else _writes_with_mode(mode, bindings, opener.writes)
+        return target if writes else None
     if isinstance(call.func, ast.Attribute):
         if call.func.attr in FILESYSTEM_WRITES["method"] or _replaces_a_path(call):
             return call.func.attr
@@ -416,14 +600,43 @@ def _keyword_arguments(call: ast.Call, names: set[str]) -> list[ast.expr]:
     return [keyword.value for keyword in call.keywords if keyword.arg is None or keyword.arg in names]
 
 
+# The writes that name where they land in one argument, by its position and the keywords that may give it: open()
+# and os.open() write to their file, and os.open() also relative to its dir_fd; an archive, compressed file, or
+# database opener to its file; unpack_archive to its extract_dir; and make_archive to its base_name.
+NAMED_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
+    "os.open": (0, frozenset({"path", "dir_fd"})),
+    **{name: (0, frozenset({"file"})) for name in OPEN_FUNCTIONS},
+    **{name: (0, opener.files) for name, opener in MODE_OPENERS.items()},
+    "shutil.unpack_archive": (1, frozenset({"extract_dir"})),
+    "shutil.make_archive": (0, frozenset({"base_name"})),
+}
+# The archive methods that write to their path argument, never to their receiver, which is the archive they read.
+METHOD_DESTINATIONS: dict[str, tuple[int, frozenset[str]]] = {
+    "extractall": (0, frozenset({"path"})),
+    "extract": (1, frozenset({"path"})),
+}
+
+
+def _named_destination(call: ast.Call, position: int, names: frozenset[str]) -> list[ast.expr]:
+    """The argument at position or a `*` unpacking at or before it, and each keyword in names or `**` unpacking. A
+    call that gives none, such as an extraction into the working directory, names no destination."""
+    positional = [
+        argument
+        for index, argument in enumerate(call.args[: position + 1])
+        if index == position or isinstance(argument, ast.Starred)
+    ]
+    return positional + _keyword_arguments(call, set(names))
+
+
 def _write_destinations(call: ast.Call, aliases: dict[str, str]) -> list[ast.expr]:
-    """The arguments that may name where a write lands. open() and os.open() write to their file and os.open() also
-    relative to its dir_fd; a path method writes to its receiver and, for a rename or a link, to its target; any
-    other function may write to every argument but a constant that is not a string, such as a mode or a flag."""
+    """The arguments that may name where a write lands. A write in NAMED_DESTINATIONS or METHOD_DESTINATIONS lands at
+    the argument it names; a path method writes to its receiver and, for a rename or a link, to its target; any other
+    function may write to every argument but a constant that is not a string, such as a mode or a flag."""
     target = qualified_name(call.func, aliases)
-    if target == "os.open" or target in OPEN_FUNCTIONS:
-        names = {"path", "dir_fd"} if target == "os.open" else {"file"}
-        return call.args[:1] + _keyword_arguments(call, names)
+    if target in NAMED_DESTINATIONS:
+        return _named_destination(call, *NAMED_DESTINATIONS[target])
+    if isinstance(call.func, ast.Attribute) and call.func.attr in METHOD_DESTINATIONS:
+        return _named_destination(call, *METHOD_DESTINATIONS[call.func.attr])
     if target not in FILESYSTEM_WRITES["qualified"] and isinstance(call.func, ast.Attribute):
         second = [*call.args, *_keyword_arguments(call, {"target"})] if call.func.attr in TWO_PATH_METHODS else []
         return [call.func.value, *second]
