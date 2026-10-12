@@ -3464,10 +3464,7 @@ class RuntimeHostTests(unittest.TestCase):
             winget = local_app_data / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
             winget.parent.mkdir(parents=True)
             winget.write_bytes(b"fixture")
-            with (
-                mock.patch("review_hosts.shutil.which", return_value=None),
-                mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}),
-            ):
+            with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data), "PATH": str(winget.parent.parent)}):
                 self.assertEqual(str(winget), find_copilot())
 
     def test_copilot_jsonl_is_diagnostic_not_the_result(self) -> None:

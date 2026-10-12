@@ -46,7 +46,7 @@ An inline reviewer has no reviewer agent and no `PreToolUse` guard: it is the se
 
 ## Bounded code-review host
 
-The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the one on `PATH` or else WinGet's, and refuses a shell script such as the `copilot.cmd` an npm install puts on `PATH`, since Windows starts one through `cmd.exe`. It:
+The bounded host runs a repository entrypoint reviewer. It requires GitHub Copilot CLI 1.0.88 or newer, installed from WinGet or the GitHub release: it runs Copilot CLI's own program, the first on `PATH` or else WinGet's, and passes over a shell script such as the `copilot.cmd` an npm install puts on `PATH`, wherever it stands there, since Windows starts one through `cmd.exe`. With only a shell script on `PATH` and no WinGet program, it refuses and names each script it passed over. It:
 
 - runs from a new isolated workspace with isolated `HOME`, `USERPROFILE`, and `COPILOT_HOME` values;
 - gives Copilot its prompt on standard input, so no review text is part of its command line;

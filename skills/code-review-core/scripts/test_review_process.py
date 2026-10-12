@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,15 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from review_process import JobTree, ProcessStatus, process_status, same_process, start_detached, winget_copilot
+from review_process import (
+    JobTree,
+    ProcessStatus,
+    path_programs,
+    process_status,
+    same_process,
+    start_detached,
+    winget_copilot,
+)
 
 # Prints a line, then sleeps until it is terminated, so its liveness can be probed from outside.
 SLEEPER = (
@@ -130,6 +139,30 @@ class WingetCopilotTests(unittest.TestCase):
             self.assertIsNone(winget_copilot(), "the Links folder alone is not an installation")
             link.write_bytes(b"fixture")
             self.assertEqual(link, winget_copilot())
+
+
+class PathProgramsTests(unittest.TestCase):
+    def test_every_match_on_path_in_order_by_the_extension_rules_of_shutil_which(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            first, second, third = (Path(temporary) / f"folder {index}" for index in range(3))
+            for folder in (first, second, third):
+                folder.mkdir()
+            (first / "copilot").write_bytes(b"no extension, so not a Windows command")
+            (first / "copilot.cmd").write_bytes(b"fixture")
+            (first / "copilot.exe").write_bytes(b"fixture")
+            (second / "copilot.exe").mkdir()
+            (third / "copilot.bat").write_bytes(b"fixture")
+            path = os.pathsep.join(("", str(first), str(second), str(first), str(third)))
+            with mock.patch.dict(os.environ, {"PATH": path, "PATHEXT": ".EXE;.BAT;.CMD"}):
+                self.assertEqual(
+                    [str(first / "copilot.EXE"), str(first / "copilot.CMD"), str(third / "copilot.BAT")],
+                    path_programs("copilot"),
+                    "PATHEXT's order within a folder, PATH's across them; a folder once; no directory",
+                )
+                self.assertEqual(shutil.which("copilot", path=str(first)), path_programs("copilot")[0])
+                self.assertEqual([str(third / "copilot.bat")], path_programs("copilot.bat"), "a name with one")
+            with mock.patch.dict(os.environ, {"PATH": "", "PATHEXT": ".EXE"}):
+                self.assertEqual([], path_programs("copilot"))
 
 
 class StartDetachedTests(unittest.TestCase):
