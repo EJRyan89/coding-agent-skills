@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 from bounded_process import run_bounded
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
+from review_documents import LINE_UNSAFE
 from review_io import PersistenceError, atomic_write_json, atomic_write_text, read_diff, read_json
 from review_process import JobTree
 from review_records import (
@@ -119,11 +120,6 @@ def _header_path(rest: str) -> str | None:
         if rest[2 + size : 5 + size] == " b/":
             return rest[5 + size :]
     return None
-
-
-# A character that could end or reshape a line of a reviewer prompt: every C0 control, DEL, and the characters
-# Python's own `splitlines` also breaks on.
-LINE_UNSAFE = re.compile(r"[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 
 def _safe_path(value: str) -> str | None:

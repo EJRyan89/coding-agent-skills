@@ -34,7 +34,7 @@ None
 
 ## Validation
 
-- [ ] The local checks "Validation" in `docs/implementing-changes.md` names for the touched files pass, with no skipped prerequisites; the `Validation` check runs the full suite
+- [ ] The local checks "Validation" in `docs/implementing-changes.md` names for the touched files pass, with no skipped prerequisites; the `Validation` check runs every suite, or the subset the runner selects when the change is documentation-only
 - [ ] Regression coverage added or updated for every behavior change
 - [ ] For a change to skill paths, `allowed-tools`, runtime adapters, or agents, the `runtime-canary` lines are below, with each runtime's version and any `SKIPPED` reason
 - [ ] For a change to a skill's prompt, model guidance, or reviewer instructions, the `evaluate-skill` run is cited below with its table, and `docs/skill-evaluations.md` holds its result
@@ -43,5 +43,6 @@ None
 - [ ] Documentation updated in this change
 - [ ] Diff reviewed for personal paths, organization names, credentials, and generated artifacts
 
-<!-- List anything that could not be run, and why. Continuous integration runs the full suite on every push, the
-     merge of the base branch included, so bringing the branch current needs no local rerun. -->
+<!-- List anything that could not be run, and why. Continuous integration runs every suite on every push, the
+     merge of the base branch included, and on a pull request that is not documentation-only, so bringing the branch
+     current needs no local rerun. -->

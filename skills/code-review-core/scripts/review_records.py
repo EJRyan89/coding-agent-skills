@@ -249,10 +249,7 @@ def validate_adapter_result(
 def _validate_result_envelope(value: Any) -> None:
     """An object of known fields, in the protocol version this module reads."""
     result = READ.json_object(value, "adapter-result", optional=ADAPTER_RESULT_FIELDS)
-    if (
-        READ.integer(result.get("protocol_version"), "adapter-result.protocol_version")
-        != ADAPTER_PROTOCOL_VERSION
-    ):
+    if READ.integer(result.get("protocol_version"), "adapter-result.protocol_version") != ADAPTER_PROTOCOL_VERSION:
         raise RecordError("Unsupported adapter protocol version")
 
 

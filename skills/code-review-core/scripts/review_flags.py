@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 
 from review_config import validate_repository_identity
 from review_io import ResourceLock, atomic_write_json, read_json
+from review_records import FINDING_ID
 from typed_fields import FieldError, FieldReader
 
 # Version 2 adds review_version, so a finding ID names one review; finding IDs restart at F001 in every review.
@@ -32,8 +33,6 @@ FIELDS = frozenset(
         "resolution",
     }
 )
-# A finding's ID within its review, as records assign it.
-FINDING_ID = re.compile(r"F[0-9]{3,}")
 
 
 class FlagError(ValueError):

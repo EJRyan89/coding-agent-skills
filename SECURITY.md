@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`main` is the supported line. Releases are checkpoints: tags on `main` that are not patched separately, so a security fix lands on `main` and is carried into the next release. `update-coding-agent-skills` keeps an installation on `main` and stops at a release that raises the major version until the user accepts it. Update before reporting an issue that may already be resolved.
+`main` is the supported line. Releases are checkpoints: tags on `main` that are not patched separately, so a security fix lands on `main` and is carried into the next release. `update-coding-agent-skills` keeps an installation on `main` and stops at a release that raises the major version until the user accepts it. It also stops at an installation pinned with `deploy.py --at`, which stays at its pinned commit, security fixes included, until the user starts the update skill with `--unpin` or, after updating the clone, runs `python deploy.py --all --unpin`, because `deploy.py` refuses to replace the pin without `--unpin`. Update, or unpin and update, before reporting an issue that may already be resolved.
 
 ## Reporting a vulnerability
 

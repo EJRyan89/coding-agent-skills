@@ -384,10 +384,24 @@ NAMED_SCRIPT = re.compile(r"/([a-z0-9-]+)/scripts/([A-Za-z_]\w*)\.py\b")
 def _referenced_scripts(path: Path) -> set[str]:
     """Module names a file imports, and script names it gives by a path through another skill's scripts/."""
     text = path.read_text(encoding="utf-8", errors="replace")
-    names = {name for _, name in NAMED_SCRIPT.findall(text)}
-    if path.suffix.casefold() == ".py":
-        names |= {found.module.split(".")[0] for found in module_imports(ast.parse(text))}
-    return names
+    if path.suffix.casefold() != ".py":
+        return {name for _, name in NAMED_SCRIPT.findall(text)}
+    tree = ast.parse(text)
+    # A module-level sanction such as DUPLICATION_ALLOWED names, in its reasons, the other files that hold a copy,
+    # which the module does not run.
+    sanctions = {
+        line
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id.endswith("_ALLOWED") for target in node.targets)
+        for line in range(node.lineno, (node.end_lineno or node.lineno) + 1)
+    }
+    unsanctioned = "".join(
+        line for number, line in enumerate(text.splitlines(keepends=True), 1) if number not in sanctions
+    )
+    return {name for _, name in NAMED_SCRIPT.findall(unsanctioned)} | {
+        found.module.split(".")[0] for found in module_imports(tree)
+    }
 
 
 def _skill_dependencies(root: Path, skill: str) -> list[str]:

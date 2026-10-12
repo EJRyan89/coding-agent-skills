@@ -58,6 +58,14 @@ MSBUILD_PROPERTIES = frozenset(
 MSBUILD_PROPERTY_PREFIXES = ("AnalysisLevel", "AnalysisMode")
 DIAGNOSTIC_KEY = re.compile(r"dotnet_(?:analyzer_)?diagnostic(?:\.[^\s=]+)?\.severity", re.IGNORECASE)
 GLOBAL_KEYS = frozenset({"is_global", "global_level"})
+# Constants that tests/run_validation.py allows another file to hold too, with the reason.
+DUPLICATION_ALLOWED = {
+    "XML_DECLARATION": (
+        "skills/dotnet-format/scripts/dotnet_format_targets.py holds the same XML declaration pattern; "
+        "code-review-core does not depend on dotnet-format, and the guarded XML reading both scripts do belongs in "
+        "skill-core, where a change of its own moves it and removes this entry"
+    ),
+}
 XML_DECLARATION = re.compile(r"\A\s*<\?xml[^>]*\?>")
 TOP_SECTION = "\x00top"
 SECTION_HEADER = re.compile(r"\[(.+)\]")

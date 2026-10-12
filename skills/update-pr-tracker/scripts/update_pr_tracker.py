@@ -32,6 +32,7 @@ from review_config import (
 )
 from review_github import GitHubClient
 from review_io import atomic_write_text
+from review_records import SEVERITIES as SEVERITY_KEYS
 from typed_fields import FieldError, FieldReader
 
 START_MARKER = "<!-- code-review-pr-tracker:start -->"
@@ -97,9 +98,6 @@ class TrackerFieldError(FieldError, TrackerError):
 
 
 READ = FieldReader(TrackerFieldError)
-
-
-SEVERITY_KEYS = frozenset({"MUST_FIX", "SHOULD_FIX", "SUGGESTION"})
 
 
 class Detector(Protocol):

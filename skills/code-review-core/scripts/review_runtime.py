@@ -27,6 +27,7 @@ from git_client import GitClient, GitError, GitResult, GitStream, Runner, subpro
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
+from review_guard import ROLE_ID as SLUG
 from review_io import PersistenceError, atomic_write_json, read_diff
 from review_process import winget_copilot
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
@@ -132,7 +133,6 @@ GENERIC_SPECIALIST = "generic-review"
 # no other file through one.
 SUITE_PROFILES = {"design-review": "design-reviewer.md"}
 SUITE_REFERENCES = Path(__file__).resolve().parents[1] / "references"
-SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 # The snapshot paths a condition may declare it reads: glob patterns, bounded as a repository's snapshot_exclude is.
 MAX_CONDITION_READS = 100
 MAX_READ_PATTERN_LENGTH = 200

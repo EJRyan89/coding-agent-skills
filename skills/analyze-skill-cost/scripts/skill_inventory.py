@@ -84,6 +84,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scr
 import frontmatter
 from console import use_utf8_output
 from git_client import GitClient
+from markdown_sections import CODE_SPAN
 
 MAIN_NAME = "skill.md"
 HELPER_SUFFIXES = frozenset({".sh", ".bash", ".ps1", ".py", ".js", ".mjs", ".cjs", ".ts"})
@@ -97,7 +98,6 @@ DOC_TOC_LINE_LIMIT = 100
 SKIPPED_DIRECTORIES = frozenset({".git", "__pycache__", "node_modules"})
 SKILL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
-CODE_SPAN = re.compile(r"`([^`\n]+)`")
 SHELL_FENCES = frozenset({"bash", "sh", "shell", "console"})
 POWERSHELL_FENCES = frozenset({"powershell", "pwsh", "ps1"})
 KNOWN_TOOLS = (
