@@ -48,7 +48,7 @@ scenarios. A pull request that changes a skill's prompt, model guidance, or revi
 | review-document | haiku | claude-haiku-5-5 | 14/20 | committed-edit 0/3, design-clean 0/2, design-gaps 4/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
 | review-document | sonnet | claude-sonnet-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
 | review-document | opus | claude-opus-5-5 | 20/20 | committed-edit 3/3, design-clean 2/2, design-gaps 5/5, pdf-gaps 5/5, word-gaps 5/5 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
-| review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
-| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
-| review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.296 | 2026-10-11 |
+| review-prs | haiku | claude-haiku-5-5 | 19/21 | clean-change 2/2, design-clean 1/2, design-gaps 5/5, planted-defects 4/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-prs | sonnet | claude-sonnet-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
+| review-prs | opus | claude-opus-5-5 | 21/21 | clean-change 2/2, design-clean 2/2, design-gaps 5/5, planted-defects 5/5, re-review 7/7 | claude-opus-5-5 | 2.1.291 | 2026-10-12 |
 <!-- skill-evals:end -->
