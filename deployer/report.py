@@ -39,6 +39,7 @@ def _detail(*parts: str) -> str:
 
 
 SKIPPED_WITH_SKILL = "its skill was skipped"
+KEPT_WITH_SKILL = "its skill stays"
 
 DRY_RUN = "DRY RUN"
 DEPLOYED = "DEPLOYED"
@@ -78,7 +79,7 @@ def _fold_adapters(lines: list[ReportLine]) -> list[ReportLine]:
     def repeats_skill(line: ReportLine) -> bool:
         if line.kind != ADAPTER or line.name not in skill_actions:
             return False
-        if line.action == "UNCHANGED" or line.detail == SKIPPED_WITH_SKILL:
+        if line.action == "UNCHANGED" or line.detail in (SKIPPED_WITH_SKILL, KEPT_WITH_SKILL):
             return True
         return line.action == skill_actions[line.name] and line.action not in ATTENTION_ACTIONS
 
