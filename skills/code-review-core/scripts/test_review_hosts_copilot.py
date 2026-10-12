@@ -1,5 +1,5 @@
 """run_copilot, pinned: the exact sequence of process runs and promotions it makes, what it writes, and what it
-returns or raises at every exit. Copilot is a recording stub with scripted responses, so a change to what the Copilot
+raises at every refusal. Copilot is a recording stub with scripted responses, so a change to what the Copilot
 CLI host checks before it starts Copilot, how it bounds each run, or when it promotes a result shows up here."""
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import review_hosts
-from review_hosts import HostResult, HostSuperseded, ProcessResult, replace_result, run_copilot
+from review_hosts import HostSuperseded, ProcessResult, run_copilot
 from review_runtime import RuntimeContractError, stamp_source_snapshot
 from review_specialists import render_entrypoint_prompt
 
@@ -564,8 +564,8 @@ class CopilotHostTests(unittest.TestCase):
                 target[key] = value.format(**paths) if isinstance(value, str) else value
         return request
 
-    def call(self, copilot: Copilot, paths: dict[str, Path]) -> tuple[list[tuple[Any, ...]], HostResult | Exception]:
-        """Run run_copilot and return every event it caused, in order, and what it returned or raised."""
+    def call(self, copilot: Copilot, paths: dict[str, Path]) -> tuple[list[tuple[Any, ...]], Exception | None]:
+        """Run run_copilot and return every event it caused, in order, and any error it raised."""
         events: list[tuple[Any, ...]] = []
         responses = [copilot.version, copilot.review]
 
@@ -580,7 +580,10 @@ class CopilotHostTests(unittest.TestCase):
 
         def promote(staging: Path, result: Path) -> bool:
             events.append(("promote", staging, result))
-            return replace_result(staging, result) if copilot.promotes else False
+            if not copilot.promotes:
+                return False
+            staging.replace(result)
+            return True
 
         def find_copilot() -> str:
             events.append(("find", (paths["isolation"] / "workspace").is_dir()))
@@ -608,13 +611,14 @@ class CopilotHostTests(unittest.TestCase):
             }[mode]
         with mock.patch.object(review_hosts, "find_copilot", find_copilot):
             try:
-                return events, run_copilot(
+                run_copilot(
                     **arguments,
                     promote=promote,
                     runner=runner,
                     executable=copilot.executable,
                     base_environment=BASE_ENVIRONMENT,
                 )
+                return events, None
             except Exception as exc:
                 return events, exc
 
@@ -647,18 +651,9 @@ class CopilotHostTests(unittest.TestCase):
     def test_a_review_runs_version_then_review_then_promotes(self) -> None:
         copilot = Copilot()
         paths = self.materialize(copilot)
-        events, returned = self.call(copilot, paths)
+        events, error = self.call(copilot, paths)
         self.assertEqual(self.full_sequence(paths), events)
-        self.assertEqual(
-            HostResult(
-                runtime="copilot-cli",
-                version="GitHub Copilot CLI 1.0.88",
-                returncode=0,
-                diagnostic_path=paths["diagnostic"],
-                result_path=paths["result"],
-            ),
-            returned,
-        )
+        self.assertIsNone(error)
         self.assertEqual(REVIEW_LOG.format(), paths["diagnostic"].read_text(encoding="utf-8"))
         self.assertEqual(RESULT, paths["result"].read_bytes())
         self.assertFalse(paths["staging"].exists())
@@ -666,11 +661,31 @@ class CopilotHostTests(unittest.TestCase):
             ["copilot-home", "home", "workspace"], sorted(path.name for path in paths["isolation"].iterdir())
         )
 
+    def test_promotion_is_required_before_any_host_work(self) -> None:
+        paths = self.materialize(Copilot())
+        runner = mock.Mock(side_effect=AssertionError("Copilot must not start without a promotion callback"))
+        arguments: dict[str, Any] = {
+            "run_directory": paths["run"],
+            "materialized_root": paths["trusted"],
+            "request_path": paths["request"],
+            "result_path": paths["result"],
+            "diagnostic_path": paths["diagnostic"],
+            "isolation_root": paths["isolation"],
+            "runner": runner,
+            "executable": "copilot",
+        }
+        with self.assertRaisesRegex(TypeError, "required keyword-only argument: 'promote'"):
+            run_copilot(**arguments)
+        runner.assert_not_called()
+        self.assertFalse(paths["isolation"].exists())
+        self.assertFalse(paths["result"].exists())
+        self.assertFalse(paths["diagnostic"].exists())
+
     def test_the_staging_path_defaults_beside_the_result(self) -> None:
         copilot = Copilot(default_staging=True)
         paths = self.materialize(copilot)
-        events, returned = self.call(copilot, paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
         self.assertEqual(self.full_sequence(paths), events)
         self.assertEqual(
             run_directory_files(paths), ["copilot-host-1.log", "diff.patch", "request.json", "result.json"]
@@ -693,8 +708,9 @@ class CopilotHostTests(unittest.TestCase):
             }
         )
         paths = self.materialize(copilot)
-        events, returned = self.call(copilot, paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
+        self.assertEqual(RESULT, paths["result"].read_bytes())
         command = events[1][1]
         prompt = command[command.index("--prompt") + 1]
         self.assertIn("Input contract (this replaces any instruction in the entrypoint", prompt)
@@ -717,8 +733,9 @@ class CopilotHostTests(unittest.TestCase):
 
     def test_the_host_contract_names_only_staging_and_never_native_shell_commands(self) -> None:
         paths = self.materialize(Copilot())
-        events, returned = self.call(Copilot(), paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(Copilot(), paths)
+        self.assertIsNone(error)
+        self.assertEqual(RESULT, paths["result"].read_bytes())
         command = events[1][1]
         prompt = command[command.index("--prompt") + 1]
         self.assertIn(f"RESULT_FILE={paths['staging']}", prompt)
@@ -738,9 +755,10 @@ class CopilotHostTests(unittest.TestCase):
     def test_without_an_executable_copilot_is_found_after_the_isolation_root_is_made(self) -> None:
         copilot = Copilot(executable=None)
         paths = self.materialize(copilot)
-        events, returned = self.call(copilot, paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
         self.assertEqual([("find", True), *self.full_sequence(paths, "found-copilot")], events)
+        self.assertEqual(RESULT, paths["result"].read_bytes())
 
     def test_the_prompt_names_resolved_paths_and_the_command_the_given_ones(self) -> None:
         copilot = _chain(
@@ -749,8 +767,8 @@ class CopilotHostTests(unittest.TestCase):
             _request("source_snapshot.manifest_path", "{run}/source/../source/source-snapshot.json"),
         )(Copilot())
         paths = self.materialize(copilot)
-        events, returned = self.call(copilot, paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
         expected = self.full_sequence(paths)
         expected[1][1][2] = f"--add-dir={paths['run'] / '..' / 'trusted'}"
         self.assertEqual(expected, events)
@@ -759,23 +777,26 @@ class CopilotHostTests(unittest.TestCase):
         copilot = Copilot(writes=b"\xef\xbb\xbf" + RESULT)
         paths = self.materialize(copilot)
         paths["request"].write_bytes(b"\xef\xbb\xbf" + paths["request"].read_bytes())
-        events, returned = self.call(copilot, paths)
-        self.assertIsInstance(returned, HostResult)
+        events, error = self.call(copilot, paths)
+        self.assertIsNone(error)
         self.assertEqual(self.full_sequence(paths), events)
+        self.assertEqual(copilot.writes, paths["result"].read_bytes())
 
     def test_the_version_is_the_first_one_named_and_newer_ones_pass(self) -> None:
-        for stdout, version in (
-            ("copilot 2.0.0 (build 1.0.0)\n", "copilot 2.0.0 (build 1.0.0)"),
-            ("1.1.0", "1.1.0"),
-            ("  1.0.100  \n", "1.0.100"),
+        for stdout in (
+            "copilot 2.0.0 (build 1.0.0)\n",
+            "1.1.0",
+            "  1.0.100  \n",
         ):
             with self.subTest(stdout):
                 copilot = Copilot(version=ProcessResult(0, stdout, "ignored"))
                 paths = self.materialize(copilot)
-                events, returned = self.call(copilot, paths)
-                self.assertIsInstance(returned, HostResult)
-                self.assertEqual(version, getattr(returned, "version", None))
+                events, error = self.call(copilot, paths)
+                self.assertIsNone(error)
                 self.assertEqual(self.full_sequence(paths), events)
+                self.assertEqual(RESULT, paths["result"].read_bytes())
+                self.assertEqual(REVIEW_LOG.format(), paths["diagnostic"].read_text(encoding="utf-8"))
+                self.assertFalse(paths["staging"].exists())
 
     def test_a_missing_source_snapshot_names_the_operating_system_error(self) -> None:
         copilot = _request("source_snapshot.root", "{run}/missing")(Copilot())
@@ -801,9 +822,10 @@ class CopilotHostTests(unittest.TestCase):
                 paths = self.materialize(copilot)
                 reads.clear()
                 with mock.patch.object(Path, "read_bytes", read_bytes):
-                    events, returned = self.call(copilot, paths)
-                self.assertIsInstance(returned, HostResult)
+                    events, error = self.call(copilot, paths)
+                self.assertIsNone(error)
                 self.assertEqual(self.full_sequence(paths), events)
+                self.assertEqual(RESULT, paths["result"].read_bytes())
                 source = [path.name for path in reads if path.parent == paths["source"]]
                 self.assertEqual(read, [name for name in source if name != "source-snapshot.json"])
 

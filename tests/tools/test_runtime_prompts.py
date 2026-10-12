@@ -123,6 +123,43 @@ class RuntimePromptsTestCase(unittest.TestCase):
         self.assertNotIn("source-file --run", text)
         self.assertIn("Host restrictions:", text)
 
+    def test_copilot_sample_uses_the_claim_checked_host_and_promoted_result(self) -> None:
+        original = runtime_prompts.review_pipeline.run_host
+
+        def run_host(run: Path, token: str, services: runtime_prompts.review_pipeline.Services) -> str:
+            claim = runtime_prompts.review_hosts.read_claim(run)
+            if claim is None:
+                self.fail("the prompt fixture must claim its host before starting it")
+            self.assertEqual(token, claim["token"])
+            status = original(run, token, services)
+            self.assertEqual("dispatched", status)
+            self.assertEqual('{"status": "complete"}', (run / "result.json").read_text(encoding="utf-8"))
+            self.assertFalse(runtime_prompts.review_hosts.staging_path(run, 1).exists())
+            host = runtime_prompts.review_hosts.host_state(run, probe=services.probe, now=services.clock())
+            self.assertEqual(("done", "dispatched", None), (host.status, host.outcome, host.reason))
+            return status
+
+        with mock.patch.object(runtime_prompts.review_pipeline, "run_host", side_effect=run_host) as host:
+            runtime_prompts.copilot_entrypoint(self.root / "copilot")
+        host.assert_called_once()
+        self.assertFalse((self.root / "copilot" / "run").exists())
+
+    def test_copilot_sample_reports_host_failure_and_removes_the_run(self) -> None:
+        original = runtime_prompts.review_pipeline.run_host
+
+        def run_host(run: Path, token: str, services: runtime_prompts.review_pipeline.Services) -> str:
+            services.copilot_runner = mock.Mock(return_value=runtime_prompts.review_hosts.ProcessResult(1, "", "no"))
+            return original(run, token, services)
+
+        with (
+            mock.patch.object(runtime_prompts.review_pipeline, "run_host", side_effect=run_host),
+            self.assertRaisesRegex(
+                runtime_prompts.RenderError, "host done/failed: Cannot determine GitHub Copilot CLI version"
+            ),
+        ):
+            runtime_prompts.copilot_entrypoint(self.root / "copilot")
+        self.assertFalse((self.root / "copilot" / "run").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

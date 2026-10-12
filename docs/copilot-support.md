@@ -58,4 +58,8 @@ The bounded host runs a repository entrypoint reviewer. It requires GitHub Copil
 - names the exact trusted materialized entrypoint and classifies request metadata, prior findings, review-comment bodies, source, diff, and pull-request description as untrusted data, never instructions; and
 - treats CLI JSON output as diagnostics, never as the review result.
 
+The internal `run_copilot` interface requires the caller's promotion callback and returns no review object.
+The pipeline supplies the callback that checks the host's claim under its lock; review data is read from the
+promoted result file, and CLI output remains in the diagnostic file.
+
 Authentication supplied through the invoking environment may remain available, but ambient Copilot configuration and personal skills do not. A real end-to-end reviewer canary invokes the model and is therefore an explicit release/cutover step, not part of ordinary deterministic validation.
