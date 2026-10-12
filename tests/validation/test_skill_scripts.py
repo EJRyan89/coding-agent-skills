@@ -903,9 +903,15 @@ class SkillScriptsFixtures(GitTestCase):
                 'GitHubClient().run(["api"])\n',
                 "skills/alpha/scripts/git.py": 'import git_client\n\ngit_client.GitClient().run(["status"])\n',
                 "skills/alpha/scripts/lookup.py": 'import shutil as sh\n\nPROGRAM = sh.which("copilot")\n',
-                # code-review-core's PATH walk looks a program up as shutil.which does.
-                "skills/alpha/scripts/walked.py": "from review_process import path_programs\n\n"
+                # skill-core's locator looks a program up as shutil.which does, and so do its lists of every match.
+                "skills/alpha/scripts/walked.py": "from executable_locator import path_programs\n\n"
                 'PROGRAMS = path_programs("ruby")\n',
+                "skills/alpha/scripts/candidates.py": "import executable_locator\n\n"
+                'FOUND = executable_locator.find_executables("lua")\n',
+                # A command whose program the locator names by its path runs the program the command names.
+                "skills/alpha/scripts/located.py": "from bounded_process import run_bounded\n"
+                "from executable_locator import located_command\n\n"
+                'run_bounded(located_command(["swift", "--version"]), 5)\n',
                 # Neither a string that reads like a call nor a list of other words is a command.
                 "skills/alpha/scripts/quiet.py": 'TEXT = "subprocess.run([\\"zsh\\"])"\nLABELS = ["zip", "unzip"]\n'
                 'print(["python", "-B"])\n',
@@ -919,7 +925,7 @@ class SkillScriptsFixtures(GitTestCase):
                     "skill alpha runs gh without declaring it in tools",
                     *(
                         f"skill alpha runs {name}, which a standard install lacks; see {doc}"
-                        for name in ("jq", "node", "perl", "rg", "ruby", "yq")
+                        for name in ("jq", "lua", "node", "perl", "rg", "ruby", "swift", "yq")
                     ),
                 ],
                 skill_command_problems(root, {"copilot", "dotnet-format", "gh"}, {"git", "python"}),

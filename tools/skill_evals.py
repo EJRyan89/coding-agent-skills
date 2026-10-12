@@ -119,7 +119,6 @@ import itertools
 import json
 import os
 import re
-import shutil
 import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -137,7 +136,7 @@ from git_client import GitClient, GitError
 from review_records import DISPOSITIONS as RECORD_DISPOSITIONS
 from review_records import LEDGER_ID, SEVERITY_RANK
 
-from deployer import fsops, tools
+from deployer import fsops, platform_support, tools
 from tools import runtime_canary
 from tools.runtime_canary import Completed, Runner
 
@@ -1151,7 +1150,7 @@ class Seams:
     """What a run reaches outside this module, so tests can stand in for each."""
 
     runner: Runner = runtime_canary.run_process
-    which: Callable[[str], str | None] = shutil.which
+    which: Callable[[str], str | None] = platform_support.find_executable
     deploy: Callable[[Path, Path], tuple[int, str]] = runtime_canary.deploy
     environment: Mapping[str, str] | None = None
     make_home: Callable[[], Path] = new_home
@@ -1165,7 +1164,7 @@ def preflight(write: bool, seams: Seams) -> tuple[str, str | None]:
     something a run needs is missing."""
     executable = seams.which("claude")
     if executable is None:
-        raise ScenarioError("Claude Code (claude) is not on PATH")
+        raise ScenarioError("Claude Code (claude) is not installed")
     if not write:
         return executable, None
     try:

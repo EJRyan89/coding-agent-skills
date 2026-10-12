@@ -11,14 +11,23 @@ import re
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 # The extraction the code-review skills run, which must find the pdftotext check reports.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "code-review-core" / "scripts"))
+# The formatter skill, which must find and run the dotnet and dotnet-format check reports.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "dotnet-format" / "scripts"))
 
+import bounded_process
+import github_client
 import review_documents
+import review_hosts
+import review_runtime
+import run_dotnet_format
 from git_test_base import GitTestCase
 from harness import REPOSITORY_ROOT, SOURCE_ID, DeployerTestCase, Result, forward
 from pdf_tool import MINIMUMS, PdfIdentity, PdfToolRefused, parse_banner
@@ -85,6 +94,12 @@ class Machine:
                 side_effect=lambda name: self.git if name == "git" else self.installed.get(name, (None,))[0],
             )
         )
+        stack.enter_context(
+            mock.patch(
+                "deployer.platform_support.find_executables",
+                side_effect=lambda name: [self.installed[name][0]] if name in self.installed else [],
+            )
+        )
         stack.enter_context(mock.patch("deployer.platform_support.find_bash", return_value=self.bash))
         stack.enter_context(mock.patch("deployer.platform_support.find_powershell", return_value=self.powershell))
         stack.enter_context(
@@ -94,15 +109,13 @@ class Machine:
             )
         )
         stack.enter_context(mock.patch("deployer.tools.python_version", return_value=self.python))
-        stack.enter_context(
-            mock.patch(
-                "deployer.tools.probe_pdftotext",
-                side_effect=lambda path: parse_banner(
-                    self.versions[path], 0 if "The Poppler Developers" in self.versions[path] else 99
-                ),
-            )
-        )
+        stack.enter_context(mock.patch("deployer.tools.probe_pdftotext", side_effect=self.probe_pdftotext))
         return stack
+
+    def probe_pdftotext(self, path: str) -> PdfIdentity:
+        """The banner of the program at this resolved path, with the status its provider exits with."""
+        [banner] = [output for found, output in self.versions.items() if Path(found).resolve() == Path(path)]
+        return parse_banner(banner, 0 if "The Poppler Developers" in banner else 99)
 
     def run_tool(self, arguments: list[str]) -> platform_support.ToolResult:
         if arguments[0] != GIT:
@@ -257,8 +270,9 @@ class CheckCommandTests(DeployerTestCase):
                 groups = self.report_groups(self.check(Machine(versions={"pdftotext": banner})).output, "CHECK")
                 self.assertEqual(
                     [
-                        f"pdftotext {provider} {version} (pdftotext {provider} {version} is unsupported; "
-                        f"upgrade to {provider} {floor} or newer)"
+                        f"pdftotext {provider} {version} (no supported pdftotext: skipped C:/tools/pdftotext.exe "
+                        f"({provider} {version}, older than {provider} {floor}); install Xpdf 4.06 or newer or "
+                        "Poppler 26.10.0 or newer)"
                     ],
                     groups["OUTDATED"],
                 )
@@ -272,10 +286,21 @@ class CheckCommandTests(DeployerTestCase):
         set_tools(self, "core", ["pdftotext"], key="optional_tools")
         with (
             Machine().patches(),
-            mock.patch("deployer.tools.probe_pdftotext", side_effect=PdfToolRefused("pdftotext version probe failed")),
+            mock.patch(
+                "deployer.tools.probe_pdftotext",
+                side_effect=PdfToolRefused("version probe failed with exit status 1"),
+            ),
         ):
             line = _tool_line(tools.SKILL_TOOLS["pdftotext"], True, ["operations"])
-        self.assertEqual(("UNUSABLE", "pdftotext version probe failed"), (line.action, line.detail))
+        self.assertEqual(
+            (
+                "pdftotext",
+                "UNUSABLE",
+                "no supported pdftotext: skipped C:/tools/pdftotext.exe (version probe failed with exit status 1); "
+                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer",
+            ),
+            (line.name, line.action, line.detail),
+        )
 
     def test_windows_powershell_is_enough_to_deploy(self) -> None:
         groups = self.report_groups(self.check(Machine(powershell="5.1.26100.1")).output, "CHECK")
@@ -562,13 +587,14 @@ class VersionTests(GitTestCase):
         self.assertEqual({"provider_minimum"}, changed)
         self.assertNotIn("version_statuses", {field.name for field in dataclasses.fields(tools.Tool)})
         with (
-            mock.patch("deployer.platform_support.find_executable", return_value="C:/tools/pdftotext.exe"),
+            mock.patch("deployer.platform_support.find_executables", return_value=["C:/tools/pdftotext.exe"]),
             mock.patch("deployer.platform_support.run_tool") as run_tool,
             mock.patch("deployer.tools.probe_pdftotext", side_effect=lambda path: parse_banner(XPDF_4_06, 99)),
         ):
             probe = tools.probe(entry)
         run_tool.assert_not_called()
-        self.assertEqual(("C:/tools/pdftotext.exe", (4, 6), None), (probe.path, probe.version, probe.refusal))
+        resolved = str(Path("C:/tools/pdftotext.exe").resolve())
+        self.assertEqual((resolved, (4, 6), None, ()), (probe.path, probe.version, probe.refusal, probe.skipped))
 
     def test_parse_version_reads_the_first_dotted_number(self) -> None:
         for output, expected in (
@@ -622,37 +648,53 @@ class VersionTests(GitTestCase):
             ast.parse("if (found := 1):\n    pass\n", feature_version=(3, 7))
 
 
-class SharedLocatorTests(GitTestCase):
-    """`check` and the PDF extraction find pdftotext through one locator, so on one fixture they report the same tool.
-    The fixture is sanitized: PATH is one empty folder, and the local application data folder is a fresh one whose
-    WinGet Links folder holds the only pdftotext, as a portable WinGet install leaves it."""
+class LocatorFixture(GitTestCase):
+    """A sanitized fixture: PATH is one empty folder, and the local application data folder is a fresh one with an
+    empty WinGet Links folder, so the only programs `check` and a skill find are the ones a test installs."""
 
     def setUp(self) -> None:
         super().setUp()
         temporary = tempfile.TemporaryDirectory(prefix="shared locator ")
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name).resolve()
-        (root / "empty path").mkdir()
+        self.path_folder = root / "on path"
+        self.path_folder.mkdir()
         self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
         self.links.mkdir(parents=True)
         environment = mock.patch.dict(
-            os.environ, {"PATH": str(root / "empty path"), "LOCALAPPDATA": str(root / "local app data")}
+            os.environ,
+            {"PATH": str(self.path_folder), "PATHEXT": ".com;.exe", "LOCALAPPDATA": str(root / "local app data")},
         )
         environment.start()
         self.addCleanup(environment.stop)
-        self.banner = XPDF_4_06
+
+    def install(self, folder: Path, name: str) -> Path:
+        program = folder / f"{name}.exe"
+        program.write_bytes(b"")
+        return program
+
+
+class SharedLocatorTests(LocatorFixture):
+    """`check` and the PDF extraction choose pdftotext alike, among every one the locator finds, so on one fixture
+    they report the same parser, skip, refusal, or absence. A portable WinGet install leaves a parser in the Links
+    folder; Git Bash puts Git's bundled Xpdf 4.0 on PATH ahead of the Windows PATH, as the fixture's PATH folder
+    does."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.banners: dict[Path, str] = {}
         self.probed: list[str] = []
         self.started: list[list[str]] = []
 
-    def install(self, banner: str) -> Path:
-        program = self.links / "pdftotext.exe"
-        program.write_bytes(b"")
-        self.banner = banner
+    def parser(self, folder: Path, banner: str) -> Path:
+        program = self.install(folder, "pdftotext")
+        self.banners[program.resolve()] = banner
         return program
 
     def probe(self, path: str) -> PdfIdentity:
         self.probed.append(path)
-        return parse_banner(self.banner, 99)
+        banner = self.banners[Path(path)]
+        return parse_banner(banner, 0 if "The Poppler Developers" in banner else 99)
 
     def start(self, command: list[str], **_: object) -> None:
         self.started.append(command)
@@ -674,7 +716,7 @@ class SharedLocatorTests(GitTestCase):
     def test_a_supported_pdftotext_only_in_wingets_links_folder_is_found_by_both_and_run_at_the_checked_path(
         self,
     ) -> None:
-        program = self.install(XPDF_4_06)
+        program = self.parser(self.links, XPDF_4_06)
         line, refusal = self.check_and_extract()
         self.assertEqual(("pdftotext Xpdf 4.06", "OPTIONAL", "used by operations"), line)
         self.assertEqual("pdftotext could not be started", refusal)
@@ -682,12 +724,43 @@ class SharedLocatorTests(GitTestCase):
         self.assertEqual([str(program.resolve())], [command[0] for command in self.started])
 
     def test_an_unsupported_pdftotext_only_there_gets_the_same_refusal_from_both(self) -> None:
-        self.install(XPDF_4_00)
+        program = self.parser(self.links, XPDF_4_00)
         line, refusal = self.check_and_extract()
-        unsupported = "pdftotext Xpdf 4.00 is unsupported; upgrade to Xpdf 4.06 or newer"
+        unsupported = (
+            f"no supported pdftotext: skipped {program} (Xpdf 4.00, older than Xpdf 4.06); "
+            "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+        )
         self.assertEqual(("pdftotext Xpdf 4.00", "OUTDATED", unsupported), line)
         self.assertEqual(unsupported, refusal)
         self.assertEqual(2, len(self.probed))
+        self.assertEqual([], self.started)
+
+    def test_a_supported_pdftotext_behind_gits_bundled_one_is_chosen_by_both_and_the_skip_reported(self) -> None:
+        bundled = self.parser(self.path_folder, XPDF_4_00)
+        supported = self.parser(self.links, XPDF_4_06)
+        line, refusal = self.check_and_extract()
+        self.assertEqual(
+            (
+                "pdftotext Xpdf 4.06",
+                "OPTIONAL",
+                f"used by operations; skipped {bundled} (Xpdf 4.00, older than Xpdf 4.06)",
+            ),
+            line,
+        )
+        self.assertEqual("pdftotext could not be started", refusal)
+        self.assertEqual([bundled, supported] * 2, [Path(path) for path in self.probed])
+        self.assertEqual([str(supported)], [command[0] for command in self.started])
+
+    def test_only_unsupported_pdftotexts_get_the_same_refusal_from_both_naming_each(self) -> None:
+        bundled = self.parser(self.path_folder, XPDF_4_00)
+        linked = self.parser(self.links, "pdftotext version 0.86.1\nCopyright 2005-2020 The Poppler Developers\n")
+        line, refusal = self.check_and_extract()
+        unsupported = (
+            f"no supported pdftotext: skipped {bundled} (Xpdf 4.00, older than Xpdf 4.06), {linked} (Poppler 0.86.1, "
+            "older than Poppler 26.10.0); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+        )
+        self.assertEqual(("pdftotext Xpdf 4.00", "OUTDATED", unsupported), line)
+        self.assertEqual(unsupported, refusal)
         self.assertEqual([], self.started)
 
     def test_with_no_pdftotext_in_either_both_say_it_is_not_installed(self) -> None:
@@ -695,6 +768,52 @@ class SharedLocatorTests(GitTestCase):
         self.assertEqual(("pdftotext", "OPTIONAL", "not installed; used by operations"), line)
         self.assertEqual("pdftotext, which extracts a PDF's text, is not installed", refusal)
         self.assertEqual(([], []), (self.probed, self.started))
+
+
+class SkillToolLocatorTests(LocatorFixture):
+    """Each tool a skill runs by name is the one `check` reports, found by the same locator on the same fixture and
+    started by that absolute path: only in WinGet's Links folder, and on PATH, which comes first."""
+
+    def started(self, module: Any, run: Callable[[], object]) -> str:
+        """The program `run` starts through `module`'s bounded runner, which the fixture replaces."""
+        finished = bounded_process.Finished(0, b"", b"")
+        with mock.patch.object(module, "run_bounded", return_value=finished) as bounded:
+            run()
+        return str(bounded.call_args.args[0][0])
+
+    def skill_program(self, name: str) -> str | None:
+        """The program the skill that runs `name` finds, and, where it starts one, the one it starts."""
+        if name == "gh":
+            return self.started(github_client, lambda: github_client.subprocess_runner(["gh", "--version"]))
+        if name in ("dotnet", "dotnet-format"):
+            found = run_dotnet_format.Services().which(name)
+            started = self.started(
+                run_dotnet_format, lambda: run_dotnet_format.subprocess_runner([name, "--version"], Path.cwd(), 60)
+            )
+            self.assertEqual(found, started)
+            return found
+        if name == "copilot":
+            return review_hosts.find_copilot()
+        return None
+
+    def test_a_tool_only_in_wingets_links_folder_is_the_one_check_reports_and_the_skill_runs(self) -> None:
+        for name in ("gh", "dotnet", "dotnet-format", "copilot"):
+            with self.subTest(name=name):
+                program = self.install(self.links, name)
+                self.assertEqual(str(program), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
+                self.assertEqual(str(program), self.skill_program(name))
+                on_path = self.install(self.path_folder, name)
+                self.assertEqual(str(on_path), {**tools.SKILL_TOOLS, **tools.VERIFY_TOOLS}[name].locate())
+                self.assertEqual(str(on_path), self.skill_program(name), "PATH comes first")
+
+    def test_a_runtime_cli_check_reports_is_one_the_code_review_skills_detect(self) -> None:
+        catalogue = {tool.name: tool for tool in (*tools.VERIFY_TOOLS.values(), *tools.REPORTED_TOOLS)}
+        for name, runtime in (("copilot", "copilot-cli"), ("codex", "codex"), ("claude", "claude-code")):
+            with self.subTest(name=name):
+                self.assertIsNone(catalogue[name].locate())
+                program = self.install(self.links, name)
+                self.assertEqual(str(program), catalogue[name].locate())
+                self.assertEqual(runtime, review_runtime.resolve_runtime("auto"))
 
 
 if __name__ == "__main__":

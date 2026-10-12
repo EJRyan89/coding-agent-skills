@@ -13,7 +13,7 @@ runtime-canary-probe, then each SKILL given. It prints one fact per line:
 
   HOME "<dir>"                                  the throwaway home; delete it with --remove-home when done
   DEPLOYED <source id>                          or DEPLOY_FAILED <source id> "<log>", which stops the run
-  SKIPPED <runtime> "<reason>"                  the runtime is not on PATH
+  SKIPPED <runtime> "<reason>"                  the runtime is not installed where `deploy.py check` looks
   DISCOVERED <runtime> <skill> ["<path>"]       the runtime lists the canary's copy, enabled
   SHADOWED <runtime> <skill> "<path>"           it also lists another enabled copy, such as an installed adapter
   DISABLED <runtime> <skill> "<path>"           it lists this copy turned off in its settings
@@ -695,7 +695,7 @@ def canary(
     *,
     sources: list[Path],
     runner: Runner | None = None,
-    which: Callable[[str], str | None] = shutil.which,
+    which: Callable[[str], str | None] = platform_support.find_executable,
     base_environment: Mapping[str, str] | None = None,
     discovery_only: bool = False,
     timeout: float = DEFAULT_TIMEOUT,
@@ -729,7 +729,7 @@ def canary(
     for runtime in runtimes:
         executable = which(runtime)
         if executable is None:
-            print(f"SKIPPED {runtime} {quote(f'{runtime} is not on PATH')}")
+            print(f"SKIPPED {runtime} {quote(f'{runtime} is not installed')}")
             continue
         for line in check_runtime(
             runtime,

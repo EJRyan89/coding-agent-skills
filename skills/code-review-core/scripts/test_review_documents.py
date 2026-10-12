@@ -166,6 +166,11 @@ sys.exit(rule["status"])
 """
 
 
+# The program extensions a stub's environment gives the locator, so the path it finds a stub at is known.
+STUB_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+STUB_EXTENSION = ".CMD"
+
+
 def path_without_pdftotext() -> str:
     """This process's PATH less every folder that holds a pdftotext, so a test decides which one, if any, runs."""
     folders = os.environ.get("PATH", "").split(os.pathsep)
@@ -191,11 +196,17 @@ class StubPdftotext:
         program = self.folder / "stub_pdftotext.py"
         program.write_text(STUB_PROGRAM, encoding="utf-8")
         (self.folder / "pdftotext.cmd").write_text(f'@"{sys.executable}" "{program}" %*\r\n', encoding="ascii")
+        # The path the locator finds it at, with the extension as PATHEXT spells it.
+        self.program = self.folder / f"pdftotext{STUB_EXTENSION}"
         self.answer(*rules, **default)
         self.version()
         environment = mock.patch.dict(
             os.environ,
-            {"PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}", "LOCALAPPDATA": no_link_folder(test)},
+            {
+                "PATH": f"{self.folder}{os.pathsep}{path_without_pdftotext()}",
+                "PATHEXT": STUB_PATHEXT,
+                "LOCALAPPDATA": no_link_folder(test),
+            },
         )
         environment.start()
         test.addCleanup(environment.stop)
@@ -465,6 +476,7 @@ class mock_parser_never_created:
 
 
 PDF = pdf_document(["Scope", "Keep one queue."], ["Retry twice."])
+XPDF_4_00 = "pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n"
 
 
 class PdfExtractionTests(GitTestCase):
@@ -496,23 +508,45 @@ class PdfExtractionTests(GitTestCase):
     def test_every_extraction_rechecks_the_current_path_and_reuses_only_the_checked_executable(self) -> None:
         first = StubPdftotext(self, output="First\n\f")
         second = StubPdftotext(self, output="Second\n\f")
-        second.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
-        original = shutil.which
+        second.version(XPDF_4_00)
         with mock.patch.object(
-            documents,
-            "find_executable",
-            side_effect=[str(first.folder / "pdftotext.cmd"), str(second.folder / "pdftotext.cmd")],
+            documents, "find_executables", side_effect=[[str(first.program)], [str(second.program)]]
         ) as located:
             self.assertEqual(b"[p1 l1] First\n", extract("pdf", PDF))
-        located.assert_called_once_with("pdftotext")
-        self.assertEqual(2, len(first.calls(probes=True)), "the checked executable also extracts")
-        found = original("pdftotext")
-        if found is None:
-            self.fail("the current PATH must resolve the second stub")
-        self.assertEqual(second.folder / "pdftotext.cmd", Path(found))
-        with self.assertRaisesRegex(ExtractionRefused, "Xpdf.*upgrade"):
-            extract("pdf", PDF)
-        self.assertEqual([], second.calls(), "no fallback to the supported parser later on PATH")
+            self.assertEqual(2, len(first.calls(probes=True)), "the checked executable also extracts")
+            self.assertRefused(
+                f"no supported pdftotext: skipped {second.program} (Xpdf 4.00, older than Xpdf 4.06); "
+                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+            )
+        self.assertEqual([mock.call("pdftotext")] * 2, located.call_args_list)
+        self.assertEqual([], second.calls(), "the parser the current lookup finds is checked again")
+
+    def test_a_supported_parser_behind_an_unsupported_one_extracts_and_the_unsupported_one_never_gets_bytes(
+        self,
+    ) -> None:
+        # Git Bash puts Git's bundled Xpdf 4.0 ahead of the Windows PATH, so it shadows a supported parser there.
+        bundled = StubPdftotext(self, output="must not extract")
+        bundled.version(XPDF_4_00)
+        supported = StubPdftotext(self, output="Supported\n\f")
+        path = os.pathsep.join((str(bundled.folder), str(supported.folder), path_without_pdftotext()))
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.assertEqual(b"[p1 l1] Supported\n", extract("pdf", PDF))
+        self.assertEqual(([], 1), (bundled.calls(), len(bundled.calls(probes=True))))
+        self.assertEqual((1, 2), (len(supported.calls()), len(supported.calls(probes=True))))
+
+    def test_only_unsupported_parsers_are_refused_naming_each_where_it_was_found(self) -> None:
+        bundled = StubPdftotext(self, output="must not extract")
+        bundled.version(XPDF_4_00)
+        poppler = StubPdftotext(self, output="must not extract")
+        poppler.version("pdftotext version 0.86.1\nCopyright 2005-2020 The Poppler Developers\n", 0)
+        path = os.pathsep.join((str(bundled.folder), str(poppler.folder), path_without_pdftotext()))
+        with mock.patch.dict(os.environ, {"PATH": path}):
+            self.assertRefused(
+                f"no supported pdftotext: skipped {bundled.program} (Xpdf 4.00, older than Xpdf 4.06), "
+                f"{poppler.program} (Poppler 0.86.1, older than Poppler 26.10.0); "
+                "install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+            )
+        self.assertEqual(([], []), (bundled.calls(), poppler.calls()))
 
     def test_a_probe_timeout_refuses_before_writing_the_pdf(self) -> None:
         import pdf_tool

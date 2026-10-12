@@ -23,13 +23,13 @@ from typing import IO, Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+from executable_locator import find_executable
 from git_client import GitClient, GitError, GitResult, GitStream, Runner, subprocess_runner
 from github_client import GitHubClient, GitHubError, replace_undecodable
 from review_config import REVIEWER_EFFORTS, validate_glob_patterns, validate_repository_identity
 from review_documents import DOCUMENT_FORMATS, EXTRACTED_WHEN_TEXT, ExtractionRefused, document_format, extract
 from review_guard import ROLE_ID as SLUG
 from review_io import PersistenceError, atomic_write_json, read_diff
-from review_process import winget_copilot
 from review_records import SUITE_PROFILE_PREFIX, is_suite_profile
 from typed_fields import FieldError, FieldReader
 
@@ -588,9 +588,10 @@ def choose_dispatch(runtime: str, kind: str, *, inline: bool = False) -> str:
 
 
 def resolve_runtime(configured: str, host: str | None = None) -> str:
-    """The configured runtime, else the host the orchestrating session states, else the first CLI on PATH.
+    """The configured runtime, else the host the orchestrating session states, else the first CLI installed, as
+    skill-core's locator finds it: on PATH, else in WinGet's Links folder.
 
-    PATH says which CLIs are installed, not which one is orchestrating, so it is only the fallback.
+    What is installed does not say which CLI is orchestrating, so it is only the fallback.
     """
     if configured != "auto":
         negotiate_capabilities(configured, ())
@@ -603,10 +604,8 @@ def resolve_runtime(configured: str, host: str | None = None) -> str:
         ("codex", "codex"),
         ("copilot-cli", "copilot"),
     ):
-        if shutil.which(command):
+        if find_executable(command):
             return runtime
-    if winget_copilot() is not None:
-        return "copilot-cli"
     raise RuntimeContractError("No supported local runtime host is available")
 
 

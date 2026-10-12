@@ -2,13 +2,13 @@
 
 A process is identified by its PID and its start time, as the deployer's lock does in
 deployer/platform_support.py; a deployed skill cannot import the deployer, so this is its own copy. Every
-operating-system-specific step of the host's lifecycle lives here, and so does where WinGet installs Copilot CLI. The
-job object that ends a condition script's or Copilot CLI's descendants with it is skill-core's `job_tree.JobTree`.
+operating-system-specific step of the host's lifecycle lives here, except where Copilot CLI is found, which is
+skill-core's `executable_locator`, and the job object that ends a condition script's or Copilot CLI's descendants with
+it, which is skill-core's `job_tree.JobTree`.
 """
 
 from __future__ import annotations
 
-import os
 import subprocess
 import warnings
 from collections.abc import Sequence
@@ -124,32 +124,3 @@ SHELL_SCRIPT_SUFFIXES = frozenset({".bat", ".cmd", ".ps1"})
 def shell_script(path: str) -> bool:
     """Whether Windows would start `path` through a shell, as it does npm's `copilot.cmd`, rather than as a program."""
     return Path(path).suffix.casefold() in SHELL_SCRIPT_SUFFIXES
-
-
-def path_programs(name: str) -> list[str]:
-    """Every file PATH holds for the command `name`, in the order `shutil.which` would look: PATH's folders in turn,
-    each folder once, and within one, `name` itself when it already ends in a PATHEXT extension, then `name` with each
-    extension in PATHEXT's order. `shutil.which` stops at the first, so a lookup that passes over one, as a shell
-    script is passed over, takes the next from here. The current directory, which `shutil.which` searches first on
-    Windows, is never searched, because PATH does not name it."""
-    extensions = [extension for extension in os.environ.get("PATHEXT", "").split(os.pathsep) if extension]
-    names = [name + extension for extension in extensions] or [name]
-    if any(name.casefold().endswith(extension.casefold()) for extension in extensions):
-        names.insert(0, name)
-    found: list[str] = []
-    seen: set[str] = set()
-    for folder in os.environ.get("PATH", "").split(os.pathsep):
-        if not folder or os.path.normcase(folder) in seen:
-            continue
-        seen.add(os.path.normcase(folder))
-        for candidate in (Path(folder) / file for file in names):
-            if candidate.is_file() and os.access(candidate, os.X_OK):
-                found.append(str(candidate))
-    return found
-
-
-def winget_copilot() -> Path | None:
-    """Copilot CLI in the folder WinGet links the commands it installs into, which PATH may not include; None when it
-    is not there."""
-    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links" / "copilot.exe"
-    return candidate if candidate.is_file() else None

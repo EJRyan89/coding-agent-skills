@@ -228,6 +228,69 @@ class SubprocessRunnerTests(GitTestCase):
         self.assertIn(b"loading", result.output)
 
 
+class LocatedFormatterTests(GitTestCase):
+    """The formatter is found by skill-core's locator, as `deploy.py check` finds it, and run by that absolute path.
+    The environment is sanitized: PATH is one empty folder and the local application data folder a fresh one, so the
+    only programs found are the ones a test puts there."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory(prefix="formatter locator ")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.path_folder = root / "on path"
+        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        self.path_folder.mkdir()
+        self.links.mkdir(parents=True)
+        environment = {
+            "PATH": str(self.path_folder),
+            "PATHEXT": ".com;.exe",
+            "LOCALAPPDATA": str(root / "local app data"),
+        }
+        patch = mock.patch.dict(os.environ, environment)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def started(self, arguments: list[str]) -> str:
+        """The program subprocess_runner starts for these arguments."""
+        finished = mock.Mock(returncode=0)
+        with mock.patch.object(formatter, "run_bounded", return_value=finished) as run:
+            formatter.subprocess_runner(arguments, Path.cwd(), 60)
+        self.assertEqual(arguments[1:], run.call_args.args[0][1:])
+        return str(run.call_args.args[0][0])
+
+    def test_each_formatter_only_in_wingets_links_folder_is_found_and_run_from_there(self) -> None:
+        services = formatter.Services()
+        for name, arguments in (
+            ("dotnet-format", formatter.command("check", "App.sln", ["a b.cs"], "warn")),
+            ("dotnet", formatter.command("check", "App.slnx", ["a b.cs"], "warn")),
+        ):
+            with self.subTest(name=name):
+                self.assertIsNone(services.which(name))
+                program = self.links / f"{name}.exe"
+                program.write_bytes(b"fixture")
+                self.assertEqual(str(program), services.which(name))
+                self.assertEqual(str(program), self.started(arguments))
+                self.assertTrue(Path(self.started(arguments)).is_absolute())
+
+    def test_a_formatter_on_path_comes_before_the_links_folder(self) -> None:
+        (self.links / "dotnet-format.exe").write_bytes(b"fixture")
+        on_path = self.path_folder / "dotnet-format.exe"
+        on_path.write_bytes(b"fixture")
+        self.assertEqual(str(on_path), formatter.Services().which("dotnet-format"))
+        self.assertEqual(str(on_path), self.started(["dotnet-format", "App.sln"]))
+
+    def test_a_missing_formatter_is_refused_before_anything_runs(self) -> None:
+        file_list = self.path_folder.parent / "files.txt"
+        file_list.write_text("a.cs\n", encoding="utf-8")
+        arguments = ["check", "--repo-root", str(Path.cwd()), "--solution", "App.sln", "--include-file", str(file_list)]
+        output = io.StringIO()
+        with mock.patch.object(formatter, "run_bounded") as run, contextlib.redirect_stdout(output):
+            status = formatter.main(arguments, formatter.Services())
+        run.assert_not_called()
+        self.assertEqual((1, f"FAILED {INSTALL_HINT}\n"), (status, output.getvalue()))
+
+
 class MainTests(GitTestCase):
     def setUp(self) -> None:
         directory = tempfile.TemporaryDirectory()

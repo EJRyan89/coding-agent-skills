@@ -8,6 +8,7 @@ environment the canary gave them, so the deployment, the recorder, and the fixtu
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import os
@@ -253,6 +254,14 @@ class DeploymentTests(RuntimeCanaryTestCase):
             runtime_canary.main(["review-prs", "no-such-skill"])
         self.assertEqual(2, raised.exception.code)
         self.assertIn("unknown skill: no-such-skill", output.getvalue())
+
+
+class LookupTests(GitTestCase):
+    def test_a_runtime_is_looked_up_where_check_and_verify_look_for_it(self) -> None:
+        # skill-core's locator through the deployer, so a runtime only in WinGet's Links folder is checked too.
+        self.assertIs(
+            platform_support.find_executable, inspect.signature(runtime_canary.canary).parameters["which"].default
+        )
 
 
 class RemoveHomeTests(GitTestCase):
@@ -1100,7 +1109,7 @@ class DiscoveryAndSkipTests(RuntimeCanaryTestCase):
             installed=("codex", "copilot"),
             environment={key: value for key, value in os.environ.items() if key not in names},
         )
-        self.assertIn('SKIPPED claude "claude is not on PATH"', lines)
+        self.assertIn('SKIPPED claude "claude is not installed"', lines)
         self.assertEqual({"codex", "copilot"}, {Path(call[1][0]).name for call in runner.calls if call[0] == "run"})
 
     def test_output_starts_with_the_home_and_each_deployment(self) -> None:

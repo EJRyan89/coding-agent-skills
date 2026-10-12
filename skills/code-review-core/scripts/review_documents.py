@@ -15,10 +15,10 @@ the bytes as a throwaway file under the system temporary directory, no stdin, an
 read no further than the extraction limit, and asked to keep the text in the order the PDF draws it, so the two
 families that ship it, Xpdf and Poppler, each read one line per line of text. Their lines can still differ where one
 line's pieces are drawn apart, such as a raised suffix, which Poppler may put on a line of its own. Before writing
-document bytes, the shared provider policy probes the executable skill-core's locator finds, the one `deploy.py check`
-reports, with no input, then extraction uses that checked path; refusal leaves a gap, not a fallback to another
-parser. This is not sandboxing. Each line starts with `[p<page> l<line>]`, the line counted among the page's lines
-that hold text.
+document bytes, the shared provider policy probes, with no input, each `pdftotext` skill-core's locator finds, in its
+search order, and takes the first it accepts, the one `deploy.py check` reports, then extraction uses that checked
+path; when it accepts none, the refusal names each one it passed over and leaves a gap. This is not sandboxing. Each
+line starts with `[p<page> l<line>]`, the line counted among the page's lines that hold text.
 """
 
 from __future__ import annotations
@@ -40,9 +40,9 @@ from xml.parsers import expat
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import streaming
-from executable_locator import find_executable
+from executable_locator import find_executables
 from flat_text import flat_text
-from pdf_tool import PdfToolRefused, probe_pdftotext
+from pdf_tool import PdfToolRefused, probe_pdftotext, select_pdftotext
 
 DOCUMENT_FORMATS = {".docx": "docx", ".pdf": "pdf"}
 # A PDF is extracted whether or not the snapshot's NUL test finds it binary: one written without compressed streams
@@ -162,6 +162,13 @@ def extract_pdf(content: bytes) -> list[tuple[str, str]]:
     return lines
 
 
+# The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
+COMMANDS_ALLOWED = {
+    "_pdftotext": "runs the pdftotext skill-core's pdf_tool chose among the programs find_executables(PDFTOTEXT) "
+    "found, and the policy reads the program at that lookup",
+}
+
+
 def _pdftotext(content: bytes) -> bytes:
     """What `pdftotext` writes for a PDF's bytes, read no further than the extraction limit.
 
@@ -170,16 +177,13 @@ def _pdftotext(content: bytes) -> bytes:
     accept: without it, Xpdf joins a paragraph's evenly set lines into one where Poppler keeps one line per line of
     text, so a finding's line would depend on which of them is first on PATH.
     """
-    executable = find_executable(PDFTOTEXT)
-    if executable is None:
+    found = find_executables(PDFTOTEXT)
+    if not found:
         raise ExtractionRefused(f"{PDFTOTEXT}, which extracts a PDF's text, is not installed")
     try:
-        executable = str(Path(executable).resolve())
-        probe_pdftotext(executable)
+        executable = select_pdftotext(found, probe_pdftotext).path
     except PdfToolRefused as exc:
         raise ExtractionRefused(str(exc)) from exc
-    except OSError as exc:
-        raise ExtractionRefused(f"{PDFTOTEXT} resolved executable could not be accessed") from exc
     with tempfile.TemporaryDirectory(prefix="code-review-pdf-", ignore_cleanup_errors=True) as folder:
         document = Path(folder) / "document.pdf"
         document.write_bytes(content)

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import IO, Any, NamedTuple, Protocol, TypeVar
 
 from bounded_process import Finished, run_bounded
+from executable_locator import located_command
 
 T = TypeVar("T")
 
@@ -150,9 +151,13 @@ def _decode(data: bytes) -> str:
 def _bounded(
     arguments: Sequence[str], timeout: float, stdout: IO[bytes] | None = None, cwd: Path | None = None
 ) -> Finished:
-    """Run gh through the bounded, non-interactive layer, classifying why it could not run or finish."""
+    """Run gh through the bounded, non-interactive layer, classifying why it could not run or finish.
+
+    gh runs at the path skill-core's locator finds, the one `deploy.py check` reports, so a GitHub CLI only in
+    WinGet's Links folder runs too.
+    """
     try:
-        return run_bounded(arguments, timeout, stdout=stdout, cwd=cwd)
+        return run_bounded(located_command(arguments), timeout, stdout=stdout, cwd=cwd)
     except FileNotFoundError as exc:
         raise GitHubError(MISSING_CLI, kind="prerequisite") from exc
     except subprocess.TimeoutExpired as exc:

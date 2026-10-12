@@ -15,8 +15,10 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
+import bounded_process
 import dotnet_format_targets as targets
 import git_client
+import github_client
 from flat_text import flat_text
 from git_client import GitClient, GitError, GitResult
 from git_test_base import GitTestCase
@@ -757,6 +759,49 @@ class FileListTests(GitTestCase):
     def test_a_missing_list_is_an_os_error(self) -> None:
         with self.assertRaises(FileNotFoundError):
             targets.read_file_list(self.path)
+
+
+class LocatedToolsTests(GitTestCase):
+    """gh and the .NET SDK are found by skill-core's locator, as `deploy.py check` finds them, and gh runs at that
+    absolute path. The environment is sanitized: PATH is one empty folder and the local application data folder a
+    fresh one, so the only programs found are the ones a test puts there."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        temporary = tempfile.TemporaryDirectory(prefix="targets locator ")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.path_folder = root / "on path"
+        self.links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+        self.path_folder.mkdir()
+        self.links.mkdir(parents=True)
+        environment = {
+            "PATH": str(self.path_folder),
+            "PATHEXT": ".com;.exe",
+            "LOCALAPPDATA": str(root / "local app data"),
+        }
+        patch = mock.patch.dict(os.environ, environment)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def test_a_tool_only_in_wingets_links_folder_is_found_and_gh_is_run_from_there(self) -> None:
+        services = targets.Services()
+        for name in ("gh", "dotnet"):
+            with self.subTest(name=name):
+                self.assertIsNone(services.which(name))
+                program = self.links / f"{name}.exe"
+                program.write_bytes(b"fixture")
+                self.assertEqual(str(program), services.which(name))
+        finished = bounded_process.Finished(0, b"{}", b"")
+        with mock.patch.object(github_client, "run_bounded", return_value=finished) as run:
+            services.gh(self.path_folder)(["gh", "pr", "view", "--json", "baseRefName"])
+        self.assertEqual([str(self.links / "gh.exe"), "pr", "view", "--json", "baseRefName"], run.call_args.args[0])
+
+    def test_a_tool_on_path_comes_before_the_links_folder(self) -> None:
+        (self.links / "gh.exe").write_bytes(b"fixture")
+        on_path = self.path_folder / "gh.exe"
+        on_path.write_bytes(b"fixture")
+        self.assertEqual(str(on_path), targets.Services().which("gh"))
 
 
 if __name__ == "__main__":

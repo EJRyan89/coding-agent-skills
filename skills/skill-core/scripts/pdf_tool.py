@@ -1,10 +1,19 @@
-"""The shared maintained-release support policy for the native PDF text extractor, not a sandbox."""
+"""The shared maintained-release support policy for the native PDF text extractor, not a sandbox.
+
+`deploy.py check` and every extraction choose the parser alike: of every `pdftotext` skill-core's locator finds, in
+its search order, the first whose provider and version the probe accepts. Each one passed over is named, with what
+the probe found and where, so a parser that comes first only because of where a shell puts it, such as the old Xpdf
+Git for Windows bundles in Git Bash's `/mingw64/bin`, is reported as skipped rather than blocking a supported one
+further down.
+"""
 
 from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 from bounded_process import streaming
 
@@ -50,7 +59,11 @@ class PdfIdentity:
 
 
 class PdfToolRefused(ValueError):
-    """A content-free refusal, optionally carrying the identified unsupported provider for reporting."""
+    """A content-free refusal, optionally carrying the identified unsupported provider for reporting.
+
+    The probe of one parser raises it with what it found, such as `Xpdf 4.00, older than Xpdf 4.06`, and the choice
+    among them with the whole reason, which names each parser passed over and what to install.
+    """
 
     def __init__(self, reason: str, identity: PdfIdentity | None = None) -> None:
         super().__init__(reason)
@@ -63,23 +76,22 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
     banner = BANNER.fullmatch(lines[0]) if lines else None
     copyrights = [COPYRIGHT.fullmatch(line) for line in lines[1:]]
     if banner is None or not copyrights or any(match is None for match in copyrights):
-        raise PdfToolRefused(f"pdftotext provider/version is unidentifiable; install {requirements()}")
+        raise PdfToolRefused("provider/version is unidentifiable")
     vendors = {match.group(1) for match in copyrights if match is not None}
     poppler = "The Poppler Developers" in vendors
     if poppler and banner.group(2):
-        raise PdfToolRefused(f"pdftotext provider/version is ambiguous; install {requirements()}")
+        raise PdfToolRefused("provider/version is ambiguous")
     provider = "Poppler" if poppler else "Xpdf"
     version = tuple(map(int, banner.group(1).split(".")))
     if provider == "Poppler" and (len(version) != 3 or (version[0] >= 20 and not 1 <= version[1] <= 12)):
-        raise PdfToolRefused(f"pdftotext provider/version is malformed; install {requirements()}")
+        raise PdfToolRefused("provider/version is malformed")
     identity = PdfIdentity(provider, version)
     statuses = {0} if poppler else {0, 99}
     if status not in statuses:
-        raise PdfToolRefused(f"pdftotext version probe failed (exit status {status}); install {requirements()}")
+        raise PdfToolRefused(f"version probe failed with exit status {status}")
     if identity.outdated:
         raise PdfToolRefused(
-            f"pdftotext {provider} {identity.version_text} is unsupported; "
-            f"upgrade to {provider} {version_text(provider, identity.minimum)} or newer",
+            f"{provider} {identity.version_text}, older than {provider} {version_text(provider, identity.minimum)}",
             identity,
         )
     return identity
@@ -87,8 +99,8 @@ def parse_banner(text: str, status: int) -> PdfIdentity:
 
 # The functions that start a command whose program tests/run_validation.py cannot read here, with the reason.
 COMMANDS_ALLOWED = {
-    "probe_pdftotext": "probes the pdftotext path its caller resolved; deployer/tools.py and code-review-core's "
-    "review_documents.py look it up by name through executable_locator, and the policy reads the program there",
+    "probe_pdftotext": "probes a pdftotext path its caller found; deployer/tools.py and code-review-core's "
+    "review_documents.py look each up by name through executable_locator, and the policy reads the program there",
 }
 
 
@@ -105,16 +117,61 @@ def probe_pdftotext(path: str) -> PdfIdentity:
             running.stdin.close()
             output = running.read(MAX_PROBE_BYTES + 1)
             if len(output) > MAX_PROBE_BYTES:
-                raise PdfToolRefused(f"pdftotext version probe output exceeds its limit; install {requirements()}")
+                raise PdfToolRefused("version probe output exceeds its limit")
             status = running.wait()
     except subprocess.TimeoutExpired as exc:
-        raise PdfToolRefused(
-            f"pdftotext version probe did not finish within {PROBE_SECONDS:g} seconds; install {requirements()}"
-        ) from exc
+        raise PdfToolRefused(f"version probe did not finish within {PROBE_SECONDS:g} seconds") from exc
     except OSError as exc:
-        raise PdfToolRefused(f"pdftotext version probe could not be started; install {requirements()}") from exc
+        raise PdfToolRefused("version probe could not be started") from exc
     try:
         text = output.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise PdfToolRefused(f"pdftotext version probe is not UTF-8; install {requirements()}") from exc
+        raise PdfToolRefused("version probe output is not UTF-8") from exc
     return parse_banner(text, status)
+
+
+@dataclass(frozen=True)
+class Skipped:
+    """A pdftotext passed over: where the locator found it, what its probe found, and its identity, when known."""
+
+    path: str
+    finding: str
+    identity: PdfIdentity | None = None
+
+    def __str__(self) -> str:
+        return f"{self.path} ({self.finding})"
+
+
+def skipped_text(skipped: Iterable[Skipped]) -> str:
+    """The parsers passed over, as `deploy.py check` and a refusal name them."""
+    return "skipped " + ", ".join(str(item) for item in skipped)
+
+
+@dataclass(frozen=True)
+class PdfSelection:
+    """The parser chosen: its resolved path, which extraction runs, its identity, and every one passed over first."""
+
+    path: str
+    identity: PdfIdentity
+    skipped: tuple[Skipped, ...] = ()
+
+
+def select_pdftotext(found: Iterable[str], probe: Callable[[str], PdfIdentity] = probe_pdftotext) -> PdfSelection:
+    """The first of `found`, in order, whose resolved path `probe` accepts. Raises PdfToolRefused naming every one
+    passed over, with the first identified one's identity, when none is accepted; `found` is never empty, since a
+    caller reports a parser that is not installed itself."""
+    skipped: list[Skipped] = []
+    for candidate in found:
+        try:
+            resolved = str(Path(candidate).resolve())
+        except OSError:
+            skipped.append(Skipped(candidate, "could not be accessed"))
+            continue
+        try:
+            return PdfSelection(resolved, probe(resolved), tuple(skipped))
+        except PdfToolRefused as exc:
+            skipped.append(Skipped(candidate, str(exc), exc.identity))
+    if not skipped:
+        raise ValueError("select_pdftotext needs at least one pdftotext to choose from")
+    identity = next((item.identity for item in skipped if item.identity is not None), None)
+    raise PdfToolRefused(f"no supported pdftotext: {skipped_text(skipped)}; install {requirements()}", identity)

@@ -507,7 +507,13 @@ class ExtractedDocumentTests(DocumentTestCase):
         stub.version("pdftotext version 4.00\nCopyright 1996-2017 Glyph & Cog, LLC\n")
         code, lines = run_main("build", str(draft), "--output", str(self.output))
         self.assertEqual(1, code)
-        self.assertIn("pdftotext Xpdf 4.00 is unsupported; upgrade to Xpdf 4.06 or newer", lines[0])
+        self.assertTrue(
+            lines[0].endswith(
+                f"is a document whose text could not be extracted: no supported pdftotext: skipped {stub.program} "
+                "(Xpdf 4.00, older than Xpdf 4.06); install Xpdf 4.06 or newer or Poppler 26.10.0 or newer"
+            ),
+            lines[0],
+        )
         self.assertFalse(self.output.exists())
         self.assertEqual([], stub.calls())
 

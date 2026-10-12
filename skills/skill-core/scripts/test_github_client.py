@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,30 @@ from github_client import (
 )
 
 SECONDARY_LIMIT = "gh: You have exceeded a secondary rate limit. (HTTP 403)"
+
+
+def sanitized_environment(test: unittest.TestCase) -> tuple[Path, Path]:
+    """A PATH of one empty temporary folder and a fresh local application data folder for the rest of a test, so the
+    only gh the locator finds is one the test puts in the first or in WinGet's Links folder under the second; returns
+    the two folders."""
+    temporary = tempfile.TemporaryDirectory(prefix="gh locator ")
+    test.addCleanup(temporary.cleanup)
+    root = Path(temporary.name)
+    path_folder = root / "on path"
+    links = root / "local app data" / "Microsoft" / "WinGet" / "Links"
+    path_folder.mkdir()
+    links.mkdir(parents=True)
+    environment = {"PATH": str(path_folder), "PATHEXT": ".com;.exe", "LOCALAPPDATA": str(root / "local app data")}
+    patch = mock.patch.dict(os.environ, environment)
+    patch.start()
+    test.addCleanup(patch.stop)
+    return path_folder, links
+
+
+def install_gh(folder: Path) -> Path:
+    program = folder / "gh.exe"
+    program.write_bytes(b"fixture")
+    return program
 
 
 def undecodable(data: bytes) -> str:
@@ -520,15 +545,18 @@ class DecodingTests(unittest.TestCase):
         self.assertEqual((0, "caf\udce9", "bad \udcff"), (result.returncode, result.stdout, result.stderr))
 
     def test_missing_cli_is_a_prerequisite_error(self) -> None:
+        sanitized_environment(self)
         with (
-            mock.patch.object(github_client, "run_bounded", side_effect=FileNotFoundError("gh")),
+            mock.patch.object(github_client, "run_bounded") as run,
             self.assertRaises(GitHubError) as context,
         ):
             github_client.subprocess_runner(["gh", "api", "user"])
         self.assertEqual("prerequisite", context.exception.kind)
-        self.assertIn("install GitHub CLI", str(context.exception))
+        self.assertEqual(github_client.MISSING_CLI, str(context.exception))
+        run.assert_not_called()
 
     def test_a_cli_that_cannot_start_is_an_execution_error(self) -> None:
+        install_gh(sanitized_environment(self)[0])
         with (
             mock.patch.object(github_client, "run_bounded", side_effect=PermissionError("denied")),
             self.assertRaises(GitHubError) as context,
@@ -569,13 +597,15 @@ class DownloadTests(unittest.TestCase):
             self.assertEqual("not_found", context.exception.kind)
 
     def test_missing_cli_is_a_prerequisite_error_for_a_download(self) -> None:
+        sanitized_environment(self)
         with (
             tempfile.TemporaryDirectory() as temporary,
-            mock.patch.object(github_client, "run_bounded", side_effect=FileNotFoundError("gh")),
+            mock.patch.object(github_client, "run_bounded") as run,
             self.assertRaises(GitHubError) as context,
         ):
             github_client.subprocess_downloader(["gh", "api", "x"], Path(temporary) / "out")
         self.assertEqual("prerequisite", context.exception.kind)
+        run.assert_not_called()
 
 
 class JsonTests(unittest.TestCase):
@@ -605,11 +635,33 @@ class JsonTests(unittest.TestCase):
 
 class SubprocessRunnerContractTests(unittest.TestCase):
     def test_runner_runs_through_the_bounded_layer_and_captures_both_streams(self) -> None:
+        program = str(install_gh(sanitized_environment(self)[0]))
         finished = bounded_process.Finished(3, b"o", b"e")
         with mock.patch.object(github_client, "run_bounded", return_value=finished) as run:
             result = github_client.subprocess_runner(["gh", "api", "user"])
         self.assertEqual(CommandResult(3, "o", "e"), result)
-        self.assertEqual(mock.call(["gh", "api", "user"], 300.0, stdout=None, cwd=None), run.call_args)
+        self.assertEqual(mock.call([program, "api", "user"], 300.0, stdout=None, cwd=None), run.call_args)
+
+    def test_both_runners_start_the_gh_the_shared_locator_finds_by_its_absolute_path(self) -> None:
+        # A GitHub CLI only in WinGet's Links folder, as `deploy.py check` finds it, runs from there, and one on
+        # PATH comes first; process creation alone would look on PATH only.
+        path_folder, links = sanitized_environment(self)
+        linked = install_gh(links)
+        finished = bounded_process.Finished(0, b"", b"")
+        with (
+            mock.patch.object(github_client, "run_bounded", return_value=finished) as run,
+            tempfile.TemporaryDirectory() as temporary,
+        ):
+            github_client.subprocess_runner(["gh", "api", "user"])
+            github_client.subprocess_downloader(["gh", "api", "x"], Path(temporary) / "out")
+            on_path = install_gh(path_folder)
+            github_client.subprocess_runner(["gh", "api", "user"])
+        started = [Path(call.args[0][0]) for call in run.call_args_list]
+        self.assertEqual([linked, linked, on_path], started)
+        self.assertTrue(all(program.is_absolute() for program in started))
+        self.assertEqual(
+            [["api", "user"], ["api", "x"], ["api", "user"]], [call.args[0][1:] for call in run.call_args_list]
+        )
 
     def test_runner_runs_in_the_directory_it_is_given(self) -> None:
         directory = Path(self.directory()) / "a repository"
@@ -641,6 +693,7 @@ class SubprocessRunnerContractTests(unittest.TestCase):
         self.assertEqual(("timeout", 1, []), (context.exception.kind, len(calls), sleeper.waits))
 
     def test_the_client_timeout_bounds_its_default_runners(self) -> None:
+        install_gh(sanitized_environment(self)[0])
         finished = bounded_process.Finished(0, b"{}", b"")
         with (
             mock.patch.object(github_client, "run_bounded", return_value=finished) as run,
