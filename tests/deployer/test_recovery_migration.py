@@ -14,7 +14,7 @@ from unittest import mock
 
 from harness import FAILS_PARTWAY, RECOVERS, REPOSITORY_ROOT, DeployerTestCase, Result, forward, tree_state
 
-from deployer import fsops, hashing, journal, pipeline, platform_support, render
+from deployer import fsops, hashing, journal, platform_support, render
 from deployer.paths import CANARY_MARKER, CANARY_MARKER_TEXT
 
 ZERO_HASH = "sha256:" + "0" * 64
@@ -327,7 +327,7 @@ class RecoveryTests(RecoveryTestCase):
             ),
         )
         result = self.deploy_fails("--all", pattern="Both alpha and backup are missing during rollback")
-        self.assertIn("ERROR: Recovery failed, so nothing was deployed.", result.output)
+        self.assertIn("ERROR: Recovery failed, so this deployment stopped before deploying anything.", result.output)
         self.assertTrue(journal.is_file())
         self.assertFalse((self.home / ".claude" / "deployer" / ".deploy.lock.d").exists())
 
@@ -533,7 +533,7 @@ class RecoveryFailureTests(RecoveryTestCase):
             f".backups/{self.HELD}/ in the same root.",
             f"  When no .deploying-bak remains, delete {forward(run)} and rerun with --dry-run. {SEE_RECOVERY_FAILED}",
             f"Recovering uncommitted run {self.NEXT} (rolling back)...",
-            "ERROR: Recovery failed, so nothing was deployed.",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
         self.assertNotIn("Traceback", result_output)
         self.assertTrue((run / "journal.jsonl").is_file())
@@ -602,12 +602,13 @@ class RecoveryFailureTests(RecoveryTestCase):
             result.output,
             f"  ERROR: Cannot list the staging runs in {forward(staging)}: Access is denied",
             f"  {SEE_RECOVERY_FAILED}",
-            "ERROR: Recovery failed, so nothing was deployed.",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock_dir.exists())
 
-    def test_an_unexpected_error_in_startup_recovery_is_reported_and_the_next_deployment_finishes_it(self) -> None:
+    def interrupted_startup_run(self, committed: bool) -> Path:
+        """Deploy alpha, then leave the journal of a run killed after it replaced alpha, committed or not."""
         self.deployed(("alpha", "Alpha content"))
         original = hashing.hash_path(self.skills_dir / "alpha")
         (self.skills_dir / "alpha").rename(self.skills_dir / "alpha.deploying-bak")
@@ -616,32 +617,67 @@ class RecoveryFailureTests(RecoveryTestCase):
         journal_file = self.write_journal(
             "20260101-000000-kill", backup_entry("alpha", original), install_entry("alpha", installed)
         )
-        real_move = fsops.move
+        if committed:
+            data = self.manifest()
+            for entry in data["sources"].values():
+                entry["skills"]["alpha"]["hash"] = installed
+            data["last_run_id"] = "20260101-000000-kill"
+            self.write_manifest(data)
+        return journal_file
 
-        def failing_restore(source: Path, destination: Path) -> None:
+    def assert_startup_recovery_stops(self, committed: bool, state: str) -> None:
+        journal_file = self.interrupted_startup_run(committed)
+        # Rolling back moves the backup into place; completing a committed run deletes it.
+        operation = "remove" if committed else "move"
+        real = getattr(fsops, operation)
+
+        def failing(source: Path, *rest: Path) -> None:
             if source.name == "alpha.deploying-bak":
                 raise RuntimeError("synthetic recovery failure")
-            real_move(source, destination)
+            real(source, *rest)
 
-        with mock.patch("deployer.fsops.move", side_effect=failing_restore):
+        with mock.patch(f"deployer.fsops.{operation}", side_effect=failing):
             result = self.deploy_fails("--all", pattern="Unexpected RuntimeError", changes_home=RECOVERS)
         self.assertEqual(1, result.code)
+        heading = (
+            "committed run 20260101-000000-kill (completing finalization)"
+            if committed
+            else "uncommitted run 20260101-000000-kill (rolling back)"
+        )
+        self.assert_lines(result.output, f"Recovering {heading}...")
         self.assertTrue(
             result.output.endswith(
                 "\nERROR: Unexpected RuntimeError: synthetic recovery failure\n"
-                "Recovery stopped, so nothing was deployed; the next deployment retries it.\n"
+                "Recovery stopped before it finished; the next deployment retries it before deploying anything.\n"
+                f"{state}\n"
                 f"{SEE_RECOVERY_FAILED}\n\n"
             ),
             result.output,
         )
+        self.assertNotIn("nothing was deployed", result.output)
         self.assertNotIn("Traceback", result.output)
         self.assertFalse(self.lock_dir.exists())
         self.assertTrue(journal_file.is_file())
+        self.assertEqual(committed, self.manifest()["last_run_id"] == "20260101-000000-kill")
         result = self.deploy_ok("--all")
-        self.assertIn("Recovering uncommitted run 20260101-000000-kill (rolling back)...", result.output)
+        self.assertIn(f"Recovering {heading}...", result.output)
         self.assertIn("Alpha content", self.skill_text("alpha"))
         self.assertFalse(journal_file.parent.exists())
         self.assertFalse((self.skills_dir / "alpha.deploying-bak").exists())
+
+    def test_an_unexpected_error_in_startup_recovery_of_an_uncommitted_run_says_it_is_rolled_back(self) -> None:
+        self.assert_startup_recovery_stops(
+            False,
+            "Run 20260101-000000-kill was not committed to the manifest, so the manifest does not hold its changes; "
+            "the next deployment rolls them back.",
+        )
+
+    def test_an_unexpected_error_in_startup_recovery_of_a_committed_run_says_its_changes_are_installed(self) -> None:
+        self.assert_startup_recovery_stops(
+            True,
+            "Run 20260101-000000-kill was committed to the manifest, so its changes are installed and the manifest "
+            "holds them; the next deployment finishes its cleanup.",
+        )
 
     def test_an_os_error_while_reconciling_a_failed_deployment_keeps_the_original_error(self) -> None:
         self.deployed(("alpha", "Original alpha"), ("obsolete", "Original obsolete"))
@@ -673,6 +709,26 @@ class RecoveryFailureTests(RecoveryTestCase):
 
 class ImmediateRecoveryExceptionTests(RecoveryTestCase):
     """Real CLI exit statuses after a deployment failure and a second failure while replaying its journal."""
+
+    def assert_stopped_report(self, stderr: str, run_id: str, recovery_failure: str, committed: bool) -> None:
+        """The report ends saying how recovery stopped and whether the run was committed to the manifest."""
+        state = (
+            f"Run {run_id} was committed to the manifest, so its changes are installed and the manifest holds "
+            "them; the next deployment finishes its cleanup."
+            if committed
+            else f"Run {run_id} was not committed to the manifest, so the manifest does not hold its changes; "
+            "the next deployment rolls them back."
+        )
+        if recovery_failure == "KeyboardInterrupt":
+            stopped = "Cancelled during recovery; the next deployment finishes recovering before it deploys.\n"
+            see = ""
+        else:
+            stopped = (
+                "ERROR: Unexpected RuntimeError: synthetic immediate recovery failure\n"
+                "Recovery stopped before it finished; the next deployment retries it before deploying anything.\n"
+            )
+            see = f"{SEE_RECOVERY_FAILED}\n"
+        self.assertTrue(stderr.endswith(f"\n{stopped}{state}\n{see}\n"), stderr)
 
     def assert_stopped_recovery(
         self, recovery_failure: str, *, deployment_failure: str = "OSError", committed: bool = False
@@ -747,22 +803,13 @@ with mock.patch("deployer.fsops.move", side_effect=failing_move):
         self.assertEqual(130 if recovery_failure == "KeyboardInterrupt" else 1, result.returncode, result.stderr)
         self.assertIn("synthetic deployment failure", result.stderr)
         self.assertIn("Deployment failed; reconciling the current journal before exit...", result.stderr)
-        if recovery_failure == "KeyboardInterrupt":
-            self.assertTrue(result.stderr.endswith(f"\n{pipeline.RECOVERY_CANCELLED}\n\n"), result.stderr)
-        else:
-            self.assertTrue(
-                result.stderr.endswith(
-                    "\nERROR: Unexpected RuntimeError: synthetic immediate recovery failure\n"
-                    "Recovery stopped, so nothing was deployed; the next deployment retries it.\n"
-                    f"{SEE_RECOVERY_FAILED}\n\n"
-                ),
-                result.stderr,
-            )
+        runs = list(self.paths.staging_root.iterdir())
+        self.assertEqual(1, len(runs))
+        self.assert_stopped_report(result.stderr, runs[0].name, recovery_failure, committed)
+        self.assertNotIn("nothing was deployed", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
         self.assertNotIn("DEPLOYED", result.stdout)
         self.assertFalse(self.lock_dir.exists())
-        runs = list(self.paths.staging_root.iterdir())
-        self.assertEqual(1, len(runs))
         journal_file = runs[0] / "journal.jsonl"
         self.assertTrue(journal_file.is_file())
         self.assertEqual(original_alpha, hashing.hash_path(self.skills_dir / "alpha.deploying-bak"))
@@ -828,7 +875,7 @@ class RecoveryBranchTests(RecoveryTestCase):
             f"Recovering committed run {self.RUN} (completing finalization)...",
             warning,
             f"  ERROR: Recovery has unreconciled entries. Journal retained at: {forward(journal_file)}",
-            "ERROR: Recovery failed, so nothing was deployed.",
+            "ERROR: Recovery failed, so this deployment stopped before deploying anything.",
         )
         self.assertNotIn("Preserved backup", result.output)
         self.assertTrue(journal_file.is_file())
