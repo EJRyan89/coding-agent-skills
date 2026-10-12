@@ -2282,25 +2282,29 @@ class GitHubTests(GitTestCase):
         self.assertEqual("malformed", context.exception.kind)
 
     def test_api_failure_kinds_are_classified(self) -> None:
-        cases = (
-            ("API rate limit exceeded", "rate_limit"),
-            ("HTTP 429: too many requests", "rate_limit"),
-            ("HTTP 401: authentication required", "authentication"),
-            ("not logged into GitHub", "authentication"),
-            ("HTTP 403: forbidden", "forbidden"),
-            ("HTTP 404: not found", "not_found"),
-            ("connection reset", "network"),
-            ("HTTP 502: Bad Gateway", "api"),
+        limited = [5.0, 10.0, 20.0, 40.0, 80.0]
+        cases: tuple[tuple[str, str, list[float]], ...] = (
+            ("API rate limit exceeded", "rate_limit", limited),
+            ("HTTP 429: too many requests", "rate_limit", limited),
+            ("HTTP 401: authentication required", "authentication", []),
+            ("not logged into GitHub", "authentication", []),
+            ("HTTP 403: forbidden", "forbidden", []),
+            ("HTTP 404: not found", "not_found", []),
+            ("connection refused", "network", []),
+            ("connection reset", "network", [2.0, 4.0]),
+            ("HTTP 502: Bad Gateway", "api", [2.0, 4.0]),
+            ("HTTP 500: Internal Server Error", "api", []),
         )
-        for stderr, expected in cases:
+        for stderr, expected, retried in cases:
             with self.subTest(stderr=stderr):
                 waits: list[float] = []
                 client = GitHubClient(answering(CommandResult(1, "", stderr)), sleeper=waits.append)
                 with self.assertRaises(GitHubError) as context:
                     client.api_json("repos/example/one")
                 self.assertEqual(expected, context.exception.kind)
-                # Only a rate limit is waited out, with skill-core's bounded backoff, before it fails.
-                self.assertEqual([5.0, 10.0, 20.0, 40.0, 80.0] if expected == "rate_limit" else [], waits)
+                # skill-core's bounded backoff waits out a rate limit, and its short retries a transient failure on
+                # this read, before it fails; nothing else is waited out.
+                self.assertEqual(retried, waits)
 
     def test_a_rate_limit_is_retried_until_it_clears(self) -> None:
         answers = [CommandResult(1, "", "gh: API rate limit exceeded (HTTP 403)"), CommandResult(0, "[]", "")]

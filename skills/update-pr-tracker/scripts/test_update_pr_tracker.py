@@ -782,7 +782,7 @@ class ReadAheadTests(unittest.TestCase):
 
     def test_a_failed_comparison_is_reported_and_a_transport_failure_stops_the_update(self) -> None:
         endpoint = f"repos/owner/repo/compare/main...{commit(4)}"  # pull 1's commit the user reviewed
-        for stderr in ("HTTP 403: Forbidden", "HTTP 502: Bad Gateway", "HTTP 404: Not Found"):
+        for stderr in ("HTTP 403: Forbidden", "HTTP 500: Internal Server Error", "HTTP 404: Not Found"):
             with self.subTest(stderr=stderr):
                 runner = GitHubRunner(failing={endpoint: stderr})
                 detector = ChangeDetector(GitHubClient(runner, sleeper=lambda seconds: None))
