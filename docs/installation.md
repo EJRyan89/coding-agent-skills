@@ -123,7 +123,7 @@ Deploy from the same clone each time: the manifest records it, and a deployment 
 
 If an updated skill requires a new configuration value, the deployer stops and asks you to run `python deploy.py configure` first.
 
-To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). `update-coding-agent-skills` then stops with `PINNED <ref> <commit>` and changes nothing until you start it with `--unpin`; that run, or any deployment without `--at`, moves the installation back to the clone's `HEAD` and reports that it replaced the pinned deployment.
+To deploy a release or an earlier commit instead of the clone's working tree, without moving the clone off `main`, add `--at` with a tag, branch, or commit the clone holds, as in `python deploy.py --all --at <tag>`; see [Deploying an earlier commit](recovery.md#deploying-an-earlier-commit). The installation then stays pinned: a deployment without `--at` refuses before it changes anything until you pass `--unpin`, and `update-coding-agent-skills` stops earlier with `PINNED <ref> <commit>` and changes nothing until you start it with `--unpin`. That run, or `python deploy.py --all --unpin`, moves the installation back to the clone's `HEAD` and reports that it replaced the pinned deployment.
 
 ## Uninstalling
 

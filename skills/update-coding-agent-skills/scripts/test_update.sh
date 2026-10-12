@@ -72,13 +72,15 @@ expect_failed() {
     *) fail "$2: expected a line starting '$1', got: $OUTPUT" ;;
   esac
 }
-# The pin is read with check before the fetch; the deployment is the one run with --all, and it comes last.
+# The pin is read with check before the fetch; the deployment is the one run with --all, and it comes last. Its
+# arguments are --all alone unless the second argument names them.
 expect_deployed() {
-  if [ "$(grep -cx -e "--all" "$FAKE_DEPLOY_LOG")" != "1" ] || [ "$(tail -n 1 "$FAKE_DEPLOY_LOG")" != "--all" ]; then
-    fail "$1: deploy.py was not run once with --all: $(cat "$FAKE_DEPLOY_LOG")"
+  local arguments=${2:---all}
+  if [ "$(grep -c -e "^--all" "$FAKE_DEPLOY_LOG")" != "1" ] || [ "$(tail -n 1 "$FAKE_DEPLOY_LOG")" != "$arguments" ]; then
+    fail "$1: deploy.py was not run once with $arguments: $(cat "$FAKE_DEPLOY_LOG")"
   fi
 }
-expect_not_deployed() { ! grep -qx -e "--all" "$FAKE_DEPLOY_LOG" || fail "$1: deploy.py ran"; }
+expect_not_deployed() { ! grep -q -e "^--all" "$FAKE_DEPLOY_LOG" || fail "$1: deploy.py ran"; }
 expect_nothing_run() { [ ! -s "$FAKE_DEPLOY_LOG" ] || fail "$1: deploy.py ran: $(cat "$FAKE_DEPLOY_LOG")"; }
 head_of() { git -C "$1" rev-parse --short "$2"; }
 
@@ -430,19 +432,20 @@ expect_status 1 "pinned untagged"
 [ "$OUTPUT" = "PINNED main~2 $PINNED_COMMIT" ] || fail "pinned untagged: got: $OUTPUT"
 expect_not_deployed "pinned untagged"
 
-# With --unpin, before or after --cross-major, the update moves past the pin and deploys main.
+# With --unpin, before or after --cross-major, the update moves past the pin and deploys main, passing --unpin to the
+# deployer, which refuses to replace a pin without it.
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin
 expect_status 0 "unpin"
 expect_first_line "UPDATED $(git -C "$CLONE" rev-parse --short "$BEFORE")..$(head_of "$CLONE" HEAD)" "unpin"
-expect_deployed "unpin"
+expect_deployed "unpin" "--all --unpin"
 publish "after the unpin"
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --cross-major --unpin
 expect_status 0 "unpin after cross-major"
-expect_deployed "unpin after cross-major"
+expect_deployed "unpin after cross-major" "--all --unpin"
 publish "unpin first"
 FAKE_CHECK_OUTPUT=$PINNED_CHECK run_subject "$CLONE" --unpin --cross-major
 expect_status 0 "unpin before cross-major"
-expect_deployed "unpin before cross-major"
+expect_deployed "unpin before cross-major" "--all --unpin"
 
 # A deployment check names without a pin, or a check that fails, does not stop the update.
 publish "unpinned change"
