@@ -1000,6 +1000,50 @@ class AtomicWriteTests(GitTestCase):
             self.assertEqual("café\nnext\n".encode(), path.read_bytes())
             self.assertEqual(["state.json"], sorted(item.name for item in Path(temporary).iterdir()))
 
+    def test_a_folder_that_cannot_be_made_or_text_utf8_cannot_encode_fails_before_a_copy_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            blocker = Path(temporary) / "blocker"
+            blocker.write_bytes(b"a file where the folder would go\n")
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b"previous\n")
+            for name, target, content, cause in (
+                ("mkdir", blocker / "inner" / "state.json", "next\n", OSError),
+                ("lone surrogate", path, "next \ud800\n", UnicodeEncodeError),
+            ):
+                with (
+                    self.subTest(failure=name),
+                    self.watched_descriptors() as (opened, _closes, _reused),
+                    self.assertRaisesRegex(
+                        PersistenceError, f"^Cannot atomically replace {re.escape(str(target))}: "
+                    ) as raised,
+                ):
+                    review_io.atomic_write_text(target, content)
+                self.assertIsInstance(raised.exception.__cause__, cause)
+                self.assertEqual([], opened, "no copy was made")
+            self.assertEqual(b"previous\n", path.read_bytes())
+            self.assertEqual(["blocker", "state.json"], sorted(item.name for item in Path(temporary).iterdir()))
+
+    def test_a_copy_that_cannot_be_removed_is_named_in_a_persistence_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "state.json"
+            path.write_bytes(b"previous\n")
+            with (
+                mock.patch.object(Path, "replace", side_effect=OSError("synthetic replace")),
+                mock.patch.object(Path, "unlink", side_effect=OSError("synthetic unlink")),
+                self.assertRaises(PersistenceError) as raised,
+            ):
+                review_io.atomic_write_text(path, "next\n")
+            copies = [item for item in Path(temporary).iterdir() if item.name != "state.json"]
+            self.assertEqual(1, len(copies), "the copy stays where the error says")
+            self.assertEqual(
+                f"Cannot remove {copies[0]}, the unfinished copy of {path}: synthetic unlink", str(raised.exception)
+            )
+            removal = raised.exception.__cause__
+            if not isinstance(removal, OSError):
+                self.fail(f"Expected the removal's OSError, got {removal!r}")
+            self.assertRegex(str(removal.__context__), "^Cannot atomically replace .*: synthetic replace$")
+            self.assertEqual(b"previous\n", path.read_bytes())
+
 
 class RecordTests(GitTestCase):
     def test_adapter_schema_matches_runtime_finding_contract(self) -> None:

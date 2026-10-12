@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 import job_tree
 from git_test_base import GitTestCase
 from harness import DeployerTestCase, Result, forward
+from test_job_tree import ended
 
 from deployer import discovery, platform_support, verify
 from deployer.discovery import Listed, ListingError
@@ -265,10 +266,7 @@ class ConverseTests(DeployerTestCase):
             lines = self.talk([*arguments, str(pids)], ["ask"], answered=lambda line: line == "done\n")
         self.assertEqual(["done"], lines)
         started = [int(pid) for pid in pids.read_text(encoding="utf-8").split()]
-        deadline = time.monotonic() + 10
-        while any(platform_support.process_status(pid).alive for pid in started) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertEqual([False, False], [platform_support.process_status(pid).alive for pid in started])
+        self.assertEqual([True, True], [ended(pid, 10) for pid in started])
 
     def test_a_program_that_cannot_be_held_with_what_it_starts_is_ended_and_a_listing_error(self) -> None:
         refusal = OSError("AssignProcessToJobObject failed: Access is denied. (Windows error 5)")

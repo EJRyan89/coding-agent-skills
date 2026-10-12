@@ -325,8 +325,6 @@ FSOPS_ALLOWED = {
 DUPLICATION_ALLOWED = {
     "process_status": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
     "cannot import the deployer, and the deployer cannot import a skill; this policy keeps the two identical",
-    "HiddenWindow": "skills/code-review-core/scripts/review_process.py carries a permanent copy: a deployed skill "
-    "cannot import the deployer, and the deployer cannot import a skill; this policy keeps the two identical",
 }
 
 
