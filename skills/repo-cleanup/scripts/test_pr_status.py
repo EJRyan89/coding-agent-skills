@@ -17,7 +17,18 @@ from bounded_process import Finished
 from git_client import GitClient, GitResult, subprocess_runner
 from git_test_base import GitTestCase
 from github_client import CommandResult, GitHubError
-from pr_status import COMMIT_LIMIT, LIMIT, QueryError, base_contains, branch_tips, classify, patch_match
+from pr_status import (
+    COMMIT_LIMIT,
+    LIMIT,
+    Bases,
+    BaseTests,
+    QueryError,
+    base_contains,
+    branch_tips,
+    classify,
+    fetched_bases,
+    patch_match,
+)
 
 TIP = "a" * 40
 OLD = "b" * 40
@@ -29,6 +40,8 @@ WORK = "2" * 40
 FOREIGN = "3" * 40
 SQUASH = "4" * 40
 OTHER_SQUASH = "beef" * 10
+RELEASE_BASE = "5" * 40
+RELEASE_SQUASH = "6" * 40
 
 
 class Recorder:
@@ -51,14 +64,32 @@ def responder(stdout: str = "[]", returncode: int = 0, stderr: str = "") -> Reco
     return Recorder(lambda arguments: subprocess.CompletedProcess(["gh", *arguments], returncode, stdout, stderr))
 
 
-def pull(state: str, sha: str = TIP, owner: str = "owner", name: str = "repo") -> dict:
+def pull(state: str, sha: str = TIP, owner: str = "owner", name: str = "repo", base: object = "main") -> dict:
     return {
         "number": 1,
         "state": state,
         "headRefOid": sha,
         "headRepository": {"name": name},
         "headRepositoryOwner": {"login": owner},
+        "baseRefName": base,
     }
+
+
+def never(tip: str, merge_commit: str) -> bool:
+    return False
+
+
+def in_main(sha: str) -> bool:
+    return sha in (BASE, MAIN_NOW)
+
+
+def in_release(sha: str) -> bool:
+    return sha in (BASE, RELEASE_BASE)
+
+
+def main_only(same_patch: Callable[[str, str], bool] = never) -> Bases:
+    """The tests of a fetched main and no other base."""
+    return {"main": BaseTests(in_main, same_patch)}.get
 
 
 def listing(*pulls: dict) -> str:
@@ -109,7 +140,7 @@ class ClassifyTests(GitTestCase):
         arguments = run.calls[0]
         self.assertEqual(["pr", "list", "--repo", "owner/repo", "--head", "topic", "--state", "all"], arguments[:8])
         fields = arguments[arguments.index("--json") + 1].split(",")
-        for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner", "mergeCommit"):
+        for field in ("state", "headRefOid", "headRepository", "headRepositoryOwner", "mergeCommit", "baseRefName"):
             self.assertIn(field, fields)
         self.assertEqual(str(LIMIT), arguments[arguments.index("--limit") + 1])
 
@@ -205,10 +236,6 @@ def history(*commits: tuple[str, ...], page_size: int = 100) -> str:
     return json.dumps([objects[start : start + page_size] for start in range(0, len(objects), page_size)] or [[]])
 
 
-def in_main(sha: str) -> bool:
-    return sha in (BASE, MAIN_NOW)
-
-
 # The tip's pull request gained a merge of main ("Update branch") before it was merged.
 UPDATED = history((TIP, BASE), (UPDATE, TIP, MAIN_NOW))
 
@@ -217,7 +244,7 @@ class UpdatedPullRequestTests(GitTestCase):
     def state(self, head: str, commits: str, upstream: str | None = None, state: str = "MERGED", **pull_fields) -> str:
         run = router(listing(dict(pull(state, head, **pull_fields), number=7)), commits)
         self.runner = run
-        return classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_main)
+        return classify("owner/repo", "topic", TIP, upstream, runner=run, bases=main_only(), default_base="main")
 
     def api_calls(self) -> list[list[str]]:
         return [call for call in self.runner.calls if call[0] == "api"]
@@ -264,6 +291,13 @@ class UpdatedPullRequestTests(GitTestCase):
                 self.assertEqual(expected, self.state(UPDATE, UPDATED, **arguments))
                 self.assertEqual([], self.api_calls())
 
+    def test_an_upstream_the_base_already_holds_is_not_newer_work(self) -> None:
+        # A branch tracking its base has the base's tip as its upstream; that is no work of the branch's own.
+        self.assertEqual("MERGED", self.state(UPDATE, UPDATED, upstream=MAIN_NOW))
+        self.assertEqual([commits_call(7)], self.api_calls())
+        self.assertEqual("UNMATCHED", self.state(UPDATE, UPDATED, upstream=RELEASE_BASE))
+        self.assertEqual([], self.api_calls())
+
     def test_an_exact_match_or_no_base_test_needs_no_commit_query(self) -> None:
         self.assertEqual("MERGED", self.state(TIP, UPDATED))
         self.assertEqual([], self.api_calls())
@@ -305,7 +339,7 @@ class UpdatedPullRequestTests(GitTestCase):
             )
         for message, run in cases.items():
             with self.subTest(message=message), self.assertRaisesRegex(QueryError, message):
-                classify("owner/repo", "topic", TIP, runner=run, in_base=in_main)
+                classify("owner/repo", "topic", TIP, runner=run, bases=main_only(), default_base="main")
 
 
 LIST_CALL = [
@@ -318,7 +352,7 @@ LIST_CALL = [
     "--state",
     "all",
     "--json",
-    "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit",
+    "number,state,headRefOid,headRepository,headRepositoryOwner,mergeCommit,baseRefName",
     "--limit",
     "1000",
 ]
@@ -335,9 +369,9 @@ class ClassifySequenceTests(GitTestCase):
         self,
         *pulls: dict,
         upstream: str | None = None,
-        in_base: Callable[[str], bool] | None = None,
+        bases: Bases | None = None,
         commits: dict[int, str] | None = None,
-        same_patch: Callable[[str, str], bool] | None = None,
+        default_base: str | None = "main",
     ) -> tuple[str, list[list[str]]]:
         answers = commits or {}
 
@@ -348,14 +382,14 @@ class ClassifySequenceTests(GitTestCase):
             return subprocess.CompletedProcess(["gh", *arguments], 0, listing(*pulls), "")
 
         run = Recorder(answer)
-        state = classify("owner/repo", "topic", TIP, upstream, runner=run, in_base=in_base, same_patch=same_patch)
+        state = classify("owner/repo", "topic", TIP, upstream, runner=run, bases=bases, default_base=default_base)
         return state, run.calls
 
     def refusal(
         self, run: Recorder, repository: str = "owner/repo", head: str = TIP, upstream: str | None = None
     ) -> str:
         with self.assertRaises(QueryError) as caught:
-            classify(repository, "topic", head, upstream, runner=run, in_base=in_main)
+            classify(repository, "topic", head, upstream, runner=run, bases=main_only(), default_base="main")
         return str(caught.exception)
 
     def test_identities_are_refused_in_order_before_any_query(self) -> None:
@@ -446,7 +480,7 @@ class ClassifySequenceTests(GitTestCase):
             ("MERGED", (updated,), {}, [LIST_CALL, commits_call(7)]),
             ("MERGED", (updated,), {"upstream": TIP}, [LIST_CALL, commits_call(7)]),
             ("UNMATCHED", (updated,), {"upstream": OLD}, [LIST_CALL]),
-            ("UNMATCHED", (updated,), {"in_base": None}, [LIST_CALL]),
+            ("UNMATCHED", (updated,), {"bases": None}, [LIST_CALL]),
             ("UNMATCHED", (dict(updated, state="CLOSED"),), {}, [LIST_CALL]),
             ("NONE", (dict(pull("MERGED", UPDATE, owner="fork"), number=7),), {}, [LIST_CALL]),
             ("UNMATCHED", (dict(updated, number="7"),), {}, [LIST_CALL]),
@@ -457,7 +491,7 @@ class ClassifySequenceTests(GitTestCase):
             ("MERGED", (pull("CLOSED"), updated), {}, [LIST_CALL, commits_call(7)]),
         )
         for expected, pulls, arguments, calls in cases:
-            options = {"in_base": in_main, "commits": {7: UPDATED}, **arguments}
+            options = {"bases": main_only(), "commits": {7: UPDATED}, **arguments}
             with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
                 self.assertEqual((expected, calls), self.outcome(*pulls, **options))
 
@@ -466,15 +500,15 @@ class ClassifySequenceTests(GitTestCase):
         first, second, third = (dict(pull("MERGED", UPDATE), number=number) for number in (4, 5, 6))
         self.assertEqual(
             ("MERGED", [LIST_CALL, commits_call(4), commits_call(5)]),
-            self.outcome(first, second, third, in_base=in_main, commits={4: unrelated, 5: UPDATED, 6: UPDATED}),
+            self.outcome(first, second, third, bases=main_only(), commits={4: unrelated, 5: UPDATED, 6: UPDATED}),
         )
         self.assertEqual(
             ("CLOSED", [LIST_CALL, commits_call(4)]),
-            self.outcome(first, pull("CLOSED"), in_base=in_main, commits={4: unrelated}),
+            self.outcome(first, pull("CLOSED"), bases=main_only(), commits={4: unrelated}),
         )
         self.assertEqual(
             ("UNMATCHED", [LIST_CALL, commits_call(4), commits_call(5)]),
-            self.outcome(first, second, in_base=in_main, commits={4: unrelated, 5: unrelated}),
+            self.outcome(first, second, bases=main_only(), commits={4: unrelated, 5: unrelated}),
         )
 
     def test_a_merge_commit_whose_patch_is_the_branches_proves_a_rewritten_tip_merged(self) -> None:
@@ -486,43 +520,162 @@ class ClassifySequenceTests(GitTestCase):
             asked.append((tip, merge_commit))
             return (tip, merge_commit) == (TIP, SQUASH)
 
-        walked = {"in_base": in_main, "commits": {7: history((OLD, BASE))}}
+        # The commit walk is tried first for every pull request, and the patch only once it proves no merge.
+        walked = [LIST_CALL, commits_call(7)]
         cases: tuple[tuple[str, tuple[dict, ...], dict, list[list[str]], list[tuple[str, str]]], ...] = (
-            ("MERGED", (squashed,), {}, [LIST_CALL], [(TIP, SQUASH)]),
-            ("MERGED", (squashed,), {"upstream": TIP}, [LIST_CALL], [(TIP, SQUASH)]),
-            # The commit walk is tried first, and the patch only once it does not prove the merge.
-            ("MERGED", (squashed,), walked, [LIST_CALL, commits_call(7)], [(TIP, SQUASH)]),
+            ("MERGED", (squashed,), {}, walked, [(TIP, SQUASH)]),
+            ("MERGED", (squashed,), {"upstream": TIP}, walked, [(TIP, SQUASH)]),
             ("UNMATCHED", (squashed,), {"upstream": OLD}, [LIST_CALL], []),
             ("UNMATCHED", (dict(squashed, state="CLOSED"),), {}, [LIST_CALL], []),
             ("NONE", (dict(squashed, headRepositoryOwner={"login": "fork"}),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit=None),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={}),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": "short"}),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": OTHER_SQUASH.upper()}),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (dict(squashed, mergeCommit=SQUASH),), {}, [LIST_CALL], []),
-            ("UNMATCHED", (other,), {}, [LIST_CALL], [(TIP, OTHER_SQUASH)]),
-            # An exact match is MERGED before any patch is compared.
+            ("UNMATCHED", (dict(squashed, mergeCommit=None),), {}, walked, []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={}),), {}, walked, []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": "short"}),), {}, walked, []),
+            ("UNMATCHED", (dict(squashed, mergeCommit={"oid": OTHER_SQUASH.upper()}),), {}, walked, []),
+            ("UNMATCHED", (dict(squashed, mergeCommit=SQUASH),), {}, walked, []),
+            ("UNMATCHED", (other,), {}, walked, [(TIP, OTHER_SQUASH)]),
+            # An exact match is MERGED before any commit is read or patch compared.
             ("MERGED", (squashed, pull("MERGED")), {}, [LIST_CALL], []),
             # A proof from the patch comes before an exact CLOSED match; a patch that differs leaves CLOSED.
-            ("MERGED", (pull("CLOSED"), squashed), {}, [LIST_CALL], [(TIP, SQUASH)]),
-            ("CLOSED", (pull("CLOSED"), other), {}, [LIST_CALL], [(TIP, OTHER_SQUASH)]),
+            ("MERGED", (pull("CLOSED"), squashed), {}, walked, [(TIP, SQUASH)]),
+            ("CLOSED", (pull("CLOSED"), other), {}, walked, [(TIP, OTHER_SQUASH)]),
             # Merged pull requests are compared in listing order until one proves the merge.
-            ("MERGED", (other, squashed), {}, [LIST_CALL], [(TIP, OTHER_SQUASH), (TIP, SQUASH)]),
-            ("MERGED", (squashed, other), {}, [LIST_CALL], [(TIP, SQUASH)]),
+            ("MERGED", (other, squashed), {}, [*walked, commits_call(7)], [(TIP, OTHER_SQUASH), (TIP, SQUASH)]),
+            ("MERGED", (squashed, other), {}, [*walked, commits_call(7)], [(TIP, SQUASH)]),
         )
         for expected, pulls, arguments, calls, compared in cases:
             asked.clear()
+            options = {"bases": main_only(same_patch), "commits": {7: history((OLD, BASE))}, **arguments}
             with self.subTest(expected=expected, pulls=pulls, arguments=arguments):
-                self.assertEqual((expected, calls), self.outcome(*pulls, same_patch=same_patch, **arguments))
+                self.assertEqual((expected, calls), self.outcome(*pulls, **options))
                 self.assertEqual(compared, asked)
 
-    def test_without_a_patch_test_a_rewritten_tip_stays_unmatched(self) -> None:
+    def test_without_base_tests_a_rewritten_tip_stays_unmatched(self) -> None:
         squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
         self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(squashed))
         self.assertEqual(
             ("UNMATCHED", [LIST_CALL, commits_call(7)]),
-            self.outcome(squashed, in_base=in_main, commits={7: history((OLD, BASE))}),
+            self.outcome(squashed, bases=main_only(), commits={7: history((OLD, BASE))}),
         )
+
+    def test_each_pull_request_is_judged_against_its_own_base(self) -> None:
+        asked: list[tuple[str, str, str]] = []
+
+        def patch_on(base: str) -> Callable[[str, str], bool]:
+            def same_patch(tip: str, merge_commit: str) -> bool:
+                asked.append((base, tip, merge_commit))
+                return (base, tip, merge_commit) == ("release/1.0", TIP, RELEASE_SQUASH)
+
+            return same_patch
+
+        bases: Bases = {
+            "main": BaseTests(in_main, patch_on("main")),
+            "release/1.0": BaseTests(in_release, patch_on("release/1.0")),
+        }.get
+        into_main = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+        into_release = dict(pull("MERGED", OLD, base="release/1.0"), number=8, mergeCommit={"oid": RELEASE_SQUASH})
+        unrelated = history((OLD, BASE))
+        commits = {7: unrelated, 8: unrelated}
+        # Several merged pull requests with different bases on one head name: each is compared on its own base.
+        self.assertEqual(
+            ("MERGED", [LIST_CALL, commits_call(7), commits_call(8)]),
+            self.outcome(into_main, into_release, bases=bases, commits=commits),
+        )
+        self.assertEqual([("main", TIP, SQUASH), ("release/1.0", TIP, RELEASE_SQUASH)], asked)
+        asked.clear()
+        self.assertEqual(
+            ("UNMATCHED", [LIST_CALL, commits_call(7)]), self.outcome(into_main, bases=bases, commits=commits)
+        )
+        self.assertEqual([("main", TIP, SQUASH)], asked)
+        asked.clear()
+        # The "Update branch" walk reads the base the pull request merged into, too.
+        updated_release = dict(pull("MERGED", UPDATE, base="release/1.0"), number=9)
+        released = history((TIP, BASE), (UPDATE, TIP, RELEASE_BASE))
+        self.assertEqual(
+            ("MERGED", [LIST_CALL, commits_call(9)]),
+            self.outcome(updated_release, bases=bases, commits={9: released}),
+        )
+        self.assertEqual(
+            ("UNMATCHED", [LIST_CALL, commits_call(9)]),
+            self.outcome(dict(updated_release, baseRefName="main"), bases=bases, commits={9: released}),
+        )
+        self.assertEqual([], asked)
+
+    def test_a_base_not_fetched_locally_proves_nothing(self) -> None:
+        squashed = dict(pull("MERGED", OLD, base="release/2.0"), number=7, mergeCommit={"oid": SQUASH})
+        always = {"main": BaseTests(in_main, lambda tip, merge_commit: True)}.get
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(squashed, bases=always, commits={}))
+        self.assertEqual(
+            ("MERGED", [LIST_CALL, commits_call(7)]),
+            self.outcome(dict(squashed, baseRefName="main"), bases=always, commits={7: history((OLD, BASE))}),
+        )
+
+    def test_a_pull_request_without_a_usable_base_name_is_judged_against_the_default(self) -> None:
+        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+        asked: list[str] = []
+
+        def tests(base: str) -> BaseTests | None:
+            asked.append(base)
+            return BaseTests(in_main, lambda tip, merge_commit: True) if base == "main" else None
+
+        unusable: tuple[object, ...] = (None, 7, "", "a..b", "with space", "a^b", "a:b", "a~1", "a@{1}", "a?b")
+        for name in unusable:
+            asked.clear()
+            with self.subTest(name=name):
+                self.assertEqual(
+                    ("MERGED", [LIST_CALL, commits_call(7)]),
+                    self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))}),
+                )
+                self.assertEqual(["main"], asked)
+                asked.clear()
+                self.assertEqual(
+                    ("UNMATCHED", [LIST_CALL]),
+                    self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={}, default_base=None),
+                )
+                self.assertEqual([], asked)
+        # A pull request's own base name is looked up as given, in any shape git accepts.
+        for name in ("main", "release/1.0", "feature-x", "topic.v2", "wip_2026", "-dash", "uni\u00e9"):
+            asked.clear()
+            with self.subTest(name=name):
+                self.outcome(dict(squashed, baseRefName=name), bases=tests, commits={7: history((OLD, BASE))})
+                self.assertEqual([name], asked)
+
+    def test_a_closed_or_fork_pull_request_on_another_base_never_matches(self) -> None:
+        bases: Bases = {"release/1.0": BaseTests(in_release, lambda tip, merge_commit: True)}.get
+        closed = dict(pull("CLOSED", OLD, base="release/1.0"), number=7, mergeCommit={"oid": RELEASE_SQUASH})
+        fork = dict(pull("MERGED", OLD, owner="fork", base="release/1.0"), number=7, mergeCommit={"oid": SQUASH})
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(closed, bases=bases, commits={}))
+        self.assertEqual(("NONE", [LIST_CALL]), self.outcome(fork, bases=bases, commits={}))
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(closed, fork, bases=bases, commits={}))
+
+    def test_an_upstream_the_pull_requests_base_holds_blocks_no_proof(self) -> None:
+        squashed = dict(pull("MERGED", OLD), number=7, mergeCommit={"oid": SQUASH})
+        bases: Bases = {
+            "main": BaseTests(in_main, lambda tip, merge_commit: True),
+            "release/1.0": BaseTests(in_release, lambda tip, merge_commit: True),
+        }.get
+        commits = {7: UPDATED}
+        cases: tuple[tuple[str, tuple[dict, ...], str | None, list[list[str]]], ...] = (
+            # An exact match, the walk, and the patch each pass the gate when the base holds the upstream.
+            ("MERGED", (pull("MERGED"),), MAIN_NOW, [LIST_CALL]),
+            ("MERGED", (dict(pull("MERGED", UPDATE), number=7),), MAIN_NOW, [LIST_CALL, commits_call(7)]),
+            ("MERGED", (squashed,), MAIN_NOW, [LIST_CALL, commits_call(7)]),
+            ("CLOSED", (pull("CLOSED"),), MAIN_NOW, [LIST_CALL]),
+            # The upstream is judged against each pull request's own base, not against every fetched base.
+            ("UNMATCHED", (squashed,), RELEASE_BASE, [LIST_CALL]),
+            ("MERGED", (dict(squashed, baseRefName="release/1.0"),), RELEASE_BASE, [LIST_CALL, commits_call(7)]),
+            ("UNMATCHED", (pull("MERGED"),), RELEASE_BASE, [LIST_CALL]),
+            ("UNMATCHED", (pull("CLOSED"),), RELEASE_BASE, [LIST_CALL]),
+            # Work the base does not hold stays newer work.
+            ("UNMATCHED", (pull("MERGED"), squashed), WORK, [LIST_CALL]),
+        )
+        for expected, pulls, upstream, calls in cases:
+            with self.subTest(expected=expected, pulls=pulls, upstream=upstream):
+                self.assertEqual(
+                    (expected, calls), self.outcome(*pulls, upstream=upstream, bases=bases, commits=commits)
+                )
+        # Without base tests the gate is the old one: any other upstream commit is newer work.
+        self.assertEqual(("UNMATCHED", [LIST_CALL]), self.outcome(pull("MERGED"), upstream=MAIN_NOW))
 
 
 class GitFixture(GitTestCase):
@@ -692,32 +845,161 @@ class PatchMatchTests(SquashFixture):
 
     def test_an_unresolvable_base_fails_closed(self) -> None:
         squash = self.squash_merge()
-        with self.assertRaisesRegex(QueryError, "cannot diff refs/remotes/origin/missing"):
+        with self.assertRaisesRegex(QueryError, "cannot find the merge base of refs/remotes/origin/missing"):
             self.same_patch(self.tip, squash, "refs/remotes/origin/missing")
+
+    def test_a_tip_sharing_no_history_with_the_base_is_no_match(self) -> None:
+        squash = self.squash_merge()
+        self.git("-C", str(self.clone), "checkout", "--orphan", "rooted")
+        self.git("-C", str(self.clone), "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".")
+        for name in self.clone.iterdir():
+            if name.is_file():
+                name.unlink()
+        orphan = self.change(self.clone, "feature.txt", "the feature\n", "the feature, rooted elsewhere")
+        self.git("-C", str(self.clone), "switch", "main")
+        self.assertFalse(self.same_patch(orphan, squash), "no merge base is no match, not a failure")
 
     def test_the_branch_patch_is_computed_once_per_tip(self) -> None:
         squash = self.squash_merge()
-        diffs: list[tuple[str, ...]] = []
+        fork_point = self.git("-C", str(self.clone), "merge-base", self.BASE_REF, self.tip)
+        commands: list[tuple[str, ...]] = []
 
         def runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
-            if "diff" in command:
-                diffs.append(tuple(command[command.index("diff") + 1 :]))
+            for verb in ("merge-base", "diff"):
+                if verb in command:
+                    commands.append(tuple(command[command.index(verb) :]))
             return subprocess_runner(command, timeout, input_bytes=input_bytes)
 
         same_patch = patch_match(str(self.clone), self.BASE_REF, GitClient(runner, input_runner=runner))
         self.assertTrue(same_patch(self.tip, squash))
         self.assertTrue(same_patch(self.tip, squash))
-        self.assertEqual([(f"{self.BASE_REF}...{self.tip}",), (f"{squash}^", squash), (f"{squash}^", squash)], diffs)
+        self.assertEqual(
+            [
+                ("merge-base", self.BASE_REF, self.tip),
+                ("diff", fork_point, self.tip),
+                ("diff", f"{squash}^", squash),
+                ("diff", f"{squash}^", squash),
+            ],
+            commands,
+        )
+
+
+class ReleaseBaseFixture(SquashFixture):
+    """Beside the topic, a release branch with a release-only commit and another sharing no history with main, each
+    with a fix squash-merged into it and the fix's local tip reworded; the clone has fetched every base."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.git("-C", str(self.clone), "switch", "-c", "release/1.0", "main")
+        self.change(self.clone, "notes.txt", "release only\n", "release-only notes")
+        self.git("-C", str(self.clone), "push", "-u", "origin", "release/1.0")
+        self.git("-C", str(self.clone), "checkout", "--orphan", "release/old")
+        self.git("-C", str(self.clone), "rm", "-r", "--cached", "--quiet", "--ignore-unmatch", ".")
+        for path in self.clone.iterdir():
+            if path.is_file():
+                path.unlink()
+        self.change(self.clone, "old.txt", "an older line\n", "the older line's root")
+        self.git("-C", str(self.clone), "push", "-u", "origin", "release/old")
+        self.fixes = {
+            "release/1.0": self.fix_into("release/1.0", "hotfix", "fix.txt"),
+            "release/old": self.fix_into("release/old", "oldfix", "oldfix.txt"),
+        }
+        self.git("-C", str(self.clone), "switch", "main")
+
+    def fix_into(self, base: str, branch: str, name: str) -> tuple[str, str, str]:
+        """A fix branch off `base`, squash-merged into `base` by the other clone and deleted remotely, then reworded
+        locally: its tip at the pull request, its squash commit, and its reworded local tip."""
+        self.git("-C", str(self.clone), "switch", "-c", branch, base)
+        tip = self.change(self.clone, name, f"the {branch}\n", f"add the {branch}")
+        self.git("-C", str(self.clone), "push", "-u", "origin", branch)
+        self.git("-C", str(self.other), "fetch", "origin")
+        self.git("-C", str(self.other), "switch", "-c", base, f"origin/{base}")
+        self.git("-C", str(self.other), "merge", "--squash", f"origin/{branch}")
+        squash = self.commit(self.other, f"Squash-merge {branch}")
+        self.git("-C", str(self.other), "push", "origin", base)
+        self.git("-C", str(self.other), "push", "origin", "--delete", branch)
+        self.git("-C", str(self.clone), "fetch", "--prune", "origin")
+        reworded = self.git("-C", str(self.clone), "commit-tree", f"{branch}^{{tree}}", "-p", f"{branch}^", "-m", "x")
+        self.git("-C", str(self.clone), "update-ref", f"refs/heads/{branch}", reworded)
+        return tip, squash, reworded
+
+
+class ReleaseBaseTests(ReleaseBaseFixture):
+    def test_a_fix_into_a_release_branch_matches_on_its_own_base_and_not_on_main(self) -> None:
+        for base, (tip, squash, reworded) in self.fixes.items():
+            with self.subTest(base=base):
+                self.assertTrue(self.same_patch(reworded, squash, f"refs/remotes/origin/{base}"))
+                self.assertTrue(self.same_patch(tip, squash, f"refs/remotes/origin/{base}"))
+                # Shared history: main's diff takes in the release-only commit. No shared history: no merge base.
+                self.assertFalse(self.same_patch(reworded, squash))
+
+    def test_fetched_bases_resolve_each_base_once_and_give_none_for_a_missing_one(self) -> None:
+        resolved: list[str] = []
+
+        def runner(command: Sequence[str], timeout: float, *, input_bytes: bytes | None = None) -> GitResult:
+            if "rev-parse" in command:
+                resolved.append(command[-1])
+            return subprocess_runner(command, timeout, input_bytes=input_bytes)
+
+        bases = fetched_bases(str(self.clone), GitClient(runner, input_runner=runner))
+        self.assertIsNone(bases("release/2.0"))
+        self.assertIsNone(bases("release/2.0"))
+        release = bases("release/1.0")
+        self.assertIs(release, bases("release/1.0"))
+        self.assertIsInstance(release, BaseTests)
+        self.assertIsInstance(bases("release/old"), BaseTests)
+        self.assertEqual(
+            [f"refs/remotes/origin/{name}^{{commit}}" for name in ("release/2.0", "release/1.0", "release/old")],
+            resolved,
+        )
+        _, squash, reworded = self.fixes["release/1.0"]
+        if release is not None:  # the isinstance assertion above holds; this narrows the type for the checker
+            self.assertTrue(release.contains(squash))
+            self.assertFalse(release.contains(reworded))
+            self.assertTrue(release.same_patch(reworded, squash))
+        self.assertIsNone(bases("hotfix"), "a branch origin no longer has is not a fetched base")
+        self.assertIsNone(bases("a..b"))
+
+    def test_a_pull_request_merged_into_a_release_branch_classifies_the_branch_merged(self) -> None:
+        for base, branch in (("release/1.0", "hotfix"), ("release/old", "oldfix")):
+            tip, squash, _ = self.fixes[base]
+            head, upstream = branch_tips(str(self.clone), branch)
+            listed = listing(dict(pull("MERGED", tip, base=base), number=7, mergeCommit={"oid": squash}))
+            run = router(listed, history((tip, BASE)))
+            with self.subTest(base=base):
+                self.assertIsNone(upstream)
+                self.assertEqual(
+                    "MERGED",
+                    classify("owner/repo", branch, head, upstream, run, fetched_bases(str(self.clone)), "main"),
+                )
+                # The base must be fetched: judged against main alone, the same pull request proves nothing.
+                self.assertEqual(
+                    "UNMATCHED",
+                    classify("owner/repo", branch, head, upstream, run, main_only_fetched(self.clone), "main"),
+                )
+                unnamed = router(
+                    listing(dict(pull("MERGED", tip, base=None), number=7, mergeCommit={"oid": squash})),
+                    history((tip, BASE)),
+                )
+                bases = fetched_bases(str(self.clone))
+                self.assertEqual("MERGED", classify("owner/repo", branch, head, upstream, unnamed, bases, base))
+                self.assertEqual("UNMATCHED", classify("owner/repo", branch, head, upstream, unnamed, bases, "main"))
+
+
+def main_only_fetched(clone: Path) -> Bases:
+    """The fetched main's tests and no other base's: how every pull request was judged before bases were per pull."""
+    main = fetched_bases(str(clone))("main")
+    return {"main": main}.get
 
 
 class BranchClassificationTests(GitFixture):
     """The branch's tips, the base's history, and its pull requests together, as repo_cleanup's
     pull_state reads them."""
 
-    def state(self, run, base_ref: str | None = None) -> str:
+    def state(self, run, with_bases: bool = False) -> str:
         head, upstream = branch_tips(str(self.clone), "topic")
-        in_base = base_contains(str(self.clone), base_ref) if base_ref else None
-        return classify("owner/repo", "topic", head, upstream, run, in_base)
+        bases = fetched_bases(str(self.clone)) if with_bases else None
+        return classify("owner/repo", "topic", head, upstream, run, bases, "main")
 
     def test_a_merged_pull_request_at_the_tip_is_merged(self) -> None:
         tip = self.tracking_branch()
@@ -734,7 +1016,7 @@ class BranchClassificationTests(GitFixture):
         update = self.git("-C", str(self.clone), "rev-parse", "HEAD")
         self.git("-C", str(self.clone), "switch", "main")
         run = router(listing(pull("MERGED", update)), history((tip, base), (update, tip, main_now)))
-        self.assertEqual("MERGED", self.state(run, "refs/remotes/origin/main"))
+        self.assertEqual("MERGED", self.state(run, with_bases=True))
         self.assertEqual("UNMATCHED", self.state(run))
 
     def test_reused_branch_with_newer_remote_work_is_not_stale(self) -> None:
@@ -754,9 +1036,10 @@ class RewrittenBranchClassificationTests(SquashFixture):
     def state(self, squash: str, with_patch: bool = True) -> str:
         head, upstream = branch_tips(str(self.clone), "topic")
         run = router(listing(dict(pull("MERGED", self.tip), mergeCommit={"oid": squash})), history((self.tip, BASE)))
-        in_base = base_contains(str(self.clone), self.BASE_REF)
-        same_patch = patch_match(str(self.clone), self.BASE_REF) if with_patch else None
-        return classify("owner/repo", "topic", head, upstream, run, in_base, same_patch)
+        bases: Bases = fetched_bases(str(self.clone))
+        if not with_patch:
+            bases = {"main": BaseTests(base_contains(str(self.clone), self.BASE_REF), never)}.get
+        return classify("owner/repo", "topic", head, upstream, run, bases, "main")
 
     def test_a_rewritten_tip_with_the_merged_content_is_merged(self) -> None:
         squash = self.squash_merge()
@@ -782,6 +1065,55 @@ class RewrittenBranchClassificationTests(SquashFixture):
         self.git("-C", str(self.other), "push", "origin", "main")
         self.reword_tip()
         self.assertEqual("UNMATCHED", self.state(squash))
+
+
+class TrackingBaseClassificationTests(SquashFixture):
+    """A topic that merged main in after main moved on, was squash-merged into main, and tracks main itself, so its
+    fetched upstream is main's tip: several commits ahead of main and behind it, with no work of its own left."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.change(self.other, "elsewhere.txt", "unrelated\n", "main moves on")
+        self.git("-C", str(self.other), "push", "origin", "main")
+        self.git("-C", str(self.clone), "fetch", "origin")
+        self.git("-C", str(self.clone), "switch", "topic")
+        self.git("-C", str(self.clone), "merge", "--no-ff", "-m", "Merge branch 'main' into topic", "origin/main")
+        self.merged_in = self.git("-C", str(self.clone), "rev-parse", "HEAD")
+        self.git("-C", str(self.clone), "push", "origin", "topic")
+        self.git("-C", str(self.clone), "switch", "main")
+        self.squash = self.squash_merge()
+        rewritten = self.git(
+            "-C", str(self.clone), "commit-tree", "topic^{tree}", "-p", "topic^1", "-p", "topic^2", "-m", "reworded"
+        )
+        self.git("-C", str(self.clone), "update-ref", "refs/heads/topic", rewritten)
+        self.git("-C", str(self.clone), "branch", "--set-upstream-to=origin/main", "topic")
+
+    def state(self, bases: Bases | None) -> str:
+        head, upstream = branch_tips(str(self.clone), "topic")
+        self.assertEqual(self.git("-C", str(self.clone), "rev-parse", "refs/remotes/origin/main"), upstream)
+        run = router(
+            listing(dict(pull("MERGED", self.merged_in), number=7, mergeCommit={"oid": self.squash})),
+            history((self.tip, BASE), (self.merged_in, self.tip, OLD)),
+        )
+        return classify("owner/repo", "topic", head, upstream, run, bases, "main")
+
+    def test_a_branch_tracking_its_base_is_merged_when_its_whole_change_landed(self) -> None:
+        ahead, behind = self.git(
+            "-C", str(self.clone), "rev-list", "--left-right", "--count", "topic...refs/remotes/origin/main"
+        ).split()
+        self.assertEqual(("2", "1"), (ahead, behind), "ahead by the change and the merge, behind by the squash")
+        self.assertNotEqual(self.merged_in, branch_tips(str(self.clone), "topic")[0])
+        self.assertEqual("MERGED", self.state(fetched_bases(str(self.clone))))
+        self.assertEqual("UNMATCHED", self.state(None), "without a base to judge the upstream by, it is newer work")
+
+    def test_a_later_commit_with_real_changes_leaves_the_branch_unmatched(self) -> None:
+        self.extend_topic()
+        self.assertEqual("UNMATCHED", self.state(fetched_bases(str(self.clone))))
+
+    def test_a_tip_the_pull_request_ended_at_is_merged_although_the_branch_tracks_its_base(self) -> None:
+        self.git("-C", str(self.clone), "update-ref", "refs/heads/topic", self.merged_in)
+        self.assertEqual("MERGED", self.state(fetched_bases(str(self.clone))))
+        self.assertEqual("UNMATCHED", self.state(None))
 
 
 if __name__ == "__main__":
