@@ -2,16 +2,18 @@ name: Deployment Smoke Test
 
 # A signal, never a gate: dispatch it before a release or after a deployer change (docs/releasing.md). It also runs
 # weekly, the day after validate.yml's weekly run, once on the README's versions and once on the latest release of
-# every runtime, so a runtime release that breaks a fresh install shows within a week. It starts from a fresh
-# GitHub-hosted Windows runner, installs the prerequisites and the three runtimes, deploys into the runner's real
-# profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter, uninstalls, and deploys again. It
+# every runtime, so a runtime release that breaks a fresh install shows within a week. Each job starts from a fresh
+# GitHub-hosted runner, Windows in one and Ubuntu in the other, installs the prerequisites and the three runtimes,
+# deploys into the runner's real profile, asks Codex CLI and Copilot CLI whether they find every runtime adapter,
+# uninstalls, and deploys again. It
 # does not start a model, so it does not show a skill running; the runtime canary does that. Claude Code reads the
 # deployed files directly and cannot list skills without a session, so for it the check is the installed version and
 # the file layout, not discovery. It needs no secret and no sign-in. If a runtime refuses to list skills until it is
 # signed in, that runtime is reported SKIPPED with the reason, and the job fails only when no runtime could be checked.
 #
 # It deploys into the real profile, not --canary-home: Codex on Windows reads personal skills from the profile whatever
-# HOME says, so only a deployment there can be discovery-checked, and a fresh runner's profile is already clean.
+# HOME says, so only a deployment there can be discovery-checked, and a fresh runner's profile is already clean. The
+# Linux job deploys into HOME, the profile every runtime reads there, for the same reason.
 
 on:
   workflow_dispatch:
@@ -255,5 +257,177 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deployable-run-${{ matrix.runtimes }}
+          path: ${{ runner.temp }}/deployable-logs
+          if-no-files-found: warn
+
+  # The same run on a fresh GitHub-hosted Ubuntu runner, in Bash with the commands docs/installation.md lists for
+  # Debian and Ubuntu, deploying into the runner's HOME, where every runtime reads skills on Linux. It has no Codex
+  # settings step, because those settings exist only on Windows.
+  deployable-linux:
+    name: Deploy to a fresh Linux profile (${{ matrix.runtimes }} runtimes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # A dispatch runs the versions it was given. A scheduled run has no inputs, so it runs the README's versions,
+        # the inputs' defaults, and beside them the latest release of every runtime.
+        runtimes: ${{ github.event_name == 'schedule' && fromJSON('["readme", "latest"]') || fromJSON('["requested"]') }}
+    env:
+      CLAUDE_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.claude-version || '2.1.289' }}
+      CODEX_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.codex-version || '0.160.0' }}
+      COPILOT_VERSION: ${{ matrix.runtimes == 'latest' && 'latest' || inputs.copilot-version || '1.0.91' }}
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare the run record
+        run: |
+          logs="$RUNNER_TEMP/deployable-logs"
+          mkdir -p "$logs"
+          {
+            echo "LOGS=$logs"
+            echo "RESULTS=$logs/results.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # The floor in deployer/tools.py.
+          python-version: '3.11'
+
+      # Copilot CLI needs Node.js 22 or newer.
+      - name: Set up Node.js 22
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+
+      # The install commands are the ones docs/installation.md lists. The runner image already provides some of these
+      # tools, so each is installed only when it is missing; the verify step below records what was found.
+      - name: Install the prerequisites
+        run: |
+          for command in git shellcheck; do
+            if command -v "$command" > /dev/null; then
+              echo "$command is provided by the runner image"
+            else
+              sudo apt-get update
+              sudo apt-get install --yes "$command"
+            fi
+          done
+          if command -v pwsh > /dev/null; then
+            echo "pwsh is provided by the runner image"
+          else
+            sudo snap install powershell --classic
+          fi
+          if ! command -v gh > /dev/null; then
+            echo "::error::gh is missing; install it from GitHub's package repository, as docs/installation.md says"
+            exit 1
+          fi
+
+      - name: Install Claude Code, Codex CLI, and GitHub Copilot CLI
+        run: |
+          npm install --global "@anthropic-ai/claude-code@$CLAUDE_VERSION" "@openai/codex@$CODEX_VERSION" "@github/copilot@$COPILOT_VERSION"
+          # Later steps start with the PATH the runner had, so hand them npm's global directory.
+          echo "$(npm prefix --global)/bin" >> "$GITHUB_PATH"
+
+      # A new step is a new shell with the PATH a person would see after opening a terminal.
+      - name: Verify the tools in a fresh shell
+        run: |
+          for command in python3 git pwsh shellcheck gh node npm claude codex copilot; do
+            if ! resolved="$(command -v "$command")"; then
+              echo "::error::$command is not on PATH"
+              exit 1
+            fi
+            echo "$command -> $resolved"
+          done
+          for pin in "claude $CLAUDE_VERSION" "codex $CODEX_VERSION" "copilot $COPILOT_VERSION"; do
+            command="${pin%% *}"
+            wanted="${pin#* }"
+            reported="$("$command" --version)"
+            echo "$command --version: $reported"
+            if [ "$wanted" != latest ] && [[ "$reported" != *"$wanted"* ]]; then
+              echo "::error::$command reports '$reported', not the requested version $wanted"
+              exit 1
+            fi
+          done
+
+      - name: Check the deployer's prerequisites
+        run: |
+          python3 deploy.py check 2>&1 | tee "$LOGS/check.log"
+
+      # configure reads its one answer from stdin, so piping it exercises the prompt a person uses.
+      - name: Configure
+        run: |
+          repositories="$HOME/GitHub"
+          mkdir -p "$repositories"
+          printf '%s\n' "$repositories" | python3 deploy.py configure 2>&1 | tee "$LOGS/configure.log"
+
+      - name: Deploy (dry run, then for real)
+        run: |
+          python3 deploy.py --all --dry-run 2>&1 | tee "$LOGS/dry-run.log"
+          python3 deploy.py --all 2>&1 | tee "$LOGS/deploy.log"
+
+      # The step runs with pipefail and errexit, so the verify's status is kept for its report rather than ending it.
+      - name: Verify discovery after the first deployment
+        run: |
+          deploy_verify=0
+          python3 deploy.py verify 2>&1 | tee "$LOGS/verify-first.log" || deploy_verify=$?
+          python3 tools/deployable_report.py verify --label 'first deploy' --deploy-verify-exit "$deploy_verify" --deploy-verify-log "$LOGS/verify-first.log" --results "$RESULTS"
+
+      # Claude Code has no skill listing and no adapter, so check its files instead; no session is started.
+      - name: Check the Claude Code file layout after the first deployment
+        run: |
+          python3 tools/deployable_report.py layout --label 'first deploy' --results "$RESULTS"
+
+      # The README's `none` selection, answered on stdin.
+      - name: Uninstall
+        run: |
+          printf 'none\n' | python3 deploy.py --dry-run 2>&1 | tee "$LOGS/uninstall-dry-run.log"
+          printf 'none\n' | python3 deploy.py 2>&1 | tee "$LOGS/uninstall.log"
+
+      - name: Confirm the profile holds nothing from the suite
+        run: |
+          left="$({
+            find "$HOME/.claude/skills" -mindepth 1 -maxdepth 1 -type d ! -name '.*'
+            find "$HOME/.agents/skills" -mindepth 1 -maxdepth 1
+            find "$HOME/.claude/agents" -mindepth 1 -maxdepth 1 -name '*.md'
+          } 2> /dev/null || true)"
+          if [ -n "$left" ]; then
+            while IFS= read -r path; do echo "::error::left after uninstall: $path"; done <<< "$left"
+            exit 1
+          fi
+          echo 'Nothing from the suite is left under ~/.claude/skills, ~/.agents/skills, or ~/.claude/agents.'
+
+      - name: Deploy again
+        run: |
+          python3 deploy.py --all 2>&1 | tee "$LOGS/redeploy.log"
+
+      - name: Verify discovery after the second deployment
+        run: |
+          deploy_verify=0
+          python3 deploy.py verify 2>&1 | tee "$LOGS/verify-second.log" || deploy_verify=$?
+          python3 tools/deployable_report.py verify --label 'after uninstall and redeploy' --deploy-verify-exit "$deploy_verify" --deploy-verify-log "$LOGS/verify-second.log" --results "$RESULTS"
+
+      - name: Check the Claude Code file layout after the second deployment
+        run: |
+          python3 tools/deployable_report.py layout --label 'after uninstall and redeploy' --results "$RESULTS"
+
+      - name: Write the step summary
+        if: ${{ !cancelled() }}
+        run: |
+          manifest="$HOME/.claude/skills/.deploy-manifest.json"
+          # Not hidden, because the artifact upload leaves hidden files out.
+          if [ -f "$manifest" ]; then cp "$manifest" "$LOGS/deploy-manifest.json"; fi
+          python3 tools/deployable_report.py summary --results "$RESULTS"
+
+      - name: Upload the run record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deployable-run-linux-${{ matrix.runtimes }}
           path: ${{ runner.temp }}/deployable-logs
           if-no-files-found: warn

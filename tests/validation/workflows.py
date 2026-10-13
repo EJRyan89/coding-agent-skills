@@ -468,10 +468,92 @@ def verify_log_problems(workflow: str) -> list[str]:
     return problems
 
 
+# The step of deployable.yml's Windows job that its Linux job has no counterpart for: Codex CLI's machine settings
+# exist only on Windows (docs/codex-support.md).
+WINDOWS_ONLY_DEPLOYABLE_STEPS = ("Make the Codex sandbox setting and record the Python aliases",)
+
+
+def deployable_linux_problems(workflow: str) -> list[str]:
+    """Report how deployable.yml's `deployable-linux` job departs from its Windows job run on a fresh ubuntu-latest
+    runner in Bash: the same matrix, runtime versions, and time limit, and the same steps in the same order, but the
+    Windows-only ones."""
+    tree = read_workflow(workflow)
+    windows = _mapping(tree, "jobs", "deployable")
+    linux = _mapping(tree, "jobs", "deployable-linux")
+    if not linux:
+        return ["there is no deployable-linux job"]
+    problems: list[str] = []
+    if windows.get("runs-on") != "windows-latest":
+        problems.append(f"the deployable job runs on {windows.get('runs-on')}, not windows-latest")
+    if linux.get("runs-on") != "ubuntu-latest":
+        problems.append(f"the deployable-linux job runs on {linux.get('runs-on')}, not ubuntu-latest")
+    if _mapping(linux, "defaults", "run").get("shell") != "bash":
+        problems.append("the deployable-linux job's steps do not run in bash")
+    for key in ("strategy", "env", "timeout-minutes"):
+        if linux.get(key) != windows.get(key):
+            problems.append(f"the deployable-linux job's {key} is not the deployable job's")
+    expected = [
+        str(step.get("name")) for step in _steps(windows) if step.get("name") not in WINDOWS_ONLY_DEPLOYABLE_STEPS
+    ]
+    found = [str(step.get("name")) for step in _steps(linux)]
+    if found != expected:
+        problems.append(f"the deployable-linux job's steps are {found}, expected {expected}")
+    return problems
+
+
+LINUX_VERIFY = re.compile(r"python3\s+(?:deploy\.py|tools/deployable_report\.py)\s+verify(?:\s|$)")
+
+
+def _linux_verify_pair_problems(lines: list[str], filename: str) -> list[str]:
+    producer = f'python3 deploy.py verify 2>&1 | tee "$LOGS/{filename}" || deploy_verify=$?'
+    problems: list[str] = []
+    reports = [line for line in lines if line.startswith("python3 tools/deployable_report.py verify")]
+    if lines.count("deploy_verify=0") != 1 or lines.count(producer) != 1 or len(reports) != 1:
+        return [f"the step must set deploy_verify=0, then run {producer!r}, then one deployable_report.py verify"]
+    if not lines.index("deploy_verify=0") < lines.index(producer) < lines.index(reports[0]):
+        problems.append(f"deploy_verify=0, the verify that saves {filename}, and its report must come in that order")
+    try:
+        words = shlex.split(reports[0])
+    except ValueError as error:
+        return [f"the report's arguments cannot be read: {error}"]
+    for option, value, written in (
+        ("--deploy-verify-log", f"$LOGS/{filename}", f'--deploy-verify-log "$LOGS/{filename}"'),
+        ("--deploy-verify-exit", "$deploy_verify", '--deploy-verify-exit "$deploy_verify"'),
+    ):
+        if words.count(option) != 1 or words[words.index(option) + 1 : words.index(option) + 2] != [value]:
+            problems.append(f"deployable_report.py verify must pass {option} {value} once")
+        elif written not in reports[0]:
+            problems.append(f"deployable_report.py verify must quote {value} as {written!r}")
+    return problems
+
+
+def linux_verify_log_problems(workflow: str) -> list[str]:
+    """Hold deployable.yml's Linux verify reports to the exact log their own step's verify writes, in order, with that
+    verify's exit status, which a failing pipeline would otherwise end the step on before its report."""
+    steps = _steps(_mapping(read_workflow(workflow), "jobs", "deployable-linux"))
+    pairs: list[tuple[str, list[str]]] = []
+    for index, step in enumerate(steps):
+        lines = [line.strip() for line in str(step.get("run", "")).splitlines()]
+        lines = [line for line in lines if line and not line.startswith("#")]
+        if any(LINUX_VERIFY.search(line) for line in lines):
+            pairs.append((str(step.get("name", f"step {index + 1}")), lines))
+    problems: list[str] = []
+    if len(pairs) != 2:
+        problems.append(f"expected first and second verify steps, found {len(pairs)}")
+    for filename, (name, lines) in zip(("verify-first.log", "verify-second.log"), pairs, strict=False):
+        problems += [f"{name}: {problem}" for problem in _linux_verify_pair_problems(lines, filename)]
+    return problems
+
+
 class WorkflowsPolicies(unittest.TestCase):
     def test_deployable_verify_reports_read_the_logs_saved_by_their_own_steps(self) -> None:
         workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
         self.assertEqual([], verify_log_problems(workflow))
+        self.assertEqual([], linux_verify_log_problems(workflow))
+
+    def test_deployable_workflow_runs_the_windows_job_again_on_a_fresh_linux_runner(self) -> None:
+        workflow = (REPOSITORY_ROOT / ".github/workflows/deployable.yml").read_text(encoding="utf-8")
+        self.assertEqual([], deployable_linux_problems(workflow))
 
     def test_deployable_workflow_is_a_dispatched_and_weekly_pinned_check_without_secrets(self) -> None:
         workflows = REPOSITORY_ROOT / ".github/workflows"
@@ -568,6 +650,6 @@ class WorkflowsPolicies(unittest.TestCase):
                     rf"(?m)^      {key}:\n(?:        .*\n)*?        default: '([^']+)'", workflow
                 ).group(1)
                 self.assertEqual(tested, default)
-                # A scheduled run has no inputs, so its README leg falls back to the same version.
-                fallback = required_match(rf"inputs\.{key} \|\| '([^']+)'", workflow).group(1)
-                self.assertEqual(tested, fallback)
+                # A scheduled run has no inputs, so its README leg falls back to the same version, in each job.
+                fallbacks = re.findall(rf"inputs\.{key} \|\| '([^']+)'", workflow)
+                self.assertEqual([tested, tested], fallbacks)

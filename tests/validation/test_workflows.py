@@ -15,8 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 from git_test_base import GitTestCase
 from workflows import (
     WorkflowSyntaxError,
+    deployable_linux_problems,
     leg_problems,
     linux_job_problems,
+    linux_verify_log_problems,
     read_workflow,
     tool_cache_problems,
     verify_log_problems,
@@ -275,6 +277,109 @@ class VerifyLogFixtures(GitTestCase):
         report = next(index for index, line in enumerate(lines) if "python tools/deployable_report.py verify" in line)
         lines[producer], lines[report] = lines[report], lines[producer]
         self.assertTrue(verify_log_problems("\n".join(lines)))
+
+
+_JOB_SETTINGS = (
+    "    timeout-minutes: 45\n"
+    "    strategy:\n      fail-fast: false\n      matrix:\n        runtimes: readme\n"
+    "    env:\n      CODEX_VERSION: '1.0'\n"
+)
+DEPLOYABLE_JOBS = (
+    "jobs:\n  deployable:\n    runs-on: windows-latest\n" + _JOB_SETTINGS + "    steps:\n"
+    "      - name: Check out source\n        uses: actions/checkout@SHA # v1\n"
+    "      - name: Make the Codex sandbox setting and record the Python aliases\n        run: Write-Host set\n"
+    "      - name: Deploy\n        run: python deploy.py --all\n"
+    "  deployable-linux:\n    runs-on: ubuntu-latest\n"
+    + _JOB_SETTINGS
+    + "    defaults:\n      run:\n        shell: bash\n"
+    "    steps:\n"
+    "      - name: Check out source\n        uses: actions/checkout@SHA # v1\n"
+    "      - name: Deploy\n        run: python3 deploy.py --all\n"
+)
+
+
+class DeployableLinuxFixtures(GitTestCase):
+    def test_the_linux_job_runs_the_windows_jobs_steps_but_the_windows_only_one(self) -> None:
+        self.assertEqual([], deployable_linux_problems(DEPLOYABLE_JOBS))
+        linux = DEPLOYABLE_JOBS.index("  deployable-linux:")
+        for drifted, problem in (
+            (DEPLOYABLE_JOBS.replace("  deployable-linux:\n", "  other:\n"), "there is no deployable-linux job"),
+            (DEPLOYABLE_JOBS.replace("runs-on: ubuntu-latest", "runs-on: ubuntu-22.04"), "not ubuntu-latest"),
+            (DEPLOYABLE_JOBS.replace("runs-on: windows-latest", "runs-on: windows-2022"), "not windows-latest"),
+            (DEPLOYABLE_JOBS.replace("        shell: bash\n", "        shell: sh\n"), "do not run in bash"),
+            (DEPLOYABLE_JOBS[:linux] + DEPLOYABLE_JOBS[linux:].replace("'1.0'", "'2.0'"), "env is not"),
+            (
+                DEPLOYABLE_JOBS[:linux] + DEPLOYABLE_JOBS[linux:].replace("fail-fast: false", "fail-fast: true"),
+                "strategy is not",
+            ),
+            (DEPLOYABLE_JOBS[:linux] + DEPLOYABLE_JOBS[linux:].replace("45", "30"), "timeout-minutes is not"),
+            (DEPLOYABLE_JOBS[:linux] + DEPLOYABLE_JOBS[linux:].replace("name: Deploy\n", "name: Ship\n"), "steps are"),
+            (
+                DEPLOYABLE_JOBS.replace(
+                    "        run: python3 deploy.py --all\n",
+                    "        run: python3 deploy.py --all\n      - name: Extra\n        run: echo\n",
+                ),
+                "steps are",
+            ),
+        ):
+            with self.subTest(problem=problem):
+                problems = deployable_linux_problems(drifted)
+                self.assertTrue(any(problem in found for found in problems), problems)
+
+
+LINUX_VERIFY_LOGS = (
+    "jobs:\n  deployable-linux:\n    steps:\n"
+    "      - name: First discovery\n        run: |\n"
+    "          deploy_verify=0\n"
+    '          python3 deploy.py verify 2>&1 | tee "$LOGS/verify-first.log" || deploy_verify=$?\n'
+    "          python3 tools/deployable_report.py verify --label 'first deploy' "
+    '--deploy-verify-exit "$deploy_verify" --deploy-verify-log "$LOGS/verify-first.log" --results "$RESULTS"\n'
+    "      - name: Second discovery\n        run: |\n"
+    "          deploy_verify=0\n"
+    '          python3 deploy.py verify 2>&1 | tee "$LOGS/verify-second.log" || deploy_verify=$?\n'
+    "          python3 tools/deployable_report.py verify --label 'after uninstall and redeploy' "
+    '--deploy-verify-exit "$deploy_verify" --deploy-verify-log "$LOGS/verify-second.log" --results "$RESULTS"\n'
+)
+
+
+class LinuxVerifyLogFixtures(GitTestCase):
+    def test_each_report_reads_the_log_and_the_status_its_own_verify_left(self) -> None:
+        self.assertEqual([], linux_verify_log_problems(LINUX_VERIFY_LOGS))
+
+    def test_wrong_swapped_unquoted_or_missing_wiring_fails(self) -> None:
+        first = '--deploy-verify-log "$LOGS/verify-first.log"'
+        second = '--deploy-verify-log "$LOGS/verify-second.log"'
+        for name, drifted in (
+            ("swapped", LINUX_VERIFY_LOGS.replace(first, "FIRST").replace(second, first).replace("FIRST", second)),
+            ("misspelt", LINUX_VERIFY_LOGS.replace(first, first.replace("first.log", "frist.log"))),
+            ("missing option", LINUX_VERIFY_LOGS.replace(first, "")),
+            ("duplicate option", LINUX_VERIFY_LOGS.replace(first, f"{first} {first}")),
+            ("unquoted log", LINUX_VERIFY_LOGS.replace(first, first.replace('"', ""))),
+            ("unquoted status", LINUX_VERIFY_LOGS.replace('"$deploy_verify"', "$deploy_verify", 1)),
+            (
+                "literal status",
+                LINUX_VERIFY_LOGS.replace('--deploy-verify-exit "$deploy_verify"', "--deploy-verify-exit 0", 1),
+            ),
+            ("no tee", LINUX_VERIFY_LOGS.replace(' | tee "$LOGS/verify-first.log"', "", 1)),
+            ("no status", LINUX_VERIFY_LOGS.replace(" || deploy_verify=$?", "", 1)),
+            ("no initial status", LINUX_VERIFY_LOGS.replace("          deploy_verify=0\n", "", 1)),
+            ("wrong producer", LINUX_VERIFY_LOGS.replace('tee "$LOGS/verify-first.log"', 'tee "$LOGS/other.log"')),
+            (
+                "commented producer",
+                LINUX_VERIFY_LOGS.replace("          python3 deploy.py", "          # python3 deploy.py", 1),
+            ),
+            ("unclosed quote", LINUX_VERIFY_LOGS.replace("'first deploy'", "'first deploy", 1)),
+            ("missing job", "jobs:\n  other:\n    steps: []\n"),
+        ):
+            with self.subTest(drift=name):
+                self.assertTrue(linux_verify_log_problems(drifted), name)
+
+    def test_a_report_before_its_producer_cannot_read_that_runs_log(self) -> None:
+        lines = LINUX_VERIFY_LOGS.splitlines()
+        producer = next(index for index, line in enumerate(lines) if "python3 deploy.py verify" in line)
+        report = next(index for index, line in enumerate(lines) if "python3 tools/deployable_report.py" in line)
+        lines[producer], lines[report] = lines[report], lines[producer]
+        self.assertTrue(linux_verify_log_problems("\n".join(lines)))
 
 
 class WorkflowReaderFixtures(GitTestCase):
