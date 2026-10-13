@@ -24,6 +24,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skill-core" / "scripts"))
 
 from bounded_process import non_interactive_environment, run_bounded
+from diff_paths import DiffPathError, header_path, unquote
 from job_tree import process_tree
 from review_analyzers import inventory, tool_names
 from review_config import safe_repository_path
@@ -101,24 +102,21 @@ MODEL_ADVICE = "write the model ID your system prompt names"
 
 
 def _unquote(value: str) -> str:
-    if not value.startswith('"'):
-        return value
-    if not value.endswith('"') or len(value) < 2:
-        raise SpecialistError(f"Malformed quoted diff path: {value!r}")
-    raw = value[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape")
-    # One U+FFFD per undecodable byte, as the GitHub client writes the diff and the source snapshot keys the name.
-    return raw.encode("latin-1").decode("utf-8", "replace")
+    """A `rename from` or `rename to` path with git's quoting undone: one U+FFFD per undecodable byte, as the GitHub
+    client writes the diff and the source snapshot keys the name."""
+    try:
+        return unquote(value)
+    except DiffPathError as error:
+        raise SpecialistError(str(error)) from error
 
 
 def _strip_prefix(value: str) -> str | None:
     """The path a `---` or `+++` line names. Git ends an unquoted name that holds a space with a tab, so a name that
     ends in a space keeps it, and the snapshot's exclusion of that name matches the diff's."""
-    value = _unquote(value.removesuffix("\t"))
-    if value == "/dev/null":
-        return None
-    if value.startswith(("a/", "b/")):
-        value = value[2:]
-    return value
+    try:
+        return header_path(value)
+    except DiffPathError as error:
+        raise SpecialistError(str(error)) from error
 
 
 def _header_path(rest: str) -> str | None:
