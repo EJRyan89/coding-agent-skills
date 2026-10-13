@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from harness import REPOSITORY_ROOT, DeployerTestCase, Result, forward
+from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, Result, forward
 
 from deployer import check, configure, platform_support, verify
 from deployer.arguments import USAGE_ERROR, parse_command
@@ -33,7 +33,7 @@ class SingleEntryPointTests(DeployerTestCase):
                 result = self.run_command(partial(module.run, ["--bogus"], self.paths))
                 self.assertEqual(USAGE_ERROR, result.code)
                 self.assertIn(
-                    f"ERROR: unrecognized arguments: --bogus\nRun 'python deploy.py {command} --help' for usage.",
+                    f"ERROR: unrecognized arguments: --bogus\nRun '{DEPLOY_COMMAND} {command} --help' for usage.",
                     result.output,
                 )
         captured = io.StringIO()
@@ -48,7 +48,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.assertEqual(0, result.code, result.output)
         self.assertTrue(result.output.startswith("\nSource: Test Skills (test/skills)\nConfig: "), result.output)
         self.assertTrue(
-            result.output.endswith("Next, preview the deployment:\n  python deploy.py --all --dry-run\n\n"),
+            result.output.endswith(f"Next, preview the deployment:\n  {DEPLOY_COMMAND} --all --dry-run\n\n"),
             result.output,
         )
         self.assertEqual(
@@ -67,41 +67,45 @@ class SingleEntryPointTests(DeployerTestCase):
 
     def test_help_describes_both_commands_and_exits_successfully(self) -> None:
         self.make_source_json()
+        # Usage continues under the first option, past the command line the platform runs deploy.py by.
+        pad = " " * len(f"usage: {DEPLOY_COMMAND} ")
+        usage = (
+            f"usage: {DEPLOY_COMMAND} [-h] [--all] [--include NAME] [--dry-run] [--force]\n"
+            f"{pad}[--force-item NAME] [--migrate-from ID]\n"
+            f"{pad}[--take-over-source] [--canary-home DIR] [--at REF]\n"
+            f"{pad}[--unpin] [--debug]\n"
+            f"{pad}COMMAND ...\n"
+        )
+        options = (
+            "\n"
+            "Render, validate, and deploy this repository's skills.\n"
+            "\n"
+            "options:\n"
+            "  -h, --help          show this help message and exit\n"
+            "  --all               deploy everything except uninstalled opt-in items\n"
+            "  --include NAME      with --all, also deploy this opt-in item; repeatable\n"
+            "  --dry-run           show what would change; change nothing\n"
+            "  --force             replace modified or unmanaged items (backed up)\n"
+            "  --force-item NAME   replace one item (backed up); repeatable\n"
+            "  --migrate-from ID   take over items from another source ID\n"
+            "  --take-over-source  deploy from this checkout in place of the recorded one\n"
+            "  --canary-home DIR   deploy into a throwaway home under the temp directory\n"
+            "  --at REF            deploy this commit, tag, or branch instead of the checkout\n"
+            "  --unpin             let a deployment without --at replace a pinned one\n"
+            "  --debug             print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
+            "\n"
+            "commands:\n"
+            "  COMMAND             run one of these instead of deploying\n"
+            "    configure         set the values skills need; see its --help\n"
+            "    check             list the tools needed and which are missing\n"
+            "    verify            check that Codex and Copilot CLI find the adapters\n"
+            "\n"
+        )
         expected = {
-            ("--help",): (
-                "\n"
-                "usage: python deploy.py [-h] [--all] [--include NAME] [--dry-run] [--force]\n"
-                "                        [--force-item NAME] [--migrate-from ID]\n"
-                "                        [--take-over-source] [--canary-home DIR] [--at REF]\n"
-                "                        [--unpin] [--debug]\n"
-                "                        COMMAND ...\n"
-                "\n"
-                "Render, validate, and deploy this repository's skills.\n"
-                "\n"
-                "options:\n"
-                "  -h, --help          show this help message and exit\n"
-                "  --all               deploy everything except uninstalled opt-in items\n"
-                "  --include NAME      with --all, also deploy this opt-in item; repeatable\n"
-                "  --dry-run           show what would change; change nothing\n"
-                "  --force             replace modified or unmanaged items (backed up)\n"
-                "  --force-item NAME   replace one item (backed up); repeatable\n"
-                "  --migrate-from ID   take over items from another source ID\n"
-                "  --take-over-source  deploy from this checkout in place of the recorded one\n"
-                "  --canary-home DIR   deploy into a throwaway home under the temp directory\n"
-                "  --at REF            deploy this commit, tag, or branch instead of the checkout\n"
-                "  --unpin             let a deployment without --at replace a pinned one\n"
-                "  --debug             print the traceback when it fails; or set DEPLOYER_DEBUG=1\n"
-                "\n"
-                "commands:\n"
-                "  COMMAND             run one of these instead of deploying\n"
-                "    configure         set the values skills need; see its --help\n"
-                "    check             list the tools needed and which are missing\n"
-                "    verify            check that Codex and Copilot CLI find the adapters\n"
-                "\n"
-            ),
+            ("--help",): "\n" + usage + options,
             ("configure", "--help"): (
                 "\n"
-                "usage: python deploy.py configure [-h] [--reset] [--debug]\n"
+                f"usage: {DEPLOY_COMMAND} configure [-h] [--reset] [--debug]\n"
                 "\n"
                 "Set or change the configuration values skills need.\n"
                 "At each prompt, Enter keeps the current value and Ctrl+C cancels.\n"
@@ -114,7 +118,7 @@ class SingleEntryPointTests(DeployerTestCase):
             ),
             ("verify", "--help"): (
                 "\n"
-                "usage: python deploy.py verify [-h] [--debug]\n"
+                f"usage: {DEPLOY_COMMAND} verify [-h] [--debug]\n"
                 "\n"
                 "Check that Codex CLI and Copilot CLI, whichever are installed, find every\n"
                 "deployed runtime adapter under ~/.agents/skills, enabled and not shadowed\n"
@@ -139,10 +143,10 @@ class SingleEntryPointTests(DeployerTestCase):
         self.make_source_json()
         self.make_config()
         for arguments, hint in (
-            (("--bogus",), "Run 'python deploy.py --help' for usage."),
-            (("configure", "--bogus"), "Run 'python deploy.py configure --help' for usage."),
-            (("verify", "--bogus"), "Run 'python deploy.py verify --help' for usage."),
-            (("--dry",), "Run 'python deploy.py --help' for usage."),
+            (("--bogus",), f"Run '{DEPLOY_COMMAND} --help' for usage."),
+            (("configure", "--bogus"), f"Run '{DEPLOY_COMMAND} configure --help' for usage."),
+            (("verify", "--bogus"), f"Run '{DEPLOY_COMMAND} verify --help' for usage."),
+            (("--dry",), f"Run '{DEPLOY_COMMAND} --help' for usage."),
         ):
             with self.subTest(arguments=arguments):
                 result = self.run_cli(*arguments)
@@ -154,7 +158,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.make_skill("alpha", "Alpha")
         result = self.run_cli("--all", "--dry-run")
         self.assertEqual(1, result.code)
-        self.assertIn("Run 'python deploy.py configure' first.", result.output)
+        self.assertIn(f"Run '{DEPLOY_COMMAND} configure' first.", result.output)
 
     def test_missing_required_variable_points_to_the_configure_command(self) -> None:
         self.make_source_json()
@@ -162,7 +166,7 @@ class SingleEntryPointTests(DeployerTestCase):
         self.config_file().write_bytes(b"_source_id=test/skills\n")
         result = self.run_cli("--all", "--dry-run")
         self.assertEqual(1, result.code)
-        self.assertIn("Run 'python deploy.py configure' to set them.", result.output)
+        self.assertIn(f"Run '{DEPLOY_COMMAND} configure' to set them.", result.output)
 
     def test_ctrl_c_at_the_configure_prompt_keeps_the_existing_config(self) -> None:
         self.make_source_json()

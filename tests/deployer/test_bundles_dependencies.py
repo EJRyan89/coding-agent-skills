@@ -11,7 +11,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 import frontmatter
-from harness import REPOSITORY_ROOT, DeployerTestCase, forward
+from harness import DEPLOY_COMMAND, REPOSITORY_ROOT, DeployerTestCase, forward
 
 BUNDLE = {"operations": {"members": ["alpha", "beta"]}}
 
@@ -240,7 +240,7 @@ class BundleAndDependencyTests(DeployerTestCase):
         self.write(native, "native Copilot skill\n")
         result = self.deploy_ok("--all")
         self.assertIn("Higher-priority GitHub Copilot personal skills shadow generated runtime adapters", result.output)
-        self.assertIn("check which copy Copilot uses with 'python deploy.py verify'", result.output)
+        self.assertIn(f"check which copy Copilot uses with '{DEPLOY_COMMAND} verify'", result.output)
         self.assertIn(forward(self.home / ".copilot" / "skills" / "alpha"), result.output)
         self.assertEqual("native Copilot skill\n", native.read_text(encoding="utf-8"))
         self.assertTrue((self.agents_dir / "alpha" / "SKILL.md").is_file())
@@ -478,7 +478,7 @@ class OptInTests(DeployerTestCase):
                 result = self.deploy_fails(*arguments, pattern=message)
                 self.assertEqual(2, result.code, result.output)
                 self.assertEqual(
-                    f"\nERROR: {message}\nRun 'python deploy.py --help' for usage.\n\n",
+                    f"\nERROR: {message}\nRun '{DEPLOY_COMMAND} --help' for usage.\n\n",
                     result.output,
                 )
 

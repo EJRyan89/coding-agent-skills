@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-c
 
 from git_test_base import GitTestCase
 
-from deployer import discovery, manifest
+from deployer import discovery, manifest, platform_support
 from deployer.paths import Paths
 from tools import deployable_report as report
 
@@ -34,6 +34,11 @@ SIGN_IN = "it exited before answering with exit code 1: You are not logged in. R
 CODEX_FAILED = "Verification failed for Codex CLI.\nSee docs/codex-support.md.\n"
 COPILOT_FAILED = "Verification failed for Copilot CLI.\nSee docs/copilot-support.md.\n"
 BYTE_ORDER_MARK = chr(0xFEFF)
+# The step the report names when nothing is deployed, pinned as each platform's literal: python on Windows, python3 on
+# Linux, where a distribution may install no python command.
+DEPLOY_FIRST = (
+    "Deploy first with 'python deploy.py'." if platform_support.WINDOWS else "Deploy first with 'python3 deploy.py'."
+)
 BOTH_FAILED = (
     "Verification failed for Codex CLI and Copilot CLI.\nSee docs/codex-support.md and docs/copilot-support.md.\n"
 )
@@ -241,6 +246,7 @@ class DeployableReportTests(GitTestCase):
         code, output = self.verify()
         self.assertEqual(1, code)
         self.assertIn("no runtime adapters", output.lower())
+        self.assertIn(DEPLOY_FIRST, output)
 
     # -- command line ---------------------------------------------------------------------------------------
 
@@ -322,6 +328,7 @@ class DeployableReportTests(GitTestCase):
         )
         self.assertEqual(1, code)
         self.assertIn("no skills are deployed", output.lower())
+        self.assertIn(DEPLOY_FIRST, output)
 
     def test_the_layout_result_joins_the_pass_with_the_same_label(self) -> None:
         self.results_file.write_text(

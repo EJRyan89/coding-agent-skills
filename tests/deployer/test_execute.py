@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "skill-core" / "scripts"))
 
 from git_test_base import GitTestCase
+from harness import DEPLOY_COMMAND
 
 from deployer import config, errors, journal, lock, pipeline, plan, platform_support, source
 from deployer.arguments import usage_error
@@ -277,7 +278,7 @@ class ExecuteTests(GitTestCase):
                 "canary_home",
                 usage_error("not a canary"),
                 2,
-                ["", "ERROR: not a canary", "Run 'python deploy.py --help' for usage.", ""],
+                ["", "ERROR: not a canary", f"Run '{DEPLOY_COMMAND} --help' for usage.", ""],
             ),
             ("validate_managed_roots", DeployError("ERROR: roots"), 1, ["", "ERROR: roots", ""]),
             ("load", DeployError("ERROR: configuration"), 1, ["", "ERROR: configuration", ""]),
