@@ -7,8 +7,8 @@ FIXTURE=$(mktemp -d "${TMPDIR:-/tmp}/update-skills-test.XXXXXX")
 trap 'rm -rf -- "$FIXTURE"' EXIT
 
 # Isolate git from the shell that started the suite, as skill-core's git_test_base.py does for the Python suites: a
-# home and global configuration of its own with the fixture identity and no hooks, no system configuration or
-# attributes, no prompt or editor, and none of the shell's other GIT_* variables.
+# home and global configuration of its own with the fixture identity, no hooks, and git's automatic maintenance off,
+# no system configuration or attributes, no prompt or editor, and none of the shell's other GIT_* variables.
 while IFS= read -r name; do
   case "$name" in
     GIT_EXEC_PATH | GIT_BASH) ;;
@@ -22,6 +22,10 @@ mkdir -p "$HOME/no-hooks"
 git config --file "$GIT_CONFIG_GLOBAL" user.name Fixture
 git config --file "$GIT_CONFIG_GLOBAL" user.email fixture@example.invalid
 git config --file "$GIT_CONFIG_GLOBAL" core.hooksPath "$HOME/no-hooks"
+git config --file "$GIT_CONFIG_GLOBAL" maintenance.auto false
+git config --file "$GIT_CONFIG_GLOBAL" maintenance.autoDetach false
+git config --file "$GIT_CONFIG_GLOBAL" gc.auto 0
+git config --file "$GIT_CONFIG_GLOBAL" gc.autoDetach false
 
 git_quiet() { git -c user.name=Test -c user.email=test@example.invalid "$@" >/dev/null 2>&1; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
