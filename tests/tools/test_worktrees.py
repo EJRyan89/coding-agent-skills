@@ -291,12 +291,12 @@ class HookCommandTests(WorktreesTestCase):
                 self.assertEqual(0, code)
                 self.assertEqual(["-B", f"{self.hub}/tools/worktrees.py", "guard"], arguments)
 
-    def test_an_inherited_git_dir_cannot_switch_the_opt_in_off(self) -> None:
+    def test_an_inherited_git_dir_or_git_config_cannot_switch_the_opt_in_off(self) -> None:
         other = self.other_repository()
         self.git(other, "config", "coding-agent-skills.hubGuard", "false")
-        for name in ("GIT_DIR", "GIT_COMMON_DIR"):
+        for name, value in (("GIT_DIR", ".git"), ("GIT_COMMON_DIR", ".git"), ("GIT_CONFIG", ".git/config")):
             with self.subTest(name=name):
-                code, arguments = self.run_hook({name: str(other / ".git")})
+                code, arguments = self.run_hook({name: str(other / value)})
                 self.assertEqual((0, ["-B", f"{self.hub}/tools/worktrees.py", "guard"]), (code, arguments))
 
 
@@ -920,8 +920,8 @@ class NewWorktreeTests(WorktreesTestCase):
 
 
 class ListTests(WorktreesTestCase):
-    def rows(self) -> dict[str, list[str]]:
-        result = self.run_script(["list"], cwd=self.tree)
+    def rows(self, environment: dict[str, str] | None = None) -> dict[str, list[str]]:
+        result = self.run_script(["list"], cwd=self.tree, environment=environment)
         self.assertEqual(0, result.returncode, result.stderr)
         lines = result.stdout.splitlines()
         self.assertTrue(lines[0].startswith("BRANCH"))
@@ -940,6 +940,12 @@ class ListTests(WorktreesTestCase):
         self.git(self.hub, "switch", "-q", "-c", "stray")
         (self.hub / "README.md").write_text("edited in the hub\n", encoding="utf-8")
         self.assertEqual(["stray", "hub · off main · dirty", "0", "0", "1"], self.rows()["stray"][:5])
+
+    def test_list_reads_each_checkouts_own_index_whatever_index_the_shell_names(self) -> None:
+        empty_index = self.root / "an empty index"
+        rows = self.rows({**self.environment, "GIT_INDEX_FILE": str(empty_index)})
+        self.assertEqual(["main", "hub", "0", "0", "0"], rows["main"][:5])
+        self.assertEqual(["feat/demo", "no commits", "0", "0", "0"], rows["feat/demo"][:5])
 
 
 if __name__ == "__main__":

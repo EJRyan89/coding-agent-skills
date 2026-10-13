@@ -12,7 +12,8 @@ gives git a temporary home of its own instead:
 - `GIT_TERMINAL_PROMPT` is 0 and `GIT_EDITOR` is `:`, which git takes as no editor, so nothing waits on a person;
 - every other variable named `GIT_*` is removed, except `GIT_EXEC_PATH`, which picks the git installation, and
   `GIT_BASH`, this repository's own name for Git Bash; so is `XDG_CONFIG_HOME`, under which git finds its attributes
-  and ignore files.
+  and ignore files. The repository-selecting ones, `bounded_process.REPOSITORY_VARIABLES`, are removed whatever is
+  kept, as every command a skill starts runs without them.
 
 Variables git reads that stay as the shell gave them, and why: `EDITOR` and `VISUAL`, which `GIT_EDITOR` outranks;
 `PAGER`, since git pages only to a terminal and a suite captures its output; `EMAIL`, since `user.email` is set;
@@ -38,6 +39,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
+
+from bounded_process import REPOSITORY_VARIABLES
 
 FIXTURE_NAME = "Fixture"
 FIXTURE_EMAIL = "fixture@example.invalid"
@@ -93,7 +96,11 @@ def config_text(settings: Mapping[str, str]) -> str:
 
 
 def _removed(name: str) -> bool:
-    return (name.startswith("GIT_") and name not in KEPT_GIT_VARIABLES) or name in REMOVED_VARIABLES
+    return (
+        name.upper() in REPOSITORY_VARIABLES
+        or (name.startswith("GIT_") and name not in KEPT_GIT_VARIABLES)
+        or name in REMOVED_VARIABLES
+    )
 
 
 @contextmanager

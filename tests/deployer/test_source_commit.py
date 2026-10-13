@@ -76,6 +76,18 @@ class SourceCommitTests(DeployerTestCase):
         self.assertIn("move", events)
         self.assertEqual(head, self.recorded())
 
+    def test_the_head_commit_is_the_sources_whatever_repository_git_dir_or_git_index_file_names(self) -> None:
+        head = self.make_repository()
+        other = self.root / "another repository"
+        other.mkdir()
+        git(other, "init", "-q", "-b", "main")
+        git(other, "commit", "-q", "--allow-empty", "-m", "Another history")
+        variables = {"GIT_DIR": str(other / ".git"), "GIT_INDEX_FILE": str(other / ".git" / "index")}
+        with mock.patch.dict("os.environ", variables):
+            self.assertEqual(head, source_commit.head_commit(self.source))
+            self.deploy_ok("--all")
+        self.assertEqual(head, self.recorded())
+
     def test_a_later_deployment_records_the_new_head_commit(self) -> None:
         first = self.make_repository()
         self.deploy_ok("--all")

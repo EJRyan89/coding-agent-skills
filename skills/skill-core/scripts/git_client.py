@@ -1,7 +1,10 @@
 """The git client every skill script that runs git shares.
 
 One runner, bounded and non-interactive (see `bounded_process`), and one failure classifier, so a failure means the
-same thing in every skill and no git command waits on a credential prompt. Tests inject the runner.
+same thing in every skill and no git command waits on a credential prompt. The runner and `stream` start git without
+its repository-selecting variables (`bounded_process.REPOSITORY_VARIABLES`), so a call reads the repository its
+`directory` names, or the one it runs in, whatever `GIT_DIR` or `GIT_INDEX_FILE` the shell or a git hook exported. Tests
+inject the runner.
 
 A git exit status is often an answer, such as `merge-base --is-ancestor` saying no, so `run` returns every result
 that git produced and raises only when git could not run or finish; `output` raises on a nonzero exit as well.

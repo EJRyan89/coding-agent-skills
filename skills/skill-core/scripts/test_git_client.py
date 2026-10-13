@@ -560,5 +560,124 @@ class StreamTests(GitTestCase):
         self.assertEqual([20, 5], bounds)
 
 
+# The listing the issue reproduces the defect with, and what each of its two repositories answers.
+LISTING = ["for-each-ref", "--format=%(refname)", "refs/heads"]
+NAMED_LISTING = b"refs/heads/main\nrefs/heads/only-in-a\n"
+OTHER_LISTING = b"refs/heads/main\n"
+
+
+class RepositoryVariableTests(GitTestCase):
+    """The issue's two repositories: `a` with branches main and only-in-a, and `b` with main alone."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        self.client = GitClient(timeout=60)
+        self.named, self.other = root / "a named repository", root / "b another repository"
+        for repository in (self.named, self.other):
+            self.client.output(["init", "--quiet", "-b", "main", str(repository)])
+            self.client.output(["commit", "--quiet", "--allow-empty", "-m", "initial"], directory=repository)
+        self.client.output(["branch", "only-in-a"], directory=self.named)
+
+    def plain_git(self, arguments: Sequence[str]) -> bytes:
+        """What git prints in the named repository given this process's environment as it is, as before the fix."""
+        return subprocess.run(
+            ["git", "-C", str(self.named), *arguments], capture_output=True, check=True, env=dict(os.environ)
+        ).stdout
+
+    def other_git_dir_forms(self) -> list[str]:
+        """`b`'s git directory as each platform's shells export it: Git Bash on Windows also writes C:/ forms."""
+        native = str(self.other / ".git")
+        return [native, (self.other / ".git").as_posix()] if os.name == "nt" else [native]
+
+    def test_a_listing_names_the_repository_it_was_given_with_git_dir_set_to_another(self) -> None:
+        forms = self.other_git_dir_forms()
+        self.assertTrue(forms)
+        for value in forms:
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"GIT_DIR": value}):
+                self.assertEqual(OTHER_LISTING, self.plain_git(LISTING))
+                self.assertEqual(NAMED_LISTING, self.client.run(LISTING, directory=self.named).output_bytes())
+                self.assertEqual(NAMED_LISTING.decode(), self.client.output(LISTING, directory=self.named))
+                with self.client.stream(LISTING, directory=self.named) as stream:
+                    stream.stdin.close()
+                    self.assertEqual(NAMED_LISTING, stream.read(len(NAMED_LISTING) + 1))
+                    self.assertEqual(0, stream.wait())
+
+    def test_a_status_reads_the_named_repositorys_index_with_git_index_file_set_to_another(self) -> None:
+        (self.named / "f.txt").write_text("staged\n", encoding="utf-8")
+        self.client.output(["add", "f.txt"], directory=self.named)
+        status = ["status", "--porcelain", "-z"]
+        empty_index = self.other / "an empty index"
+        with mock.patch.dict(os.environ, {"GIT_INDEX_FILE": str(empty_index)}):
+            self.assertEqual(b"?? f.txt\0", self.plain_git(status))
+            self.assertEqual("A  f.txt\0", self.client.output(status, directory=self.named))
+
+    def test_every_repository_selecting_variable_set_at_once_reaches_no_call(self) -> None:
+        (self.named / "f.txt").write_text("staged\n", encoding="utf-8")
+        self.client.output(["add", "f.txt"], directory=self.named)
+        self.client.output(["config", "fixture.repository", "named"], directory=self.named)
+        other_git = self.other / ".git"
+        other_config = self.other / "another config"
+        other_config.write_text("[fixture]\n\trepository = other\n", encoding="utf-8")
+        values = {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(other_git / "objects"),
+            "GIT_COMMON_DIR": str(other_git),
+            "GIT_CONFIG": str(other_config),
+            "GIT_DIR": str(other_git),
+            "GIT_GRAFT_FILE": str(self.other / "grafts"),
+            "GIT_IMPLICIT_WORK_TREE": "0",
+            "GIT_INDEX_FILE": str(self.other / "an empty index"),
+            "GIT_NAMESPACE": "elsewhere",
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OBJECT_DIRECTORY": str(other_git / "objects"),
+            "GIT_PREFIX": "a prefix/",
+            "GIT_REPLACE_REF_BASE": "refs/elsewhere/",
+            "GIT_SHALLOW_FILE": str(self.other / "shallow"),
+            "GIT_WORK_TREE": str(self.other),
+        }
+        self.assertEqual(bounded_process.REPOSITORY_VARIABLES, set(values))
+        with mock.patch.dict(os.environ, values):
+            self.assertEqual(NAMED_LISTING.decode(), self.client.output(LISTING, directory=self.named))
+            self.assertEqual("A  f.txt\0", self.client.output(["status", "--porcelain", "-z"], directory=self.named))
+            config = ["config", "--get", "fixture.repository"]
+            self.assertEqual("named\n", self.client.output(config, directory=self.named))
+            self.assertEqual(b"other\n", self.plain_git(config))
+
+    def test_command_scope_settings_still_reach_git(self) -> None:
+        settings = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "fixture.scope", "GIT_CONFIG_VALUE_0": "command"}
+        with mock.patch.dict(os.environ, settings):
+            self.assertEqual(
+                "command\n", self.client.output(["config", "--get", "fixture.scope"], directory=self.named)
+            )
+
+    def test_the_variables_are_the_ones_git_clears_but_its_settings_and_with_its_namespace(self) -> None:
+        listed = set(self.client.output(["rev-parse", "--local-env-vars"]).split())
+        self.assertLessEqual(
+            listed - {"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT"}, bounded_process.REPOSITORY_VARIABLES
+        )
+        self.assertEqual(
+            frozenset(
+                {
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                    "GIT_COMMON_DIR",
+                    "GIT_CONFIG",
+                    "GIT_DIR",
+                    "GIT_GRAFT_FILE",
+                    "GIT_IMPLICIT_WORK_TREE",
+                    "GIT_INDEX_FILE",
+                    "GIT_NAMESPACE",
+                    "GIT_NO_REPLACE_OBJECTS",
+                    "GIT_OBJECT_DIRECTORY",
+                    "GIT_PREFIX",
+                    "GIT_REPLACE_REF_BASE",
+                    "GIT_SHALLOW_FILE",
+                    "GIT_WORK_TREE",
+                }
+            ),
+            bounded_process.REPOSITORY_VARIABLES,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
